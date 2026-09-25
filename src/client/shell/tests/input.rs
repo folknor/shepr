@@ -67,9 +67,11 @@ fn full_host_palette_response_is_sent_as_one_theme_update() {
 
     let outcome = state.handle_input_bytes(responses.as_bytes());
 
-    let [ClientMessage::ClientShellHostTheme {
-        update: crate::protocol::ClientHostThemeUpdate::PaletteColors(colors),
-    }] = outcome.requests.as_slice()
+    let [
+        ClientMessage::ClientShellHostTheme {
+            update: crate::protocol::ClientHostThemeUpdate::PaletteColors(colors),
+        },
+    ] = outcome.requests.as_slice()
     else {
         panic!(
             "expected one batched palette update, got {} requests",
@@ -188,7 +190,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
         &mut enter,
     );
     let matches = vec![
@@ -409,7 +411,7 @@ fn help_overlay_uses_live_keymap_and_owns_filter_state() {
     state.set_pane_surface(surface());
     let mut open = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::Help),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::Help),
         &mut open,
     );
     let initial = state.compose(106, 30).expect("help overlay");
@@ -441,10 +443,12 @@ fn help_overlay_uses_live_keymap_and_owns_filter_state() {
         .join("\n");
     assert!(text.contains("workspace navigation"));
     assert!(!text.contains("prefix mode"));
-    assert!(filtered
-        .cursor
-        .as_ref()
-        .is_some_and(|cursor| cursor.visible));
+    assert!(
+        filtered
+            .cursor
+            .as_ref()
+            .is_some_and(|cursor| cursor.visible)
+    );
 
     assert!(state.handle_input_bytes(b"\x1b").repaint);
     assert!(matches!(state.overlay, Some(ClientShellOverlay::Help(_))));
@@ -460,7 +464,7 @@ fn rename_pane_empty_value_is_preserved_as_a_clear_request() {
     state.set_snapshot(Box::new(snapshot));
     let mut open = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::RenamePane),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::RenamePane),
         &mut open,
     );
     assert!(state.handle_input_bytes(&[0x15]).actions.is_empty());

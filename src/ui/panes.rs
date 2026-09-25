@@ -1,9 +1,9 @@
 use ratatui::{
+    Frame,
     buffer::Buffer,
     layout::Rect,
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Paragraph, Wrap},
-    Frame,
 };
 
 use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
@@ -11,8 +11,8 @@ use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
 use super::text::display_width;
 use super::text::truncate_end;
 use super::widgets::panel_contrast_fg;
-use crate::app::state::Palette;
 use crate::app::AppState;
+use crate::app::state::Palette;
 use crate::layout::PaneInfo;
 use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry};
 
@@ -81,15 +81,11 @@ fn pane_below<'a>(info: &PaneInfo, panes: &'a [PaneInfo]) -> Option<&'a PaneInfo
 }
 
 fn shrink_for_one_cell_gap(size: u16) -> u16 {
-    if size > 1 {
-        size - 1
-    } else {
-        size
-    }
+    if size > 1 { size - 1 } else { size }
 }
 
 pub(crate) fn apply_pane_chrome(
-    panes: Vec<PaneInfo>,
+    panes: &[PaneInfo],
     pane_borders: crate::config::PaneBordersConfig,
     pane_gaps: bool,
     pane_outer_borders: bool,
@@ -112,8 +108,8 @@ pub(crate) fn apply_pane_chrome(
         .iter()
         .cloned()
         .map(|mut info| {
-            let right_neighbor = multi_pane.then(|| pane_to_right(&info, &panes)).flatten();
-            let below_neighbor = multi_pane.then(|| pane_below(&info, &panes)).flatten();
+            let right_neighbor = multi_pane.then(|| pane_to_right(&info, panes)).flatten();
+            let below_neighbor = multi_pane.then(|| pane_below(&info, panes)).flatten();
 
             if multi_pane && pane_gaps && !pane_borders.draws_borders() {
                 if right_neighbor.is_some() {
@@ -239,7 +235,7 @@ pub(super) fn resize_tab_panes(
     }
 
     for info in apply_pane_chrome(
-        tab.layout.panes(area),
+        &tab.layout.panes(area),
         app.pane_borders,
         app.pane_gaps,
         app.pane_outer_borders,
@@ -319,7 +315,7 @@ pub(super) fn compute_pane_infos_for_tab(
     }
 
     let mut pane_infos = apply_pane_chrome(
-        tab.layout.panes(area),
+        &tab.layout.panes(area),
         app.pane_borders,
         app.pane_gaps,
         app.pane_outer_borders,
@@ -763,7 +759,12 @@ fn selection_fg_for_bg(bg: Color, p: &Palette) -> Color {
 
 fn mix_rgb(base: Rgb, target: Rgb, amount: f32) -> Rgb {
     fn channel(base: u8, target: u8, amount: f32) -> u8 {
-        (f32::from(base) + (f32::from(target) - f32::from(base)) * amount).round() as u8
+        // amount is a mix fraction in [0, 1] and base/target are u8 channel
+        // values, so the interpolated result stays within u8 range.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let mixed =
+            (f32::from(base) + (f32::from(target) - f32::from(base)) * amount).round() as u8;
+        mixed
     }
     (
         channel(base.0, target.0, amount),
@@ -834,9 +835,14 @@ mod tests {
         app.active = Some(0);
         app.ensure_test_terminals();
         let pane_id = app.workspaces[0].tabs[0].root_pane;
-        let terminal_id = app.workspaces[0].terminal_id(pane_id).expect("test precondition").clone();
-        app.terminals.get_mut(&terminal_id).expect("test precondition").restore_error =
-            Some("Saved directory is unavailable. Restart to retry.".into());
+        let terminal_id = app.workspaces[0]
+            .terminal_id(pane_id)
+            .expect("test precondition")
+            .clone();
+        app.terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition")
+            .restore_error = Some("Saved directory is unavailable. Restart to retry.".into());
         let runtimes = TerminalRuntimeRegistry::new();
         let area = Rect::new(0, 0, 80, 24);
         let layout = crate::ui::compute_tab_surface_for(
@@ -852,7 +858,11 @@ mod tests {
         );
         let (buffer, cursor, _, _) =
             crate::server::render_stream::render_tab_surface_virtual(&app, &runtimes, layout, area);
-        let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+        let text: String = buffer
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(text.contains("Saved directory is unavailable."));
         assert!(cursor.is_none_or(|cursor| !cursor.visible));
     }
@@ -907,8 +917,8 @@ mod tests {
         terminal_state.set_manual_label("1 模块组织（已定）".into());
         app.terminals.insert(terminal_id, terminal_state);
 
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(12, 3)).expect("test precondition");
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(12, 3))
+            .expect("test precondition");
         terminal
             .draw(|frame| render_view_pane_borders(&app, &ws, &[], frame))
             .expect("test precondition");
@@ -927,13 +937,19 @@ mod tests {
         workspace.tabs[0].layout.focus_pane(root);
 
         let infos = apply_pane_chrome(
-            workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Auto,
             false,
             true,
         );
-        let left = infos.iter().find(|info| info.id == root).expect("test precondition");
-        let right = infos.iter().find(|info| info.id == right).expect("test precondition");
+        let left = infos
+            .iter()
+            .find(|info| info.id == root)
+            .expect("test precondition");
+        let right = infos
+            .iter()
+            .find(|info| info.id == right)
+            .expect("test precondition");
 
         assert_eq!(left.rect.x + left.rect.width, right.rect.x);
         assert!(!left.borders.contains(Borders::RIGHT));
@@ -948,13 +964,19 @@ mod tests {
         workspace.tabs[0].layout.focus_pane(root);
 
         let infos = apply_pane_chrome(
-            workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Auto,
             false,
             true,
         );
-        let top = infos.iter().find(|info| info.id == root).expect("test precondition");
-        let bottom = infos.iter().find(|info| info.id == bottom).expect("test precondition");
+        let top = infos
+            .iter()
+            .find(|info| info.id == root)
+            .expect("test precondition");
+        let bottom = infos
+            .iter()
+            .find(|info| info.id == bottom)
+            .expect("test precondition");
 
         assert_eq!(top.rect.y + top.rect.height, bottom.rect.y);
         assert!(!top.borders.contains(Borders::BOTTOM));
@@ -969,13 +991,19 @@ mod tests {
         workspace.tabs[0].layout.focus_pane(root);
 
         let infos = apply_pane_chrome(
-            workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Auto,
             false,
             false,
         );
-        let left = infos.iter().find(|info| info.id == root).expect("test precondition");
-        let right = infos.iter().find(|info| info.id == right).expect("test precondition");
+        let left = infos
+            .iter()
+            .find(|info| info.id == root)
+            .expect("test precondition");
+        let right = infos
+            .iter()
+            .find(|info| info.id == right)
+            .expect("test precondition");
 
         assert_eq!(left.borders, Borders::NONE);
         assert_eq!(right.borders, Borders::LEFT);
@@ -989,13 +1017,19 @@ mod tests {
         workspace.tabs[0].layout.focus_pane(root);
 
         let infos = apply_pane_chrome(
-            workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Auto,
             true,
             true,
         );
-        let left = infos.iter().find(|info| info.id == root).expect("test precondition");
-        let right = infos.iter().find(|info| info.id == right).expect("test precondition");
+        let left = infos
+            .iter()
+            .find(|info| info.id == root)
+            .expect("test precondition");
+        let right = infos
+            .iter()
+            .find(|info| info.id == right)
+            .expect("test precondition");
 
         assert_eq!(left.rect.x + left.rect.width, right.rect.x);
         assert_eq!(left.borders, Borders::ALL);
@@ -1010,13 +1044,19 @@ mod tests {
         workspace.tabs[0].layout.focus_pane(root);
 
         let infos = apply_pane_chrome(
-            workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Off,
             true,
             true,
         );
-        let left = infos.iter().find(|info| info.id == root).expect("test precondition");
-        let right = infos.iter().find(|info| info.id == right).expect("test precondition");
+        let left = infos
+            .iter()
+            .find(|info| info.id == root)
+            .expect("test precondition");
+        let right = infos
+            .iter()
+            .find(|info| info.id == right)
+            .expect("test precondition");
 
         assert_eq!(left.rect, Rect::new(0, 0, 49, 20));
         assert_eq!(right.rect, Rect::new(50, 0, 50, 20));
@@ -1030,7 +1070,7 @@ mod tests {
         workspace.test_split(ratatui::layout::Direction::Horizontal);
 
         let infos = apply_pane_chrome(
-            workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            &workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
             PaneBordersConfig::Off,
             false,
             true,
@@ -1048,7 +1088,7 @@ mod tests {
         let area = Rect::new(0, 0, 100, 20);
 
         let default_infos = apply_pane_chrome(
-            workspace.tabs[0].layout.panes(area),
+            &workspace.tabs[0].layout.panes(area),
             PaneBordersConfig::Auto,
             false,
             true,
@@ -1056,7 +1096,7 @@ mod tests {
         assert_eq!(default_infos[0].borders, Borders::NONE);
 
         let framed_infos = apply_pane_chrome(
-            workspace.tabs[0].layout.panes(area),
+            &workspace.tabs[0].layout.panes(area),
             PaneBordersConfig::Always,
             false,
             true,
@@ -1064,7 +1104,7 @@ mod tests {
         assert_eq!(framed_infos[0].borders, Borders::ALL);
 
         let no_outer_infos = apply_pane_chrome(
-            workspace.tabs[0].layout.panes(area),
+            &workspace.tabs[0].layout.panes(area),
             PaneBordersConfig::Always,
             false,
             false,
@@ -1127,8 +1167,8 @@ mod tests {
             },
         ];
         let ws = Workspace::test_new("test");
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 4)).expect("test precondition");
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 4))
+            .expect("test precondition");
 
         terminal
             .draw(|frame| render_view_pane_borders(&app, &ws, &split_borders, frame))
@@ -1165,8 +1205,8 @@ mod tests {
             },
         ];
         let ws = Workspace::test_new("test");
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 3)).expect("test precondition");
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 3))
+            .expect("test precondition");
 
         terminal
             .draw(|frame| render_view_pane_borders(&app, &ws, &[], frame))

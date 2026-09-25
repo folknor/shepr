@@ -159,8 +159,11 @@ fn parse_number(value: &[u8]) -> Option<u32> {
 }
 
 fn boundary(index: u16, count: u16, extent: u32) -> Option<u32> {
-    (count > 0 && index <= count && extent > 0)
-        .then(|| (u64::from(index) * u64::from(extent) / u64::from(count)) as u32)
+    (count > 0 && index <= count && extent > 0).then(|| {
+        let value = u64::from(index) * u64::from(extent) / u64::from(count);
+        // value <= extent (a u32) because index <= count, so this never truncates.
+        u32::try_from(value).unwrap_or(extent)
+    })
 }
 
 fn grid_extent(count: u16, extent: u32) -> Option<u32> {
@@ -177,8 +180,10 @@ fn grid_cell(pixel: u32, count: u16, extent: u32) -> Option<u16> {
 }
 
 fn scale(pixel: u32, source: u32, target: u32) -> u32 {
-    ((u64::from(pixel) * u64::from(target)) / u64::from(source))
-        .min(u64::from(target.saturating_sub(1))) as u32
+    let cap = target.saturating_sub(1);
+    let value = ((u64::from(pixel) * u64::from(target)) / u64::from(source)).min(u64::from(cap));
+    // value <= cap (a u32) by construction, so this never truncates.
+    u32::try_from(value).unwrap_or(cap)
 }
 
 #[cfg(test)]

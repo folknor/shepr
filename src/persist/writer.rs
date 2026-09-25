@@ -107,12 +107,12 @@ fn preserve_snapshot_history(path: &Path) -> io::Result<()> {
     }
     if let Some((_, latest)) = existing.last() {
         let previous_bytes = std::fs::read(latest)?;
-        if let Ok(previous) = serde_json::from_slice::<SessionSnapshot>(&previous_bytes) {
-            if super::snapshot::layout_fingerprint(&snapshot).is_some_and(|fingerprint| {
+        if let Ok(previous) = serde_json::from_slice::<SessionSnapshot>(&previous_bytes)
+            && super::snapshot::layout_fingerprint(&snapshot).is_some_and(|fingerprint| {
                 super::snapshot::layout_fingerprint(&previous).as_ref() == Some(&fingerprint)
-            }) {
-                return Ok(());
-            }
+            })
+        {
+            return Ok(());
         }
     }
     preserve_existing_in(path, "session-snapshots", SNAPSHOT_LIMIT)?;
@@ -198,7 +198,7 @@ fn copy_recovery(source: &mut impl io::Read, backup: &Path) -> io::Result<()> {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     "recovery copy already exists",
-                ))
+                ));
             }
         }
         io::copy(source, &mut output)?;
@@ -222,10 +222,10 @@ fn recovery_files(directory: &Path) -> io::Result<Vec<(u128, PathBuf)>> {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(directory)? {
         let entry = entry?;
-        if entry.file_type()?.is_file() {
-            if let Some(timestamp) = entry.file_name().to_str().and_then(recovery_timestamp) {
-                files.push((timestamp, entry.path()));
-            }
+        if entry.file_type()?.is_file()
+            && let Some(timestamp) = entry.file_name().to_str().and_then(recovery_timestamp)
+        {
+            files.push((timestamp, entry.path()));
         }
     }
     files.sort();
@@ -245,10 +245,10 @@ fn prune_backups(older: &[(u128, PathBuf)], keep: usize) -> io::Result<()> {
             Err(err) => failure = Some(err),
         }
     }
-    if remaining > 0 {
-        if let Some(err) = failure {
-            return Err(err);
-        }
+    if remaining > 0
+        && let Some(err) = failure
+    {
+        return Err(err);
     }
     Ok(())
 }
@@ -354,9 +354,13 @@ mod tests {
             "intentional clear must still persist"
         );
         assert_eq!(snapshots(&writer), files);
-        assert_eq!(std::fs::read(&files[0].1).expect("test precondition"), saved);
+        assert_eq!(
+            std::fs::read(&files[0].1).expect("test precondition"),
+            saved
+        );
         assert!(backups(&writer).is_empty());
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
@@ -383,9 +387,11 @@ mod tests {
         }
         writer.save(&snapshot(), None);
         assert_eq!(snapshots(&writer).len(), SNAPSHOT_LIMIT);
-        assert!(!directory
-            .join(format!("session-{:039}-1-0.json", 0))
-            .exists());
+        assert!(
+            !directory
+                .join(format!("session-{:039}-1-0.json", 0))
+                .exists()
+        );
         assert!(manual.exists());
 
         for (_, path) in snapshots(&writer) {
@@ -393,7 +399,8 @@ mod tests {
         }
         let old = directory.join(format!("session-{:039}-1-0.json", 1));
         let saved = std::fs::read(&writer.path).expect("test precondition");
-        let reordered: serde_json::Value = serde_json::from_slice(&saved).expect("test precondition");
+        let reordered: serde_json::Value =
+            serde_json::from_slice(&saved).expect("test precondition");
         let equivalent = serde_json::to_vec(&reordered).expect("test precondition");
         assert_ne!(saved, equivalent);
         std::fs::write(&old, equivalent).expect("test precondition");
@@ -405,7 +412,8 @@ mod tests {
             .expect("test precondition");
         writer.save(&snapshot(), None);
         assert_eq!(snapshots(&writer), vec![(1, old)]);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
@@ -437,7 +445,8 @@ mod tests {
             2,
             "new mtime restores cadence across restart"
         );
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
@@ -451,18 +460,21 @@ mod tests {
         assert!(locked.exists());
         assert!(!removable.exists());
         assert!(prune_backups(&[(1, locked)], 1).is_err());
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
     fn snapshot_failure_does_not_block_primary_save_and_clear() {
         let mut writer = writer(false);
-        std::fs::write(writer.path.with_file_name("session-snapshots"), b"blocked").expect("test precondition");
+        std::fs::write(writer.path.with_file_name("session-snapshots"), b"blocked")
+            .expect("test precondition");
         writer.save(&snapshot(), None);
         assert!(writer.path.exists());
         writer.clear();
         assert!(!writer.path.exists());
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
@@ -470,7 +482,8 @@ mod tests {
         for protect_unloaded in [false, true] {
             let mut writer = writer(protect_unloaded);
             if !protect_unloaded {
-                super::super::io::save_to_path(&writer.path, &snapshot()).expect("test precondition");
+                super::super::io::save_to_path(&writer.path, &snapshot())
+                    .expect("test precondition");
             }
             writer.save(&snapshot(), None);
             assert!(!writer.protect_unloaded);
@@ -479,7 +492,8 @@ mod tests {
             writer.clear();
             assert!(!writer.path.exists());
             assert!(backups(&writer).is_empty());
-            std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+            std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+                .expect("test precondition");
         }
     }
 
@@ -495,8 +509,14 @@ mod tests {
         writer.save(&snapshot(), None);
         writer.clear();
         assert!(writer.protect_unloaded);
-        assert_eq!(std::fs::read(&writer.path).expect("test precondition"), original);
-        assert_eq!(std::fs::read(&history_path).expect("test precondition"), b"history");
+        assert_eq!(
+            std::fs::read(&writer.path).expect("test precondition"),
+            original
+        );
+        assert_eq!(
+            std::fs::read(&history_path).expect("test precondition"),
+            b"history"
+        );
 
         std::fs::remove_file(&directory).expect("test precondition");
         writer.save(&snapshot(), None);
@@ -505,7 +525,8 @@ mod tests {
         writer.clear();
         assert!(!writer.path.exists());
         assert_eq!(backups(&writer), vec![original.to_vec()]);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
@@ -527,12 +548,14 @@ mod tests {
         changed.workspaces[0].custom_name = Some("latest layout".into());
         writer.save(&changed, None);
         let saved: SessionSnapshot =
-            serde_json::from_slice(&std::fs::read(&writer.path).expect("test precondition")).expect("test precondition");
+            serde_json::from_slice(&std::fs::read(&writer.path).expect("test precondition"))
+                .expect("test precondition");
         assert_eq!(
             saved.workspaces[0].custom_name.as_deref(),
             Some("latest layout")
         );
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
@@ -547,9 +570,18 @@ mod tests {
             std::fs::write(&writer.path, [i]).expect("test precondition");
             writer.save(&snapshot(), None);
         }
-        assert_eq!(std::fs::read(manual).expect("test precondition"), b"manual recovery copy");
-        assert_eq!(std::fs::read_dir(directory).expect("test precondition").count(), 4);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+        assert_eq!(
+            std::fs::read(manual).expect("test precondition"),
+            b"manual recovery copy"
+        );
+        assert_eq!(
+            std::fs::read_dir(directory)
+                .expect("test precondition")
+                .count(),
+            4
+        );
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
@@ -561,7 +593,8 @@ mod tests {
         writer.clear();
         assert!(!writer.path.exists());
         assert_eq!(backups(&writer), vec![b"late layout".to_vec()]);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
@@ -572,11 +605,15 @@ mod tests {
         std::fs::create_dir(&temporary).expect("test precondition");
         writer.save(&snapshot(), None);
         writer.save(&snapshot(), None);
-        assert_eq!(std::fs::read(&writer.path).expect("test precondition"), b"original");
+        assert_eq!(
+            std::fs::read(&writer.path).expect("test precondition"),
+            b"original"
+        );
         std::fs::remove_dir(&temporary).expect("test precondition");
         writer.save(&snapshot(), None);
         assert_eq!(backups(&writer), vec![b"original".to_vec()]);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
@@ -593,10 +630,12 @@ mod tests {
             .path
             .with_file_name("session-000000000000000000000000000000000000001-1-0.json");
         let mut source = io::Cursor::new(b"partial").chain(Interrupted);
-        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            copy_recovery(&mut source, &backup)
-        }))
-        .is_err());
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                copy_recovery(&mut source, &backup)
+            }))
+            .is_err()
+        );
         assert!(
             !backup.exists(),
             "an interrupted copy must not look complete"
@@ -605,10 +644,13 @@ mod tests {
             std::fs::read(backup.with_extension("pending")).expect("test precondition"),
             b"partial"
         );
-        assert!(recovery_files(writer.path.parent().expect("test precondition"))
-            .expect("test precondition")
-            .is_empty());
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+        assert!(
+            recovery_files(writer.path.parent().expect("test precondition"))
+                .expect("test precondition")
+                .is_empty()
+        );
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
@@ -634,7 +676,8 @@ mod tests {
             writer.save(&snapshot(), None);
         }
         assert_eq!(backups(&writer), vec![vec![1], vec![2], vec![3]]);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
@@ -649,12 +692,13 @@ mod tests {
         writer.save(&snapshot(), None);
         writer.clear();
         assert_eq!(backups(&writer), vec![vec![2], vec![3], vec![4]]);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
     fn dangling_symlink_allows_first_save_and_late_target_is_preserved() {
-        use std::os::unix::{fs::symlink, fs::PermissionsExt};
+        use std::os::unix::{fs::PermissionsExt, fs::symlink};
         for late_target in [false, true] {
             let mut writer = writer(true);
             let target = writer.path.with_file_name("target.json");
@@ -663,10 +707,12 @@ mod tests {
                 std::fs::write(&target, b"late layout").expect("test precondition");
             }
             writer.save(&snapshot(), None);
-            assert!(std::fs::symlink_metadata(&writer.path)
-                .expect("test precondition")
-                .file_type()
-                .is_symlink());
+            assert!(
+                std::fs::symlink_metadata(&writer.path)
+                    .expect("test precondition")
+                    .file_type()
+                    .is_symlink()
+            );
             assert!(target.exists());
             if late_target {
                 assert_eq!(backups(&writer), vec![b"late layout".to_vec()]);
@@ -677,7 +723,11 @@ mod tests {
                     .expect("test precondition")
                     .path();
                 assert_eq!(
-                    std::fs::metadata(backup).expect("test precondition").permissions().mode() & 0o777,
+                    std::fs::metadata(backup)
+                        .expect("test precondition")
+                        .permissions()
+                        .mode()
+                        & 0o777,
                     0o600
                 );
             } else {
@@ -685,7 +735,8 @@ mod tests {
             }
             writer.clear();
             assert!(target.exists());
-            std::fs::remove_dir_all(writer.path.parent().expect("test precondition")).expect("test precondition");
+            std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+                .expect("test precondition");
         }
     }
 }

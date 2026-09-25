@@ -35,9 +35,12 @@ struct Observation {
 impl Harness {
     fn new(width: u16, height: u16) -> Self {
         let (tx, _rx) = mpsc::channel(16);
-        let terminal = crate::ghostty::Terminal::new(width, height, 256).expect("test precondition");
+        let terminal =
+            crate::ghostty::Terminal::new(width, height, 256).expect("test precondition");
         Self {
-            pane: PaneTerminal::new(GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition")),
+            pane: PaneTerminal::new(
+                GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition"),
+            ),
             tx,
             width,
             height,
@@ -130,9 +133,8 @@ fn primary_screen_replay_honors_ed3_for_droid_at_chunk_boundaries() {
     let pty = crate::pty::backend::open_pty(24, 80).expect("open pty");
     let mut command = crate::pty::PtyCommand::new("bash");
     command.args(["-c", "exec -a droid sleep 999"]);
-    let child = ChildGuard(
-        crate::pty::backend::spawn_in_pty(&pty.slave, &command).expect("spawn in pty"),
-    );
+    let child =
+        ChildGuard(crate::pty::backend::spawn_in_pty(&pty.slave, &command).expect("spawn in pty"));
     let pid = child.0.id();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -168,11 +170,13 @@ fn primary_screen_replay_honors_ed3_for_droid_at_chunk_boundaries() {
                 for bytes in old.as_bytes().chunks(chunk_size) {
                     harness.write_from_process(pid, bytes);
                 }
-                assert!(harness
-                    .pane
-                    .recent_text_snapshot(256)
-                    .text
-                    .contains("old-00"));
+                assert!(
+                    harness
+                        .pane
+                        .recent_text_snapshot(256)
+                        .text
+                        .contains("old-00")
+                );
                 harness.write_from_process(pid, &new.as_bytes()[..split]);
                 for bytes in new.as_bytes()[split..].chunks(chunk_size) {
                     harness.write_from_process(pid, bytes);
@@ -202,11 +206,13 @@ fn erase_display_preserves_screen_and_history_boundaries() {
         for row in 0..55 {
             harness.write(format!("history-{row:02}\r\n").as_bytes());
         }
-        assert!(harness
-            .pane
-            .recent_text_snapshot(256)
-            .text
-            .contains("history-00"));
+        assert!(
+            harness
+                .pane
+                .recent_text_snapshot(256)
+                .text
+                .contains("history-00")
+        );
         let primary = harness.pane.recent_text_snapshot(256);
         let visible = harness.pane.visible_text();
 
@@ -220,11 +226,13 @@ fn erase_display_preserves_screen_and_history_boundaries() {
         // ED2 clears only the display, not prior shell output in scrollback.
         harness.write(b"\x1b[2J\x1b[Hprompt");
         assert_eq!(harness.pane.visible_text().trim(), "prompt");
-        assert!(harness
-            .pane
-            .recent_text_snapshot(256)
-            .text
-            .contains("history-00"));
+        assert!(
+            harness
+                .pane
+                .recent_text_snapshot(256)
+                .text
+                .contains("history-00")
+        );
         harness.write(clear);
         // ED3 clears history without erasing the current display.
         assert_eq!(harness.pane.visible_text().trim(), "prompt");
@@ -235,7 +243,7 @@ fn erase_display_preserves_screen_and_history_boundaries() {
 #[test]
 fn short_streams_are_invariant_at_every_byte_boundary() {
     let fixtures: &[&[u8]] = &[
-        "a界e\u{301}🇯🇵!".as_bytes(),
+        "a界e\u{301}\u{1F1EF}\u{1F1F5}!".as_bytes(),
         b"a\x1b[31;1mB\x1b[0m\x1b[2;3HZ\x1b[6n\x1b[?2004h",
         b"\x1b]8;;https://example.test/a\x1b\\link\x1b]8;;\x1b\\!",
         b"\x1b]52;c;aGk=\x07\x1b]2;migration\x1b\\\x07",
@@ -260,7 +268,7 @@ fn short_streams_are_invariant_at_every_byte_boundary() {
             );
         }
         let mut bytewise = Harness::new(16, 4);
-        for byte in bytes.iter() {
+        for byte in *bytes {
             bytewise.write(std::slice::from_ref(byte));
         }
         assert_eq!(bytewise.observe(), expected);
@@ -268,7 +276,7 @@ fn short_streams_are_invariant_at_every_byte_boundary() {
     }
 }
 
-const MIXED: &str = "ab\x1b[1;38;2;12;34;56m界e\u{301}\x1b[0m\x1b]8;;https://example.test/reflow\x1b\\🇯🇵xyz\x1b]8;;\x1b\\\r\nnext カタカナ end";
+const MIXED: &str = "ab\x1b[1;38;2;12;34;56m界e\u{301}\x1b[0m\x1b]8;;https://example.test/reflow\x1b\\\u{1F1EF}\u{1F1F5}xyz\x1b]8;;\x1b\\\r\nnext カタカナ end";
 
 #[test]
 fn mixed_reflow_reads_are_stable_and_chunk_independent() {
@@ -278,16 +286,31 @@ fn mixed_reflow_reads_are_stable_and_chunk_independent() {
     for chunk in MIXED.as_bytes().chunks(3) {
         fragmented.write(chunk);
     }
-    for (width, height) in [(12, 5), (8, 4), (17, 6), (9, 5), (12, 5)] {
+    for (step, (width, height)) in [(12, 5), (8, 4), (17, 6), (9, 5), (12, 5)]
+        .into_iter()
+        .enumerate()
+    {
         whole.resize(width, height);
         fragmented.resize(width, height);
         let expected = whole.observe();
         assert_eq!(whole.observe(), expected, "reads must not mutate semantics");
         assert_eq!(fragmented.observe(), expected);
+        // alacritty reflows bottom-anchored and keeps the blank row below the
+        // cursor, so at 8x4 the linked rows scroll into history. The link must
+        // survive every reflow, visible or not.
         assert!(
-            !expected.links.is_empty(),
-            "fixture must retain a visible link"
+            whole
+                .pane
+                .recent_unwrapped_ansi(64)
+                .contains("https://example.test/reflow"),
+            "reflow at {width}x{height} must retain the link"
         );
+        if step == 0 {
+            assert!(
+                !expected.links.is_empty(),
+                "fixture must show a visible link before any reflow"
+            );
+        }
     }
 }
 
@@ -349,7 +372,12 @@ fn sparse_dirty_patches_preserve_coordinates_and_clipped_rows() {
         );
         assert!(patch.rows.iter().all(|(_, cells)| cells.len() == 8));
 
-        let core = terminal.pane.ghostty.core.lock().expect("test precondition");
+        let core = terminal
+            .pane
+            .ghostty
+            .core
+            .lock()
+            .expect("test precondition");
         let mut iterator = crate::ghostty::RowIterator::new().expect("test precondition");
         let mut rows = core
             .render_state
@@ -357,7 +385,10 @@ fn sparse_dirty_patches_preserve_coordinates_and_clipped_rows() {
             .expect("test precondition");
         let mut y = 0;
         while rows.next() {
-            assert_eq!(rows.dirty().expect("test precondition"), height == 3 && y == 4);
+            assert_eq!(
+                rows.dirty().expect("test precondition"),
+                height == 3 && y == 4
+            );
             y += 1;
         }
         assert_eq!(y, 6);
@@ -374,7 +405,12 @@ fn dirty_patch_fallback_keeps_previously_collected_rows_dirty() {
         terminal.pane.collect_dirty_patch(8, 6),
         TerminalDirtyPatchOutcome::Fallback
     ));
-    let core = terminal.pane.ghostty.core.lock().expect("test precondition");
+    let core = terminal
+        .pane
+        .ghostty
+        .core
+        .lock()
+        .expect("test precondition");
     let mut iterator = crate::ghostty::RowIterator::new().expect("test precondition");
     let mut rows = core
         .render_state
@@ -442,5 +478,8 @@ fn capture_bounded_migration_observations() {
         )
         .expect("test precondition");
     }
-    assert_eq!(observations.last().expect("test precondition"), &terminal.observe());
+    assert_eq!(
+        observations.last().expect("test precondition"),
+        &terminal.observe()
+    );
 }

@@ -56,6 +56,9 @@ mod tests {
     fn normalize_launch_env_rejects_invalid_keys() {
         let env = HashMap::from([("BAD=KEY".to_string(), "value".to_string())]);
 
-        assert_eq!(normalize_launch_env(env).expect_err("test precondition").0, "invalid_env");
+        assert_eq!(
+            normalize_launch_env(env).expect_err("test precondition").0,
+            "invalid_env"
+        );
     }
 }

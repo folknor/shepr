@@ -87,8 +87,8 @@ pub fn persisted_session_from_launch_args(
     })
 }
 
-pub fn normalize_session_start_source(value: Option<String>) -> Option<String> {
-    match value.as_deref().map(str::trim) {
+pub fn normalize_session_start_source(value: Option<&str>) -> Option<String> {
+    match value.map(str::trim) {
         Some(
             source @ ("startup" | "resume" | "clear" | "compact" | "branch" | "new" | "fork"
             | "select"),
@@ -328,26 +328,32 @@ mod tests {
             .value,
             "codex-session"
         );
-        assert!(persisted_session_from_launch_args(
-            crate::detect::Agent::Codex,
-            &["resume".into(), "--last".into()]
-        )
-        .is_none());
-        assert!(persisted_session_from_launch_args(
-            crate::detect::Agent::Codex,
-            &["resume".into(), "not-a-session".into(), "--last".into()]
-        )
-        .is_none());
-        assert!(persisted_session_from_launch_args(
-            crate::detect::Agent::Codex,
-            &[
-                "--remote".into(),
-                "ws://example.test".into(),
-                "resume".into(),
-                "remote-session".into(),
-            ]
-        )
-        .is_none());
+        assert!(
+            persisted_session_from_launch_args(
+                crate::detect::Agent::Codex,
+                &["resume".into(), "--last".into()]
+            )
+            .is_none()
+        );
+        assert!(
+            persisted_session_from_launch_args(
+                crate::detect::Agent::Codex,
+                &["resume".into(), "not-a-session".into(), "--last".into()]
+            )
+            .is_none()
+        );
+        assert!(
+            persisted_session_from_launch_args(
+                crate::detect::Agent::Codex,
+                &[
+                    "--remote".into(),
+                    "ws://example.test".into(),
+                    "resume".into(),
+                    "remote-session".into(),
+                ]
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -502,11 +508,7 @@ mod tests {
             )
             .expect("test precondition")
             .argv,
-            vec![
-                "cursor-agent",
-                "--resume",
-                "cursor-session",
-            ]
+            vec!["cursor-agent", "--resume", "cursor-session",]
         );
         assert_eq!(
             plan(
@@ -548,29 +550,35 @@ mod tests {
             .argv,
             vec!["letta", "--conversation", "default", "--agent", "agent-123"]
         );
-        assert!(plan(
-            "shepr:letta",
-            "letta",
-            &AgentSessionRef::id("default:").expect("test precondition")
-        )
-        .is_none());
+        assert!(
+            plan(
+                "shepr:letta",
+                "letta",
+                &AgentSessionRef::id("default:").expect("test precondition")
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn planner_rejects_custom_and_unsupported_path_refs() {
         let claude_session = absolute_test_path("claude-session");
-        assert!(plan(
-            "custom:claude",
-            "claude",
-            &AgentSessionRef::id("session").expect("test precondition")
-        )
-        .is_none());
-        assert!(plan(
-            "shepr:claude",
-            "claude",
-            &AgentSessionRef::path(&claude_session).expect("test precondition")
-        )
-        .is_none());
+        assert!(
+            plan(
+                "custom:claude",
+                "claude",
+                &AgentSessionRef::id("session").expect("test precondition")
+            )
+            .is_none()
+        );
+        assert!(
+            plan(
+                "shepr:claude",
+                "claude",
+                &AgentSessionRef::path(&claude_session).expect("test precondition")
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -606,8 +614,8 @@ mod tests {
         assert_eq!(session_ref.kind, AgentSessionRefKind::Path);
         assert_eq!(session_ref.value, omp_session);
 
-        let session_ref =
-            session_ref_from_report("shepr:omp", "omp", Some("omp-id".into()), None).expect("test precondition");
+        let session_ref = session_ref_from_report("shepr:omp", "omp", Some("omp-id".into()), None)
+            .expect("test precondition");
         assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
         assert_eq!(session_ref.value, "omp-id");
         let session_ref = session_ref_from_report(
@@ -639,24 +647,29 @@ mod tests {
         );
 
         let session_ref =
-            session_ref_from_report("shepr:devin", "devin", Some("devin-id".into()), None).expect("test precondition");
+            session_ref_from_report("shepr:devin", "devin", Some("devin-id".into()), None)
+                .expect("test precondition");
         assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
         assert_eq!(session_ref.value, "devin-id");
 
         let session_ref =
-            session_ref_from_report("shepr:droid", "droid", Some("droid-id".into()), None).expect("test precondition");
+            session_ref_from_report("shepr:droid", "droid", Some("droid-id".into()), None)
+                .expect("test precondition");
         assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
         assert_eq!(session_ref.value, "droid-id");
-        assert!(session_ref_from_report(
-            "shepr:droid",
-            "droid",
-            None,
-            Some("/tmp/droid-session".into())
-        )
-        .is_none());
+        assert!(
+            session_ref_from_report(
+                "shepr:droid",
+                "droid",
+                None,
+                Some("/tmp/droid-session".into())
+            )
+            .is_none()
+        );
 
         let session_ref =
-            session_ref_from_report("shepr:kimi", "kimi", Some("kimi-id".into()), None).expect("test precondition");
+            session_ref_from_report("shepr:kimi", "kimi", Some("kimi-id".into()), None)
+                .expect("test precondition");
         assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
         assert_eq!(session_ref.value, "kimi-id");
 
@@ -671,7 +684,8 @@ mod tests {
         assert_eq!(session_ref.value, "mastracode-id");
 
         let session_ref =
-            session_ref_from_report("shepr:kilo", "kilo", Some("kilo-id".into()), None).expect("test precondition");
+            session_ref_from_report("shepr:kilo", "kilo", Some("kilo-id".into()), None)
+                .expect("test precondition");
         assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
         assert_eq!(session_ref.value, "kilo-id");
 
@@ -682,7 +696,8 @@ mod tests {
         assert_eq!(session_ref.value, "qoder-id");
 
         let session_ref =
-            session_ref_from_report("shepr:qwen", "qwen", Some("qwen-id".into()), None).expect("test precondition");
+            session_ref_from_report("shepr:qwen", "qwen", Some("qwen-id".into()), None)
+                .expect("test precondition");
         assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
         assert_eq!(session_ref.value, "qwen-id");
 
@@ -696,49 +711,54 @@ mod tests {
     #[test]
     fn normalize_session_start_source_allows_known_values() {
         assert_eq!(
-            normalize_session_start_source(Some("startup".into())),
+            normalize_session_start_source(Some("startup")),
             Some("startup".into())
         );
         assert_eq!(
-            normalize_session_start_source(Some("resume".into())),
+            normalize_session_start_source(Some("resume")),
             Some("resume".into())
         );
         assert_eq!(
-            normalize_session_start_source(Some("clear".into())),
+            normalize_session_start_source(Some("clear")),
             Some("clear".into())
         );
         assert_eq!(
-            normalize_session_start_source(Some("compact".into())),
+            normalize_session_start_source(Some("compact")),
             Some("compact".into())
         );
         assert_eq!(
-            normalize_session_start_source(Some("branch".into())),
+            normalize_session_start_source(Some("branch")),
             Some("branch".into())
         );
         assert_eq!(
-            normalize_session_start_source(Some("new".into())),
+            normalize_session_start_source(Some("new")),
             Some("new".into())
         );
         assert_eq!(
-            normalize_session_start_source(Some("fork".into())),
+            normalize_session_start_source(Some("fork")),
             Some("fork".into())
         );
         assert_eq!(
-            normalize_session_start_source(Some("select".into())),
+            normalize_session_start_source(Some("select")),
             Some("select".into())
         );
         assert_eq!(
-            normalize_session_start_source(Some(" resume ".into())),
+            normalize_session_start_source(Some(" resume ")),
             Some("resume".into())
         );
-        assert_eq!(normalize_session_start_source(Some("other".into())), None);
+        assert_eq!(normalize_session_start_source(Some("other")), None);
         assert_eq!(normalize_session_start_source(None), None);
     }
 
     #[test]
     fn ids_are_data_not_shell_text() {
         let id = "abc; rm -rf /";
-        let codex_plan = plan("shepr:codex", "codex", &AgentSessionRef::id(id).expect("test precondition")).expect("test precondition");
+        let codex_plan = plan(
+            "shepr:codex",
+            "codex",
+            &AgentSessionRef::id(id).expect("test precondition"),
+        )
+        .expect("test precondition");
         assert_eq!(codex_plan.argv, vec!["codex", "resume", id]);
 
         let copilot_plan = plan(
@@ -749,7 +769,12 @@ mod tests {
         .expect("test precondition");
         assert_eq!(copilot_plan.argv, vec!["copilot", "--resume=abc; rm -rf /"]);
 
-        let devin_plan = plan("shepr:devin", "devin", &AgentSessionRef::id(id).expect("test precondition")).expect("test precondition");
+        let devin_plan = plan(
+            "shepr:devin",
+            "devin",
+            &AgentSessionRef::id(id).expect("test precondition"),
+        )
+        .expect("test precondition");
         assert_eq!(devin_plan.argv, vec!["devin", "--resume", id]);
     }
 
@@ -760,91 +785,117 @@ mod tests {
         let kilo_session = absolute_test_path("kilo-session");
         let copilot_session = absolute_test_path("copilot-session");
         let devin_session = absolute_test_path("devin-session");
-        assert!(plan(
-            "shepr:hermes",
-            "hermes",
-            &AgentSessionRef::path(&hermes_session).expect("test precondition")
-        )
-        .is_none());
-        assert!(plan(
-            "shepr:opencode",
-            "opencode",
-            &AgentSessionRef::path(&opencode_session).expect("test precondition")
-        )
-        .is_none());
-        assert!(plan(
-            "shepr:kilo",
-            "kilo",
-            &AgentSessionRef::path(&kilo_session).expect("test precondition")
-        )
-        .is_none());
-        assert!(plan(
-            "shepr:copilot",
-            "copilot",
-            &AgentSessionRef::path(&copilot_session).expect("test precondition")
-        )
-        .is_none());
-        assert!(plan(
-            "shepr:devin",
-            "devin",
-            &AgentSessionRef::path(&devin_session).expect("test precondition")
-        )
-        .is_none());
-        assert!(session_ref_from_snapshot(
-            "shepr:mastracode",
-            "mastracode",
-            AgentSessionRefKind::Id,
-            "mastracode-session"
-        )
-        .is_some());
-        assert!(session_ref_from_snapshot(
-            "shepr:hermes",
-            "hermes",
-            AgentSessionRefKind::Id,
-            "hermes-session"
-        )
-        .is_some());
-        assert!(session_ref_from_snapshot(
-            "shepr:opencode",
-            "opencode",
-            AgentSessionRefKind::Id,
-            "opencode-session"
-        )
-        .is_some());
-        assert!(session_ref_from_snapshot(
-            "shepr:kilo",
-            "kilo",
-            AgentSessionRefKind::Id,
-            "kilo-session"
-        )
-        .is_some());
-        assert!(session_ref_from_snapshot(
-            "shepr:copilot",
-            "copilot",
-            AgentSessionRefKind::Id,
-            "copilot-session"
-        )
-        .is_some());
-        assert!(session_ref_from_snapshot(
-            "shepr:devin",
-            "devin",
-            AgentSessionRefKind::Id,
-            "devin-session"
-        )
-        .is_some());
-        assert!(session_ref_from_snapshot(
-            "shepr:antigravity_cli",
-            "agy",
-            AgentSessionRefKind::Id,
-            "agy-session"
-        )
-        .is_some());
+        assert!(
+            plan(
+                "shepr:hermes",
+                "hermes",
+                &AgentSessionRef::path(&hermes_session).expect("test precondition")
+            )
+            .is_none()
+        );
+        assert!(
+            plan(
+                "shepr:opencode",
+                "opencode",
+                &AgentSessionRef::path(&opencode_session).expect("test precondition")
+            )
+            .is_none()
+        );
+        assert!(
+            plan(
+                "shepr:kilo",
+                "kilo",
+                &AgentSessionRef::path(&kilo_session).expect("test precondition")
+            )
+            .is_none()
+        );
+        assert!(
+            plan(
+                "shepr:copilot",
+                "copilot",
+                &AgentSessionRef::path(&copilot_session).expect("test precondition")
+            )
+            .is_none()
+        );
+        assert!(
+            plan(
+                "shepr:devin",
+                "devin",
+                &AgentSessionRef::path(&devin_session).expect("test precondition")
+            )
+            .is_none()
+        );
+        assert!(
+            session_ref_from_snapshot(
+                "shepr:mastracode",
+                "mastracode",
+                AgentSessionRefKind::Id,
+                "mastracode-session"
+            )
+            .is_some()
+        );
+        assert!(
+            session_ref_from_snapshot(
+                "shepr:hermes",
+                "hermes",
+                AgentSessionRefKind::Id,
+                "hermes-session"
+            )
+            .is_some()
+        );
+        assert!(
+            session_ref_from_snapshot(
+                "shepr:opencode",
+                "opencode",
+                AgentSessionRefKind::Id,
+                "opencode-session"
+            )
+            .is_some()
+        );
+        assert!(
+            session_ref_from_snapshot(
+                "shepr:kilo",
+                "kilo",
+                AgentSessionRefKind::Id,
+                "kilo-session"
+            )
+            .is_some()
+        );
+        assert!(
+            session_ref_from_snapshot(
+                "shepr:copilot",
+                "copilot",
+                AgentSessionRefKind::Id,
+                "copilot-session"
+            )
+            .is_some()
+        );
+        assert!(
+            session_ref_from_snapshot(
+                "shepr:devin",
+                "devin",
+                AgentSessionRefKind::Id,
+                "devin-session"
+            )
+            .is_some()
+        );
+        assert!(
+            session_ref_from_snapshot(
+                "shepr:antigravity_cli",
+                "agy",
+                AgentSessionRefKind::Id,
+                "agy-session"
+            )
+            .is_some()
+        );
         let agy_session = absolute_test_path("agy-session");
-        assert!(plan(
-            "shepr:antigravity_cli",
-            "agy",
-            &AgentSessionRef::path(&agy_session).expect("test precondition")
-        )
-        .is_none());
+        assert!(
+            plan(
+                "shepr:antigravity_cli",
+                "agy",
+                &AgentSessionRef::path(&agy_session).expect("test precondition")
+            )
+            .is_none()
+        );
     }
 }

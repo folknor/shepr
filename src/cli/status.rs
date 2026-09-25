@@ -31,7 +31,7 @@ enum StatusScope {
 }
 
 fn parse_status_args(args: &[String]) -> Option<(StatusScope, bool)> {
-    match args.first().map(|arg| arg.as_str()) {
+    match args.first().map(String::as_str) {
         None => Some((StatusScope::Full, false)),
         Some("--json") if args.len() == 1 => Some((StatusScope::Full, true)),
         Some("server") => {
@@ -59,7 +59,7 @@ fn parse_status_scope_args(
     scope: StatusScope,
     usage: &str,
 ) -> Option<(StatusScope, bool)> {
-    match args.get(1).map(|arg| arg.as_str()) {
+    match args.get(1).map(String::as_str) {
         None => Some((scope, false)),
         Some("--json") if args.len() == 2 => Some((scope, true)),
         _ => {

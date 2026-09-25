@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::time::Instant;
 
-use super::health::{EndpointHealth, HealthAction};
 use super::ClientEndpointId;
+use super::health::{EndpointHealth, HealthAction};
 use crate::protocol::ClientMessage;
 
 pub(crate) trait EndpointTransport: Send {
@@ -127,11 +127,6 @@ impl EndpointRegistry {
                 .is_some_and(|connection| connection.surface_active)
     }
 
-    pub(crate) fn select_unavailable_local(&mut self) {
-        self.active = ClientEndpointId::Local;
-        self.freeze_input();
-    }
-
     pub(crate) fn freeze_input(&mut self) {
         self.input_enabled = false;
     }
@@ -221,19 +216,18 @@ impl EndpointRegistry {
                         kind: crate::protocol::endpoint::HEALTH_PING_KIND.into(),
                         data: String::new(),
                     };
-                    if self.send_to(&endpoint_id, &ping) == EndpointSendOutcome::Sent {
-                        if let Some(health) = self
+                    if self.send_to(&endpoint_id, &ping) == EndpointSendOutcome::Sent
+                        && let Some(health) = self
                             .connections
                             .get_mut(&endpoint_id)
                             .and_then(|connection| connection.health.as_mut())
-                        {
-                            health.ping_sent(now);
-                        }
+                    {
+                        health.ping_sent(now);
                     }
                 }
                 HealthAction::Expired => self.record_failure(
-                    endpoint_id,
-                    io::Error::new(io::ErrorKind::TimedOut, "endpoint health check timed out"),
+                    &endpoint_id,
+                    &io::Error::new(io::ErrorKind::TimedOut, "endpoint health check timed out"),
                 ),
             }
         }
@@ -282,7 +276,7 @@ impl EndpointRegistry {
         match result {
             Ok(()) => EndpointSendOutcome::Sent,
             Err(error) => {
-                self.record_failure(endpoint_id.clone(), error);
+                self.record_failure(endpoint_id, &error);
                 EndpointSendOutcome::NotSent
             }
         }
@@ -296,8 +290,8 @@ impl EndpointRegistry {
         }
     }
 
-    pub(crate) fn fail(&mut self, endpoint_id: &ClientEndpointId, error: io::Error) {
-        self.record_failure(endpoint_id.clone(), error);
+    pub(crate) fn fail(&mut self, endpoint_id: &ClientEndpointId, error: &io::Error) {
+        self.record_failure(endpoint_id, error);
     }
 
     pub(crate) fn take_failures(&mut self) -> Vec<EndpointTransportFailure> {
@@ -312,15 +306,15 @@ impl EndpointRegistry {
             })
             .collect::<Vec<_>>();
         for (endpoint_id, error) in errors {
-            self.record_failure(endpoint_id, error);
+            self.record_failure(&endpoint_id, &error);
         }
         std::mem::take(&mut self.failures)
     }
 
-    fn record_failure(&mut self, endpoint_id: ClientEndpointId, error: io::Error) {
+    fn record_failure(&mut self, endpoint_id: &ClientEndpointId, error: &io::Error) {
         let Some(generation) = self
             .connections
-            .get(&endpoint_id)
+            .get(endpoint_id)
             .map(|connection| connection.generation)
         else {
             return;
@@ -331,13 +325,13 @@ impl EndpointRegistry {
             kind: error.kind(),
             message: error.to_string(),
         };
-        if let Some(mut connection) = self.connections.remove(&endpoint_id) {
+        if let Some(mut connection) = self.connections.remove(endpoint_id) {
             connection.transport.disconnect();
         }
         if let Some(existing) = self
             .failures
             .iter_mut()
-            .find(|existing| existing.endpoint_id == endpoint_id)
+            .find(|existing| existing.endpoint_id == *endpoint_id)
         {
             *existing = failure;
         } else {
@@ -375,7 +369,10 @@ mod tests {
             if let Some(kind) = self.error {
                 return Err(io::Error::new(kind, "fake transport failure"));
             }
-            self.sent.lock().expect("test precondition").push(message.clone());
+            self.sent
+                .lock()
+                .map_err(|_| io::Error::other("test precondition: lock poisoned"))?
+                .push(message.clone());
             Ok(())
         }
     }
@@ -392,7 +389,8 @@ mod tests {
     }
 
     fn profile() -> crate::client::endpoint::ProfileId {
-        crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition")
+        crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
+            .expect("test precondition")
     }
 
     #[test]
@@ -400,7 +398,7 @@ mod tests {
         let local_sent = Arc::new(Mutex::new(Vec::new()));
         let mut registry = EndpointRegistry::new(
             FakeTransport {
-                sent: local_sent.clone(),
+                sent: Arc::clone(&local_sent),
                 error: None,
             },
             1,
@@ -479,7 +477,7 @@ mod tests {
         registry.insert(
             ClientEndpointId::Local,
             FakeTransport {
-                sent: sent.clone(),
+                sent: Arc::clone(&sent),
                 error: None,
             },
             2,
@@ -507,7 +505,7 @@ mod tests {
         registry.insert(
             ssh_id.clone(),
             FakeTransport {
-                sent: sent.clone(),
+                sent: Arc::clone(&sent),
                 error: None,
             },
             2,
@@ -566,16 +564,20 @@ mod tests {
             !EndpointNegotiation::new(vec!["client_shell.surface.set".into()], Vec::new())
                 .supports_surface_interest()
         );
-        assert!(!EndpointNegotiation::new(
-            Vec::new(),
-            vec![crate::protocol::endpoint::SURFACE_INTEREST_CAPABILITY.into()]
-        )
-        .supports_surface_interest());
-        assert!(!EndpointNegotiation::new(
-            vec!["client_shell.surface.set".into()],
-            vec![crate::protocol::endpoint::SURFACE_INTEREST_CAPABILITY.into()]
-        )
-        .supports_surface_interest());
+        assert!(
+            !EndpointNegotiation::new(
+                Vec::new(),
+                vec![crate::protocol::endpoint::SURFACE_INTEREST_CAPABILITY.into()]
+            )
+            .supports_surface_interest()
+        );
+        assert!(
+            !EndpointNegotiation::new(
+                vec!["client_shell.surface.set".into()],
+                vec![crate::protocol::endpoint::SURFACE_INTEREST_CAPABILITY.into()]
+            )
+            .supports_surface_interest()
+        );
     }
 
     #[test]
@@ -584,7 +586,7 @@ mod tests {
         let remote_sent = Arc::new(Mutex::new(Vec::new()));
         let mut registry = EndpointRegistry::new(
             FakeTransport {
-                sent: local_sent.clone(),
+                sent: Arc::clone(&local_sent),
                 error: None,
             },
             1,
@@ -593,7 +595,7 @@ mod tests {
         registry.insert(
             ClientEndpointId::Ssh(profile()),
             FakeTransport {
-                sent: remote_sent.clone(),
+                sent: Arc::clone(&remote_sent),
                 error: None,
             },
             2,

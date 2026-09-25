@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -113,9 +113,14 @@ mod tests {
             mode: &str,
         ) -> zbus::fdo::Result<zbus::zvariant::OwnedFd> {
             assert_eq!((what, mode), ("shutdown", "delay"));
-            let (lock, peer) = UnixStream::pair().expect("test precondition");
-            peer.set_nonblocking(true).expect("test precondition");
-            *self.peer.lock().expect("test precondition") = Some(peer);
+            let (lock, peer) =
+                UnixStream::pair().map_err(|err| zbus::fdo::Error::Failed(err.to_string()))?;
+            peer.set_nonblocking(true)
+                .map_err(|err| zbus::fdo::Error::Failed(err.to_string()))?;
+            *self
+                .peer
+                .lock()
+                .map_err(|err| zbus::fdo::Error::Failed(err.to_string()))? = Some(peer);
             Ok(std::os::fd::OwnedFd::from(lock).into())
         }
 
@@ -149,7 +154,7 @@ mod tests {
                     "/org/freedesktop/login1",
                     LoginManager {
                         preparing: already_preparing,
-                        peer: peer.clone(),
+                        peer: Arc::clone(&peer),
                     },
                 )
                 .expect("test precondition")
@@ -164,8 +169,8 @@ mod tests {
             let requested = Arc::new(AtomicBool::new(false));
             let wake = Arc::new(tokio::sync::Notify::new());
             let task = tokio::spawn({
-                let requested = requested.clone();
-                let wake = wake.clone();
+                let requested = Arc::clone(&requested);
+                let wake = Arc::clone(&wake);
                 async move {
                     watch_connection(client, &requested, &move || wake.notify_one())
                         .await
@@ -194,7 +199,11 @@ mod tests {
             .await
             .expect("test precondition");
             assert!(requested.load(Ordering::Acquire));
-            let mut peer = peer.lock().expect("test precondition").take().expect("test precondition");
+            let mut peer = peer
+                .lock()
+                .expect("test precondition")
+                .take()
+                .expect("test precondition");
             assert_eq!(
                 peer.read(&mut [0]).expect_err("test precondition").kind(),
                 std::io::ErrorKind::WouldBlock,

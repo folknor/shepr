@@ -339,10 +339,7 @@ mod tests {
         let mut cmd = PtyCommand::new("/bin/sh");
         assert!(cmd.get_env("SHELL").is_some(), "SHELL is always seeded");
         cmd.env("SHEPR_PTY_TEST_KEY", "value");
-        assert_eq!(
-            cmd.get_env("SHEPR_PTY_TEST_KEY"),
-            Some(OsStr::new("value"))
-        );
+        assert_eq!(cmd.get_env("SHEPR_PTY_TEST_KEY"), Some(OsStr::new("value")));
         cmd.env_remove("SHEPR_PTY_TEST_KEY");
         assert!(cmd.get_env("SHEPR_PTY_TEST_KEY").is_none());
     }

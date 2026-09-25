@@ -25,19 +25,21 @@ id = "codex"
 }
 
 fn with_manifest_dirs<T>(name: &str, f: impl FnOnce() -> T) -> T {
-    let _guard = crate::config::test_config_env_lock().lock().expect("test precondition");
+    let _guard = crate::config::test_config_env_lock()
+        .lock()
+        .expect("test precondition");
     let old_config = std::env::var_os("XDG_CONFIG_HOME");
     let base = std::env::temp_dir().join(format!(
         "shepr-manifest-loader-{name}-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&base);
-    std::env::set_var("XDG_CONFIG_HOME", base.join("config"));
+    unsafe { std::env::set_var("XDG_CONFIG_HOME", base.join("config")) };
     reload_manifests();
     let result = f();
     match old_config {
-        Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
-        None => std::env::remove_var("XDG_CONFIG_HOME"),
+        Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
+        None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
     }
     reload_manifests();
     let _ = std::fs::remove_dir_all(&base);
@@ -460,8 +462,9 @@ fn all_bundled_manifests_parse_and_validate() {
 
 #[test]
 fn manifest_validation_rejects_unknown_fields_empty_rules_invalid_regions_and_regexes() {
-    assert!(parse_manifest(
-        r#"
+    assert!(
+        parse_manifest(
+            r#"
 id = "codex"
 
 [[rules]]
@@ -469,20 +472,24 @@ id = "typo"
 state = "working"
 contain = ["Working"]
 "#
-    )
-    .is_err());
-    assert!(parse_manifest(
-        r#"
+        )
+        .is_err()
+    );
+    assert!(
+        parse_manifest(
+            r#"
 id = "codex"
 
 [[rules]]
 id = "empty"
 state = "working"
 "#
-    )
-    .is_err());
-    assert!(parse_manifest(
-        r#"
+        )
+        .is_err()
+    );
+    assert!(
+        parse_manifest(
+            r#"
 id = "codex"
 
 [[rules]]
@@ -491,10 +498,12 @@ state = "working"
 region = "after_last_promt_marker"
 contains = ["Working"]
 "#
-    )
-    .is_err());
-    assert!(parse_manifest(
-        r#"
+        )
+        .is_err()
+    );
+    assert!(
+        parse_manifest(
+            r#"
 id = "codex"
 
 [[rules]]
@@ -502,10 +511,12 @@ id = "bad_regex"
 state = "working"
 regex = ["["]
 "#
-    )
-    .is_err());
-    assert!(parse_manifest(
-        r#"
+        )
+        .is_err()
+    );
+    assert!(
+        parse_manifest(
+            r#"
 id = "codex"
 
 [[rules]]
@@ -513,14 +524,16 @@ id = "bad_nested_regex"
 state = "working"
 any = [{ line_regex = ["["] }]
 "#
-    )
-    .is_err());
+        )
+        .is_err()
+    );
 }
 
 #[test]
 fn manifest_validation_keeps_skip_rules_neutral() {
-    assert!(parse_manifest(
-        r#"
+    assert!(
+        parse_manifest(
+            r#"
 id = "codex"
 
 [[rules]]
@@ -529,10 +542,12 @@ state = "idle"
 skip_state_update = true
 contains = ["menu"]
 "#
-    )
-    .is_err());
-    assert!(parse_manifest(
-        r#"
+        )
+        .is_err()
+    );
+    assert!(
+        parse_manifest(
+            r#"
 id = "codex"
 
 [[rules]]
@@ -542,8 +557,9 @@ skip_state_update = true
 visible_blocker = true
 contains = ["menu"]
 "#
-    )
-    .is_err());
+        )
+        .is_err()
+    );
 }
 
 #[test]

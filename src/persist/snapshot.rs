@@ -14,7 +14,7 @@ pub(super) const SNAPSHOT_VERSION: u32 = 1;
 /// Serializable snapshot of the entire shepr session.
 #[derive(Serialize, Deserialize)]
 pub struct SessionSnapshot {
-    /// Format version — used to detect incompatible changes.
+    /// Format version - used to detect incompatible changes.
     pub version: u32,
     pub workspaces: Vec<WorkspaceSnapshot>,
     pub active: Option<usize>,
@@ -191,7 +191,7 @@ fn capture_tab(
         let terminal = terminal_id.and_then(|id| terminals.get(id));
         let cwd = terminal_id
             .and_then(|id| terminal_runtimes.get(id))
-            .and_then(|runtime| runtime.cwd_for_persistence())
+            .and_then(crate::terminal::TerminalRuntime::cwd_for_persistence)
             .or_else(|| terminal.map(|terminal| terminal.cwd.clone()))
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         let label = terminal.and_then(|terminal| terminal.manual_label.clone());
@@ -208,15 +208,15 @@ fn capture_tab(
             .unwrap_or_default();
         let launch_argv = terminal.and_then(|terminal| terminal.launch_argv.clone());
         let agent_session = terminal.and_then(|terminal| {
-            if let Some(authority) = terminal.hook_authority.as_ref() {
-                if let Some(session_ref) = authority.session_ref.as_ref() {
-                    return Some(PaneAgentSessionSnapshot {
-                        source: authority.source.clone(),
-                        agent: authority.agent_label.clone(),
-                        kind: session_ref.kind,
-                        value: session_ref.value.clone(),
-                    });
-                }
+            if let Some(authority) = terminal.hook_authority.as_ref()
+                && let Some(session_ref) = authority.session_ref.as_ref()
+            {
+                return Some(PaneAgentSessionSnapshot {
+                    source: authority.source.clone(),
+                    agent: authority.agent_label.clone(),
+                    kind: session_ref.kind,
+                    value: session_ref.value.clone(),
+                });
             }
             terminal
                 .persisted_agent_session
@@ -252,11 +252,17 @@ fn capture_tab(
 
 pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
     use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
 
     // Round-trip through `Value` so JSON object keys serialize in sorted order.
     let value = serde_json::to_value(snapshot).ok()?;
     let bytes = serde_json::to_vec(&value).ok()?;
-    Some(format!("{:x}", Sha256::digest(bytes)))
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    Some(hex)
 }
 
 /// Capture pane screen history separately from the structural session snapshot.
@@ -440,7 +446,10 @@ mod tests {
         assert_eq!(pending_pane.agent_name, None);
         assert_eq!(pending_pane.managed_agent_kind, None);
 
-        let terminal = state.terminals.get_mut(&terminal_id).expect("test precondition");
+        let terminal = state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition");
         terminal.set_detected_state(
             Some(crate::detect::Agent::Pi),
             crate::detect::AgentState::Idle,
@@ -666,8 +675,10 @@ mod tests {
         state.resize_pane(NavDirection::Right);
 
         let after = capture_from_state(&state);
-        let before_ratio = root_split_ratio(&before.workspaces[0].tabs[0]).expect("test precondition");
-        let after_ratio = root_split_ratio(&after.workspaces[0].tabs[0]).expect("test precondition");
+        let before_ratio =
+            root_split_ratio(&before.workspaces[0].tabs[0]).expect("test precondition");
+        let after_ratio =
+            root_split_ratio(&after.workspaces[0].tabs[0]).expect("test precondition");
         assert_ne!(before_ratio, after_ratio);
     }
 
@@ -743,21 +754,24 @@ mod tests {
         state.active = Some(0);
         state.ensure_test_terminals();
         let pane_id = state.workspaces[0].tabs[0].root_pane;
-        let terminal_id = state.workspaces[0].terminal_id(pane_id).expect("test precondition").clone();
+        let terminal_id = state.workspaces[0]
+            .terminal_id(pane_id)
+            .expect("test precondition")
+            .clone();
         let (events, _rx) = tokio::sync::mpsc::channel(32);
         let runtime = crate::terminal::TerminalRuntime::spawn(
             pane_id,
             24,
             80,
-            old.clone(),
+            &old,
             0,
             Default::default(),
             None,
             crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
             &crate::pane::PaneLaunchEnv::default(),
-            events,
-            std::sync::Arc::new(tokio::sync::Notify::new()),
-            std::sync::Arc::new(crate::render_signal::RenderSignal::new()),
+            &events,
+            &std::sync::Arc::new(tokio::sync::Notify::new()),
+            &std::sync::Arc::new(crate::render_signal::RenderSignal::new()),
         )
         .expect("test precondition");
         let pid = runtime.child_pid().expect("test precondition");
@@ -794,7 +808,10 @@ mod tests {
             new
         );
         assert_eq!(before.workspaces[0].identity_cwd, new);
-        assert_eq!(runtimes.values().next().expect("test precondition").cwd(), Some(old.clone()));
+        assert_eq!(
+            runtimes.values().next().expect("test precondition").cwd(),
+            Some(old.clone())
+        );
         crate::platform::signal_processes(&[pid], crate::platform::Signal::Kill);
         let exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while crate::platform::process_cwd(pid).is_some()
@@ -814,7 +831,10 @@ mod tests {
             new
         );
         assert_eq!(after.workspaces[0].identity_cwd, new);
-        assert_eq!(runtimes.values().next().expect("test precondition").cwd(), Some(old));
+        assert_eq!(
+            runtimes.values().next().expect("test precondition").cwd(),
+            Some(old)
+        );
         for (_, runtime) in runtimes.drain() {
             runtime.shutdown();
         }
@@ -831,11 +851,19 @@ mod tests {
         let root_terminal_id = state.workspaces[0].tabs[0].panes[&root]
             .attached_terminal_id
             .clone();
-        state.terminals.get_mut(&root_terminal_id).expect("test precondition").cwd = PathBuf::from("/tmp/pion");
+        state
+            .terminals
+            .get_mut(&root_terminal_id)
+            .expect("test precondition")
+            .cwd = PathBuf::from("/tmp/pion");
         let second_terminal_id = state.workspaces[0].tabs[0].panes[&second]
             .attached_terminal_id
             .clone();
-        state.terminals.get_mut(&second_terminal_id).expect("test precondition").cwd = PathBuf::from("/tmp/shepr");
+        state
+            .terminals
+            .get_mut(&second_terminal_id)
+            .expect("test precondition")
+            .cwd = PathBuf::from("/tmp/shepr");
 
         let snapshot = capture_from_state(&state);
         let workspace = &snapshot.workspaces[0];
@@ -930,7 +958,10 @@ mod tests {
         let terminal_id = state.workspaces[0].tabs[0].panes[&root]
             .attached_terminal_id
             .clone();
-        let terminal = state.terminals.get_mut(&terminal_id).expect("test precondition");
+        let terminal = state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition");
         terminal.set_detected_state(
             Some(crate::detect::Agent::Pi),
             crate::detect::AgentState::Idle,
@@ -938,7 +969,8 @@ mod tests {
         terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
             source: "shepr:pi".into(),
             agent: "pi".into(),
-            session_ref: crate::agent_resume::AgentSessionRef::path(session_path.clone()).expect("test precondition"),
+            session_ref: crate::agent_resume::AgentSessionRef::path(session_path.clone())
+                .expect("test precondition"),
         });
         terminal.set_hook_authority_with_session_ref(
             "shepr:pi".into(),
@@ -979,7 +1011,8 @@ mod tests {
             .set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
                 source: "shepr:opencode".into(),
                 agent: "opencode".into(),
-                session_ref: crate::agent_resume::AgentSessionRef::id("opencode-session").expect("test precondition"),
+                session_ref: crate::agent_resume::AgentSessionRef::id("opencode-session")
+                    .expect("test precondition"),
             });
 
         let snapshot = capture_from_state(&state);

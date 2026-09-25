@@ -10,8 +10,8 @@
 
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::mpsc;
 
@@ -27,14 +27,14 @@ use super::ClientLoopEvent;
 /// The main loop receives the raw bytes and forwards them as
 /// `ClientMessage::Input` to the server.
 pub fn stdin_reader_loop(
-    event_tx: mpsc::Sender<ClientLoopEvent>,
+    event_tx: &mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
     host_color_query_sent: bool,
     host_cell_size_query_sent: bool,
-    host_mouse_capture_active: Arc<AtomicBool>,
-    host_sgr_pixels_active: Arc<AtomicBool>,
+    host_mouse_capture_active: &Arc<AtomicBool>,
+    host_sgr_pixels_active: &Arc<AtomicBool>,
     host_escape_disambiguation_active: bool,
-    initial_host_input: Vec<u8>,
+    initial_host_input: &[u8],
 ) {
     unix_stdin_reader_loop(
         event_tx,
@@ -49,14 +49,14 @@ pub fn stdin_reader_loop(
 }
 
 fn unix_stdin_reader_loop(
-    event_tx: mpsc::Sender<ClientLoopEvent>,
+    event_tx: &mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
     host_color_query_sent: bool,
     host_cell_size_query_sent: bool,
-    host_mouse_capture_active: Arc<AtomicBool>,
-    host_sgr_pixels_active: Arc<AtomicBool>,
+    host_mouse_capture_active: &Arc<AtomicBool>,
+    host_sgr_pixels_active: &Arc<AtomicBool>,
     host_escape_disambiguation_active: bool,
-    initial_host_input: Vec<u8>,
+    initial_host_input: &[u8],
 ) {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
@@ -80,10 +80,10 @@ fn unix_stdin_reader_loop(
         if sgr_pixels {
             last_geometry = crate::input::mouse::HostGeometry::current();
         }
-        let chunks = framer.push(&initial_host_input);
+        let chunks = framer.push(initial_host_input);
         if !send_unix_input_chunks(
             chunks,
-            &event_tx,
+            event_tx,
             &mut pending_palette,
             sgr_pixels,
             last_geometry,
@@ -101,11 +101,11 @@ fn unix_stdin_reader_loop(
             let held_escape = had_pending && chunks.is_empty();
             if !send_unix_input_chunks(
                 chunks,
-                &event_tx,
+                event_tx,
                 &mut pending_palette,
                 sgr_pixels,
                 last_geometry,
-            ) || !flush_unix_palette_input(&event_tx, &mut pending_palette)
+            ) || !flush_unix_palette_input(event_tx, &mut pending_palette)
             {
                 return;
             }
@@ -114,7 +114,7 @@ fn unix_stdin_reader_loop(
                     == Some(false)
                 && !send_unix_input_chunks(
                     framer.flush_timeout(),
-                    &event_tx,
+                    event_tx,
                     &mut pending_palette,
                     sgr_pixels,
                     last_geometry,
@@ -144,7 +144,7 @@ fn unix_stdin_reader_loop(
                 }
                 if !send_unix_input_chunks(
                     chunks,
-                    &event_tx,
+                    event_tx,
                     &mut pending_palette,
                     sgr_pixels,
                     last_geometry,
@@ -167,11 +167,11 @@ fn unix_stdin_reader_loop(
                     }
                     if !send_unix_input_chunks(
                         chunks,
-                        &event_tx,
+                        event_tx,
                         &mut pending_palette,
                         sgr_pixels,
                         last_geometry,
-                    ) || !flush_unix_palette_input(&event_tx, &mut pending_palette)
+                    ) || !flush_unix_palette_input(event_tx, &mut pending_palette)
                     {
                         return;
                     }
@@ -187,7 +187,7 @@ fn unix_stdin_reader_loop(
                         }
                         if !send_unix_input_chunks(
                             chunks,
-                            &event_tx,
+                            event_tx,
                             &mut pending_palette,
                             sgr_pixels,
                             last_geometry,
@@ -288,7 +288,6 @@ fn idle_flush_timeout_ms(
     }
 }
 
-
 fn stdin_read_ready<R: AsRawFd>(reader: &R, timeout_ms: i32) -> Option<bool> {
     poll_read_ready(reader.as_raw_fd(), timeout_ms)
 }
@@ -309,7 +308,7 @@ mod tests {
 
     use super::*;
 
-        #[test]
+    #[test]
     fn stdin_input_event_carries_raw_bytes() {
         let data = vec![0x1b, b'[', b'A']; // Up arrow escape sequence
         let event = ClientLoopEvent::StdinInput(data.clone());
@@ -321,7 +320,8 @@ mod tests {
 
     #[test]
     fn pixel_mouse_classification_is_narrow_and_uses_read_geometry() {
-        let geometry = crate::input::mouse::HostGeometry::new(80, 24, 800, 480).expect("test precondition");
+        let geometry =
+            crate::input::mouse::HostGeometry::new(80, 24, 800, 480).expect("test precondition");
         let report = b"\x1b[<35;321;241M".to_vec();
         let Some(ClientLoopEvent::PixelMouse(data, captured)) =
             classify_unix_input(report.clone(), true, Some(geometry))
@@ -349,7 +349,8 @@ mod tests {
 
     #[test]
     fn transient_geometry_failure_keeps_last_real_value() {
-        let geometry = crate::input::mouse::HostGeometry::new(80, 24, 800, 480).expect("test precondition");
+        let geometry =
+            crate::input::mouse::HostGeometry::new(80, 24, 800, 480).expect("test precondition");
         assert_eq!(retain_geometry(Some(geometry), None), Some(geometry));
     }
 

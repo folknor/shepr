@@ -10,7 +10,7 @@ const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const PANE_SHELL_READINESS_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(String::as_str) else {
         print_agent_help();
         return Ok(2);
     };
@@ -151,7 +151,7 @@ fn agent_explain(args: &[String]) -> std::io::Result<i32> {
         let response = super::send_request(&Request {
             id: "cli:agent:explain".into(),
             method: Method::AgentExplain(AgentTarget {
-                target: target.to_owned(),
+                target: target.clone(),
             }),
         })?;
         if response.get("error").is_some() {
@@ -191,7 +191,7 @@ fn print_agent_explain_text(explain: &serde_json::Value, verbose: bool) {
                 .and_then(|value| value.as_str())
                 .unwrap_or("-"),
             rule.get("priority")
-                .and_then(|value| value.as_i64())
+                .and_then(serde_json::Value::as_i64)
                 .unwrap_or(0),
         );
         if let Some(preview) = matched_rule_region_preview(explain, rule_id) {
@@ -232,9 +232,9 @@ fn print_agent_explain_text(explain: &serde_json::Value, verbose: bool) {
             println!(
                 "  {} {} priority={} region={} state={}",
                 if rule["matched"].as_bool().unwrap_or(false) {
-                    "✓"
+                    "\u{2713}"
                 } else {
-                    "✗"
+                    "\u{2717}"
                 },
                 rule["id"].as_str().unwrap_or("-"),
                 rule["priority"].as_i64().unwrap_or(0),
@@ -274,7 +274,9 @@ fn matched_rule_region_preview<'a>(
 
 fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let Some(name) = args.first() else {
-        eprintln!("usage: shepr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]");
+        eprintln!(
+            "usage: shepr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]"
+        );
         return Ok(2);
     };
     let separator = args
@@ -381,10 +383,10 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
             .get_or_insert_with(|| Instant::now() + PANE_SHELL_READINESS_RETRY_TIMEOUT);
         previous_busy_response = Some(response);
         let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            if let Some(previous_busy_response) = previous_busy_response.as_ref() {
-                return super::print_response(previous_busy_response);
-            }
+        if remaining.is_zero()
+            && let Some(previous_busy_response) = previous_busy_response.as_ref()
+        {
+            return super::print_response(previous_busy_response);
         }
         std::thread::sleep(AGENT_START_POLL_INTERVAL.min(remaining));
     };
@@ -416,7 +418,7 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
         }
         Ok(Err(error)) => super::print_response(&error),
         Err(err) => {
-            print_agent_transport_error(err, "cli:agent:start", "agent_start_transport_failed")
+            print_agent_transport_error(&err, "cli:agent:start", "agent_start_transport_failed")
         }
     }
 }
@@ -683,17 +685,17 @@ fn agent_name_lost_error(request_id: &str, expected_name: &str) -> serde_json::V
 }
 
 fn print_agent_transport_error(
-    err: std::io::Error,
+    err: &std::io::Error,
     request_id: &str,
     code: &str,
 ) -> std::io::Result<i32> {
-    if super::protocol_mismatch_was_reported(&err) {
+    if super::protocol_mismatch_was_reported(err) {
         return Ok(1);
     }
     // A dead-server marker reaches here from `send_request` in the agent
     // startup path; surface its deferred response exactly once instead of
     // printing a second, generic transport-error line.
-    if let Some(response) = super::server_not_running_reported_response(&err) {
+    if let Some(response) = super::server_not_running_reported_response(err) {
         let value = serde_json::to_value(response).map_err(std::io::Error::other)?;
         return super::print_response(&value);
     }
@@ -848,7 +850,9 @@ fn agent_send_keys(args: &[String]) -> std::io::Result<i32> {
 
 fn agent_read(args: &[String]) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
-        eprintln!("usage: shepr agent read <target> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]");
+        eprintln!(
+            "usage: shepr agent read <target> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]"
+        );
         return Ok(2);
     };
 
@@ -914,7 +918,9 @@ fn print_agent_help() {
     eprintln!("shepr agent commands:");
     eprintln!("  shepr agent list");
     eprintln!("  shepr agent get <target>");
-    eprintln!("  shepr agent read <target> [--source visible|recent|recent-unwrapped|detection] [--lines N] [--format text|ansi] [--ansi]");
+    eprintln!(
+        "  shepr agent read <target> [--source visible|recent|recent-unwrapped|detection] [--lines N] [--format text|ansi] [--ansi]"
+    );
     eprintln!("  shepr agent send-keys <target> <key> [key ...]");
     eprintln!("  shepr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]");
     eprintln!("  shepr agent rename <target> <name>|--clear");

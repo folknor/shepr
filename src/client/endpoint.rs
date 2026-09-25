@@ -107,13 +107,17 @@ mod tests {
         let first = ProfileId::generate();
         let second = ProfileId::generate();
         assert_ne!(first, second);
-        assert_eq!(ProfileId::parse(first.to_string()).expect("test precondition"), first);
+        assert_eq!(
+            ProfileId::parse(first.to_string()).expect("test precondition"),
+            first
+        );
         assert_eq!(first.as_str().len(), 32);
     }
 
     #[test]
     fn endpoint_storage_keys_do_not_contain_ssh_targets() {
-        let profile = ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition");
+        let profile =
+            ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition");
         assert_eq!(
             ClientEndpointId::Ssh(profile).storage_key(),
             "ssh:0123456789abcdef0123456789abcdef"

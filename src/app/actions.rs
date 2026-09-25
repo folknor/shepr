@@ -9,7 +9,7 @@ use crate::detect::{Agent, AgentState};
 use crate::events::AppEvent;
 use crate::layout::PaneId;
 #[cfg(test)]
-use crate::layout::{find_in_direction, NavDirection};
+use crate::layout::{NavDirection, find_in_direction};
 use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
 use crate::workspace::WorkspaceGitStatus;
 
@@ -32,13 +32,9 @@ fn public_tab_id_for_index(ws: &crate::workspace::Workspace, tab_idx: usize) -> 
     ))
 }
 
-pub fn active_tab_is_seen(
-    is_active_tab: bool,
-    outer_terminal_focus: Option<bool>,
-) -> bool {
+pub fn active_tab_is_seen(is_active_tab: bool, outer_terminal_focus: Option<bool>) -> bool {
     is_active_tab && outer_terminal_focus != Some(false)
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneStateUpdate {
@@ -139,7 +135,7 @@ impl AppState {
     pub(crate) fn next_agent_metadata_expiry(&self) -> Option<std::time::Instant> {
         self.terminals
             .values()
-            .filter_map(|terminal| terminal.next_agent_metadata_expiry())
+            .filter_map(crate::terminal::TerminalState::next_agent_metadata_expiry)
             .chain(
                 self.terminals
                     .values()
@@ -567,10 +563,10 @@ impl AppState {
             self.selected = 0;
         } else {
             // Keep focus on the previously focused workspace
-            if let Some(id) = active_workspace_id {
-                if let Some(idx) = self.workspaces.iter().position(|ws| ws.id == id) {
-                    self.selected = idx;
-                }
+            if let Some(id) = active_workspace_id
+                && let Some(idx) = self.workspaces.iter().position(|ws| ws.id == id)
+            {
+                self.selected = idx;
             }
             if self.selected >= self.workspaces.len() {
                 self.selected = self.workspaces.len() - 1;
@@ -621,10 +617,10 @@ impl AppState {
             self.view.pane_infos.clone()
         };
 
-        if let Some(focused) = panes.iter().find(|p| p.is_focused) {
-            if let Some(target) = find_in_direction(focused, direction, &panes) {
-                self.focus_pane_in_workspace(ws_idx, target);
-            }
+        if let Some(focused) = panes.iter().find(|p| p.is_focused)
+            && let Some(target) = find_in_direction(focused, direction, &panes)
+        {
+            self.focus_pane_in_workspace(ws_idx, target);
         }
     }
 
@@ -771,12 +767,16 @@ impl AppState {
             .into_iter()
             .collect::<Vec<_>>();
         let pane_ids = active
-            .and_then(|i| self.workspaces.get(i).and_then(|ws| ws.focused_pane_id()))
+            .and_then(|i| {
+                self.workspaces
+                    .get(i)
+                    .and_then(crate::workspace::Workspace::focused_pane_id)
+            })
             .into_iter()
             .collect::<Vec<_>>();
         let should_close_workspace = active
             .and_then(|i| self.workspaces.get_mut(i))
-            .is_some_and(|ws| ws.close_focused());
+            .is_some_and(crate::workspace::Workspace::close_focused);
         self.clear_stale_previous_pane_focus(pane_ids);
         if should_close_workspace {
             if let Some(active) = active {
@@ -1224,7 +1224,7 @@ impl AppState {
                         agent_label,
                         session_ref,
                         seq,
-                        session_start_source,
+                        session_start_source.as_deref(),
                     )
                 })
                 .into_iter()
@@ -1475,8 +1475,7 @@ impl AppState {
         suppress_completion: bool,
     ) -> Option<bool> {
         let is_active_tab = self.pane_is_in_active_tab(ws_idx, pane_id);
-        let active_tab_seen =
-            active_tab_is_seen(is_active_tab, self.outer_terminal_focus);
+        let active_tab_seen = active_tab_is_seen(is_active_tab, self.outer_terminal_focus);
         let pane = self.workspaces[ws_idx]
             .tabs
             .iter_mut()
@@ -1531,20 +1530,20 @@ impl AppState {
                 }
             } else {
                 // Keep focus on the previously focused workspace
-                if let Some(id) = active_workspace_id {
-                    if let Some(idx) = self.workspaces.iter().position(|ws| ws.id == id) {
-                        self.active = Some(idx);
-                    }
+                if let Some(id) = active_workspace_id
+                    && let Some(idx) = self.workspaces.iter().position(|ws| ws.id == id)
+                {
+                    self.active = Some(idx);
                 }
-                if let Some(active) = self.active {
-                    if active >= self.workspaces.len() {
-                        self.active = Some(self.workspaces.len() - 1);
-                    }
+                if let Some(active) = self.active
+                    && active >= self.workspaces.len()
+                {
+                    self.active = Some(self.workspaces.len() - 1);
                 }
-                if let Some(id) = selected_workspace_id {
-                    if let Some(idx) = self.workspaces.iter().position(|ws| ws.id == id) {
-                        self.selected = idx;
-                    }
+                if let Some(id) = selected_workspace_id
+                    && let Some(idx) = self.workspaces.iter().position(|ws| ws.id == id)
+                {
+                    self.selected = idx;
                 }
                 if self.selected >= self.workspaces.len() {
                     self.selected = self.workspaces.len() - 1;
@@ -1778,7 +1777,9 @@ mod tests {
     fn apply_workspace_git_statuses_updates_matching_workspace() {
         let mut state = app_with_workspaces(&["one", "two"]);
         let first_id = state.workspaces[0].id.clone();
-        let first_cwd = state.workspaces[0].resolved_identity_cwd().expect("test precondition");
+        let first_cwd = state.workspaces[0]
+            .resolved_identity_cwd()
+            .expect("test precondition");
         let second_id = state.workspaces[1].id.clone();
 
         let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
@@ -1834,7 +1835,9 @@ mod tests {
     fn apply_workspace_git_statuses_ignores_unrequested_branch_changes() {
         let mut state = app_with_workspaces(&["one"]);
         let workspace_id = state.workspaces[0].id.clone();
-        let cwd = state.workspaces[0].resolved_identity_cwd().expect("test precondition");
+        let cwd = state.workspaces[0]
+            .resolved_identity_cwd()
+            .expect("test precondition");
         state.workspaces[0].cached_auto_label = "one".into();
         state.workspaces[0].cached_git_branch = Some("old".into());
 
@@ -1864,7 +1867,9 @@ mod tests {
     fn apply_workspace_git_statuses_clears_missing_git_status() {
         let mut state = app_with_workspaces(&["one"]);
         let workspace_id = state.workspaces[0].id.clone();
-        let cwd = state.workspaces[0].resolved_identity_cwd().expect("test precondition");
+        let cwd = state.workspaces[0]
+            .resolved_identity_cwd()
+            .expect("test precondition");
         state.workspaces[0].cached_git_branch = Some("main".into());
         state.workspaces[0].cached_git_ahead_behind = Some((1, 2));
 
@@ -1900,11 +1905,25 @@ mod tests {
     fn switch_workspace_marks_panes_seen() {
         let mut state = app_with_workspaces(&["a", "b"]);
         // Mark a pane in workspace 1 as unseen
-        let id = *state.workspaces[1].panes.keys().next().expect("test precondition");
-        state.workspaces[1].panes.get_mut(&id).expect("test precondition").seen = false;
+        let id = *state.workspaces[1]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
+        state.workspaces[1]
+            .panes
+            .get_mut(&id)
+            .expect("test precondition")
+            .seen = false;
 
         state.switch_workspace(1);
-        assert!(state.workspaces[1].panes.get(&id).expect("test precondition").seen);
+        assert!(
+            state.workspaces[1]
+                .panes
+                .get(&id)
+                .expect("test precondition")
+                .seen
+        );
     }
 
     #[test]
@@ -1927,12 +1946,15 @@ mod tests {
         let names: Vec<_> = state
             .workspaces
             .iter()
-            .map(|ws| ws.display_name())
+            .map(crate::workspace::Workspace::display_name)
             .collect();
         assert_eq!(names, vec!["b", "a", "c"]);
         assert_eq!(state.active, Some(0));
         assert_eq!(state.selected, 2);
-        assert_eq!(state.workspaces[state.active.expect("test precondition")].id, active_id);
+        assert_eq!(
+            state.workspaces[state.active.expect("test precondition")].id,
+            active_id
+        );
         assert_eq!(state.workspaces[state.selected].id, selected_id);
     }
 
@@ -1945,7 +1967,7 @@ mod tests {
         let names: Vec<_> = state
             .workspaces
             .iter()
-            .map(|ws| ws.display_name())
+            .map(crate::workspace::Workspace::display_name)
             .collect();
         assert_eq!(names, vec!["b", "c", "a"]);
     }
@@ -1969,13 +1991,16 @@ mod tests {
         let names = state
             .workspaces
             .iter()
-            .map(|workspace| workspace.display_name())
+            .map(crate::workspace::Workspace::display_name)
             .collect::<Vec<_>>();
         assert_eq!(
             names,
             ["normal", "parent", "child-one", "child-two", "tail"]
         );
-        assert_eq!(state.workspaces[state.active.expect("test precondition")].id, child_one_id);
+        assert_eq!(
+            state.workspaces[state.active.expect("test precondition")].id,
+            child_one_id
+        );
         assert_eq!(state.workspaces[state.selected].id, tail_id);
     }
 
@@ -1997,7 +2022,7 @@ mod tests {
             state
                 .workspaces
                 .iter()
-                .map(|workspace| workspace.display_name())
+                .map(crate::workspace::Workspace::display_name)
                 .collect::<Vec<_>>(),
             ["a", "b", "c"]
         );
@@ -2060,7 +2085,11 @@ mod tests {
     #[test]
     fn pane_died_last_pane_removes_workspace() {
         let mut state = app_with_workspaces(&["a", "b"]);
-        let pane_id = *state.workspaces[0].panes.keys().next().expect("test precondition");
+        let pane_id = *state.workspaces[0]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
 
         state.handle_pane_died(pane_id);
 
@@ -2073,7 +2102,11 @@ mod tests {
     fn pane_died_last_workspace_enters_navigate() {
         let mut state = app_with_workspaces(&["only"]);
         state.mode = Mode::Terminal;
-        let pane_id = *state.workspaces[0].panes.keys().next().expect("test precondition");
+        let pane_id = *state.workspaces[0]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
 
         state.handle_pane_died(pane_id);
 
@@ -2108,7 +2141,11 @@ mod tests {
     #[test]
     fn state_changed_updates_pane() {
         let mut state = app_with_workspaces(&["test"]);
-        let pane_id = *state.workspaces[0].panes.keys().next().expect("test precondition");
+        let pane_id = *state.workspaces[0]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
 
         state.handle_app_event(AppEvent::StateChanged {
             pane_id,
@@ -2126,7 +2163,10 @@ mod tests {
             .expect("test precondition")
             .attached_terminal_id
             .clone();
-        let terminal = state.terminals.get(&terminal_id).expect("test precondition");
+        let terminal = state
+            .terminals
+            .get(&terminal_id)
+            .expect("test precondition");
         assert_eq!(terminal.state, AgentState::Working);
         assert_eq!(terminal.detected_agent, Some(Agent::Pi));
     }
@@ -2135,7 +2175,11 @@ mod tests {
     fn state_changed_idle_in_background_marks_unseen() {
         let mut state = app_with_workspaces(&["active", "background"]);
         state.active = Some(0);
-        let bg_pane_id = *state.workspaces[1].panes.keys().next().expect("test precondition");
+        let bg_pane_id = *state.workspaces[1]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
 
         // First set it to Working
         let bg_terminal_id = state.workspaces[1]
@@ -2144,7 +2188,11 @@ mod tests {
             .expect("test precondition")
             .attached_terminal_id
             .clone();
-        state.terminals.get_mut(&bg_terminal_id).expect("test precondition").state = AgentState::Working;
+        state
+            .terminals
+            .get_mut(&bg_terminal_id)
+            .expect("test precondition")
+            .state = AgentState::Working;
 
         // Now transition to Idle while in background
         state.handle_app_event(AppEvent::StateChanged {
@@ -2157,7 +2205,10 @@ mod tests {
             observed_at: std::time::Instant::now(),
         });
 
-        let pane = state.workspaces[1].panes.get(&bg_pane_id).expect("test precondition");
+        let pane = state.workspaces[1]
+            .panes
+            .get(&bg_pane_id)
+            .expect("test precondition");
         assert!(!pane.seen);
     }
 
@@ -2166,15 +2217,27 @@ mod tests {
         let mut state = app_with_workspaces(&["active"]);
         state.active = Some(0);
         state.outer_terminal_focus = Some(true);
-        let pane_id = *state.workspaces[0].panes.keys().next().expect("test precondition");
+        let pane_id = *state.workspaces[0]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
         let terminal_id = state.workspaces[0]
             .panes
             .get(&pane_id)
             .expect("test precondition")
             .attached_terminal_id
             .clone();
-        state.terminals.get_mut(&terminal_id).expect("test precondition").state = AgentState::Working;
-        state.workspaces[0].panes.get_mut(&pane_id).expect("test precondition").seen = false;
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition")
+            .state = AgentState::Working;
+        state.workspaces[0]
+            .panes
+            .get_mut(&pane_id)
+            .expect("test precondition")
+            .seen = false;
 
         state.handle_app_event(AppEvent::StateChanged {
             pane_id,
@@ -2186,9 +2249,15 @@ mod tests {
             observed_at: std::time::Instant::now(),
         });
 
-        let terminal = state.terminals.get(&terminal_id).expect("test precondition");
+        let terminal = state
+            .terminals
+            .get(&terminal_id)
+            .expect("test precondition");
         assert_eq!(terminal.state, AgentState::Idle);
-        let pane = state.workspaces[0].panes.get(&pane_id).expect("test precondition");
+        let pane = state.workspaces[0]
+            .panes
+            .get(&pane_id)
+            .expect("test precondition");
         assert!(pane.seen);
     }
 
@@ -2196,7 +2265,11 @@ mod tests {
     fn initial_idle_in_background_stays_seen() {
         let mut state = app_with_workspaces(&["active", "background"]);
         state.active = Some(0);
-        let bg_pane_id = *state.workspaces[1].panes.keys().next().expect("test precondition");
+        let bg_pane_id = *state.workspaces[1]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
 
         state.handle_app_event(AppEvent::StateChanged {
             pane_id: bg_pane_id,
@@ -2208,7 +2281,10 @@ mod tests {
             observed_at: std::time::Instant::now(),
         });
 
-        let pane = state.workspaces[1].panes.get(&bg_pane_id).expect("test precondition");
+        let pane = state.workspaces[1]
+            .panes
+            .get(&bg_pane_id)
+            .expect("test precondition");
         assert!(pane.seen);
     }
 
@@ -2449,7 +2525,11 @@ mod tests {
     fn first_idle_after_process_detection_is_not_completion() {
         let mut state = app_with_workspaces(&["active", "background"]);
         state.active = Some(0);
-        let pane_id = *state.workspaces[1].panes.keys().next().expect("test precondition");
+        let pane_id = *state.workspaces[1]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
 
         state.handle_app_event(AppEvent::AgentProcessDetected {
             pane_id,
@@ -2535,7 +2615,11 @@ mod tests {
     fn visible_blocker_overrides_hook_working() {
         let mut state = app_with_workspaces(&["active", "background"]);
         state.active = Some(0);
-        let bg_pane_id = *state.workspaces[1].panes.keys().next().expect("test precondition");
+        let bg_pane_id = *state.workspaces[1]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
         let bg_terminal_id = state.workspaces[1]
             .panes
             .get(&bg_pane_id)
@@ -2571,7 +2655,10 @@ mod tests {
             observed_at: std::time::Instant::now(),
         });
 
-        let terminal = state.terminals.get(&bg_terminal_id).expect("test precondition");
+        let terminal = state
+            .terminals
+            .get(&bg_terminal_id)
+            .expect("test precondition");
         assert_eq!(terminal.state, AgentState::Blocked);
     }
 
@@ -2579,7 +2666,11 @@ mod tests {
     fn reserved_native_state_report_does_not_override_screen_state() {
         let mut state = app_with_workspaces(&["active"]);
         state.active = Some(0);
-        let pane_id = *state.workspaces[0].panes.keys().next().expect("test precondition");
+        let pane_id = *state.workspaces[0]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
         let terminal_id = state.workspaces[0]
             .panes
             .get(&pane_id)
@@ -2605,7 +2696,10 @@ mod tests {
             seq: Some(1),
             session_ref: crate::agent_resume::AgentSessionRef::id("claude-session"),
         });
-        let terminal = state.terminals.get(&terminal_id).expect("test precondition");
+        let terminal = state
+            .terminals
+            .get(&terminal_id)
+            .expect("test precondition");
         assert_eq!(terminal.state, AgentState::Working);
         assert!(terminal.hook_authority.is_none());
         assert!(terminal.persisted_agent_session.is_some());
@@ -2620,14 +2714,21 @@ mod tests {
             observed_at: std::time::Instant::now(),
         });
 
-        let terminal = state.terminals.get(&terminal_id).expect("test precondition");
+        let terminal = state
+            .terminals
+            .get(&terminal_id)
+            .expect("test precondition");
         assert_eq!(terminal.state, AgentState::Idle);
     }
 
     #[test]
     fn official_release_preserves_process_owned_agent_identity() {
         let mut state = app_with_workspaces(&["active"]);
-        let pane_id = *state.workspaces[0].panes.keys().next().expect("test precondition");
+        let pane_id = *state.workspaces[0]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
         let terminal_id = state.workspaces[0]
             .panes
             .get(&pane_id)
@@ -2644,7 +2745,10 @@ mod tests {
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
-        let terminal = state.terminals.get_mut(&terminal_id).expect("test precondition");
+        let terminal = state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition");
         terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
             source: "shepr:pi".into(),
             agent: "pi".into(),
@@ -2687,7 +2791,11 @@ mod tests {
     #[test]
     fn devin_state_report_refreshes_session_without_overriding_screen_state() {
         let mut state = app_with_workspaces(&["active"]);
-        let pane_id = *state.workspaces[0].panes.keys().next().expect("test precondition");
+        let pane_id = *state.workspaces[0]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
         let terminal_id = state.workspaces[0]
             .panes
             .get(&pane_id)
@@ -2714,7 +2822,10 @@ mod tests {
             session_ref: crate::agent_resume::AgentSessionRef::id("devin-session"),
         });
 
-        let terminal = state.terminals.get(&terminal_id).expect("test precondition");
+        let terminal = state
+            .terminals
+            .get(&terminal_id)
+            .expect("test precondition");
         assert_eq!(terminal.state, AgentState::Idle);
         assert!(terminal.hook_authority.is_none());
         assert!(terminal.persisted_agent_session.is_some());
@@ -2723,7 +2834,11 @@ mod tests {
     #[test]
     fn hidden_custom_session_ref_only_update_marks_session_dirty_without_visible_update() {
         let mut state = app_with_workspaces(&["active"]);
-        let pane_id = *state.workspaces[0].panes.keys().next().expect("test precondition");
+        let pane_id = *state.workspaces[0]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
         let test_dir = std::env::current_dir().expect("test precondition");
         let first_session = test_dir.join("one.jsonl").display().to_string();
         let second_session = test_dir.join("two.jsonl").display().to_string();
@@ -2757,7 +2872,11 @@ mod tests {
     #[test]
     fn custom_release_clears_report_owned_agent() {
         let mut state = app_with_workspaces(&["active"]);
-        let pane_id = *state.workspaces[0].panes.keys().next().expect("test precondition");
+        let pane_id = *state.workspaces[0]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
         let terminal_id = state.workspaces[0]
             .pane_state(pane_id)
             .expect("test precondition")
@@ -2791,7 +2910,11 @@ mod tests {
     #[test]
     fn terminal_cwd_report_updates_terminal_cwd_and_marks_session_dirty() {
         let mut state = app_with_workspaces(&["active"]);
-        let pane_id = *state.workspaces[0].panes.keys().next().expect("test precondition");
+        let pane_id = *state.workspaces[0]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
         let terminal_id = state.workspaces[0]
             .pane_state(pane_id)
             .expect("test precondition")
@@ -2808,7 +2931,14 @@ mod tests {
         });
 
         assert!(updates.is_empty());
-        assert_eq!(state.terminals.get(&terminal_id).expect("test precondition").cwd, cwd);
+        assert_eq!(
+            state
+                .terminals
+                .get(&terminal_id)
+                .expect("test precondition")
+                .cwd,
+            cwd
+        );
         assert!(state.session_dirty);
         let _ = std::fs::remove_dir_all(cwd);
     }
@@ -2993,14 +3123,20 @@ mod tests {
         state.active = Some(1);
         state.ensure_test_terminals();
         let pane_id = state.workspaces[0].tabs[0].root_pane;
-        let terminal_id = state.terminal_id_for_pane(0, pane_id).expect("test precondition");
+        let terminal_id = state
+            .terminal_id_for_pane(0, pane_id)
+            .expect("test precondition");
         state
             .terminals
             .get_mut(&terminal_id)
             .expect("test precondition")
             .set_detected_state(Some(Agent::Pi), AgentState::Working);
         assert_eq!(
-            state.terminals.get(&terminal_id).expect("test precondition").state,
+            state
+                .terminals
+                .get(&terminal_id)
+                .expect("test precondition")
+                .state,
             AgentState::Working
         );
 
@@ -3025,7 +3161,9 @@ mod tests {
         let mut state = app_with_workspaces(&["test"]);
         let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
         state.ensure_test_terminals();
-        let terminal_id = state.terminal_id_for_pane(0, pane_id).expect("test precondition");
+        let terminal_id = state
+            .terminal_id_for_pane(0, pane_id)
+            .expect("test precondition");
 
         state.close_pane();
 
@@ -3040,7 +3178,9 @@ mod tests {
         state.ensure_test_terminals();
         state.workspaces[0].switch_tab(tab_idx);
         let pane_id = state.workspaces[0].tabs[tab_idx].root_pane;
-        let terminal_id = state.terminal_id_for_pane(0, pane_id).expect("test precondition");
+        let terminal_id = state
+            .terminal_id_for_pane(0, pane_id)
+            .expect("test precondition");
         state.close_tab();
 
         assert!(!state.terminals.contains_key(&terminal_id));
@@ -3051,7 +3191,9 @@ mod tests {
     fn close_workspace_removes_unattached_terminal_states() {
         let mut state = app_with_workspaces(&["one", "two"]);
         let pane_id = state.workspaces[0].tabs[0].root_pane;
-        let terminal_id = state.terminal_id_for_pane(0, pane_id).expect("test precondition");
+        let terminal_id = state
+            .terminal_id_for_pane(0, pane_id)
+            .expect("test precondition");
         let _ = pane_id;
         state.close_selected_workspace();
 
@@ -3092,5 +3234,4 @@ mod tests {
         assert!(!state.terminals.contains_key(&active_terminal_id));
         state.assert_invariants_for_test();
     }
-
 }

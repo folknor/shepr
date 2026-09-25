@@ -22,7 +22,7 @@ impl App {
         )
     }
 
-    pub(super) fn handle_agent_get(&mut self, id: String, target: AgentTarget) -> String {
+    pub(super) fn handle_agent_get(&mut self, id: String, target: &AgentTarget) -> String {
         self.reconcile_managed_agent_target(&target.target);
         let agent = match self.agent_info_for_target(&target.target) {
             Ok(agent) => agent,
@@ -32,7 +32,7 @@ impl App {
         encode_success(id, ResponseResult::AgentInfo { agent })
     }
 
-    pub(super) fn handle_agent_focus(&mut self, id: String, target: AgentTarget) -> String {
+    pub(super) fn handle_agent_focus(&mut self, id: String, target: &AgentTarget) -> String {
         let agent = match self.focus_agent_target(&target.target) {
             Ok(agent) => agent,
             Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
@@ -67,7 +67,7 @@ impl App {
         let crate::api::schema::Method::AgentPrompt(params) = request.method else {
             return false;
         };
-        match self.queue_agent_prompt(request.id, params) {
+        match self.queue_agent_prompt(request.id, &params) {
             Ok((id, agent, completion)) => {
                 std::thread::spawn(move || {
                     let response = match completion.recv() {
@@ -91,7 +91,7 @@ impl App {
     fn queue_agent_prompt(
         &mut self,
         id: String,
-        params: AgentPromptParams,
+        params: &AgentPromptParams,
     ) -> Result<
         (
             String,
@@ -182,7 +182,7 @@ impl App {
     pub(super) fn handle_agent_read(
         &mut self,
         id: String,
-        params: crate::api::schema::AgentReadParams,
+        params: &crate::api::schema::AgentReadParams,
     ) -> String {
         let resolved = match self.resolve_agent_target(&params.target) {
             Ok(resolved) => resolved,
@@ -223,7 +223,7 @@ impl App {
         )
     }
 
-    pub(super) fn handle_agent_explain(&mut self, id: String, target: AgentTarget) -> String {
+    pub(super) fn handle_agent_explain(&mut self, id: String, target: &AgentTarget) -> String {
         let resolved = match self.resolve_agent_target(&target.target) {
             Ok(resolved) => resolved,
             Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
@@ -292,7 +292,7 @@ impl App {
     pub(super) fn handle_agent_send_keys(
         &mut self,
         id: String,
-        params: AgentSendKeysParams,
+        params: &AgentSendKeysParams,
     ) -> String {
         let resolved = match self.resolve_agent_target(&params.target) {
             Ok(resolved) => resolved,
@@ -310,7 +310,7 @@ impl App {
             .state
             .terminals
             .get(terminal_id)
-            .and_then(|terminal| terminal.effective_known_agent())
+            .and_then(crate::terminal::TerminalState::effective_known_agent)
         else {
             return agent_not_ready(id, &params.target);
         };
@@ -412,13 +412,17 @@ mod tests {
             .attached_terminal_id
             .clone();
         let observed_at = std::time::Instant::now();
-        let terminal = app.state.terminals.get_mut(&terminal_id).expect("test precondition");
+        let terminal = app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition");
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
         terminal.set_agent_name("reviewer".into());
 
         let found = app.handle_agent_get(
             "req:before".into(),
-            AgentTarget {
+            &AgentTarget {
                 target: "reviewer".into(),
             },
         );
@@ -453,7 +457,7 @@ mod tests {
 
         let after = app.handle_agent_get(
             "req:after".into(),
-            AgentTarget {
+            &AgentTarget {
                 target: "reviewer".into(),
             },
         );
@@ -470,7 +474,11 @@ mod tests {
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let terminal = app.state.terminals.get_mut(&terminal_id).expect("test precondition");
+        let terminal = app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition");
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
         let (runtime, mut rx) =
@@ -504,7 +512,10 @@ mod tests {
             rx.try_recv().expect("test precondition"),
             Bytes::from_static(b"\x1b[200~A != B\x1b[201~")
         );
-        assert_eq!(rx.try_recv().expect("test precondition"), Bytes::from_static(b"\r"));
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            Bytes::from_static(b"\r")
+        );
         assert!(bracketed_started.elapsed() >= AGENT_PROMPT_SUBMIT_DELAY);
 
         app.lookup_runtime_sender(0, pane_id)
@@ -522,8 +533,14 @@ mod tests {
         );
         let raw: SuccessResponse = serde_json::from_str(&raw).expect("test precondition");
         assert!(matches!(raw.result, ResponseResult::AgentPrompted { .. }));
-        assert_eq!(rx.try_recv().expect("test precondition"), Bytes::from_static(b"A != B"));
-        assert_eq!(rx.try_recv().expect("test precondition"), Bytes::from_static(b"\r"));
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            Bytes::from_static(b"A != B")
+        );
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            Bytes::from_static(b"\r")
+        );
         assert!(raw_started.elapsed() >= AGENT_PROMPT_SUBMIT_DELAY);
 
         let rejected = run_deferred_agent_prompt(
@@ -535,7 +552,8 @@ mod tests {
                 wait: None,
             },
         );
-        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&rejected).expect("test precondition");
+        let error: crate::api::schema::ErrorResponse =
+            serde_json::from_str(&rejected).expect("test precondition");
         assert_eq!(error.error.code, "agent_not_found");
         assert!(rx.try_recv().is_err());
     }
@@ -547,7 +565,11 @@ mod tests {
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let terminal = app.state.terminals.get_mut(&terminal_id).expect("test precondition");
+        let terminal = app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition");
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::GithubCopilot), AgentState::Blocked);
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
@@ -563,7 +585,8 @@ mod tests {
             },
         );
 
-        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).expect("test precondition");
+        let error: crate::api::schema::ErrorResponse =
+            serde_json::from_str(&response).expect("test precondition");
         assert_eq!(error.error.code, "agent_blocked");
         assert!(
             tokio::time::timeout(
@@ -583,7 +606,11 @@ mod tests {
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let terminal = app.state.terminals.get_mut(&terminal_id).expect("test precondition");
+        let terminal = app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition");
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::GithubCopilot), AgentState::Idle);
         let (runtime, mut rx) =
@@ -607,12 +634,18 @@ mod tests {
             success.result,
             ResponseResult::AgentPrompted { .. }
         ));
-        assert_eq!(rx.try_recv().expect("test precondition"), Bytes::from_static(b"\x1b[I"));
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            Bytes::from_static(b"\x1b[I")
+        );
         assert_eq!(
             rx.try_recv().expect("test precondition"),
             Bytes::from_static(b"\x1b[200~A != B\x1b[201~")
         );
-        assert_eq!(rx.try_recv().expect("test precondition"), Bytes::from_static(b"\r"));
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            Bytes::from_static(b"\r")
+        );
     }
 
     #[tokio::test]
@@ -622,7 +655,11 @@ mod tests {
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let terminal = app.state.terminals.get_mut(&terminal_id).expect("test precondition");
+        let terminal = app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition");
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
@@ -630,25 +667,29 @@ mod tests {
 
         let rejected = app.handle_agent_send_keys(
             "req-invalid".into(),
-            AgentSendKeysParams {
+            &AgentSendKeysParams {
                 target: "reviewer".into(),
                 keys: vec!["enter".into(), "not-a-key".into()],
             },
         );
-        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&rejected).expect("test precondition");
+        let error: crate::api::schema::ErrorResponse =
+            serde_json::from_str(&rejected).expect("test precondition");
         assert_eq!(error.error.code, "invalid_key");
         assert!(rx.try_recv().is_err());
 
         let sent = app.handle_agent_send_keys(
             "req-valid".into(),
-            AgentSendKeysParams {
+            &AgentSendKeysParams {
                 target: "reviewer".into(),
                 keys: vec!["up".into(), "enter".into()],
             },
         );
         let success: SuccessResponse = serde_json::from_str(&sent).expect("test precondition");
         assert!(matches!(success.result, ResponseResult::Ok {}));
-        assert_eq!(rx.try_recv().expect("test precondition"), Bytes::from_static(b"\x1b[A\r"));
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            Bytes::from_static(b"\x1b[A\r")
+        );
         assert!(rx.try_recv().is_err());
     }
 
@@ -659,7 +700,11 @@ mod tests {
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let terminal = app.state.terminals.get_mut(&terminal_id).expect("test precondition");
+        let terminal = app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition");
         let now = std::time::Instant::now();
         terminal.begin_managed_agent(
             "reviewer".into(),
@@ -681,7 +726,8 @@ mod tests {
                 wait: None,
             },
         );
-        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).expect("test precondition");
+        let error: crate::api::schema::ErrorResponse =
+            serde_json::from_str(&response).expect("test precondition");
         assert_eq!(error.error.code, "agent_not_ready");
         assert!(rx.try_recv().is_err());
     }
@@ -709,7 +755,7 @@ mod tests {
 
         let response = app.handle_agent_focus(
             "req".into(),
-            AgentTarget {
+            &AgentTarget {
                 target: app.public_pane_id(0, pane_id).expect("test precondition"),
             },
         );
@@ -728,7 +774,11 @@ mod tests {
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let terminal = app.state.terminals.get_mut(&terminal_id).expect("test precondition");
+        let terminal = app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition");
         terminal.set_manual_label("shell-pane".into());
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
         let target = app.public_pane_id(0, pane_id).expect("test precondition");
@@ -741,7 +791,8 @@ mod tests {
                     name,
                 },
             );
-            let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+            let success: SuccessResponse =
+                serde_json::from_str(&response).expect("test precondition");
             assert!(matches!(success.result, ResponseResult::AgentInfo { .. }));
             assert_eq!(
                 app.state.terminals[&terminal_id].manual_label.as_deref(),

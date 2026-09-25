@@ -129,8 +129,8 @@ pub(crate) fn poll_pty_and_wake(
         },
     ];
 
-    let deadline =
-        (timeout_ms >= 0).then(|| Instant::now() + Duration::from_millis(timeout_ms as u64));
+    let deadline = (timeout_ms >= 0)
+        .then(|| Instant::now() + Duration::from_millis(u64::try_from(timeout_ms).unwrap_or(0)));
     let mut remaining_timeout_ms = timeout_ms;
     loop {
         for poll_fd in &mut poll_fds {
@@ -153,7 +153,9 @@ pub(crate) fn poll_pty_and_wake(
                 if remaining.is_zero() {
                     return Ok(PtyWakeReadiness::default());
                 }
-                remaining_timeout_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+                remaining_timeout_ms =
+                    i32::try_from(remaining.as_millis().clamp(1, i32::MAX as u128))
+                        .unwrap_or(i32::MAX);
                 continue;
             }
             return Err(err);
@@ -192,12 +194,18 @@ pub(crate) fn resize_pty_fd(
     let size = libc::winsize {
         ws_row: rows,
         ws_col: cols,
-        ws_xpixel: (cols as u32)
-            .saturating_mul(cell_width_px)
-            .min(u16::MAX as u32) as u16,
-        ws_ypixel: (rows as u32)
-            .saturating_mul(cell_height_px)
-            .min(u16::MAX as u32) as u16,
+        ws_xpixel: u16::try_from(
+            u32::from(cols)
+                .saturating_mul(cell_width_px)
+                .min(u32::from(u16::MAX)),
+        )
+        .unwrap_or(u16::MAX),
+        ws_ypixel: u16::try_from(
+            u32::from(rows)
+                .saturating_mul(cell_height_px)
+                .min(u32::from(u16::MAX)),
+        )
+        .unwrap_or(u16::MAX),
     };
     if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &size) } < 0 {
         return Err(std::io::Error::last_os_error());

@@ -1,4 +1,4 @@
-const CLAUDE_ACTIVITY_GLYPHS: &str = "·✢✳✶✻✽◐◓◑◒";
+const CLAUDE_ACTIVITY_GLYPHS: &str = "·\u{2722}\u{2733}\u{2736}\u{273B}\u{273D}◐◓◑◒";
 
 pub(crate) fn stripped_terminal_title(title: &str) -> Option<String> {
     let title = title.trim();
@@ -30,10 +30,10 @@ mod tests {
     fn strips_one_recognized_leading_activity_glyph() {
         for title in [
             "⠋ task",
-            "✳ task",
+            "\u{2733} task",
             "  ⠙   task  ",
-            "✢ task",
-            "✻ task",
+            "\u{2722} task",
+            "\u{273B} task",
             "◐ task",
             "◓ task",
             "◑ task",
@@ -50,10 +50,10 @@ mod tests {
     #[test]
     fn preserves_unrecognized_or_unbounded_symbols() {
         for (title, expected) in [
-            ("★task", "★task"),
-            ("★ production", "★ production"),
-            ("✨ task", "✨ task"),
-            ("☼ status", "☼ status"),
+            ("\u{2605}task", "\u{2605}task"),
+            ("\u{2605} production", "\u{2605} production"),
+            ("\u{2728} task", "\u{2728} task"),
+            ("\u{263C} status", "\u{263C} status"),
             ("@ task", "@ task"),
             ("task ⠋ detail", "task ⠋ detail"),
             ("[prod] task", "[prod] task"),
@@ -65,8 +65,8 @@ mod tests {
     #[test]
     fn preserves_unicode_text_and_elides_empty_results() {
         assert_eq!(
-            stripped_terminal_title(" ⠋ 修复🙂标题 ").as_deref(),
-            Some("修复🙂标题")
+            stripped_terminal_title(" ⠋ 修复\u{1F642}标题 ").as_deref(),
+            Some("修复\u{1F642}标题")
         );
         assert_eq!(stripped_terminal_title("  "), None);
         assert_eq!(stripped_terminal_title("⠋   "), None);

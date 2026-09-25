@@ -8,32 +8,33 @@ mod tab_bar;
 mod theme;
 mod window_title;
 
+#[cfg(test)]
+pub(crate) use self::theme::THEME_NAMES;
 pub use self::{
     io::{config_diagnostic_summary, config_dir, config_path, state_dir},
     keybinds::{
-        format_key_combo, normalize_key_combo, terminal_key_matches_combo, ActionKeybinds,
-        BindingConfig, IndexedKeybind, Keybinds, LiveKeybindConfig,
+        ActionKeybinds, BindingConfig, IndexedKeybind, Keybinds, LiveKeybindConfig,
+        format_key_combo, normalize_key_combo, terminal_key_matches_combo,
     },
     model::{
-        validated_sidebar_bounds, AgentPanelSortConfig, Config, HostCursorModeConfig,
-        NewTerminalCwdConfig, PaneBordersConfig, ShellModeConfig, SidebarCollapsedModeConfig,
-        StatusIndicatorStyle, TabBarPositionConfig,
+        AgentPanelSortConfig, Config, HostCursorModeConfig, NewTerminalCwdConfig,
+        PaneBordersConfig, ShellModeConfig, SidebarCollapsedModeConfig, StatusIndicatorStyle,
+        TabBarPositionConfig, validated_sidebar_bounds,
     },
     sidebar::{
         AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenStyle,
         SpaceSidebarToken, SpacesSidebarConfig,
     },
     tab_bar::TabBarRightEntryConfig,
-    theme::{parse_color, CustomThemeColors, ThemeConfig, THEME_NAMES},
+    theme::{CustomThemeColors, ThemeConfig, parse_color},
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
 
 pub(crate) use self::keybinds::parse_key_combo;
 pub(crate) use self::{
     tab_bar::{
-        parse_tab_bar_datetime_format, tab_bar_right_diagnostics,
         MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS, MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS,
-        MAX_TAB_BAR_RIGHT_ENTRIES,
+        MAX_TAB_BAR_RIGHT_ENTRIES, parse_tab_bar_datetime_format, tab_bar_right_diagnostics,
     },
     theme::canonical_theme_name,
     window_title::{sanitize_window_title_text, window_title_diagnostics},
@@ -175,7 +176,9 @@ new_tab = "prefix+t"
         )
         .expect("test precondition");
 
-        let profile = config.local_keybindings_profile_toml().expect("test precondition");
+        let profile = config
+            .local_keybindings_profile_toml()
+            .expect("test precondition");
         assert!(profile.contains("[keys]"));
         assert!(profile.contains("prefix = \"ctrl+a\""));
         assert!(profile.contains("new_tab = \"prefix+t\""));
@@ -192,7 +195,9 @@ prefix = "ctrl+"
         )
         .expect("test precondition");
 
-        let profile = config.local_keybindings_profile_toml().expect("test precondition");
+        let profile = config
+            .local_keybindings_profile_toml()
+            .expect("test precondition");
         let keybinds = keybindings_from_profile_toml(&profile).expect("test precondition");
 
         assert!(profile.contains("prefix = \"ctrl+b\""));
@@ -209,17 +214,21 @@ zoom = "prefix+?"
         )
         .expect("test precondition");
 
-        let profile = config.local_keybindings_profile_toml().expect("test precondition");
+        let profile = config
+            .local_keybindings_profile_toml()
+            .expect("test precondition");
         let round_tripped: Config = toml::from_str(&profile).expect("test precondition");
 
         assert!(profile.contains("zoom = \"prefix+?\""));
         assert!(!profile.contains("help = \"prefix+?\""));
-        assert!(round_tripped
-            .keybinds()
-            .zoom
-            .bindings
-            .iter()
-            .any(|binding| binding.label == "prefix+?"));
+        assert!(
+            round_tripped
+                .keybinds()
+                .zoom
+                .bindings
+                .iter()
+                .any(|binding| binding.label == "prefix+?")
+        );
         assert!(round_tripped.keybinds().help.bindings.is_empty());
     }
 
@@ -233,7 +242,9 @@ prefix = "n"
         )
         .expect("test precondition");
 
-        let profile = config.local_keybindings_profile_toml().expect("test precondition");
+        let profile = config
+            .local_keybindings_profile_toml()
+            .expect("test precondition");
         let round_tripped: Config = toml::from_str(&profile).expect("test precondition");
 
         assert!(profile.contains("prefix = \"n\""));
@@ -246,10 +257,12 @@ prefix = "n"
         let default_config = Config::default();
         assert_eq!(default_config.ui.host_cursor, HostCursorModeConfig::Auto);
 
-        let native: Config = toml::from_str("[ui]\nhost_cursor = 'native'\n").expect("test precondition");
+        let native: Config =
+            toml::from_str("[ui]\nhost_cursor = 'native'\n").expect("test precondition");
         assert_eq!(native.ui.host_cursor, HostCursorModeConfig::Native);
 
-        let drawn: Config = toml::from_str("[ui]\nhost_cursor = 'drawn'\n").expect("test precondition");
+        let drawn: Config =
+            toml::from_str("[ui]\nhost_cursor = 'drawn'\n").expect("test precondition");
         assert_eq!(drawn.ui.host_cursor, HostCursorModeConfig::Drawn);
     }
 }

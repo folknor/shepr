@@ -1,7 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use super::attach::{find_installed_remote_shepr, RemoteSsh, SshStdioBridge};
+use super::attach::{RemoteSsh, SshStdioBridge, find_installed_remote_shepr};
 
 pub(crate) struct SavedSshBridge {
     _bridge: SshStdioBridge,
@@ -23,9 +23,9 @@ pub(crate) fn connect_saved_ssh(
     let path = saved_bridge_path(profile_id);
     let bridge = SshStdioBridge::start(
         target.to_owned(),
-        remote_shepr,
+        &remote_shepr,
         path.clone(),
-        session.to_owned(),
+        session,
         ssh.options(),
         true,
     )?;

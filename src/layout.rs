@@ -694,6 +694,9 @@ fn get_ratio_at(node: &Node, path: &[bool]) -> Option<f32> {
 fn split_rect(area: Rect, direction: Direction, ratio: f32) -> (Rect, Rect) {
     match direction {
         Direction::Horizontal => {
+            // ratio is a split fraction in [0, 1], so the scaled width stays
+            // within the source u16 range; truncation/sign-loss cannot occur.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let first_w = ((area.width as f32) * ratio).round() as u16;
             let second_w = area.width.saturating_sub(first_w);
             (
@@ -702,6 +705,9 @@ fn split_rect(area: Rect, direction: Direction, ratio: f32) -> (Rect, Rect) {
             )
         }
         Direction::Vertical => {
+            // ratio is a split fraction in [0, 1], so the scaled height stays
+            // within the source u16 range; truncation/sign-loss cannot occur.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let first_h = ((area.height as f32) * ratio).round() as u16;
             let second_h = area.height.saturating_sub(first_h);
             (
@@ -883,7 +889,9 @@ mod tests {
         let (mut horizontal, _left) = TileLayout::new();
         let right = horizontal.split_focused(Direction::Horizontal);
 
-        assert!(horizontal.resize_pane(right, NavDirection::Right, 0.05, Rect::new(0, 0, 100, 40),));
+        assert!(
+            horizontal.resize_pane(right, NavDirection::Right, 0.05, Rect::new(0, 0, 100, 40),)
+        );
         let split = split_snapshot(&horizontal)[0];
         assert_eq!(split.0, Direction::Horizontal);
         assert!((split.1 - 0.55).abs() < f32::EPSILON);

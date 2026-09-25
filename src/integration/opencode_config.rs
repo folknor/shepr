@@ -2,8 +2,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use jsonc_parser::cst::{CstInputValue, CstRootNode};
 use jsonc_parser::ParseOptions;
+use jsonc_parser::cst::{CstInputValue, CstRootNode};
 use serde_json::Value;
 
 use super::config_file::{check_config_target, write_config};
@@ -282,7 +282,10 @@ mod tests {
         if let Some(dir) = std::env::var_os(CHILD_CONFIG) {
             let dir = PathBuf::from(dir);
             let result = add_cli_plugin(&dir, &dir.join("state"), "./shepr-opencode");
-            assert_eq!(result.expect_err("test precondition").raw_os_error(), Some(libc::EFBIG));
+            assert_eq!(
+                result.expect_err("test precondition").raw_os_error(),
+                Some(libc::EFBIG)
+            );
             println!("registration reached the file-size limit");
             return;
         }
@@ -308,8 +311,10 @@ mod tests {
         let remaining_files = fs::read_dir(&dir).expect("test precondition").count();
         fs::remove_dir_all(&dir).expect("test precondition");
         assert!(output.status.success(), "child failed: {output:?}");
-        assert!(String::from_utf8_lossy(&output.stdout)
-            .contains("registration reached the file-size limit"));
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains("registration reached the file-size limit")
+        );
         assert_eq!(
             actual, original,
             "failed registration must preserve preferences"
@@ -445,7 +450,13 @@ mod tests {
         fs::write(&path, r#"{"theme":{"name":"catppuccin"},"plugins":[{"package":"./shepr-opencode","options":{"custom":true}},"example"]}"#).expect("test precondition");
         add_cli_plugin(&dir, &state, "./shepr-opencode").expect("test precondition");
         assert!(cli_plugin_is_configured(&dir, "./shepr-opencode"));
-        assert_eq!(parse_config(&path)["plugins"].as_array().expect("test precondition").len(), 2);
+        assert_eq!(
+            parse_config(&path)["plugins"]
+                .as_array()
+                .expect("test precondition")
+                .len(),
+            2
+        );
         assert_eq!(parse_config(&path)["plugins"][0]["options"]["custom"], true);
         assert!(remove_cli_plugin(&dir, "./shepr-opencode").expect("test precondition"));
         assert_eq!(parse_config(&path)["plugins"], json!(["example"]));
@@ -482,16 +493,20 @@ mod tests {
         let dir = unique_dir();
         let state = unique_dir();
         fs::write(dir.join("tui.json"), "{}").expect("test precondition");
-        assert!(add_cli_plugin(&dir, &state, "./shepr-opencode")
-            .expect("test precondition")
-            .is_none());
+        assert!(
+            add_cli_plugin(&dir, &state, "./shepr-opencode")
+                .expect("test precondition")
+                .is_none()
+        );
         assert!(!dir.join("cli.json").exists());
 
         fs::remove_file(dir.join("tui.json")).expect("test precondition");
         fs::write(state.join("kv.json"), "{}").expect("test precondition");
-        assert!(add_cli_plugin(&dir, &state, "./shepr-opencode")
-            .expect("test precondition")
-            .is_none());
+        assert!(
+            add_cli_plugin(&dir, &state, "./shepr-opencode")
+                .expect("test precondition")
+                .is_none()
+        );
         assert!(!dir.join("cli.json").exists());
 
         fs::remove_dir_all(dir).expect("test precondition");

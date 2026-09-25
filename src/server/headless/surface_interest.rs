@@ -40,10 +40,8 @@ impl HeadlessServer {
                 client.host_keyboard_report_all_active = None;
             }
             client.clear_deferred_render();
-            if !active {
-                if let Some(writer) = &client.writer {
-                    writer.discard_pending_render();
-                }
+            if !active && let Some(writer) = &client.writer {
+                writer.discard_pending_render();
             }
             (changed, client.shell_projection_revision)
         };

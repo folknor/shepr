@@ -27,11 +27,11 @@ fn shell(field: usize) -> ClientShellState {
                 query: TextEditor::default(),
                 search_focused: true,
                 scroll: 0,
-            }))
+            }));
         }
         7 => {
             state.record_binding(
-                KeybindMatch::Action(KeybindAction::CopyMode),
+                &KeybindMatch::Action(KeybindAction::CopyMode),
                 &mut ClientShellInput::default(),
             );
             state.handle_input_bytes(b"/");
@@ -213,11 +213,11 @@ fn all_naming_targets_preserve_submission_and_empty_semantics() {
             let expected = if empty { "" } else { "X  ab" };
             match &request.method {
                 Method::WorkspaceCreate(v) => {
-                    assert_eq!(v.label.as_deref(), (!empty).then_some(expected))
+                    assert_eq!(v.label.as_deref(), (!empty).then_some(expected));
                 }
                 Method::WorkspaceRename(v) => assert_eq!(v.label, expected),
                 Method::TabCreate(v) => {
-                    assert_eq!(v.label.as_deref(), (!empty).then_some(expected))
+                    assert_eq!(v.label.as_deref(), (!empty).then_some(expected));
                 }
                 Method::TabRename(v) => assert_eq!(v.label, expected),
                 Method::PaneRename(v) => assert_eq!(v.label.as_deref(), Some(expected)),
@@ -258,15 +258,16 @@ fn copy_search_owns_prefix_but_parked_prompt_does_not_steal_input() {
 fn every_field_renders_long_unicode_across_resize_without_mutation() {
     for field in 0..8 {
         let mut state = shell(field);
-        *editor(&mut state) = TextEditor::new(&"e\u{301}中👩‍💻".repeat(40), false);
+        *editor(&mut state) =
+            TextEditor::new(&"e\u{301}中\u{1F469}\u{200D}\u{1F4BB}".repeat(40), false);
         for position in [KeyCode::Home, KeyCode::End, KeyCode::Left] {
             press(&mut state, position, KeyModifiers::NONE);
             for (width, height) in [(120, 40), (60, 20), (12, 6), (1, 1), (120, 40)] {
                 let before = editor(&mut state).clone();
-                if let Some(frame) = state.compose(width, height) {
-                    if let Some(cursor) = frame.cursor.as_ref().filter(|cursor| cursor.visible) {
-                        assert!(cursor.x < width && cursor.y < height, "field {field}");
-                    }
+                if let Some(frame) = state.compose(width, height)
+                    && let Some(cursor) = frame.cursor.as_ref().filter(|cursor| cursor.visible)
+                {
+                    assert!(cursor.x < width && cursor.y < height, "field {field}");
                 }
                 assert_eq!(editor(&mut state), &before);
             }

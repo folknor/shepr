@@ -57,7 +57,8 @@ mod tests {
             completions: [("pane".into(), 7)].into_iter().collect(),
         };
         let crate::protocol::ServerMessage::EndpointControl { kind, data } =
-            crate::protocol::endpoint::agent_completions_message(&projection).expect("test precondition")
+            crate::protocol::endpoint::agent_completions_message(&projection)
+                .expect("test precondition")
         else {
             panic!("expected optional control");
         };
@@ -85,8 +86,9 @@ mod tests {
 
     #[test]
     fn only_local_protocol_failures_end_the_client() {
-        let remote =
-            ClientEndpointId::Ssh(ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"));
+        let remote = ClientEndpointId::Ssh(
+            ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
+        );
         assert!(protocol_failure_is_fatal(&ClientEndpointId::Local));
         assert!(!protocol_failure_is_fatal(&remote));
     }

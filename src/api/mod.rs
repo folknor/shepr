@@ -9,7 +9,7 @@ mod wait;
 pub use event_hub::EventHub;
 pub use server::ServerHandle;
 pub(crate) use server::{api_method_name, start_server_with_stop_control};
-pub use status::{read_runtime_status_at, RuntimeStatus};
+pub use status::{RuntimeStatus, read_runtime_status_at};
 
 use std::path::PathBuf;
 
@@ -65,7 +65,6 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
 pub struct ApiRequestMessage {
     pub request: Request,
     pub respond_to: std::sync::mpsc::Sender<String>,
-    pub response_write_complete: Option<std::sync::mpsc::Receiver<()>>,
 }
 
 pub type ApiRequestSender = mpsc::UnboundedSender<ApiRequestMessage>;

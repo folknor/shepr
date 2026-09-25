@@ -35,7 +35,7 @@ pub(crate) fn render_tab_bar(
         .iter()
         .copied()
         .fold(0_u16, u16::saturating_add)
-        .saturating_add(tabs.len().saturating_sub(1).min(u16::MAX as usize) as u16)
+        .saturating_add(u16::try_from(tabs.len().saturating_sub(1)).unwrap_or(u16::MAX))
         .saturating_add(new_tab_width);
     let overflow =
         desired_total > content.width && (!mouse_chrome || content.width >= MIN_TAB_STRIP_WIDTH);
@@ -208,17 +208,17 @@ pub(crate) fn render_tab_bar(
         );
     }
 
-    if let Some(insert_index) = tab_drag_insert_index {
-        if let Some(indicator_x) = tab_drop_indicator_x(hits, &tabs, insert_index) {
-            put_text(
-                buffer,
-                indicator_x.min(content.right().saturating_sub(1)),
-                area.y,
-                1,
-                "│",
-                Style::default().fg(palette.accent),
-            );
-        }
+    if let Some(insert_index) = tab_drag_insert_index
+        && let Some(indicator_x) = tab_drop_indicator_x(hits, &tabs, insert_index)
+    {
+        put_text(
+            buffer,
+            indicator_x.min(content.right().saturating_sub(1)),
+            area.y,
+            1,
+            "│",
+            Style::default().fg(palette.accent),
+        );
     }
     render_tab_bar_status(buffer, area, snapshot, palette);
 }
@@ -230,7 +230,7 @@ pub(crate) fn tab_bar_status_width(snapshot: &ClientShellSnapshot) -> u16 {
     let separators = snapshot.tab_bar_right.len().saturating_sub(1);
     content.saturating_add(
         display_width(&snapshot.tab_bar_right_separator)
-            .saturating_mul(separators.min(u16::MAX as usize) as u16),
+            .saturating_mul(u16::try_from(separators).unwrap_or(u16::MAX)),
     )
 }
 

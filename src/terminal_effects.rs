@@ -17,7 +17,8 @@ mod tests {
     #[test]
     fn window_title_strips_terminators_and_defaults_to_shepr() {
         let mut output = Vec::new();
-        write_window_title(&mut output, Some("shepr\x1b api\u{7}\u{9c}")).expect("test precondition");
+        write_window_title(&mut output, Some("shepr\x1b api\u{7}\u{9c}"))
+            .expect("test precondition");
         assert_eq!(output, b"\x1b]0;shepr api\x07");
 
         output.clear();

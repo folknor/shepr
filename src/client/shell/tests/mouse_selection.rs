@@ -219,23 +219,47 @@ fn client_double_click_selects_word_and_copies_only_after_release() {
         let initial = start_word_drag(&mut state);
         let release = MouseEventKind::Up(MouseButton::Left);
         if release_before_response {
-            assert!(word_drag_mouse(&mut state, release, 0, 8)
-                .actions
-                .is_empty());
+            assert!(
+                word_drag_mouse(&mut state, release, 0, 8)
+                    .actions
+                    .is_empty()
+            );
         }
         let mut actions = word_row_reply(&mut state, &initial, "alpha bravo charlie");
         if !release_before_response {
             assert!(actions.is_empty(), "holding the second press must not copy");
-            assert!(state.selection.as_ref().expect("test precondition").is_in_progress());
+            assert!(
+                state
+                    .selection
+                    .as_ref()
+                    .expect("test precondition")
+                    .is_in_progress()
+            );
             state.tick_selection_highlight(
                 std::time::Instant::now() + std::time::Duration::from_secs(1),
             );
-            assert!(state.selection.as_ref().expect("test precondition").is_visible());
+            assert!(
+                state
+                    .selection
+                    .as_ref()
+                    .expect("test precondition")
+                    .is_visible()
+            );
             actions = word_drag_mouse(&mut state, release, 0, 8).actions;
         }
-        assert!(state.selection.as_ref().expect("test precondition").is_finalized());
+        assert!(
+            state
+                .selection
+                .as_ref()
+                .expect("test precondition")
+                .is_finalized()
+        );
         assert_eq!(
-            state.selection.as_ref().expect("test precondition").ordered_cells(),
+            state
+                .selection
+                .as_ref()
+                .expect("test precondition")
+                .ordered_cells(),
             ((0, 6), (0, 10))
         );
         assert!(
@@ -255,7 +279,11 @@ fn client_double_click_selects_word_and_copies_only_after_release() {
                 matches!(&copied[..], [ClientShellAction::ClipboardWrite(bytes)] if bytes == b"bravo")
             );
             assert!(
-                state.tick_selection_highlight(state.selection_highlight_clear_deadline.expect("test precondition"))
+                state.tick_selection_highlight(
+                    state
+                        .selection_highlight_clear_deadline
+                        .expect("test precondition")
+                )
             );
             assert!(state.selection.is_none());
         } else {
@@ -364,14 +392,27 @@ fn double_click_drag_selects_whole_words_in_both_directions() {
             motion.actions.is_empty(),
             "reuse the row while dragging within it"
         );
-        assert_eq!(state.selection.as_ref().expect("test precondition").ordered_cells(), expected);
+        assert_eq!(
+            state
+                .selection
+                .as_ref()
+                .expect("test precondition")
+                .ordered_cells(),
+            expected
+        );
     }
     assert!(
         word_drag_mouse(&mut state, MouseEventKind::Up(MouseButton::Left), 0, 16)
             .actions
             .is_empty()
     );
-    assert!(state.selection.as_ref().expect("test precondition").is_finalized());
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .expect("test precondition")
+            .is_finalized()
+    );
 }
 
 #[test]
@@ -460,7 +501,11 @@ fn double_click_drag_survives_focus_lag_after_anchor_reply() {
     assert!(state.selection.is_some());
     word_drag_mouse(&mut state, MouseEventKind::Drag(MouseButton::Left), 0, 14);
     assert_eq!(
-        state.selection.as_ref().expect("test precondition").ordered_cells(),
+        state
+            .selection
+            .as_ref()
+            .expect("test precondition")
+            .ordered_cells(),
         ((0, 6), (0, 18))
     );
     let released = word_drag_mouse(&mut state, MouseEventKind::Up(MouseButton::Left), 0, 14);
@@ -473,7 +518,11 @@ fn double_click_drag_invalidates_cached_boundaries_outside_selected_cells() {
         let mut state = word_drag_state(copy_on_select);
         let initial = start_word_drag(&mut state);
         word_row_reply(&mut state, &initial, "alpha bravo charlie");
-        let mut changed = state.pane_surface.as_ref().expect("test precondition").clone();
+        let mut changed = state
+            .pane_surface
+            .as_ref()
+            .expect("test precondition")
+            .clone();
         changed.surface_revision += 1;
         changed.panes[0].content_revision += 2;
         changed.frame.cells[14].symbol = " ".into();
@@ -502,7 +551,11 @@ fn reconnect_word_selection_tracks_content_changes() {
         let mut state = word_drag_state(true);
         let initial = start_word_drag(&mut state);
         word_row_reply(&mut state, &initial, "alpha bravo charlie");
-        let mut next_surface = state.pane_surface.as_ref().expect("test precondition").clone();
+        let mut next_surface = state
+            .pane_surface
+            .as_ref()
+            .expect("test precondition")
+            .clone();
         if content_changed {
             next_surface.panes[0].content_revision += 2;
             next_surface.frame.cells[14].symbol = " ".into();
@@ -543,7 +596,11 @@ fn double_click_release_ignores_reply_after_focus_or_content_changes() {
             unfocused.panes.push(other);
             state.set_snapshot(Box::new(unfocused));
         } else {
-            let mut changed = state.pane_surface.as_ref().expect("test precondition").clone();
+            let mut changed = state
+                .pane_surface
+                .as_ref()
+                .expect("test precondition")
+                .clone();
             changed.surface_revision += 1;
             changed.panes[0].content_revision += 2;
             state.set_pane_surface(changed);
@@ -569,7 +626,11 @@ fn double_click_drag_resize_cancels_pending_word_lookup() {
             initial
         };
         word_drag_mouse(&mut state, MouseEventKind::Up(MouseButton::Left), 1, 8);
-        let mut resized = state.pane_surface.as_ref().expect("test precondition").clone();
+        let mut resized = state
+            .pane_surface
+            .as_ref()
+            .expect("test precondition")
+            .clone();
         resized.surface_revision += 1;
         resized.panes[0].rect.width += 5;
         resized.panes[0].inner_rect.width += 5;
@@ -594,18 +655,32 @@ fn double_click_drag_autoscroll_keeps_absolute_word_anchor() {
     let initial = start_word_drag(&mut state);
     word_row_reply(&mut state, &initial, "alpha bravo charlie");
     word_drag_mouse(&mut state, MouseEventKind::Drag(MouseButton::Left), 0, 14);
-    let tick = state.tick_selection_autoscroll(state.selection_autoscroll_deadline.expect("test precondition"));
+    let tick = state.tick_selection_autoscroll(
+        state
+            .selection_autoscroll_deadline
+            .expect("test precondition"),
+    );
     word_row_reply(
         &mut state,
         &word_read_id(&tick.actions),
         "delta echo foxtrot",
     );
     assert_eq!(
-        state.selection.as_ref().expect("test precondition").ordered_cells(),
+        state
+            .selection
+            .as_ref()
+            .expect("test precondition")
+            .ordered_cells(),
         ((4, 11), (5, 10))
     );
     word_drag_mouse(&mut state, MouseEventKind::Up(MouseButton::Left), 0, 14);
-    assert!(state.selection.as_ref().expect("test precondition").is_finalized());
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .expect("test precondition")
+            .is_finalized()
+    );
     assert!(state.selection_autoscroll.is_none());
 }
 
@@ -662,7 +737,11 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
     replaced_surface.frame.cells[4].symbol = "X".into();
     state.set_pane_surface(replaced_surface);
     assert_eq!(
-        state.selection.as_ref().expect("test precondition").ordered_cells(),
+        state
+            .selection
+            .as_ref()
+            .expect("test precondition")
+            .ordered_cells(),
         ((12, 0), (12, 1))
     );
 
@@ -675,7 +754,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         .expect("test precondition")
         .offset_from_bottom = 2;
     assert!(matches!(
-        state.apply_pane_surface_patch(crate::protocol::PaneSurfacePatch {
+        state.apply_pane_surface_patch(&crate::protocol::PaneSurfacePatch {
             boot_id: scrolled.boot_id,
             projection_revision: scrolled.projection_revision,
             base_surface_revision: 3,
@@ -686,9 +765,19 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         }),
         super::super::surface_patch::ClientPaneSurfacePatchOutcome::Applied(_)
     ));
-    assert!(state.selection.as_ref().expect("test precondition").is_in_progress());
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .expect("test precondition")
+            .is_in_progress()
+    );
     assert_eq!(
-        state.selection.as_ref().expect("test precondition").ordered_cells(),
+        state
+            .selection
+            .as_ref()
+            .expect("test precondition")
+            .ordered_cells(),
         ((12, 0), (12, 1))
     );
 
@@ -915,11 +1004,13 @@ fn tab_click_waits_for_release_and_drag_reorders_by_stable_id() {
         }) if tab_id == "tab_1"
     ));
     let frame = state.compose(106, 20).expect("tab drop indicator");
-    assert!(frame
-        .cells
-        .iter()
-        .take(frame.width as usize)
-        .any(|cell| cell.symbol == "│"));
+    assert!(
+        frame
+            .cells
+            .iter()
+            .take(frame.width as usize)
+            .any(|cell| cell.symbol == "│")
+    );
 
     let release =
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {

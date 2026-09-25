@@ -194,7 +194,7 @@ fn attach_scroll_action(
                 Some(AttachSemanticAction::Scroll {
                     source: AttachScrollSource::Wheel,
                     direction,
-                    lines: mouse_scroll_lines.max(1).min(u16::MAX as usize) as u16,
+                    lines: u16::try_from(mouse_scroll_lines.max(1)).unwrap_or(u16::MAX),
                     column: Some(mouse.column),
                     row: Some(mouse.row),
                     modifiers: mouse.modifiers.bits(),
@@ -463,7 +463,8 @@ mod tests {
 
     #[test]
     fn direct_attach_pixel_mouse_keeps_pixels_and_semantic_kind() {
-        let geometry = crate::input::mouse::HostGeometry::new(80, 24, 800, 480).expect("test precondition");
+        let geometry =
+            crate::input::mouse::HostGeometry::new(80, 24, 800, 480).expect("test precondition");
         let (kind, position, modifiers) =
             direct_attach_pixel_mouse(b"\x1b[<0;21;22M", geometry).expect("pixel mouse");
 

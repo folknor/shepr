@@ -32,7 +32,7 @@ impl ClientShellState {
                 .agent_panel_sort_manual
                 .then_some(self.config.agent_panel_sort),
         };
-        if let Err(error) = preferences::store(path, preferences) {
+        if let Err(error) = preferences::store(path, &preferences) {
             self.set_endpoint_error(error);
             outcome.repaint = true;
         }
@@ -71,7 +71,6 @@ impl ClientShellConfig {
             mouse_scroll_lines: config.ui.mouse_scroll_lines(),
             right_click_passthrough_modifiers: config.ui.right_click_passthrough_modifiers(),
             redraw_on_focus_gained: config.ui.redraw_on_focus_gained,
-            local_config_path: crate::config::config_path(),
             preferences_path: None,
             preferences: preferences::ClientChromePreferences::default(),
             startup_config_diagnostic: None,
@@ -90,14 +89,6 @@ impl ClientShellConfig {
 
     pub(crate) fn uses_endpoint_keybindings(&self) -> bool {
         self.keybinding_source == ClientShellKeybindingSource::Endpoint
-    }
-
-    pub(super) fn local_config_diagnostic(&self, diagnostics: &[String]) -> Option<String> {
-        if self.uses_endpoint_keybindings() {
-            crate::config::config_diagnostic_summary_without_keybindings(diagnostics)
-        } else {
-            crate::config::config_diagnostic_summary(diagnostics)
-        }
     }
 
     pub(crate) fn with_local_endpoint(self, socket_path: &std::path::Path) -> Self {
@@ -223,7 +214,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         preferences::store(
             &path,
-            preferences::ClientChromePreferences {
+            &preferences::ClientChromePreferences {
                 sidebar_width: Some(31),
                 sidebar_collapsed: Some(true),
                 ..preferences::ClientChromePreferences::default()
@@ -237,5 +228,4 @@ mod tests {
         assert_eq!(initial, state.surface_size(100, 30));
         std::fs::remove_file(path).expect("remove endpoint chrome");
     }
-
 }

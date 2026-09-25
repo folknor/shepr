@@ -6,14 +6,14 @@ use std::{
 use regex::Regex;
 use serde::Deserialize;
 
-use super::{agent_label, parse_agent_label, Agent, AgentDetection, AgentState};
+use super::{Agent, AgentDetection, AgentState, agent_label, parse_agent_label};
 
 pub const DEFAULT_KNOWN_AGENT_IDLE_FALLBACK: &str = "default_known_agent_idle_fallback";
 
 /// Input to the detection engine, carrying the screen snapshot plus any
 /// OSC-derived strings captured from the terminal title / progress sequences.
 /// Pass empty strings for `osc_title` and `osc_progress` when the data is not
-/// available — behavior is identical to the pre-OSC engine in that case.
+/// available - behavior is identical to the pre-OSC engine in that case.
 #[derive(Debug, Clone, Copy)]
 pub struct DetectionInput<'a> {
     pub screen: &'a str,
@@ -256,7 +256,7 @@ pub(crate) fn reload_manifests() -> Vec<AgentManifestSummary> {
     let _reload_guard = MANIFEST_RELOAD_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let cache = build_manifest_cache();
     let summaries = manifest_summaries_from_cache(&cache);
     let lock = MANIFEST_CACHE.get_or_init(|| RwLock::new(cache.clone()));
@@ -605,7 +605,7 @@ pub fn explain_to_json_value(explain: &DetectionExplain) -> serde_json::Value {
     serde_json::json!({
         "agent": explain.agent,
         "state": agent_state_label(explain.state),
-        "manifest_source": explain.source.as_ref().map(|source| source.label()),
+        "manifest_source": explain.source.as_ref().map(ManifestSource::label),
         "matched_rule": matched_rule,
         "visible_idle": explain.visible_idle,
         "visible_blocker": explain.visible_blocker,
@@ -1135,7 +1135,10 @@ fn codex_prompt_line(line: &str) -> bool {
 }
 
 fn codex_block_marker_line(line: &str) -> bool {
-    line.starts_with('•') || line.starts_with('■') || line.starts_with('✗') || line.starts_with('✓')
+    line.starts_with('•')
+        || line.starts_with('■')
+        || line.starts_with('\u{2717}')
+        || line.starts_with('\u{2713}')
 }
 
 fn prompt_box_body(content: &str) -> Option<&str> {

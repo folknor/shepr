@@ -268,10 +268,9 @@ impl TerminalState {
                 .agent_metadata
                 .get(&report_source)
                 .is_some_and(|metadata| self.agent_metadata_is_visible_ignoring_ttl(metadata))
+            && let Some(metadata) = self.agent_metadata.get_mut(&report_source)
         {
-            if let Some(metadata) = self.agent_metadata.get_mut(&report_source) {
-                metadata.expiry_event_pending = true;
-            }
+            metadata.expiry_event_pending = true;
         }
 
         let effective_state_change = self.recompute_effective_state(
@@ -572,10 +571,14 @@ mod tests {
             ttl,
             seq: Some(seq),
         };
-        assert!(terminal
-            .set_agent_metadata(report(100, Some(Duration::ZERO)))
-            .is_some());
-        let deadline = terminal.next_agent_metadata_expiry().expect("test precondition");
+        assert!(
+            terminal
+                .set_agent_metadata(report(100, Some(Duration::ZERO)))
+                .is_some()
+        );
+        let deadline = terminal
+            .next_agent_metadata_expiry()
+            .expect("test precondition");
         terminal.expire_agent_metadata_at(deadline, deadline);
         assert!(terminal.agent_metadata.is_empty());
         let exit_at = Instant::now() + Duration::from_millis(1);
@@ -645,7 +648,12 @@ mod tests {
             presentation.state_labels.get("working").map(String::as_str),
             Some("deep in the mines")
         );
-        assert!(mutation.expect("test precondition").effective_state_change.is_some());
+        assert!(
+            mutation
+                .expect("test precondition")
+                .effective_state_change
+                .is_some()
+        );
     }
 
     #[test]
@@ -814,7 +822,9 @@ mod tests {
             ttl: Some(Duration::from_millis(1)),
             seq: None,
         });
-        let old_deadline = terminal.next_agent_metadata_expiry().expect("test precondition");
+        let old_deadline = terminal
+            .next_agent_metadata_expiry()
+            .expect("test precondition");
 
         terminal.set_agent_metadata(AgentMetadataReport {
             source: "user:status".into(),
@@ -832,12 +842,14 @@ mod tests {
 
         assert_eq!(terminal.next_agent_metadata_expiry(), None);
         assert_eq!(terminal.effective_title().as_deref(), Some("Fresh title"));
-        assert!(terminal
-            .expire_agent_metadata_at(
-                old_deadline + Duration::from_millis(1),
-                old_deadline + Duration::from_millis(1)
-            )
-            .is_none());
+        assert!(
+            terminal
+                .expire_agent_metadata_at(
+                    old_deadline + Duration::from_millis(1),
+                    old_deadline + Duration::from_millis(1)
+                )
+                .is_none()
+        );
         assert_eq!(terminal.effective_title().as_deref(), Some("Fresh title"));
     }
 
@@ -866,7 +878,9 @@ mod tests {
             ttl: Some(Duration::from_secs(60)),
             seq: None,
         });
-        let old_deadline = terminal.next_agent_metadata_expiry().expect("test precondition");
+        let old_deadline = terminal
+            .next_agent_metadata_expiry()
+            .expect("test precondition");
 
         terminal.set_agent_metadata(AgentMetadataReport {
             source: "user:status".into(),
@@ -921,7 +935,9 @@ mod tests {
             seq: None,
         });
 
-        let deadline = terminal.next_agent_metadata_expiry().expect("test precondition");
+        let deadline = terminal
+            .next_agent_metadata_expiry()
+            .expect("test precondition");
         let mutation = terminal
             .expire_agent_metadata_at(deadline, deadline)
             .expect("test precondition");
@@ -1008,7 +1024,9 @@ mod tests {
             ttl: Some(Duration::from_millis(1)),
             seq: None,
         });
-        let first_deadline = terminal.next_agent_metadata_expiry().expect("test precondition");
+        let first_deadline = terminal
+            .next_agent_metadata_expiry()
+            .expect("test precondition");
         terminal.set_agent_metadata(AgentMetadataReport {
             source: "user:second".into(),
             agent_label: Some("claude".into()),

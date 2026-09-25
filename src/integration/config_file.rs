@@ -138,10 +138,10 @@ impl Replacement {
 impl Drop for Replacement {
     fn drop(&mut self) {
         // After publication the temporary name is absent. Never remove the target.
-        if let Err(error) = fs::remove_file(&self.temporary) {
-            if error.kind() != io::ErrorKind::NotFound {
-                tracing::warn!(path = %self.temporary.display(), %error, "failed to remove integration config temporary file");
-            }
+        if let Err(error) = fs::remove_file(&self.temporary)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            tracing::warn!(path = %self.temporary.display(), %error, "failed to remove integration config temporary file");
         }
     }
 }

@@ -23,7 +23,6 @@ pub(super) struct MachineHit {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ClientEndpointFocusTarget {
     Workspace(String),
-    Tab(String),
     Pane(String),
 }
 
@@ -88,25 +87,6 @@ impl ClientShellState {
         self.mode = ClientShellMode::Terminal;
         self.snapshot = None;
         self.graphics_scope = "local:unavailable".to_owned();
-    }
-
-    pub(crate) fn retire_endpoint(&mut self, endpoint_id: &ClientEndpointId) {
-        self.clear_machine_diagnostic(endpoint_id);
-        if endpoint_id == &self.active_endpoint_id {
-            self.pending_workspace_highlight = None;
-        }
-        if let Some(endpoint) = self
-            .endpoints
-            .iter_mut()
-            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-        {
-            endpoint.status = ClientEndpointStatus::Disabled;
-            endpoint.snapshot = None;
-            endpoint.snapshot_generation = None;
-            endpoint.methods = None;
-            endpoint.agent_recency.clear();
-            endpoint.agent_presentation = Default::default();
-        }
     }
 
     pub(crate) fn set_endpoint_status(
@@ -384,7 +364,7 @@ impl ClientShellState {
         &mut self,
         endpoint_id: &ClientEndpointId,
         generation: Option<u64>,
-        snapshot: Box<ClientShellSnapshot>,
+        mut snapshot: Box<ClientShellSnapshot>,
         acknowledge_surface: bool,
     ) {
         let Some(index) = self

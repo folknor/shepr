@@ -9,7 +9,7 @@ mod session;
 mod tabs;
 mod workspaces;
 
-use super::{api_helpers::pane_agent_status, App};
+use super::{App, api_helpers::pane_agent_status};
 use crate::events::AppEvent;
 
 impl App {
@@ -87,14 +87,13 @@ impl App {
             return Vec::new();
         }
 
-        if let AppEvent::PaneDied { pane_id, .. } = &ev {
-            if let Some(update) = self
+        if let AppEvent::PaneDied { pane_id, .. } = &ev
+            && let Some(update) = self
                 .state
                 .publish_pane_process_exit_if_agent(*pane_id, false)
-            {
-                self.sync_full_lifecycle_authority_detection_pauses();
-                self.emit_pane_state_update(&update);
-            }
+        {
+            self.sync_full_lifecycle_authority_detection_pauses();
+            self.emit_pane_state_update(&update);
         }
 
         let checkpointed_pane_exit = matches!(
@@ -108,18 +107,17 @@ impl App {
             self.checkpoint_session_before_pane_exit();
         }
 
-        if let AppEvent::PaneDied { pane_id, .. } = &ev {
-            if let Some((ws_idx, _)) = self.find_pane(*pane_id) {
-                if let Some(public_pane_id) = self.public_pane_id(ws_idx, *pane_id) {
-                    self.emit_event(crate::api::schema::EventEnvelope {
-                        event: crate::api::schema::EventKind::PaneExited,
-                        data: crate::api::schema::EventData::PaneExited {
-                            pane_id: public_pane_id,
-                            workspace_id: self.public_workspace_id(ws_idx),
-                        },
-                    });
-                }
-            }
+        if let AppEvent::PaneDied { pane_id, .. } = &ev
+            && let Some((ws_idx, _)) = self.find_pane(*pane_id)
+            && let Some(public_pane_id) = self.public_pane_id(ws_idx, *pane_id)
+        {
+            self.emit_event(crate::api::schema::EventEnvelope {
+                event: crate::api::schema::EventKind::PaneExited,
+                data: crate::api::schema::EventData::PaneExited {
+                    pane_id: public_pane_id,
+                    workspace_id: self.public_workspace_id(ws_idx),
+                },
+            });
         }
         let pane_exit_layout_target = if let AppEvent::PaneDied { pane_id, .. } = &ev {
             self.find_pane(*pane_id).and_then(|(ws_idx, _)| {
@@ -141,22 +139,18 @@ impl App {
         };
 
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
-        let mut pane_updates = self.state.handle_app_event(ev);
+        let pane_updates = self.state.handle_app_event(ev);
         if checkpointed_pane_exit {
             self.finish_checkpointed_pane_exit();
         }
-        if let Some((pane_id, agent)) = released_agent {
-            if pane_updates.iter().any(|update| update.pane_id == pane_id) {
-                if let Some((ws_idx, _)) = self.find_pane(pane_id) {
-                    if let Some(runtime) = self.state.runtime_for_pane_in_workspace(
-                        &self.terminal_runtimes,
-                        ws_idx,
-                        pane_id,
-                    ) {
-                        runtime.begin_graceful_release(agent);
-                    }
-                }
-            }
+        if let Some((pane_id, agent)) = released_agent
+            && pane_updates.iter().any(|update| update.pane_id == pane_id)
+            && let Some((ws_idx, _)) = self.find_pane(pane_id)
+            && let Some(runtime) =
+                self.state
+                    .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
+        {
+            runtime.begin_graceful_release(agent);
         }
         self.sync_full_lifecycle_authority_detection_pauses();
         if terminal_cwd_reported {
@@ -252,7 +246,6 @@ impl App {
             });
         }
     }
-
 
     pub(super) fn emit_event(&mut self, event: crate::api::schema::EventEnvelope) {
         self.event_hub.push(event);
@@ -447,18 +440,18 @@ impl App {
             }
             Method::SessionSnapshot(_) => return self.handle_session_snapshot(request.id),
             Method::WorkspaceList(_) => return self.handle_workspace_list(request.id),
-            Method::WorkspaceGet(target) => return self.handle_workspace_get(request.id, target),
+            Method::WorkspaceGet(target) => return self.handle_workspace_get(request.id, &target),
             Method::WorkspaceCreate(params) => {
                 return self.handle_workspace_create(request.id, params);
             }
             Method::WorkspaceFocus(target) => {
-                return self.handle_workspace_focus(request.id, target);
+                return self.handle_workspace_focus(request.id, &target);
             }
             Method::WorkspaceRename(params) => {
                 return self.handle_workspace_rename(request.id, params);
             }
             Method::WorkspaceMove(params) => {
-                return self.handle_workspace_move(request.id, params);
+                return self.handle_workspace_move(request.id, &params);
             }
             Method::WorkspaceMoveBlock(params) => {
                 return self.handle_workspace_move_block(request.id, params);
@@ -467,18 +460,18 @@ impl App {
                 return self.handle_workspace_report_metadata(request.id, params);
             }
             Method::WorkspaceClose(target) => {
-                return self.handle_workspace_close(request.id, target);
+                return self.handle_workspace_close(request.id, &target);
             }
             Method::TabList(params) => return self.handle_tab_list(request.id, params),
-            Method::TabGet(target) => return self.handle_tab_get(request.id, target),
+            Method::TabGet(target) => return self.handle_tab_get(request.id, &target),
             Method::TabCreate(params) => return self.handle_tab_create(request.id, params),
-            Method::TabFocus(target) => return self.handle_tab_focus(request.id, target),
+            Method::TabFocus(target) => return self.handle_tab_focus(request.id, &target),
             Method::TabRename(params) => return self.handle_tab_rename(request.id, params),
-            Method::TabMove(params) => return self.handle_tab_move(request.id, params),
-            Method::TabClose(target) => return self.handle_tab_close(request.id, target),
+            Method::TabMove(params) => return self.handle_tab_move(request.id, &params),
+            Method::TabClose(target) => return self.handle_tab_close(request.id, &target),
             Method::AgentList(_) => return self.handle_agent_list(request.id),
-            Method::AgentGet(target) => return self.handle_agent_get(request.id, target),
-            Method::AgentFocus(target) => return self.handle_agent_focus(request.id, target),
+            Method::AgentGet(target) => return self.handle_agent_get(request.id, &target),
+            Method::AgentFocus(target) => return self.handle_agent_focus(request.id, &target),
             Method::AgentRename(params) => return self.handle_agent_rename(request.id, params),
             Method::AgentStart(params) => return self.handle_agent_start(request.id, params),
             Method::AgentPrompt(_) => {
@@ -495,32 +488,34 @@ impl App {
                     "agent.wait is handled by the api server",
                 );
             }
-            Method::AgentRead(params) => return self.handle_agent_read(request.id, params),
-            Method::AgentExplain(target) => return self.handle_agent_explain(request.id, target),
+            Method::AgentRead(params) => return self.handle_agent_read(request.id, &params),
+            Method::AgentExplain(target) => return self.handle_agent_explain(request.id, &target),
             Method::AgentSendKeys(params) => {
-                return self.handle_agent_send_keys(request.id, params);
+                return self.handle_agent_send_keys(request.id, &params);
             }
             Method::PaneSplit(params) => return self.handle_pane_split(request.id, params),
             Method::PaneSwap(params) => return self.handle_pane_swap(request.id, params),
             Method::PaneMove(params) => return self.handle_pane_move(request.id, params),
-            Method::PaneZoom(params) => return self.handle_pane_zoom(request.id, params),
-            Method::PaneLayout(params) => return self.handle_pane_layout(request.id, params),
+            Method::PaneZoom(params) => return self.handle_pane_zoom(request.id, &params),
+            Method::PaneLayout(params) => return self.handle_pane_layout(request.id, &params),
             Method::PaneProcessInfo(params) => {
-                return self.handle_pane_process_info(request.id, params);
+                return self.handle_pane_process_info(request.id, &params);
             }
-            Method::LayoutExport(params) => return self.handle_layout_export(request.id, params),
-            Method::LayoutApply(params) => return self.handle_layout_apply(request.id, params),
+            Method::LayoutExport(params) => {
+                return self.handle_layout_export(request.id, &params);
+            }
+            Method::LayoutApply(params) => return self.handle_layout_apply(request.id, &params),
             Method::LayoutSetSplitRatio(params) => {
                 return self.handle_layout_set_split_ratio(request.id, params);
             }
-            Method::PaneNeighbor(params) => return self.handle_pane_neighbor(request.id, params),
-            Method::PaneEdges(params) => return self.handle_pane_edges(request.id, params),
+            Method::PaneNeighbor(params) => return self.handle_pane_neighbor(request.id, &params),
+            Method::PaneEdges(params) => return self.handle_pane_edges(request.id, &params),
             Method::PaneFocusDirection(params) => {
-                return self.handle_pane_focus_direction(request.id, params);
+                return self.handle_pane_focus_direction(request.id, &params);
             }
-            Method::PaneResize(params) => return self.handle_pane_resize(request.id, params),
-            Method::PaneScroll(params) => return self.handle_pane_scroll(request.id, params),
-            Method::PaneClear(target) => return self.handle_pane_clear(request.id, target),
+            Method::PaneResize(params) => return self.handle_pane_resize(request.id, &params),
+            Method::PaneScroll(params) => return self.handle_pane_scroll(request.id, &params),
+            Method::PaneClear(target) => return self.handle_pane_clear(request.id, &target),
             Method::PaneSelectionRead(params) => {
                 return self.handle_pane_selection_read(request.id, params);
             }
@@ -530,13 +525,13 @@ impl App {
             Method::PaneCopySearch(params) => {
                 return self.handle_pane_copy_search(request.id, params);
             }
-            Method::PaneList(params) => return self.handle_pane_list(request.id, params),
-            Method::PaneCurrent(params) => return self.handle_pane_current(request.id, params),
-            Method::PaneGet(target) => return self.handle_pane_get(request.id, target),
-            Method::PaneFocus(target) => return self.handle_pane_focus(request.id, target),
-            Method::PaneInputSet(params) => return self.handle_pane_input_set(request.id, params),
+            Method::PaneList(params) => return self.handle_pane_list(request.id, &params),
+            Method::PaneCurrent(params) => return self.handle_pane_current(request.id, &params),
+            Method::PaneGet(target) => return self.handle_pane_get(request.id, &target),
+            Method::PaneFocus(target) => return self.handle_pane_focus(request.id, &target),
+            Method::PaneInputSet(params) => return self.handle_pane_input_set(request.id, &params),
             Method::PaneRename(params) => return self.handle_pane_rename(request.id, params),
-            Method::PaneRead(params) => return self.handle_pane_read(request.id, params),
+            Method::PaneRead(params) => return self.handle_pane_read(request.id, &params),
             Method::PaneReportAgent(params) => {
                 return self.handle_pane_report_agent(request.id, params);
             }
@@ -554,10 +549,10 @@ impl App {
             }
             Method::PaneSendText(params) => return self.handle_pane_send_text(request.id, params),
             Method::PaneSendInput(params) => {
-                return self.handle_pane_send_input(request.id, params);
+                return self.handle_pane_send_input(request.id, &params);
             }
-            Method::PaneClose(target) => return self.handle_pane_close(request.id, target),
-            Method::PaneSendKeys(params) => return self.handle_pane_send_keys(request.id, params),
+            Method::PaneClose(target) => return self.handle_pane_close(request.id, &target),
+            Method::PaneSendKeys(params) => return self.handle_pane_send_keys(request.id, &params),
             _ => {
                 return responses::encode_error(
                     request.id,
@@ -569,7 +564,6 @@ impl App {
 
         serde_json::to_string(&response).expect("response serializes to JSON")
     }
-
 }
 
 fn agent_manifest_info(
@@ -628,12 +622,15 @@ mod tests {
                 crate::api::schema::EmptyParams::default(),
             ),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
         assert_eq!(response["result"]["type"], "agent_manifest_reload");
-        assert!(!response["result"]["manifests"]
-            .as_array()
-            .expect("test precondition")
-            .is_empty());
+        assert!(
+            !response["result"]["manifests"]
+                .as_array()
+                .expect("test precondition")
+                .is_empty()
+        );
 
         tokio::time::timeout(
             std::time::Duration::from_millis(50),
@@ -669,12 +666,15 @@ mod tests {
                 crate::api::schema::EmptyParams::default(),
             ),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
         assert_eq!(response["result"]["type"], "agent_manifest_status");
-        assert!(!response["result"]["manifests"]
-            .as_array()
-            .expect("test precondition")
-            .is_empty());
+        assert!(
+            !response["result"]["manifests"]
+                .as_array()
+                .expect("test precondition")
+                .is_empty()
+        );
         assert!(
             tokio::time::timeout(
                 std::time::Duration::from_millis(10),
@@ -721,7 +721,8 @@ mod tests {
                 target,
             }),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["result"]["type"], "agent_explain");
         assert_eq!(response["result"]["explain"]["state"], "blocked");
@@ -768,7 +769,8 @@ mod tests {
                 target,
             }),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["error"]["code"], "agent_not_found");
     }
@@ -801,7 +803,8 @@ mod tests {
                 },
             ),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["result"]["type"], "pane_process_info");
         assert_eq!(response["result"]["process_info"]["pane_id"], target);
@@ -895,10 +898,17 @@ mod tests {
             );
             let workspace = crate::workspace::Workspace::test_new("idle-agent-exit");
             let pane_id = workspace.tabs[0].root_pane;
-            let terminal_id = workspace.terminal_id(pane_id).cloned().expect("test precondition");
+            let terminal_id = workspace
+                .terminal_id(pane_id)
+                .cloned()
+                .expect("test precondition");
             app.state.workspaces = vec![workspace];
             app.state.ensure_test_terminals();
-            let terminal = app.state.terminals.get_mut(&terminal_id).expect("test precondition");
+            let terminal = app
+                .state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("test precondition");
             terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
             if let Some(agent_name) = agent_name {
                 terminal.set_agent_name(agent_name.into());
@@ -945,11 +955,18 @@ mod tests {
         );
         let workspace = crate::workspace::Workspace::test_new("stale-agent-exit");
         let pane_id = workspace.tabs[0].root_pane;
-        let terminal_id = workspace.terminal_id(pane_id).cloned().expect("test precondition");
+        let terminal_id = workspace
+            .terminal_id(pane_id)
+            .cloned()
+            .expect("test precondition");
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         let observed_at = std::time::Instant::now();
-        let terminal = app.state.terminals.get_mut(&terminal_id).expect("test precondition");
+        let terminal = app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition");
         terminal.set_detected_state(Some(Agent::Codex), AgentState::Working);
         terminal
             .set_hook_authority_at(

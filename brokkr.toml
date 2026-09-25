@@ -1,1 +1,6 @@
 project = "shepr"
+
+# Detection manifests match text agents actually draw on screen (prompt
+# glyphs, check marks, spinners); escaping it would make captures unreadable.
+[gremlins]
+exclude = ["src/detect/manifests"]

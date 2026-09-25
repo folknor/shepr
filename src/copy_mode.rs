@@ -40,7 +40,7 @@ pub(crate) fn copy_mode_page_lines(height: u16, half_page: bool) -> usize {
     }
 }
 
-pub(crate) fn copy_mode_command_char(key: TerminalKey) -> Option<char> {
+pub(crate) fn copy_mode_command_char(key: &TerminalKey) -> Option<char> {
     if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
         return None;
     }

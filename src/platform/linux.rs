@@ -10,14 +10,13 @@ use std::{
 pub(super) const REMOTE_BRIDGE_CLOCK: libc::clockid_t = libc::CLOCK_BOOTTIME;
 
 use super::{
-    read_limited_reader, ClipboardCommand, ForegroundJob, ForegroundProcess, LimitedRead, Signal,
+    ClipboardCommand, ForegroundJob, ForegroundProcess, LimitedRead, Signal, read_limited_reader,
 };
 
 pub(crate) use super::unix_common::{
-    configure_status_command, create_remote_ssh_config_dir, create_remote_ssh_config_file,
-    hostname, local_datetime, remote_bridge_endpoint_path, remote_ssh_config_paths,
-    shutdown_client_stream, wait_client_stream_readable, write_client_stream,
-    ClientStreamReader, StatusCommandGuard,
+    ClientStreamReader, StatusCommandGuard, configure_status_command, create_remote_ssh_config_dir,
+    create_remote_ssh_config_file, hostname, local_datetime, remote_bridge_endpoint_path,
+    remote_ssh_config_paths, wait_client_stream_readable, write_client_stream,
 };
 
 #[cfg(test)]
@@ -178,12 +177,13 @@ fn copy_config_xattrs(source: RawFd, destination: RawFd) -> std::io::Result<()> 
             }
             return Err(error);
         }
-        let mut buffer = vec![0; size as usize];
+        let size = usize::try_from(size).unwrap_or(0);
+        let mut buffer = vec![0; size];
         let read = unsafe { libc::flistxattr(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
         if read < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        buffer.truncate(read as usize);
+        buffer.truncate(usize::try_from(read).unwrap_or(0));
         Ok(buffer)
     }
     fn value(fd: RawFd, name: &CStr) -> std::io::Result<Vec<u8>> {
@@ -191,13 +191,14 @@ fn copy_config_xattrs(source: RawFd, destination: RawFd) -> std::io::Result<()> 
         if size < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        let mut buffer = vec![0; size as usize];
+        let size = usize::try_from(size).unwrap_or(0);
+        let mut buffer = vec![0; size];
         let read =
             unsafe { libc::fgetxattr(fd, name.as_ptr(), buffer.as_mut_ptr().cast(), buffer.len()) };
         if read < 0 {
             return Err(std::io::Error::last_os_error());
         }
-        buffer.truncate(read as usize);
+        buffer.truncate(usize::try_from(read).unwrap_or(0));
         Ok(buffer)
     }
     let source_names = names(source)?;
@@ -382,9 +383,12 @@ fn foreground_job_from_members(
 /// foreground groups. This mode is explicit because background jobs cannot be
 /// distinguished from foreground jobs without the native terminal signal.
 fn child_groups_foreground_process_group(child_pid: u32) -> Option<u32> {
-    let shell_group_id = process_pgrp_comm_and_state(child_pid)
-        .map(|(pgrp, _, _)| pgrp)
-        .filter(|pgrp| *pgrp > 0)? as u32;
+    let shell_group_id = u32::try_from(
+        process_pgrp_comm_and_state(child_pid)
+            .map(|(pgrp, _, _)| pgrp)
+            .filter(|pgrp| *pgrp > 0)?,
+    )
+    .ok()?;
 
     child_groups_foreground_process_group_with(
         child_pid,
@@ -418,7 +422,9 @@ fn child_groups_foreground_process_group_with(
             if pgrp <= 0 {
                 continue;
             }
-            let pgrp = pgrp as u32;
+            let Ok(pgrp) = u32::try_from(pgrp) else {
+                continue;
+            };
             if pgrp == shell_group_id {
                 continue;
             }
@@ -600,12 +606,12 @@ fn numeric_file_name(entry: &std::fs::DirEntry) -> Option<u32> {
 
 fn live_process_group_member(process_group_id: u32, pid: u32) -> Option<ProcGroupMember> {
     let (pgrp, comm, state) = process_pgrp_comm_and_state(pid)?;
-    (pgrp > 0 && pgrp as u32 == process_group_id).then_some(ProcGroupMember { pid, comm, state })
+    (u32::try_from(pgrp) == Ok(process_group_id)).then_some(ProcGroupMember { pid, comm, state })
 }
 
 pub fn foreground_group_leader_job(process_group_id: u32) -> Option<ForegroundJob> {
     let (pgrp, name, state) = process_pgrp_comm_and_state(process_group_id)?;
-    if pgrp as u32 != process_group_id {
+    if u32::try_from(pgrp) != Ok(process_group_id) {
         return None;
     }
 
@@ -632,12 +638,12 @@ pub fn foreground_process_group_id(child_pid: u32) -> Option<u32> {
     let fields: Vec<&str> = rest.split_whitespace().collect();
     // After (comm): state(0) ppid(1) pgrp(2) session(3) tty_nr(4) tpgid(5)
     let tpgid: i32 = fields.get(5)?.parse().ok()?;
-    (tpgid > 0).then_some(tpgid as u32)
+    (tpgid > 0).then(|| u32::try_from(tpgid).unwrap_or_default())
 }
 
 pub fn foreground_process_group_id_for_tty_fd(fd: RawFd) -> Option<u32> {
     let pgid = unsafe { libc::tcgetpgrp(fd) };
-    (pgid > 0).then_some(pgid as u32)
+    (pgid > 0).then(|| u32::try_from(pgid).unwrap_or_default())
 }
 
 fn process_pgrp_comm_and_state(pid: u32) -> Option<(i32, String, char)> {
@@ -735,8 +741,11 @@ pub fn signal_processes(pids: &[u32], signal: Signal) {
         if pid == 0 {
             continue;
         }
+        let Ok(pid) = i32::try_from(pid) else {
+            continue;
+        };
         unsafe {
-            libc::kill(pid as i32, sig);
+            libc::kill(pid, sig);
         }
     }
 }
@@ -745,7 +754,10 @@ pub fn process_exists(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
-    let result = unsafe { libc::kill(pid as i32, 0) };
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    let result = unsafe { libc::kill(pid, 0) };
     if result == 0 {
         true
     } else {
@@ -770,7 +782,6 @@ pub fn read_clipboard_text() -> Option<String> {
     }
     None
 }
-
 
 fn clipboard_commands() -> Vec<ClipboardCommand> {
     let mut commands = Vec::new();
@@ -1045,7 +1056,8 @@ mod tests {
 
     #[test]
     fn child_groups_foreground_group_fails_closed_at_the_scan_limit() {
-        let children: Vec<u32> = (1..=(CHILD_GROUPS_SCAN_LIMIT as u32 + 10)).collect();
+        let limit = u32::try_from(CHILD_GROUPS_SCAN_LIMIT).expect("scan limit fits in u32");
+        let children: Vec<u32> = (1..=(limit + 10)).collect();
         let mut inspected = 0usize;
 
         let group = child_groups_foreground_process_group_with(
@@ -1055,7 +1067,7 @@ mod tests {
             |_, _, _budget| children.clone(),
             |pid| {
                 inspected += 1;
-                Some(pid as i32)
+                Some(i32::try_from(pid).expect("test pid fits in i32"))
             },
         );
 
@@ -1142,7 +1154,8 @@ mod tests {
         // detection read /proc/<pid>/stat for an unbounded number of processes, and
         // the foreground group's own subtree must win the limited scan budget.
         let child_count = FOREGROUND_TREE_SCAN_LIMIT + 200;
-        let shell_children: Vec<u32> = (10..10 + child_count as u32).collect();
+        let child_count = u32::try_from(child_count).expect("child count fits in u32");
+        let shell_children: Vec<u32> = (10..10 + child_count).collect();
         // The leader's subtree: leader(2) -> agent(9000) -> agent-child(9001). Both
         // descendants sit behind the shell's backlog and must still be reached.
         let agent_pid = 9000u32;
@@ -1201,7 +1214,8 @@ mod tests {
         // starve the pane shell's own foreground-group children, such as pipeline
         // members that live under the shell rather than under the leader.
         let leader_children: Vec<u32> =
-            (100..100 + FOREGROUND_TREE_SCAN_LIMIT as u32 + 200).collect();
+            (100..100 + u32::try_from(FOREGROUND_TREE_SCAN_LIMIT).expect("limit fits") + 200)
+                .collect();
         let pipeline_pid = 9000u32;
         let stat_reads = RefCell::new(Vec::new());
 
@@ -1558,10 +1572,11 @@ mod tests {
             libc::kill(owner_pid, libc::SIGTERM);
         }
         let reap_deadline = Instant::now() + Duration::from_secs(2);
-        while process_exists(owner_pid as u32) && Instant::now() < reap_deadline {
+        let owner_pid_u32 = u32::try_from(owner_pid).expect("owner pid should be positive");
+        while process_exists(owner_pid_u32) && Instant::now() < reap_deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
-        let owner_was_reaped = !process_exists(owner_pid as u32);
+        let owner_was_reaped = !process_exists(owner_pid_u32);
         cleanup.owner_pid = None;
         writer.join().expect("clipboard writer thread should join");
         drop(cleanup);
@@ -1728,5 +1743,4 @@ mod tests {
 
         assert_eq!(read_clipboard_text_with_command(&command), None);
     }
-
 }

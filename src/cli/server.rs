@@ -1,7 +1,7 @@
 use crate::api::schema::{EmptyParams, Method, Request};
 
 pub(super) fn run_server_command(args: &[String]) -> std::io::Result<Option<i32>> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(String::as_str) else {
         return Ok(None);
     };
 
@@ -92,6 +92,7 @@ fn print_server_help() {
     eprintln!("  shepr server                run as headless server");
     eprintln!("  shepr server stop           stop the running server via the API socket");
     eprintln!("  shepr server agent-manifests [--json]  show agent detection manifest status");
-    eprintln!("  shepr server reload-agent-manifests  reload agent detection manifests in the running server");
+    eprintln!(
+        "  shepr server reload-agent-manifests  reload agent detection manifests in the running server"
+    );
 }
-

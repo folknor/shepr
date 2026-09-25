@@ -28,10 +28,12 @@ pub(crate) fn render_config_diagnostic_buffer(
         .enumerate()
     {
         let text = format!(" {line} ");
-        let width = (text.len() as u16).min(area.width);
+        let width = u16::try_from(text.len())
+            .unwrap_or(u16::MAX)
+            .min(area.width);
         let diagnostic_area = Rect::new(
             area.x + area.width.saturating_sub(width),
-            area.y + row as u16,
+            area.y + u16::try_from(row).unwrap_or(u16::MAX),
             width,
             1,
         );

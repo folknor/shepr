@@ -2,7 +2,9 @@
 //! model but shepr must answer or track: OSC 7 / OSC 9;9 / OSC 1337 CurrentDir
 //! working-directory reports, DECSET/DECRST for modes 9, 1016, 2031 and 2048
 //! (plus the mouse modes that cancel them), CSI ? 996 n, CSI 16 t, XTGETTCAP
-//! (7-bit `ESC P + q` and raw C1 `0x90 + q`), and RIS.
+//! (7-bit `ESC P + q` and raw C1 `0x90 + q`), xterm modifyOtherKeys
+//! (`CSI > 4 ; Pv m`, `CSI > 4 n`), RIS, `CSI ? 3 J`, and the halfwidth katakana voiced
+//! sound marks U+FF9E/U+FF9F in ground state (see [`ScanEvent::HalfwidthVoicedMark`]).
 //!
 //! The scanner mirrors vte's framing rules closely enough that it agrees with
 //! the core about where each sequence ends: OSC ends on BEL, ESC, CAN or SUB;
@@ -31,6 +33,16 @@ pub(super) enum ScanEvent {
     WorkingDirectory(Vec<u8>),
     /// RIS (ESC c).
     FullReset,
+    /// CSI ? 3 J: the DECSED spelling of ED3 (erase scrollback). vte only
+    /// dispatches `CSI 3 J`, but programs (Droid among them) emit this form.
+    EraseScrollback,
+    /// xterm modifyOtherKeys level (0, 1 or 2) set by `CSI > 4 ; Pv m`,
+    /// `CSI > m` or `CSI > 4 n`.
+    ModifyOtherKeys(u8),
+    /// U+FF9E or U+FF9F printed in ground state; `end` is just past its last
+    /// UTF-8 byte. unicode-width gives these Grapheme_Extend marks width 0, but
+    /// wcwidth (and so the programs in the pane) gives them a column of their own.
+    HalfwidthVoicedMark(char),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,14 +70,16 @@ enum State {
 pub(super) struct Scanner {
     state: State,
     utf8_remaining: u8,
+    utf8_codepoint: u32,
     buffer: Vec<u8>,
     overflow: bool,
 }
 
 /// Private modes whose DECSET/DECRST the adapter must observe. 9, 1016, 2031
 /// and 2048 are modelled by the adapter; 1000/1002/1003 cancel X10 (9), and
-/// 1005/1006 cancel SGR-pixels (1016), mirroring xterm's exclusive groups.
-const TRACKED_PRIVATE_MODES: &[u16] = &[9, 1000, 1002, 1003, 1005, 1006, 1016, 2031, 2048];
+/// 1005 cancels SGR-pixels (1016). Re-asserting 1006 deliberately does not:
+/// apps resend it after 1016 and still expect pixel coordinates.
+const TRACKED_PRIVATE_MODES: &[u16] = &[9, 1000, 1002, 1003, 1005, 1016, 2031, 2048];
 
 impl Scanner {
     pub(super) fn scan(&mut self, bytes: &[u8]) -> Vec<ScannedEvent> {
@@ -89,9 +103,22 @@ impl Scanner {
         events
     }
 
+    /// How many trailing bytes of the input scanned so far are the start of a
+    /// U+FF9E/U+FF9F (`EF` or `EF BE`) still waiting for its final byte.
+    pub(super) fn voiced_mark_prefix_len(&self) -> usize {
+        if self.state != State::Ground {
+            return 0;
+        }
+        match (self.utf8_remaining, self.utf8_codepoint) {
+            (2, 0x0f) => 1,
+            (1, 0x3fe) => 2,
+            _ => 0,
+        }
+    }
+
     fn step(&mut self, byte: u8, index: usize, events: &mut Vec<ScannedEvent>) {
         match self.state {
-            State::Ground => self.ground(byte),
+            State::Ground => self.ground(byte, index, events),
             State::Escape => self.escape(byte, index, events),
             State::EscapeIntermediate => match byte {
                 0x1b => self.enter(State::Escape),
@@ -198,7 +225,7 @@ impl Scanner {
         }
     }
 
-    fn ground(&mut self, byte: u8) {
+    fn ground(&mut self, byte: u8, index: usize, events: &mut Vec<ScannedEvent>) {
         if byte < 0x80 {
             self.utf8_remaining = 0;
             if byte == 0x1b {
@@ -208,13 +235,22 @@ impl Scanner {
         }
         if self.utf8_remaining > 0 && (0x80..=0xbf).contains(&byte) {
             self.utf8_remaining -= 1;
+            self.utf8_codepoint = (self.utf8_codepoint << 6) | u32::from(byte & 0x3f);
+            if self.utf8_remaining == 0
+                && let Some(mark) = halfwidth_voiced_mark(self.utf8_codepoint)
+            {
+                events.push(ScannedEvent {
+                    end: index + 1,
+                    event: ScanEvent::HalfwidthVoicedMark(mark),
+                });
+            }
             return;
         }
-        self.utf8_remaining = match byte {
-            0xc2..=0xdf => 1,
-            0xe0..=0xef => 2,
-            0xf0..=0xf4 => 3,
-            _ => 0,
+        (self.utf8_remaining, self.utf8_codepoint) = match byte {
+            0xc2..=0xdf => (1, u32::from(byte & 0x1f)),
+            0xe0..=0xef => (2, u32::from(byte & 0x0f)),
+            0xf0..=0xf4 => (3, u32::from(byte & 0x07)),
+            _ => (0, 0),
         };
         if byte == 0x90 {
             // Legacy raw C1 DCS. The core ignores it, but XTGETTCAP clients
@@ -262,7 +298,10 @@ impl Scanner {
                 let Some(modes) = params.strip_prefix(b"?") else {
                     return;
                 };
-                if modes.iter().any(|byte| !byte.is_ascii_digit() && *byte != b';') {
+                if modes
+                    .iter()
+                    .any(|byte| !byte.is_ascii_digit() && *byte != b';')
+                {
                     return;
                 }
                 for mode in modes.split(|byte| *byte == b';') {
@@ -284,8 +323,33 @@ impl Scanner {
                 end: index + 1,
                 event: ScanEvent::ColorSchemeQuery,
             }),
+            b'J' if params == b"?3" => events.push(ScannedEvent {
+                end: index + 1,
+                event: ScanEvent::EraseScrollback,
+            }),
+            // CSI > 4 n: modifyOtherKeys back to its default (off).
+            b'n' if params
+                .strip_prefix(b">")
+                .is_some_and(|resource| parse_decimal(resource) == Some(4)) =>
+            {
+                events.push(ScannedEvent {
+                    end: index + 1,
+                    event: ScanEvent::ModifyOtherKeys(0),
+                });
+            }
+            b'm' => {
+                if let Some(level) = params.strip_prefix(b">").and_then(modify_other_keys_level) {
+                    events.push(ScannedEvent {
+                        end: index + 1,
+                        event: ScanEvent::ModifyOtherKeys(level),
+                    });
+                }
+            }
             b't' => {
-                let first = params.split(|byte| *byte == b';').next().unwrap_or_default();
+                let first = params
+                    .split(|byte| *byte == b';')
+                    .next()
+                    .unwrap_or_default();
                 if first.iter().all(u8::is_ascii_digit) && parse_decimal(first) == Some(16) {
                     events.push(ScannedEvent {
                         end: index + 1,
@@ -330,6 +394,28 @@ impl Scanner {
             });
         }
     }
+}
+
+/// The modifyOtherKeys level set by `CSI > params m` (XTMODKEYS); `None` when
+/// the sequence addresses another resource. A bare `CSI > m` resets it.
+fn modify_other_keys_level(params: &[u8]) -> Option<u8> {
+    if params.is_empty() {
+        return Some(0);
+    }
+    let mut parts = params.split(|byte| *byte == b';');
+    let resource = parts.next().unwrap_or_default();
+    let value = parts.next();
+    if parts.next().is_some() || parse_decimal(resource) != Some(4) {
+        return None;
+    }
+    let level = value.and_then(parse_decimal).unwrap_or(0).min(2);
+    Some(u8::try_from(level).unwrap_or(2))
+}
+
+fn halfwidth_voiced_mark(codepoint: u32) -> Option<char> {
+    matches!(codepoint, 0xff9e | 0xff9f)
+        .then(|| char::from_u32(codepoint))
+        .flatten()
 }
 
 fn parse_decimal(bytes: &[u8]) -> Option<u16> {
@@ -429,7 +515,11 @@ mod tests {
     fn assert_chunk_equivalence(bytes: &[u8]) {
         let expected = scan_chunks(&[bytes]);
         let one_byte_chunks: Vec<_> = bytes.chunks(1).collect();
-        assert_eq!(scan_chunks(&one_byte_chunks), expected, "bytewise: {bytes:?}");
+        assert_eq!(
+            scan_chunks(&one_byte_chunks),
+            expected,
+            "bytewise: {bytes:?}"
+        );
         for split in 0..=bytes.len() {
             assert_eq!(
                 scan_chunks(&[&bytes[..split], &bytes[split..]]),
@@ -561,6 +651,54 @@ mod tests {
             ]
         );
         assert_chunk_equivalence(bytes);
+    }
+
+    #[test]
+    fn modify_other_keys_levels_are_reported() {
+        let bytes: &[u8] =
+            b"\x1b[>4;1m\x1b[>4;02m\x1b[>4;9m\x1b[>4m\x1b[>4;2m\x1b[>m\x1b[>4;2m\x1b[>04n";
+        let levels: Vec<_> = scan_chunks(&[bytes])
+            .into_iter()
+            .map(|event| event.event)
+            .collect();
+        assert_eq!(
+            levels,
+            [1, 2, 2, 0, 2, 0, 2, 0]
+                .into_iter()
+                .map(ScanEvent::ModifyOtherKeys)
+                .collect::<Vec<_>>()
+        );
+        assert_chunk_equivalence(bytes);
+    }
+
+    #[test]
+    fn unrelated_modifier_sequences_leave_modify_other_keys_alone() {
+        // SGR, other XTMODKEYS resources, other DSRs and a three-part form.
+        let bytes: &[u8] = b"\x1b[4;2m\x1b[>1;2m\x1b[4n\x1b[>1n\x1b[>4;2n\x1b[>4;2;1m";
+        assert!(scan_chunks(&[bytes]).is_empty());
+    }
+
+    #[test]
+    fn halfwidth_voiced_marks_are_reported_only_in_ground_text() {
+        let text = "\u{ff76}\u{ff9e}\u{ff8a}\u{ff9f}\u{ff9d}";
+        let mut bytes = text.as_bytes().to_vec();
+        // Inside an OSC the mark is payload, not text.
+        bytes.extend_from_slice("\x1b]0;\u{ff9e}\x07".as_bytes());
+        let events = scan_chunks(&[bytes.as_slice()]);
+        assert_eq!(
+            events,
+            vec![
+                ScannedEvent {
+                    end: 6,
+                    event: ScanEvent::HalfwidthVoicedMark('\u{ff9e}')
+                },
+                ScannedEvent {
+                    end: 12,
+                    event: ScanEvent::HalfwidthVoicedMark('\u{ff9f}')
+                },
+            ]
+        );
+        assert_chunk_equivalence(&bytes);
     }
 
     #[test]

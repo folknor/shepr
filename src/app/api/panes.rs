@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 
 use crate::api::schema::{
@@ -16,15 +18,16 @@ use crate::api::schema::{
     PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams, PaneZoomReason,
     PaneZoomResult, ResponseResult,
 };
-use crate::app::actions::{PaneZoomCommand, PaneZoomNoopReason};
 use crate::app::App;
 #[cfg(test)]
 use crate::app::Mode;
-use crate::layout::{find_in_direction, NavDirection, PaneId};
+use crate::app::actions::{PaneZoomCommand, PaneZoomNoopReason};
+use crate::layout::{NavDirection, PaneId, find_in_direction};
 
 use super::super::api_helpers::{
-    detect_state_from_api, encode_api_keys, normalize_metadata_source, normalize_metadata_tokens,
-    normalize_metadata_ttl, normalize_reported_agent_label, MAX_METADATA_TOKEN_KEYS_PER_RESOURCE,
+    MAX_METADATA_TOKEN_KEYS_PER_RESOURCE, detect_state_from_api, encode_api_keys,
+    normalize_metadata_source, normalize_metadata_tokens, normalize_metadata_ttl,
+    normalize_reported_agent_label,
 };
 #[cfg(test)]
 use super::super::api_helpers::{METADATA_SOURCE_MAX_CHARS, METADATA_TTL_MAX_MS};
@@ -136,14 +139,14 @@ impl App {
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
 
-    pub(super) fn handle_pane_list(&mut self, id: String, params: PaneListParams) -> String {
+    pub(super) fn handle_pane_list(&mut self, id: String, params: &PaneListParams) -> String {
         match self.collect_panes_for_workspace(params.workspace_id.as_deref()) {
             Ok(panes) => encode_success(id, ResponseResult::PaneList { panes }),
             Err((code, message)) => encode_error(id, &code, message),
         }
     }
 
-    pub(super) fn handle_pane_current(&mut self, id: String, params: PaneCurrentParams) -> String {
+    pub(super) fn handle_pane_current(&mut self, id: String, params: &PaneCurrentParams) -> String {
         let target = match params.caller_pane_id.as_deref() {
             Some(caller_pane_id) => self.parse_pane_id(caller_pane_id),
             None => self.resolve_optional_pane(None),
@@ -158,7 +161,7 @@ impl App {
         encode_success(id, ResponseResult::PaneCurrent { pane })
     }
 
-    pub(super) fn handle_pane_get(&mut self, id: String, target: PaneTarget) -> String {
+    pub(super) fn handle_pane_get(&mut self, id: String, target: &PaneTarget) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
@@ -169,7 +172,7 @@ impl App {
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
 
-    pub(super) fn handle_pane_clear(&mut self, id: String, target: PaneTarget) -> String {
+    pub(super) fn handle_pane_clear(&mut self, id: String, target: &PaneTarget) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
@@ -181,11 +184,11 @@ impl App {
         };
         match runtime.clear_screen() {
             Ok(()) => encode_success(id, ResponseResult::Ok {}),
-            Err(err) => encode_error(id, "pane_clear_failed", err.to_string()),
+            Err(err) => encode_error(id, "pane_clear_failed", err),
         }
     }
 
-    pub(super) fn handle_pane_scroll(&mut self, id: String, params: PaneScrollParams) -> String {
+    pub(super) fn handle_pane_scroll(&mut self, id: String, params: &PaneScrollParams) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -463,7 +466,7 @@ impl App {
         )
     }
 
-    pub(super) fn handle_pane_focus(&mut self, id: String, target: PaneTarget) -> String {
+    pub(super) fn handle_pane_focus(&mut self, id: String, target: &PaneTarget) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
@@ -481,7 +484,7 @@ impl App {
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
 
-    pub(super) fn handle_pane_layout(&mut self, id: String, params: PaneLayoutParams) -> String {
+    pub(super) fn handle_pane_layout(&mut self, id: String, params: &PaneLayoutParams) -> String {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
@@ -501,7 +504,7 @@ impl App {
     pub(super) fn handle_pane_process_info(
         &mut self,
         id: String,
-        params: PaneProcessInfoParams,
+        params: &PaneProcessInfoParams,
     ) -> String {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
@@ -549,7 +552,7 @@ impl App {
     pub(super) fn handle_pane_neighbor(
         &mut self,
         id: String,
-        params: PaneNeighborParams,
+        params: &PaneNeighborParams,
     ) -> String {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
@@ -583,7 +586,7 @@ impl App {
         )
     }
 
-    pub(super) fn handle_pane_edges(&mut self, id: String, params: PaneEdgesParams) -> String {
+    pub(super) fn handle_pane_edges(&mut self, id: String, params: &PaneEdgesParams) -> String {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
@@ -638,7 +641,7 @@ impl App {
     pub(super) fn handle_pane_focus_direction(
         &mut self,
         id: String,
-        params: PaneFocusDirectionParams,
+        params: &PaneFocusDirectionParams,
     ) -> String {
         let Some((ws_idx, source_pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref())
         else {
@@ -692,7 +695,7 @@ impl App {
         )
     }
 
-    pub(super) fn handle_pane_resize(&mut self, id: String, params: PaneResizeParams) -> String {
+    pub(super) fn handle_pane_resize(&mut self, id: String, params: &PaneResizeParams) -> String {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
@@ -846,24 +849,24 @@ impl App {
         };
 
         let mut changed = false;
-        if reason.is_none() {
-            if let Some(target_pane_id) = target_pane_id {
-                let previous_focus = self.state.current_pane_focus_target();
-                if let Some(tab) = self
-                    .state
-                    .workspaces
-                    .get_mut(ws_idx)
-                    .and_then(|ws| ws.tabs.get_mut(tab_idx))
-                {
-                    changed = tab.layout.swap_panes(source_pane_id, target_pane_id);
-                    tab.layout.focus_pane(source_pane_id);
-                    if changed {
-                        self.state.switch_workspace_tab(ws_idx, tab_idx);
-                        self.state
-                            .record_pane_focus_change(previous_focus, ws_idx, source_pane_id);
-                        self.state.mark_session_dirty();
-                        self.schedule_session_save();
-                    }
+        if reason.is_none()
+            && let Some(target_pane_id) = target_pane_id
+        {
+            let previous_focus = self.state.current_pane_focus_target();
+            if let Some(tab) = self
+                .state
+                .workspaces
+                .get_mut(ws_idx)
+                .and_then(|ws| ws.tabs.get_mut(tab_idx))
+            {
+                changed = tab.layout.swap_panes(source_pane_id, target_pane_id);
+                tab.layout.focus_pane(source_pane_id);
+                if changed {
+                    self.state.switch_workspace_tab(ws_idx, tab_idx);
+                    self.state
+                        .record_pane_focus_change(previous_focus, ws_idx, source_pane_id);
+                    self.state.mark_session_dirty();
+                    self.schedule_session_save();
                 }
             }
         }
@@ -1175,7 +1178,7 @@ impl App {
                     self.recover_failed_pane_move(recovery_context, moved);
                     return encode_error(id, "pane_move_failed", "target tab disappeared");
                 };
-                let direction = split_direction_to_layout(split);
+                let direction = split_direction_to_layout(&split);
                 let moved_pane_id = match self.state.workspaces[target_ws_idx]
                     .insert_moved_pane_into_tab(
                         target_tab_idx,
@@ -1211,8 +1214,8 @@ impl App {
                         moved,
                         label,
                         self.event_tx.clone(),
-                        self.render_notify.clone(),
-                        self.render_dirty.clone(),
+                        Arc::clone(&self.render_notify),
+                        Arc::clone(&self.render_dirty),
                     );
                 created_tab = true;
                 (target_ws_idx, target_tab_idx, moved_pane_id)
@@ -1228,11 +1231,11 @@ impl App {
                 let workspace = crate::workspace::Workspace::from_existing_pane(
                     label,
                     tab_label,
-                    identity_cwd,
+                    &identity_cwd,
                     moved,
                     self.event_tx.clone(),
-                    self.render_notify.clone(),
-                    self.render_dirty.clone(),
+                    Arc::clone(&self.render_notify),
+                    Arc::clone(&self.render_dirty),
                 );
                 self.state.workspaces.push(workspace);
                 let target_ws_idx = self.state.workspaces.len() - 1;
@@ -1350,25 +1353,25 @@ impl App {
                 moved,
                 context.previous_tab_label,
                 self.event_tx.clone(),
-                self.render_notify.clone(),
-                self.render_dirty.clone(),
+                Arc::clone(&self.render_notify),
+                Arc::clone(&self.render_dirty),
             );
         } else {
             let mut workspace = crate::workspace::Workspace::from_existing_pane(
                 context.previous_workspace_label,
                 context.previous_tab_label,
-                context.identity_cwd,
+                &context.identity_cwd,
                 moved,
                 self.event_tx.clone(),
-                self.render_notify.clone(),
-                self.render_dirty.clone(),
+                Arc::clone(&self.render_notify),
+                Arc::clone(&self.render_dirty),
             );
             workspace.id = context.previous_workspace_id;
             let insert_idx = context.source_ws_idx.min(self.state.workspaces.len());
-            if let Some(active) = self.state.active {
-                if active >= insert_idx {
-                    self.state.active = Some(active + 1);
-                }
+            if let Some(active) = self.state.active
+                && active >= insert_idx
+            {
+                self.state.active = Some(active + 1);
             }
             if self.state.selected >= insert_idx && !self.state.workspaces.is_empty() {
                 self.state.selected += 1;
@@ -1379,7 +1382,7 @@ impl App {
         self.schedule_session_save();
     }
 
-    pub(super) fn handle_pane_zoom(&mut self, id: String, params: PaneZoomParams) -> String {
+    pub(super) fn handle_pane_zoom(&mut self, id: String, params: &PaneZoomParams) -> String {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
@@ -1436,7 +1439,7 @@ impl App {
     pub(super) fn handle_pane_input_set(
         &mut self,
         id: String,
-        params: PaneInputSetParams,
+        params: &PaneInputSetParams,
     ) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
@@ -1484,7 +1487,7 @@ impl App {
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
 
-    pub(super) fn handle_pane_read(&mut self, id: String, params: PaneReadParams) -> String {
+    pub(super) fn handle_pane_read(&mut self, id: String, params: &PaneReadParams) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -1508,9 +1511,9 @@ impl App {
             params.format,
             params.lines,
         );
-        let tab_id = self
-            .public_tab_id(ws_idx, tab_idx)
-            .unwrap_or_else(|| crate::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1));
+        let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
+            crate::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
+        });
 
         encode_success(
             id,
@@ -1581,7 +1584,7 @@ impl App {
             agent_label,
             seq: params.seq,
             session_start_source: crate::agent_resume::normalize_session_start_source(
-                params.session_start_source,
+                params.session_start_source.as_deref(),
             ),
         });
 
@@ -1603,7 +1606,7 @@ impl App {
             },
             None => None,
         };
-        let source = match normalize_metadata_source(params.source) {
+        let source = match normalize_metadata_source(&params.source) {
             Ok(source) => source,
             Err(message) => return encode_error(id, "invalid_metadata_source", message),
         };
@@ -1625,7 +1628,7 @@ impl App {
         let title = normalize_presentation_text(params.title);
         let display_agent = normalize_presentation_text(params.display_agent);
         let applies_to_source = match params.applies_to_source {
-            Some(applies_to_source) => match normalize_metadata_source(applies_to_source) {
+            Some(ref applies_to_source) => match normalize_metadata_source(applies_to_source) {
                 Ok(applies_to_source) => Some(applies_to_source),
                 Err(message) => return encode_error(id, "invalid_metadata_source", message),
             },
@@ -1698,18 +1701,17 @@ impl App {
             agent_label.as_deref(),
             applies_to_source.as_deref(),
         );
-        if let Some(tokens) = tokens.as_ref() {
-            if terminal.metadata_tokens.key_count_after_patch(tokens)
+        if let Some(tokens) = tokens.as_ref()
+            && terminal.metadata_tokens.key_count_after_patch(tokens)
                 > MAX_METADATA_TOKEN_KEYS_PER_RESOURCE
-            {
-                return encode_error(
-                    id,
-                    "metadata_token_limit",
-                    format!(
-                        "pane metadata may contain at most {MAX_METADATA_TOKEN_KEYS_PER_RESOURCE} tokens"
-                    ),
-                );
-            }
+        {
+            return encode_error(
+                id,
+                "metadata_token_limit",
+                format!(
+                    "pane metadata may contain at most {MAX_METADATA_TOKEN_KEYS_PER_RESOURCE} tokens"
+                ),
+            );
         }
         match terminal.accept_metadata_report(&source, params.seq, tokens.is_some(), metadata_agent)
         {
@@ -1820,7 +1822,7 @@ impl App {
     pub(super) fn handle_pane_send_input(
         &mut self,
         id: String,
-        params: PaneSendInputParams,
+        params: &PaneSendInputParams,
     ) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
@@ -1843,8 +1845,8 @@ impl App {
         encode_success(id, ResponseResult::Ok {})
     }
 
-    pub(super) fn handle_pane_close(&mut self, id: String, target: PaneTarget) -> String {
-        match self.close_pane(id.clone(), &target) {
+    pub(super) fn handle_pane_close(&mut self, id: String, target: &PaneTarget) -> String {
+        match self.close_pane(id.clone(), target) {
             Ok(()) => encode_success(id, ResponseResult::Ok {}),
             Err(response) => response,
         }
@@ -1909,7 +1911,7 @@ impl App {
     pub(super) fn handle_pane_send_keys(
         &mut self,
         id: String,
-        params: PaneSendKeysParams,
+        params: &PaneSendKeysParams,
     ) -> String {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
@@ -2003,7 +2005,7 @@ impl App {
         let area = self.state.view.terminal_area;
         let focused_pane_id = self.public_pane_id(ws_idx, tab.layout.focused())?;
         let panes = crate::ui::apply_pane_chrome(
-            tab.layout.panes(area),
+            &tab.layout.panes(area),
             self.state.pane_borders,
             self.state.pane_gaps,
             self.state.pane_outer_borders,
@@ -2154,7 +2156,7 @@ fn encode_unchanged_pane_move(
 }
 
 fn split_direction_to_layout(
-    direction: crate::api::schema::SplitDirection,
+    direction: &crate::api::schema::SplitDirection,
 ) -> ratatui::layout::Direction {
     match direction {
         crate::api::schema::SplitDirection::Right => ratatui::layout::Direction::Horizontal,
@@ -2223,7 +2225,7 @@ mod tests {
 
         let response = app.handle_pane_input_set(
             "req".into(),
-            PaneInputSetParams {
+            &PaneInputSetParams {
                 pane_id: public_pane_id,
                 right_click: crate::api::schema::PaneRightClickTarget::Pane,
             },
@@ -2315,10 +2317,22 @@ mod tests {
         let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
         assert_eq!(success.id, "req");
         assert_eq!(success.result, ResponseResult::Ok {});
-        assert_eq!(rx.try_recv().expect("test precondition"), bytes::Bytes::from(vec![0x08]));
-        assert_eq!(rx.try_recv().expect("test precondition"), bytes::Bytes::from(vec![0x0a]));
-        assert_eq!(rx.try_recv().expect("test precondition"), bytes::Bytes::from(vec![0x0b]));
-        assert_eq!(rx.try_recv().expect("test precondition"), bytes::Bytes::from(vec![0x0c]));
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            bytes::Bytes::from(vec![0x08])
+        );
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            bytes::Bytes::from(vec![0x0a])
+        );
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            bytes::Bytes::from(vec![0x0b])
+        );
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            bytes::Bytes::from(vec![0x0c])
+        );
         assert!(rx.try_recv().is_err());
     }
 
@@ -2336,7 +2350,10 @@ mod tests {
 
         let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
         assert_eq!(success.result, ResponseResult::Ok {});
-        assert_eq!(rx.try_recv().expect("test precondition"), bytes::Bytes::from_static(b"\x1b[Z"));
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            bytes::Bytes::from_static(b"\x1b[Z")
+        );
         assert!(rx.try_recv().is_err());
     }
 
@@ -2357,7 +2374,13 @@ mod tests {
             .state
             .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
             .expect("test precondition");
-        assert_eq!(runtime.scroll_metrics().expect("test precondition").max_offset_from_bottom, 0);
+        assert_eq!(
+            runtime
+                .scroll_metrics()
+                .expect("test precondition")
+                .max_offset_from_bottom,
+            0
+        );
     }
 
     #[tokio::test]
@@ -2371,7 +2394,7 @@ mod tests {
 
         let response = app.handle_pane_get(
             "req".into(),
-            PaneTarget {
+            &PaneTarget {
                 pane_id: public_pane_id,
             },
         );
@@ -2400,7 +2423,7 @@ mod tests {
 
         let response = app.handle_pane_scroll(
             "req".into(),
-            PaneScrollParams {
+            &PaneScrollParams {
                 pane_id: public_pane_id,
                 offset_from_bottom: u64::MAX,
             },
@@ -2444,7 +2467,9 @@ mod tests {
             content_revision: Some(revision),
         };
         assert_eq!(
-            app.pane_selection_text(&params).expect_err("test precondition").0,
+            app.pane_selection_text(&params)
+                .expect_err("test precondition")
+                .0,
             "stale_content"
         );
         params.content_revision = None;
@@ -2652,7 +2677,7 @@ mod tests {
 
         let response = app.handle_pane_read(
             "req".into(),
-            PaneReadParams {
+            &PaneReadParams {
                 pane_id: public_pane_id,
                 source: crate::api::schema::ReadSource::Recent,
                 lines: Some(2),
@@ -2684,9 +2709,18 @@ mod tests {
         let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
         assert_eq!(success.id, "req");
         assert_eq!(success.result, ResponseResult::Ok {});
-        assert_eq!(rx.try_recv().expect("test precondition"), bytes::Bytes::from(vec![0x03]));
-        assert_eq!(rx.try_recv().expect("test precondition"), bytes::Bytes::from(vec![0x03]));
-        assert_eq!(rx.try_recv().expect("test precondition"), bytes::Bytes::from(vec![0x03]));
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            bytes::Bytes::from(vec![0x03])
+        );
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            bytes::Bytes::from(vec![0x03])
+        );
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            bytes::Bytes::from(vec![0x03])
+        );
         assert!(rx.try_recv().is_err());
     }
 
@@ -2734,7 +2768,10 @@ mod tests {
         let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
         assert_eq!(success.id, "req");
         assert_eq!(success.result, ResponseResult::Ok {});
-        assert_eq!(rx.try_recv().expect("test precondition"), bytes::Bytes::from_static(b"+"));
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            bytes::Bytes::from_static(b"+")
+        );
         assert!(rx.try_recv().is_err());
     }
 
@@ -2763,7 +2800,10 @@ mod tests {
         let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
         assert_eq!(success.id, "req");
         assert_eq!(success.result, ResponseResult::Ok {});
-        assert_eq!(rx.try_recv().expect("test precondition"), bytes::Bytes::from_static(b"?"));
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            bytes::Bytes::from_static(b"?")
+        );
         assert!(rx.try_recv().is_err());
     }
 
@@ -2809,7 +2849,10 @@ mod tests {
         let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
         assert_eq!(success.id, "req");
         assert_eq!(success.result, ResponseResult::Ok {});
-        assert_eq!(rx.try_recv().expect("test precondition"), bytes::Bytes::from(vec![0x0a]));
+        assert_eq!(
+            rx.try_recv().expect("test precondition"),
+            bytes::Bytes::from(vec![0x0a])
+        );
         assert!(rx.try_recv().is_err());
     }
 
@@ -2891,7 +2934,7 @@ mod tests {
 
         let response = app.handle_pane_close(
             "req".into(),
-            PaneTarget {
+            &PaneTarget {
                 pane_id: public_pane_id,
             },
         );
@@ -2915,7 +2958,7 @@ mod tests {
 
         let response = app.handle_pane_current(
             "req".into(),
-            crate::api::schema::PaneCurrentParams {
+            &crate::api::schema::PaneCurrentParams {
                 caller_pane_id: Some(right_public.clone()),
             },
         );
@@ -2941,7 +2984,7 @@ mod tests {
 
         let response = app.handle_pane_current(
             "req".into(),
-            crate::api::schema::PaneCurrentParams::default(),
+            &crate::api::schema::PaneCurrentParams::default(),
         );
 
         let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
@@ -2980,7 +3023,7 @@ mod tests {
 
         let response = app.handle_pane_current(
             "req".into(),
-            crate::api::schema::PaneCurrentParams {
+            &crate::api::schema::PaneCurrentParams {
                 caller_pane_id: Some("missing".into()),
             },
         );
@@ -2995,7 +3038,7 @@ mod tests {
 
         let response = app.handle_pane_current(
             "req".into(),
-            crate::api::schema::PaneCurrentParams::default(),
+            &crate::api::schema::PaneCurrentParams::default(),
         );
 
         assert_eq!(metadata_error_code(&response), "pane_not_found");
@@ -3248,10 +3291,12 @@ mod tests {
         assert_eq!(move_result.previous_workspace_id, previous_workspace_id);
         assert_eq!(move_result.closed_workspace_id, Some(previous_workspace_id));
         assert_ne!(move_result.pane.pane_id, move_result.previous_pane_id);
-        assert!(move_result
-            .pane
-            .pane_id
-            .starts_with(&format!("{target_workspace_id}:p")));
+        assert!(
+            move_result
+                .pane
+                .pane_id
+                .starts_with(&format!("{target_workspace_id}:p"))
+        );
         assert_eq!(move_result.pane.workspace_id, target_workspace_id);
         assert_eq!(move_result.pane.tab_id, target_tab_id);
         assert_eq!(move_result.pane.terminal_id, source_terminal.to_string());
@@ -3587,7 +3632,8 @@ mod tests {
             },
         );
 
-        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).expect("test precondition");
+        let error: crate::api::schema::ErrorResponse =
+            serde_json::from_str(&response).expect("test precondition");
         assert_eq!(error.error.code, "target_pane_not_found");
         assert_eq!(app.state.workspaces[0].tabs.len(), 3);
     }
@@ -3607,8 +3653,12 @@ mod tests {
         seed_terminal_states(&mut app);
         let source_public = app.public_pane_id(0, source).expect("test precondition");
         let target_tab_public = app.public_tab_id(0, target_tab).expect("test precondition");
-        let explicit_target_public = app.public_pane_id(0, explicit_target).expect("test precondition");
-        let previously_focused_public = app.public_pane_id(0, previously_focused).expect("test precondition");
+        let explicit_target_public = app
+            .public_pane_id(0, explicit_target)
+            .expect("test precondition");
+        let previously_focused_public = app
+            .public_pane_id(0, previously_focused)
+            .expect("test precondition");
 
         let response = app.handle_pane_move(
             "req".into(),
@@ -3725,7 +3775,7 @@ mod tests {
         app.state.workspaces[0].tabs[0].layout.focus_pane(root);
         let root_public = app.public_pane_id(0, root).expect("test precondition");
 
-        let response = app.handle_pane_zoom("req".into(), PaneZoomParams::default());
+        let response = app.handle_pane_zoom("req".into(), &PaneZoomParams::default());
 
         let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
         let ResponseResult::PaneZoom { zoom } = success.result else {
@@ -3745,7 +3795,7 @@ mod tests {
                 if layout.tab_id == app.public_tab_id(0, 0).expect("test precondition") && layout.zoomed
         ));
 
-        let response = app.handle_pane_zoom("req".into(), PaneZoomParams::default());
+        let response = app.handle_pane_zoom("req".into(), &PaneZoomParams::default());
         let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
         let ResponseResult::PaneZoom { zoom } = success.result else {
             panic!("expected pane zoom response");
@@ -3772,7 +3822,7 @@ mod tests {
 
         let response = app.handle_pane_zoom(
             "req".into(),
-            PaneZoomParams {
+            &PaneZoomParams {
                 pane_id: Some(root_public.clone()),
                 mode: PaneZoomMode::Toggle,
             },
@@ -3803,7 +3853,7 @@ mod tests {
 
         let response = app.handle_pane_zoom(
             "req".into(),
-            PaneZoomParams {
+            &PaneZoomParams {
                 pane_id: Some(root_public.clone()),
                 mode: PaneZoomMode::On,
             },
@@ -3819,7 +3869,7 @@ mod tests {
 
         let response = app.handle_pane_zoom(
             "req".into(),
-            PaneZoomParams {
+            &PaneZoomParams {
                 pane_id: Some(root_public.clone()),
                 mode: PaneZoomMode::On,
             },
@@ -3836,7 +3886,7 @@ mod tests {
 
         let response = app.handle_pane_zoom(
             "req".into(),
-            PaneZoomParams {
+            &PaneZoomParams {
                 pane_id: Some(root_public),
                 mode: PaneZoomMode::Off,
             },
@@ -3852,7 +3902,7 @@ mod tests {
 
         let response = app.handle_pane_zoom(
             "req".into(),
-            PaneZoomParams {
+            &PaneZoomParams {
                 pane_id: None,
                 mode: PaneZoomMode::Off,
             },
@@ -3881,7 +3931,7 @@ mod tests {
 
         let response = app.handle_pane_zoom(
             "req".into(),
-            PaneZoomParams {
+            &PaneZoomParams {
                 pane_id: Some(right_public),
                 mode: PaneZoomMode::On,
             },
@@ -3918,7 +3968,8 @@ mod tests {
         assert!(encoded.contains("\"method\":\"pane.zoom\""));
         assert!(encoded.contains("\"mode\":\"on\""));
 
-        let decoded: crate::api::schema::Request = serde_json::from_str(&encoded).expect("test precondition");
+        let decoded: crate::api::schema::Request =
+            serde_json::from_str(&encoded).expect("test precondition");
         let crate::api::schema::Method::PaneZoom(params) = decoded.method else {
             panic!("expected pane zoom request");
         };
@@ -3942,7 +3993,7 @@ mod tests {
 
         let response = app.handle_pane_layout(
             "req".into(),
-            crate::api::schema::PaneLayoutParams {
+            &crate::api::schema::PaneLayoutParams {
                 pane_id: Some(root_public.clone()),
             },
         );
@@ -3977,7 +4028,7 @@ mod tests {
 
         let response = app.handle_pane_neighbor(
             "req".into(),
-            crate::api::schema::PaneNeighborParams {
+            &crate::api::schema::PaneNeighborParams {
                 pane_id: Some(root_public.clone()),
                 direction: PaneDirection::Right,
             },
@@ -4007,7 +4058,7 @@ mod tests {
 
         let response = app.handle_pane_edges(
             "req".into(),
-            crate::api::schema::PaneEdgesParams {
+            &crate::api::schema::PaneEdgesParams {
                 pane_id: Some(right_public.clone()),
             },
         );
@@ -4039,7 +4090,7 @@ mod tests {
 
         let response = app.handle_pane_resize(
             "req".into(),
-            crate::api::schema::PaneResizeParams {
+            &crate::api::schema::PaneResizeParams {
                 pane_id: Some(root_public.clone()),
                 direction: PaneDirection::Right,
                 amount: Some(0.1),
@@ -4081,7 +4132,7 @@ mod tests {
 
         let response = app.handle_pane_focus_direction(
             "req".into(),
-            crate::api::schema::PaneFocusDirectionParams {
+            &crate::api::schema::PaneFocusDirectionParams {
                 pane_id: Some(root_public.clone()),
                 direction: PaneDirection::Right,
             },
@@ -4107,13 +4158,15 @@ mod tests {
         app.state.workspaces[1].switch_tab(target_tab_idx);
         let target_pane = app.state.workspaces[1].tabs[target_tab_idx].root_pane;
         app.state.ensure_test_terminals();
-        let target_public = app.public_pane_id(1, target_pane).expect("test precondition");
+        let target_public = app
+            .public_pane_id(1, target_pane)
+            .expect("test precondition");
         app.state.switch_workspace(0);
         assert_eq!(app.state.active, Some(0));
 
         let response = app.handle_pane_focus(
             "req".into(),
-            crate::api::schema::PaneTarget {
+            &crate::api::schema::PaneTarget {
                 pane_id: target_public.clone(),
             },
         );
@@ -4140,7 +4193,11 @@ mod tests {
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        app.state.terminals.get_mut(&terminal_id).expect("test precondition").state = crate::detect::AgentState::Idle;
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition")
+            .state = crate::detect::AgentState::Idle;
         app.state.workspaces[0].tabs[0]
             .panes
             .get_mut(&pane_id)
@@ -4151,7 +4208,7 @@ mod tests {
         let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
         let response = app.handle_pane_focus(
             "req".into(),
-            PaneTarget {
+            &PaneTarget {
                 pane_id: public_pane_id,
             },
         );
@@ -4169,7 +4226,7 @@ mod tests {
 
         let response = app.handle_pane_focus(
             "req".into(),
-            crate::api::schema::PaneTarget {
+            &crate::api::schema::PaneTarget {
                 pane_id: "pane_missing".into(),
             },
         );
@@ -4192,7 +4249,7 @@ mod tests {
 
         let response = app.handle_pane_focus_direction(
             "req".into(),
-            crate::api::schema::PaneFocusDirectionParams {
+            &crate::api::schema::PaneFocusDirectionParams {
                 pane_id: Some(root_public.clone()),
                 direction: PaneDirection::Left,
             },
@@ -4238,7 +4295,8 @@ mod tests {
                 id: "set".into(),
                 method: crate::api::schema::Method::PaneReportMetadata(params),
             });
-            let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+            let success: SuccessResponse =
+                serde_json::from_str(&response).expect("test precondition");
             assert_eq!(success.result, ResponseResult::Ok {});
 
             let response = app.handle_api_request(crate::api::schema::Request {
@@ -4247,7 +4305,8 @@ mod tests {
                     pane_id: pane_id.clone(),
                 }),
             });
-            let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+            let success: SuccessResponse =
+                serde_json::from_str(&response).expect("test precondition");
             let ResponseResult::PaneInfo { pane } = success.result else {
                 panic!("expected pane info");
             };
@@ -4313,10 +4372,12 @@ mod tests {
             .expect("test precondition")
             .attached_terminal_id
             .clone();
-        assert!(app.state.terminals[&terminal_id]
-            .metadata_tokens
-            .values()
-            .is_empty());
+        assert!(
+            app.state.terminals[&terminal_id]
+                .metadata_tokens
+                .values()
+                .is_empty()
+        );
     }
 
     #[test]

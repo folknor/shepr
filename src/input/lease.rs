@@ -227,18 +227,6 @@ where
         self.remove_keys(keys)
     }
 
-    pub(crate) fn remove_target(&mut self, target: &Target) -> Vec<ForwardedInputLease<Target>> {
-        let keys = self
-            .leases
-            .iter()
-            .filter_map(|(key, lease)| match lease {
-                InputLease::Forwarded(lease) if &lease.target == target => Some(*key),
-                InputLease::Forwarded(_) | InputLease::Consumed(_) => None,
-            })
-            .collect::<Vec<_>>();
-        self.remove_keys(keys)
-    }
-
     fn remove_keys(
         &mut self,
         keys: impl IntoIterator<Item = InputLeaseKey<Source>>,
@@ -249,11 +237,6 @@ where
                 Some(InputLease::Consumed(_)) | None => None,
             })
             .collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.leases.is_empty()
     }
 
     #[cfg(test)]
@@ -308,23 +291,6 @@ mod tests {
         );
         assert_eq!(leases.len(), 1);
         assert!(leases.contains(&other_source));
-    }
-
-    #[test]
-    fn remove_target_closes_only_forwarded_leases_for_that_target() {
-        let key = TerminalKey::new(KeyCode::Esc, KeyModifiers::empty());
-        let removed_key = InputLeaseKey::new(7, &key);
-        let retained_key = InputLeaseKey::new(8, &key);
-        let mut leases = Leases::default();
-        leases.insert_forwarded(removed_key, 10, key.clone());
-        leases.insert_forwarded(retained_key, 11, key.clone());
-
-        assert_eq!(
-            leases.remove_target(&10),
-            vec![ForwardedInputLease { target: 10, key }]
-        );
-        assert_eq!(leases.len(), 1);
-        assert!(leases.contains(&retained_key));
     }
 
     #[test]

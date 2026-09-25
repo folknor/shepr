@@ -93,7 +93,10 @@ pub(crate) fn extract_remote_args(
         index += 1;
     }
 
-    let remote = remote_target.map(|target| RemoteLaunch { target, keybindings });
+    let remote = remote_target.map(|target| RemoteLaunch {
+        target,
+        keybindings,
+    });
     if remote.is_none() && keybindings_seen {
         return Err("--remote-keybindings requires --remote".to_string());
     }

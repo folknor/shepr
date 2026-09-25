@@ -155,13 +155,13 @@ machine (`~/.cargo/registry` has only `vte-0.14.1`, `termwiz-0.23.3`, and some
 | File | Lines | Notes |
 |---|---|---|
 | `src/ghostty/bindings.rs` | 5376 | bindgen output; delete |
-| `src/ghostty/mod.rs` | 2981 | ~2200 safe wrapper + ~780 tests (lines 2209–2981) |
-| `src/pane/terminal.rs` | 6701 | ~3280 prod (1–3281) + ~3420 tests; 513 ghostty refs |
+| `src/ghostty/mod.rs` | 2981 | ~2200 safe wrapper + ~780 tests (lines 2209-2981) |
+| `src/pane/terminal.rs` | 6701 | ~3280 prod (1-3281) + ~3420 tests; 513 ghostty refs |
 | `src/pane/input.rs` | 350 | 100% ghostty key/mouse event glue (uses `ffi::GhosttyKey_*`) |
 | `src/pane/osc.rs` | 1433 | 3 fns take `&mut ghostty::Terminal` (write OSC 10/11 into core) |
 | `src/pane/xtgettcap.rs` | 335 | raw-C1 XTGETTCAP only; 7-bit DCS answered by ghostty today |
 | `src/pane/kitty_keyboard.rs` | 227 | shepr-side kitty flag stack + modifyOtherKeys tracker (keep) |
-| `src/pane.rs` | – | `Terminal::new` (l.1984), compression task (l.1122–1290), `encode_focus` (l.2885) |
+| `src/pane.rs` | - | `Terminal::new` (l.1984), compression task (l.1122-1290), `encode_focus` (l.2885) |
 | `build.rs` | 97 | zig build + link; SHEPR_BUILD_* rerun lines are redundant (`option_env!` is tracked by rustc) |
 | `scripts/*libghostty*` | 149 | vendoring / bindgen / build scripts |
 | `vendor/libghostty-vt` | 23 MB | + `vendor/patches/libghostty-vt/` (5 patches), `.patches.md`, `.vendor.json` |
@@ -200,7 +200,7 @@ Hot = per byte/chunk or per render × panes × clients (see AGENTS.md "multiplic
 | 15 | OSC 7 cwd | `pwd_changed` callback | `reported_cwd` | medium | per chunk |
 | 16 | OSC 52 clipboard write | clipboard callback (text/plain, ≤192 KiB, queries never answered) | `clipboard_writes` | medium | per chunk |
 | 17 | BEL | bell callback | `terminal_bells` | low | per chunk |
-| 18 | Titles / OSC 9 progress | **not from ghostty**: shepr `AgentOscStateTracker` scans raw bytes | – | – | – |
+| 18 | Titles / OSC 9 progress | **not from ghostty**: shepr `AgentOscStateTracker` scans raw bytes | - | - | - |
 | 19 | OSC 8 hyperlinks | `has_hyperlink` cell flag, `viewport_hyperlink_uri` | render dirty-patch (fallback when present), `visible_hyperlinks` | medium | per render |
 | 20 | Palette / default colours | `set_default_palette`, `default_palette`, `RenderState::colors()`, `effective_{foreground,cursor}_color`, OSC 10/11 writes | host theme application, `PaletteOverrides` (forward indexed unless redefined), OSC colour query replies | high | per render (256-entry compare) |
 | 21 | Cell style for rendering | `RowCellIter::basic_data/style/fg_color/bg_color/content_bg_color/grapheme_text_into/wide` | `render`, `ghostty_collect_dirty_patch` | core | **per cell per render** |
@@ -210,10 +210,10 @@ Hot = per byte/chunk or per render × panes × clients (see AGENTS.md "multiplic
 | 25 | Text extraction, formatter | `read_text_{viewport,screen}`, `read_ansi_{viewport,screen}(unwrap)` (Plain/VT, trim, unwrap soft wraps) | `extract_selection`, `visible_ansi`, `recent_*_snapshot`, **history persistence** (`recent_unwrapped_ansi` → `seed_history_ansi` on restore), resize replay | high | on demand |
 | 26 | Clear screen+history, keep cursor line | `clear_screen` (local patch 0006) | `PaneTerminal::clear_screen` | low | no |
 | 27 | Incremental page compression | `compression_activity`, `compress_incremental` | `TerminalCompressionTask` in pane.rs | none (ghostty-specific) | background |
-| 28 | Kitty unicode placeholder filtering | constant `0x10EEEE` | render/text | trivial | – |
-| – | Core-side selection | `RowIter::selection()` always `None` (shepr draws its own) | dirty patch | none | – |
-| – | Bounded word selection (patch 0005) | test only (`link_target_*`) | none in prod | none | – |
-| – | Kitty graphics / PNG (patch 0007) | `GLYPH_PROTOCOL=false`; not rendered | none | none | – |
+| 28 | Kitty unicode placeholder filtering | constant `0x10EEEE` | render/text | trivial | - |
+| - | Core-side selection | `RowIter::selection()` always `None` (shepr draws its own) | dirty patch | none | - |
+| - | Bounded word selection (patch 0005) | test only (`link_target_*`) | none in prod | none | - |
+| - | Kitty graphics / PNG (patch 0007) | `GLYPH_PROTOCOL=false`; not rendered | none | none | - |
 
 **Who generates query replies today:** ghostty, via `write_pty`, for DA/DSR/DECRQM/XTGETTCAP/CSI ?u/size/OSC colour/?996n. Shepr then patches the stream. It
 replaces OSC 10/11/12/4 replies with host-theme answers (`remove_last_matching_libghostty_color_reply`)
@@ -232,47 +232,47 @@ and adds raw-C1 XTGETTCAP replies (`xtgettcap.rs`). After the swap, shepr has to
 | wezterm-term *(memory)* | WezTerm's emulator | MIT | large | termwiz (pest, phf, fancy-regex, …), wezterm-* crates, image, lru | active but **not on crates.io** (git dep on monorepo, or `tattoy-wezterm-term` fork) | not recommended |
 | vt100 (atuin fork 0.19.1, read) | Small emulator for tmux-likes | MIT | 4.9k | vte 0.15, unicode-width, itoa | active (2026-09) | too thin |
 | fux-vt (read) | Bounded non-reflowing emulator | MIT | ~4k | unicode-width; edition 2024, MSRV 1.95 | active | too thin |
-| ansi-rs / nativelite-ansi (read) | Tokenizer + SGR + diff | MIT | – | none | – | not an emulator |
-| vterm-rs (read) | Toy emulator on ansi-rs | MIT | 850 | path dep `../uwidth-rs` (missing) | – | no |
-| term-wm (read) | Window manager app; uses `term-wm-vt100` fork | MIT/Apache | – | – | – | app, not lib |
-| winter-term (read) | GPU terminal; grid in `winter-render` (wgpu/glyphon/resvg), block-list in `winter-core` | MIT | – | wgpu… | – | not a lib; `grid/reflow.rs` (803 lines) is a usable reference |
-| termwiz 0.23.3 (read, in registry) | Surfaces, escape parser, input encoding | MIT | – | heavy | – | not an emulator; `KeyboardEncoding::Kitty` declared but not implemented in `encode` |
+| ansi-rs / nativelite-ansi (read) | Tokenizer + SGR + diff | MIT | - | none | - | not an emulator |
+| vterm-rs (read) | Toy emulator on ansi-rs | MIT | 850 | path dep `../uwidth-rs` (missing) | - | no |
+| term-wm (read) | Window manager app; uses `term-wm-vt100` fork | MIT/Apache | - | - | - | app, not lib |
+| winter-term (read) | GPU terminal; grid in `winter-render` (wgpu/glyphon/resvg), block-list in `winter-core` | MIT | - | wgpu… | - | not a lib; `grid/reflow.rs` (803 lines) is a usable reference |
+| termwiz 0.23.3 (read, in registry) | Surfaces, escape parser, input encoding | MIT | - | heavy | - | not an emulator; `KeyboardEncoding::Kitty` declared but not implemented in `encode` |
 
 ### 2.2 Capability matrix
 
-✔ covered · ◐ partial · ✘ missing · H = shepr already has it / can do it cheaply outside the core
+yes covered · ◐ partial · no missing · H = shepr already has it / can do it cheaply outside the core
 
 | # | Capability | alacritty_terminal *(memory)* | par-term (read) | vt100 (read) | fux-vt (read) |
 |---|---|---|---|---|---|
-| 1 | VT parse → grid | ✔ `vte::ansi::Processor::advance(&mut term, bytes)` | ✔ `Terminal::process` | ✔ `Parser::process` | ✔ |
-| 2 | Alt screen | ✔ `TermMode::ALT_SCREEN`, 1049/47/1047 | ✔ `is_alt_screen_active` | ✔ | ✔ (no 1047) |
-| 3 | Scrollback | ✔ lines (`Config::scrolling_history`, max 100k); bytes→lines conversion needed | ✔ lines (`with_scrollback`) | ✔ lines | ✔ lines ring |
-| 4 | Viewport scroll | ✔ `scroll_display(Scroll::Delta/Top/Bottom)`, `grid().display_offset()`, `history_size()` | ◐ none in core; host keeps offset, reads `scrollback_line` | ◐ `set_scrollback` | ◐ windows |
-| 5 | Reflow | ✔ primary (alt not reflowed) | ✔ primary, alt truncates | ✘ | ✘ by design |
-| 6 | Cursor + style | ✔ `grid().cursor.point`, `cursor_style()` {Block/Underline/Beam/HollowBlock, blinking}, `SHOW_CURSOR` | ✔ | ◐ no style | ◐ |
-| 7 | Modes 1/1004/1005/1006/1007/2004/9-1003 | ✔ (`APP_CURSOR`, `FOCUS_IN_OUT`, `UTF8_MOUSE`, `SGR_MOUSE`, `ALTERNATE_SCROLL`, `BRACKETED_PASTE`, `MOUSE_REPORT_CLICK/DRAG/MOTION`); ◐ X10 (9) likely missing | ✔ (no 1007) | ◐ (no 1004/1007) | ◐ |
-| 7b | 1016 SGR-pixels, 2031 colour-scheme report, ?996n | ✘ → **H** pre-scan tracker | ✘ → H | ✘ | ✘ |
-| 8 | Sync output 2026 | ◐ Processor buffers BSU..ESU itself (with timeout); query via `processor.sync_timeout()`; host must `stop_sync` on expiry | ✔ flag + `flush_synchronized_updates` | ✘ | ✘ |
-| 9 | Kitty kb flags | ✔ stack per screen (needs `Config::kitty_keyboard = true`); answers CSI ?u. **H** tracker exists anyway | ✔ `keyboard_flags`, auto-reset on alt exit | ✘ | ✘ |
-| 10 | modifyOtherKeys state | ◐/✘ → **H** (`KittyKeyboardTracker::modify_other_keys_level`) | ✔ `modify_other_keys_mode` | ✘ | ✘ |
-| 11 | Key encoding | ✘ (lives in alacritty app) → **H** `input/encode.rs` (needs gaps closed, §3.3) | ✘ (host) | ✘ | ✘ |
-| 12 | Mouse encoding | ✘ → **H** `input/encode.rs::encode_mouse_*` (dead code today, add mode filter + SGR-pixels) | ✔ `Terminal::report_mouse` (no pixels) | ✘ | ✘ |
-| 13 | Focus encoding | ✘ → H (2 constants) | ✔ | ✘ | ✘ |
-| 14 | Query replies | ✔ DA1/DA2/DSR/CPR/DECRQM/CSI ?u/CSI 14t,18t via `Event::PtyWrite`, `Event::TextAreaSizeRequest(fn)`; ✔ OSC 4/10/11/12 queries via `Event::ColorRequest(idx, fmt)` (**host answers**, which is exactly what shepr wants); ✘ XTGETTCAP → H (extend `xtgettcap.rs` to 7-bit DCS); ✘ ?996n → H | ✔ DA/DSR/DECRQM/XTGETTCAP/DECRQSS/XTVERSION/XTWINOPS into `drain_responses()`; OSC colour queries answered **internally** (shepr must strip them as today) | ✘ none | ◐ DA1/DSR only |
-| 15 | OSC 7 | ✘ → H raw-byte tracker (osc.rs already scans OSC) | ✔ `current_directory`, `poll_cwd_events` | ✘ (unhandled_osc cb) | ✘ |
-| 16 | OSC 52 write | ✔ `Event::ClipboardStore(ty, String)` (UTF-8 only), `Config::osc52` | ✔ | ✔ callback | ◐ opt-in event |
-| 17 | BEL | ✔ `Event::Bell` | ✔ `bell_count` | ✔ cb | ◐ |
-| 19 | OSC 8 | ✔ `cell.hyperlink().uri()` | ✔ `hyperlink_id` + `get_hyperlink_url` | ✘ | ✘ |
-| 20 | Palette/default colours | ✔ `term.colors()[i]` = child overrides only (`Option<Rgb>`, incl. `NamedColor::Foreground/Background/Cursor`); defaults owned by shepr, a clean fit | ◐ theme default_fg/bg are concrete; **cells store concrete colours, so "default" is not distinguishable from palette 7/0** | ◐ `Color::Default` ✔ | ✔ default |
-| 21 | Cell attrs | ✔ bold/dim/italic/inverse/hidden/strike, underline single/double/curl/dotted/dashed, underline colour, `Color::{Named(Foreground/Background)=default, Indexed, Spec}`, wide flags `WIDE_CHAR`/`WIDE_CHAR_SPACER`/`LEADING_WIDE_CHAR_SPACER` (= ghostty Wide/SpacerTail/SpacerHead). ✘ blink, ✘ overline | ✔ all incl. blink/overline, 5 underline styles | ◐ bold/dim/italic/underline/inverse only | ◐ same as vt100 |
-| 22 | Damage | ✔ `term.damage()` → `TermDamage::{Full, Partial(iter of LineDamageBounds)}`, `reset_damage()`; viewport-relative; used by Alacritty's renderer, so reliable | ◐ bitset set **only** in write.rs char paths, not scroll/erase/alt switch | ✘ | ✔ row versions + structural generation |
-| 23 | Graphemes/width | ◐ zero-width chars appended (`cell.zerowidth()`); width per codepoint (unicode-width); no ZWJ/flag clustering (mode 2027) | ✔ grapheme clusters, VS15/16, ZWJ, flags | ◐ combining only | ◐ combining only |
-| 24 | Row text + wrap flags | ✔ `grid()[Line(i)][Column(j)]`, `WRAPLINE` flag on last cell; history is negative `Line` | ✔ `row`, `is_line_wrapped`, `scrollback_line`, `is_scrollback_wrapped` | ✔ `row_wrapped` | ✔ |
-| 25 | Formatter (plain/VT, unwrap) | ◐ `bounds_to_string` (plain, joins wraps); ✘ VT → **write own** | ✔ `export_text_buffer`, `export_styled_buffer`, `export_scrollback_styled` | ✔ `contents_formatted`, `rows_formatted` | ◐ copy only |
+| 1 | VT parse → grid | yes `vte::ansi::Processor::advance(&mut term, bytes)` | yes `Terminal::process` | yes `Parser::process` | yes |
+| 2 | Alt screen | yes `TermMode::ALT_SCREEN`, 1049/47/1047 | yes `is_alt_screen_active` | yes | yes (no 1047) |
+| 3 | Scrollback | yes lines (`Config::scrolling_history`, max 100k); bytes→lines conversion needed | yes lines (`with_scrollback`) | yes lines | yes lines ring |
+| 4 | Viewport scroll | yes `scroll_display(Scroll::Delta/Top/Bottom)`, `grid().display_offset()`, `history_size()` | ◐ none in core; host keeps offset, reads `scrollback_line` | ◐ `set_scrollback` | ◐ windows |
+| 5 | Reflow | yes primary (alt not reflowed) | yes primary, alt truncates | no | no by design |
+| 6 | Cursor + style | yes `grid().cursor.point`, `cursor_style()` {Block/Underline/Beam/HollowBlock, blinking}, `SHOW_CURSOR` | yes | ◐ no style | ◐ |
+| 7 | Modes 1/1004/1005/1006/1007/2004/9-1003 | yes (`APP_CURSOR`, `FOCUS_IN_OUT`, `UTF8_MOUSE`, `SGR_MOUSE`, `ALTERNATE_SCROLL`, `BRACKETED_PASTE`, `MOUSE_REPORT_CLICK/DRAG/MOTION`); ◐ X10 (9) likely missing | yes (no 1007) | ◐ (no 1004/1007) | ◐ |
+| 7b | 1016 SGR-pixels, 2031 colour-scheme report, ?996n | no → **H** pre-scan tracker | no → H | no | no |
+| 8 | Sync output 2026 | ◐ Processor buffers BSU..ESU itself (with timeout); query via `processor.sync_timeout()`; host must `stop_sync` on expiry | yes flag + `flush_synchronized_updates` | no | no |
+| 9 | Kitty kb flags | yes stack per screen (needs `Config::kitty_keyboard = true`); answers CSI ?u. **H** tracker exists anyway | yes `keyboard_flags`, auto-reset on alt exit | no | no |
+| 10 | modifyOtherKeys state | ◐/no → **H** (`KittyKeyboardTracker::modify_other_keys_level`) | yes `modify_other_keys_mode` | no | no |
+| 11 | Key encoding | no (lives in alacritty app) → **H** `input/encode.rs` (needs gaps closed, §3.3) | no (host) | no | no |
+| 12 | Mouse encoding | no → **H** `input/encode.rs::encode_mouse_*` (dead code today, add mode filter + SGR-pixels) | yes `Terminal::report_mouse` (no pixels) | no | no |
+| 13 | Focus encoding | no → H (2 constants) | yes | no | no |
+| 14 | Query replies | yes DA1/DA2/DSR/CPR/DECRQM/CSI ?u/CSI 14t,18t via `Event::PtyWrite`, `Event::TextAreaSizeRequest(fn)`; yes OSC 4/10/11/12 queries via `Event::ColorRequest(idx, fmt)` (**host answers**, which is exactly what shepr wants); no XTGETTCAP → H (extend `xtgettcap.rs` to 7-bit DCS); no ?996n → H | yes DA/DSR/DECRQM/XTGETTCAP/DECRQSS/XTVERSION/XTWINOPS into `drain_responses()`; OSC colour queries answered **internally** (shepr must strip them as today) | no none | ◐ DA1/DSR only |
+| 15 | OSC 7 | no → H raw-byte tracker (osc.rs already scans OSC) | yes `current_directory`, `poll_cwd_events` | no (unhandled_osc cb) | no |
+| 16 | OSC 52 write | yes `Event::ClipboardStore(ty, String)` (UTF-8 only), `Config::osc52` | yes | yes callback | ◐ opt-in event |
+| 17 | BEL | yes `Event::Bell` | yes `bell_count` | yes cb | ◐ |
+| 19 | OSC 8 | yes `cell.hyperlink().uri()` | yes `hyperlink_id` + `get_hyperlink_url` | no | no |
+| 20 | Palette/default colours | yes `term.colors()[i]` = child overrides only (`Option<Rgb>`, incl. `NamedColor::Foreground/Background/Cursor`); defaults owned by shepr, a clean fit | ◐ theme default_fg/bg are concrete; **cells store concrete colours, so "default" is not distinguishable from palette 7/0** | ◐ `Color::Default` yes | yes default |
+| 21 | Cell attrs | yes bold/dim/italic/inverse/hidden/strike, underline single/double/curl/dotted/dashed, underline colour, `Color::{Named(Foreground/Background)=default, Indexed, Spec}`, wide flags `WIDE_CHAR`/`WIDE_CHAR_SPACER`/`LEADING_WIDE_CHAR_SPACER` (= ghostty Wide/SpacerTail/SpacerHead). no blink, no overline | yes all incl. blink/overline, 5 underline styles | ◐ bold/dim/italic/underline/inverse only | ◐ same as vt100 |
+| 22 | Damage | yes `term.damage()` → `TermDamage::{Full, Partial(iter of LineDamageBounds)}`, `reset_damage()`; viewport-relative; used by Alacritty's renderer, so reliable | ◐ bitset set **only** in write.rs char paths, not scroll/erase/alt switch | no | yes row versions + structural generation |
+| 23 | Graphemes/width | ◐ zero-width chars appended (`cell.zerowidth()`); width per codepoint (unicode-width); no ZWJ/flag clustering (mode 2027) | yes grapheme clusters, VS15/16, ZWJ, flags | ◐ combining only | ◐ combining only |
+| 24 | Row text + wrap flags | yes `grid()[Line(i)][Column(j)]`, `WRAPLINE` flag on last cell; history is negative `Line` | yes `row`, `is_line_wrapped`, `scrollback_line`, `is_scrollback_wrapped` | yes `row_wrapped` | yes |
+| 25 | Formatter (plain/VT, unwrap) | ◐ `bounds_to_string` (plain, joins wraps); no VT → **write own** | yes `export_text_buffer`, `export_styled_buffer`, `export_scrollback_styled` | yes `contents_formatted`, `rows_formatted` | ◐ copy only |
 | 26 | Clear screen keep cursor line | ◐ call `Handler` methods directly on `Term` (parser-independent): `clear_screen(ClearMode::Saved)` + line moves | ◐ | ◐ | ◐ |
 | 27 | Compression | n/a, drop | n/a | n/a | n/a |
-| – | Rust/MSRV | ~1.74–1.85 (memory) | 1.98 (toolchain has 1.98.0) | 1.70 | 1.95, ed. 2024 |
-| – | Hot-path perf | table-driven vte; direct grid indexing | vte; wide cells (~60+ B) | fine | fine |
+| - | Rust/MSRV | ~1.74-1.85 (memory) | 1.98 (toolchain has 1.98.0) | 1.70 | 1.95, ed. 2024 |
+| - | Hot-path perf | table-driven vte; direct grid indexing | vte; wide cells (~60+ B) | fine | fine |
 
 Notes on the "read" rows:
 
@@ -398,22 +398,22 @@ It must round-trip through our own parser:
   `5;n` or `2;r;g;b`, default → 39/49/59). Wrap OSC 8 open/close on hyperlink
   change. No cursor positioning.
 * Byte-exact equality with ghostty's formatter is not required, but the tests in
-  terminal.rs that assert exact strings (e.g. around l.5139–5260) will need their
+  terminal.rs that assert exact strings (e.g. around l.5139-5260) will need their
   expectations regenerated.
 
 ### 3.3 Input encoding (shepr-owned; close the gaps ghostty was covering)
 
 Today non-Char keys go to ghostty's `KeyEncoder`. With it gone,
 `input::encode_terminal_key` has to cover the following. The terminal.rs tests
-4092–4790 are the spec.
+4092-4790 are the spec.
 * **DECCKM**: unmodified arrows/Home/End use `ESC O x` when mode 1 is set. There's a dead
   `encode_cursor_key` helper. Thread `application_cursor` into the encoder, e.g.
   via a `KeyEncodeModes { kitty_flags, modify_other_keys, app_cursor, app_keypad }`
   argument built from `input_state` scalars.
 * **Kitty functional keys: bug.** `try_encode_csi_u` maps arrows/Home/End/
-  PgUp/PgDn/Ins/Del to **57417–57426**, which are the *keypad* (KP_*) codes.
+  PgUp/PgDn/Ins/Del to **57417-57426**, which are the *keypad* (KP_*) codes.
   Correct kitty encoding: `CSI 1;mods[:ev] A/B/C/D/H/F`,
-  `CSI 2/3/5/6;mods[:ev] ~`, F1–F4 `CSI 1;mods P/Q/S` (F3 = `CSI 13~`), F5–F12 `CSI n;mods ~`,
+  `CSI 2/3/5/6;mods[:ev] ~`, F1-F4 `CSI 1;mods P/Q/S` (F3 = `CSI 13~`), F5-F12 `CSI n;mods ~`,
   Enter/Tab/Bksp/Esc as `13/9/127/27 u` under report-all/event-types. This path was masked
   because ghostty handled these keys. `input/parse.rs` maps the KP codes back to plain arrows,
   which hides the bug in round-trip tests.
@@ -450,7 +450,7 @@ Today non-Char keys go to ghostty's `KeyEncoder`. With it gone,
 * Grapheme-cluster mode 2027. Accept alacritty's per-codepoint widths. The
   width-normalisation guard in `ghostty_buffer_symbol_into` already handles
   metadata/symbol width disagreement. Affected tests: `render_cells_preserve_issue_453_unicode_payload_exactly`,
-  flag/family emoji tests (l.4882–4930), `grapheme_cluster_mode_is_default…`.
+  flag/family emoji tests (l.4882-4930), `grapheme_cluster_mode_is_default…`.
 * Exact ghostty DA/XTGETTCAP strings.
 * Blink and overline attributes (alacritty has no flag for them). They render as plain text.
 * Optionally, "clear screen but keep cursor line" (patch 0006). Replace it with a plain
@@ -460,14 +460,14 @@ Today non-Char keys go to ghostty's `KeyEncoder`. With it gone,
 
 | Area | New/changed lines | Days |
 |---|---|---|
-| Adapter `Terminal` + listener + mode/coord mapping + scrollbar/viewport | ~700 | 1.5–2 |
+| Adapter `Terminal` + listener + mode/coord mapping + scrollbar/viewport | ~700 | 1.5-2 |
 | RenderState/RowIterator shim with damage | ~300 | 1 |
-| Formatter (plain + VT, unwrap/trim) | ~250 | 0.5–1 |
+| Formatter (plain + VT, unwrap/trim) | ~250 | 0.5-1 |
 | Replies/trackers (§3.4) + simplifying ordered-response code | ~300 | 1 |
-| Key encoder completion (DECCKM, kitty functional table, modifyOtherKeys) + mouse filter/pixels, delete `pane/input.rs` glue | ~350 | 1–1.5 |
+| Key encoder completion (DECCKM, kitty functional table, modifyOtherKeys) + mouse filter/pixels, delete `pane/input.rs` glue | ~350 | 1-1.5 |
 | Drop compression, unicode width swaps, focus constants, build.rs/Cargo cleanup | ~ -400 | 0.5 |
-| Test triage (≈4.2k test lines written against ghostty; expect dozens of expectation changes) | – | 2–3 |
-| **Total** | | **~8–10 days** |
+| Test triage (≈4.2k test lines written against ghostty; expect dozens of expectation changes) | - | 2-3 |
+| **Total** | | **~8-10 days** |
 
 ### 3.7 Biggest risks (first compile only after the swap)
 
@@ -479,7 +479,7 @@ Today non-Char keys go to ghostty's `KeyEncoder`. With it gone,
    mapping, 0- vs 1-based `Column`, `WRAPLINE` living on the *last cell* of a row, damage lines
    being viewport-relative and reset by display scroll. These show up as wrong text or
    frozen panes, not compile errors. *Mitigation:* port the wrapper tests
-   (`ghostty/mod.rs` 2209–2981) first and run them before the pane tests.
+   (`ghostty/mod.rs` 2209-2981) first and run them before the pane tests.
 3. **Sync updates.** vte buffers BSU..ESU inside `Processor` and needs a host
    call when the timeout expires. If shepr never calls `stop_sync`, a program that
    forgets ESU freezes the pane until more output arrives. *Mitigation:* on every

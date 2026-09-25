@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::claude_settings::{
     install as install_claude_settings, uninstall as uninstall_claude_settings,
@@ -44,23 +44,23 @@ use super::{
     CLAUDE_HOOK_INSTALL_NAME, CODEX_HOOK_ASSET, CODEX_HOOK_INSTALL_NAME, COPILOT_HOOK_ASSET,
     COPILOT_HOOK_EVENTS, COPILOT_HOOK_INSTALL_NAME, CURSOR_HOOK_ASSET, CURSOR_HOOK_INSTALL_NAME,
     DEVIN_HOOK_ASSET, DEVIN_HOOK_EVENTS, DEVIN_HOOK_INSTALL_NAME, DROID_HOOK_ASSET,
-    DROID_HOOK_EVENTS, DROID_HOOK_INSTALL_NAME, GROK_HOOK_ASSET, GROK_HOOK_CONFIG_INSTALL_NAME, GROK_HOOK_INSTALL_NAME,
-    HERMES_PLUGIN_INIT_ASSET, HERMES_PLUGIN_INIT_INSTALL_NAME, HERMES_PLUGIN_MANIFEST_ASSET,
-    HERMES_PLUGIN_MANIFEST_INSTALL_NAME, KILO_PLUGIN_ASSET, KILO_PLUGIN_INSTALL_NAME,
-    KIMI_HOOK_ASSET, KIMI_HOOK_INSTALL_NAME, LETTA_HOOK_ASSET, LETTA_HOOK_INSTALL_NAME,
-    LETTA_HOOK_TIMEOUT_MS, MASTRACODE_HOOK_ASSET, MASTRACODE_HOOK_EVENTS,
-    MASTRACODE_HOOK_INSTALL_NAME, MASTRACODE_HOOK_TIMEOUT_MS,
-    OMP_EXTENSION_ASSET, OMP_EXTENSION_INSTALL_NAME, OPENCODE_PLUGIN_ASSET,
-    OPENCODE_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_ASSET, OPENCODE_TUI_PLUGIN_INSTALL_NAME,
-    OPENCODE_TUI_PLUGIN_SPEC, PI_EXTENSION_ASSET, PI_EXTENSION_INSTALL_NAME, QODERCLI_HOOK_ASSET,
-    QODERCLI_HOOK_EVENTS, QODERCLI_HOOK_INSTALL_NAME, QWEN_HOOK_ASSET, QWEN_HOOK_EVENTS, QWEN_HOOK_INSTALL_NAME,
+    DROID_HOOK_EVENTS, DROID_HOOK_INSTALL_NAME, GROK_HOOK_ASSET, GROK_HOOK_CONFIG_INSTALL_NAME,
+    GROK_HOOK_INSTALL_NAME, HERMES_PLUGIN_INIT_ASSET, HERMES_PLUGIN_INIT_INSTALL_NAME,
+    HERMES_PLUGIN_MANIFEST_ASSET, HERMES_PLUGIN_MANIFEST_INSTALL_NAME, KILO_PLUGIN_ASSET,
+    KILO_PLUGIN_INSTALL_NAME, KIMI_HOOK_ASSET, KIMI_HOOK_INSTALL_NAME, LETTA_HOOK_ASSET,
+    LETTA_HOOK_INSTALL_NAME, LETTA_HOOK_TIMEOUT_MS, MASTRACODE_HOOK_ASSET, MASTRACODE_HOOK_EVENTS,
+    MASTRACODE_HOOK_INSTALL_NAME, MASTRACODE_HOOK_TIMEOUT_MS, OMP_EXTENSION_ASSET,
+    OMP_EXTENSION_INSTALL_NAME, OPENCODE_PLUGIN_ASSET, OPENCODE_PLUGIN_INSTALL_NAME,
+    OPENCODE_TUI_PLUGIN_ASSET, OPENCODE_TUI_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_SPEC,
+    PI_EXTENSION_ASSET, PI_EXTENSION_INSTALL_NAME, QODERCLI_HOOK_ASSET, QODERCLI_HOOK_EVENTS,
+    QODERCLI_HOOK_INSTALL_NAME, QWEN_HOOK_ASSET, QWEN_HOOK_EVENTS, QWEN_HOOK_INSTALL_NAME,
 };
 
 fn ensure_extension_dir(dir: &Path, agent: &str) -> io::Result<()> {
     if dir.is_dir() {
         return Ok(());
     }
-    if dir.parent().is_some_and(|parent| parent.is_dir()) {
+    if dir.parent().is_some_and(Path::is_dir) {
         return fs::create_dir_all(dir);
     }
     Err(io::Error::other(format!(
@@ -162,7 +162,7 @@ pub(crate) fn install_codex() -> io::Result<CodexInstallPaths> {
     ensure_command_hook(
         hooks,
         "SessionStart",
-        hook_command(&hook_path, Some("session")),
+        &hook_command(&hook_path, Some("session")),
         10,
         None,
     )?;
@@ -311,7 +311,7 @@ pub(crate) fn install_devin() -> io::Result<DevinInstallPaths> {
         ensure_command_hook(
             hooks,
             event,
-            hook_command(&hook_path, Some(action)),
+            &hook_command(&hook_path, Some(action)),
             10,
             None,
         )?;
@@ -367,7 +367,7 @@ pub(crate) fn install_droid() -> io::Result<DroidInstallPaths> {
         ensure_command_hook(
             hooks,
             event,
-            hook_command(&hook_path, Some(action)),
+            &hook_command(&hook_path, Some(action)),
             10,
             None,
         )?;
@@ -837,7 +837,7 @@ pub(crate) fn install_qodercli() -> io::Result<QodercliInstallPaths> {
         ensure_command_hook(
             hooks,
             event,
-            hook_command(&hook_path, Some(action)),
+            &hook_command(&hook_path, Some(action)),
             10,
             Some("*"),
         )?;
@@ -891,7 +891,7 @@ pub(crate) fn install_qwen() -> io::Result<QwenInstallPaths> {
         ensure_command_hook(
             hooks,
             event,
-            hook_command(&hook_path, Some(action)),
+            &hook_command(&hook_path, Some(action)),
             10_000,
             Some("*"),
         )?;
@@ -1004,7 +1004,7 @@ fn cleanup_letta_install_artifact(path: &Path) {
     }
 }
 
-fn ensure_letta_session_hook(hooks: &mut Map<String, Value>, command: String) -> io::Result<()> {
+fn ensure_letta_session_hook(hooks: &mut Map<String, Value>, command: &str) -> io::Result<()> {
     let entries = hooks
         .entry("SessionStart".to_string())
         .or_insert_with(|| Value::Array(Vec::new()))
@@ -1055,7 +1055,7 @@ pub(crate) fn install_letta() -> io::Result<LettaInstallPaths> {
         "letta settings hooks",
     )?;
     remove_hook_commands(hooks, "SessionStart", &hook_path, Some("session"))?;
-    ensure_letta_session_hook(hooks, hook_command(&hook_path, Some("session")))?;
+    ensure_letta_session_hook(hooks, &hook_command(&hook_path, Some("session")))?;
 
     let settings_contents = serde_json::to_string_pretty(&settings)?;
     let (hook_staged, hook_backup) =
@@ -1148,7 +1148,7 @@ pub(crate) fn install_cursor() -> io::Result<CursorInstallPaths> {
         "cursor hooks file hooks",
     )?;
     let session_command = hook_command(&hook_path, Some("session"));
-    ensure_simple_command_hook(hooks, "sessionStart", session_command)?;
+    ensure_simple_command_hook(hooks, "sessionStart", &session_command)?;
 
     write_config(&hooks_path, serde_json::to_string_pretty(&hooks_file)?)?;
 
@@ -1355,7 +1355,7 @@ pub(crate) fn install_mastracode() -> io::Result<MastracodeInstallPaths> {
         ensure_flat_command_hook(
             hooks,
             event,
-            mastracode_hook_command(&hook_path, action),
+            &mastracode_hook_command(&hook_path, action),
             MASTRACODE_HOOK_TIMEOUT_MS,
         )?;
     }

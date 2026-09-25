@@ -78,10 +78,10 @@ impl SshMetadataCache {
     }
 
     pub(crate) fn invalidate(&self) {
-        if let Err(error) = std::fs::remove_file(&self.path) {
-            if error.kind() != io::ErrorKind::NotFound {
-                tracing::debug!(%error, "could not invalidate SSH machine metadata");
-            }
+        if let Err(error) = std::fs::remove_file(&self.path)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            tracing::debug!(%error, "could not invalidate SSH machine metadata");
         }
     }
 }
@@ -161,21 +161,34 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt as _;
             assert_eq!(
-                std::fs::metadata(&first.path).expect("test precondition").permissions().mode() & 0o777,
+                std::fs::metadata(&first.path)
+                    .expect("test precondition")
+                    .permissions()
+                    .mode()
+                    & 0o777,
                 0o600
             );
         }
         let mut stored: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&first.path).expect("test precondition")).expect("test precondition");
+            serde_json::from_slice(&std::fs::read(&first.path).expect("test precondition"))
+                .expect("test precondition");
         stored["future_field"] = true.into();
-        std::fs::write(&first.path, serde_json::to_vec(&stored).expect("test precondition")).expect("test precondition");
+        std::fs::write(
+            &first.path,
+            serde_json::to_vec(&stored).expect("test precondition"),
+        )
+        .expect("test precondition");
         assert_eq!(first.load(), Some(metadata.clone()));
         stored["version"] = 2.into();
-        std::fs::write(&first.path, serde_json::to_vec(&stored).expect("test precondition")).expect("test precondition");
+        std::fs::write(
+            &first.path,
+            serde_json::to_vec(&stored).expect("test precondition"),
+        )
+        .expect("test precondition");
         assert!(first.load().is_none());
         for bytes in [
             b"broken".to_vec(),
-            vec![b' '; MAX_METADATA_BYTES as usize + 1],
+            vec![b' '; usize::try_from(MAX_METADATA_BYTES).unwrap_or(usize::MAX) + 1],
         ] {
             std::fs::write(&first.path, bytes).expect("test precondition");
             assert!(first.load().is_none());
@@ -204,7 +217,10 @@ mod tests {
             os: "linux".into(),
             executable: "/bin/shepr".into(),
         });
-        assert_eq!(std::fs::read_to_string(&other).expect("test precondition"), "untouched");
+        assert_eq!(
+            std::fs::read_to_string(&other).expect("test precondition"),
+            "untouched"
+        );
         std::fs::remove_dir_all(root).expect("test precondition");
     }
 }

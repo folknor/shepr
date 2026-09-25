@@ -7,8 +7,8 @@ use ratatui::{
 };
 
 pub(crate) use self::tokens::{
-    agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows, AgentTokenContext,
-    ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
+    AgentTokenContext, ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
+    agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows,
 };
 use super::text::{display_width, truncate_end};
 use crate::app::state::Palette;
@@ -25,6 +25,9 @@ fn sidebar_section_heights(total_height: u16, split_ratio: f32) -> (u16, u16) {
         );
     }
 
+    // split_ratio is clamped to [0.1, 0.9], so the scaled height stays
+    // within the source u16 range; truncation/sign-loss cannot occur.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let workspace_height = ((total_height as f32) * split_ratio.clamp(0.1, 0.9)).round() as u16;
     let workspace_height = workspace_height.clamp(3, total_height.saturating_sub(3));
     (

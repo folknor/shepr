@@ -161,7 +161,7 @@ impl ClientShellState {
 
     pub(super) fn complete_word_selection_row(
         &mut self,
-        pane_id: String,
+        pane_id: &str,
         absolute_row: u32,
         generation: u64,
         result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,

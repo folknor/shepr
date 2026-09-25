@@ -62,12 +62,12 @@ impl ClientShellState {
             self.pane_scroll_queued.insert(pane_id, offset_from_bottom);
             return;
         }
-        self.dispatch_pane_scroll_offset(pane_id, offset_from_bottom, outcome);
+        self.dispatch_pane_scroll_offset(&pane_id, offset_from_bottom, outcome);
     }
 
     fn dispatch_pane_scroll_offset(
         &mut self,
-        pane_id: String,
+        pane_id: &str,
         offset_from_bottom: usize,
         outcome: &mut ClientShellInput,
     ) {
@@ -77,62 +77,63 @@ impl ClientShellState {
         self.next_scroll_serial = self.next_scroll_serial.saturating_add(1);
         let serial = self.next_scroll_serial;
         self.pane_scroll_targets
-            .insert(pane_id.clone(), offset_from_bottom);
-        self.pane_scroll_in_flight.insert(pane_id.clone(), serial);
+            .insert(pane_id.to_owned(), offset_from_bottom);
+        self.pane_scroll_in_flight
+            .insert(pane_id.to_owned(), serial);
         if !self.push_endpoint_method_with_kind(
             crate::api::schema::Method::PaneScroll(crate::api::schema::PaneScrollParams {
-                pane_id: pane_id.clone(),
+                pane_id: pane_id.to_owned(),
                 offset_from_bottom: offset_from_bottom as u64,
             }),
             PendingEndpointKind::PaneScroll {
-                pane_id: pane_id.clone(),
+                pane_id: pane_id.to_owned(),
                 serial,
             },
             outcome,
         ) {
-            self.pane_scroll_targets.remove(&pane_id);
-            self.pane_scroll_in_flight.remove(&pane_id);
+            self.pane_scroll_targets.remove(pane_id);
+            self.pane_scroll_in_flight.remove(pane_id);
         }
     }
 
     pub(super) fn complete_pane_scroll(
         &mut self,
-        pane_id: String,
+        pane_id: &str,
         serial: u64,
         result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
         outcome: &mut ClientShellInput,
     ) -> bool {
-        if self.pane_scroll_in_flight.get(&pane_id).copied() != Some(serial) {
+        if self.pane_scroll_in_flight.get(pane_id).copied() != Some(serial) {
             return false;
         }
-        self.pane_scroll_in_flight.remove(&pane_id);
+        self.pane_scroll_in_flight.remove(pane_id);
         let repaint = match result {
             Ok(crate::api::schema::ResponseResult::PaneInfo { pane })
                 if pane.pane_id == pane_id =>
             {
-                if let Some(scroll) = pane.scroll {
-                    if self.pane_scroll_targets.contains_key(&pane_id) {
-                        self.pane_scroll_targets.insert(
-                            pane_id.clone(),
-                            usize::try_from(scroll.offset_from_bottom).unwrap_or(usize::MAX),
-                        );
-                    }
+                if let Some(scroll) = pane.scroll
+                    && self.pane_scroll_targets.contains_key(pane_id)
+                {
+                    self.pane_scroll_targets.insert(
+                        pane_id.to_owned(),
+                        usize::try_from(scroll.offset_from_bottom).unwrap_or(usize::MAX),
+                    );
                 }
                 false
             }
             Ok(_) => {
-                self.pane_scroll_queued.remove(&pane_id);
-                self.pane_scroll_targets.remove(&pane_id);
+                self.pane_scroll_queued.remove(pane_id);
+                self.pane_scroll_targets.remove(pane_id);
                 self.set_endpoint_error("endpoint returned an unexpected pane-scroll result");
                 true
             }
             Err(_) => {
-                self.pane_scroll_queued.remove(&pane_id);
-                self.pane_scroll_targets.remove(&pane_id);
+                self.pane_scroll_queued.remove(pane_id);
+                self.pane_scroll_targets.remove(pane_id);
                 true
             }
         };
-        if let Some(offset) = self.pane_scroll_queued.remove(&pane_id) {
+        if let Some(offset) = self.pane_scroll_queued.remove(pane_id) {
             self.dispatch_pane_scroll_offset(pane_id, offset, outcome);
         }
         repaint
@@ -225,10 +226,10 @@ impl ClientShellState {
             .as_ref()
             .map_or(was_dragging || moved_from_anchor, |gesture| gesture.dragged);
         if is_dragging {
-            if let Some(selection) = self.selection.as_mut() {
-                if selection.is_just_click() {
-                    selection.force_dragging();
-                }
+            if let Some(selection) = self.selection.as_mut()
+                && selection.is_just_click()
+            {
+                selection.force_dragging();
             }
             self.last_pane_click = None;
         }
@@ -801,16 +802,15 @@ impl ClientShellState {
                     let should_send = last_sent_at.is_none_or(|last| {
                         now.duration_since(last) >= std::time::Duration::from_millis(33)
                     });
-                    if let Some(ClientChromeDrag::PaneSplit {
-                        last_sent_ratio,
-                        last_sent_at,
-                        ..
-                    }) = self.chrome_drag.as_mut()
+                    if should_send
+                        && let Some(ClientChromeDrag::PaneSplit {
+                            last_sent_ratio,
+                            last_sent_at,
+                            ..
+                        }) = self.chrome_drag.as_mut()
                     {
-                        if should_send {
-                            *last_sent_ratio = Some(ratio);
-                            *last_sent_at = Some(now);
-                        }
+                        *last_sent_ratio = Some(ratio);
+                        *last_sent_at = Some(now);
                     }
                     if should_send {
                         self.push_endpoint_method(
@@ -860,14 +860,12 @@ impl ClientShellState {
                 if delta >= 1 {
                     let source_workspace_id = press.workspace_id.clone();
                     let draggable = self.endpoint_workspace_is_draggable(press);
-                    if draggable {
-                        if let Some(target) = self.workspace_drop_target_at(point) {
-                            self.chrome_drag = Some(ClientChromeDrag::Workspace {
-                                source_workspace_id,
-                                target: Some(target),
-                            });
-                            outcome.repaint = true;
-                        }
+                    if draggable && let Some(target) = self.workspace_drop_target_at(point) {
+                        self.chrome_drag = Some(ClientChromeDrag::Workspace {
+                            source_workspace_id,
+                            target: Some(target),
+                        });
+                        outcome.repaint = true;
                     }
                 }
                 return;
@@ -877,15 +875,15 @@ impl ClientShellState {
                     .column
                     .abs_diff(press.start_column)
                     .max(mouse.row.abs_diff(press.start_row));
-                if delta >= 1 {
-                    if let Some(insert_index) = self.tab_drop_index_at(point) {
-                        self.chrome_drag = Some(ClientChromeDrag::Tab {
-                            tab_id: press.tab_id.clone(),
-                            workspace_id: press.workspace_id.clone(),
-                            insert_index: Some(insert_index),
-                        });
-                        outcome.repaint = true;
-                    }
+                if delta >= 1
+                    && let Some(insert_index) = self.tab_drop_index_at(point)
+                {
+                    self.chrome_drag = Some(ClientChromeDrag::Tab {
+                        tab_id: press.tab_id.clone(),
+                        workspace_id: press.workspace_id.clone(),
+                        insert_index: Some(insert_index),
+                    });
+                    outcome.repaint = true;
                 }
                 return;
             }
@@ -932,13 +930,13 @@ impl ClientShellState {
                         source_workspace_id,
                         target,
                     } => {
-                        if let Some((before_workspace_id, _)) = target {
-                            if let Some(method) = self.workspace_move_method(
+                        if let Some((before_workspace_id, _)) = target
+                            && let Some(method) = self.workspace_move_method(
                                 &source_workspace_id,
                                 before_workspace_id.as_deref(),
-                            ) {
-                                self.push_endpoint_method(method, outcome);
-                            }
+                            )
+                        {
+                            self.push_endpoint_method(method, outcome);
                         }
                         outcome.repaint = true;
                     }
@@ -959,10 +957,9 @@ impl ClientShellState {
                             &current_hit,
                             mouse.row,
                             Some(grab_row_offset),
-                        ) {
-                            if last_sent_offset != Some(offset) {
-                                self.push_pane_scroll_offset(current_hit.pane_id, offset, outcome);
-                            }
+                        ) && last_sent_offset != Some(offset)
+                        {
+                            self.push_pane_scroll_offset(current_hit.pane_id, offset, outcome);
                         }
                     }
                     ClientChromeDrag::PaneSplit {
@@ -1381,7 +1378,7 @@ impl ClientShellState {
                     || super::contains(self.hits.new_tab, point) =>
             {
                 self.record_binding(
-                    crate::input::KeybindMatch::Action(crate::input::KeybindAction::PreviousTab),
+                    &crate::input::KeybindMatch::Action(crate::input::KeybindAction::PreviousTab),
                     outcome,
                 );
             }
@@ -1396,7 +1393,7 @@ impl ClientShellState {
                     || super::contains(self.hits.new_tab, point) =>
             {
                 self.record_binding(
-                    crate::input::KeybindMatch::Action(crate::input::KeybindAction::NextTab),
+                    &crate::input::KeybindMatch::Action(crate::input::KeybindAction::NextTab),
                     outcome,
                 );
             }
@@ -1545,7 +1542,7 @@ impl ClientShellState {
                 }
                 if super::contains(self.hits.new_workspace, point) {
                     self.record_binding(
-                        crate::input::KeybindMatch::Action(
+                        &crate::input::KeybindMatch::Action(
                             crate::input::KeybindAction::NewWorkspace,
                         ),
                         outcome,
@@ -1554,7 +1551,7 @@ impl ClientShellState {
                 }
                 if super::contains(self.hits.new_tab, point) {
                     self.record_binding(
-                        crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewTab),
+                        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewTab),
                         outcome,
                     );
                     return;
@@ -1885,7 +1882,7 @@ impl ClientShellState {
                 position,
                 geometry,
                 modifiers: modifiers.bits(),
-                lines: self.config.mouse_scroll_lines.min(u16::MAX as usize) as u16,
+                lines: u16::try_from(self.config.mouse_scroll_lines).unwrap_or(u16::MAX),
             },
             outcome,
         );

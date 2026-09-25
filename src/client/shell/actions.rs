@@ -3,7 +3,7 @@ use super::*;
 impl ClientShellState {
     pub(super) fn record_binding(
         &mut self,
-        binding: crate::input::KeybindMatch,
+        binding: &crate::input::KeybindMatch,
         outcome: &mut ClientShellInput,
     ) {
         match binding {
@@ -20,6 +20,7 @@ impl ClientShellState {
                 self.persist_chrome_preferences(outcome);
             }
             crate::input::KeybindMatch::Action(action) => {
+                let action = *action;
                 if self.workspace_preview_action_blocked()
                     && matches!(
                         action,
@@ -217,16 +218,10 @@ impl ClientShellState {
         } else if !self.endpoint_notice_seen.insert(key.clone()) {
             return false;
         }
-        let duration_seconds = if kind == ClientEndpointNoticeKind::Rejected {
-            3
-        } else {
-            8
-        };
         self.visible_endpoint_notice = Some(ClientVisibleEndpointNotice {
             key,
             title: title.into(),
             body,
-            deadline: std::time::Instant::now() + std::time::Duration::from_secs(duration_seconds),
         });
         true
     }
@@ -334,9 +329,6 @@ impl ClientShellState {
                     workspace_id,
                 })
             }
-            ClientEndpointFocusTarget::Tab(tab_id) => {
-                crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget { tab_id })
-            }
             ClientEndpointFocusTarget::Pane(pane_id) => {
                 crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id })
             }
@@ -438,7 +430,7 @@ impl ClientShellState {
             PendingEndpointKind::Generic => {}
             PendingEndpointKind::PaneScroll { pane_id, serial } => {
                 let mut outcome = ClientShellInput::default();
-                let repaint = self.complete_pane_scroll(pane_id, serial, result, &mut outcome);
+                let repaint = self.complete_pane_scroll(&pane_id, serial, result, &mut outcome);
                 return (repaint, outcome.actions);
             }
             PendingEndpointKind::SelectionCopy => {
@@ -466,7 +458,12 @@ impl ClientShellState {
                 absolute_row,
                 generation,
             } => {
-                return self.complete_word_selection_row(pane_id, absolute_row, generation, result);
+                return self.complete_word_selection_row(
+                    &pane_id,
+                    absolute_row,
+                    generation,
+                    result,
+                );
             }
             PendingEndpointKind::CopyMotion {
                 pane_id,
@@ -560,7 +557,6 @@ impl ClientShellState {
                 self.complete_copy_operation(session_generation, continue_queue, &mut outcome);
                 return (repaint || outcome.repaint, outcome.actions);
             }
-            _ => {}
         }
         let repaint = match result {
             Ok(_) => false,
@@ -677,7 +673,9 @@ impl ClientShellState {
                 } else {
                     1
                 };
-                let next = (current as isize + delta).rem_euclid(entries.len() as isize) as usize;
+                let current_isize = isize::try_from(current).unwrap_or(isize::MAX);
+                let len_isize = isize::try_from(entries.len()).unwrap_or(isize::MAX);
+                let next = (current_isize + delta).rem_euclid(len_isize) as usize;
                 let workspace_id = snapshot.workspaces[entries[next].index]
                     .workspace_id
                     .clone();
@@ -707,7 +705,9 @@ impl ClientShellState {
                 } else {
                     1
                 };
-                let next = (current as isize + delta).rem_euclid(tabs.len() as isize) as usize;
+                let current_isize = isize::try_from(current).unwrap_or(isize::MAX);
+                let len_isize = isize::try_from(tabs.len()).unwrap_or(isize::MAX);
+                let next = (current_isize + delta).rem_euclid(len_isize) as usize;
                 Some(Method::TabFocus(TabTarget {
                     tab_id: tabs[next].tab_id.clone(),
                 }))

@@ -37,7 +37,7 @@ fn request_close(state: &mut ClientShellState, menu: bool) -> ClientShellInput {
     } else {
         let mut outcome = ClientShellInput::default();
         state.record_binding(
-            crate::input::KeybindMatch::Action(crate::input::KeybindAction::CloseTab),
+            &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CloseTab),
             &mut outcome,
         );
         outcome
@@ -126,7 +126,11 @@ fn tab_close_stays_immediate_with_confirmation_disabled_or_other_tabs() {
 #[test]
 fn last_tab_confirmation_preserves_target_across_focus_changes_and_new_tabs() {
     let mut state = close_state(true, 1);
-    let mut projected = state.snapshot.as_deref().expect("test precondition").clone();
+    let mut projected = state
+        .snapshot
+        .as_deref()
+        .expect("test precondition")
+        .clone();
     let mut other_workspace = projected.workspaces[0].clone();
     other_workspace.workspace_id = "ws_2".into();
     other_workspace.active_tab_id = "other_tab".into();
@@ -169,7 +173,11 @@ fn last_tab_confirmation_rejects_missing_moved_or_reconnected_targets() {
             state.overlay,
             Some(ClientShellOverlay::ConfirmClose(_))
         ));
-        let mut projected = state.snapshot.as_deref().expect("test precondition").clone();
+        let mut projected = state
+            .snapshot
+            .as_deref()
+            .expect("test precondition")
+            .clone();
         match change {
             "missing" => projected.tabs.clear(),
             "moved" => projected.tabs[0].workspace_id = "different_workspace".into(),
@@ -183,4 +191,3 @@ fn last_tab_confirmation_rejects_missing_moved_or_reconnected_targets() {
         assert!(state.overlay.is_none());
     }
 }
-

@@ -41,16 +41,3 @@ fn startup_config_diagnostics_are_client_rendered_and_persist_until_replaced() {
         Some("local config warning")
     );
 }
-
-#[test]
-fn endpoint_keybindings_hide_only_local_keybinding_diagnostics() {
-    let config = ClientShellConfig::from_config(&Config::default())
-        .with_keybinding_source(ClientShellKeybindingSource::Endpoint);
-    let diagnostics = vec![
-        "unsafe direct keybinding: keys.close_pane would intercept typing".into(),
-        "theme warning".into(),
-    ];
-
-    assert!(config.local_config_diagnostic(&diagnostics[..1]).is_none());
-    assert!(config.local_config_diagnostic(&diagnostics).is_some());
-}

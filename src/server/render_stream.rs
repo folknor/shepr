@@ -269,7 +269,7 @@ impl ClientRenderState {
                     ..
                 },
             ) => {
-                blit_encoder.commit(frame, encoded);
+                blit_encoder.commit(frame, &encoded);
                 *seq += 1;
                 *repaint_pending = false;
             }
@@ -507,13 +507,17 @@ mod tests {
                 &ratatui::buffer::Buffer::empty(Rect::new(0, 0, 120, 40)),
                 None,
             );
-            let initial = state.prepare_pane_surface(surface.clone()).expect("test precondition");
+            let initial = state
+                .prepare_pane_surface(surface.clone())
+                .expect("test precondition");
             state.commit_sent_frame(initial);
             state.request_recompute();
             assert_eq!(state.last_pane_surface().is_some(), enabled);
             assert_eq!(state.requires_recompute(), enabled);
             // A freshness request still emits a new revision when every cell is equal.
-            let fresh = state.prepare_pane_surface(surface.clone()).expect("test precondition");
+            let fresh = state
+                .prepare_pane_surface(surface.clone())
+                .expect("test precondition");
             assert_eq!(
                 matches!(fresh.message(), ServerMessage::EndpointControl { kind, .. }
                 if kind == crate::protocol::surface_delta::MESSAGE_KIND),
@@ -526,10 +530,18 @@ mod tests {
             );
             state.commit_sent_frame(fresh);
             assert!(!state.requires_recompute());
-            assert_eq!(state.last_pane_surface().expect("test precondition").surface_revision, 2);
+            assert_eq!(
+                state
+                    .last_pane_surface()
+                    .expect("test precondition")
+                    .surface_revision,
+                2
+            );
             state.request_repaint();
             assert!(state.last_pane_surface().is_none());
-            let recovery = state.prepare_pane_surface(surface).expect("test precondition");
+            let recovery = state
+                .prepare_pane_surface(surface)
+                .expect("test precondition");
             assert!(
                 matches!(recovery.message(), ServerMessage::PaneSurface(frame) if frame.surface_revision == 3)
             );
@@ -545,14 +557,21 @@ mod tests {
             let mut surface = test_surface("popup");
             let buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 240, 100));
             surface.frame = FrameData::from_ratatui_buffer(&buffer, None);
-            let initial = state.prepare_pane_surface(surface.clone()).expect("test precondition");
-            decoder.decode(initial.message().clone()).expect("test precondition");
+            let initial = state
+                .prepare_pane_surface(surface.clone())
+                .expect("test precondition");
+            decoder
+                .decode(initial.message().clone())
+                .expect("test precondition");
             state.commit_sent_frame(initial);
 
             surface.projection_revision += 1;
-            let update = state.prepare_pane_surface(surface.clone()).expect("test precondition");
+            let update = state
+                .prepare_pane_surface(surface.clone())
+                .expect("test precondition");
             let mut bytes = Vec::new();
-            crate::protocol::write_message(&mut bytes, update.message()).expect("test precondition");
+            crate::protocol::write_message(&mut bytes, update.message())
+                .expect("test precondition");
             if enabled {
                 assert!(
                     matches!(update.message(), ServerMessage::EndpointControl { kind, .. }
@@ -567,8 +586,9 @@ mod tests {
                 assert!(matches!(update.message(), ServerMessage::PaneSurface(_)));
                 assert!(bytes.len() > 100_000);
             }
-            let ServerMessage::PaneSurface(decoded) =
-                decoder.decode(update.message().clone()).expect("test precondition")
+            let ServerMessage::PaneSurface(decoded) = decoder
+                .decode(update.message().clone())
+                .expect("test precondition")
             else {
                 panic!("decoded full surface");
             };
@@ -594,13 +614,18 @@ mod tests {
                     cursor: None,
                 })
                 .expect("test precondition");
-            decoder.decode(patch.message().clone()).expect("test precondition");
+            decoder
+                .decode(patch.message().clone())
+                .expect("test precondition");
             state.commit_sent_frame(patch);
             surface.frame.cells[0] = changed_cell;
             surface.projection_revision += 1;
-            let update = state.prepare_pane_surface(surface.clone()).expect("test precondition");
-            let ServerMessage::PaneSurface(decoded) =
-                decoder.decode(update.message().clone()).expect("test precondition")
+            let update = state
+                .prepare_pane_surface(surface.clone())
+                .expect("test precondition");
+            let ServerMessage::PaneSurface(decoded) = decoder
+                .decode(update.message().clone())
+                .expect("test precondition")
             else {
                 panic!("decoded surface after patch");
             };
@@ -610,10 +635,13 @@ mod tests {
 
             // A changed border or terminal cell must still reach the client.
             surface.frame.cells[0].symbol = "y".into();
-            let changed = state.prepare_pane_surface(surface.clone()).expect("test precondition");
+            let changed = state
+                .prepare_pane_surface(surface.clone())
+                .expect("test precondition");
             assert!(matches!(changed.message(), ServerMessage::PaneSurface(_)));
-            let ServerMessage::PaneSurface(decoded) =
-                decoder.decode(changed.message().clone()).expect("test precondition")
+            let ServerMessage::PaneSurface(decoded) = decoder
+                .decode(changed.message().clone())
+                .expect("test precondition")
             else {
                 panic!("changed full surface");
             };
@@ -622,7 +650,10 @@ mod tests {
 
             state.request_repaint();
             assert!(matches!(
-                state.prepare_pane_surface(surface).expect("test precondition").message(),
+                state
+                    .prepare_pane_surface(surface)
+                    .expect("test precondition")
+                    .message(),
                 ServerMessage::PaneSurface(_)
             ));
         }
@@ -634,10 +665,14 @@ mod tests {
         state.enable_surface_reuse(true);
         let mut surface = test_surface("popup");
         surface.frame.hyperlinks = vec!["\"".repeat(crate::protocol::MAX_FRAME_SIZE / 2)];
-        let initial = state.prepare_pane_surface(surface.clone()).expect("test precondition");
+        let initial = state
+            .prepare_pane_surface(surface.clone())
+            .expect("test precondition");
         state.commit_sent_frame(initial);
         surface.projection_revision += 1;
-        let update = state.prepare_pane_surface(surface).expect("test precondition");
+        let update = state
+            .prepare_pane_surface(surface)
+            .expect("test precondition");
         assert!(matches!(update.message(), ServerMessage::PaneSurface(_)));
         let mut bytes = Vec::new();
         crate::protocol::write_message(&mut bytes, update.message()).expect("test precondition");
@@ -652,9 +687,7 @@ mod tests {
             .expect("initial surface");
         state.commit_sent_frame(prepared);
 
-        assert!(state
-            .prepare_pane_surface(test_surface("second"))
-            .is_some());
+        assert!(state.prepare_pane_surface(test_surface("second")).is_some());
     }
 
     #[test]
@@ -674,6 +707,12 @@ mod tests {
             ServerMessage::PaneSurface(surface) if surface.surface_revision == 2
         ));
         state.commit_sent_frame(prepared);
-        assert_eq!(state.last_pane_surface().expect("test precondition").surface_revision, 2);
+        assert_eq!(
+            state
+                .last_pane_surface()
+                .expect("test precondition")
+                .surface_revision,
+            2
+        );
     }
 }

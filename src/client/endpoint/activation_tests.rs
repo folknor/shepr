@@ -2,7 +2,8 @@ use super::*;
 
 fn endpoint() -> ClientEndpointId {
     ClientEndpointId::Ssh(
-        super::super::ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
+        super::super::ProfileId::parse("0123456789abcdef0123456789abcdef")
+            .expect("test precondition"),
     )
 }
 
@@ -23,7 +24,10 @@ struct FakeTransport {
 
 impl super::super::EndpointTransport for FakeTransport {
     fn send(&mut self, message: &crate::protocol::ClientMessage) -> std::io::Result<()> {
-        self.sent.lock().expect("test precondition").push(message.clone());
+        self.sent
+            .lock()
+            .map_err(|_| std::io::Error::other("test precondition: lock poisoned"))?
+            .push(message.clone());
         if self.fail_after_write {
             Err(std::io::Error::other("simulated observed write failure"))
         } else {
@@ -77,7 +81,8 @@ fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> Test
         crate::client::ClientShellConfig::from_config(&crate::config::Config::default()),
     );
     let profile = super::super::SavedSshEndpoint {
-        id: super::super::ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
+        id: super::super::ProfileId::parse("0123456789abcdef0123456789abcdef")
+            .expect("test precondition"),
         label: "Remote".into(),
         target: "dev@example.com".into(),
         session: "main".into(),
@@ -93,7 +98,7 @@ fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> Test
     let remote_sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut endpoints = EndpointRegistry::new(
         FakeTransport {
-            sent: local_sent.clone(),
+            sent: std::sync::Arc::clone(&local_sent),
             fail_after_write: source_fail_after_write,
         },
         1,
@@ -102,7 +107,7 @@ fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> Test
     endpoints.insert(
         target,
         FakeTransport {
-            sent: remote_sent.clone(),
+            sent: std::sync::Arc::clone(&remote_sent),
             fail_after_write: false,
         },
         7,
@@ -282,7 +287,7 @@ fn active_source_requires_metadata_from_its_current_connection_generation() {
     let result = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        endpoint(),
+        &endpoint(),
         None,
         resize(),
         26,
@@ -304,7 +309,7 @@ fn observed_begin_write_failure_returns_recoverable_partial_activation() {
     let result = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        endpoint(),
+        &endpoint(),
         None,
         resize(),
         10,
@@ -328,7 +333,7 @@ fn observed_begin_write_failure_returns_recoverable_partial_activation() {
     );
     assert!(remote_sent.lock().expect("test precondition").is_empty());
     assert!(matches!(
-        activation.rollback(&mut endpoints, error, false),
+        activation.rollback(&mut endpoints, &error, false),
         ActivationRollback::Unavailable(_)
     ));
 }
@@ -340,7 +345,7 @@ fn source_release_is_sent_and_acknowledged_before_target_activation() {
     let mut activation = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        target.clone(),
+        &target,
         None,
         resize(),
         11,
@@ -431,7 +436,7 @@ fn typed_target_ack_sets_a_floor_for_same_boot_activation_evidence() {
     let mut activation = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        target.clone(),
+        &target,
         None,
         resize(),
         16,
@@ -511,7 +516,7 @@ fn same_target_retarget_is_latest_wins() {
     let mut activation = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        target.clone(),
+        &target,
         Some(crate::client::shell::ClientEndpointFocusTarget::Workspace(
             "old".into(),
         )),
@@ -553,7 +558,10 @@ fn same_target_retarget_is_latest_wins() {
             &mut endpoints,
         )
         .expect("test precondition");
-    assert_eq!(remote_sent.lock().expect("test precondition").len(), sent_before_retarget);
+    assert_eq!(
+        remote_sent.lock().expect("test precondition").len(),
+        sent_before_retarget
+    );
     assert!(activation.accepts_response(&target, 7, "remote-boot", &old_focus));
     assert_eq!(
         activation.receive_response(
@@ -588,14 +596,16 @@ fn latest_host_focus_is_replayed_to_the_eventual_target() {
     let mut activation = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        endpoint(),
+        &endpoint(),
         None,
         resize(),
         25,
         Instant::now(),
     )
     .expect("test precondition");
-    activation.update_host_focus(false, &mut endpoints).expect("test precondition");
+    activation
+        .update_host_focus(false, &mut endpoints)
+        .expect("test precondition");
     assert!(remote_sent.lock().expect("test precondition").is_empty());
 
     let _ = activation.receive_response(
@@ -610,7 +620,9 @@ fn latest_host_focus_is_replayed_to_the_eventual_target() {
         Some(&crate::protocol::ClientMessage::ClientShellFocus { focused: false })
     );
 
-    activation.update_host_focus(true, &mut endpoints).expect("test precondition");
+    activation
+        .update_host_focus(true, &mut endpoints)
+        .expect("test precondition");
     assert_eq!(
         remote_sent.lock().expect("test precondition").last(),
         Some(&crate::protocol::ClientMessage::ClientShellFocus { focused: true })
@@ -628,7 +640,9 @@ fn host_focus_change_restarts_an_issued_presentation_effects_fence() {
         completion: Box::new(ActivationCompletion::Activated),
     };
 
-    activation.update_host_focus(false, &mut endpoints).expect("test precondition");
+    activation
+        .update_host_focus(false, &mut endpoints)
+        .expect("test precondition");
 
     assert!(matches!(
         activation.phase,
@@ -655,7 +669,7 @@ fn source_release_rejection_restores_the_source_coherently() {
     let mut activation = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        endpoint(),
+        &endpoint(),
         None,
         resize(),
         13,
@@ -676,7 +690,7 @@ fn source_release_rejection_restores_the_source_coherently() {
         }
     );
     assert_eq!(
-        activation.rollback(&mut endpoints, "source rejected release".into(), true),
+        activation.rollback(&mut endpoints, "source rejected release", true),
         ActivationRollback::Pending
     );
     assert_eq!(endpoints.active_id(), &ClientEndpointId::Local);
@@ -698,7 +712,7 @@ fn source_release_timeout_starts_an_acknowledged_source_restore() {
     let mut activation = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        endpoint(),
+        &endpoint(),
         None,
         resize(),
         14,
@@ -706,7 +720,7 @@ fn source_release_timeout_starts_an_acknowledged_source_restore() {
     )
     .expect("test precondition");
     assert_eq!(
-        activation.rollback(&mut endpoints, "source release timed out".into(), false),
+        activation.rollback(&mut endpoints, "source release timed out", false),
         ActivationRollback::Pending
     );
     let sent = local_sent.lock().expect("test precondition");
@@ -745,7 +759,9 @@ fn resize_invalidates_already_recorded_surface_evidence() {
         },
         pixel_mouse: true,
     };
-    activation.update_resize(resize, &mut endpoints).expect("test precondition");
+    activation
+        .update_resize(&resize, &mut endpoints)
+        .expect("test precondition");
     assert_eq!(activation.progress(), SurfaceActivationProgress::Pending);
 }
 
@@ -755,7 +771,7 @@ fn resize_during_activation_reaches_the_pending_target() {
     let mut activation = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        endpoint(),
+        &endpoint(),
         None,
         resize(),
         15,
@@ -779,9 +795,12 @@ fn resize_during_activation_reaches_the_pending_target() {
         pixel_mouse: true,
     };
     activation
-        .update_resize(resized.clone(), &mut endpoints)
+        .update_resize(&resized, &mut endpoints)
         .expect("test precondition");
-    assert_eq!(remote_sent.lock().expect("test precondition").last(), Some(&resized));
+    assert_eq!(
+        remote_sent.lock().expect("test precondition").last(),
+        Some(&resized)
+    );
     assert_eq!(
         activation.receive_surface(&endpoint(), 7, surface("remote-boot", 1, "pane")),
         SurfaceActivationProgress::Pending,
@@ -795,7 +814,7 @@ fn rapid_a_to_b_to_a_restores_source_before_a_fresh_latest_epoch() {
     let mut activation = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        endpoint(),
+        &endpoint(),
         None,
         resize(),
         20,
@@ -932,7 +951,7 @@ fn rapid_a_to_b_to_a_restores_source_before_a_fresh_latest_epoch() {
     let _fresh_epoch = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        ClientEndpointId::Local,
+        &ClientEndpointId::Local,
         Some(crate::client::shell::ClientEndpointFocusTarget::Pane(
             "local-pane".into(),
         )),
@@ -941,14 +960,20 @@ fn rapid_a_to_b_to_a_restores_source_before_a_fresh_latest_epoch() {
         Instant::now(),
     )
     .expect("test precondition");
-    assert!(local_sent.lock().expect("test precondition").iter().any(|message| {
-        matches!(
-            message,
-            crate::protocol::ClientMessage::ClientShellEndpointRequest { request, .. }
-                if serde_json::from_str::<crate::api::schema::Request>(request)
-                    .is_ok_and(|request| request.id == "client-shell-surface:21:on")
-        )
-    }));
+    assert!(
+        local_sent
+            .lock()
+            .expect("test precondition")
+            .iter()
+            .any(|message| {
+                matches!(
+                    message,
+                    crate::protocol::ClientMessage::ClientShellEndpointRequest { request, .. }
+                        if serde_json::from_str::<crate::api::schema::Request>(request)
+                            .is_ok_and(|request| request.id == "client-shell-surface:21:on")
+                )
+            })
+    );
 }
 
 #[test]
@@ -983,7 +1008,7 @@ fn local_escape(source_state: &str) {
     let mut activation = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        ClientEndpointId::Local,
+        &ClientEndpointId::Local,
         None,
         resize(),
         22,
@@ -1098,14 +1123,14 @@ fn local_escape(source_state: &str) {
 #[test]
 fn local_selection_abandons_every_unfinished_remote_handoff_phase() {
     use crate::client::{
-        endpoint_commands::EndpointCommands, shell_runtime::begin_endpoint_activation, ClientState,
+        ClientState, endpoint_commands::EndpointCommands, shell_runtime::begin_endpoint_activation,
     };
     for phase in ["release", "target", "rollback", "restore"] {
         let (shell, mut endpoints, local_sent, _remote_sent) = shell_and_registry();
         let mut abandoned = PendingEndpointActivation::begin(
             &shell,
             &mut endpoints,
-            endpoint(),
+            &endpoint(),
             None,
             resize(),
             30,
@@ -1123,7 +1148,7 @@ fn local_selection_abandons_every_unfinished_remote_handoff_phase() {
         }
         if matches!(phase, "rollback" | "restore") {
             assert_eq!(
-                abandoned.rollback(&mut endpoints, "cancel".into(), false),
+                abandoned.rollback(&mut endpoints, "cancel", false),
                 ActivationRollback::Pending
             );
         }
@@ -1186,9 +1211,9 @@ fn local_selection_abandons_every_unfinished_remote_handoff_phase() {
 #[test]
 fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
     use crate::client::{
+        ClientLoopEvent, ClientState,
         endpoint_commands::EndpointCommands,
         shell_runtime::{begin_endpoint_activation, take_ready_local_activation},
-        ClientLoopEvent, ClientState,
     };
     for replaced_generation in [false, true] {
         let (mut shell, mut endpoints, local_sent, remote_sent) = shell_and_registry();
@@ -1220,7 +1245,7 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
             endpoints.insert(
                 ClientEndpointId::Local,
                 FakeTransport {
-                    sent: local_sent.clone(),
+                    sent: std::sync::Arc::clone(&local_sent),
                     fail_after_write: false,
                 },
                 2,
@@ -1304,7 +1329,10 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
             &mut scheduled,
         )
         .expect("test precondition");
-        assert_eq!(pending.as_ref().expect("test precondition").target(), &ClientEndpointId::Local);
+        assert_eq!(
+            pending.as_ref().expect("test precondition").target(),
+            &ClientEndpointId::Local
+        );
         assert_eq!(serial, 42);
         assert!(!endpoints.active_surface_available());
         assert!(state.deferred_local_activation.is_none());
@@ -1314,7 +1342,7 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
 #[test]
 fn newer_remote_selection_cancels_deferred_local_selection() {
     use crate::client::{
-        endpoint_commands::EndpointCommands, shell_runtime::begin_endpoint_activation, ClientState,
+        ClientState, endpoint_commands::EndpointCommands, shell_runtime::begin_endpoint_activation,
     };
     let (shell, mut endpoints, _, _) = shell_and_registry();
     let mut state = ClientState::test_new();
@@ -1343,7 +1371,10 @@ fn newer_remote_selection_cancels_deferred_local_selection() {
             endpoint_id.is_local()
         );
     }
-    assert_eq!(pending.as_ref().expect("test precondition").target(), &endpoint());
+    assert_eq!(
+        pending.as_ref().expect("test precondition").target(),
+        &endpoint()
+    );
 }
 
 #[test]
@@ -1353,7 +1384,7 @@ fn rollback_keeps_the_latest_intent_even_when_it_returns_to_the_target() {
     let mut activation = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        target.clone(),
+        &target,
         None,
         resize(),
         23,
@@ -1406,7 +1437,7 @@ fn unacknowledged_target_release_closes_target_before_restoring_source() {
     let mut activation = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        target.clone(),
+        &target,
         None,
         resize(),
         24,
@@ -1421,11 +1452,11 @@ fn unacknowledged_target_release_closes_target_before_restoring_source() {
         &mut endpoints,
     );
     assert_eq!(
-        activation.rollback(&mut endpoints, "target activation timed out".into(), false),
+        activation.rollback(&mut endpoints, "target activation timed out", false),
         ActivationRollback::Pending
     );
     assert_eq!(
-        activation.rollback(&mut endpoints, "target release timed out".into(), false),
+        activation.rollback(&mut endpoints, "target release timed out", false),
         ActivationRollback::Pending
     );
     assert!(endpoints.connection(&target).is_none());
@@ -1456,7 +1487,7 @@ fn target_loss_at_activation_deadline_restores_source_before_timeout() {
     let mut activation = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        target.clone(),
+        &target,
         None,
         resize(),
         30,
@@ -1473,7 +1504,7 @@ fn target_loss_at_activation_deadline_restores_source_before_timeout() {
     let now = Instant::now();
     activation.deadline = now;
     assert!(activation.expired(now));
-    endpoints.fail(&target, std::io::ErrorKind::UnexpectedEof.into());
+    endpoints.fail(&target, &std::io::ErrorKind::UnexpectedEof.into());
     // Match the client timer: apply transport failures before checking phase expiry.
     for failure in endpoints.take_failures() {
         assert_eq!(
@@ -1505,7 +1536,7 @@ fn losing_local_during_handoff_does_not_revoke_the_healthy_target() {
         let mut activation = PendingEndpointActivation::begin(
             &shell,
             &mut endpoints,
-            target.clone(),
+            &target,
             None,
             resize(),
             29,
@@ -1526,7 +1557,7 @@ fn losing_local_during_handoff_does_not_revoke_the_healthy_target() {
         }
         endpoints.fail(
             &ClientEndpointId::Local,
-            std::io::ErrorKind::BrokenPipe.into(),
+            &std::io::ErrorKind::BrokenPipe.into(),
         );
         assert_eq!(
             activation.endpoint_disconnected(

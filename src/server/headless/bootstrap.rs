@@ -13,7 +13,7 @@ pub fn run_server() -> io::Result<()> {
     let _api_server = match api::start_server_with_stop_control(
         api_tx.clone(),
         event_hub.clone(),
-        should_quit.clone(),
+        Arc::clone(&should_quit),
     ) {
         Ok(server) => server,
         Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
@@ -44,7 +44,6 @@ pub fn run_server() -> io::Result<()> {
         let mut server = match HeadlessServer::new(
             app,
             &loaded_config.diagnostics,
-            Some(api_tx.clone()),
             Some(_api_server),
             should_quit,
         ) {
@@ -85,7 +84,7 @@ fn seed_startup_workspace_if_empty(app: &mut app::App) {
         return;
     }
 
-    match app.create_workspace_with_options(cwd.clone(), true) {
+    match app.create_workspace_with_options(&cwd, true) {
         Ok(_) => {
             info!(cwd = %cwd.display(), "created startup workspace");
         }
@@ -98,7 +97,7 @@ fn seed_startup_workspace_if_empty(app: &mut app::App) {
 
 fn take_startup_cwd() -> Option<PathBuf> {
     let cwd = std::env::var_os(crate::server::autodetect::STARTUP_CWD_ENV_VAR)?;
-    std::env::remove_var(crate::server::autodetect::STARTUP_CWD_ENV_VAR);
+    unsafe { std::env::remove_var(crate::server::autodetect::STARTUP_CWD_ENV_VAR) };
     (!cwd.is_empty()).then(|| PathBuf::from(cwd))
 }
 

@@ -47,14 +47,6 @@ impl TextEditor {
         self.replace_on_type = false;
     }
 
-    pub fn trim_and_accept(&mut self) {
-        let leading = self.text.len() - self.text.trim_start().len();
-        self.text = self.text.trim().to_owned();
-        self.cursor = self.cursor.saturating_sub(leading).min(self.text.len());
-        self.replace_on_type = false;
-        self.repair_cursor();
-    }
-
     fn repair_cursor(&mut self) {
         // Insertion/deletion can join clusters across the edit. Snap forward, never
         // leave an insertion offset inside the newly formed grapheme.
@@ -214,13 +206,13 @@ impl TextEditor {
                     KeyCode::Char('u') if ctrl => self.remove(0, self.cursor, true),
                     KeyCode::Char('k') if ctrl => self.remove(self.cursor, self.text.len(), true),
                     KeyCode::Char('w') if ctrl => {
-                        self.remove(self.word_boundary(true), self.cursor, true)
+                        self.remove(self.word_boundary(true), self.cursor, true);
                     }
                     KeyCode::Backspace if ctrl || alt => {
-                        self.remove(self.word_boundary(true), self.cursor, true)
+                        self.remove(self.word_boundary(true), self.cursor, true);
                     }
                     KeyCode::Char('d') if alt => {
-                        self.remove(self.cursor, self.word_boundary(false), true)
+                        self.remove(self.cursor, self.word_boundary(false), true);
                     }
                     KeyCode::Char('y') if ctrl => {
                         content_changed = self.insert(&self.killed.clone());
@@ -260,7 +252,10 @@ impl TextEditor {
             }
             end = self.cursor + index + grapheme.len();
         }
-        (&self.text[start..end], cells as u16)
+        (
+            &self.text[start..end],
+            u16::try_from(cells).unwrap_or(u16::MAX),
+        )
     }
 }
 
@@ -394,12 +389,12 @@ mod tests {
 
     #[test]
     fn unicode_graphemes_and_boundary_changing_edits() {
-        let mut editor = TextEditor::from("e\u{301}中👩‍💻");
+        let mut editor = TextEditor::from("e\u{301}中\u{1F469}\u{200D}\u{1F4BB}");
         for expected in ["e\u{301}中", "e\u{301}", ""] {
             key(&mut editor, KeyCode::Backspace, KeyModifiers::NONE);
             assert_eq!(editor.as_str(), expected);
         }
-        let mut editor = TextEditor::from("👩💻");
+        let mut editor = TextEditor::from("\u{1F469}\u{1F4BB}");
         key(&mut editor, KeyCode::Left, KeyModifiers::NONE);
         editor.insert("\u{200d}");
         assert_eq!(editor.cursor, editor.len());
@@ -414,21 +409,8 @@ mod tests {
     }
 
     #[test]
-    fn accepting_trimmed_branch_preserves_cursor_and_local_kill_buffer() {
-        let mut editor = TextEditor::new("  feature/name  ", true);
-        editor.trim_and_accept();
-        assert_eq!(editor.as_str(), "feature/name");
-        assert!(!editor.replace_on_type);
-        assert_eq!(editor.cursor, editor.len());
-        key(&mut editor, KeyCode::Char('w'), KeyModifiers::CONTROL);
-        editor.trim_and_accept();
-        key(&mut editor, KeyCode::Char('y'), KeyModifiers::CONTROL);
-        assert_eq!(editor.as_str(), "feature/name");
-    }
-
-    #[test]
     fn words_distinguish_paths_punctuation_and_whitespace() {
-        let mut editor = TextEditor::from("src/foo_bar.rs  e\u{301}中 👩‍💻");
+        let mut editor = TextEditor::from("src/foo_bar.rs  e\u{301}中 \u{1F469}\u{200D}\u{1F4BB}");
         for expected in [
             "src/foo_bar.rs  e\u{301}中 ",
             "src/foo_bar.rs  ",
@@ -463,9 +445,11 @@ mod tests {
         editor.handle_key(&event);
         assert_eq!(editor.as_str(), "a中   e\u{301}βb");
         let before = editor.clone();
-        assert!(editor
-            .handle_key(&event.with_kind(KeyEventKind::Release))
-            .is_none());
+        assert!(
+            editor
+                .handle_key(&event.with_kind(KeyEventKind::Release))
+                .is_none()
+        );
         assert_eq!(editor, before);
         let repeat =
             TerminalKey::new(KeyCode::Left, KeyModifiers::NONE).with_kind(KeyEventKind::Repeat);
@@ -489,7 +473,7 @@ mod tests {
         use ratatui::{buffer::Buffer, layout::Rect, style::Style};
         for text in [
             "abcdefghijklmnopqrstuvwxyz",
-            "e\u{301}中👩‍💻xyz",
+            "e\u{301}中\u{1F469}\u{200D}\u{1F4BB}xyz",
             "\u{301}abc",
         ] {
             let mut editor = TextEditor::from(text);

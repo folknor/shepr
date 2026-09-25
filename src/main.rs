@@ -5,7 +5,7 @@ pub(crate) const SHEPR_ENV_VALUE: &str = "1";
 const NESTED_SHEPR_MESSAGES: [&str; 6] = [
     "inception detected. we need to go deeper... said no one ever.",
     "recursion is a pathway to many abilities some consider to be... unnatural.",
-    "you were so preoccupied with whether you could, you didn't stop to think if you should. — dr. malcolm",
+    "you were so preoccupied with whether you could, you didn't stop to think if you should. \u{2014} dr. malcolm",
     "recursive shepring is disabled. somewhere, a call stack breathes a sigh of relief.",
     "recursive descent denied. there is, in fact, such a thing as too much shepr.",
     "recursion detected. base case not found. aborting.",
@@ -291,7 +291,7 @@ const DEFAULT_CONFIG: &str = r##"# shepr configuration
 # ServerAliveCountMax as fallbacks (so any keepalive values you set yourself
 # still win) to survive idle network/NAT timeouts. Shepr also uses a private
 # per-attach OpenSSH control socket to reuse the first authenticated connection.
-# Set false to run plain ssh against your ssh config unchanged — this does not
+# Set false to run plain ssh against your ssh config unchanged; this does not
 # force keepalive or multiplexing off, it only stops shepr from adding its own.
 # manage_ssh_config = true
 
@@ -370,10 +370,10 @@ fn finish_cli(outcome: io::Result<cli::CommandOutcome>) -> io::Result<()> {
         Ok(cli::CommandOutcome::NotCli) => Ok(()),
         Err(err) if cli::protocol_mismatch_was_reported(&err) => std::process::exit(1),
         Err(err) if cli::server_not_running_was_reported(&err) => {
-            if let Some(response) = cli::server_not_running_reported_response(&err) {
-                if let Ok(json) = serde_json::to_string(response) {
-                    eprintln!("{json}");
-                }
+            if let Some(response) = cli::server_not_running_reported_response(&err)
+                && let Ok(json) = serde_json::to_string(response)
+            {
+                eprintln!("{json}");
             }
             std::process::exit(1);
         }
@@ -431,16 +431,16 @@ fn main() -> io::Result<()> {
     }
 
     // Subcommands and flags (no TUI, no logging needed)
-    if args.get(1).map(|s| s.as_str()) == Some("remote-client-bridge") {
+    if args.get(1).map(String::as_str) == Some("remote-client-bridge") {
         return remote::run_remote_client_bridge(&args[2..]);
     }
 
-    if args.get(1).map(|s| s.as_str()) == Some("server") {
+    if args.get(1).map(String::as_str) == Some("server") {
         return server::headless::run_server();
     }
 
     // Hidden client mode: connect to an existing server's client socket.
-    if args.get(1).map(|s| s.as_str()) == Some("client") {
+    if args.get(1).map(String::as_str) == Some("client") {
         let loaded_config = config::Config::load();
         exit_if_nested_disabled(&loaded_config.config);
         return client::run_client();
@@ -448,7 +448,7 @@ fn main() -> io::Result<()> {
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
         platform::begin_cli_output();
-        println!("shepr — terminal workspace manager for AI coding agents");
+        println!("shepr \u{2014} terminal workspace manager for AI coding agents");
         println!();
         println!("Usage: shepr [options]");
         println!("       shepr --session <name> [options]");
@@ -608,8 +608,12 @@ mod tests {
         let accent_marker = "# accent = \"cyan\"";
         assert_eq!(DEFAULT_CONFIG.matches(accent_marker).count(), 1);
 
-        let accent = DEFAULT_CONFIG.find(accent_marker).expect("test precondition");
-        let sidebar = DEFAULT_CONFIG.find("# [ui.sidebar.agents]").expect("test precondition");
+        let accent = DEFAULT_CONFIG
+            .find(accent_marker)
+            .expect("test precondition");
+        let sidebar = DEFAULT_CONFIG
+            .find("# [ui.sidebar.agents]")
+            .expect("test precondition");
 
         assert!(accent < sidebar);
     }
@@ -641,9 +645,11 @@ mod tests {
 
     #[test]
     fn nested_message_strings_no_longer_repeat_shepr_prefix() {
-        assert!(NESTED_SHEPR_MESSAGES
-            .iter()
-            .all(|message| !message.starts_with("shepr:")));
+        assert!(
+            NESTED_SHEPR_MESSAGES
+                .iter()
+                .all(|message| !message.starts_with("shepr:"))
+        );
     }
 
     fn invalid_utf8_arg() -> std::ffi::OsString {

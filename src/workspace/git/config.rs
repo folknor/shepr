@@ -3,7 +3,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use super::discovery::{canonicalize_best_effort_path, GitWorktreeInfo};
+use super::discovery::{GitWorktreeInfo, canonicalize_best_effort_path};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BranchConfig {

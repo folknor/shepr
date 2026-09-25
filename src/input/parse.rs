@@ -315,8 +315,13 @@ fn kitty_codepoint_to_keycode(codepoint: u32) -> Option<KeyCode> {
         57361 => Some(KeyCode::PrintScreen),
         57362 => Some(KeyCode::Pause),
         57363 => Some(KeyCode::Menu),
-        57364..=57375 => Some(KeyCode::F((codepoint - 57364 + 1) as u8)),
-        57376..=57398 => Some(KeyCode::F((codepoint - 57376 + 13) as u8)),
+        // Ranges are bounded above (max 12 and 23 respectively), so the u8 cast is lossless.
+        57364..=57375 => Some(KeyCode::F(
+            u8::try_from(codepoint - 57364 + 1).unwrap_or(u8::MAX),
+        )),
+        57376..=57398 => Some(KeyCode::F(
+            u8::try_from(codepoint - 57376 + 13).unwrap_or(u8::MAX),
+        )),
         57399 => Some(KeyCode::Char('0')),
         57400 => Some(KeyCode::Char('1')),
         57401 => Some(KeyCode::Char('2')),
@@ -405,10 +410,10 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers, ModifierKeyCode};
 
     use super::*;
-    use crate::input::{encode_terminal_key, KeyboardProtocol};
+    use crate::input::{KeyboardProtocol, encode_terminal_key};
 
     fn assert_terminal_key_eq(
-        actual: TerminalKey,
+        actual: &TerminalKey,
         code: KeyCode,
         modifiers: KeyModifiers,
         kind: crossterm::event::KeyEventKind,
@@ -445,9 +450,13 @@ mod tests {
             "pagedown" => KeyCode::PageDown,
             "insert" => KeyCode::Insert,
             "delete" => KeyCode::Delete,
-            value if value.starts_with("char:") => {
-                KeyCode::Char(value.trim_start_matches("char:").chars().next().expect("test precondition"))
-            }
+            value if value.starts_with("char:") => KeyCode::Char(
+                value
+                    .trim_start_matches("char:")
+                    .chars()
+                    .next()
+                    .expect("test precondition"),
+            ),
             other => panic!("unsupported fixture key code: {other}"),
         }
     }
@@ -496,7 +505,7 @@ mod tests {
 
         for (sequence, code) in cases {
             assert_terminal_key_eq(
-                parse_terminal_key_sequence(sequence).expect("f key should parse"),
+                &parse_terminal_key_sequence(sequence).expect("f key should parse"),
                 code,
                 KeyModifiers::empty(),
                 crossterm::event::KeyEventKind::Press,
@@ -505,7 +514,7 @@ mod tests {
         }
 
         assert_terminal_key_eq(
-            parse_terminal_key_sequence("\x1b[15~").expect("f5 should parse"),
+            &parse_terminal_key_sequence("\x1b[15~").expect("f5 should parse"),
             KeyCode::F(5),
             KeyModifiers::empty(),
             crossterm::event::KeyEventKind::Press,
@@ -514,28 +523,28 @@ mod tests {
         assert_eq!(parse_terminal_key_sequence("\x1b[10~"), None);
         assert_eq!(parse_terminal_key_sequence("\x1b[16~"), None);
         assert_terminal_key_eq(
-            parse_terminal_key_sequence("\x1b[1~").expect("home should parse"),
+            &parse_terminal_key_sequence("\x1b[1~").expect("home should parse"),
             KeyCode::Home,
             KeyModifiers::empty(),
             crossterm::event::KeyEventKind::Press,
             None,
         );
         assert_terminal_key_eq(
-            parse_terminal_key_sequence("\x1b[4~").expect("end should parse"),
+            &parse_terminal_key_sequence("\x1b[4~").expect("end should parse"),
             KeyCode::End,
             KeyModifiers::empty(),
             crossterm::event::KeyEventKind::Press,
             None,
         );
         assert_terminal_key_eq(
-            parse_terminal_key_sequence("\x1b[5~").expect("pageup should parse"),
+            &parse_terminal_key_sequence("\x1b[5~").expect("pageup should parse"),
             KeyCode::PageUp,
             KeyModifiers::empty(),
             crossterm::event::KeyEventKind::Press,
             None,
         );
         assert_terminal_key_eq(
-            parse_terminal_key_sequence("\x1b[6~").expect("pagedown should parse"),
+            &parse_terminal_key_sequence("\x1b[6~").expect("pagedown should parse"),
             KeyCode::PageDown,
             KeyModifiers::empty(),
             crossterm::event::KeyEventKind::Press,
@@ -567,7 +576,7 @@ mod tests {
 
         for (sequence, code) in cases {
             assert_terminal_key_eq(
-                parse_terminal_key_sequence(sequence).expect("keypad sequence should parse"),
+                &parse_terminal_key_sequence(sequence).expect("keypad sequence should parse"),
                 code,
                 KeyModifiers::empty(),
                 crossterm::event::KeyEventKind::Press,
@@ -580,7 +589,7 @@ mod tests {
     fn parse_legacy_alt_shift_letter_preserves_shift() {
         let key = parse_terminal_key_sequence("\x1bA").expect("alt-shift letter should parse");
         assert_terminal_key_eq(
-            key.clone(),
+            &key,
             KeyCode::Char('A'),
             KeyModifiers::ALT | KeyModifiers::SHIFT,
             crossterm::event::KeyEventKind::Press,
@@ -594,7 +603,7 @@ mod tests {
         let key = parse_terminal_key_sequence("\x1b\x06")
             .expect("ctrl-alt-f legacy sequence should parse");
         assert_terminal_key_eq(
-            key.clone(),
+            &key,
             KeyCode::Char('f'),
             KeyModifiers::CONTROL | KeyModifiers::ALT,
             crossterm::event::KeyEventKind::Press,
@@ -614,28 +623,28 @@ mod tests {
     #[test]
     fn parse_modified_f_keys() {
         assert_terminal_key_eq(
-            parse_terminal_key_sequence("\x1b[1;2P").expect("shift+f1 should parse"),
+            &parse_terminal_key_sequence("\x1b[1;2P").expect("shift+f1 should parse"),
             KeyCode::F(1),
             KeyModifiers::SHIFT,
             crossterm::event::KeyEventKind::Press,
             None,
         );
         assert_terminal_key_eq(
-            parse_terminal_key_sequence("\x1b[1;3S").expect("alt+f4 should parse"),
+            &parse_terminal_key_sequence("\x1b[1;3S").expect("alt+f4 should parse"),
             KeyCode::F(4),
             KeyModifiers::ALT,
             crossterm::event::KeyEventKind::Press,
             None,
         );
         assert_terminal_key_eq(
-            parse_terminal_key_sequence("\x1b[1;4S").expect("shift+alt+f4 should parse"),
+            &parse_terminal_key_sequence("\x1b[1;4S").expect("shift+alt+f4 should parse"),
             KeyCode::F(4),
             KeyModifiers::SHIFT | KeyModifiers::ALT,
             crossterm::event::KeyEventKind::Press,
             None,
         );
         assert_terminal_key_eq(
-            parse_terminal_key_sequence("\x1b[15;2~").expect("shift+f5 should parse"),
+            &parse_terminal_key_sequence("\x1b[15;2~").expect("shift+f5 should parse"),
             KeyCode::F(5),
             KeyModifiers::SHIFT,
             crossterm::event::KeyEventKind::Press,
@@ -659,7 +668,7 @@ mod tests {
         for (sequence, code, modifiers) in cases {
             let parsed = parse_terminal_key_sequence(sequence).expect("test precondition");
             assert_terminal_key_eq(
-                parsed,
+                &parsed,
                 code,
                 modifiers,
                 crossterm::event::KeyEventKind::Press,
@@ -730,13 +739,13 @@ mod tests {
     fn parse_kitty_sequence_with_associated_emoji_text() {
         let key = parse_terminal_key_sequence("\x1b[128512;1;128512u").expect("test precondition");
         assert_terminal_key_eq(
-            key.clone(),
-            KeyCode::Char('😀'),
+            &key,
+            KeyCode::Char('\u{1F600}'),
             KeyModifiers::empty(),
             crossterm::event::KeyEventKind::Press,
             None,
         );
-        assert_eq!(key.generated_text.as_deref(), Some("😀"));
+        assert_eq!(key.generated_text.as_deref(), Some("\u{1F600}"));
     }
 
     #[test]
@@ -965,9 +974,12 @@ mod tests {
             (b'\x03', 'c'),
             (b'\x1a', 'z'),
         ] {
-            let key = parse_terminal_key_sequence(std::str::from_utf8(&[byte]).expect("test precondition")).expect("test precondition");
+            let key = parse_terminal_key_sequence(
+                std::str::from_utf8(&[byte]).expect("test precondition"),
+            )
+            .expect("test precondition");
             assert_terminal_key_eq(
-                key,
+                &key,
                 KeyCode::Char(expected),
                 KeyModifiers::CONTROL,
                 crossterm::event::KeyEventKind::Press,
@@ -981,9 +993,12 @@ mod tests {
             (b'\x1e', '^'),
             (b'\x1f', '_'),
         ] {
-            let key = parse_terminal_key_sequence(std::str::from_utf8(&[byte]).expect("test precondition")).expect("test precondition");
+            let key = parse_terminal_key_sequence(
+                std::str::from_utf8(&[byte]).expect("test precondition"),
+            )
+            .expect("test precondition");
             assert_terminal_key_eq(
-                key,
+                &key,
                 KeyCode::Char(expected),
                 KeyModifiers::CONTROL,
                 crossterm::event::KeyEventKind::Press,
@@ -1028,7 +1043,7 @@ mod tests {
         for (sequence, code) in cases {
             let parsed = parse_terminal_key_sequence(sequence).expect("test precondition");
             assert_terminal_key_eq(
-                parsed,
+                &parsed,
                 code,
                 KeyModifiers::empty(),
                 crossterm::event::KeyEventKind::Press,
@@ -1052,7 +1067,7 @@ mod tests {
         for (sequence, code) in cases {
             let parsed = parse_terminal_key_sequence(sequence).expect("test precondition");
             assert_terminal_key_eq(
-                parsed,
+                &parsed,
                 code,
                 KeyModifiers::empty(),
                 crossterm::event::KeyEventKind::Press,
@@ -1101,7 +1116,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("fixture failed to parse: {family}"));
 
             assert_terminal_key_eq(
-                parsed,
+                &parsed,
                 parse_fixture_key_code(code),
                 parse_fixture_modifiers(modifiers),
                 parse_fixture_kind(kind),

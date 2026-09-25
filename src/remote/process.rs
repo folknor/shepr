@@ -79,8 +79,11 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let started = Instant::now();
-        let error = wait_with_output_timeout(command.spawn().expect("test precondition"), Duration::from_millis(25))
-            .expect_err("test precondition");
+        let error = wait_with_output_timeout(
+            command.spawn().expect("test precondition"),
+            Duration::from_millis(25),
+        )
+        .expect_err("test precondition");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert!(started.elapsed() < Duration::from_secs(1));
     }

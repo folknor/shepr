@@ -12,7 +12,7 @@ pub(crate) enum ClientPaneSurfacePatchOutcome {
 
 fn row_fits_frame(row: &crate::protocol::PaneSurfacePatchRow, frame: &FrameData) -> bool {
     row.x
-        .saturating_add(row.cells.len().min(u16::MAX as usize) as u16)
+        .saturating_add(u16::try_from(row.cells.len()).unwrap_or(u16::MAX))
         <= frame.width
         && row.y < frame.height
 }
@@ -102,7 +102,7 @@ fn pane_geometry_matches(
 impl ClientShellState {
     pub(crate) fn apply_pane_surface_patch(
         &mut self,
-        patch: crate::protocol::PaneSurfacePatch,
+        patch: &crate::protocol::PaneSurfacePatch,
     ) -> ClientPaneSurfacePatchOutcome {
         let Some(current) = self.pane_surface.as_ref() else {
             return ClientPaneSurfacePatchOutcome::Rejected;
@@ -137,7 +137,7 @@ impl ClientShellState {
                         && row.y < pane.inner_rect.y.saturating_add(pane.inner_rect.height)
                         && row
                             .x
-                            .saturating_add(row.cells.len().min(u16::MAX as usize) as u16)
+                            .saturating_add(u16::try_from(row.cells.len()).unwrap_or(u16::MAX))
                             <= pane.inner_rect.x.saturating_add(pane.inner_rect.width);
                     let scrollbar_rect = pane.scrollbar_rect.or_else(|| {
                         current
@@ -159,7 +159,7 @@ impl ClientShellState {
             }
         }
 
-        let fast_path_blocker = fast_path_blocker(self, &patch);
+        let fast_path_blocker = fast_path_blocker(self, patch);
         let fast_path_area = fast_path_blocker.is_none().then(|| {
             let (cols, rows) = self.last_composed_size.unwrap_or_default();
             self.layout(cols, rows).pane_surface
@@ -188,7 +188,7 @@ impl ClientShellState {
             let applied = self
                 .pane_surface
                 .as_mut()
-                .is_some_and(|surface| apply_patch_to_surface(surface, &patch));
+                .is_some_and(|surface| apply_patch_to_surface(surface, patch));
             if !applied {
                 return ClientPaneSurfacePatchOutcome::Rejected;
             }
@@ -233,26 +233,11 @@ impl ClientShellState {
             }
         } else {
             let mut next = current.clone();
-            if !apply_patch_to_surface(&mut next, &patch) {
+            if !apply_patch_to_surface(&mut next, patch) {
                 return ClientPaneSurfacePatchOutcome::Rejected;
             }
             self.set_pane_surface(next);
         }
         ClientPaneSurfacePatchOutcome::Applied(composed_patch)
     }
-}
-
-#[cfg(test)]
-pub(crate) fn apply_composed_surface_patch(
-    frame: &FrameData,
-    patch: ClientComposedSurfacePatch,
-) -> Option<FrameData> {
-    let mut next = frame.clone();
-    for row in &patch.rows {
-        if !apply_row(row, &mut next) {
-            return None;
-        }
-    }
-    next.cursor = patch.cursor;
-    Some(next)
 }

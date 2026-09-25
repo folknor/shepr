@@ -394,42 +394,40 @@ impl HeadlessServer {
                             })
                     })
                 });
-            if changed {
-                if let Some(target) = self.shell_target_for_client(*client_id) {
-                    let area = Rect::new(0, 0, *cols, *rows);
-                    let layout = crate::ui::compute_tab_surface_for(
-                        &self.app.state,
-                        &self.app.terminal_runtimes,
-                        Some(target),
-                        area,
-                        false,
-                        *cell_size,
-                    );
-                    if layout.pane_infos.iter().any(|pane| {
-                        self.app
-                            .state
-                            .runtime_for_pane_in_workspace(
-                                &self.app.terminal_runtimes,
-                                target.workspace_index,
-                                pane.id,
-                            )
-                            .is_some_and(|runtime| runtime.synchronized_output_active())
-                    }) {
-                        continue;
-                    }
-                    crate::ui::resize_tab_surface(
-                        &self.app.state,
-                        &self.app.terminal_runtimes,
-                        target.workspace_index,
-                        target.tab_index,
-                        area,
-                        if cell_size.is_known() {
-                            *cell_size
-                        } else {
-                            crate::terminal_cell_size::HostCellSize::default()
-                        },
-                    );
+            if changed && let Some(target) = self.shell_target_for_client(*client_id) {
+                let area = Rect::new(0, 0, *cols, *rows);
+                let layout = crate::ui::compute_tab_surface_for(
+                    &self.app.state,
+                    &self.app.terminal_runtimes,
+                    Some(target),
+                    area,
+                    false,
+                    *cell_size,
+                );
+                if layout.pane_infos.iter().any(|pane| {
+                    self.app
+                        .state
+                        .runtime_for_pane_in_workspace(
+                            &self.app.terminal_runtimes,
+                            target.workspace_index,
+                            pane.id,
+                        )
+                        .is_some_and(crate::terminal::TerminalRuntime::synchronized_output_active)
+                }) {
+                    continue;
                 }
+                crate::ui::resize_tab_surface(
+                    &self.app.state,
+                    &self.app.terminal_runtimes,
+                    target.workspace_index,
+                    target.tab_index,
+                    area,
+                    if cell_size.is_known() {
+                        *cell_size
+                    } else {
+                        crate::terminal_cell_size::HostCellSize::default()
+                    },
+                );
             }
         }
 
@@ -567,7 +565,7 @@ impl HeadlessServer {
                     let Some(runtime) = self.runtime_for_terminal_id_string(&terminal_id) else {
                         self.send_to_client(
                             client_id,
-                            ServerMessage::ServerShutdown {
+                            &ServerMessage::ServerShutdown {
                                 reason: Some(format!(
                                     "terminal attach ended: terminal {terminal_id} not found"
                                 )),

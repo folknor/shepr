@@ -441,11 +441,15 @@ mod tests {
             let parked_at = now + Duration::from_millis(11 + step * 30);
             settle.observe(Some(park), parked_at);
             assert_eq!(
-                settle.reported_cursor(Some(park), parked_at).expect("test precondition").y,
+                settle
+                    .reported_cursor(Some(park), parked_at)
+                    .expect("test precondition")
+                    .y,
                 39,
                 "a fresh repair position must not inherit the typing deadline"
             );
-            let caret = cursor(6 + step as u16 * 2, 39, true, 0);
+            let step_x = u16::try_from(step).expect("test step fits in u16");
+            let caret = cursor(6 + step_x * 2, 39, true, 0);
             settle.observe(Some(caret), parked_at + Duration::from_millis(10));
         }
     }
@@ -477,7 +481,12 @@ mod tests {
         settle.observe(Some(cursor(2, 0, true, 0)), now + Duration::from_millis(1));
         for ms in (11..=91).step_by(10) {
             settle.observe(
-                Some(cursor(ms as u16, 0, true, 0)),
+                Some(cursor(
+                    u16::try_from(ms).expect("test ms fits in u16"),
+                    0,
+                    true,
+                    0,
+                )),
                 now + Duration::from_millis(ms),
             );
         }
@@ -504,7 +513,12 @@ mod tests {
             settle.observe(Some(cursor(0, 0, true, 0)), now);
             for ms in (1..=91).step_by(step) {
                 settle.observe(
-                    Some(cursor(ms as u16, 1, true, 0)),
+                    Some(cursor(
+                        u16::try_from(ms).expect("test ms fits in u16"),
+                        1,
+                        true,
+                        0,
+                    )),
                     now + Duration::from_millis(ms),
                 );
             }

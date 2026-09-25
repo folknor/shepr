@@ -175,7 +175,7 @@ mod read_snapshot_tests {
         assert_eq!(snapshot.text, "");
         assert!(snapshot.truncated);
 
-        let snapshot = limit_snapshot_lines("".into(), Some(2));
+        let snapshot = limit_snapshot_lines(String::new(), Some(2));
         assert_eq!(snapshot.text, "");
         assert!(!snapshot.truncated);
     }
@@ -207,7 +207,7 @@ pub(super) const MAX_METADATA_TOKEN_KEYS_PER_RESOURCE: usize = 32;
 const MAX_METADATA_TOKEN_KEY_LEN: usize = 32;
 const MAX_METADATA_TOKEN_VALUE_LEN: usize = 80;
 
-pub(super) fn normalize_metadata_source(value: String) -> Result<String, &'static str> {
+pub(super) fn normalize_metadata_source(value: &str) -> Result<String, &'static str> {
     let value = value.trim();
     if value.is_empty() {
         return Err("metadata source must not be empty");
@@ -302,11 +302,13 @@ mod metadata_token_tests {
             "bad.name".to_string(),
             "x".repeat(MAX_METADATA_TOKEN_KEY_LEN + 1),
         ] {
-            assert!(normalize_metadata_tokens(std::collections::HashMap::from([(
-                key,
-                Some("value".into()),
-            )]))
-            .is_err());
+            assert!(
+                normalize_metadata_tokens(std::collections::HashMap::from([(
+                    key,
+                    Some("value".into()),
+                )]))
+                .is_err()
+            );
         }
         let too_many = (0..=MAX_METADATA_TOKEN_KEYS_PER_REQUEST)
             .map(|index| (format!("key{index}"), Some("value".into())))

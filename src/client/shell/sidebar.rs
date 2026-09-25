@@ -65,7 +65,7 @@ pub(crate) fn render_collapsed_sidebar(
     {
         let rect = Rect::new(
             workspace_area.x,
-            workspace_area.y + index as u16,
+            workspace_area.y + u16::try_from(index).unwrap_or(u16::MAX),
             workspace_area.width,
             1,
         );
@@ -140,7 +140,7 @@ pub(crate) fn render_collapsed_sidebar(
         };
         let rect = Rect::new(
             detail_content.x,
-            detail_content.y + index as u16,
+            detail_content.y + u16::try_from(index).unwrap_or(u16::MAX),
             detail_content.width,
             1,
         );
@@ -236,15 +236,15 @@ pub(crate) fn render_sidebar(
                 .workspaces
                 .get(entry.index)
                 .map(|workspace| {
-                    workspace_rows(
+                    let len = workspace_rows(
                         workspace,
                         displayed_workspace_status(workspace),
                         entry.indented,
                         &config.spaces,
                     )
                     .len()
-                    .max(1)
-                    .min(u16::MAX as usize) as u16
+                    .max(1);
+                    u16::try_from(len).unwrap_or(u16::MAX)
                 })
                 .unwrap_or(1)
         })
@@ -264,25 +264,25 @@ pub(crate) fn render_sidebar(
         body.height,
         *state.workspace_scroll,
     );
-    if !body.is_empty() && std::mem::take(state.reveal_focused_workspace) {
-        if let Some(target) = entries
+    if !body.is_empty()
+        && std::mem::take(state.reveal_focused_workspace)
+        && let Some(target) = entries
             .iter()
             .position(|entry| snapshot.workspaces[entry.index].focused)
-        {
-            *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
-                &row_heights,
-                &gaps,
-                body.height,
-                *state.workspace_scroll,
-                target,
-            );
-            metrics = super::scroll::list_scroll_metrics(
-                &row_heights,
-                &gaps,
-                body.height,
-                *state.workspace_scroll,
-            );
-        }
+    {
+        *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
+            &row_heights,
+            &gaps,
+            body.height,
+            *state.workspace_scroll,
+            target,
+        );
+        metrics = super::scroll::list_scroll_metrics(
+            &row_heights,
+            &gaps,
+            body.height,
+            *state.workspace_scroll,
+        );
     }
     hits.workspace_max_scroll = metrics.max_offset_from_bottom;
     hits.workspace_scroll_metrics = Some(metrics);
@@ -298,7 +298,9 @@ pub(crate) fn render_sidebar(
         };
         let status = displayed_workspace_status(workspace);
         let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
-        let row_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
+        let row_height = u16::try_from(rows.len().max(1))
+            .unwrap_or(u16::MAX)
+            .min(body.height);
         if y.saturating_add(row_height) > body.bottom() {
             break;
         }
@@ -320,7 +322,7 @@ pub(crate) fn render_sidebar(
             status,
             config.status_indicators,
             entry,
-            rows,
+            &rows,
             workspace.focused,
             selected,
             state.selected_workspace_id.is_some(),
@@ -450,7 +452,7 @@ pub(in crate::client::shell) fn workspace_rows(
     let token_values = workspace.tokens.iter().cloned().collect::<HashMap<_, _>>();
     crate::ui::sidebar_space_rows(
         config,
-        crate::ui::SpaceTokenContext {
+        &crate::ui::SpaceTokenContext {
             workspace: label,
             branch: workspace.branch.as_deref(),
             state_text: status_text(status),
@@ -467,7 +469,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
     status: crate::api::schema::AgentStatus,
     indicators: crate::config::StatusIndicatorStyle,
     entry: &WorkspaceEntry,
-    rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    rows: &[Vec<crate::ui::ResolvedToken>],
     focused: bool,
     selected: bool,
     navigating: bool,
@@ -475,7 +477,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
     palette: &Palette,
 ) {
     for (row_index, row) in rows.iter().enumerate() {
-        let y = area.y + row_index as u16;
+        let y = area.y + u16::try_from(row_index).unwrap_or(u16::MAX);
         if y >= area.bottom() {
             break;
         }

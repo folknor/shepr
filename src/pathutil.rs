@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub(crate) fn expand_tilde_path(path: &str) -> PathBuf {
     expand_tilde_path_from_env(path, |key| std::env::var_os(key))
@@ -16,21 +16,6 @@ fn expand_tilde_path_from_env(path: &str, env: impl Fn(&str) -> Option<OsString>
             .unwrap_or_else(|| PathBuf::from(path));
     }
     PathBuf::from(path)
-}
-
-pub(crate) fn expand_tilde_absolute_path(path: &str) -> PathBuf {
-    let path = expand_tilde_path(path);
-    if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&path))
-            .unwrap_or(path)
-    }
-}
-
-pub(crate) fn canonical_or_original(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[cfg(test)]

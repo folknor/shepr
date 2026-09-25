@@ -33,7 +33,7 @@ impl App {
         encode_success(id, ResponseResult::TabList { tabs })
     }
 
-    pub(super) fn handle_tab_get(&mut self, id: String, target: TabTarget) -> String {
+    pub(super) fn handle_tab_get(&mut self, id: String, target: &TabTarget) -> String {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return tab_not_found(id, &target.tab_id);
         };
@@ -129,7 +129,7 @@ impl App {
         }
     }
 
-    pub(super) fn handle_tab_focus(&mut self, id: String, target: TabTarget) -> String {
+    pub(super) fn handle_tab_focus(&mut self, id: String, target: &TabTarget) -> String {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return tab_not_found(id, &target.tab_id);
         };
@@ -175,7 +175,7 @@ impl App {
         encode_success(id, ResponseResult::TabInfo { tab })
     }
 
-    pub(super) fn handle_tab_move(&mut self, id: String, params: TabMoveParams) -> String {
+    pub(super) fn handle_tab_move(&mut self, id: String, params: &TabMoveParams) -> String {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
             return tab_not_found(id, &params.tab_id);
         };
@@ -217,7 +217,7 @@ impl App {
         encode_success(id, ResponseResult::TabList { tabs })
     }
 
-    pub(super) fn handle_tab_close(&mut self, id: String, target: TabTarget) -> String {
+    pub(super) fn handle_tab_close(&mut self, id: String, target: &TabTarget) -> String {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return tab_not_found(id, &target.tab_id);
         };
@@ -338,7 +338,7 @@ mod tests {
 
         let response = app.handle_tab_close(
             "req".into(),
-            TabTarget {
+            &TabTarget {
                 tab_id: tab_id.clone(),
             },
         );
@@ -394,7 +394,7 @@ mod tests {
 
         let response = app.handle_tab_move(
             "req".into(),
-            TabMoveParams {
+            &TabMoveParams {
                 tab_id: moved_id.clone(),
                 insert_index: 3,
             },
@@ -405,7 +405,10 @@ mod tests {
             panic!("expected tab list");
         };
         assert_eq!(app.state.workspaces[0].tabs[2].root_pane, moved_root);
-        assert_eq!(tabs[2].tab_id, app.public_tab_id(0, 2).expect("test precondition"));
+        assert_eq!(
+            tabs[2].tab_id,
+            app.public_tab_id(0, 2).expect("test precondition")
+        );
         let events = event_hub.events_after(0);
         assert!(events.iter().any(|(_, event)| {
             matches!(
@@ -446,7 +449,11 @@ mod tests {
             .terminal_id(focused_pane)
             .cloned()
             .expect("test precondition");
-        app.state.terminals.get_mut(&terminal_id).expect("test precondition").cwd = cached_cwd.clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition")
+            .cwd = cached_cwd.clone();
 
         let response = app.handle_tab_create(
             "req".into(),
@@ -462,11 +469,18 @@ mod tests {
         let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
         assert!(matches!(success.result, ResponseResult::TabCreated { .. }));
         let created = &app.state.workspaces[0].tabs[1];
-        let created_terminal_id = created.terminal_id(created.root_pane).expect("test precondition");
-        let created_cwd = &app.state.terminals.get(created_terminal_id).expect("test precondition").cwd;
+        let created_terminal_id = created
+            .terminal_id(created.root_pane)
+            .expect("test precondition");
+        let created_cwd = &app
+            .state
+            .terminals
+            .get(created_terminal_id)
+            .expect("test precondition")
+            .cwd;
         assert_eq!(
-            crate::pathutil::canonical_or_original(created_cwd),
-            crate::pathutil::canonical_or_original(&cached_cwd)
+            std::fs::canonicalize(created_cwd).unwrap_or_else(|_| created_cwd.clone()),
+            std::fs::canonicalize(&cached_cwd).unwrap_or_else(|_| cached_cwd.clone())
         );
         shutdown_test_runtimes(&mut app);
     }

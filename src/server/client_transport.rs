@@ -11,18 +11,18 @@ use std::sync::mpsc::{SendError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use interprocess::local_socket::traits::Stream as _;
 use interprocess::TryClone as _;
+use interprocess::local_socket::traits::Stream as _;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::ipc::LocalStream;
 use crate::protocol::endpoint::{
-    EndpointClientHello, EndpointServerWelcome, ENDPOINT_HELLO_KIND, ENDPOINT_WELCOME_KIND,
+    ENDPOINT_HELLO_KIND, ENDPOINT_WELCOME_KIND, EndpointClientHello, EndpointServerWelcome,
 };
 use crate::protocol::{
     self, AttachScrollDirection, AttachScrollSource, ClientMessage, ClientPaneInputEvent,
-    RenderEncoding, ServerMessage, MAX_FRAME_SIZE, PROTOCOL_VERSION,
+    MAX_FRAME_SIZE, PROTOCOL_VERSION, RenderEncoding, ServerMessage,
 };
 
 /// Minimum accepted attached client size.
@@ -138,8 +138,8 @@ impl ClientWriter {
         render: std::sync::mpsc::SyncSender<Vec<u8>>,
     ) -> Self {
         let queue = ClientWriterQueue::new();
-        let drain = queue.clone();
-        let control_writer = ClientControlWriter::queue(queue.clone());
+        let drain = Arc::clone(&queue);
+        let control_writer = ClientControlWriter::queue(Arc::clone(&queue));
         let mut render_writer = ClientRenderWriter::queue(queue);
         render_writer.test_render = Some(render.clone());
         let writer = Self {
@@ -230,10 +230,6 @@ impl ClientRenderWriter {
         }
         self.queue.try_send_render(data)
     }
-
-    pub(crate) fn send_ordered(&self, data: Vec<u8>) -> Result<(), TrySendError<Vec<u8>>> {
-        self.queue.send_ordered(data)
-    }
 }
 
 #[derive(Debug)]
@@ -309,22 +305,6 @@ impl ClientWriterQueue {
         self.ready.notify_all();
     }
 
-    fn send_ordered(&self, data: Vec<u8>) -> Result<(), TrySendError<Vec<u8>>> {
-        let mut state = self.lock_state();
-        if !state.writer_alive {
-            return Err(TrySendError::Disconnected(data));
-        }
-        if !state.ordered.is_empty() {
-            return Err(TrySendError::Full(data));
-        }
-        if let Some(older) = state.render.take() {
-            state.ordered.push_back(older);
-        }
-        state.ordered.push_back(data);
-        self.ready.notify_one();
-        Ok(())
-    }
-
     fn recv(&self) -> Option<ClientWriteItem> {
         let mut state = self.lock_state();
         loop {
@@ -344,7 +324,7 @@ impl ClientWriterQueue {
             state = self
                 .ready
                 .wait(state)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
@@ -359,7 +339,7 @@ impl ClientWriterQueue {
     fn lock_state(&self) -> std::sync::MutexGuard<'_, ClientWriterQueueState> {
         self.state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -594,7 +574,7 @@ pub(crate) fn handle_client_handshake(
         return Ok(());
     }
 
-    // Reset to blocking mode — the accept loop sets nonblocking but
+    // Reset to blocking mode - the accept loop sets nonblocking but
     // the handshake thread needs blocking I/O for read_message/write_message.
     stream.set_nonblocking(false)?;
 
@@ -744,15 +724,15 @@ pub(crate) fn handle_client_handshake(
     // Create separate channels for reliable control messages and droppable renders.
     let writer_queue = ClientWriterQueue::new();
     let writer = ClientWriter {
-        control: ClientControlWriter::queue(writer_queue.clone()),
-        render: ClientRenderWriter::queue(writer_queue.clone()),
+        control: ClientControlWriter::queue(Arc::clone(&writer_queue)),
+        render: ClientRenderWriter::queue(Arc::clone(&writer_queue)),
     };
 
     // Spawn a writer thread that forwards messages from the channels to the stream.
     let write_stream = stream.try_clone()?;
     let writer_event_tx = server_event_tx.clone();
     std::thread::spawn(move || {
-        client_writer_loop(write_stream, client_id, writer_queue, writer_event_tx);
+        client_writer_loop(write_stream, client_id, &writer_queue, &writer_event_tx);
     });
 
     if should_quit.load(Ordering::Acquire) {
@@ -806,7 +786,7 @@ pub(crate) fn handle_client_handshake(
         }
     }
 
-    // Enter read loop — read client messages and forward to main loop.
+    // Enter read loop - read client messages and forward to main loop.
     client_read_loop_with_endpoint_controls(
         stream,
         client_id,
@@ -830,12 +810,12 @@ fn send_shutdown_to_unregistered_client(writer: &ClientWriter) {
     }
 }
 
-/// The client writer loop — prioritizes control messages over render frames.
+/// The client writer loop - prioritizes control messages over render frames.
 fn client_writer_loop(
     mut stream: LocalStream,
     client_id: u64,
-    writer_queue: Arc<ClientWriterQueue>,
-    server_event_tx: mpsc::Sender<ServerEvent>,
+    writer_queue: &Arc<ClientWriterQueue>,
+    server_event_tx: &mpsc::Sender<ServerEvent>,
 ) {
     while let Some(item) = writer_queue.recv() {
         let written = match item {
@@ -868,7 +848,7 @@ fn write_framed_bytes(stream: &mut LocalStream, data: &[u8]) -> bool {
     true
 }
 
-/// The client read loop — reads messages from the client and forwards to the server event channel.
+/// The client read loop - reads messages from the client and forwards to the server event channel.
 #[cfg(test)]
 fn client_read_loop(
     stream: LocalStream,
@@ -1171,7 +1151,7 @@ fn client_read_loop_with_endpoint_controls(
                 lines,
             },
             ClientMessage::TerminalHello { .. } => {
-                // Duplicate handshake — ignore.
+                // Duplicate handshake - ignore.
                 continue;
             }
         };
@@ -1275,8 +1255,8 @@ mod tests {
         let queue = ClientWriterQueue::new();
         (
             ClientWriter {
-                control: ClientControlWriter::queue(queue.clone()),
-                render: ClientRenderWriter::queue(queue.clone()),
+                control: ClientControlWriter::queue(Arc::clone(&queue)),
+                render: ClientRenderWriter::queue(Arc::clone(&queue)),
             },
             queue,
         )
@@ -1306,30 +1286,6 @@ mod tests {
     }
 
     #[test]
-    fn ordered_direct_follows_older_render_and_stays_bounded() {
-        let (writer, queue) = test_queue_writer();
-        writer.render.try_send(b"old".to_vec()).expect("test precondition");
-        writer.render.send_ordered(b"direct".to_vec()).expect("test precondition");
-        assert!(matches!(
-            writer.render.send_ordered(b"second".to_vec()),
-            Err(TrySendError::Full(_))
-        ));
-        writer.render.try_send(b"new".to_vec()).expect("test precondition");
-
-        for expected in [b"old".as_slice(), b"direct", b"new"] {
-            assert_eq!(
-                queue.recv(),
-                Some(ClientWriteItem::Render(expected.to_vec()))
-            );
-        }
-        queue.close_writer();
-        assert!(matches!(
-            writer.render.send_ordered(b"closed".to_vec()),
-            Err(TrySendError::Disconnected(_))
-        ));
-    }
-
-    #[test]
     fn client_writer_prioritizes_control_and_reports_render_drain() {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-writer-priority");
         let (writer, queue) = test_queue_writer();
@@ -1348,7 +1304,7 @@ mod tests {
 
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let handle = std::thread::spawn(move || {
-            client_writer_loop(server_stream, 9, queue, server_event_tx);
+            client_writer_loop(server_stream, 9, &queue, &server_event_tx);
         });
 
         match protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read control") {
@@ -1378,7 +1334,7 @@ mod tests {
         let (server_event_tx, _server_event_rx) = mpsc::channel(4);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            client_writer_loop(server_stream, 11, queue, server_event_tx);
+            client_writer_loop(server_stream, 11, &queue, &server_event_tx);
             let _ = done_tx.send(());
         });
 
@@ -1397,7 +1353,7 @@ mod tests {
         let (server_event_tx, _server_event_rx) = mpsc::channel(4);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            client_writer_loop(server_stream, 12, queue, server_event_tx);
+            client_writer_loop(server_stream, 12, &queue, &server_event_tx);
             let _ = done_tx.send(());
         });
 
@@ -1436,7 +1392,7 @@ mod tests {
         let (server_event_tx, _server_event_rx) = mpsc::channel(4);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            client_writer_loop(server_stream, 13, queue, server_event_tx);
+            client_writer_loop(server_stream, 13, &queue, &server_event_tx);
             let _ = done_tx.send(());
         });
 
@@ -1515,27 +1471,33 @@ mod tests {
 
     #[test]
     fn client_shell_geometry_rejects_unsafe_dimensions_and_cell_sizes() {
-        assert!(client_shell_geometry_error(
-            crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 },
-            8,
-            16,
-        )
-        .is_none());
-        assert!(client_shell_geometry_error(
-            crate::protocol::ClientSurfaceSize {
-                cols: MAX_CLIENT_SHELL_DIMENSION,
-                rows: MAX_CLIENT_SHELL_DIMENSION,
-            },
-            8,
-            16,
-        )
-        .is_some());
-        assert!(client_shell_geometry_error(
-            crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 },
-            MAX_CLIENT_CELL_SIZE_PX + 1,
-            16,
-        )
-        .is_some());
+        assert!(
+            client_shell_geometry_error(
+                crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 },
+                8,
+                16,
+            )
+            .is_none()
+        );
+        assert!(
+            client_shell_geometry_error(
+                crate::protocol::ClientSurfaceSize {
+                    cols: MAX_CLIENT_SHELL_DIMENSION,
+                    rows: MAX_CLIENT_SHELL_DIMENSION,
+                },
+                8,
+                16,
+            )
+            .is_some()
+        );
+        assert!(
+            client_shell_geometry_error(
+                crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 },
+                MAX_CLIENT_CELL_SIZE_PX + 1,
+                16,
+            )
+            .is_some()
+        );
     }
 
     #[test]
@@ -1574,7 +1536,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-handshake-ansi");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let handshake_quit = should_quit.clone();
+        let handshake_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             handle_client_handshake(server_stream, 42, &server_event_tx, &handshake_quit)
         });
@@ -1642,7 +1604,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-shell-handshake");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let handshake_quit = should_quit.clone();
+        let handshake_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             handle_client_handshake(server_stream, 43, &server_event_tx, &handshake_quit)
         });
@@ -1701,7 +1663,7 @@ mod tests {
             local_stream_pair("client-shell-empty-surface");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let handshake_quit = should_quit.clone();
+        let handshake_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             handle_client_handshake(server_stream, 43, &server_event_tx, &handshake_quit)
         });
@@ -1712,9 +1674,11 @@ mod tests {
         let welcome: ServerMessage =
             protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
         let welcome = endpoint_welcome(welcome);
-        assert!(welcome
-            .error
-            .is_some_and(|error| error.message.contains("non-empty pane surface")));
+        assert!(
+            welcome
+                .error
+                .is_some_and(|error| error.message.contains("non-empty pane surface"))
+        );
         handle
             .join()
             .expect("handshake thread join")
@@ -1727,7 +1691,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-read-detach");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let read_quit = should_quit.clone();
+        let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
         });
@@ -1760,7 +1724,7 @@ mod tests {
             local_stream_pair("client-read-future-control");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let read_quit = should_quit.clone();
+        let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
         });
@@ -1773,7 +1737,8 @@ mod tests {
             },
         )
         .expect("test precondition");
-        protocol::write_message(&mut client_stream, &ClientMessage::Detach).expect("test precondition");
+        protocol::write_message(&mut client_stream, &ClientMessage::Detach)
+            .expect("test precondition");
 
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "detach after future control"),
@@ -1791,7 +1756,7 @@ mod tests {
             local_stream_pair("client-read-unsafe-resize");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let read_quit = should_quit.clone();
+        let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
         });
@@ -1825,7 +1790,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-read-oversized");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let read_quit = should_quit.clone();
+        let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
         });
@@ -1900,7 +1865,7 @@ mod tests {
             local_stream_pair("client-read-oversized-non-paste");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let read_quit = should_quit.clone();
+        let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
         });
@@ -1932,7 +1897,7 @@ mod tests {
             local_stream_pair("client-read-invalid-utf8-paste");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let read_quit = should_quit.clone();
+        let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
         });
@@ -1960,7 +1925,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-read-resize");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let read_quit = should_quit.clone();
+        let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
         });
@@ -2003,7 +1968,7 @@ mod tests {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-read-host-theme");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let read_quit = should_quit.clone();
+        let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
             client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
         });
@@ -2082,7 +2047,7 @@ mod tests {
             position: crate::protocol::ClientMousePosition::Cell { column: 0, row: 0 },
             geometry: None,
             modifiers: 0,
-            lines: (MAX_INPUT_EVENT_BATCH + 1) as u16,
+            lines: u16::try_from(MAX_INPUT_EVENT_BATCH + 1).unwrap_or(u16::MAX),
         };
         assert_eq!(
             pane_input_event_limit(&[oversized_scroll]),
@@ -2097,9 +2062,8 @@ mod tests {
         // OS overhead (thread scheduling, timer slack, cleanup).
         assert!(
             HANDSHAKE_TIMEOUT < Duration::from_secs(5),
-            "HANDSHAKE_TIMEOUT ({:?}) must be less than 5 seconds to guarantee \
-             connection close within the 5-second deadline",
-            HANDSHAKE_TIMEOUT
+            "HANDSHAKE_TIMEOUT ({HANDSHAKE_TIMEOUT:?}) must be less than 5 seconds to guarantee \
+             connection close within the 5-second deadline"
         );
     }
 }

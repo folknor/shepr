@@ -70,9 +70,9 @@ impl App {
             }
             changed |= self.start_pending_agent_resume(
                 pane_id,
-                terminal_id,
-                cwd,
-                plan,
+                &terminal_id,
+                &cwd,
+                &plan,
                 rows,
                 cols,
                 allow_empty_theme,
@@ -207,9 +207,9 @@ impl App {
 
         let changed = self.start_pending_agent_resume(
             pane_id,
-            terminal_id.clone(),
-            cwd,
-            plan,
+            terminal_id,
+            &cwd,
+            &plan,
             rows,
             cols,
             allow_empty_theme,
@@ -226,9 +226,9 @@ impl App {
     fn start_pending_agent_resume(
         &mut self,
         pane_id: crate::layout::PaneId,
-        terminal_id: crate::terminal::TerminalId,
-        cwd: std::path::PathBuf,
-        plan: crate::agent_resume::AgentResumePlan,
+        terminal_id: &crate::terminal::TerminalId,
+        cwd: &std::path::Path,
+        plan: &crate::agent_resume::AgentResumePlan,
         rows: u16,
         cols: u16,
         allow_empty_theme: bool,
@@ -255,7 +255,7 @@ impl App {
         };
 
         if !cwd.is_dir() {
-            if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+            if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
                 terminal.pending_agent_resume_plan = None;
                 terminal.restore_error = Some("Saved directory is unavailable. Restore the directory and restart this session.".into());
                 terminal.revision = terminal.revision.saturating_add(1);
@@ -273,9 +273,9 @@ impl App {
             self.state.host_terminal_appearance,
             crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
             &launch_env,
-            self.event_tx.clone(),
-            self.render_notify.clone(),
-            self.render_dirty.clone(),
+            &self.event_tx,
+            &self.render_notify,
+            &self.render_dirty,
         ) {
             Ok(runtime) => runtime,
             Err(err) => {
@@ -286,9 +286,11 @@ impl App {
                     err = %err,
                     "failed to start shell for deferred agent resume"
                 );
-                if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
                     terminal.pending_agent_resume_plan = None;
-                    terminal.restore_error = Some(format!("Could not start the saved shell: {err}. Fix the shell configuration and restart this session."));
+                    terminal.restore_error = Some(format!(
+                        "Could not start the saved shell: {err}. Fix the shell configuration and restart this session."
+                    ));
                     terminal.revision = terminal.revision.saturating_add(1);
                 }
                 return true;
@@ -310,7 +312,7 @@ impl App {
         }
 
         self.terminal_runtimes.insert(terminal_id.clone(), runtime);
-        if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+        if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
             terminal.pending_agent_resume_plan = None;
         }
         true
@@ -325,7 +327,7 @@ fn derived_pending_agent_resume_pane_infos(
     pane_outer_borders: bool,
 ) -> Vec<crate::layout::PaneInfo> {
     crate::ui::apply_pane_chrome(
-        tab.layout.panes(terminal_area),
+        &tab.layout.panes(terminal_area),
         pane_borders,
         pane_gaps,
         pane_outer_borders,
@@ -351,7 +353,6 @@ fn stable_terminal_inner_rect(pane_inner: Rect) -> Rect {
         pane_inner.height,
     )
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -419,8 +420,12 @@ mod tests {
                 app.pending_agent_resume_deadline = None;
                 app.sync_pending_agent_resume_deadline(now);
                 assert_eq!(app.pending_agent_resume_deadline, Some(next));
-                assert!(!app
-                    .start_pending_agent_resumes(next - std::time::Duration::from_millis(1), true));
+                assert!(
+                    !app.start_pending_agent_resumes(
+                        next - std::time::Duration::from_millis(1),
+                        true
+                    )
+                );
                 // A late wakeup must not release every overdue agent in a burst.
                 for processed in 2..=4 {
                     let late = now + std::time::Duration::from_secs(processed * 10);
@@ -431,7 +436,7 @@ mod tests {
                             .values()
                             .filter(|t| t.restore_error.is_some())
                             .count(),
-                        processed as usize
+                        usize::try_from(processed).unwrap_or(usize::MAX)
                     );
                 }
             }
@@ -467,14 +472,21 @@ mod tests {
             let mut app = test_app();
             let workspace = crate::workspace::Workspace::test_new("unavailable");
             let pane_id = workspace.tabs[0].root_pane;
-            let terminal_id = workspace.terminal_id(pane_id).expect("test precondition").clone();
+            let terminal_id = workspace
+                .terminal_id(pane_id)
+                .expect("test precondition")
+                .clone();
             app.state.workspaces = vec![workspace];
             app.state.active = Some(0);
             app.state.ensure_test_terminals();
             if missing_shell {
                 app.state.default_shell = "__shepr_missing_resume_shell__".into();
             }
-            let terminal = app.state.terminals.get_mut(&terminal_id).expect("test precondition");
+            let terminal = app
+                .state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("test precondition");
             if !missing_shell {
                 terminal.cwd = std::env::current_dir()
                     .expect("test precondition")
@@ -484,7 +496,8 @@ mod tests {
             let session = crate::agent_resume::PersistedAgentSession {
                 source: "shepr:codex".into(),
                 agent: "codex".into(),
-                session_ref: crate::agent_resume::AgentSessionRef::id("resume-test").expect("test precondition"),
+                session_ref: crate::agent_resume::AgentSessionRef::id("resume-test")
+                    .expect("test precondition"),
             };
             terminal.persisted_agent_session = Some(session.clone());
             terminal.pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
@@ -508,7 +521,10 @@ mod tests {
         let mut app = test_app();
         let workspace = crate::workspace::Workspace::test_new("restored");
         let pane_id = workspace.tabs[0].root_pane;
-        let terminal_id = workspace.terminal_id(pane_id).cloned().expect("test precondition");
+        let terminal_id = workspace
+            .terminal_id(pane_id)
+            .cloned()
+            .expect("test precondition");
         let pane_infos = workspace.tabs[0]
             .layout
             .panes(ratatui::layout::Rect::new(0, 0, 100, 30));
@@ -586,7 +602,10 @@ mod tests {
         let mut app = test_app();
         let workspace = crate::workspace::Workspace::test_new("restored");
         let pane_id = workspace.tabs[0].root_pane;
-        let terminal_id = workspace.terminal_id(pane_id).cloned().expect("test precondition");
+        let terminal_id = workspace
+            .terminal_id(pane_id)
+            .cloned()
+            .expect("test precondition");
         app.state.view.pane_infos = workspace.tabs[0]
             .layout
             .panes(ratatui::layout::Rect::new(0, 0, 100, 30));
@@ -619,10 +638,16 @@ mod tests {
         let mut app = test_app();
         let active_workspace = crate::workspace::Workspace::test_new("active");
         let active_pane = active_workspace.tabs[0].root_pane;
-        let active_terminal = active_workspace.terminal_id(active_pane).cloned().expect("test precondition");
+        let active_terminal = active_workspace
+            .terminal_id(active_pane)
+            .cloned()
+            .expect("test precondition");
         let hidden_workspace = crate::workspace::Workspace::test_new("hidden");
         let hidden_pane = hidden_workspace.tabs[0].root_pane;
-        let hidden_terminal = hidden_workspace.terminal_id(hidden_pane).cloned().expect("test precondition");
+        let hidden_terminal = hidden_workspace
+            .terminal_id(hidden_pane)
+            .cloned()
+            .expect("test precondition");
         app.state.view.pane_infos = active_workspace.tabs[0]
             .layout
             .panes(ratatui::layout::Rect::new(0, 0, 100, 30));
@@ -694,12 +719,13 @@ mod tests {
         app.state.workspaces = vec![workspace];
         app.state.active = Some(0);
         app.state.ensure_test_terminals();
-        assert!(app
-            .state
-            .workspaces
-            .first()
-            .and_then(|ws| ws.tabs[0].terminal_id(active_pane))
-            .is_some());
+        assert!(
+            app.state
+                .workspaces
+                .first()
+                .and_then(|ws| ws.tabs[0].terminal_id(active_pane))
+                .is_some()
+        );
         app.state.host_terminal_theme = crate::terminal_theme::TerminalTheme {
             foreground: Some(crate::terminal_theme::RgbColor {
                 r: 220,
@@ -747,7 +773,10 @@ mod tests {
         let hidden_pane = workspace.tabs[0].root_pane;
         let visible_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
         workspace.tabs[0].zoomed = true;
-        let hidden_terminal = workspace.terminal_id(hidden_pane).cloned().expect("test precondition");
+        let hidden_terminal = workspace
+            .terminal_id(hidden_pane)
+            .cloned()
+            .expect("test precondition");
         app.state.view.pane_infos = vec![crate::layout::PaneInfo {
             id: visible_pane,
             rect: ratatui::layout::Rect::new(0, 0, 100, 30),
@@ -864,7 +893,10 @@ mod tests {
         let mut app = test_app();
         let mut workspace = crate::workspace::Workspace::test_new("split");
         let pane_id = workspace.test_split(ratatui::layout::Direction::Horizontal);
-        let terminal_id = workspace.terminal_id(pane_id).cloned().expect("test precondition");
+        let terminal_id = workspace
+            .terminal_id(pane_id)
+            .cloned()
+            .expect("test precondition");
         app.state.view.pane_infos = vec![crate::layout::PaneInfo {
             id: pane_id,
             rect: ratatui::layout::Rect::new(0, 0, 100, 30),

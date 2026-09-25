@@ -204,7 +204,7 @@ fn project_aggregate_status(snapshot: &mut ClientShellSnapshot) {
 mod tests {
     use super::*;
     use crate::protocol::{
-        endpoint::EndpointAgentCompletions, FrameData, PaneSurfacePane, SurfaceRect,
+        FrameData, PaneSurfacePane, SurfaceRect, endpoint::EndpointAgentCompletions,
     };
 
     fn agent(status: AgentStatus, sequence: u64) -> ClientShellAgent {

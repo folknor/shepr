@@ -34,7 +34,10 @@ fn config_read_error_retries_next_refresh() {
     let root = temp_test_dir("config-read-error");
     write_fake_tracked_repo(&root);
     std::fs::write(root.join(".git/config"), [0xff]).expect("test precondition");
-    let context = read_config(&git_worktree_info(&root).expect("test precondition"), "main");
+    let context = read_config(
+        &git_worktree_info(&root).expect("test precondition"),
+        "main",
+    );
     assert!(!deps_current(&context.2));
     std::fs::remove_dir_all(root).expect("test precondition");
 }
@@ -644,8 +647,10 @@ fn git_status_fingerprint_stops_recursive_include_cycles() {
         "2222222222222222222222222222222222222222\n",
     )
     .expect("test precondition");
-    std::fs::write(root.join(".git/config"), "[include]\n\tpath = a.cfg\n").expect("test precondition");
-    std::fs::write(root.join(".git/a.cfg"), "[include]\n\tpath = b.cfg\n").expect("test precondition");
+    std::fs::write(root.join(".git/config"), "[include]\n\tpath = a.cfg\n")
+        .expect("test precondition");
+    std::fs::write(root.join(".git/a.cfg"), "[include]\n\tpath = b.cfg\n")
+        .expect("test precondition");
     std::fs::write(
             root.join(".git/b.cfg"),
             "[include]\n\tpath = a.cfg\n[remote \"included\"]\n\tfetch = +refs/heads/*:refs/remotes/included/*\n[branch \"main\"]\n\tremote = included\n\tmerge = refs/heads/main\n",

@@ -10,7 +10,7 @@ use crate::api::schema::{
 };
 
 pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(String::as_str) else {
         print_pane_help();
         return Ok(2);
     };
@@ -1469,7 +1469,9 @@ fn pane_release_agent(args: &[String]) -> std::io::Result<i32> {
 
 fn pane_report_metadata(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_pane_id) = args.first() else {
-        eprintln!("usage: shepr pane report-metadata <pane_id> --source ID [--agent LABEL] [--applies-to-source ID] [--title TEXT|--clear-title] [--display-agent TEXT|--clear-display-agent] [--state-label STATUS=TEXT] [--clear-state-labels] [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
+        eprintln!(
+            "usage: shepr pane report-metadata <pane_id> --source ID [--agent LABEL] [--applies-to-source ID] [--title TEXT|--clear-title] [--display-agent TEXT|--clear-display-agent] [--state-label STATUS=TEXT] [--clear-state-labels] [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]"
+        );
         return Ok(2);
     };
 
@@ -1673,24 +1675,40 @@ fn print_pane_help() {
     );
     eprintln!("  shepr pane zoom [<pane_id>|--pane ID|--current] [--toggle|--on|--off]");
     eprintln!("  shepr pane rename <pane_id> <label>|--clear");
-    eprintln!("  shepr pane read <pane_id> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]");
+    eprintln!(
+        "  shepr pane read <pane_id> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]"
+    );
     eprintln!("  shepr pane input [<pane_id>|--pane ID|--current] --right-click shepr|pane");
     eprintln!(
         "  shepr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--cwd PATH] [--env KEY=VALUE] [--right-click shepr|pane] [--focus] [--no-focus]"
     );
     eprintln!("  shepr pane swap --direction left|right|up|down [--pane ID|--current]");
     eprintln!("  shepr pane swap --source-pane ID --target-pane ID");
-    eprintln!("  shepr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [--ratio FLOAT] [--focus|--no-focus]");
-    eprintln!("  shepr pane move <pane_id> --new-tab [--workspace ID] [--label TEXT] [--focus|--no-focus]");
-    eprintln!("  shepr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--focus|--no-focus]");
+    eprintln!(
+        "  shepr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [--ratio FLOAT] [--focus|--no-focus]"
+    );
+    eprintln!(
+        "  shepr pane move <pane_id> --new-tab [--workspace ID] [--label TEXT] [--focus|--no-focus]"
+    );
+    eprintln!(
+        "  shepr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--focus|--no-focus]"
+    );
     eprintln!("  shepr pane close <pane_id>");
     eprintln!("  shepr pane send-text <pane_id> <text>");
     eprintln!("  shepr pane send-keys <pane_id> <key> [key ...]");
-    eprintln!("  shepr pane wait-output <pane_id> (--match TEXT | --regex PATTERN) [--source visible|recent|recent-unwrapped] [--lines N] [--timeout MS] [--raw]");
-    eprintln!("  shepr pane report-agent <pane_id> --source ID --agent LABEL --state idle|working|blocked|unknown [--message TEXT] [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
-    eprintln!("  shepr pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
+    eprintln!(
+        "  shepr pane wait-output <pane_id> (--match TEXT | --regex PATTERN) [--source visible|recent|recent-unwrapped] [--lines N] [--timeout MS] [--raw]"
+    );
+    eprintln!(
+        "  shepr pane report-agent <pane_id> --source ID --agent LABEL --state idle|working|blocked|unknown [--message TEXT] [--seq N] [--agent-session-id ID] [--agent-session-path PATH]"
+    );
+    eprintln!(
+        "  shepr pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH]"
+    );
     eprintln!("  shepr pane release-agent <pane_id> --source ID --agent LABEL [--seq N]");
-    eprintln!("  shepr pane report-metadata <pane_id> --source ID [--agent LABEL] [--applies-to-source ID] [--title TEXT|--clear-title] [--display-agent TEXT|--clear-display-agent] [--state-label STATUS=TEXT] [--clear-state-labels] [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
+    eprintln!(
+        "  shepr pane report-metadata <pane_id> --source ID [--agent LABEL] [--applies-to-source ID] [--title TEXT|--clear-title] [--display-agent TEXT|--clear-display-agent] [--state-label STATUS=TEXT] [--clear-state-labels] [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]"
+    );
     eprintln!("  shepr pane run <pane_id> <command>");
 }
 
@@ -1744,16 +1762,20 @@ mod tests {
 
     #[test]
     fn parse_pane_input_args_rejects_conflicting_selectors() {
-        assert!(parse_pane_input_args(
-            &args(&["pane-a", "--pane", "pane-b", "--right-click", "pane"]),
-            None,
-        )
-        .is_err());
-        assert!(parse_pane_input_args(
-            &args(&["--pane", "pane-a", "--current", "--right-click", "pane",]),
-            Some("pane-b"),
-        )
-        .is_err());
+        assert!(
+            parse_pane_input_args(
+                &args(&["pane-a", "--pane", "pane-b", "--right-click", "pane"]),
+                None,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_pane_input_args(
+                &args(&["--pane", "pane-a", "--current", "--right-click", "pane",]),
+                Some("pane-b"),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1796,7 +1818,8 @@ mod tests {
 
     #[test]
     fn parse_pane_split_args_without_caller_keeps_focused_fallback() {
-        let params = parse_pane_split_args(&args(&["--direction", "down"]), None).expect("test precondition");
+        let params = parse_pane_split_args(&args(&["--direction", "down"]), None)
+            .expect("test precondition");
 
         assert_eq!(params.target_pane_id, None);
     }
@@ -1814,22 +1837,24 @@ mod tests {
 
     #[test]
     fn parse_pane_current_args_uses_env_pane_by_default() {
-        let pane_id = parse_pane_current_args(&args(&[]), Some("issue-1")).expect("test precondition");
+        let pane_id =
+            parse_pane_current_args(&args(&[]), Some("issue-1")).expect("test precondition");
 
         assert_eq!(pane_id, Some("issue-1".into()));
     }
 
     #[test]
     fn parse_pane_current_args_accepts_explicit_pane() {
-        let pane_id =
-            parse_pane_current_args(&args(&["--pane", "issue-2"]), Some("issue-1")).expect("test precondition");
+        let pane_id = parse_pane_current_args(&args(&["--pane", "issue-2"]), Some("issue-1"))
+            .expect("test precondition");
 
         assert_eq!(pane_id, Some("issue-2".into()));
     }
 
     #[test]
     fn parse_pane_current_args_current_keeps_env_pane() {
-        let pane_id = parse_pane_current_args(&args(&["--current"]), Some("issue-1")).expect("test precondition");
+        let pane_id = parse_pane_current_args(&args(&["--current"]), Some("issue-1"))
+            .expect("test precondition");
 
         assert_eq!(pane_id, Some("issue-1".into()));
     }
@@ -1843,7 +1868,8 @@ mod tests {
 
     #[test]
     fn parse_pane_swap_args_accepts_directional_current() {
-        let params = parse_pane_swap_args(&args(&["--direction", "right"])).expect("test precondition");
+        let params =
+            parse_pane_swap_args(&args(&["--direction", "right"])).expect("test precondition");
 
         assert_eq!(params.pane_id, None);
         assert_eq!(params.direction, Some(PaneDirection::Right));
@@ -1912,8 +1938,8 @@ mod tests {
 
     #[test]
     fn parse_pane_move_args_rejects_target_pane_without_tab() {
-        let err =
-            parse_pane_move_args(&args(&["issue-1", "--target-pane", "issue-2"])).expect_err("test precondition");
+        let err = parse_pane_move_args(&args(&["issue-1", "--target-pane", "issue-2"]))
+            .expect_err("test precondition");
 
         assert!(err.contains("usage: shepr pane move"));
     }
@@ -1946,7 +1972,8 @@ mod tests {
 
     #[test]
     fn parse_pane_zoom_args_accepts_pane_option_and_off() {
-        let params = parse_pane_zoom_args(&args(&["--pane", "issue-2", "--off"])).expect("test precondition");
+        let params = parse_pane_zoom_args(&args(&["--pane", "issue-2", "--off"]))
+            .expect("test precondition");
 
         assert_eq!(params.pane_id, Some("issue-2".into()));
         assert_eq!(params.mode, PaneZoomMode::Off);
@@ -1961,7 +1988,8 @@ mod tests {
 
     #[test]
     fn parse_pane_neighbor_args_accepts_directional_current() {
-        let params = parse_pane_neighbor_args(&args(&["--direction", "down"])).expect("test precondition");
+        let params =
+            parse_pane_neighbor_args(&args(&["--direction", "down"])).expect("test precondition");
 
         assert_eq!(params.pane_id, None);
         assert_eq!(params.direction, PaneDirection::Down);
@@ -1969,22 +1997,24 @@ mod tests {
 
     #[test]
     fn parse_optional_current_pane_args_accepts_current_target() {
-        let pane_id =
-            parse_optional_current_pane_args(&args(&["--current"]), Some("issue-1")).expect("test precondition");
+        let pane_id = parse_optional_current_pane_args(&args(&["--current"]), Some("issue-1"))
+            .expect("test precondition");
 
         assert_eq!(pane_id, Some("issue-1".into()));
     }
 
     #[test]
     fn parse_optional_current_pane_args_current_without_env_keeps_focused_fallback() {
-        let pane_id = parse_optional_current_pane_args(&args(&["--current"]), None).expect("test precondition");
+        let pane_id = parse_optional_current_pane_args(&args(&["--current"]), None)
+            .expect("test precondition");
 
         assert_eq!(pane_id, None);
     }
 
     #[test]
     fn parse_optional_current_pane_args_omitted_target_keeps_focused_fallback() {
-        let pane_id = parse_optional_current_pane_args(&args(&[]), Some("issue-1")).expect("test precondition");
+        let pane_id = parse_optional_current_pane_args(&args(&[]), Some("issue-1"))
+            .expect("test precondition");
 
         assert_eq!(pane_id, None);
     }
@@ -2000,7 +2030,8 @@ mod tests {
 
     #[test]
     fn parse_pane_focus_args_accepts_directional_current() {
-        let params = parse_pane_focus_args(&args(&["--direction", "up"])).expect("test precondition");
+        let params =
+            parse_pane_focus_args(&args(&["--direction", "up"])).expect("test precondition");
 
         assert_eq!(params.pane_id, None);
         assert_eq!(params.direction, PaneDirection::Up);
@@ -2049,8 +2080,8 @@ mod tests {
 
     #[test]
     fn parse_pane_read_args_accepts_reordered_equals_options() {
-        let params =
-            parse_pane_read_args(&args(&["--source=visible", "--lines=5", "issue-1"])).expect("test precondition");
+        let params = parse_pane_read_args(&args(&["--source=visible", "--lines=5", "issue-1"]))
+            .expect("test precondition");
 
         assert_eq!(params.pane_id, "issue-1");
         assert_eq!(params.source, ReadSource::Visible);

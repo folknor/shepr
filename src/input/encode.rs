@@ -29,19 +29,19 @@ pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<
         && key.kind != crossterm::event::KeyEventKind::Release
         && matches!(key.code, KeyCode::Char(_))
         && key.modifiers.contains(KeyModifiers::SUPER)
+        && let Some(bytes) = try_encode_csi_u(&key, 0)
     {
-        if let Some(bytes) = try_encode_csi_u(&key, 0) {
-            return bytes;
-        }
+        return bytes;
     }
 
     // REPORT_ALL_KEYS must retain physical press/repeat/release semantics instead of
     // reducing a native key to its layout-generated text.
     let preserve_physical_key = key.has_physical_identity() && protocol.reports_all_keys();
-    if !preserve_physical_key && key.kind != crossterm::event::KeyEventKind::Release {
-        if let Some(text) = &key.generated_text {
-            return text.as_bytes().to_vec();
-        }
+    if !preserve_physical_key
+        && key.kind != crossterm::event::KeyEventKind::Release
+        && let Some(text) = &key.generated_text
+    {
+        return text.as_bytes().to_vec();
     }
 
     // A release event only produces bytes when the pane protocol reports event
@@ -56,24 +56,22 @@ pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<
     let kitty_first = protocol.reports_all_keys()
         || (key.kind == crossterm::event::KeyEventKind::Release && protocol.reports_event_types());
 
-    if kitty_first {
-        if let KeyboardProtocol::Kitty { flags } = protocol {
-            if let Some(bytes) = try_encode_csi_u(&key, flags) {
-                return bytes;
-            }
-        }
+    if kitty_first
+        && let KeyboardProtocol::Kitty { flags } = protocol
+        && let Some(bytes) = try_encode_csi_u(&key, flags)
+    {
+        return bytes;
     }
 
     if let Some(bytes) = encode_text_input(&key) {
         return bytes;
     }
 
-    if !kitty_first {
-        if let KeyboardProtocol::Kitty { flags } = protocol {
-            if let Some(bytes) = try_encode_csi_u(&key, flags) {
-                return bytes;
-            }
-        }
+    if !kitty_first
+        && let KeyboardProtocol::Kitty { flags } = protocol
+        && let Some(bytes) = try_encode_csi_u(&key, flags)
+    {
+        return bytes;
     }
     if key.kind == crossterm::event::KeyEventKind::Release && protocol.reports_event_types() {
         return Vec::new();
@@ -278,10 +276,10 @@ fn try_encode_csi_u(key: &TerminalKey, flags: u16) -> Option<Vec<u8>> {
     if let Some(event) = event_suffix {
         write!(&mut sequence, ":{event}").ok()?;
     }
-    if flags & KITTY_FLAG_REPORT_ASSOCIATED_TEXT != 0 {
-        if let Some(text) = text_codepoint_for_key(key) {
-            write!(&mut sequence, ";{text}").ok()?;
-        }
+    if flags & KITTY_FLAG_REPORT_ASSOCIATED_TEXT != 0
+        && let Some(text) = text_codepoint_for_key(key)
+    {
+        write!(&mut sequence, ";{text}").ok()?;
     }
     sequence.push('u');
 
@@ -374,10 +372,10 @@ pub fn encode_terminal_key_with_modes(mut key: TerminalKey, modes: KeyEncodeMode
     }
 
     if key.kind != crossterm::event::KeyEventKind::Release {
-        if modes.modify_other_keys > 0 {
-            if let Some(bytes) = encode_modify_other_keys(&key, modes.modify_other_keys) {
-                return bytes;
-            }
+        if modes.modify_other_keys > 0
+            && let Some(bytes) = encode_modify_other_keys(&key, modes.modify_other_keys)
+        {
+            return bytes;
         }
         // xterm sends ^H for Ctrl+Backspace (DEL stays plain Backspace).
         let non_alt = key.modifiers.difference(KeyModifiers::ALT);
@@ -414,7 +412,11 @@ fn encode_modify_other_keys(key: &TerminalKey, level: u8) -> Option<Vec<u8>> {
 }
 
 /// Rewrites an unmodified `CSI A/B/C/D/H/F` into its SS3 form under DECCKM.
-fn apply_application_cursor(bytes: Vec<u8>, key: &TerminalKey, application_cursor: bool) -> Vec<u8> {
+fn apply_application_cursor(
+    bytes: Vec<u8>,
+    key: &TerminalKey,
+    application_cursor: bool,
+) -> Vec<u8> {
     if !application_cursor
         || !key.modifiers.is_empty()
         || key.kind == crossterm::event::KeyEventKind::Release
@@ -470,7 +472,7 @@ pub(crate) fn encode_mouse_event(
         MouseProtocolMode::None => false,
         // X10 reports button presses only.
         MouseProtocolMode::Press => (!release && base_button < 32) || base_button >= 64,
-        MouseProtocolMode::PressRelease => base_button < 32 || base_button >= 64,
+        MouseProtocolMode::PressRelease => !(32..64).contains(&base_button),
         MouseProtocolMode::ButtonMotion => kind != MouseEventKind::Moved,
         MouseProtocolMode::AnyMotion => true,
     };
@@ -498,20 +500,20 @@ fn encode_legacy(key: TerminalKey) -> Vec<u8> {
     //   \x1b[1;{modifier}A  for arrows/home/end
     //   \x1b[{n};{modifier}~ for insert/delete/pgup/pgdn
     // The ESC-prefix hack doesn't work for these since they're already escape sequences.
-    if !mods.is_empty() {
-        if let Some(bytes) = encode_modified_special(key.code, mods) {
-            return bytes;
-        }
+    if !mods.is_empty()
+        && let Some(bytes) = encode_modified_special(key.code, mods)
+    {
+        return bytes;
     }
 
     // Alt modifier on character keys: prefix with ESC
     if mods.contains(KeyModifiers::ALT) {
         let inner = key.with_modifiers(mods.difference(KeyModifiers::ALT));
         let mut bytes = vec![0x1b];
-        bytes.extend(encode_legacy_inner(inner));
+        bytes.extend(encode_legacy_inner(&inner));
         return bytes;
     }
-    encode_legacy_inner(key)
+    encode_legacy_inner(&key)
 }
 
 /// xterm-style encoding for modified special keys.
@@ -576,7 +578,7 @@ fn xterm_modifier(mods: KeyModifiers) -> u32 {
 }
 
 /// Kitty protocol modifier encoding: 1 + shift(1) + alt(2) + ctrl(4) + super(8) + hyper(16) + meta(32)
-/// Superset of xterm — adds Super/Hyper/Meta bits.
+/// Superset of xterm - adds Super/Hyper/Meta bits.
 fn kitty_modifier(mods: KeyModifiers) -> u32 {
     let mut m = xterm_modifier(mods);
     if mods.contains(KeyModifiers::SUPER) {
@@ -700,7 +702,7 @@ fn kitty_event_suffix(key: &TerminalKey, flags: u16) -> Option<u8> {
     })
 }
 
-fn encode_legacy_inner(key: TerminalKey) -> Vec<u8> {
+fn encode_legacy_inner(key: &TerminalKey) -> Vec<u8> {
     match key.code {
         KeyCode::Char(ch) => {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -717,7 +719,7 @@ fn encode_legacy_inner(key: TerminalKey) -> Vec<u8> {
                 }
             } else {
                 let ch = if key.modifiers == KeyModifiers::SHIFT {
-                    shifted_text_char(&key, ch).unwrap_or(ch)
+                    shifted_text_char(key, ch).unwrap_or(ch)
                 } else {
                     ch
                 };
@@ -771,7 +773,7 @@ mod tests {
     use crate::input::parse_terminal_key_sequence;
 
     fn assert_terminal_key_eq(
-        actual: TerminalKey,
+        actual: &TerminalKey,
         code: KeyCode,
         modifiers: KeyModifiers,
         kind: crossterm::event::KeyEventKind,
@@ -1366,9 +1368,11 @@ mod tests {
 
         for key in cases {
             let encoded = encode_key(key, KeyboardProtocol::Legacy);
-            let parsed =
-                parse_terminal_key_sequence(std::str::from_utf8(&encoded).expect("test precondition")).expect("test precondition");
-            assert_terminal_key_eq(parsed, key.code, key.modifiers, key.kind, None);
+            let parsed = parse_terminal_key_sequence(
+                std::str::from_utf8(&encoded).expect("test precondition"),
+            )
+            .expect("test precondition");
+            assert_terminal_key_eq(&parsed, key.code, key.modifiers, key.kind, None);
         }
     }
 
@@ -1401,9 +1405,11 @@ mod tests {
 
         for key in cases {
             let encoded = encode_key(key, KeyboardProtocol::Legacy);
-            let parsed =
-                parse_terminal_key_sequence(std::str::from_utf8(&encoded).expect("test precondition")).expect("test precondition");
-            assert_terminal_key_eq(parsed, key.code, key.modifiers, key.kind, None);
+            let parsed = parse_terminal_key_sequence(
+                std::str::from_utf8(&encoded).expect("test precondition"),
+            )
+            .expect("test precondition");
+            assert_terminal_key_eq(&parsed, key.code, key.modifiers, key.kind, None);
         }
     }
 
@@ -1471,7 +1477,7 @@ mod tests {
             assert_eq!(encoded, expected.as_bytes(), "{code:?}");
             let parsed = parse_terminal_key_sequence(expected).expect("test precondition");
             assert_terminal_key_eq(
-                parsed,
+                &parsed,
                 code,
                 KeyModifiers::empty(),
                 KeyEventKind::Press,
@@ -1502,7 +1508,11 @@ mod tests {
             (KeyCode::PageUp, b"\x1b[5~".as_slice()),
         ] {
             let key = TerminalKey::new(code, KeyModifiers::empty());
-            assert_eq!(encode_terminal_key_with_modes(key, modes), expected, "{code:?}");
+            assert_eq!(
+                encode_terminal_key_with_modes(key, modes),
+                expected,
+                "{code:?}"
+            );
         }
         // Modified cursor keys keep the CSI 1;m form.
         let key = TerminalKey::new(KeyCode::Up, KeyModifiers::CONTROL);
@@ -1586,7 +1596,14 @@ mod tests {
         let none = KeyModifiers::empty();
 
         assert_eq!(
-            encode_mouse_event(press, 1, 1, KeyModifiers::SHIFT, MouseProtocolMode::Press, sgr),
+            encode_mouse_event(
+                press,
+                1,
+                1,
+                KeyModifiers::SHIFT,
+                MouseProtocolMode::Press,
+                sgr
+            ),
             Some(b"\x1b[<0;1;1M".to_vec())
         );
         assert_eq!(
@@ -1628,7 +1645,14 @@ mod tests {
             Some(b"\x1b[<64;48;139M".to_vec())
         );
         assert_eq!(
-            encode_mouse_event(release, 1, 1, none, MouseProtocolMode::PressRelease, MouseProtocolEncoding::Default),
+            encode_mouse_event(
+                release,
+                1,
+                1,
+                none,
+                MouseProtocolMode::PressRelease,
+                MouseProtocolEncoding::Default
+            ),
             Some(vec![0x1b, b'[', b'M', 3 + 32, 33, 33])
         );
         assert_eq!(

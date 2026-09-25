@@ -251,11 +251,6 @@ impl TerminalState {
         self
     }
 
-    pub(crate) fn agent_process_exited_within(&self, now: Instant, max_age: Duration) -> bool {
-        self.recent_agent_process_exit
-            .is_some_and(|exit| now.saturating_duration_since(exit.observed_at) <= max_age)
-    }
-
     pub fn with_pending_agent_resume_plan(
         mut self,
         plan: crate::agent_resume::AgentResumePlan,
@@ -432,14 +427,13 @@ impl TerminalState {
                     .or_else(|| suppressed.session_ref.clone());
                 if let (Some(previous), Some(exited)) =
                     (suppressed.session_ref.as_ref(), exited_session_ref.as_ref())
+                    && previous != exited
                 {
-                    if previous != exited {
-                        stale_sessions.push((
-                            source.clone(),
-                            suppressed.agent_label.clone(),
-                            previous.clone(),
-                        ));
-                    }
+                    stale_sessions.push((
+                        source.clone(),
+                        suppressed.agent_label.clone(),
+                        previous.clone(),
+                    ));
                 }
                 suppressed.session_ref = exited_session_ref;
                 suppressed.pending_replacement_report = None;
@@ -726,16 +720,15 @@ impl TerminalState {
                 FullLifecycleHookSuppressionReason::HookClear,
             );
         }
-        if session_ref.is_some() || reanchor_sequence {
-            if let Some(suppressed) = self.suppressed_full_lifecycle_hook_reports.remove(&source) {
-                if let Some(suppressed_ref) = suppressed.session_ref {
-                    self.remember_stale_full_lifecycle_hook_session(
-                        source.clone(),
-                        suppressed.agent_label,
-                        suppressed_ref,
-                    );
-                }
-            }
+        if (session_ref.is_some() || reanchor_sequence)
+            && let Some(suppressed) = self.suppressed_full_lifecycle_hook_reports.remove(&source)
+            && let Some(suppressed_ref) = suppressed.session_ref
+        {
+            self.remember_stale_full_lifecycle_hook_session(
+                source.clone(),
+                suppressed.agent_label,
+                suppressed_ref,
+            );
         }
         self.persisted_agent_session = None;
         self.hook_authority = Some(HookAuthority {
@@ -1253,15 +1246,15 @@ impl TerminalState {
         crate::agent_resume::AgentSessionRefKind,
         String,
     )> {
-        if let Some(authority) = self.hook_authority.as_ref() {
-            if let Some(session_ref) = authority.session_ref.as_ref() {
-                return Some((
-                    authority.source.clone(),
-                    authority.agent_label.clone(),
-                    session_ref.kind,
-                    session_ref.value.clone(),
-                ));
-            }
+        if let Some(authority) = self.hook_authority.as_ref()
+            && let Some(session_ref) = authority.session_ref.as_ref()
+        {
+            return Some((
+                authority.source.clone(),
+                authority.agent_label.clone(),
+                session_ref.kind,
+                session_ref.value.clone(),
+            ));
         }
         self.persisted_agent_session.as_ref().map(|session| {
             (
@@ -1410,7 +1403,7 @@ impl TerminalState {
         agent_label: String,
         session_ref: Option<crate::agent_resume::AgentSessionRef>,
         seq: Option<u64>,
-        session_start_source: Option<String>,
+        session_start_source: Option<&str>,
     ) -> Option<TerminalStateMutation> {
         let session_ref = session_ref?;
         let known_agent = crate::detect::parse_agent_label(&agent_label);
@@ -1434,7 +1427,7 @@ impl TerminalState {
         let unsequenced_selection = Self::is_unsequenced_opencode_selection(
             &source,
             &agent_label,
-            session_start_source.as_deref(),
+            session_start_source,
             seq,
         );
         let selection_can_reconcile = unsequenced_selection && process_present;
@@ -1473,7 +1466,7 @@ impl TerminalState {
             && !selection_can_reconcile
             && (!process_present || generation_gated || !session_anchored)
         {
-            if !Self::session_start_source_is_recognized(session_start_source.as_deref()) {
+            if !Self::session_start_source_is_recognized(session_start_source) {
                 return None;
             }
             let seq = seq?;
@@ -1543,7 +1536,7 @@ impl TerminalState {
         let session_replacement_allowed = Self::session_report_allows_session_replacement(
             &source,
             &agent_label,
-            session_start_source.as_deref(),
+            session_start_source,
         );
         let replacing_identity_only_session =
             crate::detect::session_identity_only_integration(&source, &agent_label)
@@ -1566,7 +1559,7 @@ impl TerminalState {
                 &source,
                 &agent_label,
                 &session_ref,
-                session_start_source.as_deref(),
+                session_start_source,
             );
         if owner_conflicts && !foreground_takeover_allowed {
             return None;
@@ -1576,7 +1569,7 @@ impl TerminalState {
                 &source,
                 &agent_label,
                 &session_ref,
-                session_start_source.as_deref(),
+                session_start_source,
             )
             .is_some()
         {
@@ -1729,10 +1722,10 @@ impl TerminalState {
         if !should_clear {
             return None;
         }
-        if let Some(source) = sequence_source.as_deref() {
-            if !self.accept_hook_report(source, seq) {
-                return None;
-            }
+        if let Some(source) = sequence_source.as_deref()
+            && !self.accept_hook_report(source, seq)
+        {
+            return None;
         }
 
         let now = Instant::now();
@@ -1893,8 +1886,11 @@ impl TerminalState {
         })
     }
 
-    pub fn set_manual_label(&mut self, label: String) {
-        let label = label.trim().to_string();
+    pub fn set_manual_label(&mut self, mut label: String) {
+        let trimmed = label.trim();
+        if trimmed.len() != label.len() {
+            label = trimmed.to_string();
+        }
         self.manual_label = (!label.is_empty()).then_some(label);
     }
 
@@ -2155,7 +2151,7 @@ impl TerminalState {
                 self.agent_name_owner = Some(AgentNameOwner {
                     agent_label: agent_label.to_string(),
                     session_ref: session_ref.cloned(),
-                })
+                });
             }
             _ => {}
         }
@@ -2370,7 +2366,8 @@ mod tests {
         timed_out.set_managed_agent_launch_session(crate::agent_resume::PersistedAgentSession {
             source: "shepr:codex".into(),
             agent: "codex".into(),
-            session_ref: crate::agent_resume::AgentSessionRef::id("codex-session").expect("test precondition"),
+            session_ref: crate::agent_resume::AgentSessionRef::id("codex-session")
+                .expect("test precondition"),
         });
         assert!(timed_out.reconcile_managed_agent_at(now + Duration::from_millis(20), false));
         assert_eq!(timed_out.agent_name, None);
@@ -2400,7 +2397,8 @@ mod tests {
             Agent::Pi,
             "shepr:pi",
             "pi",
-            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl")).expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl"))
+                .expect("test precondition"),
         );
         terminal.set_hook_authority(
             "shepr:pi".into(),
@@ -2521,7 +2519,7 @@ mod tests {
                 label.into(),
                 session_ref.clone(),
                 Some(10),
-                Some("startup".into()),
+                Some("startup"),
             );
             let working = terminal.set_hook_authority_with_session_ref(
                 source.into(),
@@ -2564,14 +2562,14 @@ mod tests {
         ] {
             let mut terminal = test_terminal();
             terminal.set_detected_state(Some(agent), AgentState::Idle);
-            let first_ref =
-                crate::agent_resume::AgentSessionRef::id(format!("{label}-root")).expect("test precondition");
+            let first_ref = crate::agent_resume::AgentSessionRef::id(format!("{label}-root"))
+                .expect("test precondition");
             let first = terminal.set_agent_session_ref_for_session_start(
                 source.into(),
                 label.into(),
                 Some(first_ref.clone()),
                 Some(10),
-                start_source.map(str::to_string),
+                start_source,
             );
 
             assert!(first.is_some(), "{label} should accept its session");
@@ -2587,13 +2585,14 @@ mod tests {
 
             terminal.set_detected_state(Some(agent), AgentState::Working);
             let replacement_ref =
-                crate::agent_resume::AgentSessionRef::id(format!("{label}-replacement")).expect("test precondition");
+                crate::agent_resume::AgentSessionRef::id(format!("{label}-replacement"))
+                    .expect("test precondition");
             let replacement = terminal.set_agent_session_ref_for_session_start(
                 source.into(),
                 label.into(),
                 Some(replacement_ref.clone()),
                 Some(11),
-                start_source.map(str::to_string),
+                start_source,
             );
 
             assert!(
@@ -2624,13 +2623,14 @@ mod tests {
 
             terminal.set_detected_state(None, AgentState::Unknown);
             let background_ref =
-                crate::agent_resume::AgentSessionRef::id(format!("{label}-background")).expect("test precondition");
+                crate::agent_resume::AgentSessionRef::id(format!("{label}-background"))
+                    .expect("test precondition");
             let background_replacement = terminal.set_agent_session_ref_for_session_start(
                 source.into(),
                 label.into(),
                 Some(background_ref.clone()),
                 Some(13),
-                replacement_source.map(str::to_string),
+                replacement_source,
             );
             assert!(
                 background_replacement.is_none(),
@@ -2650,7 +2650,7 @@ mod tests {
                 label.into(),
                 Some(background_ref.clone()),
                 Some(14),
-                replacement_source.map(str::to_string),
+                replacement_source,
             );
             assert!(
                 retried_replacement.is_some_and(|mutation| mutation.session_ref_changed),
@@ -2687,7 +2687,7 @@ mod tests {
                 "pi".into(),
                 crate::agent_resume::AgentSessionRef::path(new_session.clone()),
                 Some(11),
-                Some(reason.into()),
+                Some(reason),
             );
 
             assert!(
@@ -2711,7 +2711,11 @@ mod tests {
             );
             assert_eq!(terminal.state, AgentState::Working);
             assert_eq!(
-                terminal.hook_authority.as_ref().expect("test precondition").session_ref,
+                terminal
+                    .hook_authority
+                    .as_ref()
+                    .expect("test precondition")
+                    .session_ref,
                 crate::agent_resume::AgentSessionRef::path(new_session)
             );
         }
@@ -2737,7 +2741,7 @@ mod tests {
             "pi".into(),
             crate::agent_resume::AgentSessionRef::path(session_b.clone()),
             Some(11),
-            Some("new".into()),
+            Some("new"),
         );
         terminal.set_hook_authority_with_session_ref(
             "shepr:pi".into(),
@@ -2753,7 +2757,7 @@ mod tests {
             "pi".into(),
             crate::agent_resume::AgentSessionRef::path(session_a.clone()),
             Some(13),
-            Some("resume".into()),
+            Some("resume"),
         );
         let working = terminal.set_hook_authority_with_session_ref(
             "shepr:pi".into(),
@@ -2768,7 +2772,11 @@ mod tests {
         assert!(working.is_some());
         assert_eq!(terminal.state, AgentState::Working);
         assert_eq!(
-            terminal.hook_authority.as_ref().expect("test precondition").session_ref,
+            terminal
+                .hook_authority
+                .as_ref()
+                .expect("test precondition")
+                .session_ref,
             crate::agent_resume::AgentSessionRef::path(session_a)
         );
 
@@ -2802,7 +2810,7 @@ mod tests {
             "pi".into(),
             crate::agent_resume::AgentSessionRef::path(new_session.clone()),
             Some(11),
-            Some("startup".into()),
+            Some("startup"),
         );
 
         assert!(startup.is_some());
@@ -2829,7 +2837,8 @@ mod tests {
                 Agent::Pi,
                 "shepr:pi",
                 "pi",
-                crate::agent_resume::AgentSessionRef::path(old_session.clone()).expect("test precondition"),
+                crate::agent_resume::AgentSessionRef::path(old_session.clone())
+                    .expect("test precondition"),
             );
             terminal.set_hook_authority_with_session_ref(
                 "shepr:pi".into(),
@@ -2845,7 +2854,7 @@ mod tests {
                 "pi".into(),
                 crate::agent_resume::AgentSessionRef::path(new_session.clone()),
                 Some(11),
-                reason.map(str::to_string),
+                reason,
             );
             let working = terminal.set_hook_authority_with_session_ref(
                 "shepr:pi".into(),
@@ -2860,7 +2869,11 @@ mod tests {
             assert!(working.is_none());
             assert_eq!(terminal.state, AgentState::Idle);
             assert_eq!(
-                terminal.hook_authority.as_ref().expect("test precondition").session_ref,
+                terminal
+                    .hook_authority
+                    .as_ref()
+                    .expect("test precondition")
+                    .session_ref,
                 crate::agent_resume::AgentSessionRef::path(old_session),
                 "{reason:?} must not replace the current Pi session"
             );
@@ -2887,7 +2900,7 @@ mod tests {
             "omp".into(),
             crate::agent_resume::AgentSessionRef::path(new_session.clone()),
             Some(11),
-            Some("resume".into()),
+            Some("resume"),
         );
 
         assert!(session_report.is_some());
@@ -2898,14 +2911,15 @@ mod tests {
                 .as_ref()
                 .expect("test precondition")
                 .session_ref,
-            crate::agent_resume::AgentSessionRef::path(new_session.clone()).expect("test precondition")
+            crate::agent_resume::AgentSessionRef::path(new_session.clone())
+                .expect("test precondition")
         );
 
         let blocked = terminal.set_hook_authority_with_session_ref(
             "shepr:omp".into(),
             "omp".into(),
             AgentState::Blocked,
-            Some("waiting".into()),
+            Some("waiting".to_string()),
             crate::agent_resume::AgentSessionRef::path(new_session.clone()),
             Some(12),
         );
@@ -2913,7 +2927,11 @@ mod tests {
         assert!(blocked.is_some());
         assert_eq!(terminal.state, AgentState::Blocked);
         assert_eq!(
-            terminal.hook_authority.as_ref().expect("test precondition").session_ref,
+            terminal
+                .hook_authority
+                .as_ref()
+                .expect("test precondition")
+                .session_ref,
             crate::agent_resume::AgentSessionRef::path(new_session)
         );
 
@@ -2978,7 +2996,8 @@ mod tests {
             Agent::Pi,
             "shepr:pi",
             "pi",
-            crate::agent_resume::AgentSessionRef::path(test_session_path("one.jsonl")).expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::path(test_session_path("one.jsonl"))
+                .expect("test precondition"),
         );
         terminal.set_hook_authority_with_session_ref(
             "shepr:pi".into(),
@@ -3080,7 +3099,7 @@ mod tests {
                 "pi".into(),
                 crate::agent_resume::AgentSessionRef::path(new_session),
                 Some(400),
-                Some("startup".into()),
+                Some("startup"),
             )
             .expect("fresh session should activate the buffered report");
         assert!(terminal.hook_authority.is_some());
@@ -3144,7 +3163,7 @@ mod tests {
             "pi".into(),
             crate::agent_resume::AgentSessionRef::path(session_path),
             Some(2000),
-            Some("startup".into()),
+            Some("startup"),
         );
         assert!(startup.is_none());
         assert!(lower_sequence.is_none());
@@ -3177,7 +3196,8 @@ mod tests {
             Agent::Pi,
             "shepr:pi",
             "pi",
-            crate::agent_resume::AgentSessionRef::path(old_session.clone()).expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::path(old_session.clone())
+                .expect("test precondition"),
         );
         terminal.set_hook_authority_at(
             "shepr:pi".into(),
@@ -3240,7 +3260,7 @@ mod tests {
                 "pi".into(),
                 crate::agent_resume::AgentSessionRef::path(shared_session),
                 Some(100),
-                Some("startup".into()),
+                Some("startup"),
             )
             .expect("new generation session claim");
 
@@ -3296,7 +3316,7 @@ mod tests {
             "pi".into(),
             crate::agent_resume::AgentSessionRef::path(session_path),
             Some(2000),
-            Some("startup".into()),
+            Some("startup"),
         );
 
         assert!(startup.is_some());
@@ -3364,7 +3384,7 @@ mod tests {
             "pi".into(),
             crate::agent_resume::AgentSessionRef::path(new_session),
             Some(400),
-            Some("startup".into()),
+            Some("startup"),
         );
 
         assert!(fresh_new.is_some());
@@ -3448,7 +3468,7 @@ mod tests {
                     "fresh-after-nosession-process-exit.jsonl",
                 )),
                 Some(600),
-                Some("startup".into()),
+                Some("startup"),
             )
             .expect("fresh root session should claim the process generation");
         let child_update = terminal.set_hook_authority_at(
@@ -3475,7 +3495,7 @@ mod tests {
                 "mastracode".into(),
                 crate::agent_resume::AgentSessionRef::id("mastracode-old"),
                 Some(20),
-                Some("startup".into()),
+                Some("startup"),
             )
             .expect("initial root session");
 
@@ -3484,7 +3504,7 @@ mod tests {
             "mastracode".into(),
             crate::agent_resume::AgentSessionRef::id("mastracode-new"),
             Some(21),
-            Some("startup".into()),
+            Some("startup"),
         );
 
         assert!(replacement.is_some_and(|mutation| mutation.session_ref_changed));
@@ -3556,7 +3576,7 @@ mod tests {
                 "omp".into(),
                 crate::agent_resume::AgentSessionRef::id("omp-new"),
                 Some(400),
-                Some("startup".into()),
+                Some("startup"),
             )
             .expect("fresh process and session should claim the pane");
         let fresh = terminal.set_hook_authority_with_session_ref(
@@ -3595,7 +3615,10 @@ mod tests {
 
         assert_eq!(terminal.fallback_state, AgentState::Blocked);
         assert_eq!(terminal.state, AgentState::Blocked);
-        assert_eq!(change.expect("test precondition").previous_state, AgentState::Working);
+        assert_eq!(
+            change.expect("test precondition").previous_state,
+            AgentState::Working
+        );
     }
 
     #[test]
@@ -3607,7 +3630,8 @@ mod tests {
             Agent::Pi,
             "shepr:pi",
             "pi",
-            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl")).expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl"))
+                .expect("test precondition"),
         );
         terminal.set_hook_authority(
             "shepr:pi".into(),
@@ -4059,7 +4083,8 @@ mod tests {
             Agent::Pi,
             "shepr:pi",
             "pi",
-            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl")).expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl"))
+                .expect("test precondition"),
         );
         terminal.set_hook_authority_at(
             "shepr:pi".into(),
@@ -4268,21 +4293,27 @@ mod tests {
             observed + Duration::from_millis(2),
         );
 
-        assert!(terminal
-            .release_agent_with_mutation("custom:pi", "pi", Some(200))
-            .is_none());
-        assert!(terminal
-            .clear_hook_authority_with_mutation(Some("custom:pi"), Some(201))
-            .is_none());
-        assert!(terminal
-            .set_hook_authority(
-                "custom:pi".into(),
-                "pi".into(),
-                AgentState::Working,
-                None,
-                Some(1),
-            )
-            .is_none());
+        assert!(
+            terminal
+                .release_agent_with_mutation("custom:pi", "pi", Some(200))
+                .is_none()
+        );
+        assert!(
+            terminal
+                .clear_hook_authority_with_mutation(Some("custom:pi"), Some(201))
+                .is_none()
+        );
+        assert!(
+            terminal
+                .set_hook_authority(
+                    "custom:pi".into(),
+                    "pi".into(),
+                    AgentState::Working,
+                    None,
+                    Some(1),
+                )
+                .is_none()
+        );
         terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Pi),
             AgentState::Idle,
@@ -4292,15 +4323,17 @@ mod tests {
             false,
             observed + Duration::from_millis(3),
         );
-        assert!(terminal
-            .set_hook_authority(
-                "custom:pi".into(),
-                "pi".into(),
-                AgentState::Working,
-                None,
-                Some(1),
-            )
-            .is_some());
+        assert!(
+            terminal
+                .set_hook_authority(
+                    "custom:pi".into(),
+                    "pi".into(),
+                    AgentState::Working,
+                    None,
+                    Some(1),
+                )
+                .is_some()
+        );
     }
 
     #[test]
@@ -4379,7 +4412,8 @@ mod tests {
             Agent::Pi,
             "shepr:pi",
             "pi",
-            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl")).expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl"))
+                .expect("test precondition"),
         );
         terminal.set_hook_authority(
             "shepr:pi".into(),
@@ -4400,7 +4434,11 @@ mod tests {
         assert!(change.is_none());
         assert_eq!(terminal.state, AgentState::Working);
         assert_eq!(
-            terminal.hook_authority.as_ref().expect("test precondition").state,
+            terminal
+                .hook_authority
+                .as_ref()
+                .expect("test precondition")
+                .state,
             AgentState::Working
         );
     }
@@ -4414,7 +4452,8 @@ mod tests {
             Agent::Pi,
             "shepr:pi",
             "pi",
-            crate::agent_resume::AgentSessionRef::path(session_path.clone()).expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::path(session_path.clone())
+                .expect("test precondition"),
         );
         let mutation = terminal
             .set_hook_authority_with_session_ref(
@@ -4451,7 +4490,8 @@ mod tests {
             Agent::Pi,
             "shepr:pi",
             "pi",
-            crate::agent_resume::AgentSessionRef::path(session_path.clone()).expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::path(session_path.clone())
+                .expect("test precondition"),
         );
         terminal.set_hook_authority_with_session_ref(
             "shepr:pi".into(),
@@ -4491,7 +4531,8 @@ mod tests {
             Agent::Pi,
             "shepr:pi",
             "pi",
-            crate::agent_resume::AgentSessionRef::path(session_path.clone()).expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::path(session_path.clone())
+                .expect("test precondition"),
         );
         terminal.set_hook_authority_with_session_ref(
             "shepr:pi".into(),
@@ -4515,12 +4556,14 @@ mod tests {
 
         assert!(mutation.session_ref_changed);
         assert!(mutation.effective_state_change.is_none());
-        assert!(terminal
-            .hook_authority
-            .as_ref()
-            .expect("test precondition")
-            .session_ref
-            .is_none());
+        assert!(
+            terminal
+                .hook_authority
+                .as_ref()
+                .expect("test precondition")
+                .session_ref
+                .is_none()
+        );
     }
 
     #[test]
@@ -4573,7 +4616,7 @@ mod tests {
             "claude".into(),
             crate::agent_resume::AgentSessionRef::id("nested-session"),
             Some(21),
-            Some("startup".into()),
+            Some("startup"),
         );
 
         assert!(mutation.is_none());
@@ -4606,7 +4649,7 @@ mod tests {
                     "claude".into(),
                     crate::agent_resume::AgentSessionRef::id(&next_session),
                     Some(21),
-                    Some(session_start_source.into()),
+                    Some(session_start_source),
                 )
                 .unwrap_or_else(|| panic!("{session_start_source} should replace the session"));
 
@@ -4645,7 +4688,7 @@ mod tests {
                     "codex".into(),
                     crate::agent_resume::AgentSessionRef::id(&next_session),
                     Some(21),
-                    Some(session_start_source.into()),
+                    Some(session_start_source),
                 )
                 .unwrap_or_else(|| panic!("{session_start_source} should replace the session"));
 
@@ -4681,7 +4724,7 @@ mod tests {
                     "qwen".into(),
                     crate::agent_resume::AgentSessionRef::id(&next_session),
                     Some(21),
-                    Some(session_start_source.into()),
+                    Some(session_start_source),
                 )
                 .unwrap_or_else(|| panic!("{session_start_source} should replace the session"));
 
@@ -4713,7 +4756,7 @@ mod tests {
             "qwen".into(),
             crate::agent_resume::AgentSessionRef::id("qwen-branch"),
             Some(21),
-            Some("branch".into()),
+            Some("branch"),
         );
 
         assert!(mutation.is_none());
@@ -4744,7 +4787,7 @@ mod tests {
                 "grok".into(),
                 crate::agent_resume::AgentSessionRef::id("grok-new"),
                 Some(21),
-                Some("new".into()),
+                Some("new"),
             )
             .expect("new should replace the grok session");
 
@@ -4768,7 +4811,7 @@ mod tests {
                 "opencode".into(),
                 crate::agent_resume::AgentSessionRef::id("opencode-visible"),
                 None,
-                Some("select".into()),
+                Some("select"),
             )
             .expect("local selection should be accepted");
 
@@ -4777,7 +4820,7 @@ mod tests {
             "opencode".into(),
             crate::agent_resume::AgentSessionRef::id("opencode-attached-client"),
             Some(21),
-            Some("new".into()),
+            Some("new"),
         );
 
         assert!(mutation.is_none());
@@ -4800,7 +4843,7 @@ mod tests {
                 "opencode".into(),
                 crate::agent_resume::AgentSessionRef::id("opencode-visible"),
                 None,
-                Some("select".into()),
+                Some("select"),
             )
             .expect("local selection should be accepted");
 
@@ -4809,7 +4852,7 @@ mod tests {
             "opencode".into(),
             crate::agent_resume::AgentSessionRef::id("opencode-attached-client"),
             Some(21),
-            Some("resume".into()),
+            Some("resume"),
         );
 
         assert!(mutation.is_none());
@@ -4830,7 +4873,7 @@ mod tests {
             "opencode".into(),
             crate::agent_resume::AgentSessionRef::id("opencode-startup-selection"),
             None,
-            Some("select".into()),
+            Some("select"),
         );
         assert!(startup_selection.is_none());
         assert_eq!(
@@ -4850,9 +4893,11 @@ mod tests {
                 .map(|session| session.session_ref.value.as_str()),
             Some("opencode-startup-selection")
         );
-        assert!(!terminal
-            .suppressed_full_lifecycle_hook_reports
-            .contains_key("shepr:opencode"));
+        assert!(
+            !terminal
+                .suppressed_full_lifecycle_hook_reports
+                .contains_key("shepr:opencode")
+        );
 
         terminal.suppressed_full_lifecycle_hook_reports.insert(
             "shepr:opencode".into(),
@@ -4871,14 +4916,16 @@ mod tests {
                 "opencode".into(),
                 crate::agent_resume::AgentSessionRef::id("opencode-reselected"),
                 None,
-                Some("select".into()),
+                Some("select"),
             )
             .expect("local TUI selection should reconcile generation suppression");
 
         assert!(selected.session_ref_changed);
-        assert!(!terminal
-            .suppressed_full_lifecycle_hook_reports
-            .contains_key("shepr:opencode"));
+        assert!(
+            !terminal
+                .suppressed_full_lifecycle_hook_reports
+                .contains_key("shepr:opencode")
+        );
         assert_eq!(
             terminal
                 .persisted_agent_session
@@ -4886,15 +4933,18 @@ mod tests {
                 .map(|session| session.session_ref.value.as_str()),
             Some("opencode-reselected")
         );
-        assert!(!terminal
-            .hook_report_sequences
-            .contains_key("shepr:opencode"));
+        assert!(
+            !terminal
+                .hook_report_sequences
+                .contains_key("shepr:opencode")
+        );
     }
 
     #[test]
     fn opencode_child_prompt_reports_with_root_id_preserve_lifecycle_authority() {
         let mut terminal = test_terminal();
-        let root = crate::agent_resume::AgentSessionRef::id("opencode-root").expect("test precondition");
+        let root =
+            crate::agent_resume::AgentSessionRef::id("opencode-root").expect("test precondition");
         anchor_full_lifecycle_session(
             &mut terminal,
             Agent::OpenCode,
@@ -4948,9 +4998,10 @@ mod tests {
     #[test]
     fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
         let mut terminal = test_terminal();
-        let old_session = crate::agent_resume::AgentSessionRef::id("opencode-newer").expect("test precondition");
-        let selected_session =
-            crate::agent_resume::AgentSessionRef::id("opencode-selected-older").expect("test precondition");
+        let old_session =
+            crate::agent_resume::AgentSessionRef::id("opencode-newer").expect("test precondition");
+        let selected_session = crate::agent_resume::AgentSessionRef::id("opencode-selected-older")
+            .expect("test precondition");
         anchor_full_lifecycle_session(
             &mut terminal,
             Agent::OpenCode,
@@ -4968,8 +5019,8 @@ mod tests {
                 Some(20),
             )
             .expect("initial session should own lifecycle state");
-        let attached_session =
-            crate::agent_resume::AgentSessionRef::id("opencode-attached-client").expect("test precondition");
+        let attached_session = crate::agent_resume::AgentSessionRef::id("opencode-attached-client")
+            .expect("test precondition");
         let attached = terminal.set_hook_authority_with_session_ref(
             "shepr:opencode".into(),
             "opencode".into(),
@@ -4979,9 +5030,11 @@ mod tests {
             Some(21),
         );
         assert!(attached.is_none());
-        assert!(!terminal
-            .suppressed_full_lifecycle_hook_reports
-            .contains_key("shepr:opencode"));
+        assert!(
+            !terminal
+                .suppressed_full_lifecycle_hook_reports
+                .contains_key("shepr:opencode")
+        );
 
         let selected = terminal
             .set_agent_session_ref_for_session_start(
@@ -4989,15 +5042,17 @@ mod tests {
                 "opencode".into(),
                 Some(selected_session.clone()),
                 None,
-                Some("select".into()),
+                Some("select"),
             )
             .expect("selected session should replace the previous session");
 
         assert!(selected.session_ref_changed);
         assert!(terminal.hook_authority.is_none());
-        assert!(!terminal
-            .suppressed_full_lifecycle_hook_reports
-            .contains_key("shepr:opencode"));
+        assert!(
+            !terminal
+                .suppressed_full_lifecycle_hook_reports
+                .contains_key("shepr:opencode")
+        );
         assert_eq!(
             terminal.hook_report_sequences.get("shepr:opencode"),
             Some(&20)
@@ -5058,15 +5113,15 @@ mod tests {
         assert!(late_attached_session.is_none());
         assert_eq!(terminal.state, AgentState::Working);
 
-        let final_session =
-            crate::agent_resume::AgentSessionRef::id("opencode-final-selection").expect("test precondition");
+        let final_session = crate::agent_resume::AgentSessionRef::id("opencode-final-selection")
+            .expect("test precondition");
         terminal
             .set_agent_session_ref_for_session_start(
                 "shepr:opencode".into(),
                 "opencode".into(),
                 Some(final_session.clone()),
                 None,
-                Some("select".into()),
+                Some("select"),
             )
             .expect("another local selection should remain authoritative");
         assert_eq!(
@@ -5076,9 +5131,11 @@ mod tests {
                 .map(|session| &session.session_ref),
             Some(&final_session)
         );
-        assert!(!terminal
-            .suppressed_full_lifecycle_hook_reports
-            .contains_key("shepr:opencode"));
+        assert!(
+            !terminal
+                .suppressed_full_lifecycle_hook_reports
+                .contains_key("shepr:opencode")
+        );
     }
 
     #[test]
@@ -5091,7 +5148,7 @@ mod tests {
                 "pi".into(),
                 crate::agent_resume::AgentSessionRef::id("pi-old"),
                 Some(20),
-                Some("new".into()),
+                Some("new"),
             )
             .expect("initial session should be accepted");
         terminal.set_agent_name("reviewer".into());
@@ -5102,7 +5159,7 @@ mod tests {
                 "pi".into(),
                 crate::agent_resume::AgentSessionRef::id("pi-new"),
                 Some(21),
-                Some("new".into()),
+                Some("new"),
             )
             .expect("new should replace the session");
 
@@ -5130,7 +5187,7 @@ mod tests {
                     "opencode".into(),
                     crate::agent_resume::AgentSessionRef::id(session),
                     None,
-                    Some("select".into()),
+                    Some("select"),
                 )
                 .expect("managed session should be accepted");
         }
@@ -5156,7 +5213,7 @@ mod tests {
                 "opencode".into(),
                 crate::agent_resume::AgentSessionRef::id("opencode-old"),
                 None,
-                Some("select".into()),
+                Some("select"),
             )
             .expect("local selection should be accepted");
 
@@ -5197,7 +5254,7 @@ mod tests {
             "claude".into(),
             crate::agent_resume::AgentSessionRef::id("claude-session"),
             Some(21),
-            Some("resume".into()),
+            Some("resume"),
         );
 
         assert!(mutation.is_none());
@@ -5217,7 +5274,8 @@ mod tests {
         terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
             source: "shepr:claude".into(),
             agent: "claude".into(),
-            session_ref: crate::agent_resume::AgentSessionRef::id("claude-session").expect("test precondition"),
+            session_ref: crate::agent_resume::AgentSessionRef::id("claude-session")
+                .expect("test precondition"),
         });
         terminal.set_detected_state(Some(Agent::Grok), AgentState::Idle);
 
@@ -5226,7 +5284,7 @@ mod tests {
             "grok".into(),
             crate::agent_resume::AgentSessionRef::id("grok-session"),
             Some(21),
-            Some("new".into()),
+            Some("new"),
         );
 
         assert!(mutation.is_none());
@@ -5247,7 +5305,8 @@ mod tests {
             terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
                 source: "shepr:codex".into(),
                 agent: "codex".into(),
-                session_ref: crate::agent_resume::AgentSessionRef::id("codex-session").expect("test precondition"),
+                session_ref: crate::agent_resume::AgentSessionRef::id("codex-session")
+                    .expect("test precondition"),
             });
             terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
 
@@ -5257,7 +5316,7 @@ mod tests {
                     "claude".into(),
                     crate::agent_resume::AgentSessionRef::id("claude-session"),
                     Some(21),
-                    Some(session_start_source.into()),
+                    Some(session_start_source),
                 )
                 .unwrap_or_else(|| {
                     panic!("{session_start_source} should replace stale codex session")
@@ -5283,7 +5342,8 @@ mod tests {
             terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
                 source: "shepr:codex".into(),
                 agent: "codex".into(),
-                session_ref: crate::agent_resume::AgentSessionRef::id("codex-session").expect("test precondition"),
+                session_ref: crate::agent_resume::AgentSessionRef::id("codex-session")
+                    .expect("test precondition"),
             });
             terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
 
@@ -5292,7 +5352,7 @@ mod tests {
                 "claude".into(),
                 crate::agent_resume::AgentSessionRef::id("claude-session"),
                 Some(21),
-                session_start_source.map(str::to_string),
+                session_start_source,
             );
 
             assert!(
@@ -5318,7 +5378,8 @@ mod tests {
                 terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
                     source: "shepr:codex".into(),
                     agent: "codex".into(),
-                    session_ref: crate::agent_resume::AgentSessionRef::id("codex-session").expect("test precondition"),
+                    session_ref: crate::agent_resume::AgentSessionRef::id("codex-session")
+                        .expect("test precondition"),
                 });
                 terminal.set_detected_state(detected_agent, AgentState::Idle);
 
@@ -5327,7 +5388,7 @@ mod tests {
                     "claude".into(),
                     crate::agent_resume::AgentSessionRef::id("claude-session"),
                     Some(21),
-                    Some(session_start_source.into()),
+                    Some(session_start_source),
                 );
 
                 assert!(
@@ -5352,7 +5413,8 @@ mod tests {
         terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
             source: "shepr:codex".into(),
             agent: "codex".into(),
-            session_ref: crate::agent_resume::AgentSessionRef::id("codex-session").expect("test precondition"),
+            session_ref: crate::agent_resume::AgentSessionRef::id("codex-session")
+                .expect("test precondition"),
         });
         terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
 
@@ -5361,7 +5423,7 @@ mod tests {
             "claude".into(),
             crate::agent_resume::AgentSessionRef::id("claude-session"),
             Some(21),
-            Some("resume".into()),
+            Some("resume"),
         );
 
         assert!(mutation.is_none());
@@ -5384,7 +5446,8 @@ mod tests {
             Agent::OpenCode,
             "shepr:opencode",
             "opencode",
-            crate::agent_resume::AgentSessionRef::id("opencode-session").expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::id("opencode-session")
+                .expect("test precondition"),
         );
         terminal
             .set_hook_authority_at(
@@ -5413,7 +5476,7 @@ mod tests {
                 "codex".into(),
                 crate::agent_resume::AgentSessionRef::id("codex-session"),
                 Some(21),
-                Some("startup".into()),
+                Some("startup"),
             )
             .expect("foreground codex should replace stale hook authority");
 
@@ -5445,7 +5508,7 @@ mod tests {
                 "opencode".into(),
                 crate::agent_resume::AgentSessionRef::id("opencode-new-session"),
                 None,
-                Some("select".into()),
+                Some("select"),
             )
             .expect("fresh local selection");
         let fresh_session = terminal.set_hook_authority_with_session_ref(
@@ -5525,7 +5588,8 @@ mod tests {
             Agent::OpenCode,
             "shepr:opencode",
             "opencode",
-            crate::agent_resume::AgentSessionRef::id("opencode-session").expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::id("opencode-session")
+                .expect("test precondition"),
         );
         terminal
             .set_hook_authority_with_session_ref(
@@ -5601,7 +5665,8 @@ mod tests {
             Agent::Pi,
             "shepr:pi",
             "pi",
-            crate::agent_resume::AgentSessionRef::path(session_path.clone()).expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::path(session_path.clone())
+                .expect("test precondition"),
         );
         terminal.set_hook_authority_with_session_ref(
             "shepr:pi".into(),
@@ -5813,7 +5878,8 @@ mod tests {
             Agent::Pi,
             "shepr:pi",
             "pi",
-            crate::agent_resume::AgentSessionRef::path(test_session_path("first.jsonl")).expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::path(test_session_path("first.jsonl"))
+                .expect("test precondition"),
         );
         terminal
             .set_hook_authority_at(
@@ -5861,7 +5927,8 @@ mod tests {
         terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
             source: "shepr:hermes".into(),
             agent: "hermes".into(),
-            session_ref: crate::agent_resume::AgentSessionRef::id("hermes-session").expect("test precondition"),
+            session_ref: crate::agent_resume::AgentSessionRef::id("hermes-session")
+                .expect("test precondition"),
         });
 
         let mutation = terminal
@@ -5879,7 +5946,8 @@ mod tests {
         terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
             source: "shepr:claude".into(),
             agent: "claude".into(),
-            session_ref: crate::agent_resume::AgentSessionRef::id("claude-session").expect("test precondition"),
+            session_ref: crate::agent_resume::AgentSessionRef::id("claude-session")
+                .expect("test precondition"),
         });
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
 
@@ -5901,8 +5969,8 @@ mod tests {
     #[test]
     fn process_exit_clears_matching_persisted_session_ref() {
         let mut terminal = test_terminal();
-        let session_ref =
-            crate::agent_resume::AgentSessionRef::path(test_session_path("pi.jsonl")).expect("test precondition");
+        let session_ref = crate::agent_resume::AgentSessionRef::path(test_session_path("pi.jsonl"))
+            .expect("test precondition");
         terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
             source: "shepr:pi".into(),
             agent: "pi".into(),
@@ -5939,7 +6007,8 @@ mod tests {
         terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
             source: "shepr:claude".into(),
             agent: "claude".into(),
-            session_ref: crate::agent_resume::AgentSessionRef::id("claude-session").expect("test precondition"),
+            session_ref: crate::agent_resume::AgentSessionRef::id("claude-session")
+                .expect("test precondition"),
         });
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
 
@@ -5961,39 +6030,6 @@ mod tests {
                 .map(|session| session.session_ref.value.as_str()),
             Some("claude-session")
         );
-    }
-
-    #[test]
-    fn agent_process_exit_tracks_recent_respawn_window() {
-        let mut terminal = test_terminal();
-        let now = std::time::Instant::now();
-
-        terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::OpenCode),
-            AgentState::Idle,
-            false,
-            false,
-            false,
-            true,
-            now,
-        );
-
-        assert!(terminal.agent_process_exited_within(now, Duration::from_secs(2)));
-        assert!(!terminal
-            .agent_process_exited_within(now + Duration::from_secs(3), Duration::from_secs(2)));
-
-        terminal.set_detected_state_with_screen_signals_at(
-            Some(Agent::OpenCode),
-            AgentState::Working,
-            false,
-            false,
-            true,
-            false,
-            now + Duration::from_secs(4),
-        );
-
-        assert!(!terminal
-            .agent_process_exited_within(now + Duration::from_secs(4), Duration::from_secs(2)));
     }
 
     #[test]
@@ -6057,7 +6093,8 @@ mod tests {
         terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
             source: "shepr:opencode".into(),
             agent: "opencode".into(),
-            session_ref: crate::agent_resume::AgentSessionRef::id("opencode-session").expect("test precondition"),
+            session_ref: crate::agent_resume::AgentSessionRef::id("opencode-session")
+                .expect("test precondition"),
         });
 
         let first =
@@ -6076,7 +6113,8 @@ mod tests {
         terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
             source: "shepr:hermes".into(),
             agent: "hermes".into(),
-            session_ref: crate::agent_resume::AgentSessionRef::id("hermes-session").expect("test precondition"),
+            session_ref: crate::agent_resume::AgentSessionRef::id("hermes-session")
+                .expect("test precondition"),
         });
 
         let mutation = terminal.set_detected_state_with_mutation(None, AgentState::Unknown);
@@ -6093,7 +6131,8 @@ mod tests {
             Agent::Pi,
             "shepr:pi",
             "pi",
-            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl")).expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl"))
+                .expect("test precondition"),
         );
         terminal.set_hook_authority(
             "shepr:pi".into(),
@@ -6124,7 +6163,8 @@ mod tests {
             Agent::Pi,
             "shepr:pi",
             "pi",
-            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl")).expect("test precondition"),
+            crate::agent_resume::AgentSessionRef::path(test_session_path("root.jsonl"))
+                .expect("test precondition"),
         );
         terminal.set_hook_authority(
             "shepr:pi".into(),
@@ -6163,7 +6203,11 @@ mod tests {
 
         assert_eq!(terminal.state, AgentState::Idle);
         assert_eq!(
-            terminal.hook_authority.as_ref().expect("test precondition").source,
+            terminal
+                .hook_authority
+                .as_ref()
+                .expect("test precondition")
+                .source,
             "custom:pi"
         );
     }

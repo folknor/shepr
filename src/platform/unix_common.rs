@@ -15,7 +15,7 @@ pub(crate) fn read_fd(fd: std::os::fd::RawFd, data: &mut [u8]) -> std::io::Resul
     if result < 0 {
         Err(std::io::Error::last_os_error())
     } else {
-        Ok(result as usize)
+        Ok(result.cast_unsigned())
     }
 }
 
@@ -112,7 +112,8 @@ pub(crate) fn write_client_stream(
             events: libc::POLLOUT,
             revents: 0,
         };
-        let wait_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+        let wait_ms =
+            i32::try_from(remaining.as_millis().clamp(1, i32::MAX as u128)).unwrap_or(i32::MAX);
         let ready = unsafe { libc::poll(&mut descriptor, 1, wait_ms) };
         if ready == 0 {
             return Err(timed_out());
@@ -257,10 +258,6 @@ fn set_sigpipe_disposition(handler: libc::sighandler_t) {
 
 pub(crate) fn begin_cli_output() {
     set_sigpipe_disposition(libc::SIG_DFL);
-}
-
-pub(crate) fn end_cli_output() {
-    set_sigpipe_disposition(libc::SIG_IGN);
 }
 
 pub(crate) fn remote_ssh_config_paths() -> super::RemoteSshConfigPaths {
@@ -449,6 +446,7 @@ mod tests {
 /// belonging to another uid, a symlink, or a directory accessible by others.
 pub(crate) fn shared_ssh_control_path(namespace: &Path, target: &str) -> std::io::Result<PathBuf> {
     use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
     use std::os::unix::{
         ffi::OsStrExt,
         fs::{DirBuilderExt, MetadataExt},
@@ -484,7 +482,11 @@ pub(crate) fn shared_ssh_control_path(namespace: &Path, target: &str) -> std::io
     // %C additionally scopes the socket to OpenSSH's resolved destination,
     // port and jump host, rather than merely the spelling of an alias.
     // Keep 96 bits of namespace/target hash plus OpenSSH's 160-bit %C.
-    let hash = format!("{:x}", hash.finalize());
+    let digest = hash.finalize();
+    let mut hash = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(hash, "{byte:02x}");
+    }
     let path = dir.join(format!("{}-%C", &hash[..24]));
     // OpenSSH first binds ControlPath + '.' + 16 random characters, then
     // renames it. Reserve those 17 bytes, not just the final socket's length.
@@ -520,18 +522,22 @@ mod shared_ssh_tests {
 
     #[test]
     fn shared_ssh_control_path_is_stable_scoped_and_bounded() {
-        let path = shared_ssh_control_path(Path::new("/config/one"), "user@host").expect("test precondition");
+        let path = shared_ssh_control_path(Path::new("/config/one"), "user@host")
+            .expect("test precondition");
         assert_eq!(
             path,
-            shared_ssh_control_path(Path::new("/config/one"), "user@host").expect("test precondition")
+            shared_ssh_control_path(Path::new("/config/one"), "user@host")
+                .expect("test precondition")
         );
         assert_ne!(
             path,
-            shared_ssh_control_path(Path::new("/config/two"), "user@host").expect("test precondition")
+            shared_ssh_control_path(Path::new("/config/two"), "user@host")
+                .expect("test precondition")
         );
         assert_ne!(
             path,
-            shared_ssh_control_path(Path::new("/config/one"), "other@host").expect("test precondition")
+            shared_ssh_control_path(Path::new("/config/one"), "other@host")
+                .expect("test precondition")
         );
         let expanded = path.to_string_lossy().replace("%C", &"f".repeat(40));
         assert!(fits_unix_socket_path(&PathBuf::from(&expanded)));
@@ -539,14 +545,19 @@ mod shared_ssh_tests {
         assert!(fits_unix_socket_path(&PathBuf::from(format!(
             "{expanded}.QuuYe7ZFE2HYeAE4"
         ))));
-        validate_shared_ssh_dir(path.parent().expect("test precondition")).expect("test precondition");
+        validate_shared_ssh_dir(path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
     fn shared_ssh_staging_path_fits_with_maximum_uid_width() {
-        let path = shared_ssh_control_path(Path::new("/config/one"), "user@host").expect("test precondition");
+        let path = shared_ssh_control_path(Path::new("/config/one"), "user@host")
+            .expect("test precondition");
         let directory = path.parent().expect("test precondition");
-        let name = directory.file_name().expect("test precondition").to_string_lossy();
+        let name = directory
+            .file_name()
+            .expect("test precondition")
+            .to_string_lossy();
         let prefix = name.trim_end_matches(|ch: char| ch.is_ascii_digit());
         let maximum_uid_directory = directory
             .parent()
@@ -563,17 +574,22 @@ mod shared_ssh_tests {
 
     #[test]
     fn shared_ssh_directory_rejects_symlinks_and_public_modes() {
-        use std::os::unix::fs::{symlink, PermissionsExt};
+        use std::os::unix::fs::{PermissionsExt, symlink};
         let dir = create_remote_ssh_config_dir("ctl").expect("test precondition");
         let link = dir.join("link");
         symlink(&dir, &link).expect("test precondition");
         assert_eq!(
-            validate_shared_ssh_dir(&link).expect_err("test precondition").kind(),
+            validate_shared_ssh_dir(&link)
+                .expect_err("test precondition")
+                .kind(),
             std::io::ErrorKind::PermissionDenied
         );
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).expect("test precondition");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+            .expect("test precondition");
         assert_eq!(
-            validate_shared_ssh_dir(&dir).expect_err("test precondition").kind(),
+            validate_shared_ssh_dir(&dir)
+                .expect_err("test precondition")
+                .kind(),
             std::io::ErrorKind::PermissionDenied
         );
         std::fs::remove_dir_all(dir).expect("test precondition");

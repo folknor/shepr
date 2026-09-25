@@ -1,7 +1,8 @@
 use crate::api::schema::{ErrorBody, ErrorResponse, ResponseResult, SuccessResponse};
 
 pub(crate) fn encode_success(id: String, result: ResponseResult) -> String {
-    serde_json::to_string(&SuccessResponse { id, result }).expect("SuccessResponse serializes to JSON")
+    serde_json::to_string(&SuccessResponse { id, result })
+        .expect("SuccessResponse serializes to JSON")
 }
 
 pub(crate) fn encode_error(id: String, code: &str, message: impl Into<String>) -> String {

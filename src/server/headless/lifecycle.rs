@@ -13,7 +13,7 @@ impl HeadlessServer {
         let shutdown_msg = ServerMessage::ServerShutdown {
             reason: Some("server is shutting down".to_owned()),
         };
-        self.send_to_all_clients(shutdown_msg);
+        self.send_to_all_clients(&shutdown_msg);
 
         // Give client writer threads a moment to flush the shutdown message.
         // A short sleep ensures the message is written to the socket before
@@ -36,7 +36,7 @@ impl HeadlessServer {
             let shutdown_msg = ServerMessage::ServerShutdown {
                 reason: Some("server is shutting down".to_owned()),
             };
-            self.send_to_all_clients(shutdown_msg);
+            self.send_to_all_clients(&shutdown_msg);
 
             // Give writer threads a moment to flush before closing.
             std::thread::sleep(Duration::from_millis(50));
@@ -58,14 +58,13 @@ impl HeadlessServer {
     pub(super) fn cleanup_sockets(&self) -> io::Result<()> {
         if let Err(err) =
             remove_socket_file_if_owned(&self.client_socket_path, &self.client_socket_identity)
+            && err.kind() != io::ErrorKind::NotFound
         {
-            if err.kind() != io::ErrorKind::NotFound {
-                warn!(
-                    path = %self.client_socket_path.display(),
-                    err = %err,
-                    "failed to remove client socket on shutdown"
-                );
-            }
+            warn!(
+                path = %self.client_socket_path.display(),
+                err = %err,
+                "failed to remove client socket on shutdown"
+            );
         }
         Ok(())
     }

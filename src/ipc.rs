@@ -27,14 +27,14 @@ pub(crate) struct SocketFileIdentity {
 }
 
 pub(crate) fn connect_local_stream(path: &Path) -> io::Result<LocalStream> {
-    use interprocess::local_socket::{prelude::*, GenericFilePath};
+    use interprocess::local_socket::{GenericFilePath, prelude::*};
 
     let name = path.to_fs_name::<GenericFilePath>()?;
     LocalStream::connect(name)
 }
 
 pub(crate) fn bind_local_listener(path: &Path) -> io::Result<LocalListener> {
-    use interprocess::local_socket::{prelude::*, GenericFilePath, ListenerOptions};
+    use interprocess::local_socket::{GenericFilePath, ListenerOptions, prelude::*};
 
     let name = path.to_fs_name::<GenericFilePath>()?;
     ListenerOptions::new()
@@ -63,10 +63,10 @@ pub(crate) fn prepare_socket_path(
         Err(err) => return Err(err),
     }
 
-    if let Err(err) = fs::remove_file(path) {
-        if err.kind() != io::ErrorKind::NotFound {
-            return Err(err);
-        }
+    if let Err(err) = fs::remove_file(path)
+        && err.kind() != io::ErrorKind::NotFound
+    {
+        return Err(err);
     }
 
     Ok(())

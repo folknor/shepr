@@ -1,4 +1,4 @@
-//! Headless server mode — runs the shepr event loop without a real terminal.
+//! Headless server mode - runs the shepr event loop without a real terminal.
 //!
 //! The server:
 //! - Does not enter raw mode or read stdin
@@ -17,29 +17,28 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use interprocess::local_socket::traits::Listener as _;
 use interprocess::local_socket::ListenerNonblockingMode;
+use interprocess::local_socket::traits::Listener as _;
 use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use base64::Engine;
-use bytes::Bytes;
 
 use crate::api;
 use crate::app;
 use crate::config;
 use crate::events::AppEvent;
 use crate::ipc::{
-    bind_local_listener, remove_socket_file_if_owned, socket_file_identity, LocalListener,
-    SocketFileIdentity,
+    LocalListener, SocketFileIdentity, bind_local_listener, remove_socket_file_if_owned,
+    socket_file_identity,
 };
 use crate::protocol::{
-    self, AttachScrollDirection, AttachScrollSource, FrameData, ServerMessage, MAX_FRAME_SIZE,
+    self, AttachScrollDirection, AttachScrollSource, FrameData, MAX_FRAME_SIZE, ServerMessage,
 };
 use crate::server::client_accept::accept_pending_client_connections;
 use crate::server::client_shell::{
@@ -48,18 +47,17 @@ use crate::server::client_shell::{
 };
 use crate::server::client_transport::ServerEvent;
 use crate::server::clients::{
-    latest_shell_client, render_targets, terminal_stream_client_ids, ClientConnection,
-    ClientConnectionMode, DeferredRender,
+    ClientConnection, ClientConnectionMode, DeferredRender, latest_shell_client, render_targets,
+    terminal_stream_client_ids,
 };
 use crate::server::keybindings::{app_keybindings, apply_keybindings};
 use crate::server::pane_input::{
-    apply_client_pane_input_events, apply_terminal_attach_input,
-    apply_terminal_attach_scroll, terminal_attach_mouse_position,
+    apply_client_pane_input_events, apply_terminal_attach_input, apply_terminal_attach_scroll,
+    terminal_attach_mouse_position,
 };
 use crate::server::socket_paths::{
     client_socket_path, prepare_socket_path, restrict_socket_permissions,
 };
-use crate::server::terminal_attach::paste_payload_for_runtime;
 
 mod bootstrap;
 mod client_views;
@@ -133,11 +131,11 @@ enum AltScreenReadConflict {
     Defer,
 }
 
-/// The headless server — runs the shepr event loop without a real terminal.
+/// The headless server - runs the shepr event loop without a real terminal.
 pub struct HeadlessServer {
     app: app::App,
-    api_tx: Option<api::ApiRequestSender>,
-    api_server: Option<api::ServerHandle>,
+    /// Kept alive only for its `Drop` impl, which tears down the JSON API socket server.
+    _api_server: Option<api::ServerHandle>,
     client_listener: LocalListener,
     client_socket_path: PathBuf,
     client_socket_identity: SocketFileIdentity,
@@ -197,7 +195,6 @@ impl HeadlessServer {
     pub fn new(
         app: app::App,
         config_diagnostics: &[String],
-        api_tx: Option<api::ApiRequestSender>,
         api_server: Option<api::ServerHandle>,
         should_quit: Arc<AtomicBool>,
     ) -> io::Result<Self> {
@@ -221,8 +218,7 @@ impl HeadlessServer {
             server_config_diagnostic_summaries(config_diagnostics);
         Ok(Self {
             app,
-            api_tx,
-            api_server,
+            _api_server: api_server,
             client_listener: listener,
             client_socket_path: client_path,
             client_socket_identity,
@@ -270,12 +266,12 @@ impl HeadlessServer {
         crate::logging::startup("server");
 
         // Register SIGINT handler for graceful shutdown.
-        let should_quit = self.should_quit.clone();
+        let should_quit = Arc::clone(&self.should_quit);
         let quit_notify = self.server_event_tx.clone();
         ctrlc_handler(should_quit, quit_notify);
         let quit_notify = self.server_event_tx.clone();
         let _host_shutdown = crate::platform::HostShutdownMonitor::start(
-            self.host_shutdown_requested.clone(),
+            Arc::clone(&self.host_shutdown_requested),
             move || {
                 let _ = quit_notify.try_send(ServerEvent::QuitSignal);
             },
@@ -433,7 +429,7 @@ impl HeadlessServer {
             let next_deadline = self
                 .pending_alt_screen_reads
                 .iter()
-                .map(|pending| pending.next_deadline())
+                .map(crate::server::alt_screen_read::PendingAltScreenRead::next_deadline)
                 .fold(next_deadline, |deadline, pending| {
                     Some(deadline.map_or(pending, |current| current.min(pending)))
                 });
@@ -521,10 +517,6 @@ impl HeadlessServer {
         let stamp = self.next_activity_stamp;
         self.next_activity_stamp = self.next_activity_stamp.saturating_add(1);
         stamp
-    }
-
-    fn resize_shared_runtime_to_effective_size(&mut self) {
-        self.resize_shared_runtime_to_effective_size_with_pending_agent_resumes(true);
     }
 
     fn resize_shared_runtime_to_effective_size_before_input(&mut self) {
@@ -731,10 +723,8 @@ impl HeadlessServer {
                 }
             }
         }
-        if should_release_focus {
-            if let Some(target) = disconnected_focus.as_ref() {
-                self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Lost);
-            }
+        if should_release_focus && let Some(target) = disconnected_focus.as_ref() {
+            self.send_shell_focus_target(target, crate::ghostty::FocusEvent::Lost);
         }
         if was_foreground {
             self.promote_latest_remaining_client()
@@ -809,12 +799,11 @@ impl HeadlessServer {
         while let Some(event) = self.server_event_rx.recv().await {
             if let ServerEvent::ClientConnected { writer, .. }
             | ServerEvent::ClientShellConnected { writer, .. } = event
-            {
-                if let Ok(message) = Self::frame_server_message(&ServerMessage::ServerShutdown {
+                && let Ok(message) = Self::frame_server_message(&ServerMessage::ServerShutdown {
                     reason: Some("server is shutting down".to_owned()),
-                }) {
-                    let _ = writer.control.send(message);
-                }
+                })
+            {
+                let _ = writer.control.send(message);
             }
         }
     }
@@ -948,7 +937,7 @@ impl HeadlessServer {
             .filter(|client_id| {
                 self.clients
                     .get(client_id)
-                    .is_some_and(|client| client.is_active_shell_client())
+                    .is_some_and(ClientConnection::is_active_shell_client)
             })
             .and_then(|client_id| self.shell_target_for_client(client_id))
     }
@@ -970,7 +959,7 @@ impl HeadlessServer {
 
     /// Pushes the configured outer window title to the foreground client when it
     /// changed. Shepr consumes each pane's own `OSC 0`/`OSC 2`, so without this
-    /// the host terminal title never follows the session — which is what window
+    /// the host terminal title never follows the session - which is what window
     /// managers read for tab and group bar labels.
     fn sync_window_title(&mut self) {
         let title = match &self.api_window_title {
@@ -980,10 +969,10 @@ impl HeadlessServer {
         };
         if let (Some(client_id), Some((sent_client_id, sent_title))) =
             (self.foreground_client_id, self.sent_window_title.as_ref())
+            && *sent_client_id == client_id
+            && *sent_title == title
         {
-            if *sent_client_id == client_id && *sent_title == title {
-                return;
-            }
+            return;
         }
         self.send_window_title(title);
     }
@@ -1008,7 +997,7 @@ impl HeadlessServer {
         }
         let sent = self.send_to_client(
             client_id,
-            ServerMessage::WindowTitle {
+            &ServerMessage::WindowTitle {
                 title: title.clone(),
             },
         );
@@ -1077,8 +1066,8 @@ impl HeadlessServer {
 
     /// Sends a message to all connected clients.
     /// Broken connections are tracked and cleaned up.
-    fn send_to_all_clients(&mut self, msg: ServerMessage) {
-        let serialized = match Self::frame_server_message(&msg) {
+    fn send_to_all_clients(&mut self, msg: &ServerMessage) {
+        let serialized = match Self::frame_server_message(msg) {
             Ok(framed) => framed,
             Err(err) => {
                 warn!(err = %err, "failed to serialize message for clients");
@@ -1088,11 +1077,11 @@ impl HeadlessServer {
 
         let mut broken_clients: Vec<u64> = Vec::new();
         for (&client_id, client) in &mut self.clients {
-            if let Some(writer) = &client.writer {
-                if writer.control.send(serialized.clone()).is_err() {
-                    debug!(client_id, "client writer channel closed during broadcast");
-                    broken_clients.push(client_id);
-                }
+            if let Some(writer) = &client.writer
+                && writer.control.send(serialized.clone()).is_err()
+            {
+                debug!(client_id, "client writer channel closed during broadcast");
+                broken_clients.push(client_id);
             }
         }
 
@@ -1102,41 +1091,8 @@ impl HeadlessServer {
         }
     }
 
-    /// Sends an ephemeral semantic event to every connected client-rendered shell.
-    fn send_to_client_shells(&mut self, msg: ServerMessage) -> bool {
-        let serialized = match Self::frame_server_message(&msg) {
-            Ok(framed) => framed,
-            Err(err) => {
-                warn!(err = %err, "failed to serialize message for client shells");
-                return false;
-            }
-        };
-        let client_ids = self
-            .clients
-            .iter()
-            .filter_map(|(&client_id, client)| {
-                matches!(client.mode, ClientConnectionMode::ClientShell).then_some(client_id)
-            })
-            .collect::<Vec<_>>();
-        let mut sent = false;
-        for client_id in client_ids {
-            let Some(client) = self.clients.get(&client_id) else {
-                continue;
-            };
-            let Some(writer) = &client.writer else {
-                continue;
-            };
-            if writer.control.send(serialized.clone()).is_ok() {
-                sent = true;
-            } else {
-                self.remove_client_and_resize_if_needed(client_id);
-            }
-        }
-        sent
-    }
-
     /// Sends a client-local side effect to the foreground client only.
-    fn send_to_foreground_client(&mut self, msg: ServerMessage) -> bool {
+    fn send_to_foreground_client(&mut self, msg: &ServerMessage) -> bool {
         let Some(client_id) = self.foreground_client_id else {
             return false;
         };
@@ -1145,8 +1101,8 @@ impl HeadlessServer {
 
     /// Sends a message to a specific client. Returns false if the client
     /// was not found or the send failed (client removed).
-    fn send_to_client(&mut self, client_id: u64, msg: ServerMessage) -> bool {
-        let serialized = match Self::frame_server_message(&msg) {
+    fn send_to_client(&mut self, client_id: u64, msg: &ServerMessage) -> bool {
+        let serialized = match Self::frame_server_message(msg) {
             Ok(framed) => framed,
             Err(err) => {
                 warn!(client_id, err = %err, "failed to serialize message for client");
@@ -1155,15 +1111,15 @@ impl HeadlessServer {
         };
 
         if let Some(client) = self.clients.get(&client_id) {
-            if let Some(writer) = &client.writer {
-                if writer.control.send(serialized).is_err() {
-                    debug!(
-                        client_id,
-                        "client writer channel closed during targeted send"
-                    );
-                    self.remove_client_and_resize_if_needed(client_id);
-                    return false;
-                }
+            if let Some(writer) = &client.writer
+                && writer.control.send(serialized).is_err()
+            {
+                debug!(
+                    client_id,
+                    "client writer channel closed during targeted send"
+                );
+                self.remove_client_and_resize_if_needed(client_id);
+                return false;
             }
             true
         } else {
@@ -1171,14 +1127,14 @@ impl HeadlessServer {
         }
     }
 
-    fn shutdown_terminal_stream_clients(&mut self, terminal_id: &str, reason: String) {
+    fn shutdown_terminal_stream_clients(&mut self, terminal_id: &str, reason: &str) {
         let client_ids = terminal_stream_client_ids(&self.clients, terminal_id);
 
         for client_id in client_ids {
             self.send_to_client(
                 client_id,
-                ServerMessage::ServerShutdown {
-                    reason: Some(reason.clone()),
+                &ServerMessage::ServerShutdown {
+                    reason: Some(reason.to_owned()),
                 },
             );
             self.remove_client_and_resize_if_needed(client_id);
@@ -1192,7 +1148,7 @@ impl HeadlessServer {
         ) {
             self.send_to_client(
                 client_id,
-                ServerMessage::ServerShutdown {
+                &ServerMessage::ServerShutdown {
                     reason: Some("detached".to_owned()),
                 },
             );
@@ -1202,13 +1158,13 @@ impl HeadlessServer {
     fn attach_terminal_client(
         &mut self,
         client_id: u64,
-        terminal_id: String,
+        terminal_id: &str,
         takeover: bool,
     ) -> bool {
         if !self.client_is_pending_terminal_mode(client_id) {
             self.send_to_client(
                 client_id,
-                ServerMessage::ServerShutdown {
+                &ServerMessage::ServerShutdown {
                     reason: Some(
                         "terminal attach failed: connection is not pending terminal attach"
                             .to_owned(),
@@ -1219,10 +1175,10 @@ impl HeadlessServer {
             return false;
         }
 
-        let Some(real_terminal_id) = self.terminal_id_by_string(&terminal_id) else {
+        let Some(real_terminal_id) = self.terminal_id_by_string(terminal_id) else {
             self.send_to_client(
                 client_id,
-                ServerMessage::ServerShutdown {
+                &ServerMessage::ServerShutdown {
                     reason: Some(format!(
                         "terminal attach failed: terminal {terminal_id} not found"
                     )),
@@ -1239,7 +1195,7 @@ impl HeadlessServer {
         {
             self.send_to_client(
                 client_id,
-                ServerMessage::ServerShutdown {
+                &ServerMessage::ServerShutdown {
                     reason: Some(format!(
                         "terminal attach failed: terminal {terminal_id} has a read in progress; retry"
                     )),
@@ -1249,11 +1205,11 @@ impl HeadlessServer {
             return false;
         }
 
-        if let Some(existing_owner) = self.terminal_attach_owners.get(&terminal_id).copied() {
+        if let Some(existing_owner) = self.terminal_attach_owners.get(terminal_id).copied() {
             if existing_owner != client_id && !takeover {
                 self.send_to_client(
                     client_id,
-                    ServerMessage::ServerShutdown {
+                    &ServerMessage::ServerShutdown {
                         reason: Some(format!(
                             "terminal attach failed: terminal {terminal_id} already has an attached client; retry with --takeover"
                         )),
@@ -1265,7 +1221,7 @@ impl HeadlessServer {
             if existing_owner != client_id {
                 self.send_to_client(
                     existing_owner,
-                    ServerMessage::ServerShutdown {
+                    &ServerMessage::ServerShutdown {
                         reason: Some("terminal attach taken over".to_owned()),
                     },
                 );
@@ -1280,7 +1236,7 @@ impl HeadlessServer {
         let (cols, rows) = client.terminal_size;
         let cell_size = client.cell_size;
         client.mode = ClientConnectionMode::TerminalAttach {
-            terminal_id: terminal_id.clone(),
+            terminal_id: terminal_id.to_owned(),
         };
         client.render_state.reset_baseline();
         client.last_activity = stamp;
@@ -1291,7 +1247,7 @@ impl HeadlessServer {
 
         info!(client_id, cols, rows, terminal_id = %terminal_id, "terminal attach client connected");
         self.terminal_attach_owners
-            .insert(terminal_id.clone(), client_id);
+            .insert(terminal_id.to_owned(), client_id);
         self.app
             .state
             .direct_attach_resize_locks
@@ -1425,8 +1381,8 @@ impl HeadlessServer {
                 connection.shell_snapshot = Some(seed_snapshot);
                 connection.shell_agent_completions = Some(completion_projection);
                 self.clients.insert(client_id, connection);
-                self.send_to_client(client_id, completion_message);
-                self.send_to_client(client_id, snapshot_message);
+                self.send_to_client(client_id, &completion_message);
+                self.send_to_client(client_id, &snapshot_message);
                 if surface_active {
                     self.foreground_client_id = Some(client_id);
                 }
@@ -1441,7 +1397,7 @@ impl HeadlessServer {
                 client_id,
                 terminal_id,
                 takeover,
-            } => self.attach_terminal_client(client_id, terminal_id, takeover),
+            } => self.attach_terminal_client(client_id, &terminal_id, takeover),
             ServerEvent::ClientAttachScroll {
                 client_id,
                 source,
@@ -1471,10 +1427,10 @@ impl HeadlessServer {
                 else {
                     return false;
                 };
-                if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) {
-                    if let Err(err) = apply_terminal_attach_input(runtime, data) {
-                        warn!(client_id, terminal_id = %terminal_id, err = %err);
-                    }
+                if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id)
+                    && let Err(err) = apply_terminal_attach_input(runtime, data)
+                {
+                    warn!(client_id, terminal_id = %terminal_id, err = %err);
                 }
                 true
             }
@@ -1490,7 +1446,7 @@ impl HeadlessServer {
                 ) {
                     self.send_to_client(
                         client_id,
-                        ServerMessage::ClientShellError {
+                        &ServerMessage::ClientShellError {
                             message: format!("Paste rejected: {detail}"),
                         },
                     );
@@ -1631,23 +1587,20 @@ impl HeadlessServer {
                 if focused {
                     self.promote_client_to_foreground(client_id);
                     self.claim_shell_tab_geometry(client_id, false);
-                    if !another_focused_viewer {
-                        if let Some(target) = self.shell_focus_target(client_id) {
-                            self.send_shell_focus_target(
-                                &target,
-                                crate::ghostty::FocusEvent::Gained,
-                            );
-                        }
+                    if !another_focused_viewer
+                        && let Some(target) = self.shell_focus_target(client_id)
+                    {
+                        self.send_shell_focus_target(&target, crate::ghostty::FocusEvent::Gained);
                     }
                     true
                 } else {
                     if self.foreground_client_id == Some(client_id) {
                         self.app.state.outer_terminal_focus = Some(false);
                     }
-                    if !another_focused_viewer {
-                        if let Some(target) = self.shell_focus_target(client_id) {
-                            self.send_shell_focus_target(&target, crate::ghostty::FocusEvent::Lost);
-                        }
+                    if !another_focused_viewer
+                        && let Some(target) = self.shell_focus_target(client_id)
+                    {
+                        self.send_shell_focus_target(&target, crate::ghostty::FocusEvent::Lost);
                     }
                     true
                 }
@@ -1668,7 +1621,7 @@ impl HeadlessServer {
                 self.sync_window_title();
                 self.send_to_client(
                     client_id,
-                    ServerMessage::EndpointControl {
+                    &ServerMessage::EndpointControl {
                         kind: crate::protocol::endpoint::PRESENTATION_EFFECTS_READY_KIND.into(),
                         data: token,
                     },
@@ -1723,7 +1676,7 @@ impl HeadlessServer {
                         return false;
                     }
                     if let Some(client) = self.clients.get_mut(&client_id) {
-                        client.track_shell_input(pane_id.clone(), &releases);
+                        client.track_shell_input(&pane_id, &releases);
                     }
                     let scroll_before = runtime.scroll_metrics();
                     if let Err(err) = apply_client_pane_input_events(runtime, &releases) {
@@ -1733,7 +1686,7 @@ impl HeadlessServer {
                 }
                 let interaction = client_pane_input_has_interaction(&events);
                 if let Some(client) = self.clients.get_mut(&client_id) {
-                    client.track_shell_input(pane_id.clone(), &events);
+                    client.track_shell_input(&pane_id, &events);
                 }
                 let foreground_changed =
                     interaction && self.promote_client_to_foreground(client_id);
@@ -1769,7 +1722,7 @@ impl HeadlessServer {
                 let message = crate::server::client_commands::error_message(
                     boot_id, request_id, code, message,
                 );
-                self.send_to_client(client_id, message);
+                self.send_to_client(client_id, &message);
                 false
             }
             ServerEvent::ClientShellEndpointRequest {
@@ -1798,7 +1751,7 @@ impl HeadlessServer {
                 }
                 self.send_to_client(
                     client_id,
-                    ServerMessage::ClientShellEndpointResponseChunk {
+                    &ServerMessage::ClientShellEndpointResponseChunk {
                         boot_id,
                         request_id,
                         final_chunk,
@@ -1826,7 +1779,7 @@ impl HeadlessServer {
             }
             ServerEvent::QuitSignal => {
                 // The quit check at the top of the loop handles this.
-                // No render needed — the next iteration will initiate shutdown.
+                // No render needed - the next iteration will initiate shutdown.
                 false
             }
         }
@@ -2130,37 +2083,34 @@ impl HeadlessServer {
         let mut response = self
             .app
             .handle_api_request_after_internal_events_drained(msg.request);
-        if let Some(snapshot) = frozen_alt_screen_read {
-            if let Ok(mut success) = serde_json::from_str::<api::schema::SuccessResponse>(&response)
-            {
-                if let api::schema::ResponseResult::PaneRead { read } = &mut success.result {
-                    read.text = snapshot.text;
-                    read.truncated = snapshot.truncated;
-                    if let Ok(serialized) = serde_json::to_string(&success) {
-                        response = serialized;
-                    }
-                }
+        if let Some(snapshot) = frozen_alt_screen_read
+            && let Ok(mut success) = serde_json::from_str::<api::schema::SuccessResponse>(&response)
+            && let api::schema::ResponseResult::PaneRead { read } = &mut success.result
+        {
+            read.text = snapshot.text;
+            read.truncated = snapshot.truncated;
+            if let Ok(serialized) = serde_json::to_string(&success) {
+                response = serialized;
             }
         }
-        if let Some(spec) = alt_screen_read_spec {
-            if let Ok(success) = serde_json::from_str::<api::schema::SuccessResponse>(&response) {
-                if let api::schema::ResponseResult::PaneRead { read } = success.result {
-                    let pending = crate::server::alt_screen_read::PendingAltScreenRead::start(
-                        spec.terminal_id,
-                        success.id,
-                        msg.respond_to,
-                        response,
-                        read,
-                        spec.lines,
-                        spec.unwrap,
-                        spec.initial,
-                        spec.content_seq,
-                        Instant::now(),
-                    );
-                    self.pending_alt_screen_reads.push(pending);
-                    return changed;
-                }
-            }
+        if let Some(spec) = alt_screen_read_spec
+            && let Ok(success) = serde_json::from_str::<api::schema::SuccessResponse>(&response)
+            && let api::schema::ResponseResult::PaneRead { read } = success.result
+        {
+            let pending = crate::server::alt_screen_read::PendingAltScreenRead::start(
+                spec.terminal_id,
+                success.id,
+                msg.respond_to,
+                response,
+                read,
+                spec.lines,
+                spec.unwrap,
+                spec.initial,
+                spec.content_seq,
+                Instant::now(),
+            );
+            self.pending_alt_screen_reads.push(pending);
+            return changed;
         }
         let _ = msg.respond_to.send(response);
 
@@ -2177,7 +2127,7 @@ impl HeadlessServer {
     fn handle_scheduled_tasks_headless(&mut self, now: Instant, geometry_dirty: bool) -> bool {
         let mut changed = false;
 
-        // No resize polling needed — server has no terminal.
+        // No resize polling needed - server has no terminal.
         // Client resize messages drive size changes instead.
 
         if self

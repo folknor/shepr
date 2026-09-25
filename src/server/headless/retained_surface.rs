@@ -211,7 +211,7 @@ fn has_synchronized_pane(app: &app::App, surface: &protocol::PaneSurfaceFrame) -
                     pane_id,
                 )
             })
-            .is_some_and(|runtime| runtime.synchronized_output_active())
+            .is_some_and(crate::terminal::TerminalRuntime::synchronized_output_active)
     })
 }
 

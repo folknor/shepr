@@ -34,7 +34,7 @@ impl MachineDiagnostics {
 }
 
 impl ClientShellState {
-    pub(crate) fn set_machine_diagnostic(&mut self, id: &ClientEndpointId, message: String) {
+    pub(crate) fn set_machine_diagnostic(&mut self, id: &ClientEndpointId, message: &str) {
         if !id.is_local() {
             self.machine_diagnostics.errors.insert(
                 id.clone(),
@@ -103,7 +103,7 @@ impl ClientShellState {
         } else {
             format!("shepr machine status {profile_id}")
         };
-        let code = format!("machine-diagnostic:{}", profile_id);
+        let code = format!("machine-diagnostic:{profile_id}");
         // An explicit click can reopen its diagnostic, but must not replace another notice.
         if self
             .visible_endpoint_notice
@@ -120,7 +120,6 @@ impl ClientShellState {
             },
             title: format!("{}: {command}", self.endpoint_label(&id)),
             body: error.clone(),
-            deadline: std::time::Instant::now() + std::time::Duration::from_secs(15),
         });
         outcome.repaint = true;
         true

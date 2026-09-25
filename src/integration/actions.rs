@@ -1,5 +1,6 @@
 use std::io;
 
+use super::KIMI_MIN_VERSION;
 use super::registry::integration_target_label;
 use super::targets::{
     install_antigravity_cli, install_claude, install_codex, install_copilot, install_cursor,
@@ -11,7 +12,6 @@ use super::targets::{
     uninstall_opencode, uninstall_pi, uninstall_qodercli, uninstall_qwen,
 };
 use super::version::{agent_version_requirement, enforce_agent_version};
-use super::KIMI_MIN_VERSION;
 
 pub(crate) fn install_target(
     target: crate::api::schema::IntegrationTarget,

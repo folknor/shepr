@@ -92,10 +92,12 @@ mod tests {
         )
         .expect("test precondition");
 
-        assert!(response
-            .error
-            .message
-            .contains("older than server protocol"));
+        assert!(
+            response
+                .error
+                .message
+                .contains("older than server protocol")
+        );
         assert!(response.error.message.contains("upgrade the Shepr client"));
         assert!(!response.error.message.contains("unused restart guidance"));
     }

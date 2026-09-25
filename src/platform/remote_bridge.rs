@@ -1,7 +1,8 @@
 use std::io::{self, Read, Write};
 use std::sync::{
+    Arc,
     atomic::{AtomicU64, Ordering},
-    mpsc, Arc,
+    mpsc,
 };
 use std::time::Duration;
 
@@ -16,7 +17,9 @@ fn now() -> io::Result<u64> {
     if unsafe { libc::clock_gettime(super::REMOTE_BRIDGE_CLOCK, &mut time) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok((time.tv_sec as u64) * 1_000_000_000 + time.tv_nsec as u64)
+    let secs = u64::try_from(time.tv_sec).unwrap_or(0);
+    let nanos = u64::try_from(time.tv_nsec).unwrap_or(0);
+    Ok(secs * 1_000_000_000 + nanos)
 }
 
 #[derive(Clone)]
@@ -70,10 +73,10 @@ impl<T> TrackedIo<T> {
     }
 
     fn progressed(&self, count: usize) -> io::Result<()> {
-        if count > 0 {
-            if let Some(activity) = &self.activity {
-                activity.record()?;
-            }
+        if count > 0
+            && let Some(activity) = &self.activity
+        {
+            activity.record()?;
         }
         Ok(())
     }
@@ -113,7 +116,7 @@ mod tests {
         };
         assert!(idle_expired(
             &last,
-            IDLE_TIMEOUT.as_nanos() as u64,
+            u64::try_from(IDLE_TIMEOUT.as_nanos()).unwrap_or(u64::MAX),
             IDLE_TIMEOUT
         ));
         let mut reader = TrackedIo::new(&b"output"[..], Some(activity.clone()));

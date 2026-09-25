@@ -1,10 +1,10 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::api::client::{parse_response_value, ApiClientError};
+use crate::api::client::{ApiClientError, parse_response_value};
 use crate::api::schema::{Method, Request, ResponseResult, ServerSshAgentRegisterParams};
 use crate::ipc::{LocalStream, LocalStreamRead, LocalStreamReadCount};
 
@@ -31,7 +31,7 @@ impl Registration {
             }
         };
         let stop = Arc::new(AtomicBool::new(false));
-        let worker_stop = stop.clone();
+        let worker_stop = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {
             let mut byte = [0];
             while !worker_stop.load(Ordering::Relaxed) {
@@ -117,7 +117,7 @@ fn connect(path: &str, socket_path: &Path) -> io::Result<Option<LocalStream>> {
             }
             LocalStreamReadCount::Data(_) => response.push(byte[0]),
             LocalStreamReadCount::Closed => {
-                return Err(io::Error::other("SSH agent registration closed"))
+                return Err(io::Error::other("SSH agent registration closed"));
             }
             LocalStreamReadCount::Pending => std::thread::sleep(Duration::from_millis(10)),
         }
@@ -146,8 +146,11 @@ mod tests {
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .expect("test precondition");
                 let mut line = String::new();
-                BufReader::new(&mut stream).read_line(&mut line).expect("test precondition");
-                let request: serde_json::Value = serde_json::from_str(&line).expect("test precondition");
+                BufReader::new(&mut stream)
+                    .read_line(&mut line)
+                    .expect("test precondition");
+                let request: serde_json::Value =
+                    serde_json::from_str(&line).expect("test precondition");
                 assert_eq!(request["method"], expected);
                 let response = if expected == "ping" {
                     serde_json::json!({"id": request["id"], "result": {
@@ -208,8 +211,11 @@ mod tests {
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .expect("test precondition");
             let mut line = String::new();
-            BufReader::new(&mut stream).read_line(&mut line).expect("test precondition");
-            let request: serde_json::Value = serde_json::from_str(&line).expect("test precondition");
+            BufReader::new(&mut stream)
+                .read_line(&mut line)
+                .expect("test precondition");
+            let request: serde_json::Value =
+                serde_json::from_str(&line).expect("test precondition");
             assert_eq!(request["method"], expected);
             if attempt == 1 {
                 writeln!(stream, "{}", serde_json::json!({"id": request["id"], "error": {

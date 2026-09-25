@@ -275,7 +275,7 @@ fn parse_default_color_events(body: &[u8]) -> Vec<DefaultColorEvent> {
 
 fn parse_palette_color_query(body: &[u8]) -> Option<DefaultColorEvent> {
     let index = body.strip_prefix(b"4;")?.strip_suffix(b";?")?;
-    if index.is_empty() || index.len() > 3 || !index.iter().all(|byte| byte.is_ascii_digit()) {
+    if index.is_empty() || index.len() > 3 || !index.iter().all(u8::is_ascii_digit) {
         return None;
     }
     let mut value: u16 = 0;
@@ -465,9 +465,9 @@ const AGENT_OSC_MAX_CHARS: usize = 256;
 /// payload emitted by the child process. Nothing here affects rendering; this
 /// is pure passive capture for the detection engine (Stage C / Stage D).
 ///
-/// - `latest_title` — last OSC 0 or OSC 2 payload, sanitized. An empty
+/// - `latest_title` - last OSC 0 or OSC 2 payload, sanitized. An empty
 ///   payload (e.g. `\x1b]0;\x07`) clears the stored value.
-/// - `latest_progress` — last OSC 9 payload (the part after `9;`), stored
+/// - `latest_progress` - last OSC 9 payload (the part after `9;`), stored
 ///   as-is after sanitization. E.g. `"4;3;"` or `"4;0;"`.
 #[derive(Debug, Default)]
 pub(super) struct AgentOscStateTracker {
@@ -980,12 +980,12 @@ mod tests {
     #[test]
     fn clearing_agent_evidence_preserves_the_terminal_title() {
         let mut tracker = AgentOscStateTracker::default();
-        tracker.observe("\x1b]2;✳ 修复🙂标题\x1b\\".as_bytes());
+        tracker.observe("\x1b]2;\u{2733} 修复\u{1F642}标题\x1b\\".as_bytes());
 
         tracker.clear_retained();
 
         assert_eq!(tracker.latest_title(), "");
-        assert_eq!(tracker.terminal_title(), Some("✳ 修复🙂标题"));
+        assert_eq!(tracker.terminal_title(), Some("\u{2733} 修复\u{1F642}标题"));
     }
 
     #[test]
@@ -1064,7 +1064,7 @@ mod tests {
     fn agent_osc_unrelated_osc_does_not_overwrite_title() {
         let mut t = AgentOscStateTracker::default();
         t.observe(b"\x1b]0;my title\x07");
-        // OSC 4 (palette color), OSC 52 (clipboard) — should not touch title/progress.
+        // OSC 4 (palette color), OSC 52 (clipboard) - should not touch title/progress.
         t.observe(b"\x1b]4;1;rgb:aa/bb/cc\x07");
         t.observe(b"\x1b]52;c;aGVsbG8=\x07");
         assert_eq!(t.latest_title(), "my title");
@@ -1095,13 +1095,13 @@ mod tests {
     fn osc_debug_tracker_detects_title_with_bel() {
         let mut tracker = enabled_osc_debug_tracker();
 
-        tracker.observe("hello\x1b]0;✻ working title\x07world".as_bytes());
+        tracker.observe("hello\x1b]0;\u{273B} working title\x07world".as_bytes());
 
         assert_eq!(
             tracker.drain_pending(),
             vec![OscDebugEvent {
                 command: "0".to_string(),
-                payload: "✻ working title".to_string(),
+                payload: "\u{273B} working title".to_string(),
             }]
         );
     }

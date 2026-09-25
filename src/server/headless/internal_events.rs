@@ -7,7 +7,7 @@ impl HeadlessServer {
     /// ALL internal events MUST be routed through this method to ensure
     /// clipboard forwarding is never bypassed. Do not call
     /// `self.app.handle_internal_event()` directly for any internal event
-    /// in the headless server — use this method instead.
+    /// in the headless server - use this method instead.
     ///
     /// Returns true if the event changed visual state (requiring a re-render).
     pub(super) fn handle_internal_event_with_forwarding(&mut self, ev: AppEvent) -> bool {
@@ -19,7 +19,7 @@ impl HeadlessServer {
                 // Clipboard writes are client-local side effects. Forward them only to
                 // the foreground client instead of broadcasting to every attached client.
                 let data = base64::engine::general_purpose::STANDARD.encode(content.as_slice());
-                self.send_to_foreground_client(ServerMessage::Clipboard { data });
+                self.send_to_foreground_client(&ServerMessage::Clipboard { data });
                 false
             }
             AppEvent::StateChanged { .. } => {
@@ -56,13 +56,13 @@ impl HeadlessServer {
                 self.finish_shell_location_reconciliation(focus_before, &focused_tabs_before);
                 self.reapply_controlled_shell_tab_geometry(false);
 
-                if self.app.find_pane(pane_id_val).is_none() {
-                    if let Some(terminal_id) = terminal_id {
-                        self.shutdown_terminal_stream_clients(
-                            &terminal_id,
-                            format!("terminal {terminal_id} exited"),
-                        );
-                    }
+                if self.app.find_pane(pane_id_val).is_none()
+                    && let Some(terminal_id) = terminal_id
+                {
+                    self.shutdown_terminal_stream_clients(
+                        &terminal_id,
+                        &format!("terminal {terminal_id} exited"),
+                    );
                 }
 
                 true

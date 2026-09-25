@@ -3,6 +3,7 @@ use crate::api::schema::{
     ErrorResponse, PaneMoveDestination, PaneMoveParams, PaneMoveResult, ResponseResult,
     SuccessResponse,
 };
+use bytes::Bytes;
 
 fn pane_move_server() -> HeadlessServer {
     let mut server = test_headless_server();
@@ -28,16 +29,20 @@ fn public_move(
             method: crate::api::schema::Method::PaneMove(params),
         },
         respond_to,
-        response_write_complete: None,
     });
-    let response = response_rx.recv().expect("pane move response");
+    let response = response_rx
+        .recv()
+        .unwrap_or_else(|_| panic!("pane move response"));
     match serde_json::from_str::<SuccessResponse>(&response) {
         Ok(SuccessResponse {
             result: ResponseResult::PaneMove { move_result },
             ..
         }) => Ok(move_result),
         Ok(other) => panic!("expected pane move response, got {other:?}"),
-        Err(_) => Err(serde_json::from_str(&response).expect("error response")),
+        Err(_) => {
+            Err(serde_json::from_str(&response)
+                .unwrap_or_else(|err| panic!("error response: {err}")))
+        }
     }
 }
 
@@ -51,7 +56,10 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
         .clone();
     let (runtime, mut input_rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
     server.app.terminal_runtimes.insert(terminal_id, runtime);
-    let source_id = server.app.public_pane_id(0, source).expect("test precondition");
+    let source_id = server
+        .app
+        .public_pane_id(0, source)
+        .expect("test precondition");
     let destination_id = server.app.public_workspace_id(1);
     let (control_rx, render_rx) = connect_test_shell(&mut server, 9, 80, 23);
     let initial = client_shell_snapshot(&control_rx);
@@ -71,7 +79,10 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
     assert!(moved.changed);
     assert_eq!(server.app.state.active, Some(1));
     assert!(moved.closed_tab_id.is_some());
-    let location = server.clients[&9].shell_location.as_ref().expect("test precondition");
+    let location = server.clients[&9]
+        .shell_location
+        .as_ref()
+        .expect("test precondition");
     assert_eq!(
         location.focused_workspace_id.as_deref(),
         Some(destination_id.as_str()),
@@ -123,7 +134,10 @@ async fn public_pane_move_focus_handles_source_removal_and_unchanged_server_targ
     for new_workspace in [true, false] {
         let mut server = pane_move_server();
         let source = server.app.state.workspaces[0].tabs[0].root_pane;
-        let source_id = server.app.public_pane_id(0, source).expect("test precondition");
+        let source_id = server
+            .app
+            .public_pane_id(0, source)
+            .expect("test precondition");
         let first_tab = server.app.public_tab_id(0, 0).expect("test precondition");
         let second_tab = server.app.public_tab_id(1, 0).expect("test precondition");
         let destination = if new_workspace {
@@ -164,10 +178,15 @@ async fn public_pane_move_focus_handles_source_removal_and_unchanged_server_targ
                 server.shell_tab_id_for_client(client_id).as_deref(),
                 Some(moved.pane.tab_id.as_str())
             );
-            let target = server.shell_focus_target(client_id).expect("test precondition");
+            let target = server
+                .shell_focus_target(client_id)
+                .expect("test precondition");
             assert_eq!(target.pane_id, source);
             if new_workspace {
-                let location = server.clients[&client_id].shell_location.as_ref().expect("test precondition");
+                let location = server.clients[&client_id]
+                    .shell_location
+                    .as_ref()
+                    .expect("test precondition");
                 assert_eq!(location.active_tab_ids.len(), 1);
             }
         }
@@ -180,7 +199,10 @@ async fn public_pane_move_without_effective_focus_preserves_client_views() {
     for case in ["no-focus", "same-tab", "zoomed", "invalid"] {
         let mut server = pane_move_server();
         let source = server.app.state.workspaces[0].tabs[0].root_pane;
-        let source_id = server.app.public_pane_id(0, source).expect("test precondition");
+        let source_id = server
+            .app
+            .public_pane_id(0, source)
+            .expect("test precondition");
         let remaining_tab = server.app.public_tab_id(0, 1).expect("test precondition");
         let destination_tab = server.app.public_tab_id(1, 0).expect("test precondition");
         let (_control, _render) = connect_test_shell(&mut server, 9, 80, 23);
@@ -211,9 +233,15 @@ async fn public_pane_move_without_effective_focus_preserves_client_views() {
             },
         );
         if case == "invalid" {
-            assert_eq!(result.expect_err("test precondition").error.code, "tab_not_found");
+            assert_eq!(
+                result.expect_err("test precondition").error.code,
+                "tab_not_found"
+            );
         } else {
-            assert_eq!(result.expect("test precondition").changed, case == "no-focus");
+            assert_eq!(
+                result.expect("test precondition").changed,
+                case == "no-focus"
+            );
         }
         assert_eq!(server.clients[&9].shell_location, location_before, "{case}");
         assert_eq!(

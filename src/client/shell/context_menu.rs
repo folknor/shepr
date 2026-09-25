@@ -119,8 +119,12 @@ impl ClientShellState {
         if item_count == 0 {
             return;
         }
-        menu.highlighted = (menu.highlighted as isize + delta)
-            .clamp(0, item_count.saturating_sub(1) as isize) as usize;
+        let max_index = item_count.saturating_sub(1);
+        menu.highlighted = menu
+            .highlighted
+            .checked_add_signed(delta)
+            .unwrap_or(0)
+            .min(max_index);
     }
 
     pub(super) fn activate_context_menu_item(
@@ -137,7 +141,7 @@ impl ClientShellState {
         };
         match menu.target {
             ClientContextMenuTarget::Workspace { workspace_id, .. } => {
-                self.activate_workspace_context_action(workspace_id, action, outcome)
+                self.activate_workspace_context_action(workspace_id, action, outcome);
             }
             ClientContextMenuTarget::Tab {
                 tab_id,
@@ -375,7 +379,7 @@ impl ClientShellState {
                 outcome,
             ),
             ClientContextMenuAction::ClosePane => {
-                self.push_endpoint_method(Method::PaneClose(PaneTarget { pane_id }), outcome)
+                self.push_endpoint_method(Method::PaneClose(PaneTarget { pane_id }), outcome);
             }
             _ => {}
         }

@@ -137,7 +137,11 @@ impl ClientShellState {
             .as_ref()
             .and_then(|selected| targets.iter().position(|target| target == selected));
         let next = match current {
-            Some(current) => (current as isize + delta).rem_euclid(targets.len() as isize) as usize,
+            Some(current) => {
+                let current = isize::try_from(current).unwrap_or(isize::MAX);
+                let len = isize::try_from(targets.len()).unwrap_or(isize::MAX);
+                usize::try_from((current + delta).rem_euclid(len)).unwrap_or(0)
+            }
             None if delta < 0 => targets.len() - 1,
             None => 0,
         };
@@ -147,7 +151,11 @@ impl ClientShellState {
             self.reveal_workspace(&target.workspace_id);
         }
         self.navigate_workspace_id = Some(target);
-        self.reveal_navigation_workspace = self.snapshot.is_none() || self.pane_surface.is_none();
+        // The machine sidebars (always used with several endpoints, and the
+        // unavailable-surface fallback) scroll to the selection on their next
+        // render; the single-endpoint sidebar was revealed above.
+        self.reveal_navigation_workspace =
+            self.endpoints.len() > 1 || self.snapshot.is_none() || self.pane_surface.is_none();
     }
 
     pub(super) fn accept_navigate_workspace(&mut self, outcome: &mut ClientShellInput) {

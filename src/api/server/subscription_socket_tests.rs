@@ -3,9 +3,9 @@ use crate::api::schema::{
     AgentStatus, EventData, EventEnvelope, EventKind, PaneInfo, PaneReadResult, ReadFormat,
     ReadSource,
 };
-use crate::ipc::{poll_local_stream_read_count, LocalStreamReadCount};
+use crate::ipc::{LocalStreamReadCount, poll_local_stream_read_count};
 use interprocess::local_socket::traits::Listener as _;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::atomic::AtomicU64;
 use tokio::sync::mpsc;
 
@@ -98,10 +98,10 @@ impl Drop for SocketTest {
         }
         // Also remove socket files, including after a setup failure.
         for path in self.paths.drain(..) {
-            if let Err(error) = std::fs::remove_file(path) {
-                if error.kind() != io::ErrorKind::NotFound {
-                    failures.push(format!("socket cleanup failed: {error}"));
-                }
+            if let Err(error) = std::fs::remove_file(path)
+                && error.kind() != io::ErrorKind::NotFound
+            {
+                failures.push(format!("socket cleanup failed: {error}"));
             }
         }
         if !std::thread::panicking() {
@@ -116,12 +116,12 @@ struct Client {
 }
 
 impl Client {
-    fn send(&mut self, request: Value) {
+    fn send(&mut self, request: &Value) {
         writeln!(self.stream, "{request}").expect("test precondition");
     }
 
-    fn subscribe(&mut self, id: &str, subscriptions: Value) {
-        self.send(json!({
+    fn subscribe(&mut self, id: &str, subscriptions: &Value) {
+        self.send(&json!({
             "id": id,
             "method": "events.subscribe",
             "params": {"subscriptions": subscriptions}
@@ -141,9 +141,11 @@ impl Client {
                 "timed out waiting for socket response"
             );
             let mut bytes = [0; 4096];
-            match poll_local_stream_read_count(&mut self.stream, &mut bytes).expect("test precondition") {
+            match poll_local_stream_read_count(&mut self.stream, &mut bytes)
+                .expect("test precondition")
+            {
                 LocalStreamReadCount::Data(count) => {
-                    self.buffered.extend_from_slice(&bytes[..count])
+                    self.buffered.extend_from_slice(&bytes[..count]);
                 }
                 LocalStreamReadCount::Pending => std::thread::sleep(Duration::from_millis(1)),
                 LocalStreamReadCount::Closed => {
@@ -260,7 +262,7 @@ fn reply_to_probe(request: ApiRequestMessage) {
 fn subscriptions_drain_retained_bursts_without_per_event_poll_delay() {
     let mut test = SocketTest::new();
     let mut client = test.connect();
-    client.subscribe("burst", json!([{"type": "workspace.renamed"}]));
+    client.subscribe("burst", &json!([{"type": "workspace.renamed"}]));
     client.assert_started("burst");
     for index in 0..128 {
         test.hub.push(renamed_event(index));
@@ -291,7 +293,7 @@ fn assert_subscription_history_loss(agent_status: bool) {
     } else {
         json!([{"type": "workspace.renamed"}, output_subscription()])
     };
-    client.subscribe("history-gap", subscriptions);
+    client.subscribe("history-gap", &subscriptions);
     // Hold the setup probe after the server pins its subscription cursor.
     let probe = test.app_request();
     assert!(probe.request.id.ends_with(":probe"));
@@ -307,13 +309,13 @@ fn assert_subscription_history_loss(agent_status: bool) {
 fn lagging_subscription_closes_without_interrupting_other_clients() {
     let mut test = SocketTest::new();
     let mut healthy = test.connect();
-    healthy.subscribe("healthy", json!([{"type": "workspace.renamed"}]));
+    healthy.subscribe("healthy", &json!([{"type": "workspace.renamed"}]));
     healthy.assert_started("healthy");
 
     let mut slow = test.connect();
     slow.subscribe(
         "slow",
-        json!([{"type": "workspace.renamed"}, output_subscription()]),
+        &json!([{"type": "workspace.renamed"}, output_subscription()]),
     );
     let probe = test.app_request();
     assert_eq!(probe.request.id, "slow:sub:1:probe");
@@ -340,7 +342,7 @@ fn lagging_subscription_closes_without_interrupting_other_clients() {
     healthy.assert_renames(640..641, Instant::now() + RESPONSE_TIMEOUT);
 
     let mut ordinary = test.connect();
-    ordinary.send(json!({"id": "ordinary", "method": "workspace.list", "params": {}}));
+    ordinary.send(&json!({"id": "ordinary", "method": "workspace.list", "params": {}}));
     let request = test.app_request();
     assert_eq!(request.request.id, "ordinary");
     assert!(matches!(request.request.method, Method::WorkspaceList(_)));

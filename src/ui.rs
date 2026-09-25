@@ -16,14 +16,15 @@ pub(crate) use self::scrollbar::{
     scrollbar_offset_from_row, scrollbar_thumb, scrollbar_thumb_grab_offset,
 };
 pub(crate) use self::sidebar::{
+    AgentTokenContext, ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
     expanded_sidebar_sections, resolved_token_spans, sidebar_agent_rows,
-    sidebar_section_divider_rect, sidebar_space_rows, AgentTokenContext, ResolvedToken,
-    ResolvedTokenKind, SpaceTokenContext,
+    sidebar_section_divider_rect, sidebar_space_rows,
 };
 pub(crate) use self::status::render_config_diagnostic_buffer;
 pub(crate) use self::tab_surface::{
-    compute_tab_surface, compute_tab_surface_for, render_tab_surface, resize_tab_surface,
-    tab_surface_cursor, tab_surface_hyperlinks, TabSurfaceLayout, TabSurfaceTarget, TabSurfaceView,
+    TabSurfaceLayout, TabSurfaceTarget, TabSurfaceView, compute_tab_surface,
+    compute_tab_surface_for, render_tab_surface, resize_tab_surface, tab_surface_cursor,
+    tab_surface_hyperlinks,
 };
 
 use crate::app::AppState;
@@ -108,4 +109,3 @@ fn resize_background_tab_panes(
         }
     }
 }
-

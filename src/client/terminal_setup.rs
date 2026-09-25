@@ -2,8 +2,8 @@
 
 use std::io::{self, Write as _};
 use std::os::fd::AsRawFd as _;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
@@ -135,7 +135,9 @@ fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             break;
         };
-        let timeout_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+        let timeout_ms = i32::try_from(remaining.as_millis())
+            .unwrap_or(i32::MAX)
+            .max(1);
         match crate::platform::poll_fd_readable(stdin_fd, timeout_ms) {
             Ok(true) => {}
             Ok(false) => break,
@@ -413,7 +415,7 @@ impl TerminalGuard {
 
     /// Captures the restoration state for use by the process panic hook.
     pub(super) fn panic_restore(&self) -> impl Fn() + Send + Sync + 'static {
-        let restore_claimed = self.restore_claimed.clone();
+        let restore_claimed = Arc::clone(&self.restore_claimed);
         let reset_keyboard_enhancements = self.reset_keyboard_enhancements;
         let reset_modify_other_keys = self.reset_modify_other_keys;
         let reset_host_color_scheme_reports = self.reset_host_color_scheme_reports;
@@ -532,5 +534,4 @@ mod tests {
         assert!(!responses.primary_device_attributes);
         assert_eq!(buffered, b"a\x1b[?7;1ub\x1b[?65536uc");
     }
-
 }

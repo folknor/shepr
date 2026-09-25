@@ -55,16 +55,14 @@ fn push_host_theme_update(
     requests: &mut Vec<ClientMessage>,
     update: crate::protocol::ClientHostThemeUpdate,
 ) {
-    if let crate::protocol::ClientHostThemeUpdate::PaletteColors(colors) = &update {
-        if let Some(ClientMessage::ClientShellHostTheme {
+    if let crate::protocol::ClientHostThemeUpdate::PaletteColors(colors) = &update
+        && let Some(ClientMessage::ClientShellHostTheme {
             update: crate::protocol::ClientHostThemeUpdate::PaletteColors(pending),
         }) = requests.last_mut()
-        {
-            if pending.len() + colors.len() <= 256 {
-                pending.extend_from_slice(colors);
-                return;
-            }
-        }
+        && pending.len() + colors.len() <= 256
+    {
+        pending.extend_from_slice(colors);
+        return;
     }
     requests.push(ClientMessage::ClientShellHostTheme { update });
 }
@@ -284,7 +282,7 @@ impl ClientShellState {
                     position: gesture.last_position,
                     geometry,
                     modifiers: modifiers.bits(),
-                    lines: self.config.mouse_scroll_lines.min(u16::MAX as usize) as u16,
+                    lines: u16::try_from(self.config.mouse_scroll_lines).unwrap_or(u16::MAX),
                 },
                 outcome,
             );
@@ -424,7 +422,7 @@ impl ClientShellState {
                 if let Some(binding) =
                     crate::input::resolve_direct_binding(&self.config.keybinds.keybinds, key)
                 {
-                    self.record_binding(binding, outcome);
+                    self.record_binding(&binding, outcome);
                     return None;
                 }
                 if crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
@@ -457,7 +455,7 @@ impl ClientShellState {
                 {
                     self.mode = return_mode;
                     outcome.repaint = true;
-                    self.record_binding(binding, outcome);
+                    self.record_binding(&binding, outcome);
                     return None;
                 }
                 self.mode = return_mode;
@@ -572,7 +570,7 @@ impl ClientShellState {
                 self.mode = ClientShellMode::Terminal;
                 self.navigate_workspace_id = None;
                 self.record_binding(
-                    KeybindMatch::Action(KeybindAction::SwitchWorkspace(index)),
+                    &KeybindMatch::Action(KeybindAction::SwitchWorkspace(index)),
                     outcome,
                 );
                 outcome.repaint = true;
@@ -584,7 +582,7 @@ impl ClientShellState {
             match code {
                 KeyCode::Tab => {
                     self.record_navigate_binding(
-                        KeybindMatch::Action(KeybindAction::CyclePaneNext),
+                        &KeybindMatch::Action(KeybindAction::CyclePaneNext),
                         false,
                         outcome,
                     );
@@ -592,7 +590,7 @@ impl ClientShellState {
                 }
                 KeyCode::BackTab => {
                     self.record_navigate_binding(
-                        KeybindMatch::Action(KeybindAction::CyclePanePrevious),
+                        &KeybindMatch::Action(KeybindAction::CyclePanePrevious),
                         false,
                         outcome,
                     );
@@ -600,7 +598,7 @@ impl ClientShellState {
                 }
                 KeyCode::Left => {
                     self.record_navigate_binding(
-                        KeybindMatch::Action(KeybindAction::FocusPaneLeft),
+                        &KeybindMatch::Action(KeybindAction::FocusPaneLeft),
                         true,
                         outcome,
                     );
@@ -608,7 +606,7 @@ impl ClientShellState {
                 }
                 KeyCode::Right => {
                     self.record_navigate_binding(
-                        KeybindMatch::Action(KeybindAction::FocusPaneRight),
+                        &KeybindMatch::Action(KeybindAction::FocusPaneRight),
                         true,
                         outcome,
                     );
@@ -639,7 +637,7 @@ impl ClientShellState {
         .into_iter()
         .find_map(|(bindings, action)| bindings.matches_direct_key(key).then_some(action));
         if let Some(action) = pane_action {
-            self.record_navigate_binding(KeybindMatch::Action(action), true, outcome);
+            self.record_navigate_binding(&KeybindMatch::Action(action), true, outcome);
             return;
         }
 
@@ -667,19 +665,19 @@ impl ClientShellState {
             .map(KeybindMatch::Action)
         });
         if let Some(binding) = binding {
-            self.record_navigate_binding(binding, false, outcome);
+            self.record_navigate_binding(&binding, false, outcome);
         }
     }
 
     fn record_navigate_binding(
         &mut self,
-        binding: crate::input::KeybindMatch,
+        binding: &crate::input::KeybindMatch,
         preserve_navigate: bool,
         outcome: &mut ClientShellInput,
     ) {
         use crate::input::{KeybindAction, KeybindMatch};
 
-        if !self.indexed_navigation_target_exists(&binding) {
+        if !self.indexed_navigation_target_exists(binding) {
             return;
         }
         if let KeybindMatch::Action(KeybindAction::CyclePaneNext) = binding {
@@ -798,7 +796,7 @@ impl ClientShellState {
             _ => None,
         };
         if let Some(action) = action {
-            self.record_binding(crate::input::KeybindMatch::Action(action), outcome);
+            self.record_binding(&crate::input::KeybindMatch::Action(action), outcome);
         }
     }
 

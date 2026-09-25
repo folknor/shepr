@@ -36,7 +36,6 @@ pub(crate) struct ClientShellConfig {
     pub(super) mouse_scroll_lines: usize,
     pub(super) right_click_passthrough_modifiers: Option<crossterm::event::KeyModifiers>,
     pub(super) redraw_on_focus_gained: bool,
-    pub(super) local_config_path: std::path::PathBuf,
     pub(super) preferences_path: Option<std::path::PathBuf>,
     pub(super) preferences: preferences::ClientChromePreferences,
     pub(super) startup_config_diagnostic: Option<String>,
@@ -332,7 +331,9 @@ pub(super) enum ClientContextMenuAction {
 
 #[derive(Debug)]
 pub(super) enum ClientContextMenuTarget {
-    Workspace { workspace_id: String },
+    Workspace {
+        workspace_id: String,
+    },
     Tab {
         tab_id: String,
         workspace_id: String,
@@ -451,7 +452,6 @@ pub(super) struct ClientVisibleEndpointNotice {
     pub(super) key: ClientEndpointNoticeKey,
     pub(super) title: String,
     pub(super) body: String,
-    pub(super) deadline: std::time::Instant,
 }
 
 pub(crate) struct ClientShellEndpointError {
@@ -1091,7 +1091,7 @@ impl ClientShellState {
         self.install_pane_surface(surface, true);
     }
 
-    fn install_pane_surface(&mut self, mut surface: PaneSurfaceFrame, retain_future: bool) {
+    fn install_pane_surface(&mut self, surface: PaneSurfaceFrame, retain_future: bool) {
         let Some(snapshot) = self.snapshot.as_ref() else {
             return;
         };
@@ -1158,39 +1158,38 @@ impl ClientShellState {
             }
         }
         let mut invalidated_copy_pane = None;
-        if let Some(copy_mode) = self.copy_mode.as_mut() {
-            if let Some(pane) = surface
+        if let Some(copy_mode) = self.copy_mode.as_mut()
+            && let Some(pane) = surface
                 .panes
                 .iter()
                 .find(|pane| pane.pane_id == copy_mode.pane_id)
-            {
-                let geometry = (pane.inner_rect.width, pane.inner_rect.height);
-                let coordinates_changed = copy_mode.geometry != geometry
-                    || copy_mode.alternate_screen_active != pane.alternate_screen_active;
-                if copy_mode.content_revision != pane.content_revision || coordinates_changed {
-                    copy_mode.content_revision = pane.content_revision;
-                    copy_mode.geometry = geometry;
-                    copy_mode.alternate_screen_active = pane.alternate_screen_active;
-                    if coordinates_changed {
-                        copy_mode.selection = None;
-                        invalidated_copy_pane = Some(copy_mode.pane_id.clone());
-                    }
-                    copy_mode.search_matches.clear();
-                    copy_mode.search_total = 0;
-                    copy_mode.search_current = None;
-                    copy_mode.search_current_global = None;
-                    copy_mode.search_generation = copy_mode.search_generation.saturating_add(1);
-                    copy_mode.copy_after_search = false;
+        {
+            let geometry = (pane.inner_rect.width, pane.inner_rect.height);
+            let coordinates_changed = copy_mode.geometry != geometry
+                || copy_mode.alternate_screen_active != pane.alternate_screen_active;
+            if copy_mode.content_revision != pane.content_revision || coordinates_changed {
+                copy_mode.content_revision = pane.content_revision;
+                copy_mode.geometry = geometry;
+                copy_mode.alternate_screen_active = pane.alternate_screen_active;
+                if coordinates_changed {
+                    copy_mode.selection = None;
+                    invalidated_copy_pane = Some(copy_mode.pane_id.clone());
                 }
-                if let Some(scroll) = pane.scroll {
-                    let actual_offset =
-                        usize::try_from(scroll.offset_from_bottom).unwrap_or(usize::MAX);
-                    if !self.pane_scroll_targets.contains_key(&pane.pane_id) {
-                        copy_mode.offset_from_bottom = actual_offset;
-                    }
-                    copy_mode.max_offset_from_bottom =
-                        usize::try_from(scroll.max_offset_from_bottom).unwrap_or(usize::MAX);
+                copy_mode.search_matches.clear();
+                copy_mode.search_total = 0;
+                copy_mode.search_current = None;
+                copy_mode.search_current_global = None;
+                copy_mode.search_generation = copy_mode.search_generation.saturating_add(1);
+                copy_mode.copy_after_search = false;
+            }
+            if let Some(scroll) = pane.scroll {
+                let actual_offset =
+                    usize::try_from(scroll.offset_from_bottom).unwrap_or(usize::MAX);
+                if !self.pane_scroll_targets.contains_key(&pane.pane_id) {
+                    copy_mode.offset_from_bottom = actual_offset;
                 }
+                copy_mode.max_offset_from_bottom =
+                    usize::try_from(scroll.max_offset_from_bottom).unwrap_or(usize::MAX);
             }
         }
         if invalidated_copy_pane.as_ref().is_some_and(|pane_id| {

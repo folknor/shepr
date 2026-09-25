@@ -238,7 +238,7 @@ impl ClientConnection {
         self.render_state.request_recompute();
     }
 
-    pub(crate) fn track_shell_input(&mut self, target: String, events: &[ClientPaneInputEvent]) {
+    pub(crate) fn track_shell_input(&mut self, target: &str, events: &[ClientPaneInputEvent]) {
         for event in events {
             match event {
                 ClientPaneInputEvent::Key {
@@ -254,7 +254,7 @@ impl ClientConnection {
                     self.shell_held_inputs.insert(
                         client_shell_key_press_id(code, *physical_key_id),
                         ClientShellHeldInput {
-                            target: target.clone(),
+                            target: target.to_owned(),
                             release: ClientPaneInputEvent::Key {
                                 code: code.clone(),
                                 modifiers: *modifiers,
@@ -304,7 +304,7 @@ impl ClientConnection {
                         self.shell_held_inputs.insert(
                             id,
                             ClientShellHeldInput {
-                                target: target.clone(),
+                                target: target.to_owned(),
                                 release: ClientPaneInputEvent::Mouse {
                                     kind: ClientMouseKind::Up(*button),
                                     position: *position,
@@ -507,7 +507,7 @@ mod tests {
     fn semantic_text_press_does_not_create_a_server_release_lease() {
         let mut client = shell_client();
         client.track_shell_input(
-            "w1:p1".into(),
+            "w1:p1",
             &[ClientPaneInputEvent::Key {
                 code: crate::protocol::ClientKeyCode::Char('x'),
                 modifiers: 0,
@@ -547,7 +547,7 @@ mod tests {
             windows_record: (physical_key_id == 108).then_some(windows_record),
         };
         client.track_shell_input(
-            "w1:p1".into(),
+            "w1:p1",
             &[
                 key(ClientKeyKind::Press, 13),
                 key(ClientKeyKind::Press, 108),

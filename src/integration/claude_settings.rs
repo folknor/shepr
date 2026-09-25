@@ -5,8 +5,8 @@ use std::path::Path;
 use jsonc_parser::ast::{Array as AstArray, Object as AstObject, Value as AstValue};
 use jsonc_parser::common::Ranged;
 use jsonc_parser::cst::{CstInputValue, CstNode, CstObject, CstRootNode};
-use jsonc_parser::{json, parse_to_ast, CollectOptions, ParseOptions};
-use serde_json::{json as serde_json_value, Map, Value};
+use jsonc_parser::{CollectOptions, ParseOptions, json, parse_to_ast};
+use serde_json::{Map, Value, json as serde_json_value};
 
 use super::command::hook_command;
 use super::config_edit::{
@@ -41,7 +41,7 @@ pub(crate) fn install(content: &str, settings_path: &Path, hook_path: &Path) -> 
     ensure_command_hook(
         hooks,
         "SessionStart",
-        hook_command(hook_path, Some("session")),
+        &hook_command(hook_path, Some("session")),
         10,
         Some(SESSION_START_MATCHER),
     )?;
@@ -640,7 +640,10 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            assert_eq!(install(input, settings_path, hook_path).expect("test precondition"), expected);
+            assert_eq!(
+                install(input, settings_path, hook_path).expect("test precondition"),
+                expected
+            );
         }
     }
 
@@ -665,7 +668,8 @@ mod tests {
     #[test]
     fn install_is_a_byte_exact_noop_for_a_canonical_hook() {
         let (settings_path, hook_path) = paths();
-        let command = serde_json::to_string(&hook_command(hook_path, Some("session"))).expect("test precondition");
+        let command = serde_json::to_string(&hook_command(hook_path, Some("session")))
+            .expect("test precondition");
         let input = format!(
             "{{\"hooks\":{{\"SessionStart\":[{{\"hooks\":[{{\"timeout\":10,\"command\":{command},\"type\":\"command\"}}],\"matcher\":\"{SESSION_START_MATCHER}\"}}]}},\"escaped\":\"\\u0061\"}}  \r\n\r\n"
         );
@@ -678,7 +682,8 @@ mod tests {
     #[test]
     fn install_replaces_noncanonical_session_start_and_preserves_user_hook() {
         let (settings_path, hook_path) = paths();
-        let command = serde_json::to_string(&hook_command(hook_path, Some("session"))).expect("test precondition");
+        let command = serde_json::to_string(&hook_command(hook_path, Some("session")))
+            .expect("test precondition");
         let user_hook = r#"{ "type" : "command", "command" : "echo keep", "timeout" : 3 }"#;
         let input = format!(
             "{{\n  \"hooks\": {{\n    \"SessionStart\": [{{\"matcher\":\"*\",\"hooks\":[{{\"type\":\"command\",\"command\":{command},\"timeout\":10}},{user_hook}]}}]\n  }}\n}}\n\n"
@@ -687,10 +692,18 @@ mod tests {
         assert!(installed.contains(user_hook));
         assert!(installed.ends_with("}\n\n"));
         let settings: Value = serde_json::from_str(&installed).expect("test precondition");
-        let groups = settings["hooks"]["SessionStart"].as_array().expect("test precondition");
+        let groups = settings["hooks"]["SessionStart"]
+            .as_array()
+            .expect("test precondition");
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0]["matcher"], "*");
-        assert_eq!(groups[0]["hooks"].as_array().expect("test precondition").len(), 1);
+        assert_eq!(
+            groups[0]["hooks"]
+                .as_array()
+                .expect("test precondition")
+                .len(),
+            1
+        );
         assert_eq!(groups[0]["hooks"][0]["command"], "echo keep");
         assert_eq!(groups[1], canonical_hook_value(hook_path));
         assert_eq!(
@@ -703,7 +716,10 @@ mod tests {
         assert!(!removed.contains(&command));
         let settings: Value = serde_json::from_str(&removed).expect("test precondition");
         assert_eq!(
-            settings["hooks"]["SessionStart"].as_array().expect("test precondition").len(),
+            settings["hooks"]["SessionStart"]
+                .as_array()
+                .expect("test precondition")
+                .len(),
             1
         );
     }
@@ -711,7 +727,8 @@ mod tests {
     #[test]
     fn uninstall_preserves_unrelated_hook_text() {
         let (settings_path, hook_path) = paths();
-        let command = serde_json::to_string(&hook_command(hook_path, Some("session"))).expect("test precondition");
+        let command = serde_json::to_string(&hook_command(hook_path, Some("session")))
+            .expect("test precondition");
         let input = format!(
             concat!(
                 "{{\n",
@@ -735,8 +752,11 @@ mod tests {
 
         assert_ne!(updated, input);
         assert!(!updated.contains(&command));
-        assert!(updated
-            .contains("                {  \"type\" : \"command\", \"command\" : \"echo keep\"  }"));
+        assert!(
+            updated.contains(
+                "                {  \"type\" : \"command\", \"command\" : \"echo keep\"  }"
+            )
+        );
         assert!(updated.starts_with("{\n    \"before\" : \"\\u0061\","));
         assert!(updated.ends_with("    \"after\" : 1e+02\n}\n\n"));
     }

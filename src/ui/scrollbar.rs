@@ -1,8 +1,8 @@
 use ratatui::{
+    Frame,
     buffer::Buffer,
     layout::Rect,
     style::{Color, Style},
-    Frame,
 };
 
 use crate::app::AppState;
@@ -36,6 +36,9 @@ pub(crate) fn scrollbar_thumb(
         return None;
     }
 
+    // The ratio is clamped to [1.0, track_height] just below, so the
+    // rounded result always fits in usize without truncation or sign loss.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let thumb_len = ((metrics.viewport_rows * track_height) as f32 / total_rows as f32)
         .round()
         .max(1.0)
@@ -47,11 +50,18 @@ pub(crate) fn scrollbar_thumb(
     let thumb_top = if max_thumb_top == 0 || metrics.max_offset_from_bottom == 0 {
         0
     } else {
-        ((scrolled_from_top * max_thumb_top) as f32 / metrics.max_offset_from_bottom as f32)
+        // Clamped to [0.0, max_thumb_top] just above, so this always fits in usize.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let clamped = ((scrolled_from_top * max_thumb_top) as f32
+            / metrics.max_offset_from_bottom as f32)
             .round()
-            .clamp(0.0, max_thumb_top as f32) as usize
+            .clamp(0.0, max_thumb_top as f32) as usize;
+        clamped
     };
 
+    // track.y is a small terminal row coordinate and thumb_len/thumb_top are
+    // bounded by track_height above, so these narrow to u16 without loss.
+    #[allow(clippy::cast_possible_truncation)]
     Some(ScrollbarThumb {
         top: track.y + thumb_top as u16,
         len: thumb_len as u16,
@@ -85,6 +95,9 @@ fn scrollbar_offset_from_thumb_top(
     }
 
     let desired_top = thumb_top.min(max_thumb_top);
+    // desired_top / max_thumb_top <= 1, so the scaled result stays within
+    // metrics.max_offset_from_bottom and fits in usize.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let scrolled_from_top = ((desired_top * metrics.max_offset_from_bottom) as f32
         / max_thumb_top as f32)
         .round() as usize;

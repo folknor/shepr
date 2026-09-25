@@ -34,9 +34,13 @@ fn config_publication_keeps_old_content_until_commit() {
         if existing {
             fs::write(&path, b"old preferences").expect("test precondition");
         }
-        let staged = Replacement::prepare(&path, b"complete new preferences").expect("test precondition");
+        let staged =
+            Replacement::prepare(&path, b"complete new preferences").expect("test precondition");
         if existing {
-            assert_eq!(fs::read(&path).expect("test precondition"), b"old preferences");
+            assert_eq!(
+                fs::read(&path).expect("test precondition"),
+                b"old preferences"
+            );
         } else {
             assert!(!path.exists());
         }
@@ -45,9 +49,15 @@ fn config_publication_keeps_old_content_until_commit() {
             b"complete new preferences"
         );
         staged.commit().expect("test precondition");
-        assert_eq!(fs::read(&path).expect("test precondition"), b"complete new preferences");
+        assert_eq!(
+            fs::read(&path).expect("test precondition"),
+            b"complete new preferences"
+        );
     }
-    assert_eq!(fs::read_dir(&dir.0).expect("test precondition").count(), ATOMIC_CASES.len());
+    assert_eq!(
+        fs::read_dir(&dir.0).expect("test precondition").count(),
+        ATOMIC_CASES.len()
+    );
 }
 
 #[test]
@@ -61,13 +71,19 @@ fn abandoned_and_failed_publication_leave_config_unchanged() {
         drop(Replacement::prepare(&path, b"new").expect("test precondition"));
         let staged = Replacement::prepare(&path, b"new").expect("test precondition");
         fs::remove_file(&staged.temporary).expect("test precondition");
-        assert_eq!(staged.commit().expect_err("test precondition").kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            staged.commit().expect_err("test precondition").kind(),
+            io::ErrorKind::NotFound
+        );
         if existing {
             assert_eq!(fs::read(&path).expect("test precondition"), b"original");
         } else {
             assert!(!path.exists());
         }
-        assert_eq!(fs::read_dir(&dir.0).expect("test precondition").count(), usize::from(existing));
+        assert_eq!(
+            fs::read_dir(&dir.0).expect("test precondition").count(),
+            usize::from(existing)
+        );
         assert!(write_config(&dir.0, b"not a file").is_err());
         assert!(dir.0.is_dir());
     }
@@ -83,13 +99,17 @@ fn hard_links_are_rejected_before_staging_and_rechecked_before_commit() {
     let staged = Replacement::prepare(&path, b"new").expect("test precondition");
     fs::hard_link(&path, &alias).expect("test precondition");
     #[cfg(unix)]
-    assert!(staged
-        .commit()
-        .expect_err("test precondition")
-        .to_string()
-        .contains("multiple hard links"));
+    assert!(
+        staged
+            .commit()
+            .expect_err("test precondition")
+            .to_string()
+            .contains("multiple hard links")
+    );
     for candidate in [&path, &alias] {
-        let error = write_config(candidate, b"new").expect_err("test precondition").to_string();
+        let error = write_config(candidate, b"new")
+            .expect_err("test precondition")
+            .to_string();
         assert!(error.contains(&candidate.display().to_string()));
         assert_eq!(fs::read(candidate).expect("test precondition"), b"original");
         assert_eq!(
@@ -120,20 +140,38 @@ fn symlink_chains_and_dangling_targets_preserve_links() {
     );
     write_config(&entry, b"first install").expect("test precondition");
     write_config(&entry, b"second install").expect("test precondition");
-    assert_eq!(fs::read(&target).expect("test precondition"), b"second install");
-    assert_eq!(fs::read_link(&entry).expect("test precondition"), relative_target);
-    assert_eq!(fs::read_link(&intermediate).expect("test precondition"), original_intermediate);
+    assert_eq!(
+        fs::read(&target).expect("test precondition"),
+        b"second install"
+    );
+    assert_eq!(
+        fs::read_link(&entry).expect("test precondition"),
+        relative_target
+    );
+    assert_eq!(
+        fs::read_link(&intermediate).expect("test precondition"),
+        original_intermediate
+    );
     assert_eq!(fs::read_dir(&other).expect("test precondition").count(), 2);
     let alias = other.join("hard-link");
     fs::hard_link(&target, &alias).expect("test precondition");
     assert!(write_config(&entry, b"must not change").is_err());
-    assert_eq!(fs::read(&alias).expect("test precondition"), b"second install");
-    assert_eq!(fs::read_link(&entry).expect("test precondition"), relative_target);
+    assert_eq!(
+        fs::read(&alias).expect("test precondition"),
+        b"second install"
+    );
+    assert_eq!(
+        fs::read_link(&entry).expect("test precondition"),
+        relative_target
+    );
 
     let cycle = dir.0.join("cycle");
     assert!(symlink_file(Path::new("cycle"), &cycle));
     assert!(write_config(&cycle, b"must not replace the link").is_err());
-    assert_eq!(fs::read_link(&cycle).expect("test precondition"), Path::new("cycle"));
+    assert_eq!(
+        fs::read_link(&cycle).expect("test precondition"),
+        Path::new("cycle")
+    );
 }
 
 #[test]
@@ -146,15 +184,24 @@ fn existing_permissions_and_new_file_defaults_are_preserved() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).expect("test precondition");
     }
-    let permissions = fs::metadata(&path).expect("test precondition").permissions();
+    let permissions = fs::metadata(&path)
+        .expect("test precondition")
+        .permissions();
     write_config(&path, b"new").expect("test precondition");
-    assert_eq!(fs::metadata(&path).expect("test precondition").permissions(), permissions);
+    assert_eq!(
+        fs::metadata(&path)
+            .expect("test precondition")
+            .permissions(),
+        permissions
+    );
     let ordinary = dir.0.join("ordinary");
     let new = dir.0.join("new");
     fs::write(&ordinary, b"ordinary creation").expect("test precondition");
     write_config(&new, b"atomic creation").expect("test precondition");
     assert_eq!(
-        fs::metadata(&ordinary).expect("test precondition").permissions(),
+        fs::metadata(&ordinary)
+            .expect("test precondition")
+            .permissions(),
         fs::metadata(&new).expect("test precondition").permissions()
     );
 }
@@ -165,7 +212,8 @@ fn writable_directory_does_not_bypass_read_only_config() {
     use std::os::unix::{fs::PermissionsExt, process::CommandExt};
     const CHILD: &str = "SHEPR_CONFIG_READ_ONLY_TEST";
     if let Some(path) = std::env::var_os(CHILD) {
-        let error = write_config(Path::new(&path), b"must not replace").expect_err("test precondition");
+        let error =
+            write_config(Path::new(&path), b"must not replace").expect_err("test precondition");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         println!("read-only rejection executed");
         return;
@@ -205,10 +253,14 @@ fn partial_write_errors_preserve_files_and_do_not_remove_collisions() {
         let collision = dir.join(format!(".shepr-config-{}-0.tmp", std::process::id()));
         fs::write(&collision, b"unrelated file").expect("test precondition");
         for name in ["existing", "new"] {
-            let error = write_config(&dir.join(name), vec![b'x'; 8192]).expect_err("test precondition");
+            let error =
+                write_config(&dir.join(name), vec![b'x'; 8192]).expect_err("test precondition");
             assert_eq!(error.raw_os_error(), Some(libc::EFBIG));
         }
-        assert_eq!(fs::read(collision).expect("test precondition"), b"unrelated file");
+        assert_eq!(
+            fs::read(collision).expect("test precondition"),
+            b"unrelated file"
+        );
         println!("partial-write paths executed");
         return;
     }
@@ -222,7 +274,10 @@ fn partial_write_errors_preserve_files_and_do_not_remove_collisions() {
         .output().expect("test precondition");
     assert!(output.status.success(), "child failed: {output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("partial-write paths executed"));
-    assert_eq!(fs::read(dir.0.join("existing")).expect("test precondition"), b"original");
+    assert_eq!(
+        fs::read(dir.0.join("existing")).expect("test precondition"),
+        b"original"
+    );
     assert!(!dir.0.join("new").exists());
     assert_eq!(
         fs::read_dir(&dir.0).expect("test precondition").count(),

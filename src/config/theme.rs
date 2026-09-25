@@ -61,7 +61,7 @@ pub(crate) fn canonical_theme_name(name: &str) -> Option<&'static str> {
 pub struct ThemeConfig {
     /// Built-in theme name. Default: "catppuccin".
     pub name: Option<String>,
-    /// Custom overrides — applied on top of the selected base theme.
+    /// Custom overrides - applied on top of the selected base theme.
     pub custom: Option<CustomThemeColors>,
 }
 
@@ -82,7 +82,7 @@ impl ThemeConfig {
     }
 }
 
-/// Per-token color overrides. All fields optional — only set what you want to change.
+/// Per-token color overrides. All fields optional - only set what you want to change.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct CustomThemeColors {
@@ -140,14 +140,14 @@ pub fn parse_color(s: &str) -> ratatui::style::Color {
 
     if let Some(inner) = s.strip_prefix("rgb(").and_then(|s| s.strip_suffix(')')) {
         let parts: Vec<&str> = inner.split(',').collect();
-        if parts.len() == 3 {
-            if let (Ok(r), Ok(g), Ok(b)) = (
+        if parts.len() == 3
+            && let (Ok(r), Ok(g), Ok(b)) = (
                 parts[0].trim().parse::<u8>(),
                 parts[1].trim().parse::<u8>(),
                 parts[2].trim().parse::<u8>(),
-            ) {
-                return Color::Rgb(r, g, b);
-            }
+            )
+        {
+            return Color::Rgb(r, g, b);
         }
     }
 

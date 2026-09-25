@@ -13,7 +13,8 @@ mod tests {
 
     #[test]
     fn health_ping_echoes_a_pong_without_entering_server_state() {
-        let pong = response(crate::protocol::endpoint::HEALTH_PING_KIND, "probe".into()).expect("test precondition");
+        let pong = response(crate::protocol::endpoint::HEALTH_PING_KIND, "probe".into())
+            .expect("test precondition");
         assert!(matches!(
             pong,
             crate::protocol::ServerMessage::EndpointControl { kind, data }

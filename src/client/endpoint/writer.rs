@@ -1,6 +1,6 @@
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::Stream as _;
@@ -48,9 +48,9 @@ impl NativeEndpointTransport {
         let queued_bytes = Arc::new(AtomicUsize::new(0));
         let stopped = Arc::new(AtomicBool::new(false));
         let error = Arc::new(Mutex::new(None));
-        let worker_bytes = queued_bytes.clone();
-        let worker_stop = stopped.clone();
-        let worker_error = error.clone();
+        let worker_bytes = Arc::clone(&queued_bytes);
+        let worker_stop = Arc::clone(&stopped);
+        let worker_error = Arc::clone(&error);
         std::thread::Builder::new()
             .name("endpoint-writer".into())
             .spawn(move || {
@@ -104,7 +104,7 @@ impl NativeEndpointTransport {
             frames: vec![frame],
         }));
         self.sender
-            .try_send(WriterCommand::Frames(batch.clone()))
+            .try_send(WriterCommand::Frames(Arc::clone(&batch)))
             .map_err(|error| match error {
                 mpsc::TrySendError::Full(_) => queue_full(),
                 mpsc::TrySendError::Disconnected(_) => {
@@ -116,7 +116,7 @@ impl NativeEndpointTransport {
     }
 
     pub(crate) fn stop_handle(&self) -> Arc<AtomicBool> {
-        self.stopped.clone()
+        Arc::clone(&self.stopped)
     }
 }
 
@@ -134,7 +134,7 @@ impl EndpointTransport for NativeEndpointTransport {
         let len = frame.len();
         if self
             .queued_bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |bytes| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |bytes| {
                 bytes
                     .checked_add(len)
                     .filter(|total| *total <= MAX_QUEUED_BYTES)
@@ -266,13 +266,16 @@ mod tests {
     #[test]
     fn native_endpoint_writer_delivers_ordered_protocol_frames() {
         let (stream, mut peer, path) = streams();
-        let mut transport = NativeEndpointTransport::with_lifetime(stream, ()).expect("test precondition");
+        let mut transport =
+            NativeEndpointTransport::with_lifetime(stream, ()).expect("test precondition");
         let (done, received) = mpsc::channel();
         let reader = std::thread::spawn(move || {
             let first: ClientMessage =
-                crate::protocol::read_message(&mut peer, crate::protocol::MAX_FRAME_SIZE).expect("test precondition");
+                crate::protocol::read_message(&mut peer, crate::protocol::MAX_FRAME_SIZE)
+                    .expect("test precondition");
             let second: ClientMessage =
-                crate::protocol::read_message(&mut peer, crate::protocol::MAX_FRAME_SIZE).expect("test precondition");
+                crate::protocol::read_message(&mut peer, crate::protocol::MAX_FRAME_SIZE)
+                    .expect("test precondition");
             done.send((first, second)).expect("test precondition");
         });
         transport
@@ -281,7 +284,9 @@ mod tests {
         transport
             .send(&ClientMessage::ClientShellFocus { focused: false })
             .expect("test precondition");
-        let messages = received.recv_timeout(Duration::from_secs(3)).expect("test precondition");
+        let messages = received
+            .recv_timeout(Duration::from_secs(3))
+            .expect("test precondition");
         assert_eq!(
             messages,
             (
@@ -297,7 +302,8 @@ mod tests {
     #[test]
     fn registry_exit_flushes_queued_input_and_a_complete_detach() {
         let (stream, mut peer, path) = streams();
-        let transport = NativeEndpointTransport::with_lifetime(stream, ()).expect("test precondition");
+        let transport =
+            NativeEndpointTransport::with_lifetime(stream, ()).expect("test precondition");
         let (done, received) = mpsc::channel();
         let reader = std::thread::spawn(move || {
             let result = (|| {
@@ -352,13 +358,16 @@ mod tests {
         let (stream, peer, path) = streams();
         peer.set_nonblocking(true).expect("test precondition");
         let mut peer = PollingPeer(peer);
-        let mut transport = NativeEndpointTransport::with_lifetime(stream, ()).expect("test precondition");
+        let mut transport =
+            NativeEndpointTransport::with_lifetime(stream, ()).expect("test precondition");
         let (done, received) = mpsc::channel();
         let reader = std::thread::spawn(move || {
             let first: ClientMessage =
-                crate::protocol::read_message(&mut peer, crate::protocol::MAX_FRAME_SIZE).expect("test precondition");
+                crate::protocol::read_message(&mut peer, crate::protocol::MAX_FRAME_SIZE)
+                    .expect("test precondition");
             let second: ClientMessage =
-                crate::protocol::read_message(&mut peer, crate::protocol::MAX_FRAME_SIZE).expect("test precondition");
+                crate::protocol::read_message(&mut peer, crate::protocol::MAX_FRAME_SIZE)
+                    .expect("test precondition");
             done.send((first, second)).expect("test precondition");
         });
         let input = ClientMessage::Input {
@@ -367,13 +376,17 @@ mod tests {
             data: vec![b'x'; 256 * 1024],
         };
         transport.send(&input).expect("test precondition");
-        transport.send(&ClientMessage::Detach).expect("test precondition");
+        transport
+            .send(&ClientMessage::Detach)
+            .expect("test precondition");
         // Large-frame correctness must not depend on the registry's short exit grace period.
         transport
             .flush(Instant::now() + Duration::from_secs(30))
             .expect("test precondition");
         drop(transport);
-        let (first, second) = received.recv_timeout(Duration::from_secs(30)).expect("test precondition");
+        let (first, second) = received
+            .recv_timeout(Duration::from_secs(30))
+            .expect("test precondition");
         assert_eq!(first, input);
         assert_eq!(second, ClientMessage::Detach);
         reader.join().expect("test precondition");
@@ -390,7 +403,8 @@ mod tests {
         }
         let (stream, peer, path) = streams();
         let (done, dropped) = mpsc::channel();
-        let mut transport = NativeEndpointTransport::with_lifetime(stream, Lifetime(done)).expect("test precondition");
+        let mut transport = NativeEndpointTransport::with_lifetime(stream, Lifetime(done))
+            .expect("test precondition");
         transport
             .send(&ClientMessage::Input {
                 data: vec![b'x'; 2 * 1024 * 1024],
@@ -418,8 +432,10 @@ mod tests {
             }
         }
         let mut writer = PartialWriter(Vec::new());
-        write_frame(&mut writer, b"first frame", &AtomicBool::new(false)).expect("test precondition");
-        write_frame(&mut writer, b"second frame", &AtomicBool::new(false)).expect("test precondition");
+        write_frame(&mut writer, b"first frame", &AtomicBool::new(false))
+            .expect("test precondition");
+        write_frame(&mut writer, b"second frame", &AtomicBool::new(false))
+            .expect("test precondition");
         assert_eq!(writer.0, b"first framesecond frame");
     }
 
@@ -436,14 +452,16 @@ mod tests {
             }
         }
         let stop = Arc::new(AtomicBool::new(false));
-        let worker_stop = stop.clone();
+        let worker_stop = Arc::clone(&stop);
         let (attempted, attempts) = mpsc::channel();
         let (done, completion) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             let result = write_frame(&mut StalledWriter(attempted), b"input", &worker_stop);
             done.send(result).expect("test precondition");
         });
-        attempts.recv_timeout(Duration::from_secs(2)).expect("test precondition");
+        attempts
+            .recv_timeout(Duration::from_secs(2))
+            .expect("test precondition");
         stop.store(true, Ordering::Release);
         completion
             .recv_timeout(Duration::from_secs(2))
@@ -483,7 +501,7 @@ mod tests {
                 .send(&message)
                 .expect("a small stdin burst must fit");
         }
-        let queued_bytes = transport.queued_bytes.clone();
+        let queued_bytes = Arc::clone(&transport.queued_bytes);
         assert_eq!(queued_bytes.load(Ordering::Acquire), expected.len());
         let mut received = Vec::new();
         for command in receiver.try_iter() {
@@ -491,18 +509,23 @@ mod tests {
                 panic!("unexpected flush");
             };
             assert!(batch.lock().expect("test precondition").bytes <= MAX_BATCH_BYTES);
-            write_batch(&mut received, &batch, &transport.stopped, &queued_bytes).expect("test precondition");
+            write_batch(&mut received, &batch, &transport.stopped, &queued_bytes)
+                .expect("test precondition");
         }
         assert_eq!(received, expected);
         assert_eq!(queued_bytes.load(Ordering::Acquire), 0);
 
         // The producer still holds the last claimed batch; new input must get a new command.
-        transport.send(&ClientMessage::Detach).expect("test precondition");
+        transport
+            .send(&ClientMessage::Detach)
+            .expect("test precondition");
         let WriterCommand::Frames(batch) = receiver.try_recv().expect("test precondition") else {
             panic!("expected a new batch after the worker claimed the previous one");
         };
-        write_batch(&mut received, &batch, &transport.stopped, &queued_bytes).expect("test precondition");
-        crate::protocol::write_message(&mut expected, &ClientMessage::Detach).expect("test precondition");
+        write_batch(&mut received, &batch, &transport.stopped, &queued_bytes)
+            .expect("test precondition");
+        crate::protocol::write_message(&mut expected, &ClientMessage::Detach)
+            .expect("test precondition");
         assert_eq!(received, expected);
         assert_eq!(queued_bytes.load(Ordering::Acquire), 0);
     }
@@ -514,7 +537,10 @@ mod tests {
         let last = ClientMessage::Detach;
         transport.send(&first).expect("test precondition");
         assert_eq!(
-            transport.flush(Instant::now()).expect_err("test precondition").kind(),
+            transport
+                .flush(Instant::now())
+                .expect_err("test precondition")
+                .kind(),
             io::ErrorKind::TimedOut
         );
         transport.send(&last).expect("test precondition");
@@ -562,7 +588,10 @@ mod tests {
             .expect("test precondition");
         let queued = transport.queued_bytes.load(Ordering::Acquire);
         assert_eq!(
-            transport.send(&ClientMessage::Detach).expect_err("test precondition").kind(),
+            transport
+                .send(&ClientMessage::Detach)
+                .expect_err("test precondition")
+                .kind(),
             io::ErrorKind::ConnectionAborted
         );
         assert_eq!(transport.queued_bytes.load(Ordering::Acquire), queued);
@@ -570,7 +599,10 @@ mod tests {
             .queued_bytes
             .store(MAX_QUEUED_BYTES, Ordering::Release);
         assert_eq!(
-            transport.send(&ClientMessage::Detach).expect_err("test precondition").kind(),
+            transport
+                .send(&ClientMessage::Detach)
+                .expect_err("test precondition")
+                .kind(),
             io::ErrorKind::ConnectionAborted
         );
     }

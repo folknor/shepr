@@ -114,8 +114,16 @@ pub(super) fn format_range(
             (start.column.0, end.column.0)
         } else {
             (
-                if line == start.line { start.column.0 } else { 0 },
-                if line == end.line { end.column.0 } else { last_col },
+                if line == start.line {
+                    start.column.0
+                } else {
+                    0
+                },
+                if line == end.line {
+                    end.column.0
+                } else {
+                    last_col
+                },
             )
         };
         let last_in_range = last_in_range.min(last_col);
@@ -166,7 +174,13 @@ pub(super) fn format_range(
 }
 
 /// Emits one logical line. Returns whether anything visible was written.
-fn emit_line(out: &mut String, cells: &[&Cell], format: Format, trim: bool, vt: &mut VtState) -> bool {
+fn emit_line(
+    out: &mut String,
+    cells: &[&Cell],
+    format: Format,
+    trim: bool,
+    vt: &mut VtState,
+) -> bool {
     let keep = if trim {
         cells
             .iter()
@@ -222,9 +236,9 @@ fn is_trimmable(cell: &Cell, format: Format) -> bool {
         // underlines, strikethrough) or carry a link.
         Format::Vt => {
             cell.bg == Color::Named(NamedColor::Background)
-                && !cell.flags.intersects(
-                    Flags::INVERSE | Flags::ALL_UNDERLINES | Flags::STRIKEOUT,
-                )
+                && !cell
+                    .flags
+                    .intersects(Flags::INVERSE | Flags::ALL_UNDERLINES | Flags::STRIKEOUT)
                 && cell.hyperlink().is_none()
         }
     }
@@ -340,5 +354,8 @@ pub(super) fn grid_point(grid: &Grid<Cell>, line: Line, column: u16) -> Option<P
     if line < grid.topmost_line() || line > grid.bottommost_line() || grid.columns() == 0 {
         return None;
     }
-    Some(Point::new(line, Column(usize::from(column).min(grid.columns() - 1))))
+    Some(Point::new(
+        line,
+        Column(usize::from(column).min(grid.columns() - 1)),
+    ))
 }

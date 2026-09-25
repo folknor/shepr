@@ -6,13 +6,13 @@ use tracing::info;
 
 use crate::ipc::LocalStream;
 use crate::protocol::endpoint::{
-    EndpointClientHello, EndpointServerWelcome, ENDPOINT_HELLO_KIND, ENDPOINT_WELCOME_KIND,
+    ENDPOINT_HELLO_KIND, ENDPOINT_WELCOME_KIND, EndpointClientHello, EndpointServerWelcome,
 };
 use crate::protocol::{
-    self, ClientMessage, RenderEncoding, ServerMessage, MAX_FRAME_SIZE, PROTOCOL_VERSION,
+    self, ClientMessage, MAX_FRAME_SIZE, PROTOCOL_VERSION, RenderEncoding, ServerMessage,
 };
 
-use super::{shell, ClientError};
+use super::{ClientError, shell};
 
 /// Time to wait for the server's Welcome reply during the handshake.
 ///

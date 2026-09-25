@@ -1,15 +1,15 @@
 use std::{
     process::Stdio,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 
 use tokio::io::AsyncReadExt;
 
-use super::{state::TabBarStatusSegment, App};
+use super::{App, state::TabBarStatusSegment};
 use crate::config::TabBarRightEntryConfig;
 
 impl App {
@@ -445,7 +445,7 @@ impl StatusCommandControl {
         if let Some(mut process_group) = self
             .process_group
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
             process_group.terminate();
@@ -456,7 +456,7 @@ impl StatusCommandControl {
         let mut registered = self
             .process_group
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.is_terminated() {
             process_group.terminate();
         } else {
@@ -581,7 +581,7 @@ mod tests {
     const MULTILINE_COMMAND: &str = "printf 'old\\nfinal\\n'";
     const OVER_CAP_COMMAND: &str = "head -c 5000 /dev/zero | tr '\\0' x; printf '\\nREADY\\n'";
 
-        fn unique_temp_path(name: &str) -> std::path::PathBuf {
+    fn unique_temp_path(name: &str) -> std::path::PathBuf {
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("system clock after epoch")
@@ -619,7 +619,7 @@ mod tests {
         ));
     }
 
-        #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "current_thread")]
     async fn status_command_timeout_starts_before_task_is_polled() {
         let ran = unique_temp_path("ran-after-timeout");
         let command = format!("printf ran > {}", ran.display());
@@ -704,7 +704,7 @@ mod tests {
         );
     }
 
-        #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(flavor = "current_thread")]
     async fn reload_aborts_an_in_flight_command_task_and_its_descendants() {
         let descendant_started = unique_temp_path("descendant-started");
         let survived = unique_temp_path("survived");

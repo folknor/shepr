@@ -11,7 +11,12 @@ pub(super) fn render_collapsed(
 ) {
     let rows = agent_rows(endpoints, active_endpoint_id, config);
     for (index, row) in rows.into_iter().take(area.height as usize).enumerate() {
-        let rect = Rect::new(area.x, area.y + index as u16, area.width, 1);
+        let rect = Rect::new(
+            area.x,
+            area.y + u16::try_from(index).unwrap_or(u16::MAX),
+            area.width,
+            1,
+        );
         if row.agent.focused {
             buffer.set_style(rect, Style::default().bg(config.palette.active_row_bg));
         }
@@ -99,7 +104,7 @@ impl ClientShellState {
         };
         let heights = rows
             .iter()
-            .map(|row| row.agent.rows.len().max(1).min(u16::MAX as usize) as u16)
+            .map(|row| u16::try_from(row.agent.rows.len().max(1)).unwrap_or(u16::MAX))
             .collect::<Vec<_>>();
         let mut gaps = vec![self.config.agents.row_gap; rows.len()];
         if let Some(last) = gaps.last_mut() {

@@ -1,12 +1,11 @@
 use std::{collections::BTreeSet, num::NonZeroUsize};
 
 use crossterm::event::KeyModifiers;
-use serde::{de, Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 
 use super::{
-    ActionKeybinds, BindingConfig, IndexedKeybind, Keybinds, SidebarConfig,
-    TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOUSE_SCROLL_LINES,
-    DEFAULT_SCROLLBACK_LIMIT_BYTES,
+    ActionKeybinds, BindingConfig, DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
+    IndexedKeybind, Keybinds, SidebarConfig, TabBarRightEntryConfig, ThemeConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -23,15 +22,6 @@ pub enum StatusIndicatorStyle {
     #[default]
     Dots,
     Symbols,
-}
-
-impl StatusIndicatorStyle {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Dots => "dots",
-            Self::Symbols => "symbols",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
@@ -173,11 +163,7 @@ impl Default for SessionConfig {
 /// values are funneled through this helper before they reach any
 /// `u16::clamp(min, max)` call site (`u16::clamp` panics when `min > max`).
 pub fn validated_sidebar_bounds(min: u16, max: u16) -> Option<(u16, u16)> {
-    if min <= max {
-        Some((min, max))
-    } else {
-        None
-    }
+    if min <= max { Some((min, max)) } else { None }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -731,7 +717,7 @@ pub enum ImeCursorShape {
 }
 
 impl ImeCursorShape {
-    /// Convert to DECSCUSR parameter (1–6).
+    /// Convert to DECSCUSR parameter (1-6).
     pub fn to_decscusr(self) -> u8 {
         match self {
             Self::Block => 1,
@@ -1033,10 +1019,12 @@ status_indicators = "symbols"
 
     #[test]
     fn pane_borders_parse_modes() {
-        let auto: Config = toml::from_str("[ui]\npane_borders = \"auto\"").expect("test precondition");
+        let auto: Config =
+            toml::from_str("[ui]\npane_borders = \"auto\"").expect("test precondition");
         assert_eq!(auto.ui.pane_borders, PaneBordersConfig::Auto);
 
-        let off: Config = toml::from_str("[ui]\npane_borders = \"off\"").expect("test precondition");
+        let off: Config =
+            toml::from_str("[ui]\npane_borders = \"off\"").expect("test precondition");
         assert_eq!(off.ui.pane_borders, PaneBordersConfig::Off);
 
         assert!(toml::from_str::<Config>("[ui]\npane_borders = \"framed\"").is_err());

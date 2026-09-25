@@ -20,7 +20,7 @@ impl App {
         )
     }
 
-    pub(super) fn handle_workspace_get(&mut self, id: String, target: WorkspaceTarget) -> String {
+    pub(super) fn handle_workspace_get(&mut self, id: String, target: &WorkspaceTarget) -> String {
         let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
             return workspace_not_found(id, &target.workspace_id);
         };
@@ -65,13 +65,13 @@ impl App {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
         };
-        match self.create_workspace_with_launch_env(cwd, params.focus, extra_env) {
+        match self.create_workspace_with_launch_env(&cwd, params.focus, extra_env) {
             Ok(index) => {
-                if let Some(label) = params.label {
-                    if let Some(workspace) = self.state.workspaces.get_mut(index) {
-                        workspace.set_custom_name(label);
-                        crate::logging::workspace_renamed(&workspace.id);
-                    }
+                if let Some(label) = params.label
+                    && let Some(workspace) = self.state.workspaces.get_mut(index)
+                {
+                    workspace.set_custom_name(label);
+                    crate::logging::workspace_renamed(&workspace.id);
                 }
                 self.emit_workspace_open_events(index);
                 encode_success(
@@ -84,7 +84,11 @@ impl App {
         }
     }
 
-    pub(super) fn handle_workspace_focus(&mut self, id: String, target: WorkspaceTarget) -> String {
+    pub(super) fn handle_workspace_focus(
+        &mut self,
+        id: String,
+        target: &WorkspaceTarget,
+    ) -> String {
         let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
             return workspace_not_found(id, &target.workspace_id);
         };
@@ -134,7 +138,7 @@ impl App {
     pub(super) fn handle_workspace_move(
         &mut self,
         id: String,
-        params: WorkspaceMoveParams,
+        params: &WorkspaceMoveParams,
     ) -> String {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return workspace_not_found(id, &params.workspace_id);
@@ -246,7 +250,7 @@ impl App {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return workspace_not_found(id, &params.workspace_id);
         };
-        let source = match normalize_metadata_source(params.source) {
+        let source = match normalize_metadata_source(&params.source) {
             Ok(source) => source,
             Err(message) => return encode_error(id, "invalid_metadata_source", message),
         };
@@ -311,7 +315,7 @@ impl App {
     pub(super) fn handle_workspace_close(
         &mut self,
         id: String,
-        params: WorkspaceCloseParams,
+        params: &WorkspaceCloseParams,
     ) -> String {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return workspace_not_found(id, &params.workspace_id);
@@ -414,8 +418,15 @@ mod tests {
         let root_cwd = ws.identity_cwd.clone();
         let focused_pane = ws.focused_pane_id().expect("test precondition");
         assert_ne!(focused_pane, ws.tabs[0].root_pane);
-        let terminal_id = ws.terminal_id(focused_pane).cloned().expect("test precondition");
-        app.state.terminals.get_mut(&terminal_id).expect("test precondition").cwd = focused_cwd.clone();
+        let terminal_id = ws
+            .terminal_id(focused_pane)
+            .cloned()
+            .expect("test precondition");
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition")
+            .cwd = focused_cwd.clone();
 
         let response = app.handle_workspace_create(
             "req".into(),
@@ -435,12 +446,12 @@ mod tests {
         ));
         let created_cwd = &app.state.workspaces[1].identity_cwd;
         assert_eq!(
-            crate::pathutil::canonical_or_original(created_cwd),
-            crate::pathutil::canonical_or_original(&focused_cwd)
+            std::fs::canonicalize(created_cwd).unwrap_or_else(|_| created_cwd.clone()),
+            std::fs::canonicalize(&focused_cwd).unwrap_or_else(|_| focused_cwd.clone())
         );
         assert_ne!(
-            crate::pathutil::canonical_or_original(created_cwd),
-            crate::pathutil::canonical_or_original(&root_cwd)
+            std::fs::canonicalize(created_cwd).unwrap_or_else(|_| created_cwd.clone()),
+            std::fs::canonicalize(&root_cwd).unwrap_or_else(|_| root_cwd.clone())
         );
         shutdown_test_runtimes(&mut app);
         let _ = std::fs::remove_dir_all(&focused_cwd);
@@ -470,12 +481,18 @@ mod tests {
         let source_cwd =
             std::env::temp_dir().join(format!("shepr-ws-explicit-source-{}", std::process::id()));
         std::fs::create_dir_all(&source_cwd).expect("test precondition");
-        let pane_id = app.state.workspaces[1].focused_pane_id().expect("test precondition");
+        let pane_id = app.state.workspaces[1]
+            .focused_pane_id()
+            .expect("test precondition");
         let terminal_id = app.state.workspaces[1]
             .terminal_id(pane_id)
             .cloned()
             .expect("test precondition");
-        app.state.terminals.get_mut(&terminal_id).expect("test precondition").cwd = source_cwd.clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition")
+            .cwd = source_cwd.clone();
         let source_workspace_id = app.public_workspace_id(1);
 
         let response = app.handle_workspace_create(
@@ -494,8 +511,12 @@ mod tests {
             ResponseResult::WorkspaceCreated { .. }
         ));
         assert_eq!(
-            crate::pathutil::canonical_or_original(&app.state.workspaces[2].identity_cwd),
-            crate::pathutil::canonical_or_original(&source_cwd)
+            std::fs::canonicalize(&app.state.workspaces[2].identity_cwd).unwrap_or_else(|_| app
+                .state
+                .workspaces[2]
+                .identity_cwd
+                .clone()),
+            std::fs::canonicalize(&source_cwd).unwrap_or_else(|_| source_cwd.clone())
         );
 
         let invalid = app.handle_workspace_create(
@@ -527,8 +548,12 @@ mod tests {
             ResponseResult::WorkspaceCreated { .. }
         ));
         assert_eq!(
-            crate::pathutil::canonical_or_original(&app.state.workspaces[3].identity_cwd),
-            crate::pathutil::canonical_or_original(&source_cwd)
+            std::fs::canonicalize(&app.state.workspaces[3].identity_cwd).unwrap_or_else(|_| app
+                .state
+                .workspaces[3]
+                .identity_cwd
+                .clone()),
+            std::fs::canonicalize(&source_cwd).unwrap_or_else(|_| source_cwd.clone())
         );
         shutdown_test_runtimes(&mut app);
         let _ = std::fs::remove_dir_all(&source_cwd);
@@ -579,7 +604,8 @@ mod tests {
                     },
                 ),
             });
-            let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+            let success: SuccessResponse =
+                serde_json::from_str(&response).expect("test precondition");
             assert_eq!(success.result, ResponseResult::Ok {});
             assert_eq!(app.workspace_info(0).tokens, expected);
         }
@@ -652,7 +678,7 @@ mod tests {
 
         let response = app.handle_workspace_move(
             "req".into(),
-            WorkspaceMoveParams {
+            &WorkspaceMoveParams {
                 workspace_id: moved_id.clone(),
                 insert_index: 3,
             },
@@ -715,7 +741,7 @@ mod tests {
             app.state
                 .workspaces
                 .iter()
-                .map(|workspace| workspace.display_name())
+                .map(crate::workspace::Workspace::display_name)
                 .collect::<Vec<_>>(),
             ["normal", "parent", "child", "tail"]
         );
@@ -753,7 +779,7 @@ mod tests {
 
         let response = app.handle_workspace_move(
             "req".into(),
-            WorkspaceMoveParams {
+            &WorkspaceMoveParams {
                 workspace_id: moved_id.clone(),
                 insert_index: 1,
             },

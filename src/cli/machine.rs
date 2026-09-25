@@ -187,7 +187,9 @@ fn reconnect(args: &[String]) -> std::io::Result<i32> {
         }
     };
     if !std::io::stdin().is_terminal() {
-        eprintln!("reconnect requires an interactive terminal; use shepr machine status for noninteractive checks");
+        eprintln!(
+            "reconnect requires an interactive terminal; use shepr machine status for noninteractive checks"
+        );
         return Ok(2);
     }
     let mut authentication = crate::remote::ssh_authentication_command(&profile.target)?;
@@ -495,9 +497,11 @@ mod tests {
 
     #[test]
     fn profile_id_parser_rejects_target_text() {
-        assert!(one_profile_id(&["build.example".into()], "usage")
-            .expect("test precondition")
-            .is_none());
+        assert!(
+            one_profile_id(&["build.example".into()], "usage")
+                .expect("test precondition")
+                .is_none()
+        );
     }
 
     #[test]

@@ -32,12 +32,20 @@ fn first_rendered_row_text(terminal: &Terminal) -> String {
     let mut row_text = String::new();
 
     assert!(rows.next());
-    let mut cells = rows.populate_cells(&mut row_cells).expect("test precondition");
+    let mut cells = rows
+        .populate_cells(&mut row_cells)
+        .expect("test precondition");
     while cells.next() {
         cells
             .grapheme_text_into(&mut bytes, &mut cell_text)
             .expect("test precondition");
-        row_text.push_str(&cell_text);
+        // alacritty cannot tell a printed space from a blank cell, so both come
+        // back empty; only wide-char spacers really contribute no text.
+        if cell_text.is_empty() && cells.wide().expect("test precondition") == CellWide::Narrow {
+            row_text.push(' ');
+        } else {
+            row_text.push_str(&cell_text);
+        }
     }
     row_text.trim_end().to_owned()
 }
@@ -63,17 +71,17 @@ fn unicode_width_helpers_match_terminal_layout_rules() {
     let cases: &[(&[u32], usize, u8)] = &[
         (&[], 0, 0),
         (&['e' as u32, '\u{301}' as u32], 2, 1),
-        (&['⚠' as u32, '\u{fe0f}' as u32], 2, 2),
-        (&['⚠' as u32, '\u{fe0e}' as u32], 2, 1),
-        (&['🇧' as u32, '🇷' as u32], 2, 2),
-        (&['👍' as u32, '🏽' as u32], 2, 2),
+        (&['\u{26A0}' as u32, '\u{fe0f}' as u32], 2, 2),
+        (&['\u{26A0}' as u32, '\u{fe0e}' as u32], 2, 1),
+        (&['\u{1F1E7}' as u32, '\u{1F1F7}' as u32], 2, 2),
+        (&['\u{1F44D}' as u32, '\u{1F3FD}' as u32], 2, 2),
         (
             &[
-                '👨' as u32,
+                '\u{1F468}' as u32,
                 '\u{200d}' as u32,
-                '👩' as u32,
+                '\u{1F469}' as u32,
                 '\u{200d}' as u32,
-                '👧' as u32,
+                '\u{1F467}' as u32,
             ],
             5,
             2,
@@ -91,8 +99,14 @@ fn unicode_width_helpers_match_terminal_layout_rules() {
 
 #[test]
 fn focus_encoding_matches_expected_sequences() {
-    assert_eq!(encode_focus(FocusEvent::Gained).expect("test precondition"), b"\x1b[I");
-    assert_eq!(encode_focus(FocusEvent::Lost).expect("test precondition"), b"\x1b[O");
+    assert_eq!(
+        encode_focus(FocusEvent::Gained).expect("test precondition"),
+        b"\x1b[I"
+    );
+    assert_eq!(
+        encode_focus(FocusEvent::Lost).expect("test precondition"),
+        b"\x1b[O"
+    );
 }
 
 #[test]
@@ -113,8 +127,15 @@ fn modes_and_kitty_flags_follow_terminal_state() {
     terminal.write(b"\x1b[>1u\x1b[?1000h\x1b[?1006h");
 
     assert!(terminal.mode_get(1).expect("test precondition"));
-    assert_eq!(terminal.kitty_keyboard_flags().expect("test precondition"), 1);
-    assert!(terminal.mouse_tracking_enabled().expect("test precondition"));
+    assert_eq!(
+        terminal.kitty_keyboard_flags().expect("test precondition"),
+        1
+    );
+    assert!(
+        terminal
+            .mouse_tracking_enabled()
+            .expect("test precondition")
+    );
     assert!(terminal.mode_get(1000).expect("test precondition"));
     assert!(terminal.mode_get(1006).expect("test precondition"));
 
@@ -122,13 +143,20 @@ fn modes_and_kitty_flags_follow_terminal_state() {
     terminal.write(b"\x1b[?9h");
     assert!(terminal.mode_get(9).expect("test precondition"));
     assert!(!terminal.mode_get(1000).expect("test precondition"));
-    assert!(terminal.mouse_tracking_enabled().expect("test precondition"));
+    assert!(
+        terminal
+            .mouse_tracking_enabled()
+            .expect("test precondition")
+    );
     terminal.write(b"\x1b[?1003h");
     assert!(!terminal.mode_get(9).expect("test precondition"));
     assert!(terminal.mode_get(1003).expect("test precondition"));
 
     terminal.write(b"\x1b[<u");
-    assert_eq!(terminal.kitty_keyboard_flags().expect("test precondition"), 0);
+    assert_eq!(
+        terminal.kitty_keyboard_flags().expect("test precondition"),
+        0
+    );
 }
 
 #[test]
@@ -145,8 +173,16 @@ fn adapter_modes_answer_decrqm_and_reset_on_ris() {
     );
 
     terminal.write(b"\x1b[?2031h\x1bc");
-    assert!(!terminal.mode_get(MODE_COLOR_SCHEME_REPORT).expect("test precondition"));
-    assert!(!terminal.mode_get(MODE_MOUSE_SGR_PIXELS).expect("test precondition"));
+    assert!(
+        !terminal
+            .mode_get(MODE_COLOR_SCHEME_REPORT)
+            .expect("test precondition")
+    );
+    assert!(
+        !terminal
+            .mode_get(MODE_MOUSE_SGR_PIXELS)
+            .expect("test precondition")
+    );
 }
 
 #[test]
@@ -157,9 +193,7 @@ fn replies_keep_byte_order_across_core_and_adapter_sources() {
     let replies = terminal.take_pty_responses();
     assert_eq!(replies.len(), 5);
     assert!(matches!(&replies[0], PtyResponse::Bytes(bytes) if bytes == b"\x1b[0n"));
-    assert!(
-        matches!(&replies[1], PtyResponse::Bytes(bytes) if bytes == b"\x1bP1+r5463\x1b\\")
-    );
+    assert!(matches!(&replies[1], PtyResponse::Bytes(bytes) if bytes == b"\x1bP1+r5463\x1b\\"));
     assert!(matches!(&replies[2], PtyResponse::Bytes(bytes) if bytes == b"\x1b[?997;2n"));
     match &replies[3] {
         PtyResponse::ColorQuery(query) => {
@@ -242,32 +276,52 @@ fn in_band_resize_reports_on_enable_and_resize() {
 fn synchronized_output_buffers_until_end_or_timeout() {
     let mut terminal = Terminal::new(20, 3, 0).expect("test precondition");
     terminal.write(b"\x1b[?2026hhidden");
-    assert!(terminal.mode_get(MODE_SYNCHRONIZED_OUTPUT).expect("test precondition"));
+    assert!(
+        terminal
+            .mode_get(MODE_SYNCHRONIZED_OUTPUT)
+            .expect("test precondition")
+    );
     assert!(terminal.synchronized_output_deadline().is_some());
     assert!(!terminal.flush_expired_synchronized_output());
     assert_eq!(
-        terminal.read_text_viewport((0, 0), (19, 0), false).expect("test precondition"),
+        terminal
+            .read_text_viewport((0, 0), (19, 0), false)
+            .expect("test precondition"),
         ""
     );
 
     terminal.write(b"\x1b[?2026l");
-    assert!(!terminal.mode_get(MODE_SYNCHRONIZED_OUTPUT).expect("test precondition"));
+    assert!(
+        !terminal
+            .mode_get(MODE_SYNCHRONIZED_OUTPUT)
+            .expect("test precondition")
+    );
     assert_eq!(
-        terminal.read_text_viewport((0, 0), (19, 0), false).expect("test precondition"),
+        terminal
+            .read_text_viewport((0, 0), (19, 0), false)
+            .expect("test precondition"),
         "hidden"
     );
 
     terminal.write(b"\x1b[?2026h forgotten");
-    let deadline = terminal.synchronized_output_deadline().expect("test precondition");
+    let deadline = terminal
+        .synchronized_output_deadline()
+        .expect("test precondition");
     while Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(terminal.flush_expired_synchronized_output());
-    assert!(!terminal.mode_get(MODE_SYNCHRONIZED_OUTPUT).expect("test precondition"));
-    assert!(terminal
-        .read_text_viewport((0, 0), (19, 0), false)
-        .expect("test precondition")
-        .contains("forgotten"));
+    assert!(
+        !terminal
+            .mode_get(MODE_SYNCHRONIZED_OUTPUT)
+            .expect("test precondition")
+    );
+    assert!(
+        terminal
+            .read_text_viewport((0, 0), (19, 0), false)
+            .expect("test precondition")
+            .contains("forgotten")
+    );
 }
 
 #[test]
@@ -275,7 +329,9 @@ fn terminal_read_text_viewport_unwraps_soft_wrapped_selection() {
     let mut terminal = Terminal::new(5, 3, 0).expect("test precondition");
     terminal.write("1ABCD2EFGH3IJKL".as_bytes());
 
-    let text = terminal.read_text_viewport((0, 1), (2, 2), false).expect("test precondition");
+    let text = terminal
+        .read_text_viewport((0, 1), (2, 2), false)
+        .expect("test precondition");
     assert_eq!(text, "2EFGH3IJ");
 }
 
@@ -285,25 +341,39 @@ fn terminal_extracts_viewport_hyperlink_uri() {
     terminal.write(b"\x1b]8;;https://example.com\x1b\\Link\x1b]8;;\x1b\\");
 
     assert_eq!(
-        terminal.viewport_hyperlink_uri(0, 0).expect("test precondition").as_deref(),
+        terminal
+            .viewport_hyperlink_uri(0, 0)
+            .expect("test precondition")
+            .as_deref(),
         Some("https://example.com")
     );
-    assert_eq!(terminal.viewport_hyperlink_uri(4, 0).expect("test precondition"), None);
+    assert_eq!(
+        terminal
+            .viewport_hyperlink_uri(4, 0)
+            .expect("test precondition"),
+        None
+    );
 }
 
 #[test]
 fn terminal_read_text_viewport_handles_wide_chars() {
     let mut terminal = Terminal::new(5, 3, 0).expect("test precondition");
-    terminal.write("1A⚡".as_bytes());
+    terminal.write("1A\u{26A1}".as_bytes());
 
-    let full = terminal.read_text_viewport((0, 0), (3, 0), false).expect("test precondition");
-    assert_eq!(full, "1A⚡");
+    let full = terminal
+        .read_text_viewport((0, 0), (3, 0), false)
+        .expect("test precondition");
+    assert_eq!(full, "1A\u{26A1}");
 
-    let through_wide_head = terminal.read_text_viewport((0, 0), (2, 0), false).expect("test precondition");
-    assert_eq!(through_wide_head, "1A⚡");
+    let through_wide_head = terminal
+        .read_text_viewport((0, 0), (2, 0), false)
+        .expect("test precondition");
+    assert_eq!(through_wide_head, "1A\u{26A1}");
 
-    let wide_only = terminal.read_text_viewport((3, 0), (3, 0), false).expect("test precondition");
-    assert_eq!(wide_only, "⚡");
+    let wide_only = terminal
+        .read_text_viewport((3, 0), (3, 0), false)
+        .expect("test precondition");
+    assert_eq!(wide_only, "\u{26A1}");
 }
 
 #[test]
@@ -368,21 +438,31 @@ fn deep_scrollback_resize_preserves_unicode_and_hyperlinks() {
     use std::fmt::Write as _;
 
     let mut terminal = Terminal::new(20, 5, 100_000_000).expect("test precondition");
-    let mut input = String::from("\x1b]8;;https://example.com\x1b\\FIRST 🇧🇷\x1b]8;;\x1b\\\r\n");
+    let mut input =
+        String::from("\x1b]8;;https://example.com\x1b\\FIRST \u{1F1E7}\u{1F1F7}\x1b]8;;\x1b\\\r\n");
     for line in 0..70_000 {
-        write!(input, "{line:05} 👨‍👩‍👧\r\n").expect("test precondition");
+        write!(
+            input,
+            "{line:05} \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\r\n"
+        )
+        .expect("test precondition");
     }
     terminal.write(input.as_bytes());
 
     assert!(terminal.scrollback_rows().expect("test precondition") > u16::MAX as usize);
     terminal.scroll_viewport_delta(-100_000);
     assert_eq!(terminal.scrollbar().expect("test precondition").offset, 0);
-    assert!(terminal
-        .read_text_viewport((0, 0), (19, 0), false)
-        .expect("test precondition")
-        .starts_with("FIRST 🇧🇷"));
+    assert!(
+        terminal
+            .read_text_viewport((0, 0), (19, 0), false)
+            .expect("test precondition")
+            .starts_with("FIRST \u{1F1E7}\u{1F1F7}")
+    );
     assert_eq!(
-        terminal.viewport_hyperlink_uri(0, 0).expect("test precondition").as_deref(),
+        terminal
+            .viewport_hyperlink_uri(0, 0)
+            .expect("test precondition")
+            .as_deref(),
         Some("https://example.com")
     );
 
@@ -391,12 +471,17 @@ fn deep_scrollback_resize_preserves_unicode_and_hyperlinks() {
     let metrics = terminal.scrollbar().expect("test precondition");
     assert_eq!(metrics.offset, 0);
     assert_eq!(metrics.len, 5);
-    assert!(terminal
-        .read_text_viewport((0, 0), (9, 0), false)
-        .expect("test precondition")
-        .starts_with("FIRST"));
+    assert!(
+        terminal
+            .read_text_viewport((0, 0), (9, 0), false)
+            .expect("test precondition")
+            .starts_with("FIRST")
+    );
     assert_eq!(
-        terminal.viewport_hyperlink_uri(0, 0).expect("test precondition").as_deref(),
+        terminal
+            .viewport_hyperlink_uri(0, 0)
+            .expect("test precondition")
+            .as_deref(),
         Some("https://example.com")
     );
 }
@@ -406,12 +491,19 @@ fn raw_resize_preserves_content_without_replaying_terminal_effects() {
     let mut terminal = Terminal::new(20, 6, 100_000).expect("test precondition");
     terminal.write(b"header\r\n\x1b[6;1Htail\x1b[6;18H");
     for (cols, rows) in [(10, 3), (30, 8), (8, 4), (20, 6)] {
-        terminal.resize(cols, rows, 8, 16).expect("test precondition");
+        terminal
+            .resize(cols, rows, 8, 16)
+            .expect("test precondition");
         terminal.write(b"X");
         let text = terminal
             .read_text_screen(
                 (0, 0),
-                (cols - 1, terminal.total_rows().expect("test precondition") as u32 - 1),
+                (
+                    cols - 1,
+                    u32::try_from(terminal.total_rows().expect("test precondition"))
+                        .unwrap_or(u32::MAX)
+                        - 1,
+                ),
                 false,
             )
             .expect("test precondition");
@@ -424,11 +516,13 @@ fn raw_resize_preserves_content_without_replaying_terminal_effects() {
     }
     terminal.write(b"\x1b[2J\x1b[H");
     terminal.resize(12, 3, 8, 16).expect("test precondition");
-    assert!(terminal
-        .read_text_viewport((0, 0), (11, 2), false)
-        .expect("test precondition")
-        .trim()
-        .is_empty());
+    assert!(
+        terminal
+            .read_text_viewport((0, 0), (11, 2), false)
+            .expect("test precondition")
+            .trim()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -471,9 +565,14 @@ fn active_screen_and_cursor_visibility_contract() {
     let mut render_state = RenderState::new().expect("test precondition");
 
     terminal.write(b"primary");
-    assert_eq!(terminal.active_screen().expect("test precondition"), ActiveScreen::Primary);
     assert_eq!(
-        terminal.read_text_viewport((0, 0), (6, 0), false).expect("test precondition"),
+        terminal.active_screen().expect("test precondition"),
+        ActiveScreen::Primary
+    );
+    assert_eq!(
+        terminal
+            .read_text_viewport((0, 0), (6, 0), false)
+            .expect("test precondition"),
         "primary"
     );
 
@@ -484,16 +583,26 @@ fn active_screen_and_cursor_visibility_contract() {
     assert!(!render_state.cursor().expect("test precondition").visible);
 
     terminal.write(b"\x1b[?1049h\x1b[HALT");
-    assert_eq!(terminal.active_screen().expect("test precondition"), ActiveScreen::Alternate);
     assert_eq!(
-        terminal.read_text_viewport((0, 0), (2, 0), false).expect("test precondition"),
+        terminal.active_screen().expect("test precondition"),
+        ActiveScreen::Alternate
+    );
+    assert_eq!(
+        terminal
+            .read_text_viewport((0, 0), (2, 0), false)
+            .expect("test precondition"),
         "ALT"
     );
 
     terminal.write(b"\x1b[?1049l");
-    assert_eq!(terminal.active_screen().expect("test precondition"), ActiveScreen::Primary);
     assert_eq!(
-        terminal.read_text_viewport((0, 0), (6, 0), false).expect("test precondition"),
+        terminal.active_screen().expect("test precondition"),
+        ActiveScreen::Primary
+    );
+    assert_eq!(
+        terminal
+            .read_text_viewport((0, 0), (6, 0), false)
+            .expect("test precondition"),
         "primary"
     );
 }
@@ -510,7 +619,10 @@ fn terminal_and_render_state_smoke_test() {
     render_state.update(&terminal).expect("test precondition");
     assert_eq!(render_state.cols().expect("test precondition"), 8);
     assert_eq!(render_state.rows().expect("test precondition"), 3);
-    assert_ne!(render_state.dirty().expect("test precondition"), Dirty::Clean);
+    assert_ne!(
+        render_state.dirty().expect("test precondition"),
+        Dirty::Clean
+    );
 
     let mut row_iterator = RowIterator::new().expect("test precondition");
     let mut row_iter = render_state
@@ -523,7 +635,9 @@ fn terminal_and_render_state_smoke_test() {
     let mut row_index = 0usize;
     while row_iter.next() {
         let _ = row_iter.dirty().expect("test precondition");
-        let mut cells = row_iter.populate_cells(&mut row_cells).expect("test precondition");
+        let mut cells = row_iter
+            .populate_cells(&mut row_cells)
+            .expect("test precondition");
         let mut line = String::new();
         while cells.next() {
             let text = cells.grapheme_text().expect("test precondition");
@@ -546,17 +660,67 @@ fn terminal_and_render_state_smoke_test() {
     assert!(found_hello);
     assert!(found_world);
 
-    render_state.set_dirty(Dirty::Clean).expect("test precondition");
-    assert_eq!(render_state.dirty().expect("test precondition"), Dirty::Clean);
+    render_state
+        .set_dirty(Dirty::Clean)
+        .expect("test precondition");
+    assert_eq!(
+        render_state.dirty().expect("test precondition"),
+        Dirty::Clean
+    );
 }
 
 #[test]
 fn render_cells_preserve_issue_453_unicode_payload_exactly() {
-    const PAYLOAD: &str = "README 👨‍👩‍👧‍👦 🧑‍💻 ✅ ⚡ 漢字 café é 🏳️‍🌈 🚀";
+    const PAYLOAD: &str = "README \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466} \u{1F9D1}\u{200D}\u{1F4BB} \u{2705} \u{26A1} 漢字 café é \u{1F3F3}\u{FE0F}\u{200D}\u{1F308} \u{1F680}";
     let mut terminal = Terminal::new(80, 3, 100).expect("test precondition");
     terminal.write(format!("{PAYLOAD}\r\n").as_bytes());
 
     assert_eq!(first_rendered_row_text(&terminal), PAYLOAD);
+}
+
+#[test]
+fn modify_other_keys_level_is_terminal_state() {
+    let mut terminal = Terminal::new(8, 2, 0).expect("test precondition");
+    assert_eq!(terminal.modify_other_keys_level(), 0);
+    terminal.write(b"\x1b[>4;");
+    terminal.write(b"1m");
+    assert_eq!(terminal.modify_other_keys_level(), 1);
+    terminal.write(b"\x1b[>4;2m");
+    assert_eq!(terminal.modify_other_keys_level(), 2);
+    terminal.write(b"\x1b[>4n");
+    assert_eq!(terminal.modify_other_keys_level(), 0);
+    terminal.write(b"\x1b[>4;2m\x1bc");
+    assert_eq!(terminal.modify_other_keys_level(), 0);
+}
+
+#[test]
+fn halfwidth_voiced_marks_take_their_own_cell() {
+    // Whole, split mid-character, and with the mark wrapping onto a new line.
+    for chunks in [
+        vec!["\u{ff76}\u{ff9e}Z".as_bytes().to_vec()],
+        vec![b"\xef\xbd\xb6\xef".to_vec(), b"\xbe\x9eZ".to_vec()],
+    ] {
+        let mut terminal = Terminal::new(8, 2, 0).expect("test precondition");
+        for chunk in &chunks {
+            terminal.write(chunk);
+        }
+        let rows = terminal.screen_text_rows().expect("test precondition");
+        let graphemes: Vec<_> = rows[0].cells[..3]
+            .iter()
+            .map(|cell| cell.graphemes.clone())
+            .collect();
+        assert_eq!(
+            graphemes,
+            vec![vec![0xff76], vec![0xff9e], vec![u32::from('Z')]],
+            "{chunks:?}"
+        );
+    }
+
+    let mut terminal = Terminal::new(2, 2, 0).expect("test precondition");
+    terminal.write("ab\u{ff9f}".as_bytes());
+    let rows = terminal.screen_text_rows().expect("test precondition");
+    assert!(rows[0].soft_wrapped);
+    assert_eq!(rows[1].cells[0].graphemes, vec![0xff9f]);
 }
 
 #[test]
@@ -596,23 +760,35 @@ fn render_state_row_dirty_can_be_cleared_independently() {
     }
     {
         let mut iterator = RowIterator::new().expect("test precondition");
-        let mut rows = render_state.populate_row_iterator(&mut iterator).expect("test precondition");
+        let mut rows = render_state
+            .populate_row_iterator(&mut iterator)
+            .expect("test precondition");
         assert_eq!(rows.next_dirty(), Some(0));
         assert_eq!(rows.next_dirty(), Some(1));
         assert_eq!(rows.next_dirty(), Some(2));
         assert_eq!(rows.next_dirty(), None);
     }
-    render_state.set_dirty(Dirty::Clean).expect("test precondition");
-    assert_eq!(render_state.dirty().expect("test precondition"), Dirty::Clean);
+    render_state
+        .set_dirty(Dirty::Clean)
+        .expect("test precondition");
+    assert_eq!(
+        render_state.dirty().expect("test precondition"),
+        Dirty::Clean
+    );
     {
         let mut iterator = RowIterator::new().expect("test precondition");
-        let mut rows = render_state.populate_row_iterator(&mut iterator).expect("test precondition");
+        let mut rows = render_state
+            .populate_row_iterator(&mut iterator)
+            .expect("test precondition");
         assert_eq!(rows.next_dirty(), None);
     }
 
     terminal.write(b"A");
     render_state.update(&terminal).expect("test precondition");
-    assert_eq!(render_state.dirty().expect("test precondition"), Dirty::Partial);
+    assert_eq!(
+        render_state.dirty().expect("test precondition"),
+        Dirty::Partial
+    );
 
     let mut dirty_rows = 0usize;
     {
@@ -629,10 +805,18 @@ fn render_state_row_dirty_can_be_cleared_independently() {
         }
     }
     assert_eq!(dirty_rows, 1);
-    assert_eq!(render_state.dirty().expect("test precondition"), Dirty::Partial);
+    assert_eq!(
+        render_state.dirty().expect("test precondition"),
+        Dirty::Partial
+    );
 
-    render_state.set_dirty(Dirty::Clean).expect("test precondition");
-    assert_eq!(render_state.dirty().expect("test precondition"), Dirty::Clean);
+    render_state
+        .set_dirty(Dirty::Clean)
+        .expect("test precondition");
+    assert_eq!(
+        render_state.dirty().expect("test precondition"),
+        Dirty::Clean
+    );
 }
 
 #[test]
@@ -645,9 +829,15 @@ fn scrolling_the_viewport_marks_every_row_dirty() {
 
     terminal.scroll_viewport_delta(-2);
     render_state.update(&terminal).expect("test precondition");
-    assert_eq!(render_state.dirty().expect("test precondition"), Dirty::Full);
+    assert_eq!(
+        render_state.dirty().expect("test precondition"),
+        Dirty::Full
+    );
     // The cursor sits on the bottom row, which is now two rows below the viewport.
-    assert_eq!(render_state.cursor().expect("test precondition").viewport, None);
+    assert_eq!(
+        render_state.cursor().expect("test precondition").viewport,
+        None
+    );
 }
 
 #[test]
@@ -679,7 +869,9 @@ fn row_cell_basic_data_reports_palette_style() {
     assert!(rows.next());
 
     let mut row_cells = RowCells::new().expect("test precondition");
-    let mut cells = rows.populate_cells(&mut row_cells).expect("test precondition");
+    let mut cells = rows
+        .populate_cells(&mut row_cells)
+        .expect("test precondition");
     assert!(cells.next());
 
     let basic = cells.basic_data().expect("test precondition");
@@ -687,7 +879,10 @@ fn row_cell_basic_data_reports_palette_style() {
     assert!(basic.has_styling);
     assert_eq!(basic.style.fg_color, Some(CellColor::Palette(1)));
     assert!(!basic.has_hyperlink);
-    assert_eq!(cells.fg_color().expect("test precondition"), Some(default_palette()[1]));
+    assert_eq!(
+        cells.fg_color().expect("test precondition"),
+        Some(default_palette()[1])
+    );
     assert_eq!(cells.bg_color().expect("test precondition"), None);
 }
 
@@ -703,7 +898,9 @@ fn clear_screen_keeps_the_cursor_line_and_drops_history() {
     assert_eq!(terminal.scrollback_rows().expect("test precondition"), 0);
     assert_eq!(terminal.cursor_y().expect("test precondition"), 0);
     assert_eq!(
-        terminal.read_text_viewport((0, 0), (9, 3), false).expect("test precondition"),
+        terminal
+            .read_text_viewport((0, 0), (9, 3), false)
+            .expect("test precondition"),
         "$ prompt"
     );
 }
@@ -720,7 +917,7 @@ fn vt_history_round_trips_through_the_parser() {
          last"
             .as_bytes(),
     );
-    let total = source.total_rows().expect("test precondition") as u32;
+    let total = u32::try_from(source.total_rows().expect("test precondition")).unwrap_or(u32::MAX);
     let ansi = source
         .read_ansi_screen((0, 0), (11, total - 1), false, true)
         .expect("test precondition");
@@ -737,9 +934,9 @@ fn vt_history_round_trips_through_the_parser() {
     assert_eq!(source_rows, source.total_rows().expect("test precondition"));
     let styles = |terminal: &Terminal| {
         let grid = terminal.term.grid();
-        let history = terminal.term.history_size() as i32;
+        let history = i32::try_from(terminal.term.history_size()).unwrap_or(i32::MAX);
         let mut styles = Vec::new();
-        for y in 0..terminal.term.total_lines() as i32 {
+        for y in 0..i32::try_from(terminal.term.total_lines()).unwrap_or(i32::MAX) {
             for x in 0..grid.columns() {
                 let cell = &grid[Line(y - history)][Column(x)];
                 styles.push((
@@ -758,11 +955,15 @@ fn plain_reads_trim_trailing_blank_lines_and_spaces() {
     let mut terminal = Terminal::new(10, 4, 0).expect("test precondition");
     terminal.write(b"a  \r\n\r\nb   ");
     assert_eq!(
-        terminal.read_text_viewport((0, 0), (9, 3), false).expect("test precondition"),
+        terminal
+            .read_text_viewport((0, 0), (9, 3), false)
+            .expect("test precondition"),
         "a\n\nb"
     );
     assert_eq!(
-        terminal.read_text_viewport((0, 3), (9, 3), false).expect("test precondition"),
+        terminal
+            .read_text_viewport((0, 3), (9, 3), false)
+            .expect("test precondition"),
         ""
     );
 }

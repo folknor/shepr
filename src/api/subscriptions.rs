@@ -6,7 +6,7 @@ use crate::api::schema::{
     PaneOutputMatchedEvent, PaneScrollChangedEvent, PaneScrollInfo, Request, Subscription,
     SubscriptionEventData, SubscriptionEventEnvelope, SubscriptionEventKind,
 };
-use crate::api::server::{dispatch_to_app_with_timeout, APP_RESPONSE_TIMEOUT};
+use crate::api::server::{APP_RESPONSE_TIMEOUT, dispatch_to_app_with_timeout};
 use crate::api::{ApiRequestSender, EventHub};
 
 pub(super) fn output_match_read_source(
@@ -27,11 +27,11 @@ pub(super) fn match_output(
         crate::api::schema::OutputMatch::Substring { value } => text
             .lines()
             .find(|line| line.contains(value))
-            .map(|line| line.to_string()),
+            .map(str::to_string),
         crate::api::schema::OutputMatch::Regex { .. } => regex.and_then(|re| {
             text.lines()
                 .find(|line| re.is_match(line))
-                .map(|line| line.to_string())
+                .map(str::to_string)
         }),
     }
 }
@@ -288,7 +288,10 @@ impl ActiveSubscription {
                 for (sequence, event) in events {
                     subscription.last_sequence = sequence;
                     if event.event == subscription.event_kind {
-                        matching.push(serde_json::to_value(event).map_err(event_encoding_error)?);
+                        matching.push(
+                            serde_json::to_value(event)
+                                .map_err(|err| event_encoding_error(&err))?,
+                        );
                     }
                 }
                 Ok(matching)
@@ -299,15 +302,19 @@ impl ActiveSubscription {
                 for (sequence, event) in events {
                     subscription.last_sequence = sequence;
                     if let Some(event) = subscription.event_from_history(event) {
-                        matching.push(serde_json::to_value(event).map_err(event_encoding_error)?);
+                        matching.push(
+                            serde_json::to_value(event)
+                                .map_err(|err| event_encoding_error(&err))?,
+                        );
                     }
                 }
-                if matching.is_empty() {
-                    if let Some(event) =
+                if matching.is_empty()
+                    && let Some(event) =
                         subscription.poll_snapshot(api_tx, event_hub).ok().flatten()
-                    {
-                        matching.push(serde_json::to_value(event).map_err(event_encoding_error)?);
-                    }
+                {
+                    matching.push(
+                        serde_json::to_value(event).map_err(|err| event_encoding_error(&err))?,
+                    );
                 }
                 Ok(matching)
             }
@@ -336,7 +343,7 @@ fn subscription_events_after(
     })
 }
 
-fn event_encoding_error(error: serde_json::Error) -> ErrorBody {
+fn event_encoding_error(error: &serde_json::Error) -> ErrorBody {
     ErrorBody {
         code: "internal_error".into(),
         message: format!("failed to encode subscription event: {error}"),
@@ -784,14 +791,18 @@ mod tests {
         .expect("test precondition");
         event_hub.push(presentation_event(None));
         event_hub.push(workspace_focused_event("live"));
-        let events = subscription.poll_batch(&api_tx, &event_hub).expect("test precondition");
+        let events = subscription
+            .poll_batch(&api_tx, &event_hub)
+            .expect("test precondition");
         assert_eq!(events.len(), 2);
         assert_eq!(events[0]["data"]["workspace_id"], "setup");
         assert_eq!(events[1]["data"]["workspace_id"], "live");
-        assert!(subscription
-            .poll_batch(&api_tx, &event_hub)
-            .expect("test precondition")
-            .is_empty());
+        assert!(
+            subscription
+                .poll_batch(&api_tx, &event_hub)
+                .expect("test precondition")
+                .is_empty()
+        );
         let ActiveSubscription::Event(subscription) = subscription else {
             panic!("expected lifecycle subscription");
         };
@@ -835,7 +846,9 @@ mod tests {
                 event_hub.push(event);
             }
             let (api_tx, _api_rx) = tokio::sync::mpsc::unbounded_channel();
-            let events = subscription.poll_batch(&api_tx, &event_hub).expect("test precondition");
+            let events = subscription
+                .poll_batch(&api_tx, &event_hub)
+                .expect("test precondition");
             let titles = events
                 .iter()
                 .map(|event| event["data"]["title"].as_str().expect("test precondition"))
@@ -874,9 +887,11 @@ mod tests {
             request_prefix: "test".into(),
         };
 
-        assert!(subscription
-            .event_from_snapshot(pane_info_with_scroll(Some(at_bottom)))
-            .is_none());
+        assert!(
+            subscription
+                .event_from_snapshot(pane_info_with_scroll(Some(at_bottom)))
+                .is_none()
+        );
 
         let event = subscription
             .event_from_snapshot(pane_info_with_scroll(Some(scrolled_back)))

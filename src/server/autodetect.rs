@@ -7,7 +7,6 @@
 
 use std::io;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
@@ -63,7 +62,7 @@ fn is_server_listening_at(socket_path: &Path) -> bool {
                 io::ErrorKind::ConnectionRefused | io::ErrorKind::TimedOut
             ) =>
         {
-            // Socket file exists but nobody is listening — stale socket.
+            // Socket file exists but nobody is listening - stale socket.
             false
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
@@ -71,7 +70,7 @@ fn is_server_listening_at(socket_path: &Path) -> bool {
             false
         }
         Err(err) => {
-            // Other errors (permission denied, etc.) — assume not listening.
+            // Other errors (permission denied, etc.) - assume not listening.
             tracing::warn!(err = %err, "unexpected error checking server socket");
             false
         }
@@ -131,7 +130,7 @@ pub fn spawn_server_daemon() -> io::Result<u32> {
 
     info!(exe = %exe.display(), "spawning server daemon");
 
-    let mut command = build_server_daemon_command(exe);
+    let mut command = build_server_daemon_command(&exe);
 
     let pid = command.spawn().map(|child| child.id()).map_err(|err| {
         io::Error::new(err.kind(), format!("failed to spawn shepr server: {err}"))
@@ -141,8 +140,8 @@ pub fn spawn_server_daemon() -> io::Result<u32> {
     Ok(pid)
 }
 
-fn build_server_daemon_command(exe: PathBuf) -> Command {
-    let mut command = Command::new(&exe);
+fn build_server_daemon_command(exe: &Path) -> Command {
+    let mut command = Command::new(exe);
     command
         .arg("server")
         // Redirect stdio to /dev/null
@@ -195,7 +194,9 @@ pub fn wait_for_server_socket(socket_path: &Path, timeout: Duration) -> io::Resu
             "server did not become ready within {}s (socket: {}). The background server may still be starting; try `shepr` again, or check {}",
             timeout.as_secs(),
             socket_path.display(),
-            crate::session::data_dir().join("shepr-server.log").display()
+            crate::session::data_dir()
+                .join("shepr-server.log")
+                .display()
         ),
     ))
 }
@@ -259,6 +260,7 @@ mod tests {
     use std::ffi::OsStr;
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> &'static Mutex<()> {
@@ -284,9 +286,9 @@ mod tests {
     #[test]
     fn server_daemon_command_clears_socket_overrides_for_explicit_session() {
         let _guard = env_lock().lock().expect("test precondition");
-        std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
-        std::env::set_var("SHEPR_CLIENT_SOCKET_PATH", "/tmp/inherited-client.sock");
-        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        unsafe { std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock") };
+        unsafe { std::env::set_var("SHEPR_CLIENT_SOCKET_PATH", "/tmp/inherited-client.sock") };
+        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
         crate::session::clear_explicit_session_for_test();
         let args = vec![
             "shepr".to_string(),
@@ -295,7 +297,7 @@ mod tests {
         ];
         crate::session::configure_from_args(&args).expect("test precondition");
 
-        let command = build_server_daemon_command(PathBuf::from("/tmp/shepr-test"));
+        let command = build_server_daemon_command(&PathBuf::from("/tmp/shepr-test"));
         let envs: Vec<_> = command.get_envs().collect();
 
         assert!(envs.iter().any(|(key, value)| {
@@ -304,16 +306,16 @@ mod tests {
         assert!(envs.iter().any(|(key, value)| {
             *key == OsStr::new("SHEPR_CLIENT_SOCKET_PATH") && value.is_none()
         }));
-        std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
-        std::env::remove_var("SHEPR_CLIENT_SOCKET_PATH");
-        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
+        unsafe { std::env::remove_var("SHEPR_CLIENT_SOCKET_PATH") };
+        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
         crate::session::clear_explicit_session_for_test();
     }
 
     #[test]
     fn server_daemon_command_passes_current_dir_as_startup_cwd() {
         let expected = std::env::current_dir().expect("test precondition");
-        let command = build_server_daemon_command(PathBuf::from("/tmp/shepr-test"));
+        let command = build_server_daemon_command(&PathBuf::from("/tmp/shepr-test"));
         let envs: Vec<_> = command.get_envs().collect();
 
         assert!(envs.iter().any(|(key, value)| {
@@ -375,7 +377,7 @@ test "$sid" = "$$"
         // Bind and immediately drop the listener.
         drop(UnixListener::bind(&path).expect("test precondition"));
 
-        // Socket is stale — should return false.
+        // Socket is stale - should return false.
         assert!(!is_server_listening_at(&path));
 
         let _ = std::fs::remove_dir_all(dir);
@@ -401,10 +403,13 @@ test "$sid" = "$$"
         std::fs::create_dir_all(&dir).expect("test precondition");
         let path = dir.join("s.sock");
 
-        // No listener — should time out.
+        // No listener - should time out.
         let result = wait_for_server_socket(&path, Duration::from_millis(50));
         assert!(result.is_err());
-        assert_eq!(result.expect_err("test precondition").kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            result.expect_err("test precondition").kind(),
+            io::ErrorKind::TimedOut
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -423,7 +428,7 @@ test "$sid" = "$$"
             std::thread::sleep(Duration::from_secs(1));
         });
 
-        // Wait with a generous timeout — should succeed.
+        // Wait with a generous timeout - should succeed.
         let result = wait_for_server_socket(&path, Duration::from_secs(2));
         assert!(result.is_ok());
         let _ = std::fs::remove_dir_all(dir);
@@ -465,7 +470,7 @@ test "$sid" = "$$"
         let dir = unique_test_dir("missing-api");
         std::fs::create_dir_all(&dir).expect("test precondition");
         let path = dir.join("api.sock");
-        std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, &path);
+        unsafe { std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, &path) };
 
         let err = validate_running_server_compatibility().expect_err("test precondition");
 
@@ -473,7 +478,7 @@ test "$sid" = "$$"
             err.to_string().contains("status API is unavailable"),
             "unexpected error: {err}"
         );
-        std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
+        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -481,12 +486,13 @@ test "$sid" = "$$"
     fn validate_running_server_compatibility_names_session_commands_for_protocol_mismatch() {
         let _guard = env_lock().lock().expect("test precondition");
         let dir = unique_test_dir("named-protocol");
-        std::env::set_var("XDG_CONFIG_HOME", &dir);
-        std::env::set_var(crate::session::SESSION_ENV_VAR, "work");
-        std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        unsafe { std::env::set_var(crate::session::SESSION_ENV_VAR, "work") };
+        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
         crate::session::clear_explicit_session_for_test();
         let path = crate::session::api_socket_path_for(Some("work"));
-        std::fs::create_dir_all(path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::create_dir_all(path.parent().expect("test precondition"))
+            .expect("test precondition");
         let listener = UnixListener::bind(&path).expect("test precondition");
         let handle = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("test precondition");
@@ -499,7 +505,9 @@ test "$sid" = "$$"
                 "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"protocol\":{}}}}}\n",
                 crate::protocol::PROTOCOL_VERSION + 1
             );
-            stream.write_all(body.as_bytes()).expect("test precondition");
+            stream
+                .write_all(body.as_bytes())
+                .expect("test precondition");
             stream.flush().expect("test precondition");
         });
 
@@ -519,9 +527,9 @@ test "$sid" = "$$"
             message.contains("then run `shepr session attach work` again"),
             "unexpected error: {message}"
         );
-        std::env::remove_var("XDG_CONFIG_HOME");
-        std::env::remove_var(crate::session::SESSION_ENV_VAR);
-        std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
+        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
         crate::session::clear_explicit_session_for_test();
         let _ = std::fs::remove_dir_all(dir);
     }

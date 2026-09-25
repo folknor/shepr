@@ -78,7 +78,7 @@ pub(crate) fn maybe_run_machine(args: &[String]) -> Option<std::io::Result<Comma
 }
 
 pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
-    let Some(command) = args.get(1).map(|arg| arg.as_str()) else {
+    let Some(command) = args.get(1).map(String::as_str) else {
         return Ok(CommandOutcome::NotCli);
     };
 
@@ -110,7 +110,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
 }
 
 fn run_config_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(String::as_str) else {
         print_config_help();
         return Ok(2);
     };
@@ -155,7 +155,7 @@ fn config_check(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn run_terminal_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(String::as_str) else {
         print_terminal_help();
         return Ok(2);
     };
@@ -175,7 +175,7 @@ fn run_terminal_command(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn run_session_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(String::as_str) else {
         print_session_help();
         return Ok(2);
     };
@@ -297,7 +297,7 @@ fn terminal_attach(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn terminal_title(args: &[String]) -> std::io::Result<i32> {
-    match args.first().map(|arg| arg.as_str()) {
+    match args.first().map(String::as_str) {
         Some("set") => {
             if args.len() != 2 {
                 eprintln!("usage: shepr terminal title set <title>");

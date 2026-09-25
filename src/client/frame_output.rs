@@ -1,4 +1,4 @@
-use std::io::{self, Write as _};
+use std::io;
 
 use crate::protocol::FrameData;
 

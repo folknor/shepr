@@ -267,9 +267,6 @@ impl ClientShellState {
                         crate::api::schema::WorkspaceTarget { workspace_id },
                     )
                 }
-                ClientEndpointFocusTarget::Tab(tab_id) => {
-                    crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget { tab_id })
-                }
                 ClientEndpointFocusTarget::Pane(pane_id) => {
                     crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
                         pane_id,

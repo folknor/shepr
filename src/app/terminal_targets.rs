@@ -1,4 +1,4 @@
-use super::{api_helpers::pane_agent_status, App};
+use super::{App, api_helpers::pane_agent_status};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TerminalTarget {
@@ -43,10 +43,10 @@ impl App {
             return Ok(resolved);
         }
 
-        if let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(target) {
-            if let Some(resolved) = self.terminal_target_for_pane(ws_idx, pane_id) {
-                return Ok(resolved);
-            }
+        if let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(target)
+            && let Some(resolved) = self.terminal_target_for_pane(ws_idx, pane_id)
+        {
+            return Ok(resolved);
         }
 
         let agent_matches: Vec<_> = self
@@ -76,13 +76,12 @@ impl App {
         &self,
         target: &str,
     ) -> Result<TerminalTarget, TerminalTargetError> {
-        if let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(target) {
-            if let Some(resolved) = self
+        if let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(target)
+            && let Some(resolved) = self
                 .terminal_target_for_pane(ws_idx, pane_id)
                 .filter(|resolved| self.target_is_agent(resolved))
-            {
-                return Ok(resolved);
-            }
+        {
+            return Ok(resolved);
         }
 
         let name_matches: Vec<_> = self
@@ -110,7 +109,7 @@ impl App {
             .terminals
             .values()
             .find(|terminal| terminal.id.to_string() == target.terminal_id)
-            .is_some_and(|terminal| terminal.is_agent_terminal())
+            .is_some_and(crate::terminal::TerminalState::is_agent_terminal)
     }
 
     fn single_terminal_match(

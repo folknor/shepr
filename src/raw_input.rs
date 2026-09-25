@@ -11,10 +11,10 @@ pub fn parse_raw_input_bytes_sync(data: &[u8]) -> Vec<RawInputEvent> {
     events
 }
 
-use crate::input::{parse_terminal_key_sequence, TerminalKey, TextCommit};
+use crate::input::{TerminalKey, TextCommit, parse_terminal_key_sequence};
 use crate::terminal_theme::{
-    parse_default_color_response, parse_palette_color_response, DefaultColorKind, HostAppearance,
-    RgbColor,
+    DefaultColorKind, HostAppearance, RgbColor, parse_default_color_response,
+    parse_palette_color_response,
 };
 
 const ESC: u8 = 0x1b;
@@ -159,13 +159,13 @@ impl RawInputByteFramer {
             || self.host_appearance_reply_awaited
     }
 
-        pub(crate) fn enable_host_color_scheme_change_tracking(&mut self) {
+    pub(crate) fn enable_host_color_scheme_change_tracking(&mut self) {
         self.host_color_scheme_change_tracking = true;
     }
 
     /// Arm the bounded host-reply window when focus gain will emit an appearance query.
     /// If the write or reply fails, a lone Escape is delayed for only one extra flush.
-        pub(crate) fn enable_host_appearance_query_on_focus(&mut self) {
+    pub(crate) fn enable_host_appearance_query_on_focus(&mut self) {
         self.host_appearance_query_on_focus = true;
     }
 
@@ -173,15 +173,15 @@ impl RawInputByteFramer {
         !self.buffer.is_empty()
     }
 
-        pub(crate) fn set_host_escape_disambiguation_active(&mut self, active: bool) {
+    pub(crate) fn set_host_escape_disambiguation_active(&mut self, active: bool) {
         self.host_escape_disambiguation_active = active;
     }
 
-        pub(crate) fn has_pending_lone_escape(&self) -> bool {
+    pub(crate) fn has_pending_lone_escape(&self) -> bool {
         self.buffer.as_slice() == [ESC]
     }
 
-        pub(crate) fn has_pending_incomplete_mouse_sequence(&self) -> bool {
+    pub(crate) fn has_pending_incomplete_mouse_sequence(&self) -> bool {
         starts_with_incomplete_sgr_mouse_sequence(&self.buffer)
             || starts_with_incomplete_default_mouse_sequence(&self.buffer)
     }
@@ -350,11 +350,11 @@ impl RawInputByteFramer {
             return chunks;
         }
 
-        if let Ok(text) = std::str::from_utf8(&self.buffer) {
-            if parse_terminal_key_sequence(text).is_some() {
-                chunks.push(std::mem::take(&mut self.buffer));
-                return chunks;
-            }
+        if let Ok(text) = std::str::from_utf8(&self.buffer)
+            && parse_terminal_key_sequence(text).is_some()
+        {
+            chunks.push(std::mem::take(&mut self.buffer));
+            return chunks;
         }
 
         if starts_with_incomplete_utf8_char(&self.buffer) {
@@ -738,12 +738,12 @@ fn complete_escape_sequence_len(buffer: &[u8]) -> Option<usize> {
         return None;
     }
 
-    if buffer.starts_with(b"\x1b\x1b[<") {
-        if let Some(mouse_len) = find_csi_final(&buffer[1..], b"Mm") {
-            let mouse_sequence = std::str::from_utf8(&buffer[1..1 + mouse_len]).ok()?;
-            if parse_sgr_mouse(mouse_sequence).is_some() {
-                return Some(1);
-            }
+    if buffer.starts_with(b"\x1b\x1b[<")
+        && let Some(mouse_len) = find_csi_final(&buffer[1..], b"Mm")
+    {
+        let mouse_sequence = std::str::from_utf8(&buffer[1..1 + mouse_len]).ok()?;
+        if parse_sgr_mouse(mouse_sequence).is_some() {
+            return Some(1);
         }
     }
 
@@ -942,7 +942,10 @@ fn plausible_sgr_mouse_prefix(report: &[u8]) -> bool {
             return false;
         }
         if fields.peek().is_some()
-            && ((field == 0 && parse_mouse_cb(value as u8).is_none()) || (field == 1 && value == 0))
+            && ((field == 0
+                // `field == 0` was already bounds-checked above to be <= u8::MAX.
+                && parse_mouse_cb(u8::try_from(value).unwrap_or(u8::MAX)).is_none())
+                || (field == 1 && value == 0))
         {
             return false;
         }
@@ -1117,9 +1120,13 @@ mod tests {
             "pagedown" => KeyCode::PageDown,
             "insert" => KeyCode::Insert,
             "delete" => KeyCode::Delete,
-            value if value.starts_with("char:") => {
-                KeyCode::Char(value.trim_start_matches("char:").chars().next().expect("test precondition"))
-            }
+            value if value.starts_with("char:") => KeyCode::Char(
+                value
+                    .trim_start_matches("char:")
+                    .chars()
+                    .next()
+                    .expect("test precondition"),
+            ),
             other => panic!("unsupported fixture key code: {other}"),
         }
     }
@@ -1146,7 +1153,8 @@ mod tests {
 
     #[test]
     fn parses_kitty_shift_letter_release() {
-        let (RawInputEvent::Key(key), consumed) = extract_one_event(b"\x1b[108:76;2:3u").expect("test precondition")
+        let (RawInputEvent::Key(key), consumed) =
+            extract_one_event(b"\x1b[108:76;2:3u").expect("test precondition")
         else {
             panic!("expected key");
         };
@@ -1186,7 +1194,8 @@ mod tests {
 
     #[test]
     fn parses_sgr_mouse() {
-        let (RawInputEvent::Mouse(mouse), consumed) = extract_one_event(b"\x1b[<0;20;10M").expect("test precondition")
+        let (RawInputEvent::Mouse(mouse), consumed) =
+            extract_one_event(b"\x1b[<0;20;10M").expect("test precondition")
         else {
             panic!("expected mouse");
         };
@@ -1229,7 +1238,9 @@ mod tests {
             b"\x1b[<160;20;10M".as_slice(),
             b"\x1b[<161;20;10M".as_slice(),
         ] {
-            let (RawInputEvent::Mouse(mouse), _) = extract_one_event(input).expect("test precondition") else {
+            let (RawInputEvent::Mouse(mouse), _) =
+                extract_one_event(input).expect("test precondition")
+            else {
                 panic!("expected mouse");
             };
             assert_eq!(mouse.kind, MouseEventKind::Moved);
@@ -1249,7 +1260,9 @@ mod tests {
         ];
 
         for (input, expected) in cases {
-            let (RawInputEvent::Mouse(mouse), _) = extract_one_event(input).expect("test precondition") else {
+            let (RawInputEvent::Mouse(mouse), _) =
+                extract_one_event(input).expect("test precondition")
+            else {
                 panic!("expected mouse");
             };
             assert_eq!(mouse.modifiers, expected);
@@ -1318,7 +1331,9 @@ mod tests {
 
     #[test]
     fn parses_legacy_up_arrow() {
-        let (RawInputEvent::Key(key), consumed) = extract_one_event(b"\x1b[A").expect("test precondition") else {
+        let (RawInputEvent::Key(key), consumed) =
+            extract_one_event(b"\x1b[A").expect("test precondition")
+        else {
             panic!("expected key");
         };
         assert_eq!(consumed, 3);
@@ -1471,7 +1486,9 @@ mod tests {
 
     #[test]
     fn parses_xterm_alt_up_arrow() {
-        let (RawInputEvent::Key(key), consumed) = extract_one_event(b"\x1b[1;3A").expect("test precondition") else {
+        let (RawInputEvent::Key(key), consumed) =
+            extract_one_event(b"\x1b[1;3A").expect("test precondition")
+        else {
             panic!("expected key");
         };
         assert_eq!(consumed, 6);
@@ -1481,7 +1498,9 @@ mod tests {
 
     #[test]
     fn parses_legacy_alt_backspace() {
-        let (RawInputEvent::Key(key), consumed) = extract_one_event(b"\x1b\x7f").expect("test precondition") else {
+        let (RawInputEvent::Key(key), consumed) =
+            extract_one_event(b"\x1b\x7f").expect("test precondition")
+        else {
             panic!("expected key");
         };
         assert_eq!(consumed, 2);
@@ -1491,7 +1510,9 @@ mod tests {
 
     #[test]
     fn parses_kitty_alt_backspace() {
-        let (RawInputEvent::Key(key), consumed) = extract_one_event(b"\x1b[127;3u").expect("test precondition") else {
+        let (RawInputEvent::Key(key), consumed) =
+            extract_one_event(b"\x1b[127;3u").expect("test precondition")
+        else {
             panic!("expected key");
         };
         assert_eq!(consumed, 8);
@@ -1501,7 +1522,9 @@ mod tests {
 
     #[test]
     fn parses_enhanced_pageup_press() {
-        let (RawInputEvent::Key(key), consumed) = extract_one_event(b"\x1b[5;1:1~").expect("test precondition") else {
+        let (RawInputEvent::Key(key), consumed) =
+            extract_one_event(b"\x1b[5;1:1~").expect("test precondition")
+        else {
             panic!("expected key");
         };
         assert_eq!(consumed, 8);
@@ -1512,7 +1535,9 @@ mod tests {
 
     #[test]
     fn parses_enhanced_pagedown_release() {
-        let (RawInputEvent::Key(key), consumed) = extract_one_event(b"\x1b[6;1:3~").expect("test precondition") else {
+        let (RawInputEvent::Key(key), consumed) =
+            extract_one_event(b"\x1b[6;1:3~").expect("test precondition")
+        else {
             panic!("expected key");
         };
         assert_eq!(consumed, 8);
@@ -1601,7 +1626,9 @@ mod tests {
 
     #[test]
     fn parses_raw_ctrl_b() {
-        let (RawInputEvent::Key(key), consumed) = extract_one_event(b"\x02").expect("test precondition") else {
+        let (RawInputEvent::Key(key), consumed) =
+            extract_one_event(b"\x02").expect("test precondition")
+        else {
             panic!("expected key");
         };
         assert_eq!(consumed, 1);
@@ -1611,7 +1638,9 @@ mod tests {
 
     #[test]
     fn parses_raw_lf_as_ctrl_j() {
-        let (RawInputEvent::Key(key), consumed) = extract_one_event(b"\n").expect("test precondition") else {
+        let (RawInputEvent::Key(key), consumed) =
+            extract_one_event(b"\n").expect("test precondition")
+        else {
             panic!("expected key");
         };
         assert_eq!(consumed, 1);
@@ -1743,7 +1772,11 @@ mod tests {
 
             assert_eq!(events.len(), 2);
             let mut events = events.into_iter();
-            assert_raw_key(events.next().expect("test precondition"), KeyCode::Esc, KeyModifiers::empty());
+            assert_raw_key(
+                events.next().expect("test precondition"),
+                KeyCode::Esc,
+                KeyModifiers::empty(),
+            );
             assert!(matches!(
                 events.next().expect("test precondition"),
                 RawInputEvent::Mouse(MouseEvent {
@@ -1766,7 +1799,11 @@ mod tests {
 
         assert_eq!(events.len(), 2);
         let mut events = events.into_iter();
-        assert_raw_key(events.next().expect("test precondition"), KeyCode::Esc, KeyModifiers::empty());
+        assert_raw_key(
+            events.next().expect("test precondition"),
+            KeyCode::Esc,
+            KeyModifiers::empty(),
+        );
         assert!(matches!(
             events.next().expect("test precondition"),
             RawInputEvent::Mouse(MouseEvent {
@@ -2036,7 +2073,10 @@ mod tests {
         let timeout_events = framer.flush_timeout();
         assert_eq!(timeout_events.len(), 1);
         assert_raw_key(
-            timeout_events.into_iter().next().expect("test precondition"),
+            timeout_events
+                .into_iter()
+                .next()
+                .expect("test precondition"),
             KeyCode::Esc,
             KeyModifiers::empty(),
         );
@@ -2258,7 +2298,7 @@ mod tests {
     #[test]
     fn chunked_four_byte_utf8_waits_for_all_continuation_bytes() {
         let mut framer = RawInputFramer::default();
-        let bytes = "🙂".as_bytes();
+        let bytes = "\u{1F642}".as_bytes();
 
         for split in 1..bytes.len() {
             assert!(framer.push(&bytes[split - 1..split]).is_empty());
@@ -2269,14 +2309,15 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_raw_key(
             events.into_iter().next().expect("test precondition"),
-            KeyCode::Char('🙂'),
+            KeyCode::Char('\u{1F642}'),
             KeyModifiers::empty(),
         );
     }
 
     #[test]
     fn long_multilingual_voice_like_burst_drains_without_truncation() {
-        let text = "你好，今天我们测试一段比较长的语音输入。こんにちは。안녕하세요.🙂".repeat(128);
+        let text =
+            "你好，今天我们测试一段比较长的语音输入。こんにちは。안녕하세요.\u{1F642}".repeat(128);
         assert!(
             text.len() > 4096,
             "test input should exceed the client read buffer"
@@ -2292,7 +2333,7 @@ mod tests {
 
     #[test]
     fn long_multilingual_burst_survives_one_byte_chunks_and_timeouts() {
-        let text = "中文かなカナ한글🙂，。".repeat(64);
+        let text = "中文かなカナ한글\u{1F642}，。".repeat(64);
         let mut framer = RawInputByteFramer::default();
         let mut rebuilt = Vec::new();
 

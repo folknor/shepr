@@ -30,8 +30,11 @@ impl ClientShellState {
         }
         let selected =
             super::aggregate_navigation::navigator_selected_index(&rows, navigator).unwrap_or(0);
-        let next =
-            (selected as isize + delta).clamp(0, rows.len().saturating_sub(1) as isize) as usize;
+        let max_index = rows.len().saturating_sub(1);
+        let next = selected
+            .checked_add_signed(delta)
+            .unwrap_or(0)
+            .min(max_index);
         navigator.selected = Some(rows[next].target.clone());
     }
 
@@ -362,15 +365,15 @@ impl ClientShellState {
                 return;
             }
             if search_focused {
-                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                    if let Some(content_changed) = navigator.query.handle_key(key) {
-                        if content_changed {
-                            navigator.filter = None;
-                            navigator.selected = None;
-                        }
-                        outcome.repaint = true;
-                        return;
+                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut()
+                    && let Some(content_changed) = navigator.query.handle_key(key)
+                {
+                    if content_changed {
+                        navigator.filter = None;
+                        navigator.selected = None;
                     }
+                    outcome.repaint = true;
+                    return;
                 }
                 if code == KeyCode::Up
                     || code == KeyCode::Char('p') && modifiers == KeyModifiers::CONTROL
@@ -394,10 +397,10 @@ impl ClientShellState {
                 return;
             }
             if code == KeyCode::Backspace && modifiers.is_empty() {
-                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                    if navigator.filter.take().is_some() {
-                        navigator.selected = None;
-                    }
+                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut()
+                    && navigator.filter.take().is_some()
+                {
+                    navigator.selected = None;
                 }
                 outcome.repaint = true;
                 return;
@@ -493,14 +496,14 @@ impl ClientShellState {
                 }))
             );
             if search_focused {
-                if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
-                    if let Some(content_changed) = help.query.handle_key(key) {
-                        if content_changed {
-                            help.scroll = 0;
-                        }
-                        outcome.repaint = true;
-                        return;
+                if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut()
+                    && let Some(content_changed) = help.query.handle_key(key)
+                {
+                    if content_changed {
+                        help.scroll = 0;
                     }
+                    outcome.repaint = true;
+                    return;
                 }
                 match code {
                     KeyCode::Esc => {
@@ -706,11 +709,11 @@ impl ClientShellState {
                     .any(|tab| tab.workspace_id == target.workspace_id && tab.tab_id != tab_id))
             .then(|| target.workspace_id.clone())
         });
-        if let Some(workspace_id) = workspace_id {
-            if self.open_close_confirmation(workspace_id, Some(tab_id.clone())) {
-                outcome.repaint = true;
-                return;
-            }
+        if let Some(workspace_id) = workspace_id
+            && self.open_close_confirmation(workspace_id, Some(tab_id.clone()))
+        {
+            outcome.repaint = true;
+            return;
         }
         self.push_endpoint_method(
             crate::api::schema::Method::TabClose(crate::api::schema::TabTarget { tab_id }),
@@ -789,7 +792,7 @@ impl ClientShellState {
                 workspace_id,
                 tab_target,
                 title: "Close workspace?".to_owned(),
-                detail: format!("{} — {scope}", workspace.label),
+                detail: format!("{} \u{2014} {scope}", workspace.label),
             },
         ));
         true

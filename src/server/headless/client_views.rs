@@ -860,11 +860,11 @@ impl HeadlessServer {
                 &focused_tabs_after,
             );
         }
-        if focus_before != focus_after {
-            if let Some(target) = focus_after {
-                self.app
-                    .emit_focus_api_events(target.workspace_index, target.pane_id);
-            }
+        if focus_before != focus_after
+            && let Some(target) = focus_after
+        {
+            self.app
+                .emit_focus_api_events(target.workspace_index, target.pane_id);
         }
         let geometry_changed = method_claims_geometry
             && if reconcile {

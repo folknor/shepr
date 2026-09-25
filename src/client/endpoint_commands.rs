@@ -340,17 +340,19 @@ mod tests {
         .expect("test precondition");
         let split = response.len() / 2;
 
-        assert!(commands
-            .receive_chunk(
-                &endpoint(),
-                1,
-                "boot-a",
-                "request-a",
-                false,
-                response.as_bytes()[..split].to_vec(),
-            )
-            .expect("test precondition")
-            .is_none());
+        assert!(
+            commands
+                .receive_chunk(
+                    &endpoint(),
+                    1,
+                    "boot-a",
+                    "request-a",
+                    false,
+                    response.as_bytes()[..split].to_vec(),
+                )
+                .expect("test precondition")
+                .is_none()
+        );
         let completed = commands
             .receive_chunk(
                 &endpoint(),
@@ -423,25 +425,30 @@ mod tests {
             }) if code == "endpoint_timeout"
         ));
         assert!(!has_in_flight(&commands));
-        assert!(commands
-            .expire(std::time::Instant::now() + ENDPOINT_COMMAND_TIMEOUT)
-            .is_empty());
+        assert!(
+            commands
+                .expire(std::time::Instant::now() + ENDPOINT_COMMAND_TIMEOUT)
+                .is_empty()
+        );
         let late_response = serde_json::to_vec(&SuccessResponse {
             id: "request-a".into(),
             result: ResponseResult::Ok {},
         })
         .expect("test precondition");
-        assert!(commands
-            .receive_chunk(&endpoint(), 1, "boot-a", "request-a", true, late_response)
-            .expect("late retired response is ignored")
-            .is_none());
+        assert!(
+            commands
+                .receive_chunk(&endpoint(), 1, "boot-a", "request-a", true, late_response)
+                .expect("late retired response is ignored")
+                .is_none()
+        );
         assert!(!has_in_flight(&commands));
     }
 
     #[test]
     fn endpoint_lanes_complete_independently() {
         let remote = ClientEndpointId::Ssh(
-            crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
+            crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
+                .expect("test precondition"),
         );
         let mut commands = commands_with_in_flight();
         commands.lanes.insert(
@@ -470,16 +477,19 @@ mod tests {
 
         assert_eq!(completed.endpoint_id, remote);
         assert!(has_in_flight(&commands));
-        assert!(commands
-            .lanes
-            .get(&completed.endpoint_id)
-            .is_some_and(|lane| lane.in_flight.is_none()));
+        assert!(
+            commands
+                .lanes
+                .get(&completed.endpoint_id)
+                .is_some_and(|lane| lane.in_flight.is_none())
+        );
     }
 
     #[test]
     fn retiring_complete_source_lane_cancels_queued_ids_and_keeps_other_lanes() {
         let remote = ClientEndpointId::Ssh(
-            crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
+            crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
+                .expect("test precondition"),
         );
         let mut commands = commands_with_in_flight();
         commands
@@ -519,24 +529,30 @@ mod tests {
             vec!["request-a", "queued-source"]
         );
         assert!(!has_in_flight(&commands));
-        assert!(commands
-            .lanes
-            .get(&endpoint())
-            .is_some_and(|lane| lane.queued.is_empty()));
-        assert!(commands
-            .lanes
-            .get(&remote)
-            .is_some_and(|lane| !lane.queued.is_empty()));
+        assert!(
+            commands
+                .lanes
+                .get(&endpoint())
+                .is_some_and(|lane| lane.queued.is_empty())
+        );
+        assert!(
+            commands
+                .lanes
+                .get(&remote)
+                .is_some_and(|lane| !lane.queued.is_empty())
+        );
 
         let late_response = serde_json::to_vec(&SuccessResponse {
             id: "request-a".into(),
             result: ResponseResult::Ok {},
         })
         .expect("test precondition");
-        assert!(commands
-            .receive_chunk(&endpoint(), 1, "boot-a", "request-a", true, late_response)
-            .expect("test precondition")
-            .is_none());
+        assert!(
+            commands
+                .receive_chunk(&endpoint(), 1, "boot-a", "request-a", true, late_response)
+                .expect("test precondition")
+                .is_none()
+        );
     }
 
     #[test]
@@ -571,9 +587,11 @@ mod tests {
             lane.retire((1, "boot".into(), format!("request-{serial}")));
         }
         assert_eq!(lane.retired.len(), MAX_RETIRED_REQUESTS_PER_ENDPOINT);
-        assert!(!lane
-            .retired
-            .contains(&(1, "boot".into(), "request-0".into())));
+        assert!(
+            !lane
+                .retired
+                .contains(&(1, "boot".into(), "request-0".into()))
+        );
         assert!(lane.retired.contains(&(
             1,
             "boot".into(),
@@ -585,21 +603,28 @@ mod tests {
     fn stale_or_unknown_responses_do_not_damage_the_live_lane() {
         let mut commands = commands_with_in_flight();
         let unknown = ClientEndpointId::Ssh(
-            crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
+            crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
+                .expect("test precondition"),
         );
 
-        assert!(commands
-            .receive_chunk(&endpoint(), 2, "boot-a", "request-a", true, b"{}".to_vec())
-            .expect("test precondition")
-            .is_none());
-        assert!(commands
-            .receive_chunk(&endpoint(), 1, "boot-b", "request-a", true, b"{}".to_vec())
-            .expect("test precondition")
-            .is_none());
-        assert!(commands
-            .receive_chunk(&unknown, 1, "boot-a", "request-a", true, b"{}".to_vec())
-            .expect("test precondition")
-            .is_none());
+        assert!(
+            commands
+                .receive_chunk(&endpoint(), 2, "boot-a", "request-a", true, b"{}".to_vec())
+                .expect("test precondition")
+                .is_none()
+        );
+        assert!(
+            commands
+                .receive_chunk(&endpoint(), 1, "boot-b", "request-a", true, b"{}".to_vec())
+                .expect("test precondition")
+                .is_none()
+        );
+        assert!(
+            commands
+                .receive_chunk(&unknown, 1, "boot-a", "request-a", true, b"{}".to_vec())
+                .expect("test precondition")
+                .is_none()
+        );
         assert!(has_in_flight(&commands));
     }
 }

@@ -22,7 +22,7 @@ impl HeadlessServer {
                 "unsupported_endpoint_command",
                 "this method is not available through the client shell command lane",
             );
-            self.send_to_client(client_id, message);
+            self.send_to_client(client_id, &message);
             return false;
         }
         if boot_id != self.client_shell_boot_id {
@@ -32,7 +32,7 @@ impl HeadlessServer {
                 "stale_boot",
                 "endpoint command targeted an earlier server boot",
             );
-            self.send_to_client(client_id, message);
+            self.send_to_client(client_id, &message);
             return false;
         }
         let surface_active = client.shell_surface_active;
@@ -44,7 +44,7 @@ impl HeadlessServer {
             };
             self.send_to_client(
                 client_id,
-                crate::server::client_commands::success_message_with_result(
+                &crate::server::client_commands::success_message_with_result(
                     boot_id,
                     request_id,
                     api::schema::ResponseResult::ClientShellSurfaceSet {
@@ -62,7 +62,7 @@ impl HeadlessServer {
                 "endpoint_busy",
                 "this endpoint is still processing another command",
             );
-            self.send_to_client(client_id, message);
+            self.send_to_client(client_id, &message);
             return false;
         }
         if !surface_active {
@@ -72,7 +72,7 @@ impl HeadlessServer {
                 "surface_inactive",
                 "this method requires an active client shell surface",
             );
-            self.send_to_client(client_id, message);
+            self.send_to_client(client_id, &message);
             return false;
         }
 
@@ -95,7 +95,7 @@ impl HeadlessServer {
                 "server_unavailable",
                 format!("failed to start endpoint response bridge: {err}"),
             );
-            self.send_to_client(client_id, message);
+            self.send_to_client(client_id, &message);
             return false;
         }
         if let Some(client) = self.clients.get_mut(&client_id) {
@@ -108,7 +108,6 @@ impl HeadlessServer {
                 api::ApiRequestMessage {
                     request: *request,
                     respond_to,
-                    response_write_complete: None,
                 },
             )
     }

@@ -288,8 +288,7 @@ fn host_modify_other_keys_mode_for_env(
         return Some(ModifyOtherKeysMode::Mode2);
     }
 
-    if wezterm_pane || term_program.is_some_and(|program| program.eq_ignore_ascii_case("wezterm"))
-    {
+    if wezterm_pane || term_program.is_some_and(|program| program.eq_ignore_ascii_case("wezterm")) {
         return Some(ModifyOtherKeysMode::Mode1);
     }
 
@@ -519,6 +518,9 @@ mod tests {
             host_modify_other_keys_mode_for_env(false, Some("ghostty"), false),
             None
         );
-        assert_eq!(host_modify_other_keys_mode_for_env(false, None, false), None);
+        assert_eq!(
+            host_modify_other_keys_mode_for_env(false, None, false),
+            None
+        );
     }
 }

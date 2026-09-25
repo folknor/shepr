@@ -197,24 +197,22 @@ pub(super) fn begin_endpoint_activation(
         && pending
             .as_ref()
             .is_some_and(|activation| !activation.can_retarget(&endpoint_id));
-    if !replace_pending {
-        if let Some(activation) = pending.as_mut() {
-            if activation.can_retarget(&endpoint_id) {
-                let retarget_error = activation.retarget(target, endpoints).err();
-                if let Some(error) = retarget_error {
-                    rollback_endpoint_activation(state, endpoints, pending, error, false);
-                }
-            } else {
-                // Once rollback starts, even a request for the original target is a new intent.
-                // Retain it until restoration finishes; Local can instead abandon this handoff.
-                let outcome = activation.supersede(endpoint_id, target, endpoints);
-                if let endpoint::ActivationRollback::Unavailable(message) = outcome {
-                    *pending = None;
-                    present_handoff_unavailable(state, message);
-                }
+    if !replace_pending && let Some(activation) = pending.as_mut() {
+        if activation.can_retarget(&endpoint_id) {
+            let retarget_error = activation.retarget(target, endpoints).err();
+            if let Some(error) = retarget_error {
+                rollback_endpoint_activation(state, endpoints, pending, &error, false);
             }
-            return Ok(());
+        } else {
+            // Once rollback starts, even a request for the original target is a new intent.
+            // Retain it until restoration finishes; Local can instead abandon this handoff.
+            let outcome = activation.supersede(endpoint_id, target, endpoints);
+            if let endpoint::ActivationRollback::Unavailable(message) = outcome {
+                *pending = None;
+                present_handoff_unavailable(state, message);
+            }
         }
+        return Ok(());
     }
     let already_active = !replace_pending
         && !force
@@ -232,10 +230,10 @@ pub(super) fn begin_endpoint_activation(
                 Some(shell),
                 scheduled_activation,
             );
-            if repaint {
-                if let Some(frame) = shell.compose(state.reported_size.0, state.reported_size.1) {
-                    state.present_frame(frame);
-                }
+            if repaint
+                && let Some(frame) = shell.compose(state.reported_size.0, state.reported_size.1)
+            {
+                state.present_frame(frame);
             }
         }
         return Ok(());
@@ -254,7 +252,7 @@ pub(super) fn begin_endpoint_activation(
     match endpoint::PendingEndpointActivation::prepare(
         shell,
         endpoints,
-        endpoint_id.clone(),
+        &endpoint_id,
         target,
         resize,
         *next_surface_serial,
@@ -263,10 +261,8 @@ pub(super) fn begin_endpoint_activation(
     .and_then(|activation| {
         // Preserve the old transaction if Local fails preflight. After retiring it,
         // all send failures belong to the prepared replacement's rollback path.
-        if replace_pending {
-            if let Some(previous) = pending.take() {
-                previous.abandon(endpoints);
-            }
+        if replace_pending && let Some(previous) = pending.take() {
+            previous.abandon(endpoints);
         }
         activation.start(endpoints)
     }) {
@@ -300,7 +296,7 @@ pub(super) fn begin_endpoint_activation(
                 state,
                 endpoints,
                 pending,
-                format!(
+                &format!(
                     "{}: {error}",
                     state
                         .shell
@@ -372,10 +368,10 @@ pub(super) fn complete_endpoint_activation(
             successor: next,
             ..
         } => {
-            if next.is_none() {
-                if let Some(shell) = state.shell.as_mut() {
-                    shell.receive_endpoint_unavailable(error);
-                }
+            if next.is_none()
+                && let Some(shell) = state.shell.as_mut()
+            {
+                shell.receive_endpoint_unavailable(error);
             }
             next
         }
@@ -428,13 +424,13 @@ pub(super) fn rollback_endpoint_activation(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
     pending: &mut Option<endpoint::PendingEndpointActivation>,
-    error: String,
+    error: &str,
     source_release_rejected: bool,
 ) {
     let Some(activation) = pending.as_mut() else {
         return;
     };
-    match activation.rollback(endpoints, error.clone(), source_release_rejected) {
+    match activation.rollback(endpoints, error, source_release_rejected) {
         endpoint::ActivationRollback::Pending => state.freeze_presentation(),
         endpoint::ActivationRollback::Unavailable(message) => {
             *pending = None;
@@ -507,7 +503,7 @@ pub(super) fn handle_endpoint_attention(
     endpoint_id: &endpoint::ClientEndpointId,
     generation: u64,
     now: std::time::Instant,
-    message: String,
+    message: &str,
 ) -> bool {
     endpoints.disconnect(endpoint_id);
     supervisors.record_status(
@@ -540,7 +536,7 @@ pub(super) fn handle_endpoint_attention(
             shell.cancel_endpoint_request(&request_id);
         }
         shell.set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Attention);
-        shell.set_machine_diagnostic(endpoint_id, message.clone());
+        shell.set_machine_diagnostic(endpoint_id, message);
         endpoint_was_active.then(|| format!("{}: {message}", shell.endpoint_label(endpoint_id)))
     });
     if let Some(message) = unavailable {
@@ -640,8 +636,8 @@ pub(super) fn finish_client_shell_input(
             state.pixel_geometry_exact,
         );
         if let Some(activation) = pending_activation.as_mut() {
-            if let Err(error) = activation.update_resize(resize, endpoints) {
-                rollback_endpoint_activation(state, endpoints, pending_activation, error, false);
+            if let Err(error) = activation.update_resize(&resize, endpoints) {
+                rollback_endpoint_activation(state, endpoints, pending_activation, &error, false);
             }
         } else {
             let _ = write_to_server(endpoints, &resize);
@@ -683,7 +679,7 @@ pub(super) fn finish_client_shell_input(
                         state,
                         endpoints,
                         pending_activation,
-                        error,
+                        &error,
                         false,
                     );
                 }
@@ -699,7 +695,7 @@ pub(super) fn finish_client_shell_input(
                         state,
                         endpoints,
                         pending_activation,
-                        error,
+                        &error,
                         false,
                     );
                 }

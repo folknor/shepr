@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::api::schema::{TabCreateParams, TabListParams, TabRenameParams};
 
 pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(String::as_str) else {
         print_tab_help();
         return Ok(2);
     };

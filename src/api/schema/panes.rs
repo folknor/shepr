@@ -5,9 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::agents::AgentSessionInfo;
 use super::common::{AgentStatus, PaneAgentState, ReadFormat, ReadSource, SplitDirection};
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PaneRightClickTarget {
     #[default]
@@ -102,9 +100,7 @@ pub struct PaneZoomParams {
     pub mode: PaneZoomMode,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PaneZoomMode {
     #[default]
@@ -663,4 +659,3 @@ pub struct PaneReadResult {
     pub revision: u64,
     pub truncated: bool,
 }
-

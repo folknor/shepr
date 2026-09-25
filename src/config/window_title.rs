@@ -151,9 +151,11 @@ mod tests {
 
     #[test]
     fn default_template_parses() {
-        assert!(WindowTitleTemplate::parse(&default_window_title())
-            .expect("parse")
-            .is_some());
+        assert!(
+            WindowTitleTemplate::parse(&default_window_title())
+                .expect("parse")
+                .is_some()
+        );
     }
 
     #[test]
@@ -164,15 +166,21 @@ mod tests {
 
     #[test]
     fn invalid_templates_report_diagnostics() {
-        assert!(window_title_diagnostics("{hostname")
-            .expect("diagnostic")
-            .contains("unclosed"));
-        assert!(window_title_diagnostics("a } b")
-            .expect("diagnostic")
-            .contains("unmatched"));
-        assert!(window_title_diagnostics("{session}")
-            .expect("diagnostic")
-            .contains("unknown token '{session}'"));
+        assert!(
+            window_title_diagnostics("{hostname")
+                .expect("diagnostic")
+                .contains("unclosed")
+        );
+        assert!(
+            window_title_diagnostics("a } b")
+                .expect("diagnostic")
+                .contains("unmatched")
+        );
+        assert!(
+            window_title_diagnostics("{session}")
+                .expect("diagnostic")
+                .contains("unknown token '{session}'")
+        );
     }
 
     #[test]

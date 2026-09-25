@@ -134,7 +134,7 @@ pub(super) fn render_mode_bar(
                     }
                     let footer = "  enter search  esc cancel";
                     let footer_width = if bar.width >= 50 {
-                        footer.len() as u16
+                        u16::try_from(footer.len()).unwrap_or(u16::MAX)
                     } else {
                         0
                     };
@@ -346,5 +346,5 @@ pub(super) fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &s
 }
 
 pub(super) fn display_width(text: &str) -> u16 {
-    UnicodeWidthStr::width(text).min(u16::MAX as usize) as u16
+    u16::try_from(UnicodeWidthStr::width(text)).unwrap_or(u16::MAX)
 }

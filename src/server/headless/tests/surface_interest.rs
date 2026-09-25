@@ -12,7 +12,11 @@ struct CapturingEndpointTransport(Arc<Mutex<Vec<crate::protocol::ClientMessage>>
 
 impl EndpointTransport for CapturingEndpointTransport {
     fn send(&mut self, message: &crate::protocol::ClientMessage) -> std::io::Result<()> {
-        self.0.lock().expect("test precondition").push(message.clone());
+        let mut sent = self
+            .0
+            .lock()
+            .map_err(|_| std::io::Error::other("test mutex poisoned"))?;
+        sent.push(message.clone());
         Ok(())
     }
 }
@@ -56,8 +60,16 @@ fn request_active_surface(server: &mut HeadlessServer, client_id: u64, request_i
 async fn metadata_only_shell_is_isolated_until_surface_activation() {
     let mut server = test_headless_server();
     let mut input_rx = install_focused_test_runtime(&mut server, b"");
-    let pane_id = server.app.session_snapshot().focused_pane_id.expect("test precondition");
-    let workspace_id = server.app.session_snapshot().focused_workspace_id.expect("test precondition");
+    let pane_id = server
+        .app
+        .session_snapshot()
+        .focused_pane_id
+        .expect("test precondition");
+    let workspace_id = server
+        .app
+        .session_snapshot()
+        .focused_workspace_id
+        .expect("test precondition");
     let original_size = server.effective_size;
     let (writer, control_rx, render_rx) = test_client_writer();
     let client_id = 52;
@@ -84,10 +96,12 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
 
     server.render_and_stream();
     assert!(render_rx.try_recv().is_err());
-    assert!(server.clients[&client_id]
-        .render_state
-        .last_pane_surface()
-        .is_none());
+    assert!(
+        server.clients[&client_id]
+            .render_state
+            .last_pane_surface()
+            .is_none()
+    );
 
     assert!(
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
@@ -118,12 +132,16 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     else {
         panic!("expected endpoint response");
     };
-    let error = serde_json::from_slice::<api::schema::ErrorResponse>(&data).expect("test precondition");
+    let error =
+        serde_json::from_slice::<api::schema::ErrorResponse>(&data).expect("test precondition");
     assert_eq!(error.error.code, "surface_inactive");
 
-    assert!(server.send_to_client_shells(ServerMessage::ClientShellError {
-        message: "metadata event".into(),
-    }));
+    assert!(server.send_to_client(
+        client_id,
+        &ServerMessage::ClientShellError {
+            message: "metadata event".into(),
+        }
+    ));
     assert!(matches!(
         read_server_message(control_rx.recv().expect("metadata notification")),
         ServerMessage::ClientShellError { .. }
@@ -146,7 +164,8 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     else {
         panic!("expected typed surface activation response");
     };
-    let activation_ack = serde_json::from_slice::<api::schema::SuccessResponse>(&data).expect("test precondition");
+    let activation_ack =
+        serde_json::from_slice::<api::schema::SuccessResponse>(&data).expect("test precondition");
     let api::schema::ResponseResult::ClientShellSurfaceSet {
         active: true,
         projection_revision: activation_floor,
@@ -186,7 +205,10 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     );
     let _ = control_rx.recv().expect("surface deactivation response");
     assert!(server.clients.contains_key(&client_id));
-    let (_, runtime_pane_id) = server.app.parse_pane_id(&surface.panes[0].pane_id).expect("test precondition");
+    let (_, runtime_pane_id) = server
+        .app
+        .parse_pane_id(&surface.panes[0].pane_id)
+        .expect("test precondition");
     server
         .app
         .state
@@ -224,7 +246,8 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
             other => panic!("unexpected surface reactivation message: {other:?}"),
         }
     };
-    let reactivation_ack = serde_json::from_slice::<api::schema::SuccessResponse>(&data).expect("test precondition");
+    let reactivation_ack =
+        serde_json::from_slice::<api::schema::SuccessResponse>(&data).expect("test precondition");
     let api::schema::ResponseResult::ClientShellSurfaceSet {
         active: true,
         projection_revision: reactivation_floor,
@@ -395,7 +418,10 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
     let _ = client_shell_snapshot(&control_rx);
     server.api_window_title = Some("target title".into());
     {
-        let client = server.clients.get_mut(&client_id).expect("test precondition");
+        let client = server
+            .clients
+            .get_mut(&client_id)
+            .expect("test precondition");
         client.host_mouse_capture_active = Some(false);
         client.host_sgr_pixels_active = Some(false);
         client.host_keyboard_report_all_active = Some(false);
@@ -432,9 +458,11 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
     let messages = (0..3)
         .map(|_| read_server_message(control_rx.recv().expect("reassertion effect")))
         .collect::<Vec<_>>();
-    assert!(messages
-        .iter()
-        .any(|message| matches!(message, ServerMessage::MouseCapture { enabled: true, .. })));
+    assert!(
+        messages
+            .iter()
+            .any(|message| matches!(message, ServerMessage::MouseCapture { enabled: true, .. }))
+    );
     assert!(messages.iter().any(|message| matches!(
         message,
         ServerMessage::ClientShellKeyboardReportAll { enabled: false }
@@ -550,13 +578,13 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let source_sent = Arc::new(Mutex::new(Vec::new()));
     let target_sent = Arc::new(Mutex::new(Vec::new()));
     let mut endpoints = EndpointRegistry::new(
-        CapturingEndpointTransport(source_sent.clone()),
+        CapturingEndpointTransport(Arc::clone(&source_sent)),
         1,
         lifecycle_negotiation(),
     );
     endpoints.insert(
         target_id.clone(),
-        CapturingEndpointTransport(target_sent.clone()),
+        CapturingEndpointTransport(Arc::clone(&target_sent)),
         7,
         lifecycle_negotiation(),
         false,
@@ -564,7 +592,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let mut activation = crate::client::endpoint::PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        target_id.clone(),
+        &target_id,
         None,
         lifecycle_resize(),
         41,
@@ -586,7 +614,8 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
                 );
             }
             crate::protocol::ClientMessage::ClientShellEndpointRequest { boot_id, request } => {
-                let request = serde_json::from_str::<api::schema::Request>(&request).expect("test precondition");
+                let request = serde_json::from_str::<api::schema::Request>(&request)
+                    .expect("test precondition");
                 if matches!(
                     request.method,
                     api::schema::Method::ClientShellSurfaceSet(
@@ -713,10 +742,9 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         if let ServerMessage::ClientShellEndpointResponseChunk {
             request_id, data, ..
         } = message
+            && request_id.ends_with(":presentation-sync")
         {
-            if request_id.ends_with(":presentation-sync") {
-                break (request_id, data);
-            }
+            break (request_id, data);
         }
     };
     assert_eq!(
@@ -727,10 +755,11 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let sync_snapshot = loop {
         let message =
             read_server_message(target_control.recv().expect("presentation sync snapshot"));
-        if let ServerMessage::EndpointControl { kind, data } = message {
-            if kind == crate::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND {
-                break serde_json::from_str::<crate::protocol::ClientShellSnapshot>(&data).expect("test precondition");
-            }
+        if let ServerMessage::EndpointControl { kind, data } = message
+            && kind == crate::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND
+        {
+            break serde_json::from_str::<crate::protocol::ClientShellSnapshot>(&data)
+                .expect("test precondition");
         }
     };
     let sync_progress = activation.receive_snapshot(&target_id, 7, &sync_snapshot);
@@ -806,7 +835,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let mut returning = crate::client::endpoint::PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        ClientEndpointId::Local,
+        &ClientEndpointId::Local,
         None,
         lifecycle_resize(),
         42,

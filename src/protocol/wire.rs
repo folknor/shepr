@@ -313,10 +313,8 @@ impl ClientPaneInputEvent {
                     key = key.with_shifted_codepoint(*shifted_codepoint);
                 }
                 #[cfg(any(windows, test))]
-                if attach_windows_source {
-                    if let Some(record) = windows_record {
-                        key = key.with_windows_record(*record);
-                    }
+                if attach_windows_source && let Some(record) = windows_record {
+                    key = key.with_windows_record(*record);
                 }
                 #[cfg(not(any(windows, test)))]
                 let _ = (attach_windows_source, windows_record);
@@ -516,7 +514,7 @@ pub enum AttachScrollSource {
 /// `Cell` type to keep the wire protocol stable.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CellData {
-    /// Grapheme cluster displayed in this cell (usually 1–2 chars).
+    /// Grapheme cluster displayed in this cell (usually 1-2 chars).
     pub symbol: String,
     /// Foreground color as a packed u32 (0xAARRGGBB or ratatui Color index).
     pub fg: u32,
@@ -552,7 +550,7 @@ impl CellData {
             fg: color_to_u32(cell.fg),
             bg: color_to_u32(cell.bg),
             modifier: modifier_to_u16(cell.modifier),
-            skip: cell.skip,
+            skip: cell.diff_option == ratatui::buffer::CellDiffOption::Skip,
             hyperlink: None,
         }
     }
@@ -634,7 +632,7 @@ impl FrameData {
                             return None;
                         }
                         Some(*hyperlink_indices.entry(*uri).or_insert_with(|| {
-                            let index = hyperlink_uris.len() as u32;
+                            let index = u32::try_from(hyperlink_uris.len()).unwrap_or(u32::MAX);
                             hyperlink_uris.push((*uri).to_owned());
                             index
                         }))
@@ -693,12 +691,16 @@ impl FrameData {
             for col in 0..self.width {
                 let idx = (row as usize) * (self.width as usize) + (col as usize);
                 let cell_data = &self.cells[idx];
-                let cell = buffer.cell_mut((col, row)).expect("cell within bounds");
+                let cell = buffer.cell_mut((col, row))?;
                 cell.set_symbol(&cell_data.symbol);
                 cell.fg = u32_to_color(cell_data.fg);
                 cell.bg = u32_to_color(cell_data.bg);
                 cell.modifier = u16_to_modifier(cell_data.modifier);
-                cell.skip = cell_data.skip;
+                cell.set_diff_option(if cell_data.skip {
+                    ratatui::buffer::CellDiffOption::Skip
+                } else {
+                    ratatui::buffer::CellDiffOption::None
+                });
             }
         }
 
@@ -1360,11 +1362,13 @@ mod tests {
         };
         assert!(key.is_windows_dead_key());
         assert_eq!(key.windows_record(), None);
-        assert!(crate::input::encode_terminal_key(
-            key,
-            crate::input::KeyboardProtocol::Kitty { flags: 1 },
-        )
-        .is_empty());
+        assert!(
+            crate::input::encode_terminal_key(
+                key,
+                crate::input::KeyboardProtocol::Kitty { flags: 1 },
+            )
+            .is_empty()
+        );
     }
 
     #[test]
@@ -1446,7 +1450,8 @@ mod tests {
 
     #[test]
     fn client_input_large_multilingual_payload_roundtrip() -> TestResult {
-        let text = "你好，今天我们测试一段比较长的语音输入。こんにちは。안녕하세요.🙂".repeat(1024);
+        let text =
+            "你好，今天我们测试一段比较长的语音输入。こんにちは。안녕하세요.\u{1F642}".repeat(1024);
         assert!(text.len() > 64 * 1024);
         assert!(text.len() < MAX_FRAME_SIZE);
         let msg = ClientMessage::Input {
@@ -1575,7 +1580,7 @@ mod tests {
                     hyperlink: None,
                 },
                 CellData {
-                    symbol: "🦀".into(), // emoji, wide grapheme cluster
+                    symbol: "\u{1F980}".into(), // emoji, wide grapheme cluster
                     fg: color_to_u32(Color::Yellow),
                     bg: color_to_u32(Color::Magenta),
                     modifier: Modifier::empty().bits(),
@@ -1698,7 +1703,8 @@ mod tests {
             agents: Vec::new(),
         };
         let encoded = serde_json::to_string(&msg).expect("test precondition");
-        let decoded: ClientShellSnapshot = serde_json::from_str(&encoded).expect("test precondition");
+        let decoded: ClientShellSnapshot =
+            serde_json::from_str(&encoded).expect("test precondition");
         assert_eq!(msg, decoded);
     }
 
@@ -1783,7 +1789,8 @@ mod tests {
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &msg).expect("test precondition");
-        let decoded: ClientMessage = read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
+        let decoded: ClientMessage =
+            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
         assert_eq!(msg, decoded);
     }
 
@@ -1801,9 +1808,13 @@ mod tests {
                 } else {
                     format!("{:03}", i % 1000)
                 },
-                fg: color_to_u32(Color::Rgb((i % 256) as u8, ((i / 256) % 256) as u8, 128)),
-                bg: color_to_u32(Color::Indexed((i % 256) as u8)),
-                modifier: ((i % 16) as u16),
+                fg: color_to_u32(Color::Rgb(
+                    u8::try_from(i % 256).unwrap_or(u8::MAX),
+                    u8::try_from((i / 256) % 256).unwrap_or(u8::MAX),
+                    128,
+                )),
+                bg: color_to_u32(Color::Indexed(u8::try_from(i % 256).unwrap_or(u8::MAX))),
+                modifier: u16::try_from(i % 16).unwrap_or(u16::MAX),
                 skip: i % 100 == 0,
                 hyperlink: None,
             })
@@ -1839,7 +1850,8 @@ mod tests {
             buf.len()
         );
 
-        let decoded: ServerMessage = read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
+        let decoded: ServerMessage =
+            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
         assert_eq!(msg, decoded);
     }
 
@@ -1853,21 +1865,21 @@ mod tests {
             let msg = match i % 5 {
                 0 => ClientMessage::TerminalHello {
                     version: PROTOCOL_VERSION,
-                    cols: (80 + (i % 40) as u16),
-                    rows: (24 + (i % 20) as u16),
+                    cols: (80 + u16::try_from(i % 40).unwrap_or(u16::MAX)),
+                    rows: (24 + u16::try_from(i % 20).unwrap_or(u16::MAX)),
                     cell_width_px: 8,
                     cell_height_px: 16,
                     pixel_mouse: i % 2 == 0,
                 },
                 1 => ClientMessage::Input {
-                    data: vec![(i % 256) as u8; (i as usize % 50) + 1],
+                    data: vec![u8::try_from(i % 256).unwrap_or(u8::MAX); (i as usize % 50) + 1],
                 },
                 2 => ClientMessage::ClientShellFocus {
                     focused: i % 2 == 0,
                 },
                 3 => ClientMessage::Resize {
-                    cols: (100 + (i % 30) as u16),
-                    rows: (30 + (i % 10) as u16),
+                    cols: (100 + u16::try_from(i % 30).unwrap_or(u16::MAX)),
+                    rows: (30 + u16::try_from(i % 10).unwrap_or(u16::MAX)),
                     cell_width_px: 8,
                     cell_height_px: 16,
                     pixel_mouse: i % 2 == 0,
@@ -1881,7 +1893,8 @@ mod tests {
 
         let mut cursor = buf.as_slice();
         for expected_msg in &expected {
-            let decoded: ClientMessage = read_message(&mut cursor, MAX_FRAME_SIZE).expect("test precondition");
+            let decoded: ClientMessage =
+                read_message(&mut cursor, MAX_FRAME_SIZE).expect("test precondition");
             assert_eq!(*expected_msg, decoded);
         }
     }
@@ -1908,7 +1921,10 @@ mod tests {
     fn framing_malformed_payload_rejected_without_panic() {
         // Valid length prefix pointing to garbage data.
         let payload = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02];
-        let mut buf = (payload.len() as u32).to_le_bytes().to_vec();
+        let mut buf = u32::try_from(payload.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes()
+            .to_vec();
         buf.extend_from_slice(&payload);
 
         let result: Result<ClientMessage, FramingError> =
@@ -1949,7 +1965,8 @@ mod tests {
             "length prefix should match payload size"
         );
 
-        let decoded: ClientMessage = read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
+        let decoded: ClientMessage =
+            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
         assert_eq!(msg, decoded);
     }
 
@@ -1964,7 +1981,8 @@ mod tests {
 
         // Wrap in a chunked reader that only yields 7 bytes at a time.
         let mut chunked = ChunkedReader::new(full_buf, 7);
-        let decoded: ClientMessage = read_message(&mut chunked, MAX_FRAME_SIZE).expect("test precondition");
+        let decoded: ClientMessage =
+            read_message(&mut chunked, MAX_FRAME_SIZE).expect("test precondition");
         assert_eq!(msg, decoded);
     }
 
@@ -1981,21 +1999,26 @@ mod tests {
 
     #[test]
     fn oversized_frame_does_not_panic() {
-        // Claim 4GB payload — should return Oversized error, not panic.
+        // Claim 4GB payload - should return Oversized error, not panic.
         let mut buf: Vec<u8> = 0xFFC00000u32.to_le_bytes().to_vec(); // ~4 GB claim
         buf.extend_from_slice(&[0; 8]);
 
         let result: Result<ClientMessage, FramingError> =
             read_message(&mut buf.as_slice(), MAX_FRAME_SIZE);
         assert!(result.is_err());
-        // Did not panic — test passing is proof.
+        // Did not panic - test passing is proof.
     }
 
     #[test]
     fn malformed_frame_does_not_panic() {
         // Random garbage bytes after a valid-ish length prefix.
-        let garbage: Vec<u8> = (0..200).map(|i| (i ^ 0xAA) as u8).collect();
-        let mut buf = (garbage.len() as u32).to_le_bytes().to_vec();
+        let garbage: Vec<u8> = (0..200i32)
+            .map(|i| u8::try_from(i ^ 0xAA).unwrap_or(u8::MAX))
+            .collect();
+        let mut buf = u32::try_from(garbage.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes()
+            .to_vec();
         buf.extend_from_slice(&garbage);
 
         let result: Result<ClientMessage, FramingError> =
@@ -2029,15 +2052,24 @@ mod tests {
         let mut buffer = ratatui::buffer::Buffer::filled(area, ratatui::buffer::Cell::new(" "));
 
         // Write some styled content.
-        buffer.cell_mut((0, 0)).expect("test precondition").set_symbol("H");
+        buffer
+            .cell_mut((0, 0))
+            .expect("test precondition")
+            .set_symbol("H");
         buffer.cell_mut((0, 0)).expect("test precondition").fg = Color::Red;
         buffer.cell_mut((0, 0)).expect("test precondition").modifier = Modifier::BOLD;
 
-        buffer.cell_mut((1, 0)).expect("test precondition").set_symbol("i");
+        buffer
+            .cell_mut((1, 0))
+            .expect("test precondition")
+            .set_symbol("i");
         buffer.cell_mut((1, 0)).expect("test precondition").fg = Color::Green;
         buffer.cell_mut((1, 0)).expect("test precondition").modifier = Modifier::ITALIC;
 
-        buffer.cell_mut((2, 0)).expect("test precondition").set_symbol("!");
+        buffer
+            .cell_mut((2, 0))
+            .expect("test precondition")
+            .set_symbol("!");
         buffer.cell_mut((2, 0)).expect("test precondition").fg = Color::Rgb(255, 128, 0);
         buffer.cell_mut((2, 0)).expect("test precondition").bg = Color::Indexed(220);
 
@@ -2082,12 +2114,30 @@ mod tests {
         // Convert back to ratatui buffer and compare.
         let restored = frame.to_ratatui_buffer().expect("should reconstruct");
         assert_eq!(restored.area, area);
-        assert_eq!(restored.cell((0, 0)).expect("test precondition").symbol(), "H");
-        assert_eq!(restored.cell((0, 0)).expect("test precondition").fg, Color::Red);
-        assert_eq!(restored.cell((0, 0)).expect("test precondition").modifier, Modifier::BOLD);
-        assert_eq!(restored.cell((1, 0)).expect("test precondition").symbol(), "i");
-        assert_eq!(restored.cell((2, 0)).expect("test precondition").symbol(), "!");
-        assert_eq!(restored.cell((2, 0)).expect("test precondition").fg, Color::Rgb(255, 128, 0));
+        assert_eq!(
+            restored.cell((0, 0)).expect("test precondition").symbol(),
+            "H"
+        );
+        assert_eq!(
+            restored.cell((0, 0)).expect("test precondition").fg,
+            Color::Red
+        );
+        assert_eq!(
+            restored.cell((0, 0)).expect("test precondition").modifier,
+            Modifier::BOLD
+        );
+        assert_eq!(
+            restored.cell((1, 0)).expect("test precondition").symbol(),
+            "i"
+        );
+        assert_eq!(
+            restored.cell((2, 0)).expect("test precondition").symbol(),
+            "!"
+        );
+        assert_eq!(
+            restored.cell((2, 0)).expect("test precondition").fg,
+            Color::Rgb(255, 128, 0)
+        );
     }
 
     #[test]
@@ -2240,7 +2290,8 @@ mod tests {
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &msg).expect("test precondition");
-        let decoded: ClientMessage = read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
+        let decoded: ClientMessage =
+            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
         assert_eq!(msg, decoded);
     }
 
@@ -2293,7 +2344,8 @@ mod tests {
         }
 
         for expected in &messages {
-            let decoded: ClientMessage = read_message(&mut b, MAX_FRAME_SIZE).expect("test precondition");
+            let decoded: ClientMessage =
+                read_message(&mut b, MAX_FRAME_SIZE).expect("test precondition");
             assert_eq!(*expected, decoded);
         }
     }

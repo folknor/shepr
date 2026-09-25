@@ -1,6 +1,6 @@
 //! Optional sparse delivery of a completely recomputed pane surface.
 
-use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
 use serde::{Deserialize, Serialize};
 
 use super::{CellData, PaneSurfaceFrame, PaneSurfacePatchRow, ServerMessage};
@@ -72,8 +72,9 @@ fn changed_rows<'a>(
                 x += 1;
             }
             let span = CellSpan {
-                x: start as u16,
-                y: y as u16,
+                // `start`/`y` are bounded by `width` (a u16) via chunks(usize::from(width)).
+                x: u16::try_from(start).unwrap_or(u16::MAX),
+                y: u16::try_from(y).unwrap_or(u16::MAX),
                 cells: &new_row[start..x],
             };
             size += encoded_size(&span)?;
@@ -183,7 +184,8 @@ mod tests {
         let wire =
             crate::protocol::read_message(&mut bytes.as_slice(), crate::protocol::MAX_FRAME_SIZE)
                 .expect("test precondition");
-        let ServerMessage::PaneSurface(decoded) = decoder.decode(wire).expect("test precondition") else {
+        let ServerMessage::PaneSurface(decoded) = decoder.decode(wire).expect("test precondition")
+        else {
             panic!("full surface");
         };
         assert_eq!(&decoded, next);
@@ -200,7 +202,9 @@ mod tests {
         reconstruct(&last, &next);
         let expected = next.clone();
         let mut full = ServerMessage::PaneSurface(next);
-        let update = message(&last, &mut full).expect("test precondition").expect("sparse delta");
+        let update = message(&last, &mut full)
+            .expect("test precondition")
+            .expect("sparse delta");
         assert!(framed_len(&update) < 1000);
         let ServerMessage::PaneSurface(next) = full else {
             panic!("full fallback");
@@ -244,9 +248,11 @@ mod tests {
                 .is_none()
         );
         next.frame.width += 1;
-        assert!(message(&last, &mut ServerMessage::PaneSurface(next))
-            .expect("test precondition")
-            .is_none());
+        assert!(
+            message(&last, &mut ServerMessage::PaneSurface(next))
+                .expect("test precondition")
+                .is_none()
+        );
     }
 
     #[test]
@@ -283,12 +289,12 @@ mod tests {
                 .expect("test precondition");
             let bad = ServerMessage::EndpointControl {
                 kind: MESSAGE_KIND.into(),
-                data: STANDARD_NO_PAD.encode(
-                    crate::protocol::codec::to_vec(&corrupt).expect("test precondition"),
-                ),
+                data: STANDARD_NO_PAD
+                    .encode(crate::protocol::codec::to_vec(&corrupt).expect("test precondition")),
             };
             assert!(decoder.decode(bad).is_err(), "case {case}");
-            let ServerMessage::PaneSurface(decoded) = decoder.decode(update.clone()).expect("test precondition")
+            let ServerMessage::PaneSurface(decoded) =
+                decoder.decode(update.clone()).expect("test precondition")
             else {
                 panic!("full reconstruction");
             };
@@ -303,7 +309,9 @@ mod tests {
         next.surface_revision += 1;
         next.frame.cells[0].symbol = "a".into();
         let mut decoder = crate::protocol::surface_reuse::Decoder::new(true);
-        decoder.decode(ServerMessage::PaneSurface(last)).expect("test precondition");
+        decoder
+            .decode(ServerMessage::PaneSurface(last))
+            .expect("test precondition");
         decoder
             .decode(ServerMessage::PaneSurfacePatch(
                 crate::protocol::PaneSurfacePatch {
@@ -335,7 +343,9 @@ mod tests {
         let update = message(&next, &mut ServerMessage::PaneSurface(latest.clone()))
             .expect("test precondition")
             .expect("test precondition");
-        let ServerMessage::PaneSurface(decoded) = decoder.decode(update).expect("test precondition") else {
+        let ServerMessage::PaneSurface(decoded) =
+            decoder.decode(update).expect("test precondition")
+        else {
             panic!("full reconstruction");
         };
         assert_eq!(decoded, latest);
@@ -358,9 +368,11 @@ mod tests {
             let start = usize::from(span.y) * 120 + usize::from(span.x);
             assert_eq!(span.cells.as_ptr(), next.frame.cells[start..].as_ptr());
         }
-        assert!(changed_rows(&last.frame.cells, &next.frame.cells, 120, 1)
-            .expect("test precondition")
-            .is_none());
+        assert!(
+            changed_rows(&last.frame.cells, &next.frame.cells, 120, 1)
+                .expect("test precondition")
+                .is_none()
+        );
         let mut large =
             FrameData::from_ratatui_buffer(&Buffer::empty(Rect::new(0, 0, 120, 100)), None);
         let baseline = large.cells.clone();
@@ -369,9 +381,11 @@ mod tests {
                 cell.symbol = "x".into();
             }
         }
-        assert!(changed_rows(&baseline, &large.cells, 120, usize::MAX)
-            .expect("test precondition")
-            .is_none());
+        assert!(
+            changed_rows(&baseline, &large.cells, 120, usize::MAX)
+                .expect("test precondition")
+                .is_none()
+        );
     }
 
     #[test]
@@ -389,7 +403,9 @@ mod tests {
             .expect("test precondition");
         assert!(legacy.decode(update.clone()).is_err());
         let mut decoder = crate::protocol::surface_reuse::Decoder::new(true);
-        decoder.decode(ServerMessage::PaneSurface(last)).expect("test precondition");
+        decoder
+            .decode(ServerMessage::PaneSurface(last))
+            .expect("test precondition");
         let ServerMessage::EndpointControl { data, .. } = &update else {
             panic!("delta");
         };
@@ -401,12 +417,13 @@ mod tests {
         });
         let bad = ServerMessage::EndpointControl {
             kind: MESSAGE_KIND.into(),
-            data: STANDARD_NO_PAD.encode(
-                crate::protocol::codec::to_vec(&corrupt).expect("test precondition"),
-            ),
+            data: STANDARD_NO_PAD
+                .encode(crate::protocol::codec::to_vec(&corrupt).expect("test precondition")),
         };
         assert!(decoder.decode(bad).is_err());
-        let ServerMessage::PaneSurface(decoded) = decoder.decode(update.clone()).expect("test precondition") else {
+        let ServerMessage::PaneSurface(decoded) =
+            decoder.decode(update.clone()).expect("test precondition")
+        else {
             panic!("recovered");
         };
         assert_eq!(decoded, next);

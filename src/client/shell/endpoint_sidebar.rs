@@ -1,4 +1,4 @@
-use super::render::{display_width, put_right_text, put_text, ShellRenderState};
+use super::render::{ShellRenderState, display_width, put_right_text, put_text};
 use super::*;
 
 pub(super) fn render_collapsed(
@@ -20,17 +20,16 @@ pub(super) fn render_collapsed(
             continue;
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
-            if reveal {
-                if let Some(target) = state
+            if reveal
+                && let Some(target) = state
                     .selected_workspace_id
                     .filter(|target| target.endpoint_id == endpoint.endpoint_id)
-                {
-                    selected_row = snapshot
-                        .workspaces
-                        .iter()
-                        .position(|workspace| workspace.workspace_id == target.workspace_id)
-                        .map(|index| total_rows + index);
-                }
+            {
+                selected_row = snapshot
+                    .workspaces
+                    .iter()
+                    .position(|workspace| workspace.workspace_id == target.workspace_id)
+                    .map(|index| total_rows + index);
             }
             total_rows += snapshot.workspaces.len();
         }
@@ -266,12 +265,14 @@ pub(super) fn render_expanded(
             continue;
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
-            rows.extend(super::sidebar::workspace_entries(snapshot).into_iter().map(
-                |entry| Row::Workspace {
-                    endpoint: endpoint_index,
-                    entry,
-                },
-            ));
+            rows.extend(
+                super::sidebar::workspace_entries(snapshot)
+                    .into_iter()
+                    .map(|entry| Row::Workspace {
+                        endpoint: endpoint_index,
+                        entry,
+                    }),
+            );
         }
     }
     let body = Rect::new(
@@ -294,17 +295,15 @@ pub(super) fn render_expanded(
                     .as_deref()
                     .and_then(|snapshot| {
                         let workspace = snapshot.workspaces.get(entry.index)?;
-                        Some(
-                            super::sidebar::workspace_rows(
-                                workspace,
-                                super::sidebar::displayed_workspace_status(workspace),
-                                entry.indented,
-                                &config.spaces,
-                            )
-                            .len()
-                            .max(1)
-                            .min(u16::MAX as usize) as u16,
+                        let len = super::sidebar::workspace_rows(
+                            workspace,
+                            super::sidebar::displayed_workspace_status(workspace),
+                            entry.indented,
+                            &config.spaces,
                         )
+                        .len()
+                        .max(1);
+                        Some(u16::try_from(len).unwrap_or(u16::MAX))
                     })
                     .unwrap_or(1)
             }
@@ -423,7 +422,9 @@ pub(super) fn render_expanded(
                     entry.indented,
                     &config.spaces,
                 );
-                let height = (tokens.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
+                let height = u16::try_from(tokens.len().max(1))
+                    .unwrap_or(u16::MAX)
+                    .min(body.height);
                 if y.saturating_add(height) > body.bottom() {
                     break;
                 }
@@ -444,7 +445,7 @@ pub(super) fn render_expanded(
                     status,
                     config.status_indicators,
                     entry,
-                    tokens,
+                    &tokens,
                     endpoint_active && workspace.focused,
                     selected,
                     state.selected_workspace_id.is_some(),

@@ -1,5 +1,5 @@
 use super::*;
-use crate::client::endpoint::{ClientEndpointId, ClientEndpointStatus};
+use crate::client::endpoint::ClientEndpointId;
 
 fn pending_request() -> (ClientShellState, Vec<ClientShellAction>) {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
@@ -39,9 +39,9 @@ impl crate::client::endpoint::EndpointTransport for TestTransport {
 #[test]
 fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
     use crate::client::{
+        ClientLoopEvent,
         endpoint::{EndpointNegotiation, EndpointRegistry},
         endpoint_commands::EndpointCommands,
-        ClientLoopEvent,
     };
     let mut endpoints = EndpointRegistry::new(
         TestTransport { fail: false },
@@ -50,7 +50,8 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
     );
     let mut commands = EndpointCommands::default();
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-    tx.try_send(ClientLoopEvent::Timer).expect("test precondition");
+    tx.try_send(ClientLoopEvent::Timer)
+        .expect("test precondition");
     let mut scheduled = None;
     crate::client::shell_runtime::dispatch_client_shell_actions(
         vec![ClientShellAction::ActivateEndpoint {
@@ -94,10 +95,12 @@ fn dispatcher_cancels_pending_requests_on_frozen_surface_or_failed_send() {
         );
         assert!(repaint);
         assert!(state.pending_requests.is_empty());
-        assert!(state
-            .visible_endpoint_notice
-            .as_ref()
-            .is_some_and(|notice| { notice.title == "Action interrupted" }));
+        assert!(
+            state
+                .visible_endpoint_notice
+                .as_ref()
+                .is_some_and(|notice| { notice.title == "Action interrupted" })
+        );
         assert!(commands.disconnect(&ClientEndpointId::Local).is_empty());
     }
 }

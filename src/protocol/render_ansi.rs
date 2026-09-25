@@ -1,4 +1,4 @@
-//! Frame blitting — renders FrameData to the terminal using diff-based updates.
+//! Frame blitting - renders FrameData to the terminal using diff-based updates.
 //!
 //! The blitting strategy:
 //! 1. On the first frame, write the entire buffer (full redraw).
@@ -17,11 +17,11 @@
 //!    cursor movement during active TUI repaints, so Windows skips it.
 //!
 //! Escape sequences used:
-//! - `CSI H` (CUP) — move cursor to (row, col)
-//! - `CSI m` (SGR) — set graphic rendition (colors, bold, etc.)
-//! - `CSI ? 2026 h/l` — begin/end synchronized output
-//! - `CSI Ps SP q` — DECSCUSR cursor shape
-//! - `ESC ] 52 ; c ; <base64> BEL` — OSC 52 clipboard write
+//! - `CSI H` (CUP) - move cursor to (row, col)
+//! - `CSI m` (SGR) - set graphic rendition (colors, bold, etc.)
+//! - `CSI ? 2026 h/l` - begin/end synchronized output
+//! - `CSI Ps SP q` - DECSCUSR cursor shape
+//! - `ESC ] 52 ; c ; <base64> BEL` - OSC 52 clipboard write
 //!
 //! The goal is minimal output: skip unchanged cells, batch adjacent changes,
 //! and minimize cursor movement.
@@ -32,7 +32,7 @@ use std::io::Write;
 use unicode_width::UnicodeWidthStr;
 
 use crate::protocol::{
-    underline_style_from_modifier, CellData, CursorState, FrameData, PaneSurfacePatchRow,
+    CellData, CursorState, FrameData, PaneSurfacePatchRow, underline_style_from_modifier,
 };
 
 const REVERSED_MODIFIER: u16 = 1 << 6;
@@ -105,7 +105,7 @@ impl BlitEncoder {
         }
     }
 
-    pub(crate) fn commit(&mut self, frame: FrameData, encoded: EncodedBlit) {
+    pub(crate) fn commit(&mut self, frame: FrameData, encoded: &EncodedBlit) {
         self.last_visible_cursor = encoded.next_last_visible_cursor;
         self.last_cursor_shape = encoded.next_last_cursor_shape;
         self.last_frame = Some(frame);
@@ -175,16 +175,16 @@ impl BlitEncoder {
             .filter(|cursor| cursor.visible)
             .map(|cursor| clamp_cursor_position(frame, cursor.x, cursor.y));
 
-        if let Some((x, y)) = previous.filter(|position| Some(*position) != next) {
-            if patch_cell_mut(&mut rows, x, y).is_none() {
-                let mut cell = frame.cells.get(frame_cell_index(frame, x, y)?)?.clone();
-                cell.modifier ^= REVERSED_MODIFIER;
-                rows.push(PaneSurfacePatchRow {
-                    x,
-                    y,
-                    cells: vec![cell],
-                });
-            }
+        if let Some((x, y)) = previous.filter(|position| Some(*position) != next)
+            && patch_cell_mut(&mut rows, x, y).is_none()
+        {
+            let mut cell = frame.cells.get(frame_cell_index(frame, x, y)?)?.clone();
+            cell.modifier ^= REVERSED_MODIFIER;
+            rows.push(PaneSurfacePatchRow {
+                x,
+                y,
+                cells: vec![cell],
+            });
         }
         if let Some((x, y)) = next {
             if let Some(cell) = patch_cell_mut(&mut rows, x, y) {
@@ -206,7 +206,7 @@ impl BlitEncoder {
         &mut self,
         rows: &[PaneSurfacePatchRow],
         cursor: Option<CursorState>,
-        encoded: EncodedBlit,
+        encoded: &EncodedBlit,
     ) -> bool {
         let Some(frame) = self.last_frame.as_mut() else {
             return false;
@@ -480,7 +480,12 @@ fn patch_rows_overlap(rows: &[PaneSurfacePatchRow]) -> bool {
     }
     let mut spans = rows
         .iter()
-        .map(|row| (row.y, row.x, row.x.saturating_add(row.cells.len() as u16)))
+        .map(|row| {
+            // Patch rows are validated against a u16-wide frame, so this fits in a u16;
+            // saturate defensively rather than panic on a pathological patch.
+            let len = u16::try_from(row.cells.len()).unwrap_or(u16::MAX);
+            (row.y, row.x, row.x.saturating_add(len))
+        })
         .collect::<Vec<_>>();
     spans.sort_unstable();
     spans
@@ -525,7 +530,8 @@ fn blit_patch_to(
         let mut to_skip = 0usize;
         let mut next_inline_col = None;
         for (offset, cell) in row.cells.iter().enumerate() {
-            let col = row.x + offset as u16;
+            // `row` was validated by `patch_row_fits` to stay within the u16-wide frame.
+            let col = row.x + u16::try_from(offset).unwrap_or(u16::MAX);
             let idx = usize::from(row.y) * usize::from(frame.width) + usize::from(col);
             let prev_cell = &frame.cells[idx];
             if !cell.skip && (!cells_equal(cell, prev_cell) || invalidated > 0) && to_skip == 0 {
@@ -666,7 +672,7 @@ fn is_halfwidth_katakana_voiced_grapheme(symbol: &str) -> bool {
 struct HostCursorState {
     position: (u16, u16),
     visible: bool,
-    /// DECSCUSR parameter (0–6). 0 means terminal default.
+    /// DECSCUSR parameter (0-6). 0 means terminal default.
     shape: u8,
 }
 
@@ -704,11 +710,7 @@ fn resolve_host_cursor_state(
 }
 
 fn normalize_cursor_shape(shape: u8) -> u8 {
-    if shape <= 6 {
-        shape
-    } else {
-        0
-    }
+    if shape <= 6 { shape } else { 0 }
 }
 
 fn default_hidden_cursor_position(frame: &FrameData) -> (u16, u16) {
@@ -726,7 +728,7 @@ fn clamp_cursor_position(frame: &FrameData, x: u16, y: u16) -> (u16, u16) {
 }
 
 fn write_cursor_position(writer: &mut impl Write, (x, y): (u16, u16)) {
-    // CUP: move cursor to (row+1, col+1) — 1-based.
+    // CUP: move cursor to (row+1, col+1) - 1-based.
     let _ = write!(writer, "\x1b[{};{}H", y + 1, x + 1);
 }
 
@@ -964,7 +966,7 @@ mod tests {
     use super::*;
     use crate::protocol::{CellData, CursorState};
 
-    const WIDE_GRAPHEME: &str = "💡";
+    const WIDE_GRAPHEME: &str = "\u{1F4A1}";
     const HALFWIDTH_VOICED_KANA: &str = "ｶ\u{ff9e}";
 
     fn make_cell(symbol: &str, fg: u32, bg: u32, modifier: u16) -> CellData {
@@ -1660,7 +1662,7 @@ mod tests {
         let curr = make_frame(3, 2, vec![make_cell("B", 0, 0, 0); 6]);
         let mut encoder = BlitEncoder::new();
         let initial = encoder.encode(&prev, false);
-        encoder.commit(prev, initial);
+        encoder.commit(prev, &initial);
 
         let encoded = encoder.encode(&curr, false);
         assert!(encoded.full);
@@ -1675,7 +1677,7 @@ mod tests {
         let frame = make_frame(3, 2, vec![make_cell("A", 0, 0, 0); 6]);
         let mut encoder = BlitEncoder::new();
         let initial = encoder.encode(&frame, false);
-        encoder.commit(frame.clone(), initial);
+        encoder.commit(frame.clone(), &initial);
 
         let encoded = encoder.encode(&frame, true);
         assert!(encoded.full);
@@ -1703,7 +1705,7 @@ mod tests {
         );
         let mut encoder = BlitEncoder::new();
         let initial = encoder.encode(&previous, false);
-        encoder.commit(previous.clone(), initial);
+        encoder.commit(previous.clone(), &initial);
 
         let rows = vec![PaneSurfacePatchRow {
             x: 0,
@@ -1730,7 +1732,7 @@ mod tests {
             .encode_patch(&rows, cursor.clone(), false)
             .expect("valid retained patch");
         assert_eq!(patch.bytes, full_diff.bytes);
-        assert!(encoder.commit_patch(&rows, cursor, patch));
+        assert!(encoder.commit_patch(&rows, cursor, &patch));
         assert!(encoder.is_current(&expected));
     }
 
@@ -1747,7 +1749,7 @@ mod tests {
         );
         let mut encoder = BlitEncoder::new();
         let initial = encoder.encode(&previous, false);
-        encoder.commit(previous.clone(), initial);
+        encoder.commit(previous.clone(), &initial);
 
         let rows = vec![PaneSurfacePatchRow {
             x: 0,
@@ -1777,7 +1779,7 @@ mod tests {
         );
         let mut encoder = BlitEncoder::new();
         let initial = encoder.encode(&frame, false);
-        encoder.commit(frame, initial);
+        encoder.commit(frame, &initial);
         let rows = vec![
             PaneSurfacePatchRow {
                 x: 0,
@@ -1823,10 +1825,12 @@ mod tests {
         ] {
             frame.cursor = cursor.clone();
             let initial = encoder.encode(&frame, false);
-            encoder.commit(frame.clone(), initial);
-            let encoded = encoder.encode_patch(&[], cursor.clone(), false).expect("test precondition");
+            encoder.commit(frame.clone(), &initial);
+            let encoded = encoder
+                .encode_patch(&[], cursor.clone(), false)
+                .expect("test precondition");
             assert!(encoded.bytes.is_empty());
-            assert!(encoder.commit_patch(&[], cursor, encoded));
+            assert!(encoder.commit_patch(&[], cursor, &encoded));
             assert!(encoder.is_current(&frame));
         }
         for cursor in [
@@ -1847,13 +1851,18 @@ mod tests {
                 .encode_patch(&[], Some(cursor.clone()), false)
                 .expect("test precondition");
             assert!(String::from_utf8_lossy(&encoded.bytes).contains("\x1b[1;3H"));
-            assert!(encoder.commit_patch(&[], Some(cursor), encoded));
+            assert!(encoder.commit_patch(&[], Some(cursor), &encoded));
         }
         // Switching to a client-drawn cursor must still hide the visible host cursor.
         let encoded = encoder
             .encode_patch(
                 &[],
-                encoder.last_frame.as_ref().expect("test precondition").cursor.clone(),
+                encoder
+                    .last_frame
+                    .as_ref()
+                    .expect("test precondition")
+                    .cursor
+                    .clone(),
                 true,
             )
             .expect("test precondition");
@@ -1880,7 +1889,7 @@ mod tests {
         let previous_drawn = frame_with_drawn_cursor(previous.clone());
         let mut encoder = BlitEncoder::new();
         let initial = encoder.encode_with_suppressed_visible_cursor(&previous_drawn, false);
-        encoder.commit(previous_drawn, initial);
+        encoder.commit(previous_drawn, &initial);
 
         let rows = vec![PaneSurfacePatchRow {
             x: 0,
@@ -1910,7 +1919,7 @@ mod tests {
             .encode_patch(&drawn_rows, cursor.clone(), true)
             .expect("valid drawn cursor patch");
         assert_eq!(patch.bytes, full_diff.bytes);
-        assert!(encoder.commit_patch(&drawn_rows, cursor, patch));
+        assert!(encoder.commit_patch(&drawn_rows, cursor, &patch));
         assert!(encoder.is_current(&expected));
     }
 
@@ -2003,11 +2012,13 @@ mod tests {
         let mut output = Vec::new();
         blit_frame_to(&mut output, &prev, None);
         assert!(
-            String::from_utf8(output).expect("test precondition").contains("\x1b[?25l"),
+            String::from_utf8(output)
+                .expect("test precondition")
+                .contains("\x1b[?25l"),
             "first frame should hide cursor"
         );
 
-        // Second frame: cursor visible — should restore visibility.
+        // Second frame: cursor visible - should restore visibility.
         let curr = FrameData {
             cells: vec![make_cell("B", 0, 0, 0)],
             width: 1,
@@ -2181,7 +2192,9 @@ mod tests {
         blit_frame_to(&mut output, &curr, Some(&prev));
 
         assert!(
-            String::from_utf8(output).expect("test precondition").contains("\x1b[?25l"),
+            String::from_utf8(output)
+                .expect("test precondition")
+                .contains("\x1b[?25l"),
             "diff redraw should hide a previously visible cursor when the next frame has none"
         );
     }

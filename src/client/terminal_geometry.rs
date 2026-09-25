@@ -1,6 +1,6 @@
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use tracing::debug;
@@ -52,7 +52,7 @@ pub(super) fn pack_cell_size(width_px: u32, height_px: u32) -> u64 {
 
 fn unpack_cell_size(packed: u64) -> Option<(u32, u32)> {
     let width_px = (packed >> 32) as u32;
-    let height_px = (packed & u64::from(u32::MAX)) as u32;
+    let height_px = u32::try_from(packed & u64::from(u32::MAX)).unwrap_or(u32::MAX);
     (width_px > 0 && height_px > 0).then_some((width_px, height_px))
 }
 
@@ -127,7 +127,7 @@ pub(super) fn resize_report_required(
 /// swallow the first change.
 #[allow(clippy::too_many_arguments)] // The arguments are one immutable launch snapshot, not shared state.
 pub(super) fn resize_poll_loop(
-    resize_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
+    resize_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
     initial_cols: u16,
     initial_rows: u16,
     initial_cell_width: u32,

@@ -29,14 +29,14 @@ fn attribute(file: &std::fs::File, name: &CStr) -> Option<Vec<u8>> {
             value.len(),
         )
     };
-    if read < 0 {
+    let Ok(read) = usize::try_from(read) else {
         assert_eq!(
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::ENODATA)
         );
         return None;
-    }
-    value.truncate(read as usize);
+    };
+    value.truncate(read);
     Some(value)
 }
 

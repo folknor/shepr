@@ -49,9 +49,9 @@ fn missing_pixel_geometry_keeps_a_valid_terminal_grid() {
 
 fn restore_env_var(key: &str, value: Option<OsString>) {
     if let Some(value) = value {
-        std::env::set_var(key, value);
+        unsafe { std::env::set_var(key, value) };
     } else {
-        std::env::remove_var(key);
+        unsafe { std::env::remove_var(key) };
     }
 }
 
@@ -63,7 +63,7 @@ struct EnvVarGuard {
 impl EnvVarGuard {
     fn set(key: &'static str, value: &str) -> Self {
         let previous = std::env::var_os(key);
-        std::env::set_var(key, value);
+        unsafe { std::env::set_var(key, value) };
         Self { key, previous }
     }
 }
@@ -85,7 +85,7 @@ impl EnvVarsRemovedGuard {
             .map(|key| (*key, std::env::var_os(key)))
             .collect();
         for key in keys {
-            std::env::remove_var(key);
+            unsafe { std::env::remove_var(key) };
         }
         Self { previous }
     }
@@ -127,7 +127,6 @@ fn host_cursor_policy_native_and_drawn_override_auto_detection() {
         crate::config::HostCursorModeConfig::Drawn
     ));
 }
-
 
 #[test]
 fn write_host_terminal_appearance_query_emits_mode_2031_query() {

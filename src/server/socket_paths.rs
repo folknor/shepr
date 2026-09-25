@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn client_socket_path_defaults_to_config_dir() {
-        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
         crate::session::clear_explicit_session_for_test();
         let path = client_socket_path_from_overrides(None, None);
         assert_eq!(path, crate::config::config_dir().join("shepr-client.sock"));
@@ -165,7 +165,10 @@ mod tests {
 
         let result = prepare_socket_path(&socket_path);
         assert!(result.is_err());
-        assert_eq!(result.expect_err("test precondition").kind(), io::ErrorKind::AddrInUse);
+        assert_eq!(
+            result.expect_err("test precondition").kind(),
+            io::ErrorKind::AddrInUse
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

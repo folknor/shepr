@@ -2,39 +2,37 @@ use std::cell::Cell;
 use std::io;
 use std::path::Path;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering},
 };
 
 use bytes::Bytes;
-use ratatui::{layout::Rect, Frame};
+use ratatui::{Frame, layout::Rect};
 #[cfg(test)]
 use tokio::sync::watch;
-use tokio::sync::{mpsc, Notify};
-use tracing::{debug, error, info, warn};
+use tokio::sync::{Notify, mpsc};
+use tracing::{error, info, warn};
 
 use crate::detect::{Agent, AgentState};
 use crate::events::AppEvent;
 use crate::layout::PaneId;
-use crate::pty::actor::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult};
 use crate::pty::PtyCommand;
+use crate::pty::actor::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult};
 use crate::render_signal::RenderSignal;
 
 mod agent_detection;
 mod cursor;
-mod kitty_keyboard;
 mod osc;
 mod state;
 mod terminal;
 
 use self::agent_detection::{
-    codex_prompt_ready, decide_detection_screen_read, decide_screen_detection_publish,
-    detection_update_for_publish_with_osc, mark_detection_content_changed,
-    observe_detection_content_change, DetectionPublishDecision, DetectionScreenReadDecision,
-    DetectionScreenReadInput, PendingIdleConfirmation, ScreenDetectionPublishInput,
-    AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
+    AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW, DetectionPublishDecision,
+    DetectionScreenReadDecision, DetectionScreenReadInput, PendingIdleConfirmation,
+    ScreenDetectionPublishInput, codex_prompt_ready, decide_detection_screen_read,
+    decide_screen_detection_publish, detection_update_for_publish_with_osc,
+    mark_detection_content_changed, observe_detection_content_change,
 };
-pub use self::terminal::InputState;
 use self::terminal::{GhosttyPaneTerminal, PaneTerminal};
 pub(crate) use self::terminal::{
     TerminalDirtyPatch, TerminalDirtyPatchOutcome, TerminalReadSnapshot, TerminalSearchDirection,
@@ -621,11 +619,11 @@ fn hinted_process_probe_result(
 fn probe_foreground_process_from_jobs(
     pid: u32,
     foreground_pgid: Option<u32>,
-    leader_job: Option<crate::platform::ForegroundJob>,
+    leader_job: Option<&crate::platform::ForegroundJob>,
     foreground_job: impl FnOnce() -> Option<crate::platform::ForegroundJob>,
     read_hint: impl Fn(u32) -> Option<Agent> + Copy,
 ) -> ProcessProbeResult {
-    if let Some(job) = leader_job.as_ref() {
+    if let Some(job) = leader_job {
         if let Some(hinted) = hinted_process_probe_result(job, pid, read_hint) {
             return hinted;
         }
@@ -677,7 +675,9 @@ fn probe_foreground_process(pid: u32, foreground_pgid: Option<u32>) -> ProcessPr
     probe_foreground_process_from_jobs(
         pid,
         foreground_pgid,
-        foreground_pgid.and_then(crate::detect::foreground_group_leader_job),
+        foreground_pgid
+            .and_then(crate::detect::foreground_group_leader_job)
+            .as_ref(),
         || crate::detect::foreground_job(pid),
         crate::platform::process_agent_hint,
     )
@@ -733,7 +733,7 @@ impl AgentDetectionPresence {
 }
 
 // ---------------------------------------------------------------------------
-// PaneRuntime — PTY, parser, channels, background tasks
+// PaneRuntime - PTY, parser, channels, background tasks
 // ---------------------------------------------------------------------------
 
 /// PTY runtime for a pane. Owns the terminal, I/O channels, and background tasks.
@@ -921,11 +921,7 @@ fn wait_for_processes_to_exit(
     }
 }
 
-fn shutdown_pane_processes(
-    pane_id: PaneId,
-    child_pid: u32,
-    child_wait_completed: &AtomicBool,
-) {
+fn shutdown_pane_processes(pane_id: PaneId, child_pid: u32, child_wait_completed: &AtomicBool) {
     if child_pid == 0 {
         return;
     }
@@ -1112,15 +1108,15 @@ impl PaneRuntime {
         pane_id: PaneId,
         rows: u16,
         cols: u16,
-        cwd: std::path::PathBuf,
+        cwd: &std::path::Path,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        events: &mpsc::Sender<AppEvent>,
+        render_notify: &Arc<Notify>,
+        render_dirty: &Arc<RenderSignal>,
     ) -> std::io::Result<Self> {
         Self::spawn_with_initial_history(
             pane_id,
@@ -1145,19 +1141,19 @@ impl PaneRuntime {
         pane_id: PaneId,
         rows: u16,
         cols: u16,
-        cwd: std::path::PathBuf,
+        cwd: &std::path::Path,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
         initial_history_ansi: Option<&str>,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        events: &mpsc::Sender<AppEvent>,
+        render_notify: &Arc<Notify>,
+        render_dirty: &Arc<RenderSignal>,
     ) -> std::io::Result<Self> {
         let mut cmd = pane_shell_command_builder(shell_config)?;
-        cmd.cwd(&cwd);
+        cmd.cwd(cwd);
         apply_pane_terminal_env(&mut cmd);
         apply_pane_launch_env(&mut cmd, launch_env);
         Self::spawn_command_builder(
@@ -1182,15 +1178,15 @@ impl PaneRuntime {
         pane_id: PaneId,
         rows: u16,
         cols: u16,
-        cwd: std::path::PathBuf,
+        cwd: &std::path::Path,
         argv: &[String],
         launch_env: &PaneLaunchEnv,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        events: &mpsc::Sender<AppEvent>,
+        render_notify: &Arc<Notify>,
+        render_dirty: &Arc<RenderSignal>,
     ) -> std::io::Result<Self> {
         let Some((program, args)) = argv.split_first() else {
             return Err(std::io::Error::new(
@@ -1200,7 +1196,7 @@ impl PaneRuntime {
         };
         let mut cmd = PtyCommand::new(program);
         cmd.args(args);
-        cmd.cwd(&cwd);
+        cmd.cwd(cwd);
         apply_pane_terminal_env(&mut cmd);
         apply_pane_launch_env(&mut cmd, launch_env);
         Self::spawn_command_builder(
@@ -1228,9 +1224,9 @@ impl PaneRuntime {
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        events: &mpsc::Sender<AppEvent>,
+        render_notify: &Arc<Notify>,
+        render_dirty: &Arc<RenderSignal>,
         cmd: &PtyCommand,
         spawn_error_message: &'static str,
         initial_history_ansi: Option<&str>,
@@ -1261,8 +1257,8 @@ impl PaneRuntime {
         let detection_content_seq = Arc::new(AtomicU64::new(0));
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
         {
-            let child_pid = child_pid.clone();
-            let child_wait_completed = child_wait_completed.clone();
+            let child_pid = Arc::clone(&child_pid);
+            let child_wait_completed = Arc::clone(&child_wait_completed);
             let events = events.clone();
             let rt = tokio::runtime::Handle::current();
             let mut child = spawned.child;
@@ -1285,7 +1281,7 @@ impl PaneRuntime {
                     }
                 };
                 child_wait_completed.store(true, Ordering::Release);
-                // Use blocking send — PaneDied is critical, must not be dropped
+                // Use blocking send - PaneDied is critical, must not be dropped
                 if let Err(e) = rt.block_on(events.send(AppEvent::PaneDied {
                     pane_id,
                     exit_reason,
@@ -1296,16 +1292,16 @@ impl PaneRuntime {
         }
 
         let io = {
-            let terminal = terminal.clone();
+            let terminal = Arc::clone(&terminal);
             let response_writer = response_tx.clone();
-            let render_notify = render_notify.clone();
-            let render_dirty = render_dirty.clone();
-            let content_seq = content_seq.clone();
-            let content_write_lock = content_write_lock.clone();
-            let detection_content_seq = detection_content_seq.clone();
-            let child_pid = child_pid.clone();
+            let render_notify = Arc::clone(render_notify);
+            let render_dirty = Arc::clone(render_dirty);
+            let content_seq = Arc::clone(&content_seq);
+            let content_write_lock = Arc::clone(&content_write_lock);
+            let detection_content_seq = Arc::clone(&detection_content_seq);
+            let child_pid = Arc::clone(&child_pid);
             let events = events.clone();
-            let reported_cwd = reported_cwd.clone();
+            let reported_cwd = Arc::clone(&reported_cwd);
             let rt = tokio::runtime::Handle::current();
             let on_read = Box::new(move |bytes: &[u8]| {
                 let _content_write_guard = match content_write_lock.lock() {
@@ -1326,8 +1322,8 @@ impl PaneRuntime {
                     render_notify.notify_one();
                 }
                 if let Some(delay) = result.render_delay {
-                    let render_notify = render_notify.clone();
-                    let render_dirty = render_dirty.clone();
+                    let render_notify = Arc::clone(&render_notify);
+                    let render_dirty = Arc::clone(&render_dirty);
                     rt.spawn(async move {
                         tokio::time::sleep(delay).await;
                         if render_dirty.request_pty(pane_id) {
@@ -1368,17 +1364,18 @@ impl PaneRuntime {
             const TICK_IDENTIFIED: Duration = Duration::from_millis(300);
             const TICK_PENDING_RELEASE: Duration = Duration::from_millis(50);
 
-            let child_pid = child_pid.clone();
-            let terminal = terminal.clone();
+            let child_pid = Arc::clone(&child_pid);
+            let terminal = Arc::clone(&terminal);
             let state_events = events.clone();
-            let detection_content_seq = detection_content_seq.clone();
-            let full_lifecycle_authority_active_for_task = full_lifecycle_authority_active.clone();
-            let render_notify = render_notify.clone();
-            let render_dirty = render_dirty.clone();
+            let detection_content_seq = Arc::clone(&detection_content_seq);
+            let full_lifecycle_authority_active_for_task =
+                Arc::clone(&full_lifecycle_authority_active);
+            let render_notify = Arc::clone(render_notify);
+            let render_dirty = Arc::clone(render_dirty);
             let detect_reset_notify = Arc::new(Notify::new());
-            let detect_reset = detect_reset_notify.clone();
+            let detect_reset = Arc::clone(&detect_reset_notify);
             let pending_release = Arc::new(Mutex::new(None));
-            let pending_release_for_task = pending_release.clone();
+            let pending_release_for_task = Arc::clone(&pending_release);
 
             let handle = tokio::spawn(async move {
                 let mut agent_presence = AgentDetectionPresence::from_agent(None);
@@ -1771,7 +1768,7 @@ impl PaneRuntime {
 
     #[cfg(test)]
     pub(crate) fn agent_detection_reset_notify_for_test(&self) -> Arc<Notify> {
-        self.detect_reset_notify.clone()
+        Arc::clone(&self.detect_reset_notify)
     }
 
     pub fn set_full_lifecycle_authority_active(&self, active: bool) {
@@ -1870,14 +1867,8 @@ impl PaneRuntime {
         )>,
         limit: usize,
     ) -> crate::pane::TerminalSearchWindow {
-        self.terminal.search_text_window(
-            query,
-            case_sensitive,
-            direction,
-            cursor,
-            previous,
-            limit,
-        )
+        self.terminal
+            .search_text_window(query, case_sensitive, direction, cursor, previous, limit)
     }
 
     pub(crate) fn word_motion_target(
@@ -1899,10 +1890,6 @@ impl PaneRuntime {
         direction: i8,
     ) -> Option<crate::pane::TerminalTextPoint> {
         self.terminal.paragraph_motion_target(row, direction)
-    }
-
-    pub fn input_state(&self) -> Option<InputState> {
-        self.terminal.input_state()
     }
 
     pub fn bracketed_paste_enabled(&self) -> bool {
@@ -2262,9 +2249,9 @@ impl PaneRuntime {
         &self,
         bytes: Vec<u8>,
     ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<bool>) {
-        let terminal = self.terminal.clone();
-        let sequence = self.content_seq.clone();
-        let write_lock = self.content_write_lock.clone();
+        let terminal = Arc::clone(&self.terminal);
+        let sequence = Arc::clone(&self.content_seq);
+        let write_lock = Arc::clone(&self.content_write_lock);
         let pane_id = self.pane_id;
         let (start_tx, start_rx) = std::sync::mpsc::channel();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -2397,7 +2384,9 @@ mod tests {
         let before = runtime.content_seq();
         runtime.scroll_up(1);
         runtime.clear_screen().expect("test precondition");
-        let snapshot = runtime.collect_dirty_patch_snapshot(10, 5).expect("test precondition");
+        let snapshot = runtime
+            .collect_dirty_patch_snapshot(10, 5)
+            .expect("test precondition");
         assert!(snapshot.content_revision > before);
         assert!(!matches!(snapshot.patch, TerminalDirtyPatchOutcome::Clean));
         let metrics = runtime.scroll_metrics().expect("test precondition");
@@ -2423,15 +2412,19 @@ mod tests {
         runtime.clear_screen().expect("test precondition");
         assert_eq!(runtime.visible_text(), before);
         runtime.test_process_pty_bytes(b"\x1b[?1049l");
-        assert!(runtime
-            .recent_unwrapped_text_snapshot(100)
-            .text
-            .contains("one"));
+        assert!(
+            runtime
+                .recent_unwrapped_text_snapshot(100)
+                .text
+                .contains("one")
+        );
         runtime.clear_screen().expect("test precondition");
-        assert!(!runtime
-            .recent_unwrapped_text_snapshot(100)
-            .text
-            .contains("one"));
+        assert!(
+            !runtime
+                .recent_unwrapped_text_snapshot(100)
+                .text
+                .contains("one")
+        );
         assert!(runtime.visible_text().contains("five"));
     }
 
@@ -2589,7 +2582,11 @@ mod tests {
         let (events, _event_rx) = mpsc::channel(1);
         publish_reported_cwd(runtime.pane_id, cwd.clone(), &runtime.reported_cwd, &events);
         assert_eq!(
-            runtime.reported_cwd.lock().expect("test precondition").as_ref(),
+            runtime
+                .reported_cwd
+                .lock()
+                .expect("test precondition")
+                .as_ref(),
             Some(&cwd),
             "test setup must pass cache admission"
         );
@@ -2778,10 +2775,11 @@ mod tests {
         std::fs::write(&shell, "#!/bin/sh\nexit 0\n").expect("test precondition");
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).expect("test precondition");
+            std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755))
+                .expect("test precondition");
         }
         let original_path = std::env::var_os("PATH");
-        std::env::set_var("PATH", &bin);
+        unsafe { std::env::set_var("PATH", &bin) };
 
         let cmd = pane_shell_command_builder(PaneShellConfig::new(
             "fake-shell",
@@ -2795,15 +2793,18 @@ mod tests {
             shell.to_str()
         );
         match original_path {
-            Some(path) => std::env::set_var("PATH", path),
-            None => std::env::remove_var("PATH"),
+            Some(path) => unsafe { std::env::set_var("PATH", path) },
+            None => unsafe { std::env::remove_var("PATH") },
         }
         let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
     fn login_shell_resolution_preserves_shell_paths() {
-        assert_eq!(resolve_shell_for_login_mode("/bin/sh").expect("test precondition"), "/bin/sh");
+        assert_eq!(
+            resolve_shell_for_login_mode("/bin/sh").expect("test precondition"),
+            "/bin/sh"
+        );
     }
 
     #[test]
@@ -2865,7 +2866,13 @@ mod tests {
 
         assert_eq!(runtime.current_size(), (45, 80));
         assert_eq!(runtime.terminal_dimensions(), Some((80, 45)));
-        assert_eq!(runtime.scroll_metrics().expect("test precondition").viewport_rows, 45);
+        assert_eq!(
+            runtime
+                .scroll_metrics()
+                .expect("test precondition")
+                .viewport_rows,
+            45
+        );
         let snapshot = runtime.recent_unwrapped_text_snapshot(usize::MAX);
         assert!(snapshot.text.contains("00001 "));
         assert!(snapshot.text.contains("02000 "));
@@ -2907,7 +2914,10 @@ mod tests {
         };
 
         assert!(runtime.try_send_focus_event(crate::ghostty::FocusEvent::Gained));
-        assert_eq!(rx.recv().await.expect("test precondition"), Bytes::from_static(b"\x1b[I"));
+        assert_eq!(
+            rx.recv().await.expect("test precondition"),
+            Bytes::from_static(b"\x1b[I")
+        );
     }
 
     #[tokio::test]
@@ -3072,7 +3082,7 @@ mod tests {
         let result = probe_foreground_process_from_jobs(
             42,
             Some(99),
-            Some(job),
+            Some(&job),
             || None,
             |pid| (pid == 99).then_some(Agent::Claude),
         );

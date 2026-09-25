@@ -246,10 +246,10 @@ pub fn identify_agent_in_job(job: &crate::platform::ForegroundJob) -> Option<(Ag
         .find(|process| process.pid == job.process_group_id)
     {
         let candidate = normalized_process_name(process);
-        if let Some(agent) = identify_agent(&candidate) {
-            if agent != Agent::Letta || is_interactive_letta_process(process) {
-                return Some((agent, candidate));
-            }
+        if let Some(agent) = identify_agent(&candidate)
+            && (agent != Agent::Letta || is_interactive_letta_process(process))
+        {
+            return Some((agent, candidate));
         }
     }
 
@@ -356,12 +356,11 @@ fn normalized_process_name(process: &crate::platform::ForegroundProcess) -> Stri
     let effective = process.argv0.as_deref().unwrap_or(&process.name);
     let lower_effective = effective.to_lowercase();
 
-    if is_generic_runtime_or_shell(&lower_effective) {
-        if let Some(wrapped_agent) =
+    if is_generic_runtime_or_shell(&lower_effective)
+        && let Some(wrapped_agent) =
             wrapped_agent_name_from_runtime_argv(&lower_effective, process.argv.as_deref())
-        {
-            return wrapped_agent;
-        }
+    {
+        return wrapped_agent;
     }
 
     if identify_agent(effective).is_some() {
@@ -370,17 +369,15 @@ fn normalized_process_name(process: &crate::platform::ForegroundProcess) -> Stri
 
     if let Some(runtime) = process.argv.as_deref().and_then(|argv| argv.first()) {
         let runtime_name = normalized_agent_lookup_name(path_basename(runtime));
-        if matches!(runtime_name.as_str(), "node" | "bun") {
-            if let Some(wrapped_agent) =
+        if matches!(runtime_name.as_str(), "node" | "bun")
+            && let Some(wrapped_agent) =
                 wrapped_agent_name_from_runtime_argv(runtime, process.argv.as_deref())
-            {
-                if matches!(
-                    identify_agent(&wrapped_agent),
-                    Some(Agent::Qwen | Agent::Cline | Agent::Letta)
-                ) {
-                    return wrapped_agent;
-                }
-            }
+            && matches!(
+                identify_agent(&wrapped_agent),
+                Some(Agent::Qwen | Agent::Cline | Agent::Letta)
+            )
+        {
+            return wrapped_agent;
         }
     }
 
@@ -1529,11 +1526,11 @@ mod tests {
 
     #[test]
     fn foreground_job_detects_sleep() {
-        use crate::pty::{backend::spawn_in_pty, PtyCommand};
+        use crate::pty::{PtyCommand, backend::spawn_in_pty};
 
         let pty = open_test_pty();
 
-        // Spawn "sleep 999" — a known, deterministic process
+        // Spawn "sleep 999" - a known, deterministic process
         let mut cmd = PtyCommand::new("sleep");
         cmd.arg("999");
         let mut child = spawn_in_pty(&pty.slave, &cmd).expect("failed to spawn");
@@ -1560,7 +1557,7 @@ mod tests {
 
     #[test]
     fn foreground_job_detects_shell_running_command() {
-        use crate::pty::{backend::spawn_in_pty, PtyCommand};
+        use crate::pty::{PtyCommand, backend::spawn_in_pty};
         use std::io::Write;
 
         let pty = open_test_pty();
@@ -1595,7 +1592,7 @@ mod tests {
 
     #[test]
     fn foreground_job_detects_agent_behind_shell_wrapper() {
-        use crate::pty::{backend::spawn_in_pty, PtyCommand};
+        use crate::pty::{PtyCommand, backend::spawn_in_pty};
 
         let pty = open_test_pty();
 
@@ -1609,7 +1606,10 @@ mod tests {
         let job = foreground_job(pid);
         let process_group_id = job.as_ref().map(|job| job.process_group_id).unwrap_or(pid);
         unsafe {
-            libc::kill(-(process_group_id as i32), libc::SIGKILL);
+            libc::kill(
+                -i32::try_from(process_group_id).unwrap_or(i32::MAX),
+                libc::SIGKILL,
+            );
         }
         child.wait().ok();
 

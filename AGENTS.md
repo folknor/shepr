@@ -99,7 +99,9 @@ lives in `src/ghostty/` (the name predates the switch; a rename to `vt` is
 planned): `mod.rs` is the adapter the rest of the tree uses, `format.rs` the
 plain/VT formatters used for reads and history persistence, `scan.rs` a scanner
 for sequences alacritty ignores (OSC 7, modes 9/1016/2031/2048, CSI ? 996 n,
-CSI 16 t, XTGETTCAP). Alacritty types must not leak out of that module. When
+CSI 16 t, XTGETTCAP, modifyOtherKeys) and for the halfwidth katakana voiced
+marks U+FF9E/U+FF9F, which unicode-width calls zero-width but terminals give
+their own column. Alacritty types must not leak out of that module. When
 writing against its API, read the source instead of relying on memory: a
 checkout of the pinned `alacritty_terminal` release and the matching `vte` live
 under `research/` (`research/alacritty/alacritty_terminal/`, `research/vte/`).

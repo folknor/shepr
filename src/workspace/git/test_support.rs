@@ -84,7 +84,8 @@ pub(super) fn write_fake_tracked_repo(root: &Path) {
     std::fs::create_dir_all(root.join(".git/refs/heads")).expect("test precondition");
     std::fs::create_dir_all(root.join(".git/refs/remotes/origin")).expect("test precondition");
     std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").expect("test precondition");
-    std::fs::write(root.join(".git/refs/heads/main"), format!("{head_oid}\n")).expect("test precondition");
+    std::fs::write(root.join(".git/refs/heads/main"), format!("{head_oid}\n"))
+        .expect("test precondition");
     std::fs::write(
         root.join(".git/refs/remotes/origin/main"),
         format!("{upstream_oid}\n"),

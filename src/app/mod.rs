@@ -1,7 +1,7 @@
 //! Application orchestration.
 //!
-//! - `state.rs` — AppState, Mode, and pure data structs
-//! - `actions.rs` — state mutations (testable without PTYs/async)
+//! - `state.rs` - AppState, Mode, and pure data structs
+//! - `actions.rs` - state mutations (testable without PTYs/async)
 
 pub(crate) mod actions;
 mod agent_resume;
@@ -35,7 +35,7 @@ const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
 
 use ratatui::layout::Rect;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 use tracing::info;
 
 use crate::config::Config;
@@ -80,7 +80,6 @@ pub struct App {
     pub(crate) git_refresh_due_after_in_flight: bool,
     pub(crate) git_identity_refresh_requested: bool,
     pub(crate) git_status_cache: HashMap<std::path::PathBuf, crate::workspace::GitStatusCacheEntry>,
-    pub(crate) loaded_host_cursor: crate::config::HostCursorModeConfig,
     pub(crate) agent_metadata_deadline: Option<Instant>,
     pub(crate) pending_agent_resume_deadline: Option<Instant>,
     startup_per_agent_delay: Duration,
@@ -109,25 +108,16 @@ pub struct App {
 pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
 pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
 
-fn agent_panel_sort_from_config(
-    sort: crate::config::AgentPanelSortConfig,
-) -> state::AgentPanelSort {
-    match sort {
-        crate::config::AgentPanelSortConfig::Spaces => state::AgentPanelSort::Spaces,
-        crate::config::AgentPanelSortConfig::Priority => state::AgentPanelSort::Priority,
-    }
-}
-
 /// Parse the configured agent name list into a deduplicated set of `Agent`
 /// values. Unknown agent names are silently dropped so a typo cannot disable
 /// other valid entries.
 fn parse_cjk_ime_agents(names: &[String]) -> Vec<crate::detect::Agent> {
     let mut out = Vec::with_capacity(names.len());
     for name in names {
-        if let Some(agent) = crate::detect::parse_agent_label(name) {
-            if !out.contains(&agent) {
-                out.push(agent);
-            }
+        if let Some(agent) = crate::detect::parse_agent_label(name)
+            && !out.contains(&agent)
+        {
+            out.push(agent);
         }
     }
     out
@@ -189,9 +179,9 @@ impl App {
                 &config.terminal.default_shell,
                 config.terminal.shell_mode,
                 config.session.resume_agents_on_restore,
-                event_tx.clone(),
-                render_notify.clone(),
-                render_dirty.clone(),
+                &event_tx,
+                &render_notify,
+                &render_dirty,
             );
             restored_terminals = terminals;
             restored_terminal_runtimes = terminal_runtimes.into();
@@ -207,8 +197,6 @@ impl App {
         } else {
             (Vec::new(), None, 0)
         };
-
-        let agent_panel_sort = agent_panel_sort_from_config(config.ui.agent_panel_sort);
 
         info!(
             pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes,
@@ -248,11 +236,9 @@ impl App {
             prefix_code,
             prefix_mods,
             headless_size: config.headless_size(),
-            agent_panel_sort,
             sidebar_agents: config.ui.sidebar.agents.clone(),
             sidebar_spaces: config.ui.sidebar.spaces.clone(),
             next_agent_state_change_seq: 0,
-            confirm_close: config.ui.confirm_close,
             pane_borders: config.ui.pane_borders,
             pane_outer_borders: config.ui.pane_outer_borders,
             pane_scrollbars: config.ui.pane_scrollbars,
@@ -309,7 +295,6 @@ impl App {
             git_refresh_due_after_in_flight: false,
             git_identity_refresh_requested: false,
             git_status_cache: HashMap::new(),
-            loaded_host_cursor: config.ui.host_cursor,
             agent_metadata_deadline: None,
             pending_agent_resume_deadline: None,
             startup_per_agent_delay: Duration::from_millis(
@@ -342,6 +327,12 @@ impl App {
         app
     }
 
+    /// Returns the client shell keybindings profile serialized as TOML, if
+    /// one could be computed from the effective config.
+    pub(crate) fn client_shell_keybindings_profile(&self) -> Option<&str> {
+        self.client_shell_keybindings_profile.as_deref()
+    }
+
     pub(crate) fn ensure_default_workspace(&mut self) -> bool {
         if !self.state.workspaces.is_empty() {
             return false;
@@ -350,7 +341,7 @@ impl App {
         let cwd = self.resolve_new_terminal_cwd(None);
         let preserve_checkpoint = self.pane_exit_checkpoint_pending && !self.state.session_dirty;
 
-        match self.create_workspace_with_options(cwd, true) {
+        match self.create_workspace_with_options(&cwd, true) {
             Ok(_) => {
                 if preserve_checkpoint {
                     // Automatic replacement is part of pane removal, not a new user mutation.
@@ -366,7 +357,6 @@ impl App {
             }
         }
     }
-
 }
 #[cfg(test)]
 mod tests {
@@ -374,7 +364,6 @@ mod tests {
     use crate::config::Config;
     use crate::detect::{Agent, AgentState};
     use crate::workspace::Workspace;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::sync::Mutex;
 
     fn test_app() -> App {
@@ -400,18 +389,6 @@ mod tests {
 
     fn config_env_lock() -> &'static Mutex<()> {
         crate::config::test_config_env_lock()
-    }
-
-    fn temp_config_path(name: &str) -> std::path::PathBuf {
-        let unique = format!(
-            "shepr-{name}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        );
-        std::env::temp_dir().join(unique).join("config.toml")
     }
 
     #[test]
@@ -486,7 +463,9 @@ mod tests {
         app.state.workspaces.push(Workspace::test_new("one"));
         let _ = app.render_dirty.take();
         let workspace_id = app.state.workspaces[0].id.clone();
-        let resolved_identity_cwd = app.state.workspaces[0].resolved_identity_cwd().expect("test precondition");
+        let resolved_identity_cwd = app.state.workspaces[0]
+            .resolved_identity_cwd()
+            .expect("test precondition");
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
             results: vec![crate::workspace::WorkspaceGitStatus {
@@ -556,27 +535,11 @@ mod tests {
                 crate::api::schema::EmptyParams::default(),
             ),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["result"]["type"], "ok");
         assert!(app.event_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn startup_uses_configured_agent_panel_sort() {
-        let mut config = Config::default();
-        config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-
-        let app = App::new(
-            &config,
-            crate::app::AppPolicy::TEST,
-            None,
-            api_rx,
-            crate::api::EventHub::default(),
-        );
-
-        assert_eq!(app.state.agent_panel_sort, state::AgentPanelSort::Priority);
     }
 
     #[test]
@@ -767,7 +730,9 @@ mod tests {
         app.state.mode = Mode::Navigate;
 
         let ws_idx = app.workspace_creation_source().expect("test precondition");
-        let seed_cwd = app.seed_cwd_from_workspace(ws_idx).expect("test precondition");
+        let seed_cwd = app
+            .seed_cwd_from_workspace(ws_idx)
+            .expect("test precondition");
 
         assert_eq!(ws_idx, 1);
         assert_eq!(seed_cwd, std::path::PathBuf::from("/tmp/pion"));
@@ -815,7 +780,8 @@ mod tests {
                 crate::api::schema::EmptyParams::default(),
             ),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["result"]["type"], "ok");
         assert!(app.state.should_quit);
@@ -839,7 +805,8 @@ mod tests {
                 label: Some("reviewer".into()),
             }),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["result"]["type"], "pane_info");
         assert_eq!(response["result"]["pane"]["label"], "reviewer");
@@ -865,17 +832,19 @@ mod tests {
                 label: None,
             }),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["result"]["type"], "pane_info");
         assert!(response["result"]["pane"].get("label").is_none());
-        assert!(app
-            .state
-            .terminals
-            .get(&terminal_id)
-            .expect("test precondition")
-            .manual_label
-            .is_none());
+        assert!(
+            app.state
+                .terminals
+                .get(&terminal_id)
+                .expect("test precondition")
+                .manual_label
+                .is_none()
+        );
     }
 
     #[test]
@@ -883,12 +852,17 @@ mod tests {
         let mut app = test_app();
         let workspace = Workspace::test_new("terminal-target-id");
         let pane = workspace.tabs[0].root_pane;
-        let terminal_id = workspace.terminal_id(pane).expect("test precondition").to_string();
+        let terminal_id = workspace
+            .terminal_id(pane)
+            .expect("test precondition")
+            .to_string();
         app.state.workspaces = vec![workspace];
         app.state.active = Some(0);
         app.state.selected = 0;
 
-        let resolved = app.resolve_terminal_target(&terminal_id).expect("test precondition");
+        let resolved = app
+            .resolve_terminal_target(&terminal_id)
+            .expect("test precondition");
         assert_eq!(resolved.pane_id, pane);
         assert_eq!(resolved.terminal_id, terminal_id);
 
@@ -903,7 +877,10 @@ mod tests {
         let mut app = test_app();
         let workspace = Workspace::test_new("terminal-target-command");
         let pane = workspace.tabs[0].root_pane;
-        let terminal_id = workspace.terminal_id(pane).expect("test precondition").clone();
+        let terminal_id = workspace
+            .terminal_id(pane)
+            .expect("test precondition")
+            .clone();
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         app.state
@@ -925,10 +902,16 @@ mod tests {
         let mut app = test_app();
         let workspace = Workspace::test_new("terminal-target-pane");
         let pane = workspace.tabs[0].root_pane;
-        let terminal_id = workspace.terminal_id(pane).expect("test precondition").to_string();
+        let terminal_id = workspace
+            .terminal_id(pane)
+            .expect("test precondition")
+            .to_string();
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        let attached_terminal_id = app.state.workspaces[0].terminal_id(pane).cloned().expect("test precondition");
+        let attached_terminal_id = app.state.workspaces[0]
+            .terminal_id(pane)
+            .cloned()
+            .expect("test precondition");
         app.state
             .terminals
             .get_mut(&attached_terminal_id)
@@ -941,7 +924,9 @@ mod tests {
         app.state.selected = 0;
         let pane_id = app.public_pane_id(0, pane).expect("test precondition");
 
-        let resolved = app.resolve_terminal_target(&pane_id).expect("test precondition");
+        let resolved = app
+            .resolve_terminal_target(&pane_id)
+            .expect("test precondition");
 
         assert_eq!(resolved.pane_id, pane);
         assert_eq!(resolved.terminal_id, terminal_id);
@@ -952,7 +937,10 @@ mod tests {
         let mut app = test_app();
         let workspace = Workspace::test_new("terminal-target-name");
         let pane = workspace.tabs[0].root_pane;
-        let terminal_id = workspace.terminal_id(pane).expect("test precondition").to_string();
+        let terminal_id = workspace
+            .terminal_id(pane)
+            .expect("test precondition")
+            .to_string();
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         let attached_terminal_id = app.state.workspaces[0]
@@ -968,7 +956,9 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
 
-        let resolved = app.resolve_terminal_target("reviewer").expect("test precondition");
+        let resolved = app
+            .resolve_terminal_target("reviewer")
+            .expect("test precondition");
 
         assert_eq!(resolved.pane_id, pane);
         assert_eq!(resolved.terminal_id, terminal_id);
@@ -979,10 +969,17 @@ mod tests {
         let mut app = test_app();
         let workspace = Workspace::test_new("agent-target-name");
         let pane = workspace.tabs[0].root_pane;
-        let terminal_id = workspace.terminal_id(pane).expect("test precondition").clone();
+        let terminal_id = workspace
+            .terminal_id(pane)
+            .expect("test precondition")
+            .clone();
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        let terminal = app.state.terminals.get_mut(&terminal_id).expect("test precondition");
+        let terminal = app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition");
         terminal.set_detected_state(
             Some(crate::detect::Agent::Pi),
             crate::detect::AgentState::Idle,
@@ -1002,7 +999,9 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
 
-        let err = app.resolve_terminal_target("missing-agent").expect_err("test precondition");
+        let err = app
+            .resolve_terminal_target("missing-agent")
+            .expect_err("test precondition");
 
         assert_eq!(
             err,
@@ -1043,7 +1042,9 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
 
-        let err = app.resolve_terminal_target("worker").expect_err("test precondition");
+        let err = app
+            .resolve_terminal_target("worker")
+            .expect_err("test precondition");
 
         let crate::app::terminal_targets::TerminalTargetError::Ambiguous { target, candidates } =
             err
@@ -1064,7 +1065,7 @@ mod tests {
     async fn pane_split_request_focuses_new_pane_when_requested() {
         let _guard = config_env_lock().lock().expect("test precondition");
         let original_shell = std::env::var_os("SHELL");
-        std::env::set_var("SHELL", exiting_test_command());
+        unsafe { std::env::set_var("SHELL", exiting_test_command()) };
 
         let mut app = test_app();
         let mut workspace = Workspace::test_new("api-pane-split-focus-background-tab");
@@ -1076,8 +1077,13 @@ mod tests {
         app.state.selected = 0;
 
         let target_pane = app.state.workspaces[0].tabs[background_tab].root_pane;
-        let target_pane_id = app.pane_info(0, target_pane).expect("test precondition").pane_id;
-        let target_tab_id = app.public_tab_id(0, background_tab).expect("test precondition");
+        let target_pane_id = app
+            .pane_info(0, target_pane)
+            .expect("test precondition")
+            .pane_id;
+        let target_tab_id = app
+            .public_tab_id(0, background_tab)
+            .expect("test precondition");
 
         let response = app.handle_api_request(crate::api::schema::Request {
             id: "req_pane_split_focus_background_tab".into(),
@@ -1092,7 +1098,8 @@ mod tests {
                 env: Default::default(),
             }),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["result"]["type"], "pane_info");
         assert_eq!(response["result"]["pane"]["tab_id"], target_tab_id);
@@ -1105,8 +1112,8 @@ mod tests {
             runtime.shutdown();
         }
         match original_shell {
-            Some(value) => std::env::set_var("SHELL", value),
-            None => std::env::remove_var("SHELL"),
+            Some(value) => unsafe { std::env::set_var("SHELL", value) },
+            None => unsafe { std::env::remove_var("SHELL") },
         }
     }
 
@@ -1114,7 +1121,7 @@ mod tests {
     async fn pane_split_request_applies_ratio() {
         let _guard = config_env_lock().lock().expect("test precondition");
         let original_shell = std::env::var_os("SHELL");
-        std::env::set_var("SHELL", exiting_test_command());
+        unsafe { std::env::set_var("SHELL", exiting_test_command()) };
 
         let mut app = test_app();
         let workspace = Workspace::test_new("api-pane-split-ratio");
@@ -1124,7 +1131,10 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
 
-        let target_pane_id = app.pane_info(0, target_pane).expect("test precondition").pane_id;
+        let target_pane_id = app
+            .pane_info(0, target_pane)
+            .expect("test precondition")
+            .pane_id;
 
         let response = app.handle_api_request(crate::api::schema::Request {
             id: "req_pane_split_ratio".into(),
@@ -1139,7 +1149,8 @@ mod tests {
                 env: Default::default(),
             }),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["result"]["type"], "pane_info");
         let splits = app.state.workspaces[0].tabs[0]
@@ -1147,8 +1158,12 @@ mod tests {
             .splits(ratatui::layout::Rect::new(0, 0, 100, 20));
         assert_eq!(splits.len(), 1);
         assert!((splits[0].ratio - 0.333).abs() < f32::EPSILON);
-        let response_pane_id = response["result"]["pane"]["pane_id"].as_str().expect("test precondition");
-        let (_, response_pane_id) = app.parse_pane_id(response_pane_id).expect("test precondition");
+        let response_pane_id = response["result"]["pane"]["pane_id"]
+            .as_str()
+            .expect("test precondition");
+        let (_, response_pane_id) = app
+            .parse_pane_id(response_pane_id)
+            .expect("test precondition");
         assert!(
             app.state.workspaces[0]
                 .pane_state(response_pane_id)
@@ -1161,8 +1176,8 @@ mod tests {
             runtime.shutdown();
         }
         match original_shell {
-            Some(value) => std::env::set_var("SHELL", value),
-            None => std::env::remove_var("SHELL"),
+            Some(value) => unsafe { std::env::set_var("SHELL", value) },
+            None => unsafe { std::env::remove_var("SHELL") },
         }
     }
 
@@ -1170,7 +1185,7 @@ mod tests {
     async fn pane_split_request_uses_active_focused_pane_when_target_is_omitted() {
         let _guard = config_env_lock().lock().expect("test precondition");
         let original_shell = std::env::var_os("SHELL");
-        std::env::set_var("SHELL", exiting_test_command());
+        unsafe { std::env::set_var("SHELL", exiting_test_command()) };
 
         let mut app = test_app();
         let workspace = Workspace::test_new("api-pane-split-current");
@@ -1194,7 +1209,8 @@ mod tests {
                 env: Default::default(),
             }),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["result"]["type"], "pane_info");
         assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_count(), 2);
@@ -1208,8 +1224,8 @@ mod tests {
             runtime.shutdown();
         }
         match original_shell {
-            Some(value) => std::env::set_var("SHELL", value),
-            None => std::env::remove_var("SHELL"),
+            Some(value) => unsafe { std::env::set_var("SHELL", value) },
+            None => unsafe { std::env::remove_var("SHELL") },
         }
     }
 
@@ -1234,7 +1250,8 @@ mod tests {
                 timeout_ms: Some(1_000),
             }),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["error"]["code"], "agent_pane_unavailable");
         assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_count(), 1);
@@ -1277,12 +1294,15 @@ mod tests {
             }),
         };
         let response = app.handle_api_request(request());
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
         assert_eq!(response["error"]["code"], "agent_start_input_failed");
         assert_eq!(app.state.terminals[&terminal_id].agent_name, None);
-        assert!(app.state.terminals[&terminal_id]
-            .persisted_agent_session
-            .is_none());
+        assert!(
+            app.state.terminals[&terminal_id]
+                .persisted_agent_session
+                .is_none()
+        );
         assert_eq!(
             app.state.terminals[&terminal_id].manual_label.as_deref(),
             Some("shell")
@@ -1337,7 +1357,10 @@ mod tests {
         app.state.selected = 0;
 
         let target_pane = app.state.workspaces[0].tabs[second_tab].root_pane;
-        let target_pane_id = app.pane_info(0, target_pane).expect("test precondition").pane_id;
+        let target_pane_id = app
+            .pane_info(0, target_pane)
+            .expect("test precondition")
+            .pane_id;
 
         let response = app.handle_api_request(crate::api::schema::Request {
             id: "req_pane_close".into(),
@@ -1345,7 +1368,8 @@ mod tests {
                 pane_id: target_pane_id,
             }),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["result"]["type"], "ok");
         assert_eq!(app.state.workspaces.len(), 1);
@@ -1363,7 +1387,10 @@ mod tests {
         app.state.selected = 0;
 
         let target_pane = app.state.workspaces[0].tabs[0].root_pane;
-        let target_pane_id = app.pane_info(0, target_pane).expect("test precondition").pane_id;
+        let target_pane_id = app
+            .pane_info(0, target_pane)
+            .expect("test precondition")
+            .pane_id;
 
         let response = app.handle_api_request(crate::api::schema::Request {
             id: "req_pane_close_last".into(),
@@ -1371,7 +1398,8 @@ mod tests {
                 pane_id: target_pane_id,
             }),
         });
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
 
         assert_eq!(response["result"]["type"], "ok");
         assert!(app.state.workspaces.is_empty());
@@ -1417,10 +1445,12 @@ mod tests {
 
     #[test]
     fn due_session_save_starts_background_writer() {
-        let _guard = crate::config::test_config_env_lock().lock().expect("test precondition");
+        let _guard = crate::config::test_config_env_lock()
+            .lock()
+            .expect("test precondition");
         let config_home = unique_temp_path("background-session-save");
-        std::env::set_var("XDG_CONFIG_HOME", &config_home);
-        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
+        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
 
         let mut app = test_app();
         app.policy.persist_session = true;
@@ -1435,7 +1465,7 @@ mod tests {
         app.save_session_now();
         assert!(crate::session::data_dir().join("session.json").exists());
 
-        std::env::remove_var("XDG_CONFIG_HOME");
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
         let _ = std::fs::remove_dir_all(config_home);
     }
 
@@ -1482,10 +1512,12 @@ mod tests {
 
     #[tokio::test]
     async fn pane_exit_checkpoint_survives_automatic_workspace_creation_on_shutdown() {
-        let _guard = crate::config::test_config_env_lock().lock().expect("test precondition");
+        let _guard = crate::config::test_config_env_lock()
+            .lock()
+            .expect("test precondition");
         let config_home = unique_temp_path("signaled-pane-session-checkpoint");
-        std::env::set_var("XDG_CONFIG_HOME", &config_home);
-        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
+        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
 
         let mut app = test_app();
         app.policy.persist_session = true;
@@ -1513,16 +1545,18 @@ mod tests {
         assert_eq!(snapshot.workspaces.len(), 1);
         assert_eq!(snapshot.workspaces[0].tabs[0].panes.len(), 2);
 
-        std::env::remove_var("XDG_CONFIG_HOME");
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
         let _ = std::fs::remove_dir_all(config_home);
     }
 
     #[test]
     fn normal_autosave_replaces_a_signaled_exit_checkpoint() {
-        let _guard = crate::config::test_config_env_lock().lock().expect("test precondition");
+        let _guard = crate::config::test_config_env_lock()
+            .lock()
+            .expect("test precondition");
         let config_home = unique_temp_path("signaled-pane-autosave");
-        std::env::set_var("XDG_CONFIG_HOME", &config_home);
-        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
+        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
 
         let mut app = test_app();
         app.policy.persist_session = true;
@@ -1546,16 +1580,18 @@ mod tests {
 
         assert!(crate::persist::load().is_none());
 
-        std::env::remove_var("XDG_CONFIG_HOME");
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
         let _ = std::fs::remove_dir_all(config_home);
     }
 
     #[test]
     fn durable_mutation_after_pane_exit_checkpoint_wins_on_shutdown() {
-        let _guard = crate::config::test_config_env_lock().lock().expect("test precondition");
+        let _guard = crate::config::test_config_env_lock()
+            .lock()
+            .expect("test precondition");
         let config_home = unique_temp_path("pane-exit-newer-session-state");
-        std::env::set_var("XDG_CONFIG_HOME", &config_home);
-        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
+        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
 
         for another_interrupted_exit in [false, true] {
             let mut app = test_app();
@@ -1587,7 +1623,7 @@ mod tests {
             assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("newer"));
         }
 
-        std::env::remove_var("XDG_CONFIG_HOME");
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
         let _ = std::fs::remove_dir_all(config_home);
     }
 
@@ -1618,7 +1654,11 @@ mod tests {
             observed_at: std::time::Instant::now(),
         });
         assert_eq!(
-            app.state.terminals.get(&terminal_id).expect("test precondition").state,
+            app.state
+                .terminals
+                .get(&terminal_id)
+                .expect("test precondition")
+                .state,
             AgentState::Working
         );
 
@@ -1659,14 +1699,25 @@ mod tests {
 
         let max_drains = (APP_EVENT_CHANNEL_CAPACITY / APP_EVENT_DRAIN_LIMIT) + 2;
         for _ in 0..max_drains {
-            if app.state.terminals.get(&terminal_id).expect("test precondition").state == AgentState::Idle {
+            if app
+                .state
+                .terminals
+                .get(&terminal_id)
+                .expect("test precondition")
+                .state
+                == AgentState::Idle
+            {
                 break;
             }
             app.drain_internal_events();
         }
 
         assert_eq!(
-            app.state.terminals.get(&terminal_id).expect("test precondition").state,
+            app.state
+                .terminals
+                .get(&terminal_id)
+                .expect("test precondition")
+                .state,
             AgentState::Idle,
             "Working→Idle should still apply after temporary queue pressure"
         );

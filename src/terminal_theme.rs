@@ -134,12 +134,16 @@ pub fn osc_reset_default_color_sequence(kind: DefaultColorKind) -> &'static str 
 fn parse_rgb_color(value: &str) -> Option<RgbColor> {
     if let Some(rgb) = value.strip_prefix("rgb:") {
         let mut parts = rgb.split('/');
-        return Some(RgbColor {
+        let color = RgbColor {
             r: parse_hex_component(parts.next()?)?,
             g: parse_hex_component(parts.next()?)?,
             b: parse_hex_component(parts.next()?)?,
-        })
-        .filter(|_| parts.next().is_none());
+        };
+        return if parts.next().is_none() {
+            Some(color)
+        } else {
+            None
+        };
     }
 
     if let Some(hex) = value.strip_prefix('#') {
@@ -166,7 +170,8 @@ fn parse_hex_component(component: &str) -> Option<u8> {
     }
     let value = u32::from_str_radix(component, 16).ok()?;
     let max = (1u32 << (component.len() * 4)) - 1;
-    Some(((value * 255 + (max / 2)) / max) as u8)
+    // Result is a value scaled into 0..=255, so this never truncates.
+    Some(u8::try_from((value * 255 + (max / 2)) / max).unwrap_or(u8::MAX))
 }
 
 #[cfg(test)]

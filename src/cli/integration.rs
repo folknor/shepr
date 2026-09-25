@@ -1,7 +1,7 @@
 use crate::api::schema::IntegrationTarget;
 
 pub(super) fn run_integration_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(String::as_str) else {
         print_integration_help();
         return Ok(2);
     };
@@ -145,7 +145,7 @@ fn parse_integration_target(
     args: &[String],
     action: &str,
 ) -> std::io::Result<Option<IntegrationCommandTarget>> {
-    let Some(target) = args.first().map(|arg| arg.as_str()) else {
+    let Some(target) = args.first().map(String::as_str) else {
         eprintln!(
             "usage: shepr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
         );

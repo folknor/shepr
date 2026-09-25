@@ -3,14 +3,13 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Color;
 
-use crate::detect::AgentState;
 use crate::layout::{PaneId, PaneInfo};
 
 use crate::terminal_theme::{HostAppearance, TerminalTheme};
 use crate::workspace::Workspace;
 
 // ---------------------------------------------------------------------------
-// Theme palette — all UI colors in one place, ready for theming
+// Theme palette - all UI colors in one place, ready for theming
 // ---------------------------------------------------------------------------
 
 /// All colors used by the UI. Derived from a base accent color for now,
@@ -37,7 +36,7 @@ pub struct Palette {
     pub overlay0: Color,
     /// Slightly brighter overlay text.
     pub overlay1: Color,
-    /// Main text color — soft white.
+    /// Main text color - soft white.
     pub text: Color,
     /// Subdued text (workspace numbers, dim labels).
     pub subtext0: Color,
@@ -58,7 +57,7 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// Catppuccin Mocha — the default.
+    /// Catppuccin Mocha - the default.
     pub fn catppuccin() -> Self {
         Self {
             accent: Color::Rgb(137, 180, 250), // blue
@@ -83,7 +82,7 @@ impl Palette {
         }
     }
 
-    /// Catppuccin Latte — the light Catppuccin flavor.
+    /// Catppuccin Latte - the light Catppuccin flavor.
     pub fn catppuccin_latte() -> Self {
         Self {
             accent: Color::Rgb(30, 102, 245),
@@ -133,7 +132,7 @@ impl Palette {
         }
     }
 
-    /// Tokyo Night — blue-purple aesthetic.
+    /// Tokyo Night - blue-purple aesthetic.
     pub fn tokyo_night() -> Self {
         Self {
             accent: Color::Rgb(122, 162, 247), // blue
@@ -158,7 +157,7 @@ impl Palette {
         }
     }
 
-    /// Tokyo Night Day — the light Tokyo Night style.
+    /// Tokyo Night Day - the light Tokyo Night style.
     pub fn tokyo_night_day() -> Self {
         Self {
             accent: Color::Rgb(46, 125, 233),
@@ -183,7 +182,7 @@ impl Palette {
         }
     }
 
-    /// Dracula — purple/pink/green.
+    /// Dracula - purple/pink/green.
     pub fn dracula() -> Self {
         Self {
             accent: Color::Rgb(189, 147, 249), // purple
@@ -208,7 +207,7 @@ impl Palette {
         }
     }
 
-    /// Nord — frosty blue palette.
+    /// Nord - frosty blue palette.
     pub fn nord() -> Self {
         Self {
             accent: Color::Rgb(136, 192, 208), // frost
@@ -233,7 +232,7 @@ impl Palette {
         }
     }
 
-    /// Gruvbox Dark — warm retro palette.
+    /// Gruvbox Dark - warm retro palette.
     pub fn gruvbox() -> Self {
         Self {
             accent: Color::Rgb(215, 153, 33), // yellow
@@ -258,7 +257,7 @@ impl Palette {
         }
     }
 
-    /// Gruvbox Light — the light retro palette.
+    /// Gruvbox Light - the light retro palette.
     pub fn gruvbox_light() -> Self {
         Self {
             accent: Color::Rgb(7, 102, 120),
@@ -283,7 +282,7 @@ impl Palette {
         }
     }
 
-    /// One Dark — Atom's classic dark theme.
+    /// One Dark - Atom's classic dark theme.
     pub fn one_dark() -> Self {
         Self {
             accent: Color::Rgb(97, 175, 239), // blue
@@ -308,7 +307,7 @@ impl Palette {
         }
     }
 
-    /// One Light — Atom's classic light theme.
+    /// One Light - Atom's classic light theme.
     pub fn one_light() -> Self {
         Self {
             accent: Color::Rgb(64, 120, 242),
@@ -333,7 +332,7 @@ impl Palette {
         }
     }
 
-    /// Solarized Dark — Ethan Schoonover's classic.
+    /// Solarized Dark - Ethan Schoonover's classic.
     pub fn solarized() -> Self {
         Self {
             accent: Color::Rgb(38, 139, 210), // blue
@@ -358,7 +357,7 @@ impl Palette {
         }
     }
 
-    /// Solarized Light — Ethan Schoonover's light variant.
+    /// Solarized Light - Ethan Schoonover's light variant.
     pub fn solarized_light() -> Self {
         Self {
             accent: Color::Rgb(38, 139, 210),
@@ -383,7 +382,7 @@ impl Palette {
         }
     }
 
-    /// Kanagawa — inspired by Katsushika Hokusai.
+    /// Kanagawa - inspired by Katsushika Hokusai.
     pub fn kanagawa() -> Self {
         Self {
             accent: Color::Rgb(126, 156, 216), // blue
@@ -408,7 +407,7 @@ impl Palette {
         }
     }
 
-    /// Kanagawa Lotus — the light Kanagawa variant.
+    /// Kanagawa Lotus - the light Kanagawa variant.
     pub fn kanagawa_lotus() -> Self {
         Self {
             accent: Color::Rgb(77, 105, 155),
@@ -433,7 +432,7 @@ impl Palette {
         }
     }
 
-    /// Rosé Pine — muted, elegant.
+    /// Rosé Pine - muted, elegant.
     pub fn rose_pine() -> Self {
         Self {
             accent: Color::Rgb(196, 167, 231), // iris
@@ -458,7 +457,7 @@ impl Palette {
         }
     }
 
-    /// Rosé Pine Dawn — the light Rosé Pine variant.
+    /// Rosé Pine Dawn - the light Rosé Pine variant.
     pub fn rose_pine_dawn() -> Self {
         Self {
             accent: Color::Rgb(144, 122, 169),
@@ -483,7 +482,7 @@ impl Palette {
         }
     }
 
-    /// Vesper — minimal high-contrast monochrome with peach and mint accents.
+    /// Vesper - minimal high-contrast monochrome with peach and mint accents.
     pub fn vesper() -> Self {
         Self {
             accent: Color::Rgb(255, 199, 153),
@@ -595,7 +594,6 @@ impl Palette {
         }
         self
     }
-
 }
 
 /// Geometry for the server-rendered active-tab pane surface.
@@ -610,20 +608,13 @@ pub enum Mode {
     Terminal,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum AgentPanelSort {
-    #[default]
-    Spaces,
-    Priority,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PaneFocusTarget {
     pub workspace_id: String,
     pub pane_id: PaneId,
 }
 
-/// All application state — pure data, no channels or async runtime.
+/// All application state - pure data, no channels or async runtime.
 /// Testable without PTYs or a tokio runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TabBarStatusSegment {
@@ -656,11 +647,9 @@ pub struct AppState {
     pub prefix_mods: KeyModifiers,
     /// Virtual terminal size (columns, rows) used when no client is attached.
     pub(crate) headless_size: (u16, u16),
-    pub agent_panel_sort: AgentPanelSort,
     pub sidebar_agents: crate::config::AgentsSidebarConfig,
     pub sidebar_spaces: crate::config::SpacesSidebarConfig,
     pub next_agent_state_change_seq: u64,
-    pub confirm_close: bool,
     pub pane_borders: crate::config::PaneBordersConfig,
     pub pane_outer_borders: bool,
     pub pane_scrollbars: bool,
@@ -675,14 +664,14 @@ pub struct AppState {
     /// one of these. When false, apply to any focused pane.
     pub cjk_ime_agent_filter_configured: bool,
     pub cjk_ime_agents: Vec<crate::detect::Agent>,
-    /// DECSCUSR shape parameter (1–6) for the IME anchor cursor.
+    /// DECSCUSR shape parameter (1-6) for the IME anchor cursor.
     pub cjk_ime_cursor_shape: u8,
     pub default_shell: String,
     pub shell_mode: crate::config::ShellModeConfig,
     pub new_terminal_cwd: NewTerminalCwdConfig,
     pub pane_scrollback_limit_bytes: usize,
     pub keybinds: Keybinds,
-    /// UI color palette — all sidebar/UI colors centralized for theming.
+    /// UI color palette - all sidebar/UI colors centralized for theming.
     pub palette: Palette,
     /// Last known foreground host terminal appearance.
     pub host_terminal_appearance: Option<HostAppearance>,
@@ -775,7 +764,7 @@ pub fn key_matches(
 
 #[cfg(test)]
 impl AppState {
-    /// Create an AppState for testing — no channels, no PTYs.
+    /// Create an AppState for testing - no channels, no PTYs.
     pub fn test_new() -> Self {
         Self {
             terminals: std::collections::HashMap::new(),
@@ -800,11 +789,9 @@ impl AppState {
                 crate::config::DEFAULT_HEADLESS_COLS,
                 crate::config::DEFAULT_HEADLESS_ROWS,
             ),
-            agent_panel_sort: AgentPanelSort::Spaces,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
             sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
             next_agent_state_change_seq: 0,
-            confirm_close: true,
             pane_borders: crate::config::PaneBordersConfig::Auto,
             pane_outer_borders: true,
             pane_scrollbars: true,
@@ -920,8 +907,7 @@ impl AppState {
                 for (pane_id, pane) in &tab.panes {
                     assert!(
                         pane_ids.insert(*pane_id),
-                        "pane {:?} appears in more than one workspace",
-                        pane_id
+                        "pane {pane_id:?} appears in more than one workspace"
                     );
                     assert!(
                         attached_terminal_ids.insert(pane.attached_terminal_id.clone()),
@@ -941,8 +927,7 @@ impl AppState {
         let assert_live_pane = |pane_id: PaneId, context: &str| {
             assert!(
                 pane_ids.contains(&pane_id),
-                "{context} references missing pane {:?}",
-                pane_id
+                "{context} references missing pane {pane_id:?}"
             );
         };
         let assert_workspace_pane = |workspace_id: &str, pane_id: PaneId, context: &str| {
@@ -952,9 +937,7 @@ impl AppState {
                 .unwrap_or_else(|| panic!("{context} references missing workspace {workspace_id}"));
             assert!(
                 self.workspaces[ws_idx].pane_state(pane_id).is_some(),
-                "{context} references pane {:?} outside workspace {}",
-                pane_id,
-                workspace_id
+                "{context} references pane {pane_id:?} outside workspace {workspace_id}"
             );
         };
         for (&raw, &pane_id) in &self.pane_id_aliases {

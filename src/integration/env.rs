@@ -220,12 +220,14 @@ mod tests {
     fn opencode_state_dir_defaults_to_local_state() {
         let _lock = integration_env_lock();
         let original = std::env::var_os("XDG_STATE_HOME");
-        std::env::remove_var("XDG_STATE_HOME");
-        let expected = home_dir().expect("test precondition").join(".local/state/opencode");
+        unsafe { std::env::remove_var("XDG_STATE_HOME") };
+        let expected = home_dir()
+            .expect("test precondition")
+            .join(".local/state/opencode");
         assert_eq!(opencode_state_dir().expect("test precondition"), expected);
         match original {
-            Some(value) => std::env::set_var("XDG_STATE_HOME", value),
-            None => std::env::remove_var("XDG_STATE_HOME"),
+            Some(value) => unsafe { std::env::set_var("XDG_STATE_HOME", value) },
+            None => unsafe { std::env::remove_var("XDG_STATE_HOME") },
         }
     }
 
@@ -234,11 +236,14 @@ mod tests {
         let _lock = integration_env_lock();
         let original = std::env::var_os("XDG_STATE_HOME");
         let xdg = std::env::temp_dir().join("shepr-xdg-state");
-        std::env::set_var("XDG_STATE_HOME", &xdg);
-        assert_eq!(opencode_state_dir().expect("test precondition"), xdg.join("opencode"));
+        unsafe { std::env::set_var("XDG_STATE_HOME", &xdg) };
+        assert_eq!(
+            opencode_state_dir().expect("test precondition"),
+            xdg.join("opencode")
+        );
         match original {
-            Some(value) => std::env::set_var("XDG_STATE_HOME", value),
-            None => std::env::remove_var("XDG_STATE_HOME"),
+            Some(value) => unsafe { std::env::set_var("XDG_STATE_HOME", value) },
+            None => unsafe { std::env::remove_var("XDG_STATE_HOME") },
         }
     }
 }

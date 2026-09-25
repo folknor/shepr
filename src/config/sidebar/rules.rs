@@ -209,16 +209,19 @@ mod tests {
             assert!(!rule.matches(no, &mut None));
             assert!(!rule.matches(&yes.to_ascii_lowercase(), &mut None));
             let folded: SidebarTokenRule =
-                toml::from_str(&format!("{condition}\nignore_case = true")).expect("test precondition");
+                toml::from_str(&format!("{condition}\nignore_case = true"))
+                    .expect("test precondition");
             assert!(folded.matches(&yes.to_ascii_lowercase(), &mut None));
         }
         for condition in ["equals", "contains", "starts_with"] {
             let rule: SidebarTokenRule =
-                toml::from_str(&format!("{condition} = 'ÉA'\nignore_case = true")).expect("test precondition");
+                toml::from_str(&format!("{condition} = 'ÉA'\nignore_case = true"))
+                    .expect("test precondition");
             assert!(rule.matches("Éa", &mut None));
             assert!(!rule.matches("éa", &mut None));
         }
-        let empty: SidebarTokenRule = toml::from_str("contains = ''\nignore_case = true").expect("test precondition");
+        let empty: SidebarTokenRule =
+            toml::from_str("contains = ''\nignore_case = true").expect("test precondition");
         assert!(empty.matches("", &mut None));
     }
 

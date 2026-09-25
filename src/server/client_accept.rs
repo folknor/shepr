@@ -1,5 +1,5 @@
 use std::io;
-use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
+use std::sync::{Arc, atomic::AtomicBool, atomic::Ordering};
 
 use interprocess::local_socket::traits::{Listener as _, Stream as _};
 use tokio::sync::mpsc;
@@ -29,7 +29,7 @@ pub(crate) fn accept_pending_client_connections(
                     continue;
                 }
 
-                let should_quit = should_quit.clone();
+                let should_quit = Arc::clone(should_quit);
                 let server_event_tx = server_event_tx.clone();
                 std::thread::spawn(move || {
                     if let Err(err) = client_transport::handle_client_handshake(

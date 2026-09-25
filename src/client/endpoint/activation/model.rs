@@ -16,7 +16,6 @@ pub(super) struct EndpointLease {
 pub(super) struct ActivationEvidence {
     pub(super) snapshot_revision: Option<u64>,
     pub(super) focused_workspace_id: Option<String>,
-    pub(super) focused_tab_id: Option<String>,
     pub(super) focused_pane_id: Option<String>,
     pub(super) surface: Option<crate::protocol::PaneSurfaceFrame>,
 }
@@ -29,7 +28,6 @@ impl ActivationEvidence {
         {
             self.snapshot_revision = Some(snapshot.revision);
             self.focused_workspace_id = snapshot.focused_workspace_id.clone();
-            self.focused_tab_id = snapshot.focused_tab_id.clone();
             self.focused_pane_id = snapshot.focused_pane_id.clone();
         }
     }

@@ -1,7 +1,7 @@
 use std::io;
 use std::path::Path;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use super::command::hook_command;
 use super::{
@@ -58,7 +58,7 @@ pub(crate) fn hooks_object_if_present<'a>(
 pub(crate) fn ensure_command_hook(
     hooks: &mut Map<String, Value>,
     event: &str,
-    command: String,
+    command: &str,
     timeout: u64,
     matcher: Option<&str>,
 ) -> io::Result<()> {
@@ -75,7 +75,7 @@ pub(crate) fn ensure_command_hook(
             .is_some_and(|hook_entries| {
                 hook_entries.iter().any(|hook| {
                     hook.get("type").and_then(Value::as_str) == Some("command")
-                        && hook.get("command").and_then(Value::as_str) == Some(command.as_str())
+                        && hook.get("command").and_then(Value::as_str) == Some(command)
                 })
             })
     });
@@ -111,7 +111,7 @@ pub(crate) fn ensure_command_hook(
 pub(crate) fn ensure_flat_command_hook(
     hooks: &mut Map<String, Value>,
     event: &str,
-    command: String,
+    command: &str,
     timeout_ms: u64,
 ) -> io::Result<()> {
     let entries = hooks
@@ -122,7 +122,7 @@ pub(crate) fn ensure_flat_command_hook(
 
     if entries.iter().any(|entry| {
         entry.get("type").and_then(Value::as_str) == Some("command")
-            && entry.get("command").and_then(Value::as_str) == Some(command.as_str())
+            && entry.get("command").and_then(Value::as_str) == Some(command)
     }) {
         return Ok(());
     }
@@ -292,7 +292,7 @@ pub(crate) fn remove_direct_command_hook(
 pub(crate) fn ensure_simple_command_hook(
     hooks: &mut Map<String, Value>,
     event: &str,
-    command: String,
+    command: &str,
 ) -> io::Result<()> {
     let entries = hooks
         .entry(event.to_string())
@@ -302,7 +302,7 @@ pub(crate) fn ensure_simple_command_hook(
 
     if entries
         .iter()
-        .any(|entry| entry.get("command").and_then(Value::as_str) == Some(command.as_str()))
+        .any(|entry| entry.get("command").and_then(Value::as_str) == Some(command))
     {
         return Ok(());
     }
@@ -411,7 +411,7 @@ pub(crate) fn update_hermes_enabled_plugin(content: &str, enabled: bool) -> Stri
             let comment = yaml_inline_comment(&lines[enabled_index]);
             let replacement = hermes_enabled_plugin_lines(&items, comment);
             lines.splice(enabled_index..enabled_index + 1, replacement);
-            return join_yaml_lines(lines, trailing_newline);
+            return join_yaml_lines(&lines, trailing_newline);
         }
 
         let list_start = enabled_index + 1;
@@ -434,7 +434,7 @@ pub(crate) fn update_hermes_enabled_plugin(content: &str, enabled: bool) -> Stri
                 lines.remove(index);
             }
         }
-        return join_yaml_lines(lines, trailing_newline);
+        return join_yaml_lines(&lines, trailing_newline);
     }
 
     if let Some(mut items) = plugins_inline_items {
@@ -453,7 +453,7 @@ pub(crate) fn update_hermes_enabled_plugin(content: &str, enabled: bool) -> Stri
         let comment = yaml_inline_comment(&lines[plugins_index]);
         let replacement = hermes_flat_plugin_lines(&items, comment);
         lines.splice(plugins_index..plugins_end, replacement);
-        return join_yaml_lines(lines, trailing_newline);
+        return join_yaml_lines(&lines, trailing_newline);
     }
 
     if let Some(flat_list_start) = flat_list_start {
@@ -469,13 +469,13 @@ pub(crate) fn update_hermes_enabled_plugin(content: &str, enabled: bool) -> Stri
                 lines.remove(index);
             }
         }
-        return join_yaml_lines(lines, trailing_newline);
+        return join_yaml_lines(&lines, trailing_newline);
     }
 
     if enabled {
         lines.insert(plugins_index + 1, "  enabled:".to_string());
         lines.insert(plugins_index + 2, "    - shepr-agent-state".to_string());
-        return join_yaml_lines(lines, trailing_newline);
+        return join_yaml_lines(&lines, trailing_newline);
     }
 
     content.to_string()
@@ -682,7 +682,7 @@ pub(crate) fn yaml_inline_comment(value: &str) -> Option<&str> {
     None
 }
 
-pub(crate) fn join_yaml_lines(lines: Vec<String>, trailing_newline: bool) -> String {
+pub(crate) fn join_yaml_lines(lines: &[String], trailing_newline: bool) -> String {
     let mut result = lines.join("\n");
     if trailing_newline || result.is_empty() {
         result.push('\n');
@@ -729,7 +729,7 @@ pub(crate) fn build_codex_config_with_hooks(content: &str) -> String {
     if hooks_index.is_none() {
         if let Some(index) = features_header_index {
             lines.insert(index + 1, "hooks = true".to_string());
-            return join_toml_lines(lines, trailing_newline);
+            return join_toml_lines(&lines, trailing_newline);
         }
 
         let mut result = content.trim_end_matches('\n').to_string();
@@ -741,7 +741,7 @@ pub(crate) fn build_codex_config_with_hooks(content: &str) -> String {
         return result;
     }
 
-    join_toml_lines(lines, trailing_newline)
+    join_toml_lines(&lines, trailing_newline)
 }
 
 pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> String {
@@ -805,7 +805,7 @@ pub(crate) fn remove_kimi_config_block(content: &str) -> String {
         return content.to_string();
     }
 
-    let mut result = join_toml_lines(lines, trailing_newline);
+    let mut result = join_toml_lines(&lines, trailing_newline);
     while result.ends_with("\n\n") {
         result.pop();
     }
@@ -838,7 +838,7 @@ pub(crate) fn toml_basic_string(value: &str) -> String {
     result
 }
 
-pub(crate) fn join_toml_lines(lines: Vec<String>, trailing_newline: bool) -> String {
+pub(crate) fn join_toml_lines(lines: &[String], trailing_newline: bool) -> String {
     let mut result = lines.join("\n");
     if trailing_newline || result.is_empty() {
         result.push('\n');

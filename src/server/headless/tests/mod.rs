@@ -1,4 +1,5 @@
 use super::*;
+use bytes::Bytes;
 
 #[path = "pane_move.rs"]
 mod pane_move_tests;
@@ -25,9 +26,11 @@ fn client_shell_projection(
         data
     };
     let completions: protocol::endpoint::EndpointAgentCompletions =
-        serde_json::from_str(&read_control(protocol::endpoint::AGENT_COMPLETIONS_KIND)).expect("test precondition");
+        serde_json::from_str(&read_control(protocol::endpoint::AGENT_COMPLETIONS_KIND))
+            .expect("test precondition");
     let snapshot: Box<protocol::ClientShellSnapshot> =
-        serde_json::from_str(&read_control(protocol::endpoint::ENDPOINT_SNAPSHOT_KIND)).expect("test precondition");
+        serde_json::from_str(&read_control(protocol::endpoint::ENDPOINT_SNAPSHOT_KIND))
+            .expect("test precondition");
     assert_eq!(completions.boot_id, snapshot.boot_id);
     assert_eq!(completions.revision, snapshot.revision);
     (snapshot, completions)
@@ -79,8 +82,7 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
 
     HeadlessServer {
         app,
-        api_tx: None,
-        api_server: None,
+        _api_server: None,
         client_listener: listener,
         client_socket_path: socket_path,
         client_socket_identity,
@@ -184,7 +186,9 @@ async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
         .insert(terminal_id.clone(), runtime);
     server.app.render_dirty.request_terminal_title(pane_id);
 
-    let first = headless_pane_list(&mut server).pop().expect("test precondition");
+    let first = headless_pane_list(&mut server)
+        .pop()
+        .expect("test precondition");
     assert_eq!(first.terminal_title.as_deref(), Some("⠋ task"));
     assert_eq!(first.terminal_title_stripped.as_deref(), Some("task"));
     assert_eq!(pane_updated_events(&event_hub), 1);
@@ -195,7 +199,9 @@ async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
         .expect("test precondition")
         .test_process_pty_bytes(b"\x1b]2;\xe2\xa0\x99 task\x1b\\");
     server.app.render_dirty.request_terminal_title(pane_id);
-    let second = headless_pane_list(&mut server).pop().expect("test precondition");
+    let second = headless_pane_list(&mut server)
+        .pop()
+        .expect("test precondition");
     assert_eq!(second.terminal_title.as_deref(), Some("⠙ task"));
     assert_eq!(second.terminal_title_stripped.as_deref(), Some("task"));
     assert_eq!(pane_updated_events(&event_hub), 1);
@@ -209,10 +215,10 @@ fn headless_pane_list(server: &mut HeadlessServer) -> Vec<api::schema::PaneInfo>
             method: api::schema::Method::PaneList(api::schema::PaneListParams::default()),
         },
         respond_to,
-        response_write_complete: None,
     });
     let response: api::schema::SuccessResponse =
-        serde_json::from_str(&response_rx.recv().expect("test precondition")).expect("test precondition");
+        serde_json::from_str(&response_rx.recv().expect("test precondition"))
+            .expect("test precondition");
     let api::schema::ResponseResult::PaneList { panes } = response.result else {
         panic!("expected pane list");
     };
@@ -259,16 +265,15 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
     }
 
     let (respond_to, response_rx) = std::sync::mpsc::channel();
-    assert!(
-        server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
-            request: api::schema::Request {
-                id: "headless_stop_after_events".into(),
-                method: api::schema::Method::ServerStop(api::schema::EmptyParams::default()),
-            },
-            respond_to,
-            response_write_complete: None,
-        })
-    );
+    // An empty git refresh has no render impact, so the returned `changed` flag is
+    // not asserted; this test only covers draining past the per-batch limit.
+    server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+        request: api::schema::Request {
+            id: "headless_stop_after_events".into(),
+            method: api::schema::Method::ServerStop(api::schema::EmptyParams::default()),
+        },
+        respond_to,
+    });
     let response = response_rx
         .recv_timeout(Duration::from_millis(100))
         .expect("test precondition");
@@ -787,8 +792,9 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     let first_rename = rename();
     let busy_rename = rename();
 
+    // A rename is a UI mutation, so the accepted request reports a render.
     assert!(
-        !server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
             request: Box::new(api::schema::Request {
@@ -949,7 +955,13 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
         .last_pane_surface()
         .expect("initial baseline");
     let cells_ptr = baseline.frame.cells.as_ptr();
-    let untouched_symbol_ptr = baseline.frame.cells.last().expect("test precondition").symbol.as_ptr();
+    let untouched_symbol_ptr = baseline
+        .frame
+        .cells
+        .last()
+        .expect("test precondition")
+        .symbol
+        .as_ptr();
 
     server
         .app
@@ -968,19 +980,30 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
             assert_eq!(patch.surface_revision, initial_surface.surface_revision + 1);
             assert_eq!(patch.panes.len(), 1);
             assert!(!patch.rows.is_empty());
-            assert!(patch
-                .rows
-                .iter()
-                .flat_map(|row| &row.cells)
-                .any(|cell| cell.symbol == "P"));
+            assert!(
+                patch
+                    .rows
+                    .iter()
+                    .flat_map(|row| &row.cells)
+                    .any(|cell| cell.symbol == "P")
+            );
         }
         other => panic!("expected pane surface patch, got {other:?}"),
     }
-    let patched = server.clients[&7].render_state.last_pane_surface().expect("test precondition");
+    let patched = server.clients[&7]
+        .render_state
+        .last_pane_surface()
+        .expect("test precondition");
     assert_eq!(
         (
             patched.frame.cells.as_ptr(),
-            patched.frame.cells.last().expect("test precondition").symbol.as_ptr()
+            patched
+                .frame
+                .cells
+                .last()
+                .expect("test precondition")
+                .symbol
+                .as_ptr()
         ),
         (cells_ptr, untouched_symbol_ptr),
         "a text patch must preserve the frame and unchanged cell storage"
@@ -1007,7 +1030,13 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
         .expect("committed retained surface");
     assert_eq!(retained.frame.cells.as_ptr(), cells_ptr);
     assert_eq!(
-        retained.frame.cells.last().expect("test precondition").symbol.as_ptr(),
+        retained
+            .frame
+            .cells
+            .last()
+            .expect("test precondition")
+            .symbol
+            .as_ptr(),
         untouched_symbol_ptr,
         "retained updates must not copy unchanged screen cells"
     );
@@ -1140,7 +1169,11 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
         b"\x1b[?2026h\x1b[?1049h\x1b[2J\x1b[HPARTIAL",
     );
     server.app.state.workspaces[0].custom_name = Some("renamed during frame".into());
-    server.clients.get_mut(&7).expect("test precondition").request_recompute();
+    server
+        .clients
+        .get_mut(&7)
+        .expect("test precondition")
+        .request_recompute();
     server.render_and_stream();
     assert!(render.try_recv().is_err(), "partial frame was published");
     assert_eq!(
@@ -1359,22 +1392,26 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
         large_patch.panes[0].inner_rect,
         small_patch.panes[0].inner_rect
     );
-    assert!(frame_text(
-        &server.clients[&7]
-            .render_state
-            .last_pane_surface()
-            .expect("large retained surface")
-            .frame
-    )
-    .contains("MIXED"));
-    assert!(frame_text(
-        &server.clients[&8]
-            .render_state
-            .last_pane_surface()
-            .expect("small retained surface")
-            .frame
-    )
-    .contains("MIXED"));
+    assert!(
+        frame_text(
+            &server.clients[&7]
+                .render_state
+                .last_pane_surface()
+                .expect("large retained surface")
+                .frame
+        )
+        .contains("MIXED")
+    );
+    assert!(
+        frame_text(
+            &server.clients[&8]
+                .render_state
+                .last_pane_surface()
+                .expect("small retained surface")
+                .frame
+        )
+        .contains("MIXED")
+    );
 
     write_shared_test_pane(&mut server, pane_id, b"\x1b[?1049hALT");
     assert!(!server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
@@ -1438,7 +1475,10 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_tab() {
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
-    let second_tab_id = server.app.public_tab_id(0, second_tab).expect("test precondition");
+    let second_tab_id = server
+        .app
+        .public_tab_id(0, second_tab)
+        .expect("test precondition");
 
     let (first_control, first_render) = connect_matching_test_shell(&mut server, 7);
     let (second_control, second_render) = connect_matching_test_shell(&mut server, 8);
@@ -1483,7 +1523,11 @@ async fn late_retained_fallback_leaves_all_client_baselines_unchanged() {
     // Foreground renders last. Its old hyperlink forces a fallback after the first plan.
     server.foreground_client_id = Some(8);
     let crate::server::render_stream::ClientRenderState::Semantic { last_surface, .. } =
-        &mut server.clients.get_mut(&8).expect("test precondition").render_state
+        &mut server
+            .clients
+            .get_mut(&8)
+            .expect("test precondition")
+            .render_state
     else {
         panic!("semantic client");
     };
@@ -1586,8 +1630,16 @@ async fn full_render_backpressure_does_not_disable_responsive_peer_patches() {
         .expect("responsive initial surface");
     // Keep the slow client's initial surface queued, then force another full
     // replacement for both clients.
-    server.clients.get_mut(&7).expect("test precondition").request_repaint();
-    server.clients.get_mut(&8).expect("test precondition").request_repaint();
+    server
+        .clients
+        .get_mut(&7)
+        .expect("test precondition")
+        .request_repaint();
+    server
+        .clients
+        .get_mut(&8)
+        .expect("test precondition")
+        .request_repaint();
     server.app.full_redraw_pending = true;
     server.render_and_stream();
     let _ = responsive_render
@@ -1765,15 +1817,26 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
-    let second_tab_id = server.app.public_tab_id(0, second_tab).expect("test precondition");
+    let second_tab_id = server
+        .app
+        .public_tab_id(0, second_tab)
+        .expect("test precondition");
 
     let (first_control, _) = connect_matching_test_shell(&mut server, 61);
     let (second_control, _) = connect_matching_test_shell(&mut server, 62);
     let _ = first_control.recv().expect("first snapshot");
     let _ = second_control.recv().expect("second snapshot");
     assert!(server.focus_shell_client_on_tab(62, &second_tab_id));
-    server.clients.get_mut(&61).expect("test precondition").outer_terminal_focus = Some(true);
-    server.clients.get_mut(&62).expect("test precondition").outer_terminal_focus = Some(true);
+    server
+        .clients
+        .get_mut(&61)
+        .expect("test precondition")
+        .outer_terminal_focus = Some(true);
+    server
+        .clients
+        .get_mut(&62)
+        .expect("test precondition")
+        .outer_terminal_focus = Some(true);
 
     let (respond_to, _response_rx) = std::sync::mpsc::channel();
     server.handle_client_shell_api_request(
@@ -1786,7 +1849,6 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
                 }),
             },
             respond_to,
-            response_write_complete: None,
         },
     );
     server.app.sync_focus_events();
@@ -1811,9 +1873,18 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
     let first_tab_id = server.app.public_tab_id(0, 0).expect("test precondition");
-    let second_tab_id = server.app.public_tab_id(0, second_tab).expect("test precondition");
-    let first_pane_id = server.app.public_pane_id(0, first_pane).expect("test precondition");
-    let second_pane_id = server.app.public_pane_id(0, second_pane).expect("test precondition");
+    let second_tab_id = server
+        .app
+        .public_tab_id(0, second_tab)
+        .expect("test precondition");
+    let first_pane_id = server
+        .app
+        .public_pane_id(0, first_pane)
+        .expect("test precondition");
+    let second_pane_id = server
+        .app
+        .public_pane_id(0, second_pane)
+        .expect("test precondition");
     let workspace_id = server.app.public_workspace_id(0);
 
     let (first_control, _) = connect_matching_test_shell(&mut server, 61);
@@ -1876,7 +1947,6 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
                     method,
                 },
                 respond_to,
-                response_write_complete: None,
             },
         );
         let response = response_rx.recv().expect("navigation response");
@@ -1946,8 +2016,16 @@ async fn public_focus_moves_shell_focus_between_tabs() {
     let _ = first_control.recv().expect("first snapshot");
     let _ = second_control.recv().expect("second snapshot");
     assert!(server.focus_shell_client_on_tab(64, &second_tab_id));
-    server.clients.get_mut(&63).expect("test precondition").outer_terminal_focus = Some(true);
-    server.clients.get_mut(&64).expect("test precondition").outer_terminal_focus = Some(true);
+    server
+        .clients
+        .get_mut(&63)
+        .expect("test precondition")
+        .outer_terminal_focus = Some(true);
+    server
+        .clients
+        .get_mut(&64)
+        .expect("test precondition")
+        .outer_terminal_focus = Some(true);
     assert!(server.app.state.switch_workspace_tab(0, second_tab));
 
     server.focus_all_shell_clients_on_default_target();
@@ -2007,7 +2085,6 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
                 ),
             },
             respond_to,
-            response_write_complete: None,
         },
     ));
 
@@ -2034,7 +2111,10 @@ async fn public_close_reapplies_controller_geometry() {
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
-    let second_pane_id = server.app.public_pane_id(0, second_pane).expect("test precondition");
+    let second_pane_id = server
+        .app
+        .public_pane_id(0, second_pane)
+        .expect("test precondition");
 
     let (control, _) = connect_test_shell(&mut server, 66, 100, 30);
     let _ = control.recv().expect("snapshot");
@@ -2051,7 +2131,6 @@ async fn public_close_reapplies_controller_geometry() {
                 }),
             },
             respond_to,
-            response_write_complete: None,
         })
     );
 
@@ -2060,7 +2139,10 @@ async fn public_close_reapplies_controller_geometry() {
     assert!(grown.0 > shrunk.0);
     assert_eq!(runtime.terminal_dimensions(), Some((grown.1, grown.0)));
     assert_eq!(
-        runtime.scroll_metrics().expect("test precondition").viewport_rows,
+        runtime
+            .scroll_metrics()
+            .expect("test precondition")
+            .viewport_rows,
         grown.0 as usize
     );
     shutdown_test_runtimes(&mut server);
@@ -2085,8 +2167,14 @@ async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
-    let second_tab_id = server.app.public_tab_id(0, second_tab).expect("test precondition");
-    let third_tab_id = server.app.public_tab_id(0, third_tab).expect("test precondition");
+    let second_tab_id = server
+        .app
+        .public_tab_id(0, second_tab)
+        .expect("test precondition");
+    let third_tab_id = server
+        .app
+        .public_tab_id(0, third_tab)
+        .expect("test precondition");
 
     let (first_control, _) = connect_test_shell(&mut server, 67, 100, 30);
     let (second_control, _) = connect_test_shell(&mut server, 68, 70, 20);
@@ -2141,8 +2229,14 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
-    let second_tab_id = server.app.public_tab_id(0, second_tab).expect("test precondition");
-    let second_pane_id = server.app.public_pane_id(0, second_pane).expect("test precondition");
+    let second_tab_id = server
+        .app
+        .public_tab_id(0, second_tab)
+        .expect("test precondition");
+    let second_pane_id = server
+        .app
+        .public_pane_id(0, second_pane)
+        .expect("test precondition");
     let initial_second_size =
         server.app.state.workspaces[0].test_runtimes[&second_pane].current_size();
 
@@ -2233,7 +2327,10 @@ async fn public_background_tab_create_preserves_client_locations() {
     server.app.state.mode = crate::app::Mode::Terminal;
     let workspace_id = server.app.public_workspace_id(0);
     let first_tab_id = server.app.public_tab_id(0, 0).expect("test precondition");
-    let second_tab_id = server.app.public_tab_id(0, second_tab).expect("test precondition");
+    let second_tab_id = server
+        .app
+        .public_tab_id(0, second_tab)
+        .expect("test precondition");
 
     let (first_control, _) = connect_matching_test_shell(&mut server, 71);
     let (second_control, _) = connect_matching_test_shell(&mut server, 72);
@@ -2254,7 +2351,6 @@ async fn public_background_tab_create_preserves_client_locations() {
             }),
         },
         respond_to,
-        response_write_complete: None,
     });
 
     assert_eq!(
@@ -2282,7 +2378,10 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
     let first_workspace_id = server.app.public_workspace_id(0);
     let second_workspace_id = server.app.public_workspace_id(1);
     let first_tab_id = server.app.public_tab_id(0, 0).expect("test precondition");
-    let second_tab_id = server.app.public_tab_id(0, second_tab).expect("test precondition");
+    let second_tab_id = server
+        .app
+        .public_tab_id(0, second_tab)
+        .expect("test precondition");
 
     let (first_control, _) = connect_test_shell(&mut server, 41, 100, 30);
     let (second_control, _) = connect_test_shell(&mut server, 42, 80, 24);
@@ -2301,11 +2400,16 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
             ),
         },
         respond_to,
-        response_write_complete: None,
     });
 
-    let first_location = server.clients[&41].shell_location.as_ref().expect("test precondition");
-    let second_location = server.clients[&42].shell_location.as_ref().expect("test precondition");
+    let first_location = server.clients[&41]
+        .shell_location
+        .as_ref()
+        .expect("test precondition");
+    let second_location = server.clients[&42]
+        .shell_location
+        .as_ref()
+        .expect("test precondition");
     assert_eq!(
         first_location.focused_workspace_id.as_deref(),
         Some(second_workspace_id.as_str())
@@ -2347,7 +2451,10 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
     server.app.state.mode = crate::app::Mode::Terminal;
     let first_workspace_id = server.app.public_workspace_id(0);
     let first_tab_id = server.app.public_tab_id(0, 0).expect("test precondition");
-    let first_pane_id = server.app.public_pane_id(0, first_pane).expect("test precondition");
+    let first_pane_id = server
+        .app
+        .public_pane_id(0, first_pane)
+        .expect("test precondition");
     let second_tab_id = server.app.public_tab_id(1, 0).expect("test precondition");
 
     let (control_rx, render_rx) = connect_test_shell(&mut server, 9, 80, 23);
@@ -2381,17 +2488,20 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
             }),
         },
         respond_to,
-        response_write_complete: None,
     });
     let response: crate::api::schema::SuccessResponse =
-        serde_json::from_str(&response_rx.recv().expect("agent focus response")).expect("test precondition");
+        serde_json::from_str(&response_rx.recv().expect("agent focus response"))
+            .expect("test precondition");
     let crate::api::schema::ResponseResult::AgentInfo { agent } = response.result else {
         panic!("expected agent info");
     };
     assert_eq!(agent.pane_id, first_pane_id);
     assert!(agent.focused);
     assert_eq!(server.app.state.active, Some(0));
-    let location = server.clients[&9].shell_location.as_ref().expect("test precondition");
+    let location = server.clients[&9]
+        .shell_location
+        .as_ref()
+        .expect("test precondition");
     assert_eq!(
         location.focused_workspace_id.as_deref(),
         Some(first_workspace_id.as_str())
@@ -2454,7 +2564,6 @@ async fn public_api_focus_replaces_every_client_shell_projection() {
             ),
         },
         respond_to,
-        response_write_complete: None,
     });
     assert_eq!(server.app.state.active, Some(1));
     server.render_and_stream();
@@ -2478,7 +2587,11 @@ async fn public_api_focus_replaces_every_client_shell_projection() {
 async fn client_shell_input_targets_runtime_without_server_shell_classification() {
     let mut server = test_headless_server();
     let mut input_rx = install_focused_test_runtime(&mut server, b"\x1b[?1000h\x1b[?1006h");
-    let pane_id = server.app.session_snapshot().focused_pane_id.expect("test precondition");
+    let pane_id = server
+        .app
+        .session_snapshot()
+        .focused_pane_id
+        .expect("test precondition");
     server.clients.insert(
         11,
         ClientConnection::new_with_mode(
@@ -2554,7 +2667,11 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
         Bytes::from_static(b"\x1b[<0;3;2M")
     );
     assert_eq!(server.foreground_client_id, Some(11));
-    let pane_id = server.app.session_snapshot().focused_pane_id.expect("test precondition");
+    let pane_id = server
+        .app
+        .session_snapshot()
+        .focused_pane_id
+        .expect("test precondition");
 
     let (workspace_index, runtime_pane_id) = server
         .app
@@ -2592,7 +2709,10 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
-    let pane_id = server.app.public_pane_id(0, hidden_pane).expect("test precondition");
+    let pane_id = server
+        .app
+        .public_pane_id(0, hidden_pane)
+        .expect("test precondition");
     server.clients.insert(
         11,
         ClientConnection::new(
@@ -2649,14 +2769,19 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
             4,
         );
     runtime.scroll_up(1);
-    assert!(runtime
-        .scroll_metrics()
-        .is_some_and(|metrics| metrics.offset_from_bottom > 0));
+    assert!(
+        runtime
+            .scroll_metrics()
+            .is_some_and(|metrics| metrics.offset_from_bottom > 0)
+    );
     workspace.insert_test_runtime(pane_id, runtime);
     server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
-    let public_pane_id = server.app.public_pane_id(0, pane_id).expect("test precondition");
+    let public_pane_id = server
+        .app
+        .public_pane_id(0, pane_id)
+        .expect("test precondition");
     server.clients.insert(
         11,
         ClientConnection::new_with_mode(
@@ -2689,7 +2814,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
             .app
             .state
             .runtime_for_pane_in_workspace(&server.app.terminal_runtimes, 0, pane_id)
-            .and_then(|runtime| runtime.scroll_metrics())
+            .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .map(|metrics| metrics.offset_from_bottom),
         Some(0)
     );
@@ -2714,7 +2839,11 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
 async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
     let mut server = test_headless_server();
     let mut input_rx = install_focused_test_runtime(&mut server, b"\x1b[?1003h\x1b[?1006h");
-    let pane_id = server.app.session_snapshot().focused_pane_id.expect("test precondition");
+    let pane_id = server
+        .app
+        .session_snapshot()
+        .focused_pane_id
+        .expect("test precondition");
     server.clients.insert(
         11,
         ClientConnection::new_with_mode(
@@ -2754,7 +2883,11 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
 async fn client_shell_mouse_motion_promotes_and_requests_render() {
     let mut server = test_headless_server();
     let mut input_rx = install_focused_test_runtime(&mut server, b"\x1b[?1003h\x1b[?1006h");
-    let pane_id = server.app.session_snapshot().focused_pane_id.expect("test precondition");
+    let pane_id = server
+        .app
+        .session_snapshot()
+        .focused_pane_id
+        .expect("test precondition");
     server.clients.insert(
         11,
         ClientConnection::new_with_mode(
@@ -2809,18 +2942,6 @@ fn install_focused_test_runtime(
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
     input_rx
-}
-
-fn retained_test_server(
-    initial_screen: &[u8],
-) -> (
-    HeadlessServer,
-    std::sync::mpsc::Receiver<Vec<u8>>,
-    crate::layout::PaneId,
-) {
-    let (server, _control_rx, render_rx, pane_id) =
-        retained_test_server_with_control(initial_screen);
-    (server, render_rx, pane_id)
 }
 
 fn retained_test_server_with_control(
@@ -3133,14 +3254,14 @@ fn explicit_agent_history_read_requires_idle_on_alternate_screen() {
             };
 
             assert_eq!(
-                    server.agent_read_not_idle_error(&request),
-                    Some(api::schema::ErrorBody {
-                        code: "agent_not_idle".into(),
-                        message: format!(
-                            "cannot read 200 lines while {public_pane_id} is working: its alternate-screen history can only be captured by scrolling while idle. Wait and retry, or use --source visible"
-                        ),
-                    })
-                );
+                server.agent_read_not_idle_error(&request),
+                Some(api::schema::ErrorBody {
+                    code: "agent_not_idle".into(),
+                    message: format!(
+                        "cannot read 200 lines while {public_pane_id} is working: its alternate-screen history can only be captured by scrolling while idle. Wait and retry, or use --source visible"
+                    ),
+                })
+            );
 
             let mut default_request = request.clone();
             let api::schema::Method::AgentRead(params) = &mut default_request.method else {
@@ -3214,11 +3335,13 @@ fn terminal_attach_disconnect_restores_client_shell_pane_size() {
         })
     );
     assert_eq!(server.foreground_client_id, Some(1));
-    assert!(server
-        .app
-        .state
-        .direct_attach_resize_locks
-        .contains(&terminal_id));
+    assert!(
+        server
+            .app
+            .state
+            .direct_attach_resize_locks
+            .contains(&terminal_id)
+    );
     assert_eq!(
         server
             .app
@@ -3231,11 +3354,13 @@ fn terminal_attach_disconnect_restores_client_shell_pane_size() {
 
     assert!(server.focus_shell_client_on_tab(1, &second_tab_id));
     assert!(server.handle_server_event(ServerEvent::ClientDisconnected { client_id: 2 }));
-    assert!(!server
-        .app
-        .state
-        .direct_attach_resize_locks
-        .contains(&terminal_id));
+    assert!(
+        !server
+            .app
+            .state
+            .direct_attach_resize_locks
+            .contains(&terminal_id)
+    );
     assert_eq!(
         server
             .app
@@ -3291,16 +3416,18 @@ fn terminal_attach_is_rejected_during_alt_screen_read() {
             })
         );
         assert!(!server.clients.contains_key(&7));
-        assert!(!server
-            .terminal_attach_owners
-            .contains_key(&terminal_id_string));
+        assert!(
+            !server
+                .terminal_attach_owners
+                .contains_key(&terminal_id_string)
+        );
         let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
         assert_eq!(
-                reason,
-                Some(format!(
-                    "terminal attach failed: terminal {terminal_id_string} has a read in progress; retry"
-                ))
-            );
+            reason,
+            Some(format!(
+                "terminal attach failed: terminal {terminal_id_string} has a read in progress; retry"
+            ))
+        );
     });
 }
 
@@ -3379,9 +3506,11 @@ fn terminal_attach_detach_sends_shutdown_before_removal() {
         assert!(server.handle_server_event(ServerEvent::ClientDetach { client_id: 7 }));
 
         assert!(!server.clients.contains_key(&7));
-        assert!(!server
-            .terminal_attach_owners
-            .contains_key(&terminal_id_string));
+        assert!(
+            !server
+                .terminal_attach_owners
+                .contains_key(&terminal_id_string)
+        );
         let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
         assert_eq!(reason, Some("detached".to_owned()));
     });
@@ -3454,7 +3583,11 @@ async fn host_shutdown_preserves_panes_from_queued_and_selected_death_events() {
         pane_id,
         exit_reason: crate::platform::ChildExitReason::Exited,
     };
-    server.app.event_tx.try_send(event()).expect("test precondition");
+    server
+        .app
+        .event_tx
+        .try_send(event())
+        .expect("test precondition");
     server
         .host_shutdown_requested
         .store(true, Ordering::Release);
@@ -3504,8 +3637,16 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
     let _ = first_control.recv().expect("first snapshot");
     let _ = second_control.recv().expect("second snapshot");
     assert!(server.focus_shell_client_on_tab(72, &second_tab_id));
-    server.clients.get_mut(&71).expect("test precondition").outer_terminal_focus = Some(true);
-    server.clients.get_mut(&72).expect("test precondition").outer_terminal_focus = Some(false);
+    server
+        .clients
+        .get_mut(&71)
+        .expect("test precondition")
+        .outer_terminal_focus = Some(true);
+    server
+        .clients
+        .get_mut(&72)
+        .expect("test precondition")
+        .outer_terminal_focus = Some(false);
 
     assert!(
         server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
@@ -3588,7 +3729,10 @@ async fn pane_death_reapplies_controller_geometry() {
     assert!(grown.0 > shrunk.0);
     assert_eq!(runtime.terminal_dimensions(), Some((grown.1, grown.0)));
     assert_eq!(
-        runtime.scroll_metrics().expect("test precondition").viewport_rows,
+        runtime
+            .scroll_metrics()
+            .expect("test precondition")
+            .viewport_rows,
         grown.0 as usize
     );
     shutdown_test_runtimes(&mut server);
@@ -4266,21 +4410,23 @@ fn headless_scheduled_tasks_expire_agent_metadata() {
             .effective_title(),
         None
     );
-    assert!(server
-        .app
-        .event_hub
-        .events_after(0)
-        .iter()
-        .any(|(_, event)| {
-            event.event == crate::api::schema::EventKind::PaneAgentStatusChanged
-                && matches!(
-                    &event.data,
-                    crate::api::schema::EventData::PaneAgentStatusChanged {
-                        title,
-                        ..
-                    } if title.is_none()
-                )
-        }));
+    assert!(
+        server
+            .app
+            .event_hub
+            .events_after(0)
+            .iter()
+            .any(|(_, event)| {
+                event.event == crate::api::schema::EventKind::PaneAgentStatusChanged
+                    && matches!(
+                        &event.data,
+                        crate::api::schema::EventData::PaneAgentStatusChanged {
+                            title,
+                            ..
+                        } if title.is_none()
+                    )
+            })
+    );
 }
 
 #[tokio::test]
@@ -4288,7 +4434,10 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
     let mut server = test_headless_server();
     let workspace = crate::workspace::Workspace::test_new("restored");
     let pane_id = workspace.tabs[0].root_pane;
-    let terminal_id = workspace.terminal_id(pane_id).cloned().expect("test precondition");
+    let terminal_id = workspace
+        .terminal_id(pane_id)
+        .cloned()
+        .expect("test precondition");
     server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.state.ensure_test_terminals();
@@ -4317,14 +4466,16 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
 
     assert!(server.handle_scheduled_tasks_headless(deadline, false));
     assert!(server.app.terminal_runtimes.get(&terminal_id).is_some());
-    assert!(server
-        .app
-        .state
-        .terminals
-        .get(&terminal_id)
-        .expect("test terminal should still exist")
-        .pending_agent_resume_plan
-        .is_none());
+    assert!(
+        server
+            .app
+            .state
+            .terminals
+            .get(&terminal_id)
+            .expect("test terminal should still exist")
+            .pending_agent_resume_plan
+            .is_none()
+    );
     shutdown_test_runtimes(&mut server);
 }
 
@@ -4469,7 +4620,11 @@ fn client_shell_streams_focused_pane_report_all_demand() {
 async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect() {
     let mut server = test_headless_server();
     let mut input_rx = install_focused_test_runtime(&mut server, b"\x1b[>3u");
-    let pane_id = server.app.session_snapshot().focused_pane_id.expect("test precondition");
+    let pane_id = server
+        .app
+        .session_snapshot()
+        .focused_pane_id
+        .expect("test precondition");
     for client_id in [1, 2] {
         server.clients.insert(
             client_id,
@@ -4521,17 +4676,21 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
             events: vec![key(crate::protocol::ClientKeyKind::Press)],
         })
     );
-    assert!(!input_rx
-        .recv()
-        .await
-        .expect("second encoded press")
-        .is_empty());
+    assert!(
+        !input_rx
+            .recv()
+            .await
+            .expect("second encoded press")
+            .is_empty()
+    );
     assert!(server.handle_server_event(ServerEvent::ClientDisconnected { client_id: 1 }));
-    assert!(!input_rx
-        .recv()
-        .await
-        .expect("disconnect synthesized release")
-        .is_empty());
+    assert!(
+        !input_rx
+            .recv()
+            .await
+            .expect("disconnect synthesized release")
+            .is_empty()
+    );
     shutdown_test_runtimes(&mut server);
 }
 

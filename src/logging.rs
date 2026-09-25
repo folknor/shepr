@@ -3,15 +3,15 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use tracing_subscriber::fmt::writer::MakeWriter;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::writer::MakeWriter;
 
 const DEFAULT_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const DEFAULT_RETAINED_LOG_FILES: usize = 0;
 
 pub(crate) fn init_file_logging(file_name: &str) {
     let Ok(make_writer) = RotatingFileMakeWriter::new(
-        crate::session::data_dir(),
+        &crate::session::data_dir(),
         file_name,
         DEFAULT_MAX_LOG_BYTES,
         DEFAULT_RETAINED_LOG_FILES,
@@ -361,13 +361,8 @@ struct RotatingFileMakeWriter {
 }
 
 impl RotatingFileMakeWriter {
-    fn new(
-        dir: PathBuf,
-        file_name: &str,
-        max_bytes: u64,
-        retained_files: usize,
-    ) -> io::Result<Self> {
-        fs::create_dir_all(&dir)?;
+    fn new(dir: &Path, file_name: &str, max_bytes: u64, retained_files: usize) -> io::Result<Self> {
+        fs::create_dir_all(dir)?;
         let path = dir.join(file_name);
         let mut state = RotatingFileState {
             path,
@@ -515,7 +510,7 @@ impl RotatingFileState {
 }
 
 fn rotated_log_path(path: &Path, index: usize) -> PathBuf {
-    let suffix = format!(".{}", index);
+    let suffix = format!(".{index}");
     let file_name = path
         .file_name()
         .map(|name| {
@@ -589,7 +584,8 @@ mod tests {
         let dir = path.parent().expect("test precondition").to_path_buf();
         fs::create_dir_all(&dir).expect("test precondition");
 
-        let writer = RotatingFileMakeWriter::new(dir.clone(), "shepr.log", 8, 0).expect("test precondition");
+        let writer =
+            RotatingFileMakeWriter::new(&dir, "shepr.log", 8, 0).expect("test precondition");
         {
             let mut guard = writer.make_writer();
             guard.write_all(b"12345678").expect("test precondition");

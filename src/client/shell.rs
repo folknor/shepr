@@ -33,8 +33,6 @@ use word_selection::ClientWordSelection;
 
 pub(in crate::client::shell) use render::sidebar;
 pub(crate) use state::*;
-#[cfg(test)]
-pub(super) use surface_patch::apply_composed_surface_patch;
 pub(super) use surface_patch::{ClientComposedSurfacePatch, ClientPaneSurfacePatchOutcome};
 
 use crossterm::event::KeyCode;
@@ -78,11 +76,10 @@ fn push_target_event(
                 pane_id: pending_pane,
                 events,
             }) = outcome.requests.last_mut()
+                && *pending_pane == pane_id
             {
-                if *pending_pane == pane_id {
-                    events.push(event);
-                    return;
-                }
+                events.push(event);
+                return;
             }
             outcome.requests.push(target_event_message(
                 ClientInputTarget::Pane(pane_id),
@@ -161,7 +158,7 @@ fn status_icon(
         (StatusIndicatorStyle::Dots, AgentStatus::Unknown) => "·",
         (StatusIndicatorStyle::Symbols, AgentStatus::Blocked) => "×",
         (StatusIndicatorStyle::Symbols, AgentStatus::Working) => "◐",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Done) => "✓",
+        (StatusIndicatorStyle::Symbols, AgentStatus::Done) => "\u{2713}",
         (StatusIndicatorStyle::Symbols, AgentStatus::Idle) => "○",
         (StatusIndicatorStyle::Symbols, AgentStatus::Unknown) => "·",
     }
@@ -217,7 +214,7 @@ fn panel_contrast_fg(palette: &Palette) -> ratatui::style::Color {
 fn blit_pane_surface(target: &mut FrameData, source: &FrameData, area: Rect) {
     let copy_width = source.width.min(area.width);
     let copy_height = source.height.min(area.height);
-    let hyperlink_base = target.hyperlinks.len() as u32;
+    let hyperlink_base = u32::try_from(target.hyperlinks.len()).unwrap_or(u32::MAX);
     target.hyperlinks.extend(source.hyperlinks.iter().cloned());
 
     for row in 0..copy_height {

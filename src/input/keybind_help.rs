@@ -53,7 +53,8 @@ fn indexed_range_prefix(bindings: &[IndexedKeybind]) -> Option<&str> {
     let run = bindings.get(..9)?;
     let prefix = run[0].label.strip_suffix('1')?;
     for (offset, binding) in run.iter().enumerate() {
-        let digit = char::from(b'1' + offset as u8);
+        // `run` has exactly 9 elements, so offset is always < 9 and fits in a u8.
+        let digit = char::from(b'1' + u8::try_from(offset).unwrap_or(u8::MAX));
         if binding.label.strip_suffix(digit) != Some(prefix) {
             return None;
         }

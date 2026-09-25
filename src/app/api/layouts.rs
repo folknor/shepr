@@ -19,9 +19,9 @@ impl App {
     pub(super) fn handle_layout_export(
         &mut self,
         id: String,
-        params: LayoutExportParams,
+        params: &LayoutExportParams,
     ) -> String {
-        let Some((ws_idx, tab_idx)) = self.resolve_layout_export_target(&params) else {
+        let Some((ws_idx, tab_idx)) = self.resolve_layout_export_target(params) else {
             return encode_error(id, "layout_not_found", "layout target not found");
         };
         let Some(layout) = self.layout_description(ws_idx, tab_idx) else {
@@ -31,12 +31,12 @@ impl App {
         encode_success(id, ResponseResult::LayoutExport { layout })
     }
 
-    pub(super) fn handle_layout_apply(&mut self, id: String, params: LayoutApplyParams) -> String {
+    pub(super) fn handle_layout_apply(&mut self, id: String, params: &LayoutApplyParams) -> String {
         let replace_target = match params.tab_id.as_deref() {
             Some(tab_id) => match self.parse_tab_id(tab_id) {
                 Some(target) => Some(target),
                 None => {
-                    return encode_error(id, "tab_not_found", format!("tab {tab_id} not found"))
+                    return encode_error(id, "tab_not_found", format!("tab {tab_id} not found"));
                 }
             },
             None => None,
@@ -162,12 +162,14 @@ impl App {
             let terminal_ids = self
                 .state
                 .terminal_ids_for_tab(target_ws_idx, target_tab_idx);
-            let pane_ids_for_focus_clear = self.state.pane_ids_for_tab(target_ws_idx, target_tab_idx);
+            let pane_ids_for_focus_clear =
+                self.state.pane_ids_for_tab(target_ws_idx, target_tab_idx);
             let Some(ws) = self.state.workspaces.get_mut(target_ws_idx) else {
                 return encode_error(id, "tab_not_found", "tab not found");
             };
             if ws.close_tab(target_tab_idx) {
-                self.state.clear_stale_previous_pane_focus(pane_ids_for_focus_clear);
+                self.state
+                    .clear_stale_previous_pane_focus(pane_ids_for_focus_clear);
                 self.state.remove_unattached_terminal_ids(terminal_ids);
                 self.shutdown_detached_terminal_runtimes();
                 self.emit_event(EventEnvelope {
@@ -375,13 +377,8 @@ impl App {
                 second,
             } => {
                 let second_leaf = first_layout_leaf(second);
-                let new_pane = self.layout_split_pane(
-                    ws_idx,
-                    pane_id,
-                    direction.clone(),
-                    *ratio,
-                    second_leaf,
-                )?;
+                let new_pane =
+                    self.layout_split_pane(ws_idx, pane_id, direction, *ratio, second_leaf)?;
                 self.apply_layout_node_to_pane(ws_idx, pane_id, first)?;
                 self.apply_layout_node_to_pane(ws_idx, new_pane, second)
             }
@@ -392,7 +389,7 @@ impl App {
         &mut self,
         ws_idx: usize,
         target_pane_id: PaneId,
-        direction: SplitDirection,
+        direction: &SplitDirection,
         ratio: f32,
         pane: &LayoutPane,
     ) -> Result<PaneId, String> {
@@ -406,8 +403,8 @@ impl App {
             .as_ref()
             .map(PathBuf::from)
             .or_else(|| self.launch_cwd_for_pane_in_workspace(ws_idx, target_pane_id));
-        let extra_env = super::env::normalize_launch_env(pane.env.clone())
-            .map_err(|(_, message)| message.to_string())?;
+        let extra_env =
+            super::env::normalize_launch_env(pane.env.clone()).map_err(|(_, message)| message)?;
         let direction = match direction {
             SplitDirection::Right => Direction::Horizontal,
             SplitDirection::Down => Direction::Vertical,
@@ -508,7 +505,8 @@ impl App {
             .get_mut(ws_idx)
             .is_some_and(|ws| ws.close_tab(tab_idx))
         {
-            self.state.clear_stale_previous_pane_focus(pane_ids_for_focus_clear);
+            self.state
+                .clear_stale_previous_pane_focus(pane_ids_for_focus_clear);
             self.state.remove_unattached_terminal_ids(terminal_ids);
             self.shutdown_detached_terminal_runtimes();
         }
@@ -564,19 +562,17 @@ fn validate_layout_node(
     stats.max_depth = stats.max_depth.max(depth);
     if depth > MAX_LAYOUT_DEPTH {
         return Err(format!(
-            "layout depth is {}; maximum is {}",
-            depth, MAX_LAYOUT_DEPTH
+            "layout depth is {depth}; maximum is {MAX_LAYOUT_DEPTH}"
         ));
     }
     match node {
         LayoutNode::Pane { pane } => {
             stats.panes += 1;
             if stats.panes > MAX_LAYOUT_PANES {
-                return Err(format!("layout has more than {} panes", MAX_LAYOUT_PANES));
+                return Err(format!("layout has more than {MAX_LAYOUT_PANES} panes"));
             }
             layout_command(pane)?;
-            super::env::normalize_launch_env(pane.env.clone())
-                .map_err(|(_, message)| message.to_string())?;
+            super::env::normalize_launch_env(pane.env.clone()).map_err(|(_, message)| message)?;
             Ok(())
         }
         LayoutNode::Split {
@@ -644,7 +640,7 @@ mod tests {
 
         let response = app.handle_layout_export(
             "req".into(),
-            LayoutExportParams {
+            &LayoutExportParams {
                 tab_id: None,
                 pane_id: None,
             },
@@ -655,7 +651,10 @@ mod tests {
             panic!("expected layout export response");
         };
         assert_eq!(layout.workspace_id, app.public_workspace_id(0));
-        assert_eq!(layout.focused_pane_id, app.public_pane_id(0, root).expect("test precondition"));
+        assert_eq!(
+            layout.focused_pane_id,
+            app.public_pane_id(0, root).expect("test precondition")
+        );
         let LayoutNode::Split {
             direction,
             ratio,
@@ -671,7 +670,10 @@ mod tests {
             panic!("expected second pane");
         };
         assert_eq!(pane.label.as_deref(), Some("tests"));
-        assert_eq!(pane.pane_id, Some(app.public_pane_id(0, right).expect("test precondition")));
+        assert_eq!(
+            pane.pane_id,
+            Some(app.public_pane_id(0, right).expect("test precondition"))
+        );
     }
 
     #[test]
@@ -730,7 +732,7 @@ mod tests {
 
         let response = app.handle_layout_apply(
             "req".into(),
-            LayoutApplyParams {
+            &LayoutApplyParams {
                 workspace_id: None,
                 tab_id: Some(original_tab_id),
                 tab_label: Some("dev".into()),
@@ -809,11 +811,15 @@ mod tests {
             .terminal_id(focused_pane)
             .cloned()
             .expect("test precondition");
-        app.state.terminals.get_mut(&terminal_id).expect("test precondition").cwd = cached_cwd.clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition")
+            .cwd = cached_cwd.clone();
 
         let response = app.handle_layout_apply(
             "req".into(),
-            LayoutApplyParams {
+            &LayoutApplyParams {
                 workspace_id: None,
                 tab_id: None,
                 tab_label: Some("cached".into()),
@@ -827,11 +833,18 @@ mod tests {
         let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
         assert!(matches!(success.result, ResponseResult::LayoutApply { .. }));
         let created = &app.state.workspaces[0].tabs[1];
-        let created_terminal_id = created.terminal_id(created.root_pane).expect("test precondition");
-        let created_cwd = &app.state.terminals.get(created_terminal_id).expect("test precondition").cwd;
+        let created_terminal_id = created
+            .terminal_id(created.root_pane)
+            .expect("test precondition");
+        let created_cwd = &app
+            .state
+            .terminals
+            .get(created_terminal_id)
+            .expect("test precondition")
+            .cwd;
         assert_eq!(
-            crate::pathutil::canonical_or_original(created_cwd),
-            crate::pathutil::canonical_or_original(&cached_cwd)
+            std::fs::canonicalize(created_cwd).unwrap_or_else(|_| created_cwd.clone()),
+            std::fs::canonicalize(&cached_cwd).unwrap_or_else(|_| cached_cwd.clone())
         );
         shutdown_test_runtimes(&mut app);
     }
@@ -843,7 +856,7 @@ mod tests {
 
         let response = app.handle_layout_apply(
             "req".into(),
-            LayoutApplyParams {
+            &LayoutApplyParams {
                 workspace_id: Some(app.public_workspace_id(0)),
                 tab_id: None,
                 tab_label: Some("bad".into()),

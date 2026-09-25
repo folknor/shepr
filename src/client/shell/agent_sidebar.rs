@@ -99,7 +99,8 @@ pub(super) fn render_agent_panel_header(
         crate::config::AgentPanelSortConfig::Spaces => "grouped",
         crate::config::AgentPanelSortConfig::Priority => "priority",
     };
-    let sort_width = display_width(sort_label).min(area.width as usize) as u16;
+    let sort_width =
+        u16::try_from(display_width(sort_label).min(usize::from(area.width))).unwrap_or(u16::MAX);
     let sort_rect = Rect::new(
         area.right().saturating_sub(sort_width),
         area.y + 1,
@@ -161,7 +162,7 @@ pub(super) fn render_agent_list<T>(
 
     let row_heights = rows
         .iter()
-        .map(|row| row_lines(row).max(1).min(u16::MAX as usize) as u16)
+        .map(|row| u16::try_from(row_lines(row).max(1)).unwrap_or(u16::MAX))
         .collect::<Vec<_>>();
     let gaps = rows
         .iter()
@@ -267,7 +268,7 @@ pub(super) fn agent_row(
         .and_then(crate::detect::parse_agent_label);
     let rows = crate::ui::sidebar_agent_rows(
         &config.agents,
-        crate::ui::AgentTokenContext {
+        &crate::ui::AgentTokenContext {
             machine,
             workspace: &workspace.label,
             tab: tab_label,
@@ -337,10 +338,18 @@ pub(super) fn render_agent_row(
             secondary,
             secondary,
             palette,
-            rect.width.saturating_sub(indent as u16) as usize,
+            usize::from(
+                rect.width
+                    .saturating_sub(u16::try_from(indent).unwrap_or(u16::MAX)),
+            ),
         ));
         Paragraph::new(Line::from(spans)).style(row_style).render(
-            Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
+            Rect::new(
+                rect.x,
+                rect.y + u16::try_from(index).unwrap_or(u16::MAX),
+                rect.width,
+                1,
+            ),
             buffer,
         );
     }
@@ -348,7 +357,7 @@ pub(super) fn render_agent_row(
 
 fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Style) {
     for (offset, character) in text.chars().take(width as usize).enumerate() {
-        if let Some(cell) = buffer.cell_mut((x + offset as u16, y)) {
+        if let Some(cell) = buffer.cell_mut((x + u16::try_from(offset).unwrap_or(u16::MAX), y)) {
             cell.set_char(character).set_style(style);
         }
     }

@@ -1,4 +1,4 @@
-//! Thin client mode — connects to the server's client socket.
+//! Thin client mode - connects to the server's client socket.
 //!
 //! The client:
 //! - Connects to `shepr-client.sock`, sends TerminalHello with terminal size and protocol version
@@ -56,8 +56,8 @@ use terminal_geometry::{
 };
 use terminal_geometry::{reported_cell_size_from_events, store_reported_cell_size};
 use terminal_setup::{
-    effective_mouse_capture, effective_sgr_pixel_mouse, set_mouse_capture,
-    setup_direct_attach_terminal, setup_terminal, should_draw_host_cursor, TerminalGuard,
+    TerminalGuard, effective_mouse_capture, effective_sgr_pixel_mouse, set_mouse_capture,
+    setup_direct_attach_terminal, setup_terminal, should_draw_host_cursor,
 };
 
 fn refresh_host_mouse_capture(enabled: bool, sgr_pixels: bool) {
@@ -72,28 +72,26 @@ use terminal_setup::{
     write_terminal_restore_postlude,
 };
 
-use attach::direct_attach_pixel_mouse;
 use attach::AttachEscapeState;
-use attach::{write_attach_semantic_action, AttachInputAction};
+use attach::direct_attach_pixel_mouse;
+use attach::{AttachInputAction, write_attach_semantic_action};
 pub use errors::ClientError;
-use handshake::{client_shell_keybinding_source, do_handshake, is_remote_client_process};
 #[cfg(test)]
-use handshake::{handshake_read_timeout, REMOTE_HANDSHAKE_READ_TIMEOUT};
+use handshake::{REMOTE_HANDSHAKE_READ_TIMEOUT, handshake_read_timeout};
+use handshake::{client_shell_keybinding_source, do_handshake, is_remote_client_process};
 
 use std::io::{self, Write as _};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
-use interprocess::local_socket::traits::Stream as _;
 use interprocess::TryClone as _;
+use interprocess::local_socket::traits::Stream as _;
 use tracing::{debug, info, warn};
 
 use crate::ipc::LocalStream;
 use crate::protocol::render_ansi;
-use crate::protocol::{self, ClientMessage, ServerMessage, MAX_FRAME_SIZE};
-#[cfg(test)]
-use crate::protocol::{AttachScrollDirection, AttachScrollSource};
+use crate::protocol::{self, ClientMessage, MAX_FRAME_SIZE, ServerMessage};
 use crate::server::socket_paths::client_socket_path;
 
 fn init_logging() {
@@ -262,7 +260,7 @@ fn run_client_with_mode(
 
     // ctrlc's "termination" feature also catches SIGTERM/SIGHUP so direct
     // termination signals still run the quit path and TerminalGuard::Drop.
-    let quit_flag = should_quit.clone();
+    let quit_flag = Arc::clone(&should_quit);
     if let Err(err) = ctrlc::set_handler(move || {
         quit_flag.store(true, Ordering::Release);
     }) {
@@ -335,7 +333,6 @@ async fn run_client_loop(
     _terminal_guard: &TerminalGuard,
 ) -> Result<(), ClientError> {
     let draw_host_cursor = attach_escape.is_none() && should_draw_host_cursor(config.host_cursor);
-    let is_remote_client = is_remote_client_process();
     let local_unavailable = initial.is_none();
 
     let mut state = ClientState {
@@ -399,21 +396,21 @@ async fn run_client_loop(
     // instead of falling back to an assumed cell size.
     let will_query_host_cell_size = state.attach_escape.is_none()
         && host_cell_size_query_required(state.pixel_geometry_enabled);
-    let stdin_quit = should_quit.clone();
-    let stdin_mouse_capture_active = host_mouse_capture_active.clone();
-    let stdin_sgr_pixels_active = host_sgr_pixels_active.clone();
+    let stdin_quit = Arc::clone(&should_quit);
+    let stdin_mouse_capture_active = Arc::clone(&host_mouse_capture_active);
+    let stdin_sgr_pixels_active = Arc::clone(&host_sgr_pixels_active);
     let stdin_escape_disambiguation_active = config.host_escape_disambiguation_active;
     let stdin_initial_host_input = std::mem::take(&mut config.initial_host_input);
     std::thread::spawn(move || {
         input::stdin_reader_loop(
-            stdin_tx,
+            &stdin_tx,
             &stdin_quit,
             will_query_host_terminal_theme,
             will_query_host_cell_size,
-            stdin_mouse_capture_active,
-            stdin_sgr_pixels_active,
+            &stdin_mouse_capture_active,
+            &stdin_sgr_pixels_active,
             stdin_escape_disambiguation_active,
-            stdin_initial_host_input,
+            &stdin_initial_host_input,
         );
     });
 
@@ -429,14 +426,14 @@ async fn run_client_loop(
     }
 
     // Spawn the resize poller thread.
-    let resize_quit = should_quit.clone();
+    let resize_quit = Arc::clone(&should_quit);
     let resize_tx = event_tx.clone();
-    let resize_cell_size = reported_cell_size.clone();
+    let resize_cell_size = Arc::clone(&reported_cell_size);
     let pixel_geometry_enabled = state.pixel_geometry_enabled;
     let pixel_geometry_fallback = config.pixel_geometry_fallback;
     std::thread::spawn(move || {
         resize_poll_loop(
-            resize_tx,
+            &resize_tx,
             cols,
             rows,
             initial_cell_width_px,
@@ -487,14 +484,13 @@ async fn run_client_loop(
             std::time::Instant::now(),
         );
     }
-    if local_unavailable {
-        if let Some(frame) = state
+    if local_unavailable
+        && let Some(frame) = state
             .shell
             .as_mut()
             .and_then(|shell| shell.compose(cols, rows))
-        {
-            state.present_frame(frame);
-        }
+    {
+        state.present_frame(frame);
     }
     let mut next_surface_serial = 1_u64;
     let mut pending_activation: Option<endpoint::PendingEndpointActivation> = None;
@@ -671,13 +667,13 @@ async fn run_client_loop(
                     continue;
                 }
                 if let Some(attach_escape) = state.attach_escape.as_mut() {
-                    if let Some(prefix) = attach_escape.take_pending_prefix() {
-                        if let Err(err) = write_to_server(
+                    if let Some(prefix) = attach_escape.take_pending_prefix()
+                        && let Err(err) = write_to_server(
                             &mut write_stream,
                             &ClientMessage::Input { data: prefix },
-                        ) {
-                            return Err(ClientError::ConnectionLost(err));
-                        }
+                        )
+                    {
+                        return Err(ClientError::ConnectionLost(err));
                     }
                     if let Some((kind, position, modifiers)) =
                         direct_attach_pixel_mouse(&data, geometry)
@@ -692,7 +688,8 @@ async fn run_client_loop(
                                 height_px: geometry.height_px,
                             }),
                             modifiers,
-                            lines: state.mouse_scroll_lines.max(1).min(u16::MAX as usize) as u16,
+                            lines: u16::try_from(state.mouse_scroll_lines.max(1))
+                                .unwrap_or(u16::MAX),
                         };
                         if let Err(err) = write_to_server(&mut write_stream, &message) {
                             return Err(ClientError::ConnectionLost(err));
@@ -749,12 +746,12 @@ async fn run_client_loop(
                     }
                 };
                 if let Some(activation) = pending_activation.as_mut() {
-                    if let Err(error) = activation.update_resize(msg, &mut write_stream) {
+                    if let Err(error) = activation.update_resize(&msg, &mut write_stream) {
                         rollback_endpoint_activation(
                             &mut state,
                             &mut write_stream,
                             &mut pending_activation,
-                            error,
+                            &error,
                             false,
                         );
                     }
@@ -777,7 +774,7 @@ async fn run_client_loop(
                     }
                     let unavailable = state.shell.as_mut().and_then(|shell| {
                         shell.set_endpoint_status(&endpoint_id, status);
-                        shell.set_machine_diagnostic(&endpoint_id, message.clone());
+                        shell.set_machine_diagnostic(&endpoint_id, &message);
                         (status == endpoint::ClientEndpointStatus::Attention
                             && shell.endpoint_is_active(&endpoint_id))
                         .then(|| format!("{}: {message}", shell.endpoint_label(&endpoint_id)))
@@ -830,7 +827,7 @@ async fn run_client_loop(
                     std::thread::spawn(move || {
                         server_reader_thread(
                             reader,
-                            reader_tx,
+                            &reader_tx,
                             &reader_quit,
                             MAX_FRAME_SIZE,
                             endpoint_id,
@@ -917,15 +914,14 @@ async fn run_client_loop(
                                 pending.receive_surface(&endpoint_id, generation, surface)
                             });
                             if matches!(progress, Some(endpoint::SurfaceActivationProgress::Ready))
-                            {
-                                if let Some(event) = complete_endpoint_activation(
+                                && let Some(event) = complete_endpoint_activation(
                                     &mut state,
                                     &mut write_stream,
                                     &mut pending_activation,
                                     &mut endpoint_commands,
-                                )? {
-                                    scheduled_activation = Some(event);
-                                }
+                                )?
+                            {
+                                scheduled_activation = Some(event);
                             }
                             continue;
                         }
@@ -946,7 +942,7 @@ async fn run_client_loop(
                         let outcome = state
                             .shell
                             .as_mut()
-                            .map(|shell| shell.apply_pane_surface_patch(patch));
+                            .map(|shell| shell.apply_pane_surface_patch(&patch));
                         let compose_fallback = match outcome {
                             Some(shell::ClientPaneSurfacePatchOutcome::Applied(Some(patch))) => {
                                 match state.present_surface_patch(patch) {
@@ -981,21 +977,19 @@ async fn run_client_loop(
                         }
                         write_stream.fail(
                             &endpoint_id,
-                            io::Error::new(
+                            &io::Error::new(
                                 io::ErrorKind::ConnectionAborted,
                                 reason.unwrap_or_else(|| "server stopped".into()),
                             ),
                         );
                     }
                     ServerMessage::ClientShellError { message } => {
-                        if let Some(shell) = state.shell.as_mut() {
-                            if shell.receive_endpoint_error(message) {
-                                let frame =
-                                    shell.compose(state.reported_size.0, state.reported_size.1);
-                                if let Some(frame) = frame {
-                                    state.present_frame(frame);
-                                }
-                            }
+                        if let Some(shell) = state.shell.as_mut()
+                            && shell.receive_endpoint_error(message)
+                            && let Some(frame) =
+                                shell.compose(state.reported_size.0, state.reported_size.1)
+                        {
+                            state.present_frame(frame);
                         }
                     }
                     ServerMessage::ClientShellEndpointResponseChunk {
@@ -1017,7 +1011,7 @@ async fn run_client_loop(
                                     &mut state,
                                     &mut write_stream,
                                     &mut pending_activation,
-                                    "endpoint returned a chunked activation acknowledgement".into(),
+                                    "endpoint returned a chunked activation acknowledgement",
                                     false,
                                 );
                                 continue;
@@ -1051,7 +1045,7 @@ async fn run_client_loop(
                                         &mut state,
                                         &mut write_stream,
                                         &mut pending_activation,
-                                        message,
+                                        &message,
                                         source_release_rejected,
                                     );
                                 }
@@ -1101,12 +1095,12 @@ async fn run_client_loop(
                             state.shell.as_mut(),
                             &mut scheduled_activation,
                         );
-                        if repaint || dispatch_repaint {
-                            if let Some(frame) = state.shell.as_mut().and_then(|shell| {
+                        if (repaint || dispatch_repaint)
+                            && let Some(frame) = state.shell.as_mut().and_then(|shell| {
                                 shell.compose(state.reported_size.0, state.reported_size.1)
-                            }) {
-                                state.present_frame(frame);
-                            }
+                            })
+                        {
+                            state.present_frame(frame);
                         }
                     }
                     ServerMessage::Clipboard { data } => {
@@ -1172,15 +1166,14 @@ async fn run_client_loop(
                                 )
                             });
                             if matches!(progress, Some(endpoint::SurfaceActivationProgress::Ready))
-                            {
-                                if let Some(event) = complete_endpoint_activation(
+                                && let Some(event) = complete_endpoint_activation(
                                     &mut state,
                                     &mut write_stream,
                                     &mut pending_activation,
                                     &mut endpoint_commands,
-                                )? {
-                                    scheduled_activation = Some(event);
-                                }
+                                )?
+                            {
+                                scheduled_activation = Some(event);
                             }
                             continue;
                         }
@@ -1214,7 +1207,7 @@ async fn run_client_loop(
                                     &endpoint_id,
                                     generation,
                                     now,
-                                    message,
+                                    &message,
                                 ) {
                                     clear_endpoint_host_effects(
                                         &mut state,
@@ -1248,24 +1241,21 @@ async fn run_client_loop(
                         if matches!(
                             activation_progress,
                             Some(endpoint::SurfaceActivationProgress::Ready)
-                        ) {
-                            if let Some(event) = complete_endpoint_activation(
-                                &mut state,
-                                &mut write_stream,
-                                &mut pending_activation,
-                                &mut endpoint_commands,
-                            )? {
-                                scheduled_activation = Some(event);
-                            }
+                        ) && let Some(event) = complete_endpoint_activation(
+                            &mut state,
+                            &mut write_stream,
+                            &mut pending_activation,
+                            &mut endpoint_commands,
+                        )? {
+                            scheduled_activation = Some(event);
                         }
                         write_stream.mark_ready(&endpoint_id, generation);
-                        if endpoint_id.is_local() {
-                            if let Some(event) =
+                        if endpoint_id.is_local()
+                            && let Some(event) =
                                 take_ready_local_activation(&mut state, &write_stream)
-                            {
-                                scheduled_activation = Some(event);
-                                continue;
-                            }
+                        {
+                            scheduled_activation = Some(event);
+                            continue;
                         }
                         let selected_endpoint = endpoint_catalog
                             .selected_profile
@@ -1309,7 +1299,7 @@ async fn run_client_loop(
                 }
                 write_stream.fail(
                     &endpoint_id,
-                    io::Error::new(io::ErrorKind::UnexpectedEof, "connection was lost"),
+                    &io::Error::new(io::ErrorKind::UnexpectedEof, "connection was lost"),
                 );
             }
             ClientLoopEvent::Timer => {
@@ -1369,7 +1359,7 @@ async fn run_client_loop(
                         &mut state,
                         &mut write_stream,
                         &mut pending_activation,
-                        format!("{label} did not produce a coherent surface in time"),
+                        &format!("{label} did not produce a coherent surface in time"),
                         false,
                     );
                 }

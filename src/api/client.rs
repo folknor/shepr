@@ -47,8 +47,8 @@ impl ApiClient {
         self.target.socket_path()
     }
 
-    pub fn request(&self, request: Request) -> Result<SuccessResponse, ApiClientError> {
-        let value = self.request_value(&request)?;
+    pub fn request(&self, request: &Request) -> Result<SuccessResponse, ApiClientError> {
+        let value = self.request_value(request)?;
         parse_response_value(value)
     }
 
@@ -104,7 +104,7 @@ impl ApiClient {
                 });
                 parse_response_value(read_json_line(&mut reader)?)?
             }
-            None => self.request(request)?,
+            None => self.request(&request)?,
         };
         match response.result {
             ResponseResult::Pong {
@@ -125,6 +125,7 @@ impl ApiClient {
     }
 }
 
+#[derive(Clone, Copy)]
 enum TimeoutKind {
     Send,
     Recv,
@@ -210,7 +211,7 @@ impl Read for DeadlineReader<'_> {
                 crate::ipc::LocalStreamReadCount::Data(count) => return Ok(count),
                 crate::ipc::LocalStreamReadCount::Closed => return Ok(0),
                 crate::ipc::LocalStreamReadCount::Pending => {
-                    std::thread::sleep(Duration::from_millis(2))
+                    std::thread::sleep(Duration::from_millis(2));
                 }
             }
         }

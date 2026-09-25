@@ -118,7 +118,7 @@ fn cell_symbol_position(frame: &FrameData, area: Rect, needle: &str) -> (u16, u1
             .take(area.width as usize)
             .collect::<String>();
         if let Some(byte) = slice.find(needle) {
-            let column = slice[..byte].chars().count() as u16 + area.x;
+            let column = u16::try_from(slice[..byte].chars().count()).unwrap_or(u16::MAX) + area.x;
             return (column, y);
         }
     }

@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ratatui::layout::Direction;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 
 use crate::events::AppEvent;
 use crate::layout::PaneId;
@@ -23,8 +23,8 @@ use self::git::git_status_cache_key_for_space;
 pub(crate) use self::{git::git_status_snapshot_for_cwd_with_demand, tab::MovedPane};
 pub use self::{
     git::{
-        derive_label_from_cwd, fallback_label_from_cwd, git_branch, git_space_metadata,
-        git_status_cache_key, GitSpaceMetadata, GitStatusCacheEntry, GitStatusRefreshDemand,
+        GitSpaceMetadata, GitStatusCacheEntry, GitStatusRefreshDemand, derive_label_from_cwd,
+        fallback_label_from_cwd, git_branch, git_space_metadata, git_status_cache_key,
     },
     tab::{NewPane, Tab},
 };
@@ -97,7 +97,10 @@ const PUBLIC_ID_ALPHABET: &[u8; 32] = b"123456789ABCDEFGHJKMNPQRSTVWXYZ0";
 
 pub(crate) fn generate_workspace_id() -> String {
     let counter = NEXT_WORKSPACE_ID.fetch_add(1, Ordering::Relaxed);
-    format!("w{}", encode_public_number(counter as usize))
+    format!(
+        "w{}",
+        encode_public_number(usize::try_from(counter).unwrap_or(usize::MAX))
+    )
 }
 
 pub(crate) fn encode_public_number(mut value: usize) -> String {
@@ -225,7 +228,7 @@ impl Workspace {
     pub(crate) fn from_existing_pane(
         label: Option<String>,
         tab_label: Option<String>,
-        identity_cwd: PathBuf,
+        identity_cwd: &Path,
         moved: MovedPane,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
@@ -237,15 +240,15 @@ impl Workspace {
         let mut public_pane_numbers = HashMap::new();
         public_pane_numbers.insert(root_pane, 1);
         let (cached_git_space, cached_auto_label, cached_git_status_key) =
-            discover_workspace_git_identity(&identity_cwd);
+            discover_workspace_git_identity(identity_cwd);
         Self {
             id,
             custom_name: label,
-            identity_cwd: identity_cwd.clone(),
-            cached_identity_cwd: identity_cwd.clone(),
+            identity_cwd: identity_cwd.to_path_buf(),
+            cached_identity_cwd: identity_cwd.to_path_buf(),
             cached_auto_label,
             cached_git_status_key,
-            cached_git_branch: git_branch(&identity_cwd),
+            cached_git_branch: git_branch(identity_cwd),
             cached_git_ahead_behind: None,
             cached_git_space,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
@@ -260,37 +263,9 @@ impl Workspace {
         }
     }
 
-    pub fn new(
-        initial_cwd: PathBuf,
-        rows: u16,
-        cols: u16,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
-        Self::new_with_tab(
-            initial_cwd,
-            rows,
-            cols,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            events,
-            render_notify,
-            render_dirty,
-            None,
-            Vec::new(),
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_extra_env(
-        initial_cwd: PathBuf,
+        initial_cwd: &Path,
         rows: u16,
         cols: u16,
         scrollback_limit_bytes: usize,
@@ -302,20 +277,6 @@ impl Workspace {
         render_dirty: Arc<RenderSignal>,
         extra_env: Vec<(String, String)>,
     ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
-        if extra_env.is_empty() {
-            return Self::new(
-                initial_cwd,
-                rows,
-                cols,
-                scrollback_limit_bytes,
-                host_terminal_theme,
-                host_terminal_appearance,
-                shell_config,
-                events,
-                render_notify,
-                render_dirty,
-            );
-        }
         Self::new_with_tab(
             initial_cwd,
             rows,
@@ -334,7 +295,7 @@ impl Workspace {
 
     #[allow(clippy::too_many_arguments)]
     fn new_with_tab(
-        initial_cwd: PathBuf,
+        initial_cwd: &Path,
         rows: u16,
         cols: u16,
         scrollback_limit_bytes: usize,
@@ -356,7 +317,7 @@ impl Workspace {
         let (tab, terminal, runtime) = if let Some(argv) = argv {
             Tab::new_argv_command(
                 1,
-                initial_cwd.clone(),
+                initial_cwd.to_path_buf(),
                 rows,
                 cols,
                 argv,
@@ -371,7 +332,7 @@ impl Workspace {
         } else {
             Tab::new(
                 1,
-                initial_cwd.clone(),
+                initial_cwd.to_path_buf(),
                 rows,
                 cols,
                 scrollback_limit_bytes,
@@ -387,19 +348,19 @@ impl Workspace {
         let mut public_pane_numbers = HashMap::new();
         public_pane_numbers.insert(tab.root_pane, 1);
         let (cached_git_space, cached_auto_label, cached_git_status_key) =
-            discover_workspace_git_identity(&initial_cwd);
+            discover_workspace_git_identity(initial_cwd);
         Ok((
             Self {
                 id,
                 custom_name: None,
-                identity_cwd: initial_cwd.clone(),
-                cached_identity_cwd: initial_cwd.clone(),
+                identity_cwd: initial_cwd.to_path_buf(),
+                cached_identity_cwd: initial_cwd.to_path_buf(),
                 cached_auto_label,
                 cached_git_status_key,
-                cached_git_branch: git_branch(&initial_cwd),
+                cached_git_branch: git_branch(initial_cwd),
                 cached_git_ahead_behind: None,
                 cached_git_space,
-                    metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
+                metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
                 metadata_token_sequences: HashMap::new(),
                 public_pane_numbers,
                 next_public_pane_number: 2,
@@ -516,11 +477,11 @@ impl Workspace {
             .expect("workspace must always have at least one tab");
         let render_notify = self
             .active_tab()
-            .map(|tab| tab.render_notify.clone())
+            .map(|tab| Arc::clone(&tab.render_notify))
             .expect("workspace must always have at least one tab");
         let render_dirty = self
             .active_tab()
-            .map(|tab| tab.render_dirty.clone())
+            .map(|tab| Arc::clone(&tab.render_dirty))
             .expect("workspace must always have at least one tab");
 
         let (tab, terminal, runtime) = if let Some(argv) = argv {
@@ -868,8 +829,8 @@ impl Workspace {
             .map(|tab| {
                 (
                     tab.events.clone(),
-                    tab.render_notify.clone(),
-                    tab.render_dirty.clone(),
+                    Arc::clone(&tab.render_notify),
+                    Arc::clone(&tab.render_dirty),
                 )
             })
             .unwrap_or((
@@ -1441,7 +1402,8 @@ mod tests {
             .expect("adversarial state should contain raw/public pane divergence");
         assert_ne!(
             divergent_pane.raw() as usize,
-            ws.public_pane_number(divergent_pane).expect("test precondition")
+            ws.public_pane_number(divergent_pane)
+                .expect("test precondition")
         );
 
         let new_pane = ws.test_split(Direction::Vertical);
@@ -1484,9 +1446,19 @@ mod tests {
 
         assert_eq!(
             space.expect("test precondition").repo_name,
-            repo.file_name().expect("test precondition").to_str().expect("test precondition")
+            repo.file_name()
+                .expect("test precondition")
+                .to_str()
+                .expect("test precondition")
         );
-        assert_eq!(auto_label, checkout.file_name().expect("test precondition").to_str().expect("test precondition"));
+        assert_eq!(
+            auto_label,
+            checkout
+                .file_name()
+                .expect("test precondition")
+                .to_str()
+                .expect("test precondition")
+        );
 
         std::fs::remove_dir_all(base).expect("test precondition");
     }
@@ -1520,7 +1492,10 @@ mod tests {
     fn terminal_aware_display_name_uses_latest_admitted_identity_cache() {
         let mut ws = Workspace::test_new("ignored");
         let root_pane = ws.tabs[0].root_pane;
-        let terminal_id = ws.tabs[0].terminal_id(root_pane).expect("test precondition").clone();
+        let terminal_id = ws.tabs[0]
+            .terminal_id(root_pane)
+            .expect("test precondition")
+            .clone();
         ws.custom_name = None;
         ws.identity_cwd = PathBuf::from("/old/workspace");
         ws.cached_identity_cwd = PathBuf::from("/new/repo/deep");
@@ -1539,7 +1514,10 @@ mod tests {
         let mut ws = Workspace::test_new("ignored");
         ws.custom_name = None;
         let root_pane = ws.tabs[0].root_pane;
-        let terminal_id = ws.tabs[0].terminal_id(root_pane).expect("test precondition").clone();
+        let terminal_id = ws.tabs[0]
+            .terminal_id(root_pane)
+            .expect("test precondition")
+            .clone();
         let mut terminals = HashMap::new();
         terminals.insert(
             terminal_id.clone(),

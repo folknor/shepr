@@ -38,7 +38,7 @@ pub fn fallback_label_from_cwd(cwd: &Path) -> String {
     cwd.file_name()
         .and_then(|n| n.to_str())
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(str::to_string)
         .unwrap_or_else(|| cwd.display().to_string())
 }
 
@@ -201,15 +201,15 @@ pub(super) fn git_dir_for_repo_root(repo_root: &Path) -> Option<PathBuf> {
         return Some(git_path);
     }
 
-    if let Ok(gitdir) = std::fs::read_to_string(&git_path) {
-        if let Some(relative) = gitdir.trim().strip_prefix("gitdir:").map(str::trim) {
-            let resolved = Path::new(relative);
-            return Some(if resolved.is_absolute() {
-                resolved.to_path_buf()
-            } else {
-                repo_root.join(resolved)
-            });
-        }
+    if let Ok(gitdir) = std::fs::read_to_string(&git_path)
+        && let Some(relative) = gitdir.trim().strip_prefix("gitdir:").map(str::trim)
+    {
+        let resolved = Path::new(relative);
+        return Some(if resolved.is_absolute() {
+            resolved.to_path_buf()
+        } else {
+            repo_root.join(resolved)
+        });
     }
 
     if path_is_git_dir_layout(repo_root) && git_dir_is_bare(repo_root) {
@@ -283,10 +283,10 @@ fn simple_git_config_section(line: &str) -> Option<&str> {
 fn strip_git_config_comment(value: &str) -> &str {
     let value = value.trim();
     for marker in ['#', ';'] {
-        if let Some((prefix, _)) = value.split_once(marker) {
-            if prefix.chars().next_back().is_some_and(char::is_whitespace) {
-                return prefix;
-            }
+        if let Some((prefix, _)) = value.split_once(marker)
+            && prefix.chars().next_back().is_some_and(char::is_whitespace)
+        {
+            return prefix;
         }
     }
     value
@@ -340,8 +340,8 @@ pub(super) fn read_ref_oid(common_dir: &Path, full_ref: &str) -> Option<String> 
             }
             return Some(oid.to_string());
         }
-        // A loose ref that exists — or whose existence cannot be ruled out
-        // because of a metadata or I/O error — must not fall back to
+        // A loose ref that exists - or whose existence cannot be ruled out
+        // because of a metadata or I/O error - must not fall back to
         // packed-refs: that could resurrect a stale same-name OID into the
         // status fingerprint. Report the ref as unavailable instead.
         RefFileRead::Unavailable => return None,
@@ -391,7 +391,8 @@ mod tests {
     fn git_branch_reads_head_from_standard_repo() {
         let root = temp_test_dir("standard-repo");
         std::fs::create_dir_all(root.join(".git")).expect("test precondition");
-        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").expect("test precondition");
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n")
+            .expect("test precondition");
 
         assert_eq!(git_branch(&root).as_deref(), Some("main"));
 
@@ -409,7 +410,8 @@ mod tests {
         )
         .expect("test precondition");
         let loose = refs_dir.join("main");
-        std::fs::write(&loose, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n").expect("test precondition");
+        std::fs::write(&loose, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n")
+            .expect("test precondition");
         std::fs::OpenOptions::new()
             .write(true)
             .open(loose)
@@ -483,7 +485,8 @@ mod tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa refs/heads/main\n",
         )
         .expect("test precondition");
-        std::fs::write(refs_dir.join("target-parent"), "not a directory").expect("test precondition");
+        std::fs::write(refs_dir.join("target-parent"), "not a directory")
+            .expect("test precondition");
         symlink("target-parent/nested", refs_dir.join("main")).expect("test precondition");
 
         let oid = read_ref_oid(&root, "refs/heads/main");
@@ -593,8 +596,10 @@ mod tests {
         let root = temp_test_dir("worktree");
         let worktree_git_dir = root.join(".bare/worktrees/feature");
         std::fs::create_dir_all(&worktree_git_dir).expect("test precondition");
-        std::fs::write(root.join(".git"), "gitdir: .bare/worktrees/feature\n").expect("test precondition");
-        std::fs::write(worktree_git_dir.join("HEAD"), "ref: refs/heads/feature\n").expect("test precondition");
+        std::fs::write(root.join(".git"), "gitdir: .bare/worktrees/feature\n")
+            .expect("test precondition");
+        std::fs::write(worktree_git_dir.join("HEAD"), "ref: refs/heads/feature\n")
+            .expect("test precondition");
 
         assert_eq!(git_branch(&root).as_deref(), Some("feature"));
 
@@ -691,10 +696,20 @@ mod tests {
         assert_eq!(bare_space.key, checkout_space.key);
         assert_eq!(bare_space.repo_name, ".bare");
         assert_eq!(checkout_space.repo_name, bare_space.repo_name);
-        assert_eq!(bare_auto_label, bare.file_name().expect("test precondition").to_str().expect("test precondition"));
+        assert_eq!(
+            bare_auto_label,
+            bare.file_name()
+                .expect("test precondition")
+                .to_str()
+                .expect("test precondition")
+        );
         assert_eq!(
             checkout_auto_label,
-            checkout.file_name().expect("test precondition").to_str().expect("test precondition")
+            checkout
+                .file_name()
+                .expect("test precondition")
+                .to_str()
+                .expect("test precondition")
         );
 
         std::fs::remove_dir_all(base).expect("test precondition");
@@ -776,12 +791,15 @@ mod tests {
         let root = temp_test_dir("label-repo");
         let nested = root.join("nested");
         std::fs::create_dir_all(root.join(".git")).expect("test precondition");
-        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").expect("test precondition");
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n")
+            .expect("test precondition");
         std::fs::create_dir_all(&nested).expect("test precondition");
 
         assert_eq!(
             derive_label_from_cwd(&nested),
-            root.file_name().and_then(|name| name.to_str()).expect("test precondition")
+            root.file_name()
+                .and_then(|name| name.to_str())
+                .expect("test precondition")
         );
 
         std::fs::remove_dir_all(root).expect("test precondition");
@@ -790,7 +808,10 @@ mod tests {
     #[test]
     fn derive_label_uses_path_name_outside_git() {
         let root = temp_test_dir("label-plain");
-        let label = root.file_name().and_then(|name| name.to_str()).expect("test precondition");
+        let label = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("test precondition");
 
         assert_eq!(derive_label_from_cwd(Path::new(&root)), label);
 

@@ -30,10 +30,9 @@ impl App {
             .session_save_thread
             .as_ref()
             .is_some_and(std::thread::JoinHandle::is_finished)
+            && let Some(thread) = self.session_save_thread.take()
         {
-            if let Some(thread) = self.session_save_thread.take() {
-                let _ = thread.join();
-            }
+            let _ = thread.join();
         }
     }
 
@@ -74,7 +73,7 @@ impl App {
         let job = self.capture_session_save_job();
         self.pane_exit_checkpoint_pending = false;
         self.session_save_deadline = None;
-        let writer = self.session_writer.clone();
+        let writer = std::sync::Arc::clone(&self.session_writer);
         match std::thread::Builder::new()
             .name("shepr-session-save".into())
             .spawn(move || run_session_save_job(job, &writer))

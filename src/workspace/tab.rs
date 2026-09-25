@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ratatui::layout::Direction;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 
 use crate::events::AppEvent;
 use crate::layout::{Node, PaneId, TileLayout};
@@ -30,7 +30,7 @@ pub struct Tab {
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
     pub layout: TileLayout,
-    /// Pane viewport state — always present, testable without PTYs.
+    /// Pane viewport state - always present, testable without PTYs.
     pub panes: HashMap<PaneId, PaneState>,
     #[cfg(test)]
     pub runtimes: HashMap<PaneId, TerminalRuntime>,
@@ -129,30 +129,30 @@ impl Tab {
                 root_id,
                 rows,
                 cols,
-                initial_cwd.clone(),
+                &initial_cwd,
                 argv,
                 launch_env,
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,
-                events.clone(),
-                render_notify.clone(),
-                render_dirty.clone(),
+                &events,
+                &render_notify,
+                &render_dirty,
             )?
         } else {
             TerminalRuntime::spawn(
                 root_id,
                 rows,
                 cols,
-                initial_cwd.clone(),
+                &initial_cwd,
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,
                 shell_config,
                 launch_env,
-                events.clone(),
-                render_notify.clone(),
-                render_dirty.clone(),
+                &events,
+                &render_notify,
+                &render_dirty,
             )?
         };
 
@@ -299,29 +299,29 @@ impl Tab {
                 new_id,
                 rows,
                 cols,
-                actual_cwd.clone(),
+                &actual_cwd,
                 argv,
                 launch_env,
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,
-                self.events.clone(),
-                self.render_notify.clone(),
-                self.render_dirty.clone(),
+                &self.events,
+                &self.render_notify,
+                &self.render_dirty,
             ),
             None => TerminalRuntime::spawn(
                 new_id,
                 rows,
                 cols,
-                actual_cwd.clone(),
+                &actual_cwd,
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,
                 shell_config,
                 launch_env,
-                self.events.clone(),
-                self.render_notify.clone(),
-                self.render_dirty.clone(),
+                &self.events,
+                &self.render_notify,
+                &self.render_dirty,
             ),
         };
         let runtime = match runtime {
@@ -471,7 +471,7 @@ impl Tab {
         let terminal_id = self.terminal_id(pane_id)?;
         terminal_runtimes
             .get(terminal_id)
-            .and_then(|rt| rt.cwd())
+            .and_then(TerminalRuntime::cwd)
             .or_else(|| {
                 terminals
                     .get(terminal_id)
@@ -487,6 +487,6 @@ impl Tab {
         let terminal_id = self.terminal_id(pane_id)?;
         terminal_runtimes
             .get(terminal_id)
-            .and_then(|rt| rt.foreground_cwd())
+            .and_then(TerminalRuntime::foreground_cwd)
     }
 }

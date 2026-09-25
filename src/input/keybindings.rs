@@ -162,24 +162,24 @@ pub(crate) fn resolve_indexed_action(
         };
 
         for binding in &keybinds.switch_tab {
-            if trigger_matches(binding) {
-                if let Some(index) = binding.matched_index(key) {
-                    return Some(KeybindAction::SwitchTab(index));
-                }
+            if trigger_matches(binding)
+                && let Some(index) = binding.matched_index(key)
+            {
+                return Some(KeybindAction::SwitchTab(index));
             }
         }
         for binding in &keybinds.switch_workspace {
-            if trigger_matches(binding) {
-                if let Some(index) = binding.matched_index(key) {
-                    return Some(KeybindAction::SwitchWorkspace(index));
-                }
+            if trigger_matches(binding)
+                && let Some(index) = binding.matched_index(key)
+            {
+                return Some(KeybindAction::SwitchWorkspace(index));
             }
         }
         for binding in &keybinds.focus_agent {
-            if trigger_matches(binding) {
-                if let Some(index) = binding.matched_index(key) {
-                    return Some(KeybindAction::FocusAgent(index));
-                }
+            if trigger_matches(binding)
+                && let Some(index) = binding.matched_index(key)
+            {
+                return Some(KeybindAction::FocusAgent(index));
             }
         }
     }
@@ -228,13 +228,16 @@ mod tests {
 
     #[test]
     fn clear_pane_is_unbound_by_default_and_configurable() {
-        assert!(crate::config::Config::default()
-            .keybinds()
-            .clear_pane
-            .bindings
-            .is_empty());
+        assert!(
+            crate::config::Config::default()
+                .keybinds()
+                .clear_pane
+                .bindings
+                .is_empty()
+        );
         let config: crate::config::Config =
-            toml::from_str("[keys]\nclear_pane = [\"super+k\", \"prefix+ctrl+k\"]").expect("test precondition");
+            toml::from_str("[keys]\nclear_pane = [\"super+k\", \"prefix+ctrl+k\"]")
+                .expect("test precondition");
         assert!(config.collect_diagnostics().is_empty());
         let keybinds = config.keybinds();
         assert!(matches!(

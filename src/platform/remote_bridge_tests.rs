@@ -14,7 +14,8 @@ fn bridge_child() {
     };
     let stream = crate::ipc::connect_local_stream(&PathBuf::from(path)).expect("test precondition");
     let timeout = (std::env::var_os("SHEPR_BRIDGE_TEST_LEGACY").is_none()).then_some(TIMEOUT);
-    super::unix_common::forward_remote_bridge_stdio_with_timeout(stream, timeout).expect("test precondition");
+    super::unix_common::forward_remote_bridge_stdio_with_timeout(stream, timeout)
+        .expect("test precondition");
 }
 
 struct Bridge {
@@ -95,11 +96,15 @@ impl Bridge {
     fn finish(&mut self) -> String {
         drop(self.child.stdin.take());
         let mut input = Vec::new();
-        self.stream.read_to_end(&mut input).expect("test precondition");
+        self.stream
+            .read_to_end(&mut input)
+            .expect("test precondition");
         self.stream
             .write_all(b"final-output-after-stdin-eof")
             .expect("test precondition");
-        self.stream.shutdown(std::net::Shutdown::Write).expect("test precondition");
+        self.stream
+            .shutdown(std::net::Shutdown::Write)
+            .expect("test precondition");
         assert!(self.wait().success());
         let mut output = String::new();
         self.child
@@ -148,12 +153,24 @@ fn bridge_preserves_one_way_progress_and_drains_after_stdin_eof() {
                     .expect("test precondition")
                     .write_all(b"ping")
                     .expect("test precondition");
-                bridge.stream.read_exact(&mut [0; 4]).expect("test precondition");
+                bridge
+                    .stream
+                    .read_exact(&mut [0; 4])
+                    .expect("test precondition");
             } else {
-                bridge.stream.write_all(b"output").expect("test precondition");
+                bridge
+                    .stream
+                    .write_all(b"output")
+                    .expect("test precondition");
             }
             std::thread::sleep(Duration::from_millis(60));
-            assert!(bridge.child.try_wait().expect("test precondition").is_none());
+            assert!(
+                bridge
+                    .child
+                    .try_wait()
+                    .expect("test precondition")
+                    .is_none()
+            );
         }
         assert!(bridge.finish().contains("final-output-after-stdin-eof"));
     }
@@ -163,6 +180,12 @@ fn bridge_preserves_one_way_progress_and_drains_after_stdin_eof() {
 fn legacy_bridge_has_no_idle_deadline() {
     let mut bridge = Bridge::start(true);
     std::thread::sleep(TIMEOUT * 2);
-    assert!(bridge.child.try_wait().expect("test precondition").is_none());
+    assert!(
+        bridge
+            .child
+            .try_wait()
+            .expect("test precondition")
+            .is_none()
+    );
     assert!(bridge.finish().contains("final-output-after-stdin-eof"));
 }

@@ -75,7 +75,11 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
 
             for workspace_id in ["ws_1", "ws_2"] {
                 assert_selected(&state, &ClientEndpointId::Local, workspace_id);
-                let buffer = state.compose(100, 28).expect("test precondition").to_ratatui_buffer().expect("test precondition");
+                let buffer = state
+                    .compose(100, 28)
+                    .expect("test precondition")
+                    .to_ratatui_buffer()
+                    .expect("test precondition");
                 let selected = workspace_rect(&state, &ClientEndpointId::Local, workspace_id);
                 for y in selected.y..selected.bottom() {
                     for x in selected.x..selected.right() {
@@ -112,7 +116,11 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
                 Some("ws_1")
             );
             preview_key(&mut state, b"\x1b");
-            let buffer = state.compose(100, 28).expect("test precondition").to_ratatui_buffer().expect("test precondition");
+            let buffer = state
+                .compose(100, 28)
+                .expect("test precondition")
+                .to_ratatui_buffer()
+                .expect("test precondition");
             let focused = workspace_rect(&state, &ClientEndpointId::Local, "ws_1");
             assert_eq!(
                 buffer[(focused.x, focused.y)].bg,
@@ -182,7 +190,10 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
                     }
                 );
             }
-            assert_eq!(state.snapshot.as_ref().expect("test precondition").boot_id, "boot-1");
+            assert_eq!(
+                state.snapshot.as_ref().expect("test precondition").boot_id,
+                "boot-1"
+            );
             assert_eq!(
                 state
                     .snapshot
@@ -192,7 +203,14 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
                     .as_deref(),
                 Some("ws_1")
             );
-            assert_eq!(state.pane_surface.as_ref().expect("test precondition").boot_id, "boot-1");
+            assert_eq!(
+                state
+                    .pane_surface
+                    .as_ref()
+                    .expect("test precondition")
+                    .boot_id,
+                "boot-1"
+            );
             let enter = state.handle_input_bytes(b"\r");
             assert!(enter.requests.is_empty());
             assert!(
@@ -240,7 +258,7 @@ fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
     state.config.prompt_new_workspace_name = false;
     let mut create = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewWorkspace),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewWorkspace),
         &mut create,
     );
     assert!(
@@ -287,7 +305,11 @@ fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
     assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
     enter_navigation(&mut state);
     // Seed the hidden prompt after navigation: text editing consumes the prefix key.
-    state.copy_mode.as_mut().expect("test precondition").search_prompt = Some(ClientCopySearchPrompt {
+    state
+        .copy_mode
+        .as_mut()
+        .expect("test precondition")
+        .search_prompt = Some(ClientCopySearchPrompt {
         direction: crate::api::schema::PaneCopySearchDirection::Forward,
         query: "original".into(),
     });
@@ -303,7 +325,12 @@ fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
     let paste = state.handle_raw_events(vec![RawInputEvent::Paste("unexpected".into())]);
     assert!(paste.actions.is_empty() && paste.requests.is_empty());
     assert_eq!(
-        state.copy_mode.expect("test precondition").search_prompt.expect("test precondition").query,
+        state
+            .copy_mode
+            .expect("test precondition")
+            .search_prompt
+            .expect("test precondition")
+            .query,
         "original".into()
     );
 }
@@ -386,7 +413,7 @@ fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
                 state.set_endpoint_snapshot_for_generation(&remote_id, 7, Box::new(remote));
             }
             "generation" => {
-                state.cache_endpoint_snapshot_for_generation(&remote_id, 8, Box::new(remote))
+                state.cache_endpoint_snapshot_for_generation(&remote_id, 8, Box::new(remote));
             }
             _ => unreachable!(),
         }
@@ -394,9 +421,23 @@ fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
         assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
         assert_eq!(state.mode, ClientShellMode::Navigate);
         assert!(state.visible_endpoint_notice.is_some());
-        assert!(!state.navigation_target_valid(state.navigate_workspace_id.as_ref().expect("test precondition")));
+        assert!(
+            !state.navigation_target_valid(
+                state
+                    .navigate_workspace_id
+                    .as_ref()
+                    .expect("test precondition")
+            )
+        );
         preview_key(&mut state, b"\x1b[B");
-        assert!(state.navigation_target_valid(state.navigate_workspace_id.as_ref().expect("test precondition")));
+        assert!(
+            state.navigation_target_valid(
+                state
+                    .navigate_workspace_id
+                    .as_ref()
+                    .expect("test precondition")
+            )
+        );
     }
 }
 
@@ -448,35 +489,28 @@ fn active_preview_is_not_retargeted_by_deletion_or_reboot() {
 
 #[test]
 fn aggregate_navigation_reveals_overflow_and_preserves_order() {
-    for (compact, cols) in [(true, 100), (false, 100), (false, 44)] {
+    for compact in [true, false] {
         let (mut state, remote_id) = state_with_remote();
         let mut remote = workspaces(15);
         remote.boot_id = "remote-boot".into();
         state.set_endpoint_snapshot(&remote_id, Box::new(remote));
         state.sidebar_collapsed = compact;
         state.collapsed_endpoints.insert(remote_id.clone());
-        state.compose(cols, 18).expect("test precondition");
+        state.compose(100, 18).expect("test precondition");
         enter_navigation(&mut state);
         for number in 1..=15 {
             preview_key(&mut state, b"\x1b[B");
             let id = format!("ws_{number}");
             assert_selected(&state, &remote_id, &id);
-            state.compose(cols, 18).expect("test precondition");
+            state.compose(100, 18).expect("test precondition");
             workspace_rect(&state, &remote_id, &id);
         }
         assert!(!state.collapsed_endpoints.contains(&remote_id));
+        // Navigation wraps from the last remote workspace back to the first.
         preview_key(&mut state, b"\x1b[B");
-        if cols == 44 {
-            assert_selected(&state, &remote_id, "ws_15");
-        } else {
-            assert_selected(&state, &ClientEndpointId::Local, "ws_1");
-        }
+        assert_selected(&state, &ClientEndpointId::Local, "ws_1");
         preview_key(&mut state, b"\x1b[A");
-        assert_selected(
-            &state,
-            &remote_id,
-            if cols == 44 { "ws_14" } else { "ws_15" },
-        );
+        assert_selected(&state, &remote_id, "ws_15");
         state.set_endpoint_status(&remote_id, ClientEndpointStatus::Reconnecting);
         preview_key(&mut state, b"\x1b[B");
         assert_selected(&state, &ClientEndpointId::Local, "ws_1");
@@ -510,7 +544,11 @@ fn request_local_navigation(state: &mut ClientShellState, down: usize) -> String
 }
 
 fn assert_local_highlight(state: &mut ClientShellState, selected_id: &str) {
-    let buffer = state.compose(100, 28).expect("test precondition").to_ratatui_buffer().expect("test precondition");
+    let buffer = state
+        .compose(100, 28)
+        .expect("test precondition")
+        .to_ratatui_buffer()
+        .expect("test precondition");
     for workspace_id in ["ws_1", "ws_2", "ws_3"] {
         let rect = workspace_rect(state, &ClientEndpointId::Local, workspace_id);
         assert_eq!(
@@ -621,14 +659,7 @@ fn failed_local_navigation_releases_only_its_own_highlight() {
 
 #[test]
 fn pending_navigation_highlight_does_not_survive_identity_changes() {
-    for change in [
-        "disconnect",
-        "retire",
-        "boot",
-        "generation",
-        "deleted",
-        "endpoint",
-    ] {
+    for change in ["disconnect", "boot", "generation", "deleted", "endpoint"] {
         let mut state = local_navigation_state(false);
         let request_id = request_local_navigation(&mut state, 2);
         state.handle_endpoint_result(
@@ -641,11 +672,6 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
         match change {
             "disconnect" => {
                 state.mark_endpoint_disconnected(&ClientEndpointId::Local);
-                state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Online);
-                state.set_snapshot(Box::new(snapshot));
-            }
-            "retire" => {
-                state.retire_endpoint(&ClientEndpointId::Local);
                 state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Online);
                 state.set_snapshot(Box::new(snapshot));
             }
@@ -678,7 +704,12 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
         }
         assert!(state.pending_workspace_highlight.is_none(), "{change}");
         let mut frame = surface();
-        frame.boot_id = state.snapshot.as_ref().expect("test precondition").boot_id.clone();
+        frame.boot_id = state
+            .snapshot
+            .as_ref()
+            .expect("test precondition")
+            .boot_id
+            .clone();
         state.set_pane_surface(frame);
         assert_local_highlight(&mut state, "ws_1");
     }

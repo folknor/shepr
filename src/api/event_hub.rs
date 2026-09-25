@@ -91,12 +91,18 @@ mod tests {
     #[test]
     fn checked_history_distinguishes_retained_boundary_from_lost_events() {
         let hub = EventHub::default();
-        assert!(hub.events_after_checked(0).expect("test precondition").is_empty());
+        assert!(
+            hub.events_after_checked(0)
+                .expect("test precondition")
+                .is_empty()
+        );
         for _ in 0..EventHub::MAX_EVENTS {
             hub.push(event());
         }
         assert_eq!(
-            hub.events_after_checked(0).expect("test precondition").len(),
+            hub.events_after_checked(0)
+                .expect("test precondition")
+                .len(),
             EventHub::MAX_EVENTS
         );
         hub.push(event());
@@ -104,21 +110,27 @@ mod tests {
         let retained = hub.events_after_checked(1).expect("test precondition");
         assert_eq!(retained.len(), EventHub::MAX_EVENTS);
         assert_eq!(retained.first().expect("test precondition").0, 2);
-        assert_eq!(retained.last().expect("test precondition").0, hub.current_sequence());
-        assert!(hub
-            .events_after_checked(hub.current_sequence())
-            .expect("test precondition")
-            .is_empty());
+        assert_eq!(
+            retained.last().expect("test precondition").0,
+            hub.current_sequence()
+        );
+        assert!(
+            hub.events_after_checked(hub.current_sequence())
+                .expect("test precondition")
+                .is_empty()
+        );
     }
 
     #[test]
     fn checked_history_reports_unavailable_instead_of_empty_after_poison() {
         let hub = EventHub::default();
-        assert!(std::panic::catch_unwind(|| {
-            let _guard = hub.inner.lock().expect("test precondition");
-            panic!("poison the test event history");
-        })
-        .is_err());
+        assert!(
+            std::panic::catch_unwind(|| {
+                let _guard = hub.inner.lock().expect("test precondition");
+                panic!("poison the test event history");
+            })
+            .is_err()
+        );
         assert_eq!(
             hub.events_after_checked(0),
             Err(EventHistoryError::Unavailable)

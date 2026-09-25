@@ -1,5 +1,5 @@
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use regex::Regex;
 
@@ -9,8 +9,8 @@ use crate::api::schema::{
     SubscriptionEventEnvelope, SuccessResponse,
 };
 use crate::api::server::{
-    dispatch_to_app_with_caller_timeout, dispatch_to_app_with_timeout, should_stop_connection,
-    APP_RESPONSE_TIMEOUT, CONNECTION_POLL_INTERVAL,
+    APP_RESPONSE_TIMEOUT, CONNECTION_POLL_INTERVAL, dispatch_to_app_with_caller_timeout,
+    dispatch_to_app_with_timeout, should_stop_connection,
 };
 use crate::api::subscriptions::ActiveSubscription;
 use crate::api::subscriptions::{match_output, output_match_read_source};
@@ -21,7 +21,7 @@ const AGENT_PROMPT_EFFECT_TIMEOUT_MS: u64 = 5_000;
 
 pub(super) fn wait_for_output(
     request_id: String,
-    params: crate::api::schema::PaneWaitForOutputParams,
+    params: &crate::api::schema::PaneWaitForOutputParams,
     stream: &mut LocalStream,
     api_tx: &ApiRequestSender,
     running: &Arc<AtomicBool>,
@@ -155,7 +155,7 @@ pub(super) fn wait_for_agent(
 
     match wait_for_resolved_agent(
         request_id.clone(),
-        ResolvedAgentWait {
+        &ResolvedAgentWait {
             target: params.target,
             until,
             timeout_ms: params.timeout_ms,
@@ -260,7 +260,7 @@ pub(super) fn prompt_agent(
         };
         let Some(outcome) = wait_for_resolved_agent(
             request_id.clone(),
-            ResolvedAgentWait {
+            &ResolvedAgentWait {
                 target: target.clone(),
                 until: prompt_activity_statuses(),
                 timeout_ms: Some(effect_timeout_ms),
@@ -289,7 +289,7 @@ pub(super) fn prompt_agent(
 
     let Some(outcome) = wait_for_resolved_agent(
         request_id.clone(),
-        ResolvedAgentWait {
+        &ResolvedAgentWait {
             target,
             until,
             timeout_ms: remaining_timeout_ms(wait.timeout_ms, wait_started),
@@ -318,7 +318,7 @@ pub(super) fn prompt_agent(
 
 fn remaining_timeout_ms(total_ms: Option<u64>, started: std::time::Instant) -> Option<u64> {
     total_ms.map(|total_ms| {
-        let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         total_ms.saturating_sub(elapsed_ms)
     })
 }
@@ -358,7 +358,7 @@ enum AgentWaitOutcome {
 
 fn wait_for_resolved_agent(
     request_id: String,
-    wait: ResolvedAgentWait,
+    wait: &ResolvedAgentWait,
     stream: &mut LocalStream,
     api_tx: &ApiRequestSender,
     event_hub: &EventHub,
@@ -586,7 +586,10 @@ fn agent_get_for_prompt(
     };
     let remaining_ms = remaining_timeout_ms(total_timeout_ms, started);
     let response = match remaining_ms {
-        Some(timeout_ms) if timeout_ms <= APP_RESPONSE_TIMEOUT.as_millis() as u64 => {
+        Some(timeout_ms)
+            if timeout_ms
+                <= u64::try_from(APP_RESPONSE_TIMEOUT.as_millis()).unwrap_or(u64::MAX) =>
+        {
             dispatch_to_app_with_caller_timeout(
                 request,
                 api_tx,
@@ -706,7 +709,7 @@ pub(super) fn wait_for_event(
         Err(response) => {
             return Ok(Some(
                 serde_json::to_string(&response).map_err(std::io::Error::other)?,
-            ))
+            ));
         }
     };
     let mut active = match ActiveSubscription::new(
@@ -721,7 +724,7 @@ pub(super) fn wait_for_event(
         Err(response) => {
             return Ok(Some(
                 serde_json::to_string(&response).map_err(std::io::Error::other)?,
-            ))
+            ));
         }
     };
 
@@ -838,7 +841,8 @@ mod tests {
             },
         })
         .expect("test precondition");
-        let disappeared: ErrorResponse = serde_json::from_str(&disappeared).expect("test precondition");
+        let disappeared: ErrorResponse =
+            serde_json::from_str(&disappeared).expect("test precondition");
         assert_eq!(disappeared.id, "wait");
         assert_eq!(disappeared.error.code, "agent_not_running");
 
@@ -850,7 +854,8 @@ mod tests {
             },
         })
         .expect("test precondition");
-        let unavailable: ErrorResponse = serde_json::from_str(&unavailable).expect("test precondition");
+        let unavailable: ErrorResponse =
+            serde_json::from_str(&unavailable).expect("test precondition");
         assert_eq!(unavailable.id, "wait");
         assert_eq!(unavailable.error.code, "server_unavailable");
     }

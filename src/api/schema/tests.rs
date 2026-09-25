@@ -44,7 +44,10 @@ fn workspace_close_group_intent_defaults_false_and_round_trips() {
     };
     let json = serde_json::to_value(&explicit).expect("test precondition");
     assert_eq!(json["params"]["close_group"], true);
-    assert_eq!(serde_json::from_value::<Request>(json).expect("test precondition"), explicit);
+    assert_eq!(
+        serde_json::from_value::<Request>(json).expect("test precondition"),
+        explicit
+    );
 }
 
 #[test]
@@ -454,7 +457,8 @@ fn subscription_event_envelope_round_trips() {
 
     let json = serde_json::to_string(&event).expect("test precondition");
     assert!(json.contains("\"event\":\"pane.output_matched\""));
-    let restored: SubscriptionEventEnvelope = serde_json::from_str(&json).expect("test precondition");
+    let restored: SubscriptionEventEnvelope =
+        serde_json::from_str(&json).expect("test precondition");
     assert_eq!(restored, event);
 }
 
@@ -475,7 +479,8 @@ fn scroll_changed_subscription_event_round_trips() {
 
     let json = serde_json::to_string(&event).expect("test precondition");
     assert!(json.contains("\"event\":\"pane.scroll_changed\""));
-    let restored: SubscriptionEventEnvelope = serde_json::from_str(&json).expect("test precondition");
+    let restored: SubscriptionEventEnvelope =
+        serde_json::from_str(&json).expect("test precondition");
     assert_eq!(restored, event);
 }
 
@@ -801,5 +806,3 @@ fn event_wait_parses_typed_match() {
         }
     );
 }
-
-

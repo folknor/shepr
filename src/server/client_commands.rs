@@ -177,9 +177,11 @@ mod tests {
 
     #[test]
     fn advertised_client_shell_methods_are_sorted_and_unique() {
-        assert!(CLIENT_SHELL_METHODS
-            .windows(2)
-            .all(|pair| pair[0] < pair[1]));
+        assert!(
+            CLIENT_SHELL_METHODS
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+        );
     }
 
     #[test]
@@ -229,7 +231,9 @@ mod tests {
         )
         .expect("test precondition");
         let response = "x".repeat(ENDPOINT_RESPONSE_CHUNK_BYTES + 17);
-        response_tx.send(response.clone()).expect("test precondition");
+        response_tx
+            .send(response.clone())
+            .expect("test precondition");
 
         let mut received = Vec::new();
         loop {

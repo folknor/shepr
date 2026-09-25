@@ -59,7 +59,7 @@ fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
 fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
     let (mut state, id) = state_with_remote();
     state.set_endpoint_status(&id, ClientEndpointStatus::Attention);
-    state.set_machine_diagnostic(&id, "Permission denied (keyboard-interactive)".into());
+    state.set_machine_diagnostic(&id, "Permission denied (keyboard-interactive)");
     for _ in 0..2 {
         state.compose(120, 40).expect("test precondition");
         let hit = state
@@ -77,21 +77,28 @@ fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
         let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
         assert!(outcome.repaint);
         assert!(!state.collapsed_endpoints.contains(&id));
-        let notice = state.visible_endpoint_notice.take().expect("test precondition");
+        let notice = state
+            .visible_endpoint_notice
+            .take()
+            .expect("test precondition");
         assert!(notice.body.contains("Permission denied"));
-        assert!(notice
-            .title
-            .contains("shepr machine reconnect 0123456789abcdef0123456789abcdef"));
+        assert!(
+            notice
+                .title
+                .contains("shepr machine reconnect 0123456789abcdef0123456789abcdef")
+        );
     }
     state.set_endpoint_status(&id, ClientEndpointStatus::Online);
     state.compose(120, 40).expect("test precondition");
-    assert!(!state.machine_diagnostics.required_for(
-        state
-            .endpoints
-            .iter()
-            .find(|endpoint| endpoint.endpoint_id == id)
-            .expect("test precondition")
-    ));
+    assert!(
+        !state.machine_diagnostics.required_for(
+            state
+                .endpoints
+                .iter()
+                .find(|endpoint| endpoint.endpoint_id == id)
+                .expect("test precondition")
+        )
+    );
 }
 
 fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
@@ -151,11 +158,13 @@ fn agent_navigation_reveals_offscreen_targets() {
             state.hits.agent_max_scroll
         };
         state.compose(100, 28).expect("test precondition");
-        assert!(!state
-            .hits
-            .endpoint_agents
-            .iter()
-            .any(|(_, endpoint, pane)| { endpoint == &endpoint_id && pane == pane_id }));
+        assert!(
+            !state
+                .hits
+                .endpoint_agents
+                .iter()
+                .any(|(_, endpoint, pane)| { endpoint == &endpoint_id && pane == pane_id })
+        );
 
         let mut outcome = ClientShellInput::default();
         assert!(state.handle_endpoint_navigation(action, &mut outcome));
@@ -181,8 +190,12 @@ fn agent_navigation_reveal_is_cancelled_by_another_selection() {
         let (mut state, remote) = state_with_scrollable_agents();
         let scroll = state.agent_scroll;
         let mut outcome = ClientShellInput::default();
-        assert!(state
-            .handle_endpoint_navigation(crate::input::KeybindAction::PreviousAgent, &mut outcome,));
+        assert!(
+            state.handle_endpoint_navigation(
+                crate::input::KeybindAction::PreviousAgent,
+                &mut outcome,
+            )
+        );
         assert_eq!(state.agent_scroll, scroll);
         if select_pane {
             assert!(state.focus_or_activate(
@@ -253,7 +266,10 @@ fn switching_machines_preserves_aggregate_agent_scroll_and_visible_rows() {
         assert!(state.pane_surface.is_none());
 
         let mut next_surface = surface();
-        next_surface.boot_id = state.endpoint_boot_id(&endpoint_id).expect("test precondition").into();
+        next_surface.boot_id = state
+            .endpoint_boot_id(&endpoint_id)
+            .expect("test precondition")
+            .into();
         state.set_pane_surface(next_surface);
         state.compose(100, 28).expect("test precondition");
         assert_eq!(state.agent_scroll, 6);
@@ -389,9 +405,10 @@ fn live_catalog_active_removal_does_not_retain_remote_projection_or_input() {
     assert!(state.activate_endpoint_projection(&remote));
     state.set_pane_surface(surface());
     state.mode = ClientShellMode::Prefix;
-    state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay { highlighted: 0 }));
+    state.overlay = Some(ClientShellOverlay::GlobalMenu(ClientGlobalMenuOverlay {
+        highlighted: 0,
+    }));
     state.select_unavailable_local();
-    state.retire_endpoint(&remote);
     state.set_endpoint_catalog(&[]);
     assert!(state.endpoint_is_active(&ClientEndpointId::Local));
     assert!(state.snapshot.is_none());
@@ -405,7 +422,7 @@ fn live_catalog_active_removal_does_not_retain_remote_projection_or_input() {
     let text = buffer
         .content()
         .iter()
-        .map(|cell| cell.symbol())
+        .map(ratatui::buffer::Cell::symbol)
         .collect::<String>();
     assert!(!text.contains("remote-workspace"));
 }
@@ -575,20 +592,20 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
     state.compose(106, 2).expect("zero-height workspace body");
     assert!(state.reveal_focused_workspace);
     state.compose(106, 20).expect("new workspace revealed");
-    assert!(state
-        .hits
-        .workspaces
-        .iter()
-        .any(|hit| { hit.endpoint_id == ClientEndpointId::Local && hit.workspace_id == "ws_13" }));
+    assert!(
+        state.hits.workspaces.iter().any(|hit| {
+            hit.endpoint_id == ClientEndpointId::Local && hit.workspace_id == "ws_13"
+        })
+    );
 
     state.workspace_scroll = 0;
     state.compose(106, 20).expect("manual scroll");
     assert_eq!(state.workspace_scroll, 0);
-    assert!(!state
-        .hits
-        .workspaces
-        .iter()
-        .any(|hit| { hit.endpoint_id == ClientEndpointId::Local && hit.workspace_id == "ws_13" }));
+    assert!(
+        !state.hits.workspaces.iter().any(|hit| {
+            hit.endpoint_id == ClientEndpointId::Local && hit.workspace_id == "ws_13"
+        })
+    );
     let unchanged = state.snapshot.as_deref().expect("snapshot").clone();
     state.set_snapshot(Box::new(unchanged));
     state
@@ -662,15 +679,17 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     assert_eq!(remote_workspaces[0].rect.y, remote_machine.rect.bottom());
     assert_eq!(
         remote_workspaces[1].rect.y,
-        remote_workspaces[0].rect.bottom()
+        remote_workspaces[0].rect.bottom() + 1
     );
     assert_eq!(
         remote_workspaces[2].rect.y,
         remote_workspaces[1].rect.bottom() + 1
     );
 
+    // 22 rows gives an 8-row workspace body: exactly three two-row workspaces
+    // with a gap after each of the first two.
     state.workspace_scroll = usize::MAX;
-    state.compose(100, 18).expect("scrolled endpoint frame");
+    state.compose(100, 22).expect("scrolled endpoint frame");
     let metrics = state
         .hits
         .workspace_scroll_metrics
@@ -688,11 +707,13 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     let gap_y = visible_remote[1].rect.bottom();
     assert_eq!(visible_remote[2].rect.y, gap_y + 1);
     assert!(visible_remote[2].rect.bottom() <= state.hits.workspace_body.bottom());
-    assert!(state
-        .hits
-        .workspaces
-        .iter()
-        .all(|hit| gap_y < hit.rect.top() || gap_y >= hit.rect.bottom()));
+    assert!(
+        state
+            .hits
+            .workspaces
+            .iter()
+            .all(|hit| gap_y < hit.rect.top() || gap_y >= hit.rect.bottom())
+    );
 }
 
 #[test]
@@ -802,10 +823,12 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     let buffer = frame
         .to_ratatui_buffer()
         .expect("aggregate frame should reconstruct");
-    assert!(buffer
-        .content()
-        .iter()
-        .any(|cell| cell.symbol() == "×" && cell.fg == state.config.palette.red));
+    assert!(
+        buffer
+            .content()
+            .iter()
+            .any(|cell| cell.symbol() == "×" && cell.fg == state.config.palette.red)
+    );
 }
 
 #[test]
@@ -1015,7 +1038,8 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
         ] {
             let (mut state, remote_id) = state_with_remote();
             let mut other_profile = remote_profile();
-            other_profile.id = ProfileId::parse("1123456789abcdef0123456789abcdef").expect("test precondition");
+            other_profile.id =
+                ProfileId::parse("1123456789abcdef0123456789abcdef").expect("test precondition");
             let other_id = ClientEndpointId::Ssh(other_profile.id.clone());
             state.set_endpoint_catalog(&[remote_profile(), other_profile]);
             state.set_endpoint_status(&other_id, ClientEndpointStatus::Online);
@@ -1051,7 +1075,10 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
                 assert!(outcome.requests.is_empty());
                 assert!(outcome.repaint);
                 assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
-                assert_eq!(state.snapshot.as_ref().expect("test precondition").boot_id, "boot-1");
+                assert_eq!(
+                    state.snapshot.as_ref().expect("test precondition").boot_id,
+                    "boot-1"
+                );
                 assert_eq!(
                     state
                         .snapshot
@@ -1076,11 +1103,13 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
                     !collapsed
                 );
                 for endpoint_id in [&ClientEndpointId::Local, &other_id] {
-                    assert!(state
-                        .hits
-                        .workspaces
-                        .iter()
-                        .any(|hit| &hit.endpoint_id == endpoint_id));
+                    assert!(
+                        state
+                            .hits
+                            .workspaces
+                            .iter()
+                            .any(|hit| &hit.endpoint_id == endpoint_id)
+                    );
                 }
             }
         }
@@ -1197,9 +1226,21 @@ fn new_connection_generation_accepts_a_lower_same_boot_projection_revision() {
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
         .expect("remote endpoint");
     assert_eq!(endpoint.snapshot_generation, Some(5));
-    assert_eq!(endpoint.snapshot.as_ref().expect("test precondition").revision, 1);
     assert_eq!(
-        endpoint.snapshot.as_ref().expect("test precondition").workspaces[0].label,
+        endpoint
+            .snapshot
+            .as_ref()
+            .expect("test precondition")
+            .revision,
+        1
+    );
+    assert_eq!(
+        endpoint
+            .snapshot
+            .as_ref()
+            .expect("test precondition")
+            .workspaces[0]
+            .label,
         "new connection"
     );
 }
@@ -1232,8 +1273,18 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
             5,
             Box::new(reconnected),
         );
-        assert_eq!(state.snapshot.as_ref().expect("test precondition").revision, previous_revision);
-        assert_eq!(state.pane_surface.as_ref().expect("test precondition").surface_revision, 9);
+        assert_eq!(
+            state.snapshot.as_ref().expect("test precondition").revision,
+            previous_revision
+        );
+        assert_eq!(
+            state
+                .pane_surface
+                .as_ref()
+                .expect("test precondition")
+                .surface_revision,
+            9
+        );
 
         state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
         assert!(state.activate_endpoint_projection(&endpoint_id));
@@ -1244,9 +1295,26 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         reconnected_surface.surface_revision = 1;
         state.set_pane_surface(reconnected_surface);
 
-        assert_eq!(state.snapshot.as_ref().expect("test precondition").revision, 1);
-        assert_eq!(state.pane_surface.as_ref().expect("test precondition").projection_revision, 1);
-        assert_eq!(state.pane_surface.as_ref().expect("test precondition").surface_revision, 1);
+        assert_eq!(
+            state.snapshot.as_ref().expect("test precondition").revision,
+            1
+        );
+        assert_eq!(
+            state
+                .pane_surface
+                .as_ref()
+                .expect("test precondition")
+                .projection_revision,
+            1
+        );
+        assert_eq!(
+            state
+                .pane_surface
+                .as_ref()
+                .expect("test precondition")
+                .surface_revision,
+            1
+        );
         assert!(state.pending_pane_surface.is_none());
         assert_eq!(state.agent_scroll, 7);
         assert!(state.compose(106, 20).is_some());
@@ -1257,18 +1325,36 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
 fn reconnect_snapshot_waits_for_coherent_activation_before_replacing_projection() {
     let (mut state, endpoint_id) = state_with_remote();
     assert!(state.activate_endpoint_projection(&endpoint_id));
-    assert_eq!(state.snapshot.as_deref().expect("test precondition").boot_id, "remote-boot");
+    assert_eq!(
+        state
+            .snapshot
+            .as_deref()
+            .expect("test precondition")
+            .boot_id,
+        "remote-boot"
+    );
 
     state.mark_endpoint_disconnected(&endpoint_id);
     let mut replacement = snapshot();
     replacement.boot_id = "replacement-boot".into();
     state.cache_endpoint_snapshot(&endpoint_id, Box::new(replacement));
-    assert_eq!(state.snapshot.as_deref().expect("test precondition").boot_id, "remote-boot");
+    assert_eq!(
+        state
+            .snapshot
+            .as_deref()
+            .expect("test precondition")
+            .boot_id,
+        "remote-boot"
+    );
 
     state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
     assert!(state.activate_endpoint_projection(&endpoint_id));
     assert_eq!(
-        state.snapshot.as_deref().expect("test precondition").boot_id,
+        state
+            .snapshot
+            .as_deref()
+            .expect("test precondition")
+            .boot_id,
         "replacement-boot"
     );
 }
@@ -1383,17 +1469,19 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
     local.set_pane_surface(surface());
     let frame = local.compose(100, 28).expect("local-only sidebar");
     assert!(local.hits.machines.is_empty());
-    assert!(!frame
-        .cells
-        .chunks(frame.width as usize)
-        .map(|row| {
-            row.iter()
-                .map(|cell| cell.symbol.as_str())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-        .contains(" machines"));
+    assert!(
+        !frame
+            .cells
+            .chunks(frame.width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .contains(" machines")
+    );
     local.open_navigator_overlay();
     let ClientShellOverlay::Navigator(navigator) = local.overlay.as_ref().expect("navigator")
     else {
@@ -1401,9 +1489,10 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
     };
     let rows =
         render::client_navigator_rows(&local.endpoints, &local.active_endpoint_id, navigator);
-    assert!(rows
-        .iter()
-        .all(|row| !matches!(row.target, ClientNavigatorTarget::Machine { .. })));
+    assert!(
+        rows.iter()
+            .all(|row| !matches!(row.target, ClientNavigatorTarget::Machine { .. }))
+    );
     assert!(rows.iter().all(|row| match row.target {
         ClientNavigatorTarget::Workspace { .. } => row.depth == 0,
         ClientNavigatorTarget::Pane { .. } => row.depth == 1,

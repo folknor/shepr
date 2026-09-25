@@ -180,9 +180,7 @@ mod remote_bridge;
 #[cfg(test)]
 mod remote_bridge_tests;
 mod unix_common;
-pub(crate) use unix_common::{
-    begin_cli_output, end_cli_output, forward_remote_bridge_stdio, RemoteBridgeWake,
-};
+pub(crate) use unix_common::{RemoteBridgeWake, begin_cli_output, forward_remote_bridge_stdio};
 
 mod client_state;
 pub(crate) use client_state::{create_private_state_file, replace_file, sync_parent_directory};

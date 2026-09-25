@@ -6,15 +6,15 @@ use std::time::Duration;
 use super::{App, MIN_RENDER_INTERVAL};
 
 impl App {
-    pub(crate) fn shutdown_terminal_runtime(&mut self, terminal_id: crate::terminal::TerminalId) {
-        if let Some(runtime) = self.terminal_runtimes.remove(&terminal_id) {
+    pub(crate) fn shutdown_terminal_runtime(&mut self, terminal_id: &crate::terminal::TerminalId) {
+        if let Some(runtime) = self.terminal_runtimes.remove(terminal_id) {
             runtime.shutdown();
         }
     }
 
     pub(crate) fn shutdown_detached_terminal_runtimes(&mut self) {
         let terminal_ids = std::mem::take(&mut self.state.terminal_runtime_shutdowns);
-        for terminal_id in terminal_ids {
+        for terminal_id in &terminal_ids {
             self.shutdown_terminal_runtime(terminal_id);
         }
     }

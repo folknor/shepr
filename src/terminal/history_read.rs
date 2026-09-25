@@ -182,7 +182,7 @@ fn wrapped_text(rows: &[ScreenTextRow]) -> String {
     while lines.last().is_some_and(|line| line.trim().is_empty()) {
         lines.pop();
     }
-    lines_to_text(lines)
+    lines_to_text(&lines)
 }
 
 fn unwrapped_text(rows: &[ScreenTextRow]) -> String {
@@ -203,10 +203,10 @@ fn unwrapped_text(rows: &[ScreenTextRow]) -> String {
     while lines.last().is_some_and(|line| line.trim().is_empty()) {
         lines.pop();
     }
-    lines_to_text(lines)
+    lines_to_text(&lines)
 }
 
-fn lines_to_text(lines: Vec<String>) -> String {
+fn lines_to_text(lines: &[String]) -> String {
     let text = lines.join("\n");
     if text.is_empty() {
         text
@@ -298,7 +298,9 @@ mod tests {
         );
         assert_eq!(
             row_identities(&history),
-            ["sticky", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7"]
+            [
+                "sticky", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7"
+            ]
         );
     }
 

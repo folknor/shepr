@@ -100,10 +100,12 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
                 kind: DefaultColorKind::Background,
                 color: RgbColor { r, g, b },
             }]);
-            assert!(outcome
-                .requests
-                .iter()
-                .any(|request| matches!(request, ClientMessage::ClientShellHostTheme { .. })));
+            assert!(
+                outcome
+                    .requests
+                    .iter()
+                    .any(|request| matches!(request, ClientMessage::ClientShellHostTheme { .. }))
+            );
             let frame = state.compose(106, 20).expect("host-colored selection");
             let cell = &frame.cells[cell_index];
             assert_eq!(
@@ -152,10 +154,12 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
                 crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_1"
             )
     ));
-    assert!(state
-        .selection
-        .as_ref()
-        .is_some_and(|selection| !selection.is_visible()));
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .is_some_and(|selection| !selection.is_visible())
+    );
 
     let drag = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Drag(MouseButton::Left),
@@ -164,10 +168,12 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
         modifiers: KeyModifiers::empty(),
     })]);
     assert!(drag.repaint || state.selection_repaint_deadline.is_some());
-    assert!(state
-        .selection
-        .as_ref()
-        .is_some_and(crate::selection::Selection::is_visible));
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .is_some_and(crate::selection::Selection::is_visible)
+    );
     let selected = state.compose(106, 20).expect("selected frame");
     let selected_cell =
         &selected.cells[usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x)];
@@ -246,10 +252,12 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
         updated.frame.cells[0].symbol = "x".into();
         state.set_pane_surface(updated);
     }
-    assert!(state
-        .selection
-        .as_ref()
-        .is_some_and(crate::selection::Selection::is_finalized));
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .is_some_and(crate::selection::Selection::is_finalized)
+    );
 
     // A patch that redraws selected text must retain the same live terminal range.
     let mut updated = state.pane_surface.clone().expect("pane surface");
@@ -257,7 +265,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
     let mut cell = updated.frame.cells[0].clone();
     cell.symbol = "y".into();
     assert!(matches!(
-        state.apply_pane_surface_patch(crate::protocol::PaneSurfacePatch {
+        state.apply_pane_surface_patch(&crate::protocol::PaneSurfacePatch {
             boot_id: updated.boot_id,
             projection_revision: updated.projection_revision,
             base_surface_revision: updated.surface_revision,
@@ -272,10 +280,12 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
         }),
         super::super::surface_patch::ClientPaneSurfacePatchOutcome::Applied(_)
     ));
-    assert!(state
-        .selection
-        .as_ref()
-        .is_some_and(crate::selection::Selection::is_finalized));
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .is_some_and(crate::selection::Selection::is_finalized)
+    );
 
     let highlighted = state.compose(106, 20).expect("highlighted frame");
     let cell_index = usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x);
@@ -384,7 +394,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
 
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
         &mut enter,
     );
     assert_eq!(state.mode, ClientShellMode::Copy);
@@ -457,10 +467,12 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         KeyCode::Char('l'),
         KeyModifiers::empty(),
     ))]);
-    assert!(state
-        .selection
-        .as_ref()
-        .is_some_and(crate::selection::Selection::is_visible));
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .is_some_and(crate::selection::Selection::is_visible)
+    );
 
     let copy = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
         KeyCode::Char('y'),
@@ -515,7 +527,14 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
         pane_surface.frame.cells[0].symbol = "X".into();
         state.set_pane_surface(pane_surface);
         assert_eq!(state.mode, ClientShellMode::Copy);
-        assert!(state.copy_mode.as_ref().expect("test precondition").selection.is_some());
+        assert!(
+            state
+                .copy_mode
+                .as_ref()
+                .expect("test precondition")
+                .selection
+                .is_some()
+        );
         assert_eq!(
             state
                 .selection
@@ -567,7 +586,13 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
         Ok(copy_search_result(vec![found], Some(0))),
     );
     state.handle_input_bytes(b"v");
-    assert!(!state.selection.as_ref().expect("test precondition").is_visible());
+    assert!(
+        !state
+            .selection
+            .as_ref()
+            .expect("test precondition")
+            .is_visible()
+    );
     let copy = state.handle_input_bytes(b"y");
     assert!(copy.actions.iter().any(|action| matches!(
         action,
@@ -604,7 +629,14 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
         }
         state.set_pane_surface(pane_surface);
         assert!(state.selection.is_none());
-        assert!(state.copy_mode.as_ref().expect("test precondition").selection.is_none());
+        assert!(
+            state
+                .copy_mode
+                .as_ref()
+                .expect("test precondition")
+                .selection
+                .is_none()
+        );
         state.compose(106, 20).expect("changed frame");
         state.handle_input_bytes(b"l");
         assert!(
@@ -628,7 +660,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed_and_stale_safe() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
         &mut enter,
     );
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
@@ -681,7 +713,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
         &mut enter,
     );
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
@@ -699,10 +731,12 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         KeyCode::Esc,
         KeyModifiers::empty(),
     ))]);
-    assert!(state
-        .copy_mode
-        .as_ref()
-        .is_some_and(|mode| mode.search_prompt.is_none()));
+    assert!(
+        state
+            .copy_mode
+            .as_ref()
+            .is_some_and(|mode| mode.search_prompt.is_none())
+    );
 
     state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
         KeyCode::Char('/'),
@@ -847,10 +881,12 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
         Some(15)
     );
-    assert!(state
-        .selection
-        .as_ref()
-        .is_some_and(crate::selection::Selection::is_visible));
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .is_some_and(crate::selection::Selection::is_visible)
+    );
 
     let reverse = state.handle_raw_events(vec![RawInputEvent::Key(
         crate::input::TerminalKey::new(KeyCode::Char('N'), KeyModifiers::SHIFT),
@@ -885,10 +921,12 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         KeyModifiers::empty(),
     ))]);
     assert_eq!(state.mode, ClientShellMode::Copy);
-    assert!(state
-        .copy_mode
-        .as_ref()
-        .is_some_and(|mode| mode.search_query.is_empty() && mode.selection.is_none()));
+    assert!(
+        state
+            .copy_mode
+            .as_ref()
+            .is_some_and(|mode| mode.search_query.is_empty() && mode.selection.is_none())
+    );
     let exit = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
         KeyCode::Esc,
         KeyModifiers::empty(),
@@ -1395,11 +1433,13 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
     assert_eq!(metrics.offset_from_bottom, metrics.max_offset_from_bottom);
     assert!(track.y > state.hits.navigator_search.y);
     assert!(track.bottom() < state.hits.navigator_popup.bottom() - 3);
-    assert!(state
-        .hits
-        .navigator_rows
-        .iter()
-        .all(|(rect, _)| rect.right() == track.x));
+    assert!(
+        state
+            .hits
+            .navigator_rows
+            .iter()
+            .all(|(rect, _)| rect.right() == track.x)
+    );
     let buffer = frame.to_ratatui_buffer().expect("buffer");
     assert_eq!(buffer[(track.x, track.y)].fg, state.config.palette.overlay1);
     assert_eq!(
@@ -1599,7 +1639,8 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_tabs_and_panes() {
         })
         .collect::<Vec<_>>();
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    let remote = SavedSshEndpoint::new("Remote", "dev@example.invalid", "test").expect("test precondition");
+    let remote =
+        SavedSshEndpoint::new("Remote", "dev@example.invalid", "test").expect("test precondition");
     let remote_id = ClientEndpointId::Ssh(remote.id.clone());
     state.set_endpoint_catalog(&[remote]);
     state.set_endpoint_status(&remote_id, ClientEndpointStatus::Online);
@@ -1642,7 +1683,7 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
     state.set_pane_surface(surface());
     let mut open = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::OpenNavigator),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::OpenNavigator),
         &mut open,
     );
     let navigator = state.compose(106, 30).expect("navigator overlay");
@@ -1678,10 +1719,12 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
     ));
     assert!(state.handle_input_bytes(b"client").actions.is_empty());
     let filtered = state.compose(106, 30).expect("filtered navigator");
-    assert!(filtered
-        .cursor
-        .as_ref()
-        .is_some_and(|cursor| cursor.visible));
+    assert!(
+        filtered
+            .cursor
+            .as_ref()
+            .is_some_and(|cursor| cursor.visible)
+    );
 
     state.handle_input_bytes(b"\x1b");
     state.handle_input_bytes(b"a");
@@ -1744,7 +1787,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
         &mut enter,
     );
 
@@ -1758,10 +1801,12 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     assert!(state.copy_mode.is_some());
 
     state.handle_input_bytes(b"v");
-    assert!(state
-        .copy_mode
-        .as_ref()
-        .is_some_and(|copy_mode| copy_mode.selection.is_some()));
+    assert!(
+        state
+            .copy_mode
+            .as_ref()
+            .is_some_and(|copy_mode| copy_mode.selection.is_some())
+    );
 
     let mut unfocused = snapshot();
     unfocused.focused_pane_id = Some("pane_2".into());
@@ -1778,10 +1823,12 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     });
     state.set_snapshot(Box::new(unfocused.clone()));
     assert_eq!(state.mode, ClientShellMode::Terminal);
-    assert!(state
-        .copy_mode
-        .as_ref()
-        .is_some_and(|copy_mode| copy_mode.selection.is_some()));
+    assert!(
+        state
+            .copy_mode
+            .as_ref()
+            .is_some_and(|copy_mode| copy_mode.selection.is_some())
+    );
 
     let (prefix_key, prefix_modifiers) = state.config.keybinds.prefix;
     state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
@@ -1801,10 +1848,12 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     assert!(other_selection.finish());
     state.selection = Some(other_selection);
     state.set_snapshot(Box::new(unfocused));
-    assert!(state
-        .selection
-        .as_ref()
-        .is_some_and(|selection| selection.pane_id == "pane_2"));
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.pane_id == "pane_2")
+    );
 
     let mut other_surface = surface();
     other_surface.panes[0].pane_id = "pane_2".into();
@@ -1827,18 +1876,22 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     state.set_snapshot(Box::new(snapshot()));
     assert_eq!(state.mode, ClientShellMode::Copy);
     assert!(state.copy_mode.is_some());
-    assert!(state
-        .selection
-        .as_ref()
-        .is_some_and(|selection| selection.pane_id == "pane_1"));
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.pane_id == "pane_1")
+    );
     state.handle_raw_events(vec![RawInputEvent::Text(crate::input::TextCommit::new(
         "ignored",
     ))]);
     state.handle_raw_events(vec![RawInputEvent::Paste("ignored".into())]);
-    assert!(state
-        .selection
-        .as_ref()
-        .is_some_and(|selection| selection.pane_id == "pane_1"));
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.pane_id == "pane_1")
+    );
 
     state.mode = ClientShellMode::Navigate;
     state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
@@ -1846,20 +1899,24 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
         KeyModifiers::empty(),
     ))]);
     assert_eq!(state.mode, ClientShellMode::Copy);
-    assert!(state
-        .selection
-        .as_ref()
-        .is_some_and(|selection| selection.pane_id == "pane_1"));
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.pane_id == "pane_1")
+    );
     state.mode = ClientShellMode::Resize;
     state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
         KeyCode::Esc,
         KeyModifiers::empty(),
     ))]);
     assert_eq!(state.mode, ClientShellMode::Copy);
-    assert!(state
-        .selection
-        .as_ref()
-        .is_some_and(|selection| selection.pane_id == "pane_1"));
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.pane_id == "pane_1")
+    );
 }
 
 #[test]
@@ -1908,7 +1965,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
         &mut enter,
     );
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
@@ -1959,7 +2016,7 @@ fn queued_copy_keys_preserve_prefix_order() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
         &mut enter,
     );
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
@@ -2038,7 +2095,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
         &mut enter,
     );
     state.handle_input_bytes(b"v");
@@ -2089,7 +2146,7 @@ fn new_content_revision_invalidates_copy_search_coordinates() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
         &mut enter,
     );
     let copy_mode = state.copy_mode.as_mut().expect("copy mode");
@@ -2138,10 +2195,12 @@ fn word_selection_result_survives_focus_snapshot_lag() {
         }),
     );
     assert!(repaint);
-    assert!(state
-        .selection
-        .as_ref()
-        .is_some_and(crate::selection::Selection::is_visible));
+    assert!(
+        state
+            .selection
+            .as_ref()
+            .is_some_and(crate::selection::Selection::is_visible)
+    );
 }
 
 #[test]
@@ -2159,7 +2218,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
         state.compose(106, 20).expect("composed frame");
         let mut enter = ClientShellInput::default();
         state.record_binding(
-            crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+            &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
             &mut enter,
         );
         if selection_before_gap == Some(true) {

@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::{ListenerExt as _, Stream as _};
@@ -15,11 +15,11 @@ use crate::api::schema::{
 };
 use crate::api::subscriptions::ActiveSubscription;
 use crate::api::wait::{prompt_agent, wait_for_agent, wait_for_event, wait_for_output};
-use crate::api::{request_changes_ui, socket_path, ApiRequestMessage, ApiRequestSender, EventHub};
+use crate::api::{ApiRequestMessage, ApiRequestSender, EventHub, request_changes_ui, socket_path};
 use crate::ipc::{
-    bind_local_listener, is_connection_closed_error, local_stream_peer_closed,
-    poll_local_stream_read, remove_socket_file_if_owned, set_local_stream_polling,
-    socket_file_identity, LocalStream, LocalStreamRead, SocketFileIdentity,
+    LocalStream, LocalStreamRead, SocketFileIdentity, bind_local_listener,
+    is_connection_closed_error, local_stream_peer_closed, poll_local_stream_read,
+    remove_socket_file_if_owned, set_local_stream_polling, socket_file_identity,
 };
 
 #[cfg(test)]
@@ -43,10 +43,10 @@ impl Drop for ServerHandle {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
 
-        if let Err(err) = self.remove_socket_file_if_owned() {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                warn!(path = %self.path.display(), err = %err, "failed to remove api socket on shutdown");
-            }
+        if let Err(err) = self.remove_socket_file_if_owned()
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            warn!(path = %self.path.display(), err = %err, "failed to remove api socket on shutdown");
         }
     }
 }
@@ -167,15 +167,7 @@ fn handle_connection(
     running: &Arc<AtomicBool>,
     capabilities: Option<ServerCapabilities>,
 ) -> std::io::Result<()> {
-    handle_connection_with_stop(
-        stream,
-        api_tx,
-        event_hub,
-        running,
-        capabilities,
-        None,
-        None,
-    )
+    handle_connection_with_stop(stream, api_tx, event_hub, running, capabilities, None, None)
 }
 
 fn handle_connection_with_stop(
@@ -252,7 +244,7 @@ fn handle_connection_with_stop(
                             },
                             error.to_string(),
                         ),
-                    )
+                    );
                 }
             };
             write_json_line(
@@ -293,7 +285,7 @@ fn handle_connection_with_stop(
                     changes_ui,
                 ),
                 Err(err) => {
-                    crate::logging::api_request_failed(&request_id, method, &err.to_string())
+                    crate::logging::api_request_failed(&request_id, method, &err.to_string());
                 }
             }
             result
@@ -333,11 +325,10 @@ fn handle_connection_with_stop(
         }
         Method::PaneWaitForOutput(params) => {
             let response =
-                wait_for_output(request_id.clone(), params, &mut stream, api_tx, running)?;
+                wait_for_output(request_id.clone(), &params, &mut stream, api_tx, running)?;
             finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
         }
         method_body => {
-            let (response_write_tx, response_write_rx) = std::sync::mpsc::channel();
             let response = handle_request(
                 Request {
                     id: request_id.clone(),
@@ -346,10 +337,8 @@ fn handle_connection_with_stop(
                 api_tx,
                 capabilities,
                 server_stop,
-                Some(response_write_rx),
             );
             let result = write_text_line_allow_disconnect(&mut stream, &response);
-            let _ = response_write_tx.send(());
             match &result {
                 Ok(()) => crate::logging::api_request_completed(
                     &request_id,
@@ -358,7 +347,7 @@ fn handle_connection_with_stop(
                     changes_ui,
                 ),
                 Err(err) => {
-                    crate::logging::api_request_failed(&request_id, method, &err.to_string())
+                    crate::logging::api_request_failed(&request_id, method, &err.to_string());
                 }
             }
             result
@@ -400,7 +389,6 @@ fn handle_request(
     api_tx: &ApiRequestSender,
     capabilities: Option<ServerCapabilities>,
     server_stop: Option<&Arc<AtomicBool>>,
-    response_write_complete: Option<std::sync::mpsc::Receiver<()>>,
 ) -> String {
     if matches!(&request.method, Method::Ping(_)) {
         return serde_json::to_string(&SuccessResponse {
@@ -442,7 +430,7 @@ fn handle_request(
         );
     }
 
-    dispatch_to_app(request, api_tx, None, response_write_complete, None)
+    dispatch_to_app(request, api_tx, None, None)
 }
 
 pub(crate) fn api_method_name(method: &Method) -> &'static str {
@@ -710,7 +698,7 @@ pub(super) fn dispatch_to_app_with_timeout(
     api_tx: &ApiRequestSender,
     timeout: Option<Duration>,
 ) -> String {
-    dispatch_to_app(request, api_tx, timeout, None, None)
+    dispatch_to_app(request, api_tx, timeout, None)
 }
 
 pub(super) fn dispatch_to_app_with_caller_timeout(
@@ -722,7 +710,6 @@ pub(super) fn dispatch_to_app_with_caller_timeout(
         request,
         api_tx,
         timeout,
-        None,
         Some(("timeout", "timed out waiting for agent status")),
     )
 }
@@ -731,7 +718,6 @@ fn dispatch_to_app(
     request: Request,
     api_tx: &ApiRequestSender,
     timeout: Option<Duration>,
-    response_write_complete: Option<std::sync::mpsc::Receiver<()>>,
     timeout_response: Option<(&str, &str)>,
 ) -> String {
     let request_id = request.id.clone();
@@ -739,7 +725,6 @@ fn dispatch_to_app(
     if let Err(err) = api_tx.send(ApiRequestMessage {
         request,
         respond_to,
-        response_write_complete,
     }) {
         return error_response_json(
             request_id,
@@ -770,10 +755,10 @@ fn dispatch_to_app(
     match response {
         Ok(response) => response,
         Err(err) => {
-            if err.kind() == std::io::ErrorKind::TimedOut {
-                if let Some((code, message)) = timeout_response {
-                    return error_response_json(request_id, code, message.into());
-                }
+            if err.kind() == std::io::ErrorKind::TimedOut
+                && let Some((code, message)) = timeout_response
+            {
+                return error_response_json(request_id, code, message.into());
             }
             error_response_json(
                 request_id,
@@ -864,8 +849,8 @@ mod tests {
         let agent = directory.join("upstream");
         let _agent = UnixListener::bind(&agent).expect("test precondition");
         let stable = directory.join("stable");
-        let registry =
-            crate::platform::ssh_agent::SshAgentRegistry::new(stable.clone(), None).expect("test precondition");
+        let registry = crate::platform::ssh_agent::SshAgentRegistry::new(stable.clone(), None)
+            .expect("test precondition");
         let (mut client, server, api_path) = local_stream_pair("agent-api");
         let (tx, _rx) = mpsc::unbounded_channel();
         let worker_registry = registry.clone();
@@ -893,7 +878,8 @@ mod tests {
             },
         )
         .expect("test precondition");
-        let response: SuccessResponse = serde_json::from_str(&read_line(&mut client)).expect("test precondition");
+        let response: SuccessResponse =
+            serde_json::from_str(&read_line(&mut client)).expect("test precondition");
         assert!(matches!(response.result, ResponseResult::Ok {}));
         assert_eq!(fs::read_link(&stable).expect("test precondition"), agent);
         drop(client);
@@ -970,11 +956,11 @@ mod tests {
     fn socket_path_prefers_explicit_env_override() {
         let _guard = env_lock().lock().expect("test precondition");
         let unique = format!("/tmp/shepr-test-{}.sock", std::process::id());
-        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
         crate::session::clear_explicit_session_for_test();
-        std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, &unique);
+        unsafe { std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, &unique) };
         assert_eq!(socket_path(), PathBuf::from(&unique));
-        std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
+        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
     }
 
     #[test]
@@ -982,29 +968,29 @@ mod tests {
         let _guard = env_lock().lock().expect("test precondition");
         let config_home = unique_test_path("socket-default-config-home");
         let runtime_dir = unique_test_path("socket-default-runtime");
-        std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
-        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
+        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
         crate::session::clear_explicit_session_for_test();
-        std::env::set_var("XDG_CONFIG_HOME", &config_home);
-        std::env::set_var("XDG_RUNTIME_DIR", &runtime_dir);
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", &runtime_dir) };
 
         let expected = config_home
             .join(crate::config::app_dir_name())
             .join("shepr.sock");
         assert_eq!(socket_path(), expected);
 
-        std::env::remove_var("XDG_CONFIG_HOME");
-        std::env::remove_var("XDG_RUNTIME_DIR");
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
     }
 
     #[test]
     fn socket_path_uses_named_session_dir() {
         let _guard = env_lock().lock().expect("test precondition");
         let config_home = unique_test_path("socket-named-config-home");
-        std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
+        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
         crate::session::clear_explicit_session_for_test();
-        std::env::set_var(crate::session::SESSION_ENV_VAR, "work");
-        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        unsafe { std::env::set_var(crate::session::SESSION_ENV_VAR, "work") };
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
 
         let expected = config_home
             .join(crate::config::app_dir_name())
@@ -1013,8 +999,8 @@ mod tests {
             .join("shepr.sock");
         assert_eq!(socket_path(), expected);
 
-        std::env::remove_var(crate::session::SESSION_ENV_VAR);
-        std::env::remove_var("XDG_CONFIG_HOME");
+        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
     }
 
     #[test]
@@ -1026,7 +1012,11 @@ mod tests {
 
         restrict_socket_permissions(&path).expect("test precondition");
 
-        let mode = fs::metadata(&path).expect("test precondition").permissions().mode() & 0o777;
+        let mode = fs::metadata(&path)
+            .expect("test precondition")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, SOCKET_PERMISSION_MODE);
 
         drop(_listener);
@@ -1066,7 +1056,8 @@ mod tests {
         .expect("test precondition");
 
         let response = read_line(&mut client);
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
         assert_eq!(response["id"], "unknown");
         assert_eq!(response["error"]["code"], "invalid_request");
         assert!(api_rx.try_recv().is_err());
@@ -1091,7 +1082,8 @@ mod tests {
         .expect("test precondition");
 
         let response = read_line(&mut client);
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
         assert_eq!(response["id"], "ordinary");
         assert_eq!(response["result"]["type"], "pong");
     }
@@ -1112,7 +1104,6 @@ mod tests {
                 ssh_agent_registration: false,
             }),
             None,
-            None,
         );
 
         let parsed: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
@@ -1132,10 +1123,10 @@ mod tests {
             &tx,
             None,
             Some(&stop),
-            None,
         );
 
-        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&response).expect("test precondition");
         assert_eq!(response["id"], "priority_stop");
         assert_eq!(response["result"]["type"], "ok");
         assert!(stop.load(Ordering::Acquire));
@@ -1148,9 +1139,9 @@ mod tests {
             &tx,
             None,
             Some(&stop),
-            None,
         );
-        let rejected: serde_json::Value = serde_json::from_str(&rejected).expect("test precondition");
+        let rejected: serde_json::Value =
+            serde_json::from_str(&rejected).expect("test precondition");
         assert_eq!(rejected["error"]["code"], "server_unavailable");
         assert!(rx.try_recv().is_err());
     }
@@ -1165,7 +1156,7 @@ mod tests {
 
         let request_for_thread = request.clone();
         let thread =
-            std::thread::spawn(move || handle_request(request_for_thread, &tx, None, None, None));
+            std::thread::spawn(move || handle_request(request_for_thread, &tx, None, None));
 
         let msg = rx.blocking_recv().expect("test precondition");
         assert_eq!(msg.request.id, "req_2");
@@ -1185,45 +1176,6 @@ mod tests {
     }
 
     #[test]
-    fn dispatched_request_reports_response_write_completion() {
-        let (api_tx, mut api_rx) = mpsc::unbounded_channel();
-        let (mut client, server, _path) = local_stream_pair("write-ack");
-        client
-            .write_all(br#"{"id":"req_write","method":"workspace.list","params":{}}"#)
-            .expect("test precondition");
-        client.write_all(b"\n").expect("test precondition");
-        client.flush().expect("test precondition");
-
-        let running = Arc::new(AtomicBool::new(true));
-        let server_running = Arc::clone(&running);
-        let event_hub = EventHub::default();
-        let server_thread = std::thread::spawn(move || {
-            handle_connection(server, &api_tx, &event_hub, &server_running, None)
-        });
-
-        let msg = api_rx.blocking_recv().expect("test precondition");
-        let response_write_complete = msg
-            .response_write_complete
-            .expect("socket-dispatched requests include write completion");
-        msg.respond_to
-            .send(
-                serde_json::to_string(&SuccessResponse {
-                    id: msg.request.id,
-                    result: ResponseResult::Ok {},
-                })
-                .expect("test precondition"),
-            )
-            .expect("test precondition");
-
-        response_write_complete
-            .recv_timeout(Duration::from_secs(1))
-            .expect("response write completion");
-        let response: SuccessResponse = serde_json::from_str(&read_line(&mut client)).expect("test precondition");
-        assert_eq!(response.id, "req_write");
-        server_thread.join().expect("test precondition").expect("test precondition");
-    }
-
-    #[test]
     fn events_wait_agent_status_returns_initial_match() {
         let (api_tx, responder) =
             spawn_pane_get_responder(crate::api::schema::AgentStatus::Blocked);
@@ -1239,7 +1191,8 @@ mod tests {
         let event_hub = EventHub::default();
         handle_connection(server, &api_tx, &event_hub, &running, None).expect("test precondition");
 
-        let response: serde_json::Value = serde_json::from_str(&read_line(&mut client)).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&read_line(&mut client)).expect("test precondition");
         assert_eq!(response["id"], "wait_1");
         assert_eq!(response["result"]["type"], "wait_matched");
         assert_eq!(
@@ -1266,7 +1219,8 @@ mod tests {
         let event_hub = EventHub::default();
         handle_connection(server, &api_tx, &event_hub, &running, None).expect("test precondition");
 
-        let response: serde_json::Value = serde_json::from_str(&read_line(&mut client)).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&read_line(&mut client)).expect("test precondition");
         assert_eq!(response["id"], "wait_2");
         assert_eq!(response["error"]["code"], "timeout");
         assert_eq!(
@@ -1327,7 +1281,8 @@ mod tests {
         let running = Arc::new(AtomicBool::new(true));
         handle_connection(server, &api_tx, &event_hub, &running, None).expect("test precondition");
 
-        let response: serde_json::Value = serde_json::from_str(&read_line(&mut client)).expect("test precondition");
+        let response: serde_json::Value =
+            serde_json::from_str(&read_line(&mut client)).expect("test precondition");
         assert_eq!(response["id"], "wait_close");
         assert_eq!(response["error"]["code"], "pane_not_found");
         assert_eq!(response["error"]["message"], "pane pane_1 not found");
@@ -1386,10 +1341,14 @@ mod tests {
             done_tx.send(result).expect("test precondition");
         });
 
-        first_read_rx.recv_timeout(Duration::from_secs(2)).expect("test precondition");
+        first_read_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("test precondition");
         drop(client);
 
-        let result = done_rx.recv_timeout(Duration::from_secs(2)).expect("test precondition");
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("test precondition");
         assert!(result.is_ok());
 
         server_thread.join().expect("test precondition");
@@ -1419,13 +1378,15 @@ mod tests {
             let (mut client, server, path) = local_stream_pair("invalid-request-id");
             writeln!(client, "{request}").expect("test precondition");
             let running = Arc::new(AtomicBool::new(true));
-            handle_connection(server, &api_tx, &EventHub::default(), &running, None).expect("test precondition");
+            handle_connection(server, &api_tx, &EventHub::default(), &running, None)
+                .expect("test precondition");
 
             let mut response = String::new();
             BufReader::new(client)
                 .read_to_string(&mut response)
                 .expect("test precondition");
-            let response: ErrorResponse = serde_json::from_str(&response).expect("test precondition");
+            let response: ErrorResponse =
+                serde_json::from_str(&response).expect("test precondition");
             assert_eq!(response.id, expected_id, "{request}");
             assert_eq!(response.error.code, "invalid_request");
             assert!(response.error.message.starts_with("invalid request: "));
@@ -1514,7 +1475,9 @@ mod tests {
 
         drop(client);
 
-        let result = done_rx.recv_timeout(Duration::from_secs(2)).expect("test precondition");
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("test precondition");
         assert!(result.is_ok());
         server_thread.join().expect("test precondition");
     }
@@ -1546,7 +1509,9 @@ mod tests {
 
         running.store(false, Ordering::Relaxed);
 
-        let result = done_rx.recv_timeout(Duration::from_secs(2)).expect("test precondition");
+        let result = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("test precondition");
         assert!(result.is_ok());
         server_thread.join().expect("test precondition");
     }

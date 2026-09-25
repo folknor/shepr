@@ -26,11 +26,11 @@ pub(super) fn maybe_run(args: &[String]) -> Option<io::Result<super::CommandOutc
     let (selector, args) = match parse_machine_prefix(args) {
         Ok(Some(target)) => target,
         Ok(None) => return None,
-        Err(error) => return Some(usage_error(error)),
+        Err(error) => return Some(usage_error(&error)),
     };
     Some((|| {
         if let Err(error) = validate_machine_command(&args) {
-            return usage_error(error);
+            return usage_error(&error);
         }
         if super::spec::print_requested_help(&args)? {
             return Ok(super::CommandOutcome::Handled(0));
@@ -38,7 +38,7 @@ pub(super) fn maybe_run(args: &[String]) -> Option<io::Result<super::CommandOutc
         let profiles = EndpointCatalog::load_profiles().map_err(io::Error::other)?;
         let profile = match resolve_machine(&profiles, &selector) {
             Ok(profile) => profile.clone(),
-            Err(error) => return usage_error(error),
+            Err(error) => return usage_error(&error),
         };
         let _scope = TARGET.with(|target| {
             TargetScope(target.replace(Some(MachineTarget {
@@ -50,7 +50,7 @@ pub(super) fn maybe_run(args: &[String]) -> Option<io::Result<super::CommandOutc
     })())
 }
 
-fn usage_error(error: String) -> io::Result<super::CommandOutcome> {
+fn usage_error(error: &str) -> io::Result<super::CommandOutcome> {
     eprintln!("error: {error}");
     Ok(super::CommandOutcome::Handled(2))
 }
@@ -145,7 +145,7 @@ pub(super) fn remote_error(error: io::Error) -> io::Error {
         let error = target
             .bridge
             .as_ref()
-            .and_then(|bridge| bridge.reported_failure())
+            .and_then(crate::remote::SavedSshApiBridge::reported_failure)
             .unwrap_or(error);
         io::Error::new(
             error.kind(),
@@ -289,7 +289,9 @@ fn validate_machine_command(args: &[String]) -> Result<(), String> {
     if supported {
         Ok(())
     } else {
-        Err(format!("`{command} {subcommand}` is not an API-backed machine command; --machine does not run local management commands or attach a TUI"))
+        Err(format!(
+            "`{command} {subcommand}` is not an API-backed machine command; --machine does not run local management commands or attach a TUI"
+        ))
     }
 }
 
@@ -379,18 +381,27 @@ mod tests {
     #[test]
     fn machine_resolution_requires_a_unique_enabled_saved_machine() {
         let mac = SavedSshEndpoint::new("mac", "mac-ssh", "agents").expect("test precondition");
-        let other = SavedSshEndpoint::new("build", "builder", "default").expect("test precondition");
+        let other =
+            SavedSshEndpoint::new("build", "builder", "default").expect("test precondition");
         let profiles = vec![mac.clone(), other];
-        assert_eq!(resolve_machine(&profiles, "mac").expect("test precondition"), &mac);
-        assert_eq!(resolve_machine(&profiles, mac.id.as_str()).expect("test precondition"), &mac);
-        let shadow = SavedSshEndpoint::new(mac.id.as_str(), "shadow", "default").expect("test precondition");
+        assert_eq!(
+            resolve_machine(&profiles, "mac").expect("test precondition"),
+            &mac
+        );
+        assert_eq!(
+            resolve_machine(&profiles, mac.id.as_str()).expect("test precondition"),
+            &mac
+        );
+        let shadow =
+            SavedSshEndpoint::new(mac.id.as_str(), "shadow", "default").expect("test precondition");
         assert_eq!(
             resolve_machine(&[mac.clone(), shadow], mac.id.as_str()).expect("test precondition"),
             &mac
         );
         assert!(resolve_machine(&profiles, "mac-ssh").is_err());
         assert!(resolve_machine(&profiles, "missing").is_err());
-        let duplicate = SavedSshEndpoint::new("mac", "other", "default").expect("test precondition");
+        let duplicate =
+            SavedSshEndpoint::new("mac", "other", "default").expect("test precondition");
         assert!(resolve_machine(&[mac.clone(), duplicate], "mac").is_err());
         let mut disabled = mac;
         disabled.enabled = false;

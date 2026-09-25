@@ -177,7 +177,9 @@ impl ClientState {
             stdout.write_all(&encoded.bytes)?;
             stdout.flush()?;
         }
-        let committed = self.blit_encoder.commit_patch(&rows, patch.cursor, encoded);
+        let committed = self
+            .blit_encoder
+            .commit_patch(&rows, patch.cursor, &encoded);
         Ok(committed)
     }
 
@@ -222,7 +224,7 @@ impl ClientState {
             self.repaint_pending = true;
             return false;
         }
-        self.blit_encoder.commit(frame_data, encoded);
+        self.blit_encoder.commit(frame_data, &encoded);
         self.repaint_pending = false;
         true
     }

@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use super::{
-    api_helpers::{pane_agent_status, tab_attention_priority},
     App, Mode,
+    api_helpers::{pane_agent_status, tab_attention_priority},
 };
 use crate::api::schema::{EventData, EventEnvelope, EventKind};
 use crate::{config::NewTerminalCwdConfig, workspace::Workspace};
@@ -37,7 +37,7 @@ pub(super) fn launch_cwd_for_terminal(
 ) -> Option<PathBuf> {
     terminal_runtimes
         .get(terminal_id)
-        .and_then(|runtime| runtime.follow_cwd())
+        .and_then(crate::terminal::TerminalRuntime::follow_cwd)
         .or_else(|| {
             terminals
                 .get(terminal_id)
@@ -117,7 +117,7 @@ impl App {
 
     pub(crate) fn create_workspace_with_options(
         &mut self,
-        initial_cwd: PathBuf,
+        initial_cwd: &std::path::Path,
         focus: bool,
     ) -> std::io::Result<usize> {
         self.create_workspace_with_launch_env(initial_cwd, focus, Vec::new())
@@ -125,7 +125,7 @@ impl App {
 
     pub(crate) fn create_workspace_with_launch_env(
         &mut self,
-        initial_cwd: PathBuf,
+        initial_cwd: &std::path::Path,
         focus: bool,
         extra_env: Vec<(String, String)>,
     ) -> std::io::Result<usize> {
@@ -139,8 +139,8 @@ impl App {
             self.state.host_terminal_appearance,
             crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
             self.event_tx.clone(),
-            self.render_notify.clone(),
-            self.render_dirty.clone(),
+            std::sync::Arc::clone(&self.render_notify),
+            std::sync::Arc::clone(&self.render_dirty),
             extra_env,
         )?;
         self.terminal_runtimes.insert(terminal.id.clone(), runtime);
@@ -316,7 +316,7 @@ impl App {
         let scroll = self
             .state
             .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
-            .and_then(|runtime| runtime.scroll_metrics())
+            .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .map(|metrics| crate::api::schema::PaneScrollInfo {
                 offset_from_bottom: metrics.offset_from_bottom as u64,
                 max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
@@ -398,15 +398,15 @@ impl App {
 fn terminal_agent_session_info(
     terminal: &crate::terminal::TerminalState,
 ) -> Option<crate::api::schema::AgentSessionInfo> {
-    if let Some(authority) = terminal.hook_authority.as_ref() {
-        if let Some(session_ref) = authority.session_ref.as_ref() {
-            return Some(crate::api::schema::AgentSessionInfo {
-                source: authority.source.clone(),
-                agent: authority.agent_label.clone(),
-                kind: session_ref.kind,
-                value: session_ref.value.clone(),
-            });
-        }
+    if let Some(authority) = terminal.hook_authority.as_ref()
+        && let Some(session_ref) = authority.session_ref.as_ref()
+    {
+        return Some(crate::api::schema::AgentSessionInfo {
+            source: authority.source.clone(),
+            agent: authority.agent_label.clone(),
+            kind: session_ref.kind,
+            value: session_ref.value.clone(),
+        });
     }
 
     terminal

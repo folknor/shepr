@@ -4,12 +4,12 @@ use std::time::{Duration, Instant};
 use crate::workspace::{GitSpaceMetadata, WorkspaceGitStatusSnapshot};
 
 use super::{
-    config::{deps_current, read_config, stamp, upstream_full_ref, ConfigCtx, FileDep},
+    config::{ConfigCtx, FileDep, deps_current, read_config, stamp, upstream_full_ref},
     discovery::{
-        automatic_workspace_label, canonicalize_best_effort_path, fallback_label_from_cwd,
-        git_ref_storage_is_reftable, git_rev_parse_verify, git_space_metadata_from_info,
-        git_symbolic_head_full, git_worktree_info, read_git_ref_file, read_ref_oid,
-        GitWorktreeInfo,
+        GitWorktreeInfo, automatic_workspace_label, canonicalize_best_effort_path,
+        fallback_label_from_cwd, git_ref_storage_is_reftable, git_rev_parse_verify,
+        git_space_metadata_from_info, git_symbolic_head_full, git_worktree_info, read_git_ref_file,
+        read_ref_oid,
     },
 };
 
@@ -466,7 +466,10 @@ mod tests {
 
         assert_eq!(snapshot.branch.as_deref(), Some("main"));
         assert_eq!(snapshot.ahead_behind, Some((2, 1)));
-        assert_eq!(update.expect("test precondition").snapshot.ahead_behind, Some((2, 1)));
+        assert_eq!(
+            update.expect("test precondition").snapshot.ahead_behind,
+            Some((2, 1))
+        );
 
         std::fs::remove_dir_all(root).expect("test precondition");
     }
@@ -486,7 +489,8 @@ mod tests {
                 space: git_space_metadata(&root),
             },
         };
-        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/feature\n").expect("test precondition");
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/feature\n")
+            .expect("test precondition");
         std::fs::write(
             root.join(".git/refs/heads/feature"),
             "1111111111111111111111111111111111111111\n",
@@ -549,7 +553,12 @@ mod tests {
 
         let (_, updated) = git_status_snapshot_for_cwd(&root, cached.as_ref());
 
-        let upstream = updated.expect("test precondition").fingerprint.expect("test precondition").upstream.expect("test precondition");
+        let upstream = updated
+            .expect("test precondition")
+            .fingerprint
+            .expect("test precondition")
+            .upstream
+            .expect("test precondition");
         assert_eq!(upstream.remote, "fork");
         std::fs::remove_dir_all(root).expect("test precondition");
     }
@@ -558,7 +567,8 @@ mod tests {
     fn git_status_fingerprint_reads_packed_refs() {
         let root = temp_test_dir("packed-refs");
         write_fake_tracked_repo(&root);
-        std::fs::remove_file(root.join(".git/refs/remotes/origin/main")).expect("test precondition");
+        std::fs::remove_file(root.join(".git/refs/remotes/origin/main"))
+            .expect("test precondition");
         std::fs::write(
             root.join(".git/packed-refs"),
             "# pack-refs with: peeled fully-peeled sorted\n2222222222222222222222222222222222222222 refs/remotes/origin/main\n",
@@ -568,7 +578,11 @@ mod tests {
         let fingerprint = git_status_fingerprint(&root).expect("test precondition");
 
         assert_eq!(
-            fingerprint.upstream.expect("test precondition").oid.as_deref(),
+            fingerprint
+                .upstream
+                .expect("test precondition")
+                .oid
+                .as_deref(),
             Some("2222222222222222222222222222222222222222")
         );
 
@@ -586,7 +600,11 @@ mod tests {
 
         assert_eq!(
             snapshot.auto_label,
-            checkout.file_name().expect("test precondition").to_str().expect("test precondition")
+            checkout
+                .file_name()
+                .expect("test precondition")
+                .to_str()
+                .expect("test precondition")
         );
 
         std::fs::remove_dir_all(base).expect("test precondition");
@@ -614,8 +632,10 @@ mod tests {
             format!("gitdir: {}\n", git_dir_two.display()),
         )
         .expect("test precondition");
-        std::fs::write(git_dir_one.join("HEAD"), "ref: refs/heads/one\n").expect("test precondition");
-        std::fs::write(git_dir_two.join("HEAD"), "ref: refs/heads/two\n").expect("test precondition");
+        std::fs::write(git_dir_one.join("HEAD"), "ref: refs/heads/one\n")
+            .expect("test precondition");
+        std::fs::write(git_dir_two.join("HEAD"), "ref: refs/heads/two\n")
+            .expect("test precondition");
 
         assert_ne!(
             git_status_cache_key(&worktree_one),

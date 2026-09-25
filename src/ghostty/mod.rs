@@ -10,7 +10,9 @@
 //!   ([`RenderState`], [`RowIter`], [`RowCellIter`]);
 //! * plain and VT formatters for reads and history persistence (`format.rs`);
 //! * a scanner for sequences alacritty ignores (OSC 7, modes 9/1016/2031/2048,
-//!   CSI ? 996 n, CSI 16 t, XTGETTCAP; `scan.rs`);
+//!   CSI ? 996 n, CSI 16 t, XTGETTCAP, modifyOtherKeys; `scan.rs`);
+//! * a column of their own for the halfwidth voiced marks U+FF9E/U+FF9F,
+//!   which unicode-width (and so alacritty) treats as zero-width;
 //! * ordered query replies, with OSC colour queries surfaced as structured
 //!   [`ColorQuery`] values so the pane can answer from the host theme;
 //! * byte-denominated scrollback limits converted to line counts;
@@ -229,20 +231,21 @@ pub fn default_palette() -> [RgbColor; 256] {
         if value == 0 {
             0
         } else {
-            (value * 40 + 55) as u8
+            // `value` is a 0..=5 cube coordinate, so `value * 40 + 55` maxes at 255.
+            u8::try_from(value * 40 + 55).unwrap_or(u8::MAX)
         }
     };
-    for index in 16..232 {
-        let offset = index - 16;
-        palette[index] = RgbColor {
+    for (offset, slot) in palette[16..232].iter_mut().enumerate() {
+        *slot = RgbColor {
             r: cube(offset / 36),
             g: cube((offset / 6) % 6),
             b: cube(offset % 6),
         };
     }
-    for index in 232..256 {
-        let value = ((index - 232) * 10 + 8) as u8;
-        palette[index] = RgbColor {
+    for (offset, slot) in palette[232..256].iter_mut().enumerate() {
+        // `offset` is 0..24 here, so `offset * 10 + 8` maxes at 238.
+        let value = u8::try_from(offset * 10 + 8).unwrap_or(u8::MAX);
+        *slot = RgbColor {
             r: value,
             g: value,
             b: value,
@@ -317,7 +320,7 @@ pub enum ColorQueryTarget {
 impl ColorQueryTarget {
     fn from_index(index: usize) -> Option<Self> {
         match index {
-            0..=255 => Some(Self::Palette(index as u8)),
+            0..=255 => Some(Self::Palette(u8::try_from(index).unwrap_or(u8::MAX))),
             index if index == NamedColor::Foreground as usize => Some(Self::Foreground),
             index if index == NamedColor::Background as usize => Some(Self::Background),
             index if index == NamedColor::Cursor as usize => Some(Self::Cursor),
@@ -380,7 +383,7 @@ impl PtyResponse {
 
 pub fn unicode_codepoint_width(codepoint: u32) -> u8 {
     match char::from_u32(codepoint) {
-        Some(ch) => ch.width().unwrap_or(0).min(2) as u8,
+        Some(ch) => u8::try_from(ch.width().unwrap_or(0).min(2)).unwrap_or(2),
         None => 1,
     }
 }
@@ -402,7 +405,7 @@ pub fn unicode_grapheme_width(codepoints: &[u32]) -> (usize, u8) {
         return (0, 0);
     };
     let consumed = cluster.chars().count();
-    (consumed, cluster.width().min(2) as u8)
+    (consumed, u8::try_from(cluster.width().min(2)).unwrap_or(2))
 }
 
 pub fn encode_focus(event: FocusEvent) -> Result<Vec<u8>, Error> {
@@ -416,10 +419,7 @@ fn scrollback_lines(max_scrollback_bytes: usize, columns: usize) -> usize {
     if max_scrollback_bytes == 0 {
         return 0;
     }
-    let bytes_per_line = columns
-        .max(1)
-        .saturating_mul(mem::size_of::<Cell>())
-        .max(1);
+    let bytes_per_line = columns.max(1).saturating_mul(mem::size_of::<Cell>()).max(1);
     (max_scrollback_bytes / bytes_per_line).clamp(MIN_SCROLLBACK_LINES, MAX_SCROLLBACK_LINES)
 }
 
@@ -480,6 +480,8 @@ struct ExtraModes {
     sgr_pixels_mouse: bool,
     color_scheme_report: bool,
     in_band_resize: bool,
+    /// xterm modifyOtherKeys level (0, 1 or 2).
+    modify_other_keys: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -493,6 +495,8 @@ pub struct Terminal {
     parser: Processor,
     events: Arc<Mutex<Vec<Event>>>,
     scanner: Scanner,
+    /// Start of a U+FF9E/U+FF9F split across writes, not yet given to the parser.
+    held_utf8: Vec<u8>,
     max_scrollback: usize,
     history_lines: usize,
     default_palette: [RgbColor; 256],
@@ -524,7 +528,7 @@ impl Terminal {
                 columns,
                 screen_lines,
             },
-            Listener(events.clone()),
+            Listener(Arc::clone(&events)),
         );
         // alacritty starts fully damaged; our own generation counters already
         // start "full", so begin alacritty's tracking from a clean slate.
@@ -534,6 +538,7 @@ impl Terminal {
             parser: Processor::new(),
             events,
             scanner: Scanner::default(),
+            held_utf8: Vec::new(),
             max_scrollback,
             history_lines,
             default_palette: default_palette(),
@@ -559,24 +564,93 @@ impl Terminal {
         }
         self.flush_expired_synchronized_output();
         let events = self.scanner.scan(bytes);
+        // Bytes held back by the previous call come first; scan offsets are
+        // relative to `bytes`, so shift them past the held prefix.
+        let held = mem::take(&mut self.held_utf8);
+        let joined;
+        let bytes = if held.is_empty() {
+            bytes
+        } else {
+            joined = [held.as_slice(), bytes].concat();
+            joined.as_slice()
+        };
+        let offset = held.len();
+        // A trailing partial U+FF9E/U+FF9F must not reach the parser yet, or
+        // the mark could no longer be given its own cell once it completes.
+        let feed_end = bytes.len() - self.scanner.voiced_mark_prefix_len().min(bytes.len());
         let mut written = 0usize;
         for scanned in events {
-            let end = scanned.end.min(bytes.len());
+            let end = (scanned.end + offset).min(feed_end);
+            if let ScanEvent::HalfwidthVoicedMark(mark) = scanned.event {
+                written = self.input_halfwidth_voiced_mark(bytes, written, end, mark);
+                continue;
+            }
             if end > written {
                 self.advance(&bytes[written..end]);
                 written = end;
             }
             self.apply_scan_event(scanned.event);
         }
-        if written < bytes.len() {
-            self.advance(&bytes[written..]);
+        if written < feed_end {
+            self.advance(&bytes[written..feed_end]);
         }
+        self.held_utf8 = bytes[feed_end..].to_vec();
         self.collect_damage();
     }
 
     fn advance(&mut self, bytes: &[u8]) {
         self.parser.advance(&mut self.term, bytes);
         self.drain_events();
+    }
+
+    /// Prints U+FF9E/U+FF9F (whose UTF-8 ends just before `bytes[end]`) in a cell of its
+    /// own. unicode-width counts these Grapheme_Extend marks as zero-width, so
+    /// alacritty would fold them into the previous cell, while wcwidth, xterm
+    /// and the program writing them advance the cursor one column; left alone,
+    /// every later cell on the line would sit one column left of where the
+    /// program believes it is. Feeds everything before the mark first and
+    /// returns how much of `bytes` has now been consumed. The mark is left for
+    /// the parser to take normally when its bytes are not all in this slice or
+    /// a synchronized update is buffering output.
+    fn input_halfwidth_voiced_mark(
+        &mut self,
+        bytes: &[u8],
+        written: usize,
+        end: usize,
+        mark: char,
+    ) -> usize {
+        let mut encoded = [0u8; 4];
+        let encoded = mark.encode_utf8(&mut encoded).as_bytes();
+        let Some(start) = end.checked_sub(encoded.len()) else {
+            return written;
+        };
+        if start < written || bytes.get(start..end) != Some(encoded) {
+            return written;
+        }
+        if start > written {
+            self.advance(&bytes[written..start]);
+        }
+        if self.synchronized_output_deadline().is_some() {
+            return start;
+        }
+        // A plain width-1 print handles wrapping, insert mode and the SGR
+        // template; the cell it wrote then gets the mark as its character.
+        self.term.input(' ');
+        let grid = self.term.grid_mut();
+        let point = grid.cursor.point;
+        let column = if grid.cursor.input_needs_wrap {
+            point.column
+        } else {
+            Column(point.column.0.saturating_sub(1))
+        };
+        grid[point.line][column].c = mark;
+        self.drain_events();
+        end
+    }
+
+    /// The xterm modifyOtherKeys level the child selected (0, 1 or 2).
+    pub fn modify_other_keys_level(&self) -> u8 {
+        self.modes.modify_other_keys
     }
 
     /// Ends a synchronized update (mode 2026) whose timeout has passed so its
@@ -622,10 +696,7 @@ impl Terminal {
             }
             ScanEvent::CellSizeQuery => {
                 if self.has_pixel_geometry() {
-                    let reply = format!(
-                        "\x1b[6;{};{}t",
-                        self.cell_height_px, self.cell_width_px
-                    );
+                    let reply = format!("\x1b[6;{};{}t", self.cell_height_px, self.cell_width_px);
                     self.push_bytes(reply.into_bytes());
                 }
             }
@@ -636,6 +707,13 @@ impl Terminal {
             }
             ScanEvent::WorkingDirectory(payload) => self.pwd_changes.push(payload),
             ScanEvent::FullReset => self.modes = ExtraModes::default(),
+            // The parser has just consumed (and ignored) `CSI ? 3 J`; feed the
+            // ED3 spelling it does dispatch. Going through the parser keeps
+            // the erase in byte order even inside a synchronized update.
+            ScanEvent::EraseScrollback => self.advance(b"\x1b[3J"),
+            ScanEvent::ModifyOtherKeys(level) => self.modes.modify_other_keys = level,
+            // Printed by `write` itself, in byte order.
+            ScanEvent::HalfwidthVoicedMark(_) => {}
         }
     }
 
@@ -655,7 +733,7 @@ impl Terminal {
             }
             (9, false) => self.modes.x10_mouse = false,
             (1000 | 1002 | 1003, true) => self.modes.x10_mouse = false,
-            (1005 | 1006, true) => self.modes.sgr_pixels_mouse = false,
+            (1005, true) => self.modes.sgr_pixels_mouse = false,
             (1016, _) => self.modes.sgr_pixels_mouse = enabled,
             (2031, _) => self.modes.color_scheme_report = enabled,
             (2048, _) => {
@@ -715,10 +793,10 @@ impl Terminal {
                     }
                 }
                 Event::Bell => self.bell_count = self.bell_count.saturating_add(1),
-                Event::ClipboardStore(ClipboardType::Clipboard, text) => {
-                    if !text.is_empty() && text.len() <= MAX_CLIPBOARD_BYTES {
-                        self.clipboard_writes.push(text.into_bytes());
-                    }
+                Event::ClipboardStore(ClipboardType::Clipboard, text)
+                    if !text.is_empty() && text.len() <= MAX_CLIPBOARD_BYTES =>
+                {
+                    self.clipboard_writes.push(text.into_bytes());
                 }
                 _ => {}
             }
@@ -736,12 +814,11 @@ impl Terminal {
             .strip_prefix("\x1b[?")
             .and_then(|rest| rest.strip_suffix(";0$y"))
             .and_then(|mode| mode.parse::<u16>().ok())
+            && ADAPTER_PRIVATE_MODES.contains(&mode)
         {
-            if ADAPTER_PRIVATE_MODES.contains(&mode) {
-                let enabled = self.mode_get(mode).unwrap_or(false);
-                let state = if enabled { 1 } else { 2 };
-                return Some(format!("\x1b[?{mode};{state}$y").into_bytes());
-            }
+            let enabled = self.mode_get(mode).unwrap_or(false);
+            let state = if enabled { 1 } else { 2 };
+            return Some(format!("\x1b[?{mode};{state}$y").into_bytes());
         }
         Some(text.into_bytes())
     }
@@ -787,13 +864,16 @@ impl Terminal {
     fn render_cursor(&self) -> RenderCursor {
         let grid = self.term.grid();
         let point = grid.cursor.point;
-        let viewport_y = i64::from(point.line.0) + grid.display_offset() as i64;
+        let display_offset = i64::try_from(grid.display_offset()).unwrap_or(i64::MAX);
+        let viewport_y = i64::from(point.line.0) + display_offset;
+        // Guarded by `viewport_y >= 0` below, so this never truncates in the branch that uses it.
+        let viewport_y_usize = usize::try_from(viewport_y).unwrap_or(0);
         let viewport = (viewport_y >= 0
-            && (viewport_y as usize) < grid.screen_lines()
+            && viewport_y_usize < grid.screen_lines()
             && point.column.0 < grid.columns())
         .then(|| CursorViewport {
             x: saturating_u16(point.column.0),
-            y: saturating_u16(viewport_y as usize),
+            y: saturating_u16(viewport_y_usize),
             wide_tail: grid[point].flags.contains(Flags::WIDE_CHAR_SPACER),
         });
         let style = self.term.cursor_style();
@@ -1002,7 +1082,8 @@ impl Terminal {
 
     /// Converts a screen row (0 = oldest retained line) to an alacritty line.
     fn screen_line(&self, y: u64) -> Option<Line> {
-        let line = i64::try_from(y).ok()? - self.term.history_size() as i64;
+        let history_size = i64::try_from(self.term.history_size()).unwrap_or(i64::MAX);
+        let line = i64::try_from(y).ok()? - history_size;
         let line = Line(i32::try_from(line).ok()?);
         (line >= self.term.topmost_line() && line <= self.term.bottommost_line()).then_some(line)
     }
@@ -1013,7 +1094,8 @@ impl Terminal {
         if y >= self.term.screen_lines() {
             return None;
         }
-        let line = y as i64 - self.term.grid().display_offset() as i64;
+        let display_offset = i64::try_from(self.term.grid().display_offset()).unwrap_or(i64::MAX);
+        let line = i64::try_from(y).unwrap_or(i64::MAX) - display_offset;
         Some(Line(i32::try_from(line).ok()?))
     }
 
@@ -1092,7 +1174,14 @@ impl Terminal {
         end: (u16, u32),
         rectangle: bool,
     ) -> Result<String, Error> {
-        self.read_range(start, end, Coordinates::Viewport, rectangle, Format::Plain, true)
+        self.read_range(
+            start,
+            end,
+            Coordinates::Viewport,
+            rectangle,
+            Format::Plain,
+            true,
+        )
     }
 
     pub fn read_ansi_viewport(
@@ -1101,7 +1190,14 @@ impl Terminal {
         end: (u16, u32),
         rectangle: bool,
     ) -> Result<String, Error> {
-        self.read_range(start, end, Coordinates::Viewport, rectangle, Format::Vt, false)
+        self.read_range(
+            start,
+            end,
+            Coordinates::Viewport,
+            rectangle,
+            Format::Vt,
+            false,
+        )
     }
 
     pub fn read_text_screen(
@@ -1110,7 +1206,14 @@ impl Terminal {
         end: (u16, u32),
         rectangle: bool,
     ) -> Result<String, Error> {
-        self.read_range(start, end, Coordinates::Screen, rectangle, Format::Plain, true)
+        self.read_range(
+            start,
+            end,
+            Coordinates::Screen,
+            rectangle,
+            Format::Plain,
+            true,
+        )
     }
 
     pub fn read_ansi_screen(
@@ -1120,7 +1223,14 @@ impl Terminal {
         rectangle: bool,
         unwrap: bool,
     ) -> Result<String, Error> {
-        self.read_range(start, end, Coordinates::Screen, rectangle, Format::Vt, unwrap)
+        self.read_range(
+            start,
+            end,
+            Coordinates::Screen,
+            rectangle,
+            Format::Vt,
+            unwrap,
+        )
     }
 
     fn read_range(
@@ -1149,23 +1259,42 @@ impl Terminal {
     }
 
     /// Clears the screen and scrollback but keeps the cursor's (possibly
-    /// soft-wrapped) line, moved to the top of the screen.
+    /// soft-wrapped) line, moved to the top of the screen. A no-op returning
+    /// `false` while the alternate screen is active: the full-screen app owns
+    /// that screen, and the primary history must survive until it exits.
     pub fn clear_screen(&mut self) -> bool {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return false;
+        }
         let screen_lines = self.term.screen_lines();
         let last_column = self.term.last_column();
         let grid = self.term.grid_mut();
         let mut top = grid.cursor.point.line;
-        while top > Line(0) && grid[Line(top.0 - 1)][last_column].flags.contains(Flags::WRAPLINE) {
+        while top > Line(0)
+            && grid[Line(top.0 - 1)][last_column]
+                .flags
+                .contains(Flags::WRAPLINE)
+        {
             top = Line(top.0 - 1);
         }
         let shift = usize::try_from(top.0).unwrap_or(0);
+        let screen_lines_line = i32::try_from(screen_lines).unwrap_or(i32::MAX);
         if shift > 0 {
-            grid.scroll_up(&(Line(0)..Line(screen_lines as i32)), shift);
-            grid.cursor.point.line = Line(grid.cursor.point.line.0 - shift as i32);
+            grid.scroll_up(&(Line(0)..Line(screen_lines_line)), shift);
+            // `shift` was derived from `top.0` (an i32) above, so this round-trips losslessly.
+            let shift_i32 = i32::try_from(shift).unwrap_or(i32::MAX);
+            grid.cursor.point.line = Line(grid.cursor.point.line.0 - shift_i32);
         }
-        let kept_rows = usize::try_from(grid.cursor.point.line.0 + 1).unwrap_or(1);
+        // Keep the rest of the logical line too: the cursor may sit on an
+        // earlier row of soft-wrapped input.
+        let last_line = Line(screen_lines_line - 1);
+        let mut bottom = grid.cursor.point.line;
+        while bottom < last_line && grid[bottom][last_column].flags.contains(Flags::WRAPLINE) {
+            bottom = Line(bottom.0 + 1);
+        }
+        let kept_rows = usize::try_from(bottom.0 + 1).unwrap_or(1);
         if kept_rows < screen_lines {
-            grid.reset_region(Line(kept_rows as i32)..);
+            grid.reset_region(Line(i32::try_from(kept_rows).unwrap_or(i32::MAX))..);
         }
         grid.clear_history();
         self.bump_full_damage();
@@ -1180,9 +1309,12 @@ impl Terminal {
     /// Scrolls the viewport by `delta` rows; negative values move toward
     /// older history.
     pub fn scroll_viewport_delta(&mut self, delta: isize) {
-        let delta = delta
-            .saturating_neg()
-            .clamp(i32::MIN as isize, i32::MAX as isize) as i32;
+        let delta = i32::try_from(
+            delta
+                .saturating_neg()
+                .clamp(i32::MIN as isize, i32::MAX as isize),
+        )
+        .unwrap_or(i32::MAX);
         if delta != 0 {
             self.term.scroll_display(Scroll::Delta(delta));
             self.collect_damage();
@@ -1195,8 +1327,12 @@ impl Terminal {
         let history = self.term.history_size();
         let target_offset = history - row.min(history);
         let current = self.term.grid().display_offset();
-        let delta = (target_offset as i64 - current as i64)
-            .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        let target_offset_i64 = i64::try_from(target_offset).unwrap_or(i64::MAX);
+        let current_i64 = i64::try_from(current).unwrap_or(i64::MAX);
+        let delta = i32::try_from(
+            (target_offset_i64 - current_i64).clamp(i64::from(i32::MIN), i64::from(i32::MAX)),
+        )
+        .unwrap_or(i32::MAX);
         if delta != 0 {
             self.term.scroll_display(Scroll::Delta(delta));
             self.collect_damage();
@@ -1282,7 +1418,7 @@ fn cell_color(color: Color) -> Option<CellColor> {
     match color {
         Color::Named(named) => {
             let index = named as usize;
-            (index < 16).then_some(CellColor::Palette(index as u8))
+            (index < 16).then(|| CellColor::Palette(u8::try_from(index).unwrap_or(u8::MAX)))
         }
         Color::Indexed(index) => Some(CellColor::Palette(index)),
         Color::Spec(rgb) => Some(CellColor::Rgb(rgb.into())),
@@ -1388,9 +1524,17 @@ impl RenderState {
             if !changed {
                 continue;
             }
-            let line = Line(y as i32 - display_offset as i32);
+            let y_i32 = i32::try_from(y).unwrap_or(i32::MAX);
+            let display_offset_i32 = i32::try_from(display_offset).unwrap_or(i32::MAX);
+            let line = Line(y_i32 - display_offset_i32);
+            let current = &grid[line][..];
+            // alacritty damages the cursor row on every damage read, content
+            // change or not, so a mode-only write would otherwise dirty it.
+            if !full && snapshot.cells.as_slice() == current {
+                continue;
+            }
             snapshot.cells.clear();
-            snapshot.cells.extend_from_slice(&grid[line][..]);
+            snapshot.cells.extend_from_slice(current);
             snapshot.dirty.set(true);
             any_changed = true;
         }

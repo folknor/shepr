@@ -2,7 +2,6 @@ use super::*;
 
 #[derive(Default)]
 pub(crate) struct OverlayRender {
-    pub(crate) area: Rect,
     pub(crate) menu_rows: Vec<(Rect, usize)>,
     pub(crate) primary: Rect,
     pub(crate) clear: Rect,
@@ -68,7 +67,8 @@ pub(crate) fn render_global_menu(
         .unwrap_or(8)
         .saturating_add(4)
         .min(screen.width.max(1));
-    let height = (items.len() as u16)
+    let height = u16::try_from(items.len())
+        .unwrap_or(u16::MAX)
         .saturating_add(2)
         .min(screen.height.max(1));
     let x = launcher
@@ -80,7 +80,9 @@ pub(crate) fn render_global_menu(
     let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
     let mut rows = Vec::new();
     for (index, (label, _)) in items.iter().enumerate() {
-        let row_y = inner.y.saturating_add(index as u16);
+        let row_y = inner
+            .y
+            .saturating_add(u16::try_from(index).unwrap_or(u16::MAX));
         if row_y >= inner.bottom() {
             break;
         }
@@ -99,7 +101,6 @@ pub(crate) fn render_global_menu(
         rows.push((row, index));
     }
     Some(OverlayRender {
-        area: rect,
         menu_rows: rows,
         ..OverlayRender::default()
     })
@@ -121,7 +122,8 @@ pub(crate) fn render_context_menu(
         .saturating_add(4)
         .max(14)
         .min(screen.width.max(1));
-    let height = (items.len() as u16)
+    let height = u16::try_from(items.len())
+        .unwrap_or(u16::MAX)
         .saturating_add(2)
         .min(screen.height.max(1));
     let x = menu
@@ -136,7 +138,9 @@ pub(crate) fn render_context_menu(
     let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
     let mut rows = Vec::new();
     for (index, item) in items.iter().enumerate() {
-        let row_y = inner.y.saturating_add(index as u16);
+        let row_y = inner
+            .y
+            .saturating_add(u16::try_from(index).unwrap_or(u16::MAX));
         if row_y >= inner.bottom() {
             break;
         }
@@ -155,7 +159,6 @@ pub(crate) fn render_context_menu(
         rows.push((row, index));
     }
     Some(OverlayRender {
-        area: rect,
         menu_rows: rows,
         ..OverlayRender::default()
     })
@@ -220,10 +223,11 @@ fn popup(a: Rect, w: u16, h: u16) -> Option<Rect> {
 fn button(b: &mut Buffer, r: Rect, t: &str, s: Style) {
     b.set_style(r, s);
     let w = display_width(t).min(r.width);
-    put_text(b, r.x + (r.width - w) / 2, r.y, w, t, s)
+    put_text(b, r.x + (r.width - w) / 2, r.y, w, t, s);
 }
 fn row(i: Rect, ws: &[u16], gap: u16, off: u16) -> Vec<Rect> {
-    let total = ws.iter().sum::<u16>() + gap * (ws.len().saturating_sub(1) as u16);
+    let total = ws.iter().sum::<u16>()
+        + gap * u16::try_from(ws.len().saturating_sub(1)).unwrap_or(u16::MAX);
     let mut x = i.x + i.width.saturating_sub(total) / 2;
     ws.iter()
         .map(|w| {
@@ -290,7 +294,6 @@ fn render_rename_overlay(
     button(b, *clear, " ^c clear ", n);
     button(b, *cancel, " esc cancel ", n);
     Some(OverlayRender {
-        area: q,
         primary: *save,
         clear: *clear,
         cancel: *cancel,
@@ -434,7 +437,12 @@ fn render_navigator_overlay(
         .skip(scroll)
         .take(body.height as usize)
     {
-        let rect = Rect::new(body.x, body.y + (ix - scroll) as u16, row_width, 1);
+        let rect = Rect::new(
+            body.x,
+            body.y + u16::try_from(ix - scroll).unwrap_or(u16::MAX),
+            row_width,
+            1,
+        );
         row_hits.push((rect, r.target.clone()));
         let st = if r.stale {
             Style::default()
@@ -598,7 +606,7 @@ fn render_navigator_overlay(
                 rect.width.saturating_sub(label_width.saturating_add(1)),
                 1,
             );
-            put_right_text(b, meta, rect.y, &r.meta, st)
+            put_right_text(b, meta, rect.y, &r.meta, st);
         }
     }
     if let Some(track) = scrollbar {
@@ -635,7 +643,6 @@ fn render_navigator_overlay(
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );
     Some(OverlayRender {
-        area: q,
         primary: Rect::default(),
         clear: Rect::default(),
         cancel: Rect::default(),
@@ -814,18 +821,18 @@ fn render_help_overlay(
         text_area,
         b,
     );
-    if let Some(track) = scrollbar {
-        if let Some(thumb) = crate::ui::scrollbar_thumb(metrics, track) {
-            for y in track.y..track.bottom() {
-                b[(track.x, y)]
-                    .set_symbol("▐")
-                    .set_style(Style::default().fg(p.overlay0).bg(p.panel_bg));
-            }
-            for y in thumb.top..thumb.top.saturating_add(thumb.len) {
-                b[(track.x, y)]
-                    .set_symbol("▐")
-                    .set_style(Style::default().fg(p.overlay1).bg(p.panel_bg));
-            }
+    if let Some(track) = scrollbar
+        && let Some(thumb) = crate::ui::scrollbar_thumb(metrics, track)
+    {
+        for y in track.y..track.bottom() {
+            b[(track.x, y)]
+                .set_symbol("▐")
+                .set_style(Style::default().fg(p.overlay0).bg(p.panel_bg));
+        }
+        for y in thumb.top..thumb.top.saturating_add(thumb.len) {
+            b[(track.x, y)]
+                .set_symbol("▐")
+                .set_style(Style::default().fg(p.overlay1).bg(p.panel_bg));
         }
     }
 
@@ -842,7 +849,6 @@ fn render_help_overlay(
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );
     Some(OverlayRender {
-        area: q,
         cancel: close,
         help_popup: q,
         help_scrollbar: scrollbar.unwrap_or_default(),
@@ -901,7 +907,6 @@ fn render_confirm_close_overlay(
             .add_modifier(Modifier::BOLD),
     );
     Some(OverlayRender {
-        area: q,
         primary: *ok,
         clear: Rect::default(),
         cancel: *cancel,

@@ -34,9 +34,9 @@
 use std::fmt;
 use std::io::Write;
 
+use serde::Deserialize;
 use serde::de::{self, DeserializeSeed, Visitor};
 use serde::ser::{self, Serialize};
-use serde::Deserialize;
 
 /// Default maximum nesting depth of compound values accepted by the decoder.
 pub const DEFAULT_MAX_DEPTH: usize = 128;
@@ -448,11 +448,7 @@ impl<S: Sink> ser::Serializer for &mut Encoder<S> {
         Ok(self)
     }
 
-    fn serialize_tuple_struct(
-        self,
-        _name: &'static str,
-        _len: usize,
-    ) -> Result<Self, CodecError> {
+    fn serialize_tuple_struct(self, _name: &'static str, _len: usize) -> Result<Self, CodecError> {
         Ok(self)
     }
 
@@ -695,13 +691,10 @@ impl<'de> Decoder<'de> {
     }
 
     fn read_byte(&mut self) -> Result<u8, CodecError> {
-        let byte = *self
-            .input
-            .get(self.pos)
-            .ok_or(CodecError::UnexpectedEof {
-                needed: 1,
-                remaining: 0,
-            })?;
+        let byte = *self.input.get(self.pos).ok_or(CodecError::UnexpectedEof {
+            needed: 1,
+            remaining: 0,
+        })?;
         self.pos += 1;
         Ok(byte)
     }
@@ -801,15 +794,20 @@ impl<'de> de::Deserializer<'de> for &mut Decoder<'de> {
     }
 
     fn deserialize_i8<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, CodecError> {
-        visitor.visit_i8(i8::try_from(self.read_signed()?).map_err(|_| CodecError::IntegerOutOfRange)?)
+        visitor
+            .visit_i8(i8::try_from(self.read_signed()?).map_err(|_| CodecError::IntegerOutOfRange)?)
     }
 
     fn deserialize_i16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, CodecError> {
-        visitor.visit_i16(i16::try_from(self.read_signed()?).map_err(|_| CodecError::IntegerOutOfRange)?)
+        visitor.visit_i16(
+            i16::try_from(self.read_signed()?).map_err(|_| CodecError::IntegerOutOfRange)?,
+        )
     }
 
     fn deserialize_i32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, CodecError> {
-        visitor.visit_i32(i32::try_from(self.read_signed()?).map_err(|_| CodecError::IntegerOutOfRange)?)
+        visitor.visit_i32(
+            i32::try_from(self.read_signed()?).map_err(|_| CodecError::IntegerOutOfRange)?,
+        )
     }
 
     fn deserialize_i64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, CodecError> {
@@ -825,11 +823,15 @@ impl<'de> de::Deserializer<'de> for &mut Decoder<'de> {
     }
 
     fn deserialize_u16<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, CodecError> {
-        visitor.visit_u16(u16::try_from(self.read_varint()?).map_err(|_| CodecError::IntegerOutOfRange)?)
+        visitor.visit_u16(
+            u16::try_from(self.read_varint()?).map_err(|_| CodecError::IntegerOutOfRange)?,
+        )
     }
 
     fn deserialize_u32<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, CodecError> {
-        visitor.visit_u32(u32::try_from(self.read_varint()?).map_err(|_| CodecError::IntegerOutOfRange)?)
+        visitor.visit_u32(
+            u32::try_from(self.read_varint()?).map_err(|_| CodecError::IntegerOutOfRange)?,
+        )
     }
 
     fn deserialize_u64<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, CodecError> {
@@ -849,7 +851,8 @@ impl<'de> de::Deserializer<'de> for &mut Decoder<'de> {
     }
 
     fn deserialize_char<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, CodecError> {
-        let value = u32::try_from(self.read_varint()?).map_err(|_| CodecError::IntegerOutOfRange)?;
+        let value =
+            u32::try_from(self.read_varint()?).map_err(|_| CodecError::IntegerOutOfRange)?;
         let ch = char::from_u32(value).ok_or(CodecError::InvalidChar(value))?;
         visitor.visit_char(ch)
     }
@@ -974,10 +977,7 @@ impl<'de> de::Deserializer<'de> for &mut Decoder<'de> {
         Err(CodecError::NotSelfDescribing("deserialize_identifier"))
     }
 
-    fn deserialize_ignored_any<V: Visitor<'de>>(
-        self,
-        _visitor: V,
-    ) -> Result<V::Value, CodecError> {
+    fn deserialize_ignored_any<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, CodecError> {
         Err(CodecError::NotSelfDescribing("deserialize_ignored_any"))
     }
 
@@ -1025,7 +1025,10 @@ impl<'de> de::MapAccess<'de> for Access<'_, 'de> {
         seed.deserialize(&mut *self.decoder).map(Some)
     }
 
-    fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, CodecError> {
+    fn next_value_seed<V: DeserializeSeed<'de>>(
+        &mut self,
+        seed: V,
+    ) -> Result<V::Value, CodecError> {
         seed.deserialize(&mut *self.decoder)
     }
 
@@ -1042,7 +1045,8 @@ impl<'de> de::EnumAccess<'de> for &mut Decoder<'de> {
         self,
         seed: V,
     ) -> Result<(V::Value, Self::Variant), CodecError> {
-        let index = u32::try_from(self.read_varint()?).map_err(|_| CodecError::IntegerOutOfRange)?;
+        let index =
+            u32::try_from(self.read_varint()?).map_err(|_| CodecError::IntegerOutOfRange)?;
         let value = seed.deserialize(de::value::U32Deserializer::<CodecError>::new(index))?;
         Ok((value, self))
     }
@@ -1118,7 +1122,16 @@ mod tests {
             to_vec(&u64::MAX)?,
             [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]
         );
-        for value in [0, 1, 127, 128, 16_383, 16_384, u64::from(u32::MAX), u64::MAX] {
+        for value in [
+            0,
+            1,
+            127,
+            128,
+            16_383,
+            16_384,
+            u64::from(u32::MAX),
+            u64::MAX,
+        ] {
             assert_eq!(roundtrip(&value)?, value);
         }
         assert_eq!(roundtrip(&usize::MAX)?, usize::MAX);
@@ -1127,8 +1140,14 @@ mod tests {
 
     #[test]
     fn varint_rejects_overlong_overflow_and_truncation() -> TestResult {
-        assert_eq!(decode_err::<u64>(&[0x80, 0x00])?, CodecError::OverlongVarint);
-        assert_eq!(decode_err::<u64>(&[0x81, 0x80, 0x00])?, CodecError::OverlongVarint);
+        assert_eq!(
+            decode_err::<u64>(&[0x80, 0x00])?,
+            CodecError::OverlongVarint
+        );
+        assert_eq!(
+            decode_err::<u64>(&[0x81, 0x80, 0x00])?,
+            CodecError::OverlongVarint
+        );
         let mut ten = [0xffu8; 10];
         ten[9] = 0x02;
         assert_eq!(decode_err::<u64>(&ten)?, CodecError::VarintOverflow);
@@ -1218,7 +1237,7 @@ mod tests {
     #[test]
     fn chars_are_validated_scalar_values() -> TestResult {
         assert_eq!(to_vec(&'a')?, [0x61]);
-        for ch in ['a', 'é', '→', '🦀', char::MAX] {
+        for ch in ['a', 'é', '→', '\u{1F980}', char::MAX] {
             assert_eq!(roundtrip(&ch)?, ch);
         }
         assert_eq!(
@@ -1231,7 +1250,7 @@ mod tests {
     #[test]
     fn strings_and_bytes() -> TestResult {
         assert_eq!(to_vec("hi")?, [2, b'h', b'i']);
-        let text = "héllo 🦀".to_owned();
+        let text = "héllo \u{1F980}".to_owned();
         assert_eq!(roundtrip(&text)?, text);
         assert_eq!(roundtrip(&String::new())?, "");
 
@@ -1351,10 +1370,7 @@ mod tests {
         assert_eq!(to_vec(&Unit)?, Vec::<u8>::new());
         assert_eq!(to_vec(&Wrapper(3))?, [3]);
         assert_eq!(to_vec(&Pair(1, "b".into()))?, [1, 1, b'b']);
-        assert!(matches!(
-            decode_err::<Shape>(&[9])?,
-            CodecError::Message(_)
-        ));
+        assert!(matches!(decode_err::<Shape>(&[9])?, CodecError::Message(_)));
         Ok(())
     }
 
@@ -1440,7 +1456,10 @@ mod tests {
 
     #[test]
     fn unsupported_shapes_are_rejected() -> TestResult {
-        assert_eq!(to_vec(&UnknownLength).err(), Some(CodecError::UnknownLength));
+        assert_eq!(
+            to_vec(&UnknownLength).err(),
+            Some(CodecError::UnknownLength)
+        );
         assert_eq!(
             to_vec(&Skipping { value: None }).err(),
             Some(CodecError::SkippedField)

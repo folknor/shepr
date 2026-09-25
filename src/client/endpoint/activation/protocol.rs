@@ -14,10 +14,6 @@ pub(super) fn focus_result_matches(
             Some(crate::client::shell::ClientEndpointFocusTarget::Workspace(expected)),
             crate::api::schema::ResponseResult::WorkspaceInfo { workspace },
         ) => workspace.focused && &workspace.workspace_id == expected,
-        (
-            Some(crate::client::shell::ClientEndpointFocusTarget::Tab(expected)),
-            crate::api::schema::ResponseResult::TabInfo { tab },
-        ) => tab.focused && &tab.tab_id == expected,
         _ => false,
     }
 }
@@ -176,15 +172,10 @@ pub(super) fn focus_request(
                 pane_id: pane_id.clone(),
             })
         }
-        crate::client::shell::ClientEndpointFocusTarget::Tab(tab_id) => {
-            crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
-                tab_id: tab_id.clone(),
-            })
-        }
     };
     endpoint_request(
         boot_id,
-        crate::api::schema::Request {
+        &crate::api::schema::Request {
             id: request_id,
             method,
         },
@@ -198,7 +189,7 @@ pub(super) fn surface_interest_request(
 ) -> std::io::Result<crate::protocol::ClientMessage> {
     endpoint_request(
         boot_id,
-        crate::api::schema::Request {
+        &crate::api::schema::Request {
             id: request_id,
             method: crate::api::schema::Method::ClientShellSurfaceSet(
                 crate::api::schema::ClientShellSurfaceSetParams { active },
@@ -209,11 +200,11 @@ pub(super) fn surface_interest_request(
 
 fn endpoint_request(
     boot_id: &str,
-    request: crate::api::schema::Request,
+    request: &crate::api::schema::Request,
 ) -> std::io::Result<crate::protocol::ClientMessage> {
     Ok(crate::protocol::ClientMessage::ClientShellEndpointRequest {
         boot_id: boot_id.to_owned(),
-        request: serde_json::to_string(&request)
+        request: serde_json::to_string(request)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
     })
 }

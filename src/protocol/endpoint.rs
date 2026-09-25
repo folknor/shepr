@@ -131,7 +131,8 @@ mod tests {
     #[test]
     fn snapshot_message_uses_named_json_control() {
         let snapshot = snapshot();
-        let ServerMessage::EndpointControl { kind, data } = snapshot_message(&snapshot).expect("test precondition")
+        let ServerMessage::EndpointControl { kind, data } =
+            snapshot_message(&snapshot).expect("test precondition")
         else {
             panic!("snapshot should use endpoint control");
         };
@@ -144,7 +145,8 @@ mod tests {
     fn welcome_roundtrips_through_json() {
         let welcome = EndpointServerWelcome::compatible(vec!["pane.close".into()]);
         let json = serde_json::to_string(&welcome).expect("test precondition");
-        let decoded: EndpointServerWelcome = serde_json::from_str(&json).expect("test precondition");
+        let decoded: EndpointServerWelcome =
+            serde_json::from_str(&json).expect("test precondition");
         assert_eq!(decoded, welcome);
         assert_eq!(decoded.version, super::super::PROTOCOL_VERSION);
     }

@@ -281,7 +281,7 @@ impl EndpointCatalog {
                 return Err(format!(
                     "failed to open endpoint catalog {}: {error}",
                     path.display()
-                ))
+                ));
             }
         };
         let metadata = file
@@ -344,12 +344,12 @@ pub(super) fn store_private_json(
         .ok_or_else(|| format!("invalid {description} path: {}", path.display()))?;
     std::fs::create_dir_all(parent)
         .map_err(|error| format!("failed to create {description} directory: {error}"))?;
-    if let Ok(metadata) = std::fs::symlink_metadata(path) {
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(format!(
-                "refusing to replace {description} through a non-file path"
-            ));
-        }
+    if let Ok(metadata) = std::fs::symlink_metadata(path)
+        && (metadata.file_type().is_symlink() || !metadata.is_file())
+    {
+        return Err(format!(
+            "refusing to replace {description} through a non-file path"
+        ));
     }
 
     let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
@@ -413,36 +413,49 @@ mod tests {
         let loaded = EndpointCatalog::load_from_path(&path).expect("test precondition");
         assert_eq!(loaded, catalog);
         assert_eq!(loaded.ssh[0].id, id);
-        std::fs::remove_dir_all(path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
     fn duplicate_target_and_session_profiles_keep_distinct_opaque_ids() {
         let mut catalog = EndpointCatalog::default();
-        let first = catalog.add_ssh("One", "build", "default").expect("test precondition");
-        let second = catalog.add_ssh("Two", "build", "default").expect("test precondition");
+        let first = catalog
+            .add_ssh("One", "build", "default")
+            .expect("test precondition");
+        let second = catalog
+            .add_ssh("Two", "build", "default")
+            .expect("test precondition");
         assert_ne!(first, second);
     }
 
     #[test]
     fn catalog_rejects_passwords_embedded_in_ssh_targets() {
         let mut catalog = EndpointCatalog::default();
-        assert!(catalog
-            .add_ssh("Build", "ssh://dev:secret@build.example", "default")
-            .expect_err("test precondition")
-            .contains("must not contain a password"));
-        assert!(catalog
-            .add_ssh("Build", "dev:secret@build.example", "default")
-            .is_err());
-        assert!(catalog
-            .add_ssh("Build", "ssh://dev@[::1]:2222", "default")
-            .is_ok());
+        assert!(
+            catalog
+                .add_ssh("Build", "ssh://dev:secret@build.example", "default")
+                .expect_err("test precondition")
+                .contains("must not contain a password")
+        );
+        assert!(
+            catalog
+                .add_ssh("Build", "dev:secret@build.example", "default")
+                .is_err()
+        );
+        assert!(
+            catalog
+                .add_ssh("Build", "ssh://dev@[::1]:2222", "default")
+                .is_ok()
+        );
     }
 
     #[test]
     fn interactive_bootstrap_matches_only_enabled_target_and_session() {
         let mut catalog = EndpointCatalog::default();
-        let id = catalog.add_ssh("Build", "build", "agents").expect("test precondition");
+        let id = catalog
+            .add_ssh("Build", "build", "agents")
+            .expect("test precondition");
         assert!(catalog.contains_enabled_target_session("build", "agents"));
         assert!(!catalog.contains_enabled_target_session("build", "default"));
         assert!(catalog.set_enabled(&id, false));
@@ -452,7 +465,9 @@ mod tests {
     #[test]
     fn rename_changes_only_the_machine_label() {
         let mut catalog = EndpointCatalog::default();
-        let id = catalog.add_ssh("Old", "build", "agents").expect("test precondition");
+        let id = catalog
+            .add_ssh("Old", "build", "agents")
+            .expect("test precondition");
         let original = catalog.ssh[0].clone();
 
         assert!(catalog.rename_ssh(&id, "New").expect("test precondition"));
@@ -467,7 +482,9 @@ mod tests {
     #[test]
     fn removal_and_disable_return_selection_to_local() {
         let mut catalog = EndpointCatalog::default();
-        let first = catalog.add_ssh("One", "one", "default").expect("test precondition");
+        let first = catalog
+            .add_ssh("One", "one", "default")
+            .expect("test precondition");
         assert!(catalog.select_ssh(&first));
         assert!(catalog.set_enabled(&first, false));
         assert_eq!(catalog.selected_profile, None);
@@ -482,7 +499,8 @@ mod tests {
     fn catalog_rejects_unknown_fields_instead_of_retaining_possible_secrets() {
         let path = path("unknown-field");
         let _ = std::fs::remove_dir_all(path.parent().expect("test precondition"));
-        std::fs::create_dir_all(path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::create_dir_all(path.parent().expect("test precondition"))
+            .expect("test precondition");
         std::fs::write(
             &path,
             r#"{
@@ -498,10 +516,13 @@ mod tests {
             }"#,
         )
         .expect("test precondition");
-        assert!(EndpointCatalog::load_from_path(&path)
-            .expect_err("test precondition")
-            .contains("unknown field"));
-        std::fs::remove_dir_all(path.parent().expect("test precondition")).expect("test precondition");
+        assert!(
+            EndpointCatalog::load_from_path(&path)
+                .expect_err("test precondition")
+                .contains("unknown field")
+        );
+        std::fs::remove_dir_all(path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
@@ -510,14 +531,23 @@ mod tests {
         let selection_path = catalog_path.with_file_name("selection.json");
         let _ = std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"));
         let mut catalog = EndpointCatalog::default();
-        let id = catalog.add_ssh("Build", "build", "agents").expect("test precondition");
-        catalog.store_to_path(&catalog_path).expect("test precondition");
+        let id = catalog
+            .add_ssh("Build", "build", "agents")
+            .expect("test precondition");
+        catalog
+            .store_to_path(&catalog_path)
+            .expect("test precondition");
         let profiles_before = std::fs::read(&catalog_path).expect("test precondition");
 
         assert!(catalog.select_ssh(&id));
-        catalog.store_selection_to_path(&selection_path).expect("test precondition");
+        catalog
+            .store_selection_to_path(&selection_path)
+            .expect("test precondition");
 
-        assert_eq!(std::fs::read(&catalog_path).expect("test precondition"), profiles_before);
+        assert_eq!(
+            std::fs::read(&catalog_path).expect("test precondition"),
+            profiles_before
+        );
         assert_eq!(
             load_selection_from_path(&selection_path)
                 .expect("test precondition")
@@ -525,7 +555,8 @@ mod tests {
                 .selected_profile,
             Some(id)
         );
-        std::fs::remove_dir_all(catalog_path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
@@ -534,15 +565,21 @@ mod tests {
         let selection_path = catalog_path.with_file_name("selection.json");
         let _ = std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"));
         let mut catalog = EndpointCatalog::default();
-        let id = catalog.add_ssh("Build", "build", "agents").expect("test precondition");
-        catalog.store_to_path(&catalog_path).expect("test precondition");
+        let id = catalog
+            .add_ssh("Build", "build", "agents")
+            .expect("test precondition");
+        catalog
+            .store_to_path(&catalog_path)
+            .expect("test precondition");
         std::fs::write(&selection_path, b"not json").expect("test precondition");
 
-        let loaded = EndpointCatalog::load_from_paths(&catalog_path, &selection_path).expect("test precondition");
+        let loaded = EndpointCatalog::load_from_paths(&catalog_path, &selection_path)
+            .expect("test precondition");
         assert_eq!(loaded.ssh.len(), 1);
         assert_eq!(loaded.ssh[0].id, id);
         assert_eq!(loaded.selected_profile, None);
-        std::fs::remove_dir_all(catalog_path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
@@ -551,9 +588,14 @@ mod tests {
         let selection_path = catalog_path.with_file_name("selection.json");
         let _ = std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"));
         let mut catalog = EndpointCatalog::default();
-        let saved = catalog.add_ssh("Build", "build", "agents").expect("test precondition");
-        catalog.store_to_path(&catalog_path).expect("test precondition");
-        let missing = ProfileId::parse("fedcba9876543210fedcba9876543210").expect("test precondition");
+        let saved = catalog
+            .add_ssh("Build", "build", "agents")
+            .expect("test precondition");
+        catalog
+            .store_to_path(&catalog_path)
+            .expect("test precondition");
+        let missing =
+            ProfileId::parse("fedcba9876543210fedcba9876543210").expect("test precondition");
         store_private_json(
             &selection_path,
             &serde_json::to_vec(&EndpointSelection {
@@ -565,16 +607,20 @@ mod tests {
         )
         .expect("test precondition");
 
-        let loaded = EndpointCatalog::load_from_paths(&catalog_path, &selection_path).expect("test precondition");
+        let loaded = EndpointCatalog::load_from_paths(&catalog_path, &selection_path)
+            .expect("test precondition");
         assert_eq!(loaded.ssh[0].id, saved);
         assert_eq!(loaded.selected_profile, None);
-        std::fs::remove_dir_all(catalog_path.parent().expect("test precondition")).expect("test precondition");
+        std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"))
+            .expect("test precondition");
     }
 
     #[test]
     fn invalid_or_missing_selected_profile_is_rejected() {
         let catalog = EndpointCatalog {
-            selected_profile: Some(ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition")),
+            selected_profile: Some(
+                ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
+            ),
             ..EndpointCatalog::default()
         };
         assert!(catalog.validate().is_err());

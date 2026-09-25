@@ -538,9 +538,11 @@ mod tests {
         let (pending, response_rx) = pending_read(&runtime, started, 8);
 
         runtime.test_process_pty_bytes(b"\x1b]0;still changing\x07");
-        assert!(pending
-            .poll(Some(&runtime), started + MAX_DURATION)
-            .is_none());
+        assert!(
+            pending
+                .poll(Some(&runtime), started + MAX_DURATION)
+                .is_none()
+        );
         assert_eq!(
             response_rx
                 .recv_timeout(Duration::from_millis(50))
@@ -570,9 +572,11 @@ mod tests {
         input_rx.try_recv().expect("bottom wheel probe");
 
         runtime.test_process_pty_bytes(b"\x1b]0;still changing\x07");
-        assert!(pending
-            .poll(Some(&runtime), started + MAX_DURATION)
-            .is_none());
+        assert!(
+            pending
+                .poll(Some(&runtime), started + MAX_DURATION)
+                .is_none()
+        );
         assert_eq!(
             response_rx
                 .recv_timeout(Duration::from_millis(50))
@@ -602,9 +606,11 @@ mod tests {
         input_rx.try_recv().expect("bottom wheel probe");
 
         runtime.test_process_pty_bytes(b"\x1b[?2026h");
-        assert!(pending
-            .poll(Some(&runtime), started + MAX_DURATION)
-            .is_none());
+        assert!(
+            pending
+                .poll(Some(&runtime), started + MAX_DURATION)
+                .is_none()
+        );
         assert_eq!(
             response_rx
                 .recv_timeout(Duration::from_millis(50))
@@ -722,9 +728,11 @@ mod tests {
         let pending = pending
             .poll(Some(&runtime), retry_at + Duration::from_millis(1))
             .expect("restore redraw coalescing");
-        assert!(pending
-            .poll(Some(&runtime), retry_at + Duration::from_millis(11))
-            .is_none());
+        assert!(
+            pending
+                .poll(Some(&runtime), retry_at + Duration::from_millis(11))
+                .is_none()
+        );
         assert_eq!(
             response_text(&response_rx),
             "13\n14\n15\n16\n17\n18\n19\n20\n"
@@ -780,9 +788,11 @@ mod tests {
         let pending = pending
             .poll(Some(&runtime), restore_started + Duration::from_millis(12))
             .expect("restore redraw coalescing");
-        assert!(pending
-            .poll(Some(&runtime), restore_started + Duration::from_millis(22))
-            .is_none());
+        assert!(
+            pending
+                .poll(Some(&runtime), restore_started + Duration::from_millis(22))
+                .is_none()
+        );
         assert_eq!(
             response_text(&response_rx),
             "13\n14\n15\n16\n17\n18\n19\n20\n"
@@ -846,12 +856,14 @@ mod tests {
                 harvest_started + STEP_TIMEOUT + Duration::from_millis(3),
             )
             .expect("restore redraw coalescing");
-        assert!(pending
-            .poll(
-                Some(&runtime),
-                harvest_started + STEP_TIMEOUT + Duration::from_millis(13)
-            )
-            .is_none());
+        assert!(
+            pending
+                .poll(
+                    Some(&runtime),
+                    harvest_started + STEP_TIMEOUT + Duration::from_millis(13)
+                )
+                .is_none()
+        );
         assert_eq!(
             response_text(&response_rx),
             "13\n14\n15\n16\n17\n18\n19\n20\n"
@@ -904,9 +916,11 @@ mod tests {
         let pending = pending
             .poll(Some(&runtime), harvest_started + Duration::from_millis(16))
             .expect("restore redraw coalescing");
-        assert!(pending
-            .poll(Some(&runtime), harvest_started + Duration::from_millis(26))
-            .is_none());
+        assert!(
+            pending
+                .poll(Some(&runtime), harvest_started + Duration::from_millis(26))
+                .is_none()
+        );
         assert_eq!(
             response_text(&response_rx),
             "13\n14\n15\n16\n17\n18\n19\n20\nready\n"
@@ -978,12 +992,14 @@ mod tests {
                 started + INITIAL_QUIET + STEP_TIMEOUT + Duration::from_millis(23),
             )
             .expect("restore redraw coalescing");
-        assert!(pending
-            .poll(
-                Some(&runtime),
-                started + INITIAL_QUIET + STEP_TIMEOUT + Duration::from_millis(33),
-            )
-            .is_none());
+        assert!(
+            pending
+                .poll(
+                    Some(&runtime),
+                    started + INITIAL_QUIET + STEP_TIMEOUT + Duration::from_millis(33),
+                )
+                .is_none()
+        );
         assert_eq!(
             response_text(&response_rx),
             "13\n14\n15\n16\n17\n18\n19\n20\n"

@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::render_signal::RenderSignal;
 
 use bytes::Bytes;
-use ratatui::{layout::Rect, Frame};
-use tokio::sync::{mpsc, Notify};
+use ratatui::{Frame, layout::Rect};
+use tokio::sync::{Notify, mpsc};
 
 use crate::events::AppEvent;
 use crate::layout::PaneId;
@@ -27,15 +27,15 @@ impl TerminalRuntime {
         pane_id: PaneId,
         rows: u16,
         cols: u16,
-        cwd: std::path::PathBuf,
+        cwd: &std::path::Path,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
         launch_env: &crate::pane::PaneLaunchEnv,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        events: &mpsc::Sender<AppEvent>,
+        render_notify: &Arc<Notify>,
+        render_dirty: &Arc<RenderSignal>,
     ) -> std::io::Result<Self> {
         crate::pane::PaneRuntime::spawn(
             pane_id,
@@ -60,16 +60,16 @@ impl TerminalRuntime {
         pane_id: PaneId,
         rows: u16,
         cols: u16,
-        cwd: std::path::PathBuf,
+        cwd: &std::path::Path,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
         launch_env: &crate::pane::PaneLaunchEnv,
         initial_history_ansi: Option<&str>,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        events: &mpsc::Sender<AppEvent>,
+        render_notify: &Arc<Notify>,
+        render_dirty: &Arc<RenderSignal>,
     ) -> std::io::Result<Self> {
         crate::pane::PaneRuntime::spawn_with_initial_history(
             pane_id,
@@ -95,15 +95,15 @@ impl TerminalRuntime {
         pane_id: PaneId,
         rows: u16,
         cols: u16,
-        cwd: std::path::PathBuf,
+        cwd: &std::path::Path,
         argv: &[String],
         launch_env: &crate::pane::PaneLaunchEnv,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        events: &mpsc::Sender<AppEvent>,
+        render_notify: &Arc<Notify>,
+        render_dirty: &Arc<RenderSignal>,
     ) -> std::io::Result<Self> {
         crate::pane::PaneRuntime::spawn_argv_command(
             pane_id,

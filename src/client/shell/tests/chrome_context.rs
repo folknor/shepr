@@ -164,11 +164,13 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("full sidebar");
     assert!(state.hits.workspace_max_scroll > 0);
-    assert!(state
-        .hits
-        .workspaces
-        .iter()
-        .all(|hit| hit.workspace_id != "ws_12"));
+    assert!(
+        state
+            .hits
+            .workspaces
+            .iter()
+            .all(|hit| hit.workspace_id != "ws_12")
+    );
 
     let mut update = state.snapshot.as_deref().expect("snapshot").clone();
     update.revision = 2;
@@ -184,11 +186,13 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
     assert!(state.reveal_focused_workspace);
     state.compose(106, 20).expect("updated full sidebar");
 
-    assert!(state
-        .hits
-        .workspaces
-        .iter()
-        .any(|hit| hit.workspace_id == "ws_12"));
+    assert!(
+        state
+            .hits
+            .workspaces
+            .iter()
+            .any(|hit| hit.workspace_id == "ws_12")
+    );
 }
 
 #[test]
@@ -321,9 +325,11 @@ fn context_menus_capture_stable_targets_and_route_actions() {
         Some(ClientShellOverlay::ContextMenu(menu)) => menu.items(),
         _ => panic!("workspace context menu"),
     };
-    assert!(workspace_items
-        .iter()
-        .any(|item| item.action == ClientContextMenuAction::Close));
+    assert!(
+        workspace_items
+            .iter()
+            .any(|item| item.action == ClientContextMenuAction::Close)
+    );
     state.compose(106, 20).expect("workspace context menu");
     let rename = state.hits.context_menu_rows[0].0;
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
@@ -432,7 +438,7 @@ fn new_tab_overlay_owns_text_cursor_and_submits_public_api_request() {
     state.set_pane_surface(surface());
     let mut open = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewTab),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewTab),
         &mut open,
     );
     assert!(open.actions.is_empty());
@@ -450,11 +456,13 @@ fn new_tab_overlay_owns_text_cursor_and_submits_public_api_request() {
     assert!(text.contains("new tab"));
     assert!(text.contains("save"));
     let restored = frame.to_ratatui_buffer().expect("overlay frame");
-    assert!(!restored
-        .cell((26, 7))
-        .expect("overlay title cell")
-        .modifier
-        .contains(Modifier::DIM));
+    assert!(
+        !restored
+            .cell((26, 7))
+            .expect("overlay title cell")
+            .modifier
+            .contains(Modifier::DIM)
+    );
     assert!(frame.cursor.as_ref().is_some_and(|cursor| cursor.visible));
 
     assert!(state.handle_input_bytes(b"logs").actions.is_empty());
@@ -478,7 +486,7 @@ fn close_confirmation_error_becomes_client_owned_overlay_and_stable_group_close(
     state.set_pane_surface(surface());
     let mut close = ClientShellInput::default();
     state.record_binding(
-        crate::input::KeybindMatch::Action(crate::input::KeybindAction::ClosePane),
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::ClosePane),
         &mut close,
     );
     let [ClientShellAction::Endpoint { request, .. }] = &close.actions[..] else {

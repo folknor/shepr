@@ -1,4 +1,4 @@
-use ratatui::{layout::Rect, Frame};
+use ratatui::{Frame, layout::Rect};
 
 use super::panes::{compute_pane_infos_for_tab, render_panes, resize_tab_panes};
 use crate::app::AppState;
@@ -212,9 +212,9 @@ pub(crate) fn tab_surface_cursor(
 mod tests {
     use super::*;
     use crate::workspace::Workspace;
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::layout::Direction;
-    use ratatui::Terminal;
 
     #[tokio::test]
     async fn explicit_surface_layout_drives_render_cursor_and_hyperlinks() {
@@ -260,11 +260,11 @@ mod tests {
             pane_infos: &surface.pane_infos,
             split_borders: &surface.split_borders,
         };
-        let mut terminal =
-            Terminal::new(TestBackend::new(full_area.width, full_area.height)).expect("test precondition");
+        let mut terminal = Terminal::new(TestBackend::new(full_area.width, full_area.height))
+            .expect("test precondition");
         terminal
             .draw(|frame| {
-                render_tab_surface(&app, &TerminalRuntimeRegistry::new(), surface_view, frame)
+                render_tab_surface(&app, &TerminalRuntimeRegistry::new(), surface_view, frame);
             })
             .expect("test precondition");
 
@@ -273,16 +273,18 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(rendered.contains("LEFT"), "surface: {rendered:?}");
         assert!(rendered.contains("RIGHT"), "surface: {rendered:?}");
         assert!(!rendered.contains("shell-workspace"));
 
         let links = tab_surface_hyperlinks(&app, &TerminalRuntimeRegistry::new(), surface_view);
-        assert!(links
-            .iter()
-            .any(|(_, symbol, link)| { symbol == "L" && link == uri }));
+        assert!(
+            links
+                .iter()
+                .any(|(_, symbol, link)| { symbol == "L" && link == uri })
+        );
         assert!(tab_surface_cursor(&app, &TerminalRuntimeRegistry::new(), surface_view,).is_some());
     }
 }

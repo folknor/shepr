@@ -77,20 +77,22 @@ impl<'de> Deserialize<'de> for SidebarTokenColor {
                 "sidebar token fg must be #RGB or #RRGGBB",
             ));
         };
+        let invalid_hex = || serde::de::Error::custom("sidebar token fg must be #RGB or #RRGGBB");
         let (r, g, b) = if hex.len() == 3 {
-            let mut digits = hex
-                .bytes()
-                .map(|byte| char::from(byte).to_digit(16).expect("validated hex digit") as u8 * 17);
+            let mut digits = hex.bytes().map(|byte| {
+                let digit = char::from(byte).to_digit(16).unwrap_or(0);
+                u8::try_from(digit).unwrap_or(0) * 17
+            });
             (
-                digits.next().expect("three hex digits"),
-                digits.next().expect("three hex digits"),
-                digits.next().expect("three hex digits"),
+                digits.next().ok_or_else(invalid_hex)?,
+                digits.next().ok_or_else(invalid_hex)?,
+                digits.next().ok_or_else(invalid_hex)?,
             )
         } else {
             (
-                u8::from_str_radix(&hex[0..2], 16).expect("validated hex digits"),
-                u8::from_str_radix(&hex[2..4], 16).expect("validated hex digits"),
-                u8::from_str_radix(&hex[4..6], 16).expect("validated hex digits"),
+                u8::from_str_radix(&hex[0..2], 16).map_err(|_| invalid_hex())?,
+                u8::from_str_radix(&hex[2..4], 16).map_err(|_| invalid_hex())?,
+                u8::from_str_radix(&hex[4..6], 16).map_err(|_| invalid_hex())?,
             )
         };
         Ok(Self { r, g, b })
@@ -218,7 +220,7 @@ impl RawSidebarToken {
     }
 }
 
-fn parse_sidebar_token<T>(value: String, builtins: &[(&str, T)]) -> Result<T, String>
+fn parse_sidebar_token<T>(value: &str, builtins: &[(&str, T)]) -> Result<T, String>
 where
     T: Clone + From<String>,
 {
@@ -242,7 +244,7 @@ where
 }
 
 fn serialize_styled_token<S>(
-    name: String,
+    name: &str,
     style: SidebarTokenStyle,
     rules: &[SidebarTokenRule],
     serializer: S,
@@ -306,7 +308,7 @@ impl Serialize for AgentSidebarToken {
                 token,
                 style,
                 rules,
-            } => serialize_styled_token(agent_token_name(token), *style, rules, serializer),
+            } => serialize_styled_token(&agent_token_name(token), *style, rules, serializer),
             token => serializer.serialize_str(&agent_token_name(token)),
         }
     }
@@ -327,7 +329,7 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
             .parts()
             .map_err(serde::de::Error::custom)?;
         let token = parse_sidebar_token(
-            value,
+            &value,
             &[
                 ("state_icon", Self::StateIcon),
                 ("state_text", Self::StateText),
@@ -359,7 +361,7 @@ impl Serialize for SpaceSidebarToken {
                 token,
                 style,
                 rules,
-            } => serialize_styled_token(space_token_name(token), *style, rules, serializer),
+            } => serialize_styled_token(&space_token_name(token), *style, rules, serializer),
             token => serializer.serialize_str(&space_token_name(token)),
         }
     }
@@ -380,7 +382,7 @@ impl<'de> Deserialize<'de> for SpaceSidebarToken {
             .parts()
             .map_err(serde::de::Error::custom)?;
         let token = parse_sidebar_token(
-            value,
+            &value,
             &[
                 ("state_icon", Self::StateIcon),
                 ("state_text", Self::StateText),
@@ -622,7 +624,10 @@ rows = [[{ token = "$status", rules = [{ contains = "error", bold = true }] }]]
         let config: SidebarConfig = toml::from_str(input).expect("conditional sidebar config");
         let encoded = toml::to_string(&config).expect("test precondition");
         assert!(encoded.contains("rules"));
-        assert_eq!(toml::from_str::<SidebarConfig>(&encoded).expect("test precondition"), config);
+        assert_eq!(
+            toml::from_str::<SidebarConfig>(&encoded).expect("test precondition"),
+            config
+        );
     }
 
     #[test]

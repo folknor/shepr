@@ -5,7 +5,7 @@ use crate::api::schema::{
 };
 
 pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(String::as_str) else {
         print_workspace_help();
         return Ok(2);
     };
@@ -142,7 +142,9 @@ fn workspace_rename(args: &[String]) -> std::io::Result<i32> {
 
 fn workspace_report_metadata(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_workspace_id) = args.first() else {
-        eprintln!("usage: shepr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
+        eprintln!(
+            "usage: shepr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]"
+        );
         return Ok(2);
     };
     let workspace_id = super::normalize_workspace_id(raw_workspace_id);
@@ -244,10 +246,14 @@ fn workspace_close(args: &[String]) -> std::io::Result<i32> {
 fn print_workspace_help() {
     eprintln!("shepr workspace commands:");
     eprintln!("  shepr workspace list");
-    eprintln!("  shepr workspace create [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]");
+    eprintln!(
+        "  shepr workspace create [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]"
+    );
     eprintln!("  shepr workspace get <workspace_id>");
     eprintln!("  shepr workspace focus <workspace_id>");
     eprintln!("  shepr workspace rename <workspace_id> <label>");
-    eprintln!("  shepr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
+    eprintln!(
+        "  shepr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]"
+    );
     eprintln!("  shepr workspace close <workspace_id> [--group]");
 }

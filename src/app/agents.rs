@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
-use super::{terminal_targets::TerminalTargetError, App};
+use super::{App, terminal_targets::TerminalTargetError};
 use crate::api::schema::AgentStartParams;
 
 const DEFAULT_AGENT_START_TIMEOUT: Duration = Duration::from_secs(30);
@@ -199,11 +199,10 @@ impl App {
         let command = crate::platform::interactive_shell_command(&argv)
             .ok_or(AgentStartError::InvalidArgument)?;
         let bytes = crate::app::api_helpers::encode_api_submission(runtime, &command);
-        let timeout = Duration::from_millis(
-            params
-                .timeout_ms
-                .unwrap_or(DEFAULT_AGENT_START_TIMEOUT.as_millis() as u64),
-        );
+        let timeout =
+            Duration::from_millis(params.timeout_ms.unwrap_or(
+                u64::try_from(DEFAULT_AGENT_START_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
+            ));
         if timeout <= AGENT_START_SETTLE_DELAY || timeout > MAX_AGENT_START_TIMEOUT {
             return Err(AgentStartError::InvalidTimeout);
         }

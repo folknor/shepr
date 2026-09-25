@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
-use super::{model::LoadedConfig, Config, CONFIG_PATH_ENV_VAR};
+use super::{CONFIG_PATH_ENV_VAR, Config, model::LoadedConfig};
 
 const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "advanced",
@@ -68,14 +68,28 @@ fn normalize_utf8_bom(content: &str) -> String {
     }
 
     let mut normalized = content.to_owned();
-    while let Err(error) = normalized.parse::<toml::Value>() {
+    // `toml::Table`, not `toml::Value`: since toml 0.9, `Value::from_str`
+    // parses a single value expression rather than a document.
+    while let Err(error) = normalized.parse::<toml::Table>() {
         let Some(span) = error.span() else {
             break;
         };
-        if normalized.get(span.clone()) != Some("\u{feff}") {
+        // toml reads a line-start BOM as the start of a bare key and reports
+        // the error just past it ("key with no value"), so look for a BOM at
+        // the start of the error's line rather than under the span.
+        let bom_len = '\u{feff}'.len_utf8();
+        let Some(before) = normalized.get(..span.start) else {
+            break;
+        };
+        let bom_start = before.rfind('\n').map_or(0, |newline| newline + 1);
+        if span.start > bom_start + bom_len
+            || !normalized
+                .get(bom_start..)
+                .is_some_and(|line| line.starts_with('\u{feff}'))
+        {
             break;
         }
-        normalized.replace_range(span, "");
+        normalized.replace_range(bom_start..bom_start + bom_len, "");
     }
     normalized
 }
@@ -108,7 +122,7 @@ impl Config {
     }
 
     fn load_from_str(content: &str) -> LoadedConfig {
-        match deserialize_with_ignored::<Config, _>(toml::Deserializer::new(content)) {
+        match toml::Deserializer::parse(content).and_then(deserialize_with_ignored::<Config, _>) {
             Ok((config, ignored_keys)) => {
                 let (unknown_sections, mut diagnostics) =
                     unknown_top_level_sections_from_str(content);
@@ -179,16 +193,13 @@ pub fn config_diagnostic_summary(diagnostics: &[String]) -> Option<String> {
 }
 
 fn unknown_top_level_sections_from_str(content: &str) -> (Vec<String>, Vec<String>) {
-    let Ok(value) = content.parse::<toml::Value>() else {
-        return (Vec::new(), Vec::new());
-    };
-    let Some(table) = value.as_table() else {
+    let Ok(table) = content.parse::<toml::Table>() else {
         return (Vec::new(), Vec::new());
     };
 
     let mut keys = Vec::new();
     let mut diagnostics = Vec::new();
-    for (key, value) in table {
+    for (key, value) in &table {
         if let Some(diagnostic) = unknown_top_level_section_diagnostic(key, value) {
             keys.push(key.clone());
             diagnostics.push(diagnostic);
@@ -348,20 +359,24 @@ mod tests {
 
     #[test]
     fn config_load_reports_unreadable_path() {
-        let _guard = crate::config::test_config_env_lock().lock().expect("test precondition");
+        let _guard = crate::config::test_config_env_lock()
+            .lock()
+            .expect("test precondition");
         let path =
             std::env::temp_dir().join(format!("shepr-config-unreadable-{}", std::process::id()));
         std::fs::create_dir_all(&path).expect("test precondition");
-        std::env::set_var(CONFIG_PATH_ENV_VAR, &path);
+        unsafe { std::env::set_var(CONFIG_PATH_ENV_VAR, &path) };
 
         let startup = Config::load();
-        assert!(startup
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.contains("config read error")
-                && diagnostic.contains("using defaults")));
+        assert!(
+            startup
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("config read error")
+                    && diagnostic.contains("using defaults"))
+        );
 
-        std::env::remove_var(CONFIG_PATH_ENV_VAR);
+        unsafe { std::env::remove_var(CONFIG_PATH_ENV_VAR) };
         let _ = std::fs::remove_dir_all(path);
     }
 
@@ -428,27 +443,27 @@ id = "example"
         let content = "[ui]\n\u{feff}[terminal]\ndefault_shell = \"zsh\"\n";
         let normalized = normalize_utf8_bom(content);
         assert_eq!(normalized, "[ui]\n[terminal]\ndefault_shell = \"zsh\"\n");
-        assert!(normalized.parse::<toml::Value>().is_ok());
+        assert!(normalized.parse::<toml::Table>().is_ok());
     }
 
     #[test]
     fn normalize_utf8_bom_preserves_boms_in_multiline_basic_strings() {
         let content = "[theme]\nname = \"\"\"\nfirst\n\u{feff}second\n\"\"\"\n";
-        assert!(content.parse::<toml::Value>().is_ok());
+        assert!(content.parse::<toml::Table>().is_ok());
         assert_eq!(normalize_utf8_bom(content), content);
     }
 
     #[test]
     fn normalize_utf8_bom_preserves_boms_in_multiline_literal_strings() {
         let content = "[theme]\nname = '''\nfirst\n\u{feff}second\n'''\n";
-        assert!(content.parse::<toml::Value>().is_ok());
+        assert!(content.parse::<toml::Table>().is_ok());
         assert_eq!(normalize_utf8_bom(content), content);
     }
 
     #[test]
     fn normalize_utf8_bom_preserves_string_boms_despite_other_errors() {
         let content = "[theme]\nname = \"\"\"\nfirst\n\u{feff}second\n\"\"\"\nbroken = \n";
-        assert!(content.parse::<toml::Value>().is_err());
+        assert!(content.parse::<toml::Table>().is_err());
         assert_eq!(normalize_utf8_bom(content), content);
     }
 }

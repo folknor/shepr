@@ -738,10 +738,6 @@ fn required(name: &'static str, value_name: &'static str) -> Arg {
     Arg::new(name).value_name(value_name).required(true)
 }
 
-fn path_arg(name: &'static str, value_name: &'static str) -> Arg {
-    required(name, value_name).value_hint(ValueHint::AnyPath)
-}
-
 #[cfg(test)]
 mod tests {
     use clap::{Arg, Command};
@@ -838,7 +834,8 @@ mod tests {
                 args.push(flag.to_string());
                 let mut output = Vec::new();
                 assert!(
-                    super::write_requested_help(&args, &mut output, || {}).expect("test precondition"),
+                    super::write_requested_help(&args, &mut output, || {})
+                        .expect("test precondition"),
                     "help was not handled for shepr {} {flag}",
                     path.join(" ")
                 );
@@ -942,9 +939,11 @@ mod tests {
             || {},
         )
         .expect("test precondition");
-        assert!(String::from_utf8(help)
-            .expect("test precondition")
-            .contains("Usage: shepr agent rename <TARGET> <NAME>|--clear"));
+        assert!(
+            String::from_utf8(help)
+                .expect("test precondition")
+                .contains("Usage: shepr agent rename <TARGET> <NAME>|--clear")
+        );
     }
 
     #[test]
@@ -962,25 +961,33 @@ mod tests {
     #[test]
     fn spec_matches_refactored_agent_and_pane_commands() {
         let cmd = super::command();
-        assert!(cmd
-            .get_subcommands()
-            .all(|subcommand| subcommand.get_name() != "wait"));
+        assert!(
+            cmd.get_subcommands()
+                .all(|subcommand| subcommand.get_name() != "wait")
+        );
 
         let agent = command_path(&cmd, &["agent"]);
-        assert!(agent
-            .get_subcommands()
-            .any(|subcommand| subcommand.get_name() == "send-keys"));
-        assert!(agent
-            .get_subcommands()
-            .any(|subcommand| subcommand.get_name() == "wait"));
-        assert!(agent
-            .get_subcommands()
-            .all(|subcommand| subcommand.get_name() != "send"));
+        assert!(
+            agent
+                .get_subcommands()
+                .any(|subcommand| subcommand.get_name() == "send-keys")
+        );
+        assert!(
+            agent
+                .get_subcommands()
+                .any(|subcommand| subcommand.get_name() == "wait")
+        );
+        assert!(
+            agent
+                .get_subcommands()
+                .all(|subcommand| subcommand.get_name() != "send")
+        );
 
         let pane = command_path(&cmd, &["pane"]);
-        assert!(pane
-            .get_subcommands()
-            .any(|subcommand| subcommand.get_name() == "wait-output"));
+        assert!(
+            pane.get_subcommands()
+                .any(|subcommand| subcommand.get_name() == "wait-output")
+        );
     }
 
     #[test]
@@ -1014,14 +1021,16 @@ mod tests {
         for legacy in ["cwd", "workspace", "tab", "split", "focus", "env", "argv"] {
             assert!(!has_option(agent_start, legacy), "legacy option --{legacy}");
         }
-        assert!(agent_start
-            .get_arguments()
-            .any(|arg| arg.get_id() == "agent_args"));
+        assert!(
+            agent_start
+                .get_arguments()
+                .any(|arg| arg.get_id() == "agent_args")
+        );
     }
 
     fn long_help(path: &[&str]) -> String {
         let mut args = vec!["shepr".to_string()];
-        args.extend(path.iter().map(|segment| segment.to_string()));
+        args.extend(path.iter().map(ToString::to_string));
         args.push("--help".to_string());
         let mut output = Vec::new();
         assert!(
@@ -1052,5 +1061,4 @@ mod tests {
             "pane send-text is missing its next-step hint: {pane_send_text}"
         );
     }
-
 }

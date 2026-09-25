@@ -83,9 +83,12 @@ mod tests {
         let mut output = Vec::new();
         let mut active = DirectHostKeyboardState::default();
 
-        set_direct_host_keyboard_protocol(&mut output, &mut active, 3, 0).expect("test precondition");
-        set_direct_host_keyboard_protocol(&mut output, &mut active, 15, 2).expect("test precondition");
-        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 0).expect("test precondition");
+        set_direct_host_keyboard_protocol(&mut output, &mut active, 3, 0)
+            .expect("test precondition");
+        set_direct_host_keyboard_protocol(&mut output, &mut active, 15, 2)
+            .expect("test precondition");
+        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 0)
+            .expect("test precondition");
 
         assert_eq!(
             output,
@@ -99,9 +102,12 @@ mod tests {
         let mut output = Vec::new();
         let mut active = DirectHostKeyboardState::default();
 
-        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 1).expect("test precondition");
-        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 2).expect("test precondition");
-        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 0).expect("test precondition");
+        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 1)
+            .expect("test precondition");
+        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 2)
+            .expect("test precondition");
+        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 0)
+            .expect("test precondition");
 
         assert_eq!(output, b"\x1b[>4;1m\x1b[>4;2m\x1b[>4;0m");
         assert_eq!(active, DirectHostKeyboardState::default());
@@ -112,7 +118,8 @@ mod tests {
         let mut output = Vec::new();
         let mut active = DirectHostKeyboardState::default();
 
-        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 0).expect("test precondition");
+        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 0)
+            .expect("test precondition");
 
         assert!(output.is_empty());
         assert_eq!(active, DirectHostKeyboardState::default());

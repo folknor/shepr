@@ -2,13 +2,13 @@
 
 use std::fs;
 use std::io;
-use std::os::unix::fs::{symlink, FileTypeExt, MetadataExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use interprocess::local_socket::{ConnectOptions, GenericFilePath, ToFsName};
 use interprocess::ConnectWaitMode;
+use interprocess::local_socket::{ConnectOptions, GenericFilePath, ToFsName};
 
 use crate::ipc::LocalStream;
 
@@ -219,7 +219,8 @@ mod tests {
         fs::create_dir(&directory).expect("test precondition");
         let stable = directory.join("agent");
         for inherited in [None, Some(PathBuf::new())] {
-            let registry = SshAgentRegistry::new(stable.clone(), inherited).expect("test precondition");
+            let registry =
+                SshAgentRegistry::new(stable.clone(), inherited).expect("test precondition");
             assert!(
                 fs::symlink_metadata(&stable).is_err(),
                 "a local server without an agent must not advertise an agent address to panes"
@@ -239,7 +240,8 @@ mod tests {
         let b = directory.join("b");
         let listener_a = UnixListener::bind(&a).expect("test precondition");
         let _listener_b = UnixListener::bind(&b).expect("test precondition");
-        let registry = SshAgentRegistry::new(stable.clone(), Some(a.clone())).expect("test precondition");
+        let registry =
+            SshAgentRegistry::new(stable.clone(), Some(a.clone())).expect("test precondition");
         let (mut probe, _) = listener_a.accept().expect("test precondition");
         probe.set_nonblocking(true).expect("test precondition");
         assert_eq!(
@@ -250,8 +252,15 @@ mod tests {
         let lease_b = registry.register(b.clone()).expect("test precondition");
         assert_eq!(fs::read_link(&stable).expect("test precondition"), a);
         drop(listener_a);
-        assert!(fs::metadata(&a).expect("test precondition").file_type().is_socket());
-        lease_b.refresh_at(Instant::now() + PROBE_INTERVAL).expect("test precondition");
+        assert!(
+            fs::metadata(&a)
+                .expect("test precondition")
+                .file_type()
+                .is_socket()
+        );
+        lease_b
+            .refresh_at(Instant::now() + PROBE_INTERVAL)
+            .expect("test precondition");
         assert_eq!(fs::read_link(&stable).expect("test precondition"), b);
         drop(lease_b);
         drop(registry);
@@ -291,7 +300,9 @@ mod tests {
         let supplied = directory.join("alias/upstream");
         let stable = directory.join("agent");
         let registry = SshAgentRegistry::new(stable.clone(), None).expect("test precondition");
-        let lease = registry.register(supplied.clone()).expect("test precondition");
+        let lease = registry
+            .register(supplied.clone())
+            .expect("test precondition");
         assert_eq!(fs::read_link(&stable).expect("test precondition"), supplied);
         drop(lease);
         drop(registry);
@@ -309,8 +320,10 @@ mod tests {
         let _b_listener = UnixListener::bind(&b).expect("test precondition");
         let stable_a = agent_path_for(&directory.join("first.sock"));
         let stable_b = agent_path_for(&directory.join("second.sock"));
-        let registry_a = SshAgentRegistry::new(stable_a.clone(), Some(a.clone())).expect("test precondition");
-        let registry_b = SshAgentRegistry::new(stable_b.clone(), Some(b.clone())).expect("test precondition");
+        let registry_a =
+            SshAgentRegistry::new(stable_a.clone(), Some(a.clone())).expect("test precondition");
+        let registry_b =
+            SshAgentRegistry::new(stable_b.clone(), Some(b.clone())).expect("test precondition");
         assert_eq!(fs::read_link(&stable_a).expect("test precondition"), a);
         assert_eq!(fs::read_link(&stable_b).expect("test precondition"), b);
         drop(registry_a);
@@ -331,7 +344,8 @@ mod tests {
         let _a_listener = UnixListener::bind(&a).expect("test precondition");
         let _b_listener = UnixListener::bind(&b).expect("test precondition");
         let _probe_listener = UnixListener::bind(&probe).expect("test precondition");
-        let registry = SshAgentRegistry::new(stable.clone(), Some(a.clone())).expect("test precondition");
+        let registry =
+            SshAgentRegistry::new(stable.clone(), Some(a.clone())).expect("test precondition");
         let temporary = registry.register(a.clone()).expect("test precondition");
         drop(temporary);
         assert_eq!(fs::read_link(&stable).expect("test precondition"), a);
@@ -342,7 +356,9 @@ mod tests {
         let lease_b = registry.register(b.clone()).expect("test precondition");
         assert_eq!(fs::read_link(&stable).expect("test precondition"), a);
         fs::remove_file(&a).expect("test precondition");
-        lease_b.refresh_at(Instant::now() + PROBE_INTERVAL).expect("test precondition");
+        lease_b
+            .refresh_at(Instant::now() + PROBE_INTERVAL)
+            .expect("test precondition");
         assert_eq!(fs::read_link(&stable).expect("test precondition"), b);
         drop(lease_a);
         assert_eq!(fs::read_link(&stable).expect("test precondition"), b);

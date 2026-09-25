@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 
 use super::snapshot::{
-    parse_history_snapshot, parse_snapshot, SessionHistorySnapshot, SessionSnapshot,
+    SessionHistorySnapshot, SessionSnapshot, parse_history_snapshot, parse_snapshot,
 };
 
 pub(super) fn session_path() -> PathBuf {
@@ -77,13 +77,6 @@ pub(super) fn clear_path(path: &Path) -> std::io::Result<()> {
     }
 }
 
-pub fn clear_history() {
-    let path = session_history_path();
-    if let Err(err) = clear_path(&path) {
-        crate::logging::session_clear_failed(&path, &err.to_string());
-    }
-}
-
 pub fn load() -> Option<SessionSnapshot> {
     let path = session_path();
     let content = match std::fs::read_to_string(&path) {
@@ -140,7 +133,7 @@ pub fn load_history() -> Option<SessionHistorySnapshot> {
 mod tests {
     use super::*;
     use crate::persist::snapshot::{
-        PaneHistorySnapshot, TabHistorySnapshot, WorkspaceHistorySnapshot, SNAPSHOT_VERSION,
+        PaneHistorySnapshot, SNAPSHOT_VERSION, TabHistorySnapshot, WorkspaceHistorySnapshot,
     };
 
     fn temp_session_path(name: &str) -> PathBuf {
@@ -194,7 +187,8 @@ mod tests {
         let (session_path, history_path) = temp_session_paths("split-history");
 
         save_to_path(&session_path, &empty_snapshot()).expect("test precondition");
-        save_history_to_path(&history_path, Some(&history_snapshot("split-secret"))).expect("test precondition");
+        save_history_to_path(&history_path, Some(&history_snapshot("split-secret")))
+            .expect("test precondition");
 
         let session = std::fs::read_to_string(&session_path).expect("test precondition");
         let history = std::fs::read_to_string(&history_path).expect("test precondition");
@@ -207,7 +201,8 @@ mod tests {
     fn save_to_paths_removes_stale_history_when_history_is_disabled() {
         let (session_path, history_path) = temp_session_paths("clear-history");
         save_to_path(&session_path, &empty_snapshot()).expect("test precondition");
-        save_history_to_path(&history_path, Some(&history_snapshot("stale-secret"))).expect("test precondition");
+        save_history_to_path(&history_path, Some(&history_snapshot("stale-secret")))
+            .expect("test precondition");
 
         save_history_to_path(&history_path, None).expect("test precondition");
 
@@ -245,11 +240,14 @@ mod tests {
         snap.selected = 7;
         save_to_path(&link, &snap).expect("test precondition");
 
-        assert!(std::fs::symlink_metadata(&link)
-            .expect("test precondition")
-            .file_type()
-            .is_symlink());
-        let parsed = parse_snapshot(&std::fs::read_to_string(&target).expect("test precondition")).expect("test precondition");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("test precondition")
+                .file_type()
+                .is_symlink()
+        );
+        let parsed = parse_snapshot(&std::fs::read_to_string(&target).expect("test precondition"))
+            .expect("test precondition");
         assert_eq!(parsed.selected, 7);
     }
 
@@ -257,15 +255,18 @@ mod tests {
     fn save_to_path_writes_through_dangling_symlink() {
         let target = temp_session_path("dangling-target");
         let link = target.with_file_name("link.json");
-        std::fs::create_dir_all(target.parent().expect("test precondition")).expect("test precondition");
+        std::fs::create_dir_all(target.parent().expect("test precondition"))
+            .expect("test precondition");
         std::os::unix::fs::symlink(&target, &link).expect("test precondition");
 
         save_to_path(&link, &empty_snapshot()).expect("test precondition");
 
-        assert!(std::fs::symlink_metadata(&link)
-            .expect("test precondition")
-            .file_type()
-            .is_symlink());
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("test precondition")
+                .file_type()
+                .is_symlink()
+        );
         assert!(target.exists());
     }
 
@@ -280,10 +281,12 @@ mod tests {
 
         save_to_path(&link, &empty_snapshot()).expect("test precondition");
 
-        assert!(std::fs::symlink_metadata(&link)
-            .expect("test precondition")
-            .file_type()
-            .is_symlink());
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("test precondition")
+                .file_type()
+                .is_symlink()
+        );
         assert!(target.exists());
     }
 }

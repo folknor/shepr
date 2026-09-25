@@ -11,7 +11,7 @@ pub(crate) fn run_remote_client_bridge(args: &[String]) -> io::Result<()> {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "unsupported remote client bridge option",
-            ))
+            ));
         }
     };
     ensure_remote_server_running()?;

@@ -5,7 +5,7 @@ mod runtime_registry;
 pub mod state;
 mod title;
 
-pub(crate) use history_read::{merge_scrolled_up, snapshot_text, ScreenSnapshot, UpwardMerge};
+pub(crate) use history_read::{ScreenSnapshot, UpwardMerge, merge_scrolled_up, snapshot_text};
 pub use id::TerminalId;
 pub use runtime::TerminalRuntime;
 pub(crate) use runtime_registry::TerminalRuntimeRegistry;

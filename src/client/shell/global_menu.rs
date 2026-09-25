@@ -40,8 +40,12 @@ impl ClientShellState {
         let Some(ClientShellOverlay::GlobalMenu(menu)) = self.overlay.as_mut() else {
             return;
         };
-        menu.highlighted = (menu.highlighted as isize + delta)
-            .clamp(0, item_count.saturating_sub(1) as isize) as usize;
+        let max_index = item_count.saturating_sub(1);
+        menu.highlighted = menu
+            .highlighted
+            .checked_add_signed(delta)
+            .unwrap_or(0)
+            .min(max_index);
     }
 
     pub(super) fn activate_global_menu_item(
@@ -59,7 +63,7 @@ impl ClientShellState {
         self.overlay = None;
         match action {
             ClientGlobalMenuAction::Binding(binding) => {
-                self.record_binding(crate::input::KeybindMatch::Action(binding), outcome)
+                self.record_binding(&crate::input::KeybindMatch::Action(binding), outcome);
             }
         }
         outcome.repaint = true;

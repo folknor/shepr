@@ -5,13 +5,11 @@ use crate::protocol::ClientShellAgent;
 
 #[derive(Clone, Copy)]
 pub(super) struct CachedEndpointSnapshot<'a> {
-    pub(super) endpoint_index: usize,
     pub(super) endpoint_id: &'a ClientEndpointId,
     pub(super) label: &'a str,
     pub(super) status: ClientEndpointStatus,
     pub(super) snapshot: &'a ClientShellSnapshot,
     pub(super) agent_recency: &'a HashMap<String, u64>,
-    pub(super) agent_presentation: &'a super::endpoint_agent_state::EndpointAgentPresentation,
 }
 
 impl CachedEndpointSnapshot<'_> {
@@ -23,23 +21,18 @@ impl CachedEndpointSnapshot<'_> {
 pub(super) fn cached_endpoint_snapshots(
     endpoints: &[ClientShellEndpoint],
 ) -> impl Iterator<Item = CachedEndpointSnapshot<'_>> {
-    endpoints
-        .iter()
-        .enumerate()
-        .filter_map(|(endpoint_index, endpoint)| {
-            endpoint
-                .snapshot
-                .as_deref()
-                .map(|snapshot| CachedEndpointSnapshot {
-                    endpoint_index,
-                    endpoint_id: &endpoint.endpoint_id,
-                    label: &endpoint.label,
-                    status: endpoint.status,
-                    snapshot,
-                    agent_recency: &endpoint.agent_recency,
-                    agent_presentation: &endpoint.agent_presentation,
-                })
-        })
+    endpoints.iter().filter_map(|endpoint| {
+        endpoint
+            .snapshot
+            .as_deref()
+            .map(|snapshot| CachedEndpointSnapshot {
+                endpoint_id: &endpoint.endpoint_id,
+                label: &endpoint.label,
+                status: endpoint.status,
+                snapshot,
+                agent_recency: &endpoint.agent_recency,
+            })
+    })
 }
 
 pub(super) struct AggregateAgentRow<'a> {
@@ -98,7 +91,6 @@ fn sort_aggregate_rows(
         });
     }
 }
-
 
 pub(super) fn online_agent_targets(
     endpoints: &[ClientShellEndpoint],
@@ -286,7 +278,7 @@ pub(super) fn navigator_rows(
             if federated {
                 rows.push(ClientNavigatorRow {
                     depth: 0,
-                    label: endpoint.label.to_owned(),
+                    label: endpoint.label.clone(),
                     meta: String::new(),
                     detail: String::new(),
                     agent: None,

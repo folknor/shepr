@@ -6,15 +6,16 @@ use std::io::{self, IsTerminal, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
+use interprocess::TryClone as _;
+use interprocess::local_socket::ListenerNonblockingMode;
 use interprocess::local_socket::traits::Listener as _;
 #[cfg(test)]
 use interprocess::local_socket::traits::Stream as _;
-use interprocess::local_socket::ListenerNonblockingMode;
-use interprocess::TryClone as _;
 use serde::Deserialize;
 use std::sync::{
+    Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc, Arc,
+    mpsc,
 };
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -36,12 +37,8 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
     let program = std::env::args()
         .next()
         .unwrap_or_else(|| "shepr".to_string());
-    let reattach_command = reattach_command(
-        &program,
-        &remote.target,
-        &session_name,
-        remote.keybindings,
-    );
+    let reattach_command =
+        reattach_command(&program, &remote.target, &session_name, remote.keybindings);
     let manage_ssh_config = crate::config::Config::load()
         .config
         .remote
@@ -55,13 +52,17 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
         session_name.clone(),
     );
     let prepared_remote = prepare_remote_shepr(&remote_ssh, require_surface_interest)?;
-    ensure_remote_server_ready(&remote_ssh, &prepared_remote.remote_shepr, require_surface_interest)?;
+    ensure_remote_server_ready(
+        &remote_ssh,
+        &prepared_remote.remote_shepr,
+        require_surface_interest,
+    )?;
 
     let _bridge = SshStdioBridge::start(
         remote.target,
-        prepared_remote.remote_shepr,
+        &prepared_remote.remote_shepr,
         local_socket.clone(),
-        session_name,
+        &session_name,
         remote_ssh.options(),
         false,
     )?;
@@ -179,10 +180,6 @@ impl RemoteShepr {
         metadata.is_valid().then_some(metadata)
     }
 
-    fn display(&self) -> &str {
-        &self.path
-    }
-
     fn quoted(&self) -> String {
         shell_quote(&self.path)
     }
@@ -207,10 +204,6 @@ impl RemoteShepr {
         }
         session_args.extend_from_slice(args);
         session_args
-    }
-
-    fn exists_command(&self) -> String {
-        format!("test -x {}", self.quoted())
     }
 
     fn status_client_command(&self) -> String {
@@ -239,10 +232,6 @@ impl RemoteShepr {
 
 fn posix_remote_output_command(command: &str) -> String {
     format!("printf '\n%s\n' '{REMOTE_OUTPUT_READY_MARKER}'\n{command}")
-}
-
-fn current_version() -> String {
-    crate::build_info::version()
 }
 
 pub(super) struct PreparedRemoteShepr {
@@ -403,12 +392,6 @@ impl RemoteSsh {
         command
     }
 
-    fn scp_command(&self) -> Command {
-        let mut command = Command::new("scp");
-        apply_managed_scp_options(&mut command, self.options());
-        command
-    }
-
     fn sh_output(&self, script: &str) -> io::Result<Output> {
         let script = posix_remote_output_command(script);
         let mut child = self
@@ -457,7 +440,6 @@ impl RemoteSsh {
     fn posix_user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
         self.framed_user_shell_output(&posix_remote_output_command(remote_command))
     }
-
 }
 
 // Only interactive setup uses this relay. Background probes retain their
@@ -518,12 +500,12 @@ fn normalize_remote_stdout(stdout: &mut Vec<u8>, command_succeeded: bool) -> io:
     let consumed = {
         let mut reader = io::Cursor::new(stdout.as_slice());
         match discard_remote_output_preamble(&mut reader) {
-            Ok(()) => reader.position() as usize,
+            Ok(()) => usize::try_from(reader.position()).unwrap_or(usize::MAX),
             Err(_) if !command_succeeded => return Ok(()),
             Err(err) => return Err(err),
         }
     };
-    stdout.drain(..consumed);
+    stdout.drain(..consumed.min(stdout.len()));
     Ok(())
 }
 
@@ -567,34 +549,13 @@ fn apply_managed_ssh_options(command: &mut Command, options: Option<&ManagedSshO
     }
 }
 
-fn apply_managed_scp_options(command: &mut Command, options: Option<&ManagedSshOptions>) {
-    command.arg("-C");
-    let Some(options) = options else {
-        return;
-    };
-
-    command.arg("-F").arg(&options.config_path);
-    if let Some(control_path) = &options.control_path {
-        command
-            .arg("-o")
-            .arg(format!(
-                "ControlPath={}",
-                ssh_config_quote(&control_path.to_string_lossy())
-            ))
-            .arg("-o")
-            .arg("ControlMaster=auto")
-            .arg("-o")
-            .arg("ControlPersist=600");
-    }
-}
-
 fn locate_remote_shepr(ssh: &RemoteSsh, require_surface_interest: bool) -> io::Result<RemoteShepr> {
     let candidates = remote_binary_candidates(ssh)?;
     for candidate in candidates {
-        if let Some(status) = remote_client_status(ssh, &candidate)? {
-            if status.supports_endpoint_requirement(require_surface_interest) {
-                return Ok(candidate);
-            }
+        if let Some(status) = remote_client_status(ssh, &candidate)?
+            && status.supports_endpoint_requirement(require_surface_interest)
+        {
+            return Ok(candidate);
         }
     }
     Err(io::Error::new(
@@ -660,7 +621,10 @@ fn remote_binary_candidates(ssh: &RemoteSsh) -> io::Result<Vec<RemoteShepr>> {
 }
 
 fn push_if_new_remote_binary_candidate(candidates: &mut Vec<RemoteShepr>, candidate: RemoteShepr) {
-    if !candidates.iter().any(|existing| existing.path == candidate.path) {
+    if !candidates
+        .iter()
+        .any(|existing| existing.path == candidate.path)
+    {
         candidates.push(candidate);
     }
 }
@@ -918,7 +882,9 @@ fn confirm_remote_server_stop(
         }
     }
 
-    eprintln!("This stops active remote pane processes, including shells, agents, dev servers, and tests.");
+    eprintln!(
+        "This stops active remote pane processes, including shells, agents, dev servers, and tests."
+    );
     let prompt = if required_restart {
         "stop the remote server and continue attaching? [y/N] "
     } else {
@@ -1040,22 +1006,13 @@ pub(super) fn cached_remote_api_command(
     let session = shell_quote(session);
     let script = format!(
         "if capability=$({path} --session {session} remote-api-bridge --check </dev/null 2>/dev/null) && [ \"$capability\" = shepr-api-bridge-v1 ]; then\n{}\nelse\n    printf '%s\\n' '{STALE_API_METADATA}' >&2\n    exit 78\nfi",
-        posix_remote_output_command(&format!("exec {path} --session {session} remote-api-bridge")),
+        posix_remote_output_command(&format!(
+            "exec {path} --session {session} remote-api-bridge"
+        )),
     );
     format!("/bin/sh -c {}", shell_quote(&script))
 }
 
-pub(super) fn remote_api_bridge_command(
-    remote_shepr: &RemoteShepr,
-    session_name: &str,
-    check: bool,
-) -> String {
-    let mut args = vec!["--session", session_name, "remote-api-bridge"];
-    if check {
-        args.push("--check");
-    }
-    posix_remote_output_command(&format!("exec {}", remote_shepr.command(&args)))
-}
 fn reattach_command(
     program: &str,
     target: &str,
@@ -1097,15 +1054,15 @@ pub(super) struct SshStdioBridge {
 impl SshStdioBridge {
     pub(super) fn start(
         target: String,
-        remote_shepr: RemoteShepr,
+        remote_shepr: &RemoteShepr,
         local_socket: PathBuf,
-        session_name: String,
+        session_name: &str,
         ssh_options: Option<&ManagedSshOptions>,
         noninteractive: bool,
     ) -> io::Result<Self> {
         Self::start_command(
             target,
-            remote_shepr.bridge_command(&session_name, noninteractive),
+            remote_shepr.bridge_command(session_name, noninteractive),
             local_socket,
             ssh_options,
             noninteractive,
@@ -1285,10 +1242,10 @@ impl BridgeUploadStop {
     }
 
     fn cancel(&self) {
-        if !self.stopped.swap(true, Ordering::AcqRel) {
-            if let Err(error) = self.wake.cancel() {
-                tracing::debug!(%error, "remote bridge read cancellation failed");
-            }
+        if !self.stopped.swap(true, Ordering::AcqRel)
+            && let Err(error) = self.wake.cancel()
+        {
+            tracing::debug!(%error, "remote bridge read cancellation failed");
         }
     }
 
@@ -1305,7 +1262,8 @@ pub(crate) fn bridge_upload_cancellation_for_test(
     stream
         .set_nonblocking(true)
         .expect("test stream supports nonblocking mode");
-    let stop = Arc::new(BridgeUploadStop::new().expect("test bridge upload stop creation succeeds"));
+    let stop =
+        Arc::new(BridgeUploadStop::new().expect("test bridge upload stop creation succeeds"));
     let worker_stop = Arc::clone(&stop);
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let worker = thread::spawn(move || {
@@ -1788,7 +1746,9 @@ mod tests {
         thread::sleep(Duration::from_millis(100));
         let reads_after_input = attempts.load(Ordering::Relaxed);
         stop.cancel();
-        let (result, output, closed) = done_rx.recv_timeout(Duration::from_secs(2)).expect("test precondition");
+        let (result, output, closed) = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("test precondition");
         worker.join().expect("test precondition");
         assert_eq!(result.expect("test precondition"), 10);
         assert_eq!(output, b"pane input");
@@ -1820,7 +1780,9 @@ mod tests {
         .expect("test precondition");
         assert_eq!(count, 0);
         assert!(!closed.load(Ordering::Acquire));
-        download.write_all(b"final frame").expect("test precondition");
+        download
+            .write_all(b"final frame")
+            .expect("test precondition");
         let mut output = [0; 11];
         client.read_exact(&mut output).expect("test precondition");
         assert_eq!(&output, b"final frame");
@@ -1834,7 +1796,9 @@ mod tests {
         stop.cancel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let worker = thread::spawn(move || {
-            done_tx.send(stop.wake.wait(&stream)).expect("test precondition");
+            done_tx
+                .send(stop.wake.wait(&stream))
+                .expect("test precondition");
         });
         done_rx
             .recv_timeout(Duration::from_secs(2))
@@ -1880,15 +1844,19 @@ mod tests {
         let remote_shepr = RemoteShepr::new("/usr/bin/shepr");
         let bridge = SshStdioBridge::start(
             "example".to_string(),
-            remote_shepr,
+            &remote_shepr,
             socket.clone(),
-            "default".to_string(),
+            "default",
             None,
             false,
         )
         .expect("start bridge listener");
 
-        let mode = std::fs::metadata(&socket).expect("test precondition").permissions().mode() & 0o777;
+        let mode = std::fs::metadata(&socket)
+            .expect("test precondition")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, BRIDGE_SOCKET_PERMISSION_MODE);
 
         drop(bridge);
@@ -1936,9 +1904,9 @@ mod tests {
         let remote_shepr = RemoteShepr::new("/usr/bin/shepr");
         let bridge = SshStdioBridge::start(
             "example".to_string(),
-            remote_shepr,
+            &remote_shepr,
             socket.clone(),
-            "default".to_string(),
+            "default",
             None,
             false,
         )
@@ -1998,14 +1966,22 @@ mod tests {
             }
         }
 
-        let mode = std::fs::metadata(&path).expect("test precondition").permissions().mode() & 0o777;
+        let mode = std::fs::metadata(&path)
+            .expect("test precondition")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(
             mode, BRIDGE_SOCKET_PERMISSION_MODE,
             "keepalive config must be user-only"
         );
         // The config lives in a private 0700 dir, not a predictable temp path.
         let dir = path.parent().expect("config has a parent dir");
-        let dir_mode = std::fs::metadata(dir).expect("test precondition").permissions().mode() & 0o777;
+        let dir_mode = std::fs::metadata(dir)
+            .expect("test precondition")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(dir_mode, 0o700, "ssh config dir must be user-only");
         assert!(
             fits_unix_socket_path(&control_path),
@@ -2019,7 +1995,11 @@ mod tests {
     fn shared_ssh_transport_survives_helper_config_drop() {
         let first = write_managed_ssh_config("example").expect("test precondition");
         let second = write_managed_ssh_config("example").expect("test precondition");
-        let socket = first.options.control_path.clone().expect("test precondition");
+        let socket = first
+            .options
+            .control_path
+            .clone()
+            .expect("test precondition");
         assert_eq!(Some(&socket), second.options.control_path.as_ref());
         assert_ne!(socket.parent(), first.options.config_path.parent());
         let config_path = first.options.config_path.clone();
@@ -2090,9 +2070,10 @@ mod tests {
             |(key, value)| *key == std::ffi::OsStr::new("SSH_ASKPASS_REQUIRE")
                 && *value == Some(std::ffi::OsStr::new("never"))
         ));
-        assert!(env
-            .iter()
-            .any(|(key, value)| *key == std::ffi::OsStr::new("SSH_ASKPASS") && value.is_none()));
+        assert!(
+            env.iter()
+                .any(|(key, value)| *key == std::ffi::OsStr::new("SSH_ASKPASS") && value.is_none())
+        );
     }
 
     #[test]
@@ -2125,7 +2106,11 @@ mod tests {
     fn remote_ssh_command_uses_managed_config_when_present() {
         let managed_config = write_managed_ssh_config("example").expect("write managed config");
         let config_path = managed_config.options.config_path.clone();
-        let control_path = managed_config.options.control_path.clone().expect("test precondition");
+        let control_path = managed_config
+            .options
+            .control_path
+            .clone()
+            .expect("test precondition");
         let ssh = RemoteSsh {
             target: "example".to_string(),
             session_name: crate::session::DEFAULT_SESSION_NAME.into(),
@@ -2155,28 +2140,7 @@ mod tests {
                 "example".to_string(),
             ]
         );
-
-        let scp_args = ssh
-            .scp_command()
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            scp_args,
-            vec![
-                "-C".to_string(),
-                "-F".to_string(),
-                config_path.to_string_lossy().into_owned(),
-                "-o".to_string(),
-                format!("ControlPath=\"{}\"", control_path.to_string_lossy()),
-                "-o".to_string(),
-                "ControlMaster=auto".to_string(),
-                "-o".to_string(),
-                "ControlPersist=600".to_string(),
-            ]
-        );
     }
-
 
     #[test]
     fn noninteractive_ssh_stderr_capture_is_bounded() {
@@ -2223,8 +2187,14 @@ mod tests {
                 read_remote_confirmation(&mut "\n".as_bytes(), default).expect("test precondition"),
                 default
             );
-            assert!(read_remote_confirmation(&mut "YES\n".as_bytes(), default).expect("test precondition"));
-            assert!(!read_remote_confirmation(&mut "no\n".as_bytes(), default).expect("test precondition"));
+            assert!(
+                read_remote_confirmation(&mut "YES\n".as_bytes(), default)
+                    .expect("test precondition")
+            );
+            assert!(
+                !read_remote_confirmation(&mut "no\n".as_bytes(), default)
+                    .expect("test precondition")
+            );
         }
     }
 
@@ -2251,11 +2221,11 @@ mod tests {
         ] {
             assert_eq!(
                 shepr.session_command("agents", args),
-                format!("{} --session agents {command}", shepr.display())
+                format!("{} --session agents {command}", shepr.path)
             );
             assert_eq!(
                 shepr.session_command(crate::session::DEFAULT_SESSION_NAME, args),
-                format!("{} {command}", shepr.display())
+                format!("{} {command}", shepr.path)
             );
         }
     }
@@ -2276,7 +2246,6 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(args, vec!["-C", "-T", "example"]);
-        assert_eq!(ssh.scp_command().get_args().collect::<Vec<_>>(), vec!["-C"]);
     }
 
     #[test]
@@ -2329,7 +2298,10 @@ mod tests {
         ];
         let (cleaned, remote) = extract_remote_args(&args).expect("test precondition");
         assert_eq!(cleaned, vec!["shepr"]);
-        assert_eq!(remote.expect("test precondition").keybindings, RemoteKeybindings::Server);
+        assert_eq!(
+            remote.expect("test precondition").keybindings,
+            RemoteKeybindings::Server
+        );
     }
 
     #[test]
@@ -2412,7 +2384,13 @@ mod tests {
     fn machine_metadata_keeps_raw_resolved_paths_not_shell_expressions() {
         let path = "/home/user's files/$literal/shepr";
         let resolved = RemoteShepr::new(path);
-        assert_eq!(resolved.machine_metadata().expect("test precondition").executable, path);
+        assert_eq!(
+            resolved
+                .machine_metadata()
+                .expect("test precondition")
+                .executable,
+            path
+        );
         assert_eq!(resolved.quoted(), shell_quote(path));
     }
 
@@ -2471,24 +2449,13 @@ mod tests {
     }
 
     #[test]
-    fn remote_api_bridge_always_selects_the_saved_session() {
-        let remote_shepr = RemoteShepr::new("/usr/bin/shepr");
-        for session in ["default", "agents"] {
-            assert_eq!(
-                remote_api_bridge_command(&remote_shepr, session, false),
-                posix_remote_output_command(&format!(
-                    "exec /usr/bin/shepr --session {session} remote-api-bridge"
-                ))
-            );
-        }
-    }
-
-    #[test]
     fn noninteractive_remote_bridge_requests_idle_timeout() {
         let remote = RemoteShepr::new("/usr/bin/shepr");
-        assert!(remote
-            .bridge_command("agents", true)
-            .ends_with(" --session agents remote-client-bridge --idle-timeout-v1"));
+        assert!(
+            remote
+                .bridge_command("agents", true)
+                .ends_with(" --session agents remote-client-bridge --idle-timeout-v1")
+        );
     }
 
     #[test]
@@ -2528,9 +2495,8 @@ mod tests {
 
     #[test]
     fn remote_path_discovery_reads_multiple_absolute_paths() {
-        let candidates = remote_sheprs_from_path_discovery(
-            "/usr/bin/shepr\nbin/shepr\n /opt/shepr bin/shepr\n",
-        );
+        let candidates =
+            remote_sheprs_from_path_discovery("/usr/bin/shepr\nbin/shepr\n /opt/shepr bin/shepr\n");
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].path, "/usr/bin/shepr");
@@ -2634,7 +2600,7 @@ mod tests {
     #[test]
     fn local_forward_socket_path_uses_readable_name_when_it_fits() {
         let _guard = remote_env_lock().lock().expect("test precondition");
-        // Short target + session leave plenty of room — keep the human-
+        // Short target + session leave plenty of room - keep the human-
         // readable form so the socket path stays grep-friendly.
         let path = local_forward_socket_path("dev", "default");
         let filename = path
@@ -2680,7 +2646,7 @@ mod tests {
         let prior = std::env::var_os("TMPDIR");
         let long_dir = std::env::temp_dir().join("a".repeat(80));
         let _ = fs::create_dir_all(&long_dir);
-        std::env::set_var("TMPDIR", &long_dir);
+        unsafe { std::env::set_var("TMPDIR", &long_dir) };
 
         let path = local_forward_socket_path("longish-host.example.com", "default");
         let fits = fits_unix_socket_path(&path);
@@ -2692,8 +2658,8 @@ mod tests {
             .to_string();
 
         match prior {
-            Some(v) => std::env::set_var("TMPDIR", v),
-            None => std::env::remove_var("TMPDIR"),
+            Some(v) => unsafe { std::env::set_var("TMPDIR", v) },
+            None => unsafe { std::env::remove_var("TMPDIR") },
         }
         let _ = fs::remove_dir_all(&long_dir);
 
@@ -2704,5 +2670,4 @@ mod tests {
             "expected hashed fallback, got {filename}"
         );
     }
-
 }

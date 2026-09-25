@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     io::{Read, Write},
     os::fd::{AsRawFd, OwnedFd},
-    sync::{mpsc as std_mpsc, Arc, Mutex},
+    sync::{Arc, Mutex, mpsc as std_mpsc},
     time::{Duration, Instant},
 };
 
@@ -99,7 +99,7 @@ impl PtyIoActorHandle {
         let user_writes = self
             .user_writes
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !user_writes.accepting {
             return Err(mpsc::error::TrySendError::Closed(bytes));
         }
@@ -135,7 +135,7 @@ impl PtyIoActorHandle {
         let user_writes = self
             .user_writes
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !user_writes.accepting {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
@@ -166,14 +166,14 @@ impl PtyIoActorHandle {
         let _order = self
             .response_order
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(bytes) = response() else {
             return;
         };
         if !bytes.is_empty() {
             self.controls
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .terminal_responses
                 .push(bytes);
             self.wake_actor();
@@ -192,7 +192,7 @@ impl PtyIoActorHandle {
             let mut controls = self
                 .controls
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             controls.resize = Some(PtyResizeRequest {
                 resize: PtyResize {
                     rows,
@@ -220,7 +220,7 @@ impl PtyIoActorHandle {
             let mut user_writes = self
                 .user_writes
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             user_writes.accepting = false;
         }
         if self.control_tx.send(PtyIoControlCommand::Shutdown).is_ok() {
@@ -516,7 +516,7 @@ impl PtyIoActorRunner {
             let mut controls = self
                 .controls
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             (
                 controls.resize.take(),
                 std::mem::take(&mut controls.terminal_responses),
@@ -543,11 +543,11 @@ impl PtyIoActorRunner {
                 let response_order = Arc::clone(&self.response_order);
                 let _order = response_order
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let result = (self.on_read)(&buf[..n]);
                 self.controls
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .terminal_responses
                     .extend(result.terminal_responses);
                 drop(_order);
@@ -555,7 +555,7 @@ impl PtyIoActorRunner {
                     &mut self
                         .controls
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .terminal_responses,
                 );
                 self.enqueue_terminal_responses(terminal_responses);
@@ -620,11 +620,14 @@ impl PtyIoActorRunner {
         else {
             return ACTOR_IDLE_POLL_MS;
         };
-        deadline
-            .saturating_duration_since(Instant::now())
-            .as_millis()
-            .max(1)
-            .min(ACTOR_IDLE_POLL_MS as u128) as i32
+        i32::try_from(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis()
+                .max(1)
+                .min(ACTOR_IDLE_POLL_MS as u128),
+        )
+        .unwrap_or(ACTOR_IDLE_POLL_MS)
     }
 
     fn fail_active_submission(&mut self, err: std::io::Error) {
@@ -793,7 +796,9 @@ mod tests {
         runner.enqueue_write(Bytes::from_static(b"response"));
 
         assert_eq!(
-            runner.flush_pending_writes_once().expect("test precondition"),
+            runner
+                .flush_pending_writes_once()
+                .expect("test precondition"),
             Some(SubmissionBoundary::Text)
         );
         assert_eq!(
@@ -982,7 +987,7 @@ mod tests {
                 move || {
                     let handle = handle_slot
                         .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .as_ref()
                         .expect("actor handle installed")
                         .clone();
@@ -998,7 +1003,7 @@ mod tests {
         let handle = PtyIoActor::spawn(config).expect("actor spawn");
         *handle_slot
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(handle);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(handle);
 
         drop(peer);
         let err = match attempt_rx

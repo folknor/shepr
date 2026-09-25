@@ -19,7 +19,7 @@ pub(super) fn start_endpoint_transport(
         .spawn(move || {
             server_reader_thread(
                 reader,
-                event_tx,
+                &event_tx,
                 &stopped,
                 max_frame_size,
                 endpoint_id,
@@ -34,7 +34,7 @@ pub(super) fn start_endpoint_transport(
 /// Reads complete frames while retaining partial-read progress across nonblocking polls.
 pub(super) fn server_reader_thread(
     mut stream: LocalStream,
-    event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
+    event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
     max_frame_size: usize,
     endpoint_id: endpoint::ClientEndpointId,
@@ -180,12 +180,15 @@ mod tests {
         std::fs::remove_file(path).expect("test precondition");
         drop(listener);
         let mut reader_stream = client.try_clone().expect("test precondition");
-        let mut writer = endpoint::NativeEndpointTransport::with_lifetime(client, ()).expect("test precondition");
+        let mut writer = endpoint::NativeEndpointTransport::with_lifetime(client, ())
+            .expect("test precondition");
         let stopped = writer.stop_handle();
         struct ForwardedInput(std::sync::mpsc::Sender<Vec<u8>>);
         impl io::Write for ForwardedInput {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.0.send(bytes.to_vec()).expect("test precondition");
+                self.0
+                    .send(bytes.to_vec())
+                    .map_err(|error| io::Error::other(error.to_string()))?;
                 Ok(bytes.len())
             }
 
@@ -204,7 +207,11 @@ mod tests {
         writer.send(&message).expect("test precondition");
         let mut forwarded = Vec::new();
         while forwarded.len() < expected.len() {
-            forwarded.extend(forwarded_rx.recv_timeout(Duration::from_secs(3)).expect("test precondition"));
+            forwarded.extend(
+                forwarded_rx
+                    .recv_timeout(Duration::from_secs(3))
+                    .expect("test precondition"),
+            );
         }
         assert_eq!(forwarded, expected);
         cancel();
@@ -216,7 +223,8 @@ mod tests {
         let flushed = writer.flush(Instant::now() + Duration::from_secs(3));
         if flushed.is_ok() {
             let received: ClientMessage =
-                protocol::read_message(&mut bridge, protocol::MAX_FRAME_SIZE).expect("test precondition");
+                protocol::read_message(&mut bridge, protocol::MAX_FRAME_SIZE)
+                    .expect("test precondition");
             assert_eq!(received, ClientMessage::ClientShellFocus { focused: true });
         }
         const FINAL: &[u8] = b"pending-download: FINAL OUTPUT\n";

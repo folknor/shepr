@@ -37,10 +37,6 @@ impl TerminalRuntimeRegistry {
         self.runtimes.values()
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.runtimes.len()
-    }
-
     #[cfg(test)]
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = (TerminalId, TerminalRuntime)> + '_ {
         self.runtimes.drain()

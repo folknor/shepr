@@ -35,13 +35,13 @@ pub(super) fn load(path: &Path) -> Option<ClientChromePreferences> {
     serde_json::from_str(&content).ok()
 }
 
-pub(super) fn store(path: &Path, preferences: ClientChromePreferences) -> Result<(), String> {
+pub(super) fn store(path: &Path, preferences: &ClientChromePreferences) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("invalid client shell state path: {}", path.display()))?;
     std::fs::create_dir_all(parent)
         .map_err(|error| format!("failed to create client shell state directory: {error}"))?;
-    let content = serde_json::to_vec_pretty(&preferences)
+    let content = serde_json::to_vec_pretty(preferences)
         .map_err(|error| format!("failed to encode client shell state: {error}"))?;
     let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
     let mut temp_name = path
@@ -93,7 +93,7 @@ mod tests {
                 std::thread::spawn(move || {
                     store(
                         &path,
-                        ClientChromePreferences {
+                        &ClientChromePreferences {
                             sidebar_width: Some(width),
                             ..ClientChromePreferences::default()
                         },
@@ -104,9 +104,11 @@ mod tests {
         for writer in writers {
             writer.join().expect("preference writer").expect("store");
         }
-        assert!(load(&path)
-            .and_then(|saved| saved.sidebar_width)
-            .is_some_and(|width| (20..28).contains(&width)));
+        assert!(
+            load(&path)
+                .and_then(|saved| saved.sidebar_width)
+                .is_some_and(|width| (20..28).contains(&width))
+        );
         std::fs::remove_file(path).expect("remove preferences");
     }
 
@@ -119,7 +121,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         store(
             &path,
-            ClientChromePreferences {
+            &ClientChromePreferences {
                 sidebar_width: Some(24),
                 ..ClientChromePreferences::default()
             },
@@ -127,7 +129,7 @@ mod tests {
         .expect("first preference store");
         store(
             &path,
-            ClientChromePreferences {
+            &ClientChromePreferences {
                 sidebar_width: Some(32),
                 ..ClientChromePreferences::default()
             },

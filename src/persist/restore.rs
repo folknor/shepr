@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ratatui::layout::Direction;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 use tracing::{error, warn};
 
 use crate::detect::AgentState;
@@ -69,9 +69,9 @@ pub fn restore(
     default_shell: &str,
     shell_mode: crate::config::ShellModeConfig,
     resume_agents_on_restore: bool,
-    events: mpsc::Sender<AppEvent>,
-    render_notify: Arc<Notify>,
-    render_dirty: Arc<RenderSignal>,
+    events: &mpsc::Sender<AppEvent>,
+    render_notify: &Arc<Notify>,
+    render_dirty: &Arc<RenderSignal>,
 ) -> RestoredSession {
     restore_with_imports(
         snapshot,
@@ -95,9 +95,9 @@ fn restore_with_imports(
     scrollback_limit_bytes: usize,
     shell_config: crate::pane::PaneShellConfig<'_>,
     resume_agents_on_restore: bool,
-    events: mpsc::Sender<AppEvent>,
-    render_notify: Arc<Notify>,
-    render_dirty: Arc<RenderSignal>,
+    events: &mpsc::Sender<AppEvent>,
+    render_notify: &Arc<Notify>,
+    render_dirty: &Arc<RenderSignal>,
 ) -> RestoredSession {
     let history = history.filter(|history| {
         let matches = history.layout_fingerprint.is_some()
@@ -117,8 +117,8 @@ fn restore_with_imports(
             shell_config,
             resume_agents_on_restore,
             events: events.clone(),
-            render_notify: render_notify.clone(),
-            render_dirty: render_dirty.clone(),
+            render_notify: Arc::clone(render_notify),
+            render_dirty: Arc::clone(render_dirty),
         };
         let restored = restore_workspace(
             ws_snap,
@@ -238,26 +238,26 @@ fn restore_workspace(
         crate::workspace::discover_workspace_git_identity(&snap.identity_cwd);
 
     Some(Workspace {
-            id: workspace_id,
-            custom_name: snap.custom_name.clone(),
-            identity_cwd: snap.identity_cwd.clone(),
-            cached_identity_cwd: snap.identity_cwd.clone(),
-            cached_auto_label,
-            cached_git_status_key,
-            cached_git_branch: crate::workspace::git_branch(&snap.identity_cwd),
-            cached_git_ahead_behind: None,
-            cached_git_space,
-            metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
-            metadata_token_sequences: HashMap::new(),
-            public_pane_numbers,
-            next_public_pane_number,
-            next_public_tab_number,
-            active_tab: snap.active_tab.min(tabs.len().saturating_sub(1)),
-            tabs,
-            #[cfg(test)]
-            test_runtimes: HashMap::new(),
-        })
-        .map(|workspace| (workspace, terminals, terminal_runtimes))
+        id: workspace_id,
+        custom_name: snap.custom_name.clone(),
+        identity_cwd: snap.identity_cwd.clone(),
+        cached_identity_cwd: snap.identity_cwd.clone(),
+        cached_auto_label,
+        cached_git_status_key,
+        cached_git_branch: crate::workspace::git_branch(&snap.identity_cwd),
+        cached_git_ahead_behind: None,
+        cached_git_space,
+        metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
+        metadata_token_sequences: HashMap::new(),
+        public_pane_numbers,
+        next_public_pane_number,
+        next_public_tab_number,
+        active_tab: snap.active_tab.min(tabs.len().saturating_sub(1)),
+        tabs,
+        #[cfg(test)]
+        test_runtimes: HashMap::new(),
+    })
+    .map(|workspace| (workspace, terminals, terminal_runtimes))
 }
 
 fn unavailable_restored_terminal(
@@ -376,7 +376,7 @@ fn restore_tab(
             }
             match (saved_agent_name, saved_managed_agent) {
                 (Some(agent_name), Some(agent)) => {
-                    terminal.restore_managed_agent(agent_name, agent)
+                    terminal.restore_managed_agent(agent_name, agent);
                 }
                 (Some(_), None) => {}
                 (None, _) => {}
@@ -401,16 +401,16 @@ fn restore_tab(
             *id,
             rows,
             cols,
-            cwd.clone(),
+            &cwd,
             runtime_context.scrollback_limit_bytes,
             crate::terminal_theme::TerminalTheme::default(),
             None,
             runtime_context.shell_config,
             &launch_env,
             startup.initial_history_ansi,
-            runtime_context.events.clone(),
-            runtime_context.render_notify.clone(),
-            runtime_context.render_dirty.clone(),
+            &runtime_context.events,
+            &runtime_context.render_notify,
+            &runtime_context.render_dirty,
         );
 
         match runtime_result {
@@ -449,8 +449,11 @@ fn restore_tab(
                     "failed to restore pane"
                 );
                 let terminal = unavailable_restored_terminal(
-                    saved_pane, cwd,
-                    format!("Could not start the saved shell: {e}. Fix the shell configuration and restart this session."),
+                    saved_pane,
+                    cwd,
+                    format!(
+                        "Could not start the saved shell: {e}. Fix the shell configuration and restart this session."
+                    ),
                 );
                 panes.insert(*id, PaneState::new(terminal.id.clone()));
                 terminals.push(terminal);
@@ -490,8 +493,8 @@ fn restore_tab(
             runtimes: HashMap::new(),
             zoomed: snap.zoomed,
             events: runtime_context.events.clone(),
-            render_notify: runtime_context.render_notify.clone(),
-            render_dirty: runtime_context.render_dirty.clone(),
+            render_notify: Arc::clone(&runtime_context.render_notify),
+            render_dirty: Arc::clone(&runtime_context.render_dirty),
         },
         terminals,
         terminal_runtimes,
@@ -763,7 +766,9 @@ mod tests {
 
         assert!(restore_plan_for_snapshot(&session, false).is_none());
         assert_eq!(
-            restore_plan_for_snapshot(&session, true).expect("test precondition").argv,
+            restore_plan_for_snapshot(&session, true)
+                .expect("test precondition")
+                .argv,
             vec!["pi", "--session", pi_session_path.as_str()]
         );
 
@@ -920,21 +925,18 @@ mod tests {
                         "identity_cwd": "/tmp/shepr-restore-test-a",
                         "tabs": [
                             {
-                                "layout": { "Pane": 0 },
-                                "panes": {
-                                    "0": { "cwd": "/tmp/shepr-restore-test-a" },
-                                    "1": { "cwd": "/tmp/shepr-restore-test-a", "label": "website" }
-                                },
+                                "layout": { "Pane": 1 },
+                                "panes": { "1": { "cwd": "/tmp/shepr-restore-test-a" } },
                                 "zoomed": false,
-                                "focused": 0,
-                                "root_pane": 0
+                                "focused": 1,
+                                "root_pane": 1
                             },
                             {
-                                "layout": { "Pane": 0 },
-                                "panes": { "0": { "cwd": "/tmp/shepr-restore-test-a" } },
+                                "layout": { "Pane": 2 },
+                                "panes": { "2": { "cwd": "/tmp/shepr-restore-test-a" } },
                                 "zoomed": false,
-                                "focused": 0,
-                                "root_pane": 0
+                                "focused": 2,
+                                "root_pane": 2
                             }
                         ],
                         "active_tab": 0
@@ -944,11 +946,11 @@ mod tests {
                         "identity_cwd": "/tmp/shepr-restore-test-b",
                         "tabs": [
                             {
-                                "layout": { "Pane": 0 },
-                                "panes": { "0": { "cwd": "/tmp/shepr-restore-test-b" } },
+                                "layout": { "Pane": 3 },
+                                "panes": { "3": { "cwd": "/tmp/shepr-restore-test-b" } },
                                 "zoomed": false,
-                                "focused": 0,
-                                "root_pane": 0
+                                "focused": 3,
+                                "root_pane": 3
                             }
                         ],
                         "active_tab": 0
@@ -969,7 +971,10 @@ mod tests {
                     }
                 }
             }
-            let failed = snapshot.workspaces[0].tabs[0].panes.get_mut(&1).expect("test precondition");
+            let failed = snapshot.workspaces[0].tabs[0]
+                .panes
+                .get_mut(&1)
+                .expect("test precondition");
             failed.cwd = missing.clone();
             failed.label = Some("keep my pane".into());
             failed.agent_session = Some(super::super::snapshot::PaneAgentSessionSnapshot {
@@ -992,9 +997,9 @@ mod tests {
                 },
                 crate::config::ShellModeConfig::NonLogin,
                 false,
-                events,
-                Arc::new(Notify::new()),
-                Arc::new(RenderSignal::new()),
+                &events,
+                &Arc::new(Notify::new()),
+                &Arc::new(RenderSignal::new()),
             );
             let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
             let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
@@ -1015,11 +1020,16 @@ mod tests {
             );
             assert_eq!(pane.label.as_deref(), Some("keep my pane"));
             assert_eq!(
-                pane.agent_session.as_ref().expect("test precondition").value,
+                pane.agent_session
+                    .as_ref()
+                    .expect("test precondition")
+                    .value,
                 "keep-my-session"
             );
             let root = workspaces[0].tabs[0].root_pane;
-            let terminal_id = workspaces[0].tabs[0].terminal_id(root).expect("test precondition");
+            let terminal_id = workspaces[0].tabs[0]
+                .terminal_id(root)
+                .expect("test precondition");
             assert!(
                 runtimes.get(terminal_id).is_none(),
                 "do not open a replacement shell elsewhere"
@@ -1089,9 +1099,9 @@ mod tests {
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
             false,
-            events,
-            Arc::new(Notify::new()),
-            Arc::new(RenderSignal::new()),
+            &events,
+            &Arc::new(Notify::new()),
+            &Arc::new(RenderSignal::new()),
         );
 
         let terminal = terminals
@@ -1174,9 +1184,9 @@ mod tests {
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
             false,
-            events,
-            Arc::new(Notify::new()),
-            Arc::new(RenderSignal::new()),
+            &events,
+            &Arc::new(Notify::new()),
+            &Arc::new(RenderSignal::new()),
         );
 
         let workspace = workspaces.first().expect("workspace should restore");
@@ -1277,9 +1287,9 @@ mod tests {
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
             false,
-            events,
-            Arc::new(Notify::new()),
-            Arc::new(RenderSignal::new()),
+            &events,
+            &Arc::new(Notify::new()),
+            &Arc::new(RenderSignal::new()),
         );
 
         let workspace = workspaces.first().expect("workspace should restore");
@@ -1289,10 +1299,7 @@ mod tests {
         let terminal_id = &workspace.tabs[3].panes[&agent_pane].attached_terminal_id;
         assert!(terminals[terminal_id].agent_name.is_none());
         assert_eq!(terminals[terminal_id].managed_agent_kind(), None);
-        assert!(workspace
-            .pane_details(&terminals)
-            .into_iter()
-            .all(|detail| detail.pane_id != agent_pane));
+        assert!(terminals[terminal_id].effective_agent_label().is_none());
     }
 
     #[tokio::test]
@@ -1347,9 +1354,9 @@ mod tests {
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
             true,
-            events,
-            Arc::new(Notify::new()),
-            Arc::new(RenderSignal::new()),
+            &events,
+            &Arc::new(Notify::new()),
+            &Arc::new(RenderSignal::new()),
         );
 
         let terminal = terminals
@@ -1382,9 +1389,9 @@ mod tests {
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
             false,
-            events,
-            render_notify,
-            render_dirty,
+            &events,
+            &render_notify,
+            &render_dirty,
         );
         let runtime = runtimes
             .values()
@@ -1393,7 +1400,8 @@ mod tests {
 
         let restored_text = runtime.recent_unwrapped_text(10);
         assert!(
-            restored_text.contains("RESTORED_HISTORY 👨‍👩‍👧 LINK"),
+            restored_text
+                .contains("RESTORED_HISTORY \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} LINK"),
             "styled Unicode and hyperlink text should survive history replay"
         );
 
@@ -1420,9 +1428,9 @@ mod tests {
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
             false,
-            events,
-            render_notify,
-            render_dirty,
+            &events,
+            &render_notify,
+            &render_dirty,
         );
         let runtime = runtimes
             .values()
@@ -1449,7 +1457,10 @@ mod tests {
             let (mut snapshot, history) = snapshot_with_saved_pane_history();
             let mut value = serde_json::to_value(history).expect("test precondition");
             if missing_fingerprint {
-                value.as_object_mut().expect("test precondition").remove("layout_fingerprint");
+                value
+                    .as_object_mut()
+                    .expect("test precondition")
+                    .remove("layout_fingerprint");
             } else {
                 snapshot.workspaces[0].tabs[0]
                     .panes
@@ -1468,9 +1479,9 @@ mod tests {
                 test_restore_shell(),
                 crate::config::ShellModeConfig::NonLogin,
                 false,
-                events,
-                Arc::new(Notify::new()),
-                Arc::new(RenderSignal::new()),
+                &events,
+                &Arc::new(Notify::new()),
+                &Arc::new(RenderSignal::new()),
             );
             let runtime = runtimes.values().next().expect("test precondition");
             assert!(
@@ -1508,7 +1519,7 @@ mod tests {
                         0,
                         super::super::snapshot::PaneHistorySnapshot {
                             ansi: concat!(
-                                "\x1b[31mRESTORED_HISTORY 👨‍👩‍👧\x1b[0m ",
+                                "\x1b[31mRESTORED_HISTORY \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\x1b[0m ",
                                 "\x1b]8;;https://example.com\x1b\\LINK\x1b]8;;\x1b\\\r\n"
                             )
                             .to_string(),

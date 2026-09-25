@@ -109,7 +109,7 @@ impl App {
                 }
                 WindowTitlePart::Token(WindowTitleToken::TerminalTitle) => {
                     if let Some(terminal_title) =
-                        terminal.and_then(|terminal| terminal.terminal_title_stripped())
+                        terminal.and_then(crate::terminal::TerminalState::terminal_title_stripped)
                     {
                         title.push_str(&terminal_title);
                     }

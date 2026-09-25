@@ -21,7 +21,7 @@ use crate::{layout::PaneId, pane::ScrollMetrics};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     /// Mouse is down but hasn't moved yet. If released without
-    /// moving, this was just a click — no selection created.
+    /// moving, this was just a click - no selection created.
     Anchored,
     /// Mouse has moved from the anchor point. Cells are being highlighted.
     Dragging,
@@ -45,7 +45,7 @@ pub struct Selection<P = PaneId> {
 
 impl<P> Selection<P> {
     /// Start a potential selection. This records the anchor but doesn't
-    /// make anything visible yet — the user might just be clicking.
+    /// make anything visible yet - the user might just be clicking.
     pub fn anchor(pane_id: P, viewport_row: u16, col: u16, metrics: Option<ScrollMetrics>) -> Self {
         let anchor = (absolute_row_for_viewport_row(viewport_row, metrics), col);
         Self {
@@ -211,13 +211,14 @@ impl<P> Selection<P> {
 }
 
 fn viewport_top_row(metrics: Option<ScrollMetrics>) -> u32 {
-    metrics
+    let value = metrics
         .map(|metrics| {
             metrics
                 .max_offset_from_bottom
                 .saturating_sub(metrics.offset_from_bottom)
         })
-        .unwrap_or(0) as u32
+        .unwrap_or(0);
+    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 pub(crate) fn absolute_row_for_viewport(viewport_row: u16, metrics: Option<ScrollMetrics>) -> u32 {
@@ -324,7 +325,12 @@ mod tests {
     use super::*;
 
     fn make_sel(sr: u32, sc: u16, er: u32, ec: u16) -> Selection {
-        let mut sel = Selection::anchor(PaneId::from_raw(0), sr as u16, sc, None);
+        let mut sel = Selection::anchor(
+            PaneId::from_raw(0),
+            u16::try_from(sr).unwrap_or(u16::MAX),
+            sc,
+            None,
+        );
         sel.anchor = (sr, sc);
         sel.cursor = (er, ec);
         sel.phase = Phase::Dragging;
@@ -552,7 +558,7 @@ mod tests {
     #[test]
     fn anchor_screen_pos_same_cell_as_mouse_with_offset() {
         // When the pane has a non-zero origin, anchor and mouse on the same
-        // screen cell must compare equal — no false drag detection.
+        // screen cell must compare equal - no false drag detection.
         let pane_inner = Rect::new(10, 5, 80, 24);
         // Mouse clicked at screen (15, 8) → anchor stored as (viewport_row=3, col=5)
         let sel = Selection::anchor(PaneId::from_raw(0), 3, 5, None);

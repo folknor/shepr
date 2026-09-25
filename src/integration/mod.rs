@@ -17,7 +17,7 @@ pub(crate) use actions::{
 #[cfg(test)]
 pub(crate) use env::integration_env_lock;
 pub(crate) use env::{
-    apply_pane_base_env, SHEPR_PANE_ID_ENV_VAR, SHEPR_TAB_ID_ENV_VAR, SHEPR_WORKSPACE_ID_ENV_VAR,
+    SHEPR_PANE_ID_ENV_VAR, SHEPR_TAB_ID_ENV_VAR, SHEPR_WORKSPACE_ID_ENV_VAR, apply_pane_base_env,
 };
 pub(crate) use registry::{
     experimental_letta_integration_status, installed_integration_statuses,
@@ -137,7 +137,7 @@ const ANTIGRAVITY_CLI_HOOK_BLOCK_NAME: &str = "shepr";
 const ANTIGRAVITY_CLI_HOOK_TIMEOUT_SEC: u64 = 10;
 /// `(event, reported action)`. Session-only: `PreInvocation` is the only event
 /// we need because it carries `conversationId`. The others cannot express
-/// lifecycle safely — Antigravity CLI has no blocked event, `PostInvocation` is
+/// lifecycle safely - Antigravity CLI has no blocked event, `PostInvocation` is
 /// skipped on interruption, and `Stop` is end-of-turn rather than process exit.
 /// Screen detection owns agent state instead.
 ///
