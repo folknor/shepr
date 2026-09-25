@@ -1,0 +1,599 @@
+use super::*;
+
+fn restore_mode_bar(
+    frame: &mut FrameData,
+    bar: Option<Rect>,
+    cells: Option<&[crate::protocol::CellData]>,
+) {
+    let (Some(bar), Some(cells)) = (bar, cells) else {
+        return;
+    };
+    let start = usize::from(bar.y) * usize::from(frame.width) + usize::from(bar.x);
+    frame.cells[start..start + usize::from(bar.width)].clone_from_slice(cells);
+    if frame
+        .cursor
+        .as_ref()
+        .is_some_and(|cursor| cursor.y == bar.y)
+    {
+        frame.cursor = None;
+    }
+}
+
+impl ClientShellState {
+    fn compose_unavailable(&mut self, cols: u16, rows: u16) -> FrameData {
+        let layout = self.layout(cols, rows);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
+        buffer.set_style(
+            buffer.area,
+            Style::default()
+                .fg(self.config.palette.text)
+                .bg(self.config.palette.panel_bg),
+        );
+        self.hits = ShellHitMap::default();
+        let sidebar = if layout.sidebar.width > 0 {
+            layout.sidebar
+        } else {
+            Rect::new(0, 1, cols, rows.saturating_sub(2))
+        };
+        let valid_navigation_target = self.mode == ClientShellMode::Navigate
+            && self
+                .navigate_workspace_id
+                .as_ref()
+                .is_some_and(|target| self.navigation_target_valid(target));
+        let pending_workspace_highlight =
+            self.pending_workspace_highlight.as_ref().filter(|pending| {
+                self.mode != ClientShellMode::Navigate
+                    && pending.target.endpoint_id == self.active_endpoint_id
+                    && self.navigation_target_valid(&pending.target)
+            });
+        // A resize invalidates pane geometry, not the healthy Local workspace chrome.
+        let local_snapshot = self.snapshot.as_deref().filter(|_| {
+            self.endpoints.len() == 1
+                && !self.sidebar_collapsed
+                && layout.sidebar.width > 0
+                && self.endpoint_status(&self.active_endpoint_id)
+                    == Some(ClientEndpointStatus::Online)
+        });
+        let mut render_state = render::ShellRenderState {
+            machine_diagnostics: &self.machine_diagnostics,
+            endpoints: &self.endpoints,
+            active_endpoint_id: &self.active_endpoint_id,
+            collapsed_endpoints: &self.collapsed_endpoints,
+            workspace_scroll: &mut self.workspace_scroll,
+            agent_scroll: &mut self.agent_scroll,
+            tab_scroll: &mut self.tab_scroll,
+            reveal_focused_workspace: &mut self.reveal_focused_workspace,
+            reveal_focused_tab: &mut self.reveal_focused_tab,
+            sidebar_collapsed: false,
+            sidebar_section_split: self.sidebar_section_split,
+            tab_drag_insert_index: None,
+            selected_workspace_id: self
+                .navigate_workspace_id
+                .as_ref()
+                .filter(|_| valid_navigation_target)
+                .or_else(|| pending_workspace_highlight.map(|pending| &pending.target)),
+            reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
+            dragged_workspace_id: None,
+            workspace_drop_indicator_row: None,
+        };
+        if let Some(snapshot) = local_snapshot {
+            render::render_sidebar(
+                &mut buffer,
+                sidebar,
+                snapshot,
+                &self.config,
+                &mut render_state,
+                &mut self.hits,
+            );
+        } else {
+            super::endpoint_sidebar::render_expanded(
+                &mut buffer,
+                sidebar,
+                self.snapshot.as_deref(),
+                &self.config,
+                &mut render_state,
+                &mut self.hits,
+            );
+        }
+        if !self.config.mouse_capture {
+            self.hits = ShellHitMap::default();
+        }
+        let message = self.endpoint_error.clone().unwrap_or_else(|| {
+            let status = self
+                .endpoint_status(&self.active_endpoint_id)
+                .unwrap_or(ClientEndpointStatus::Connecting);
+            let (_, label, _) = endpoint_status_presentation(status, &self.config.palette);
+            format!(
+                "{}: {label}. Select a connected machine.",
+                self.active_endpoint_label()
+            )
+        });
+        let message_area = if layout.sidebar.width > 0 {
+            layout.pane_surface
+        } else {
+            Rect::new(0, 0, cols, 1)
+        };
+        if local_snapshot.is_none() || self.endpoint_error.is_some() {
+            render::put_text(
+                &mut buffer,
+                message_area.x,
+                message_area.y,
+                message_area.width,
+                &message,
+                Style::default().fg(self.config.palette.overlay0),
+            );
+        }
+        render::render_mode_bar(
+            &mut buffer,
+            Rect::new(0, 0, cols, rows),
+            self.mode,
+            None,
+            self.endpoint_error.as_deref(),
+            false,
+            &self.config.keybinds,
+            &self.config.palette,
+        );
+        if let Some(notice) = &self.visible_endpoint_notice {
+            self.hits.notification_toast = endpoint_notices::render_notice(
+                &mut buffer,
+                Rect::new(0, 0, cols, rows),
+                notice,
+                1,
+                &self.config.palette,
+            );
+        }
+        FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
+    }
+
+    pub(crate) fn compose(
+        &mut self,
+        cols: u16,
+        rows: u16,
+    ) -> Option<crate::client::frame_output::ComposedFrame> {
+        self.last_composed_at = Some(std::time::Instant::now());
+        self.selection_repaint_deadline = None;
+        if self.last_composed_size != Some((cols, rows)) && self.mode == ClientShellMode::Navigate {
+            self.reveal_navigation_workspace = true;
+        }
+        self.last_composed_size = Some((cols, rows));
+        let valid_navigation_target = self.mode == ClientShellMode::Navigate
+            && self
+                .navigate_workspace_id
+                .as_ref()
+                .is_some_and(|target| self.navigation_target_valid(target));
+        let pending_workspace_highlight =
+            self.pending_workspace_highlight.as_ref().filter(|pending| {
+                self.mode != ClientShellMode::Navigate
+                    && pending.target.endpoint_id == self.active_endpoint_id
+                    && self.navigation_target_valid(&pending.target)
+            });
+        if self.snapshot.is_none() || self.pane_surface.is_none() {
+            return Some(self.compose_unavailable(cols, rows).into());
+        }
+        let snapshot = self.snapshot.as_deref()?;
+        // Do not compose a retained surface while waiting for its matching snapshot or
+        // connection generation.
+        if self.pending_pane_surface.is_some()
+            || self.pane_surface_generation != self.active_snapshot_generation
+        {
+            return None;
+        }
+        let surface = self.pane_surface.as_ref()?;
+        if snapshot.revision != surface.projection_revision {
+            return None;
+        }
+        let layout = self.layout(cols, rows);
+        if self.last_tab_bar_width != Some(layout.tab_bar.width) {
+            self.last_tab_bar_width = Some(layout.tab_bar.width);
+            self.reveal_focused_tab = true;
+        }
+        let tab_drag_insert_index = match &self.chrome_drag {
+            Some(ClientChromeDrag::Tab { insert_index, .. }) => *insert_index,
+            _ => None,
+        };
+        let (dragged_workspace_id, workspace_drop_indicator_row) = match &self.chrome_drag {
+            Some(ClientChromeDrag::Workspace {
+                source_workspace_id,
+                target,
+            }) => (
+                Some(source_workspace_id.as_str()),
+                target.as_ref().map(|(_, row)| *row),
+            ),
+            _ => (None, None),
+        };
+        let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
+        self.hits = render::render_shell(
+            &mut buffer,
+            layout,
+            snapshot,
+            &self.config,
+            render::ShellRenderState {
+                machine_diagnostics: &self.machine_diagnostics,
+                endpoints: &self.endpoints,
+                active_endpoint_id: &self.active_endpoint_id,
+                collapsed_endpoints: &self.collapsed_endpoints,
+                workspace_scroll: &mut self.workspace_scroll,
+                agent_scroll: &mut self.agent_scroll,
+                tab_scroll: &mut self.tab_scroll,
+                reveal_focused_workspace: &mut self.reveal_focused_workspace,
+                reveal_focused_tab: &mut self.reveal_focused_tab,
+                sidebar_collapsed: self.sidebar_collapsed,
+                sidebar_section_split: self.sidebar_section_split,
+                tab_drag_insert_index,
+                selected_workspace_id: self
+                    .navigate_workspace_id
+                    .as_ref()
+                    .filter(|_| valid_navigation_target)
+                    .or_else(|| pending_workspace_highlight.map(|pending| &pending.target)),
+                reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
+                dragged_workspace_id,
+                workspace_drop_indicator_row,
+            },
+        );
+        self.hits.panes = surface
+            .panes
+            .iter()
+            .map(|pane| PaneHit {
+                rect: Rect::new(
+                    layout.pane_surface.x.saturating_add(pane.rect.x),
+                    layout.pane_surface.y.saturating_add(pane.rect.y),
+                    pane.rect.width,
+                    pane.rect.height,
+                ),
+                inner_rect: Rect::new(
+                    layout.pane_surface.x.saturating_add(pane.inner_rect.x),
+                    layout.pane_surface.y.saturating_add(pane.inner_rect.y),
+                    pane.inner_rect.width,
+                    pane.inner_rect.height,
+                ),
+                scrollbar_rect: pane.scrollbar_rect.map(|rect| {
+                    Rect::new(
+                        layout.pane_surface.x.saturating_add(rect.x),
+                        layout.pane_surface.y.saturating_add(rect.y),
+                        rect.width,
+                        rect.height,
+                    )
+                }),
+                scroll: pane.scroll.map(|metrics| crate::pane::ScrollMetrics {
+                    offset_from_bottom: usize::try_from(metrics.offset_from_bottom)
+                        .unwrap_or(usize::MAX),
+                    max_offset_from_bottom: usize::try_from(metrics.max_offset_from_bottom)
+                        .unwrap_or(usize::MAX),
+                    viewport_rows: usize::try_from(metrics.viewport_rows).unwrap_or(usize::MAX),
+                }),
+                pane_id: pane.pane_id.clone(),
+                mouse_reporting: pane.mouse_reporting,
+                sgr_pixel_mouse: pane.sgr_pixel_mouse,
+                pixel_width: pane.pixel_width,
+                pixel_height: pane.pixel_height,
+            })
+            .collect();
+        let topology_signature = pane_surface_topology_signature(surface);
+        self.hits.pane_splits = surface
+            .splits
+            .iter()
+            .map(|split| PaneSplitHit {
+                direction: split.direction,
+                pos: match split.direction {
+                    crate::protocol::PaneSurfaceSplitDirection::Horizontal => {
+                        layout.pane_surface.x.saturating_add(split.pos)
+                    }
+                    crate::protocol::PaneSurfaceSplitDirection::Vertical => {
+                        layout.pane_surface.y.saturating_add(split.pos)
+                    }
+                },
+                area: Rect::new(
+                    layout.pane_surface.x.saturating_add(split.area.x),
+                    layout.pane_surface.y.saturating_add(split.area.y),
+                    split.area.width,
+                    split.area.height,
+                ),
+                hit_rect: Rect::new(
+                    layout.pane_surface.x.saturating_add(split.hit_rect.x),
+                    layout.pane_surface.y.saturating_add(split.hit_rect.y),
+                    split.hit_rect.width,
+                    split.hit_rect.height,
+                ),
+                path: split.path.clone(),
+                topology_signature,
+            })
+            .collect();
+        if !self.config.mouse_capture {
+            self.hits.pane_splits.clear();
+        }
+        let mode_bar_area = if self.config.tab_bar_position == TabBarPositionConfig::Bottom
+            && !layout.tab_bar.is_empty()
+        {
+            layout.tab_bar
+        } else {
+            layout.pane_surface
+        };
+        let mode_bar = if self.overlay.is_some() {
+            None
+        } else {
+            render::render_mode_bar(
+                &mut buffer,
+                mode_bar_area,
+                self.mode,
+                self.copy_mode.as_ref(),
+                self.endpoint_error.as_deref(),
+                &self.config.keybinds,
+                &self.config.palette,
+            )
+        };
+        if mode_bar == Some(layout.tab_bar) {
+            self.hits.tabs.clear();
+            self.hits.new_tab = Rect::default();
+            self.hits.tab_scroll_left = Rect::default();
+            self.hits.tab_scroll_right = Rect::default();
+        }
+        let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
+        let mode_bar_cells = mode_bar.map(|bar| {
+            let start = usize::from(bar.y) * usize::from(frame.width) + usize::from(bar.x);
+            frame.cells[start..start + usize::from(bar.width)].to_vec()
+        });
+        blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+        restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
+        let has_selection = self
+            .selection
+            .as_ref()
+            .is_some_and(|selection| selection.is_visible());
+        let has_search = self
+            .copy_mode
+            .as_ref()
+            .is_some_and(|copy_mode| !copy_mode.search_matches.is_empty());
+        if has_selection || has_search {
+            let cursor = frame.cursor.clone();
+            let mut composed = frame.to_ratatui_buffer()?;
+            for hit in &self.hits.panes {
+                let copy_surface_coherent =
+                    client_copy_surface_coherent(self.copy_mode.as_ref(), hit);
+                if copy_surface_coherent {
+                    render_client_copy_search_highlights(
+                        &mut composed,
+                        self.copy_mode.as_ref(),
+                        hit,
+                        &self.config.palette,
+                        false,
+                    );
+                }
+                let selection_is_stale_copy_projection = !copy_surface_coherent
+                    && self.copy_mode.as_ref().is_some_and(|copy_mode| {
+                        copy_mode.pane_id == hit.pane_id
+                            && self
+                                .selection
+                                .as_ref()
+                                .is_some_and(|selection| selection.pane_id == hit.pane_id)
+                    });
+                if !selection_is_stale_copy_projection {
+                    crate::ui::render_selection_highlight(
+                        self.selection.as_ref(),
+                        &mut composed,
+                        &hit.pane_id,
+                        hit.inner_rect,
+                        hit.scroll,
+                        &self.config.palette,
+                        crate::terminal_theme::TerminalTheme {
+                            background: self.host_background,
+                            ..Default::default()
+                        },
+                    );
+                }
+                if copy_surface_coherent {
+                    render_client_copy_search_highlights(
+                        &mut composed,
+                        self.copy_mode.as_ref(),
+                        hit,
+                        &self.config.palette,
+                        true,
+                    );
+                }
+            }
+            frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
+        }
+        if self.mode == ClientShellMode::Copy {
+            frame.cursor = None;
+            if let Some(copy_mode) = self.copy_mode.as_ref() {
+                if let Some(hit) = self.hits.panes.iter().find(|hit| {
+                    hit.pane_id == copy_mode.pane_id
+                        && client_copy_surface_coherent(Some(copy_mode), hit)
+                }) {
+                    let viewport_top = copy_mode
+                        .max_offset_from_bottom
+                        .saturating_sub(copy_mode.offset_from_bottom)
+                        .min(u32::MAX as usize) as u32;
+                    let viewport_row = copy_mode.cursor.row.saturating_sub(viewport_top);
+                    let x = hit.inner_rect.x.saturating_add(copy_mode.cursor.col);
+                    let y = hit.inner_rect.y.saturating_add(viewport_row as u16);
+                    if viewport_row < u32::from(hit.inner_rect.height)
+                        && copy_mode.cursor.col < hit.inner_rect.width
+                        && x < frame.width
+                        && y < frame.height
+                    {
+                        let mut composed = frame.to_ratatui_buffer()?;
+                        composed[(x, y)].set_style(
+                            Style::default()
+                                .fg(match self.config.palette.panel_bg {
+                                    ratatui::style::Color::Reset => self.config.palette.surface_dim,
+                                    color => color,
+                                })
+                                .bg(self.config.palette.accent)
+                                .add_modifier(Modifier::BOLD),
+                        );
+                        frame.replace_from_ratatui_buffer_preserving_effects(&composed, None);
+                    } else {
+                        frame.cursor = None;
+                    }
+                }
+            }
+        }
+        restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
+        self.hits.notification_toast = Rect::default();
+        let has_config_diagnostic = self.config_diagnostic.is_some();
+        let active_lifecycle = self
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+            .filter(|endpoint| endpoint.status != ClientEndpointStatus::Online)
+            .map(|endpoint| (endpoint.label.clone(), endpoint.status));
+        if has_config_diagnostic || active_lifecycle.is_some() || self.visible_endpoint_notice.is_some()
+        {
+            let cursor = frame.cursor.clone();
+            let mut composed = frame.to_ratatui_buffer()?;
+            if let Some(diagnostic) = self.config_diagnostic.as_deref() {
+                let diagnostic_area = Rect::new(0, 0, cols, rows);
+                crate::ui::render_config_diagnostic_buffer(
+                    &mut composed,
+                    diagnostic_area,
+                    diagnostic,
+                    &self.config.palette,
+                );
+            }
+            let lifecycle_offset = active_lifecycle.as_ref().map_or(0, |(label, status)| {
+                endpoint_notices::render_lifecycle_banner(
+                    &mut composed,
+                    Rect::new(0, 0, cols, rows),
+                    label,
+                    *status,
+                    u16::from(has_config_diagnostic),
+                    &self.config.palette,
+                );
+                1
+            });
+            if let Some(notice) = self.visible_endpoint_notice.as_ref() {
+                self.hits.notification_toast = endpoint_notices::render_notice(
+                    &mut composed,
+                    Rect::new(0, 0, cols, rows),
+                    notice,
+                    u16::from(has_config_diagnostic) + lifecycle_offset,
+                    &self.config.palette,
+                );
+            }
+            frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
+        }
+        restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
+        if let Some(overlay) = self.overlay.as_ref() {
+            let mut composed = frame.to_ratatui_buffer()?;
+            let cursor = if let ClientShellOverlay::ContextMenu(menu) = overlay {
+                let rendered =
+                    render::render_context_menu(&mut composed, menu, &self.config.palette)?;
+                self.hits.context_menu_rows = rendered.menu_rows;
+                None
+            } else if let ClientShellOverlay::GlobalMenu(menu) = overlay {
+                let rendered = render::render_global_menu(
+                    &mut composed,
+                    self.hits.global_launcher,
+                    menu,
+                    snapshot,
+                    &self.config.palette,
+                )?;
+                self.hits.global_menu_rows = rendered.menu_rows;
+                None
+            } else {
+                let rendered = render::render_client_overlay(
+                    &mut composed,
+                    overlay,
+                    snapshot,
+                    &self.endpoints,
+                    &self.active_endpoint_id,
+                    &self.config.keybinds,
+                    &self.config.palette,
+                )?;
+                self.hits.overlay_primary = rendered.primary;
+                self.hits.overlay_clear = rendered.clear;
+                self.hits.overlay_cancel = rendered.cancel;
+                self.hits.navigator_popup = rendered.navigator_popup;
+                self.hits.navigator_search = rendered.navigator_search;
+                self.hits.navigator_rows = rendered.navigator_rows;
+                self.hits.navigator_scrollbar = rendered.navigator_scrollbar;
+                self.hits.navigator_scroll_metrics = rendered.navigator_scroll_metrics;
+                self.hits.help_popup = rendered.help_popup;
+                self.hits.help_scrollbar = rendered.help_scrollbar;
+                self.hits.help_scroll_metrics = rendered.help_scroll_metrics;
+                self.hits.help_max_scroll = rendered.help_max_scroll;
+                rendered.cursor
+            };
+            frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
+        }
+        if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
+            help.scroll = help.scroll.min(self.hits.help_max_scroll);
+        }
+        if self.endpoint_status(&self.active_endpoint_id) != Some(ClientEndpointStatus::Online) {
+            frame.cursor = None;
+            self.hits.panes.clear();
+            self.hits.pane_splits.clear();
+        }
+        Some(crate::client::frame_output::ComposedFrame { frame })
+    }
+}
+
+fn client_copy_surface_coherent(copy_mode: Option<&ClientCopyModeState>, hit: &PaneHit) -> bool {
+    copy_mode
+        .filter(|copy_mode| copy_mode.pane_id == hit.pane_id)
+        .is_none_or(|copy_mode| {
+            copy_mode.geometry == (hit.inner_rect.width, hit.inner_rect.height)
+                && hit.scroll.is_some_and(|scroll| {
+                    scroll.offset_from_bottom == copy_mode.offset_from_bottom
+                        && scroll.max_offset_from_bottom == copy_mode.max_offset_from_bottom
+                })
+        })
+}
+
+fn render_client_copy_search_highlights(
+    buffer: &mut Buffer,
+    copy_mode: Option<&ClientCopyModeState>,
+    hit: &PaneHit,
+    palette: &Palette,
+    current_only: bool,
+) {
+    let Some(copy_mode) = copy_mode.filter(|copy_mode| copy_mode.pane_id == hit.pane_id) else {
+        return;
+    };
+    if hit.inner_rect.is_empty() {
+        return;
+    }
+    let top = copy_mode
+        .max_offset_from_bottom
+        .saturating_sub(copy_mode.offset_from_bottom)
+        .min(u32::MAX as usize) as u32;
+    let bottom = top.saturating_add(u32::from(hit.inner_rect.height.saturating_sub(1)));
+    let style = if current_only {
+        Style::default()
+            .fg(panel_contrast_fg(palette))
+            .bg(palette.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(palette.text).bg(palette.surface1)
+    };
+    for (index, text_match) in copy_mode.search_matches.iter().enumerate() {
+        if (copy_mode.search_current == Some(index)) != current_only
+            || text_match.end.row < top
+            || text_match.start.row > bottom
+        {
+            continue;
+        }
+        let start_row = text_match.start.row.max(top);
+        let end_row = text_match.end.row.min(bottom);
+        for absolute_row in start_row..=end_row {
+            let viewport_row = absolute_row.saturating_sub(top) as u16;
+            let start_col = if absolute_row == text_match.start.row {
+                text_match.start.col
+            } else {
+                0
+            };
+            let end_col = if absolute_row == text_match.end.row {
+                text_match.end.col
+            } else {
+                hit.inner_rect.width.saturating_sub(1)
+            };
+            let end_col = end_col.min(hit.inner_rect.width.saturating_sub(1));
+            for col in start_col..=end_col {
+                buffer[(
+                    hit.inner_rect.x.saturating_add(col),
+                    hit.inner_rect.y.saturating_add(viewport_row),
+                )]
+                    .set_style(style);
+            }
+        }
+    }
+}

@@ -1,0 +1,12 @@
+target
+__pycache__
+*.pyc
+*.swp
+*.swo
+*~
+.agents
+.plans
+.claude
+.brokkr
+.local
+research/

@@ -1,0 +1,1674 @@
+//! Application orchestration.
+//!
+//! - `state.rs` — AppState, Mode, and pure data structs
+//! - `actions.rs` — state mutations (testable without PTYs/async)
+
+pub(crate) mod actions;
+mod agent_resume;
+mod agents;
+pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
+mod api;
+#[cfg(test)]
+pub(crate) use api::test_support::exiting_test_command;
+pub(crate) mod api_helpers;
+pub(crate) use api_helpers::limit_snapshot_lines;
+mod creation;
+mod git_refresh;
+mod host_theme;
+mod ids;
+mod runtime;
+mod session;
+pub mod state;
+mod tab_bar_status;
+mod terminal_targets;
+mod terminal_titles;
+mod window_title;
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
+const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
+const GIT_REPO_DISCOVERY_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
+const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
+
+use ratatui::layout::Rect;
+use tokio::sync::{mpsc, Notify};
+use tracing::info;
+
+use crate::config::Config;
+use crate::events::AppEvent;
+
+pub use state::{AppState, Mode, ViewState};
+
+/// Full application: AppState + runtime concerns (event channels, async I/O).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AppPolicy {
+    pub(crate) restore_session: bool,
+    pub(crate) persist_session: bool,
+}
+
+impl AppPolicy {
+    pub(crate) const PRODUCTION: Self = Self {
+        restore_session: true,
+        persist_session: true,
+    };
+
+    #[cfg(test)]
+    pub(crate) const TEST: Self = Self {
+        restore_session: false,
+        persist_session: false,
+    };
+}
+
+pub struct App {
+    pub state: AppState,
+    pub(crate) pixel_mouse_available: bool,
+    pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
+    pub event_tx: mpsc::Sender<AppEvent>,
+    pub(crate) event_rx: mpsc::Receiver<AppEvent>,
+    pub(crate) api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
+    pub(crate) event_hub: crate::api::EventHub,
+    pub(crate) last_focus: Option<(usize, crate::layout::PaneId)>,
+    pub(crate) policy: AppPolicy,
+    pub(crate) config_diagnostic_deadline: Option<Instant>,
+    pub(crate) last_git_remote_status_refresh: Instant,
+    pub(crate) last_git_repo_discovery_refresh: Instant,
+    pub(crate) git_refresh_in_flight: bool,
+    pub(crate) git_refresh_due_after_in_flight: bool,
+    pub(crate) git_identity_refresh_requested: bool,
+    pub(crate) git_status_cache: HashMap<std::path::PathBuf, crate::workspace::GitStatusCacheEntry>,
+    pub(crate) loaded_host_cursor: crate::config::HostCursorModeConfig,
+    pub(crate) agent_metadata_deadline: Option<Instant>,
+    pub(crate) pending_agent_resume_deadline: Option<Instant>,
+    startup_per_agent_delay: Duration,
+    next_agent_resume_at: Option<Instant>,
+    pub(crate) session_save_deadline: Option<Instant>,
+    pub(crate) session_save_thread: Option<std::thread::JoinHandle<()>>,
+    session_writer: Arc<std::sync::Mutex<crate::persist::SessionWriter>>,
+    pane_exit_checkpoint_pending: bool,
+    tab_bar_status_generation: u64,
+    tab_bar_datetimes: Vec<tab_bar_status::TabBarDatetimeRuntime>,
+    tab_bar_commands: Vec<tab_bar_status::TabBarCommandRuntime>,
+    next_tab_bar_datetime_refresh: Option<Instant>,
+    /// Parsed `ui.window_title` plus the hostname resolved when it was applied.
+    window_title_template: Option<(crate::config::WindowTitleTemplate, String)>,
+    pub(crate) persist_pane_history: bool,
+    /// Last render-loop attempt, including a throttled hidden-only PTY skip.
+    pub(crate) last_render_at: Option<Instant>,
+    /// Last attempt that could update a connected presentation surface.
+    pub(crate) last_presentation_at: Option<Instant>,
+    pub render_notify: Arc<Notify>,
+    pub(crate) render_dirty: Arc<crate::render_signal::RenderSignal>,
+    pub(crate) full_redraw_pending: bool,
+    client_shell_keybindings_profile: Option<String>,
+}
+
+pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
+pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
+
+fn agent_panel_sort_from_config(
+    sort: crate::config::AgentPanelSortConfig,
+) -> state::AgentPanelSort {
+    match sort {
+        crate::config::AgentPanelSortConfig::Spaces => state::AgentPanelSort::Spaces,
+        crate::config::AgentPanelSortConfig::Priority => state::AgentPanelSort::Priority,
+    }
+}
+
+/// Parse the configured agent name list into a deduplicated set of `Agent`
+/// values. Unknown agent names are silently dropped so a typo cannot disable
+/// other valid entries.
+fn parse_cjk_ime_agents(names: &[String]) -> Vec<crate::detect::Agent> {
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        if let Some(agent) = crate::detect::parse_agent_label(name) {
+            if !out.contains(&agent) {
+                out.push(agent);
+            }
+        }
+    }
+    out
+}
+
+pub(crate) fn palette_from_config(config: &Config) -> state::Palette {
+    let name = config.theme.name.as_deref().unwrap_or("catppuccin");
+    let mut palette = state::Palette::from_name(name).unwrap_or_else(|| {
+        tracing::warn!(theme = name, "unknown theme, falling back to catppuccin");
+        state::Palette::catppuccin()
+    });
+    if let Some(custom) = &config.theme.custom {
+        palette = palette.with_overrides(custom);
+    }
+    let custom_accent = config
+        .theme
+        .custom
+        .as_ref()
+        .and_then(|custom| custom.accent.as_ref())
+        .is_some();
+    if config.ui.accent != "cyan" && !custom_accent {
+        palette.accent = crate::config::parse_color(&config.ui.accent);
+    }
+    palette
+}
+
+impl App {
+    pub fn new(
+        config: &Config,
+        policy: AppPolicy,
+        config_diagnostic: Option<String>,
+        api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
+        event_hub: crate::api::EventHub,
+    ) -> Self {
+        let (prefix_code, prefix_mods) = config.prefix_key();
+        let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
+        let render_notify = Arc::new(Notify::new());
+        let render_dirty = Arc::new(crate::render_signal::RenderSignal::new());
+
+        // Try to restore previous session
+        let mut restored_terminals = std::collections::HashMap::new();
+        let mut restored_terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let snapshot = policy.restore_session.then(crate::persist::load).flatten();
+        let session_writer = Arc::new(std::sync::Mutex::new(crate::persist::SessionWriter::new(
+            policy.restore_session && snapshot.is_none(),
+        )));
+        let (workspaces, active, selected) = if let Some(snap) = snapshot {
+            let history = config
+                .experimental
+                .pane_history
+                .then(crate::persist::load_history)
+                .flatten();
+            let (ws, terminals, terminal_runtimes) = crate::persist::restore(
+                &snap,
+                history.as_ref(),
+                24,
+                80,
+                config.advanced.scrollback_limit_bytes,
+                &config.terminal.default_shell,
+                config.terminal.shell_mode,
+                config.session.resume_agents_on_restore,
+                event_tx.clone(),
+                render_notify.clone(),
+                render_dirty.clone(),
+            );
+            restored_terminals = terminals;
+            restored_terminal_runtimes = terminal_runtimes.into();
+            if ws.is_empty() {
+                crate::logging::session_restored(0, "empty");
+                (Vec::new(), None, 0)
+            } else {
+                crate::logging::session_restored(ws.len(), "ok");
+                let active = snap.active.filter(|&i| i < ws.len());
+                let selected = snap.selected.min(ws.len().saturating_sub(1));
+                (ws, active, selected)
+            }
+        } else {
+            (Vec::new(), None, 0)
+        };
+
+        let agent_panel_sort = agent_panel_sort_from_config(config.ui.agent_panel_sort);
+
+        info!(
+            pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes,
+            "using pane scrollback configuration"
+        );
+
+        let mode = if active.is_some() {
+            state::Mode::Terminal
+        } else {
+            state::Mode::Navigate
+        };
+
+        #[cfg(not(test))]
+        let agent_manifest_summaries = crate::detect::manifest::reload_manifests();
+        // Nextest runs each unit test in a fresh process. Manifest-sensitive tests reload
+        // explicitly; unrelated App tests should not recompile every bundled regex.
+        #[cfg(test)]
+        let agent_manifest_summaries = Vec::new();
+
+        let mut state = AppState {
+            terminals: std::collections::HashMap::new(),
+            direct_attach_resize_locks: std::collections::HashSet::new(),
+            pane_id_aliases: std::collections::HashMap::new(),
+            public_pane_id_aliases: std::collections::HashMap::new(),
+            workspaces,
+            active,
+            previous_pane_focus: None,
+            selected,
+            mode,
+            should_quit: false,
+            view: state::ViewState {
+                terminal_area: Rect::default(),
+                pane_infos: Vec::new(),
+            },
+            config_diagnostic,
+            outer_terminal_focus: None,
+            prefix_code,
+            prefix_mods,
+            headless_size: config.headless_size(),
+            agent_panel_sort,
+            sidebar_agents: config.ui.sidebar.agents.clone(),
+            sidebar_spaces: config.ui.sidebar.spaces.clone(),
+            next_agent_state_change_seq: 0,
+            confirm_close: config.ui.confirm_close,
+            pane_borders: config.ui.pane_borders,
+            pane_outer_borders: config.ui.pane_outer_borders,
+            pane_scrollbars: config.ui.pane_scrollbars,
+            pane_gaps: config.ui.pane_gaps,
+            show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
+            tab_bar_right: Vec::new(),
+            tab_bar_right_separator: String::new(),
+            reveal_hidden_cursor_for_cjk_ime: config.experimental.reveal_hidden_cursor_for_cjk_ime,
+            cjk_ime_agent_filter_configured: !config.experimental.cjk_ime_agents.is_empty(),
+            cjk_ime_agents: parse_cjk_ime_agents(&config.experimental.cjk_ime_agents),
+            cjk_ime_cursor_shape: config.experimental.cjk_ime_cursor_shape.to_decscusr(),
+            default_shell: config.terminal.default_shell.clone(),
+            shell_mode: config.terminal.shell_mode,
+            new_terminal_cwd: config.terminal.new_cwd.clone(),
+            pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
+            keybinds: config.keybinds(),
+            palette: palette_from_config(config),
+            host_terminal_appearance: None,
+            host_terminal_appearance_explicit: false,
+            agent_manifest_summaries,
+            host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
+            host_cell_size: crate::terminal_cell_size::HostCellSize::default(),
+            session_dirty: false,
+            terminal_runtime_shutdowns: Vec::new(),
+        };
+
+        state.terminals = restored_terminals;
+
+        for ws_idx in 0..state.workspaces.len() {
+            let cwd = state.workspaces[ws_idx]
+                .resolved_identity_cwd_from(&state.terminals, &restored_terminal_runtimes);
+            state.workspaces[ws_idx].cached_git_branch =
+                cwd.as_deref().and_then(crate::workspace::git_branch);
+        }
+
+        let last_focus = state.active.and_then(|idx| {
+            state
+                .workspaces
+                .get(idx)
+                .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
+        });
+        let client_shell_keybindings_profile = config.local_keybindings_profile_toml().ok();
+
+        let mut app = Self {
+            config_diagnostic_deadline: None,
+            state,
+            pixel_mouse_available: false,
+            terminal_runtimes: restored_terminal_runtimes,
+            event_tx,
+            event_rx,
+            last_git_remote_status_refresh: Instant::now() - GIT_REMOTE_STATUS_REFRESH_INTERVAL,
+            last_git_repo_discovery_refresh: Instant::now(),
+            git_refresh_in_flight: false,
+            git_refresh_due_after_in_flight: false,
+            git_identity_refresh_requested: false,
+            git_status_cache: HashMap::new(),
+            loaded_host_cursor: config.ui.host_cursor,
+            agent_metadata_deadline: None,
+            pending_agent_resume_deadline: None,
+            startup_per_agent_delay: Duration::from_millis(
+                config.session.startup_per_agent_delay_ms.into(),
+            ),
+            next_agent_resume_at: None,
+            session_save_deadline: None,
+            session_save_thread: None,
+            session_writer,
+            pane_exit_checkpoint_pending: false,
+            tab_bar_status_generation: 0,
+            tab_bar_datetimes: Vec::new(),
+            tab_bar_commands: Vec::new(),
+            next_tab_bar_datetime_refresh: None,
+            window_title_template: None,
+            persist_pane_history: config.experimental.pane_history,
+            last_render_at: None,
+            last_presentation_at: None,
+            api_rx,
+            event_hub,
+            last_focus,
+            policy,
+            render_notify,
+            render_dirty,
+            full_redraw_pending: false,
+            client_shell_keybindings_profile,
+        };
+        app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
+        app.configure_window_title(&config.ui.window_title);
+        app
+    }
+
+    pub(crate) fn ensure_default_workspace(&mut self) -> bool {
+        if !self.state.workspaces.is_empty() {
+            return false;
+        }
+
+        let cwd = self.resolve_new_terminal_cwd(None);
+        let preserve_checkpoint = self.pane_exit_checkpoint_pending && !self.state.session_dirty;
+
+        match self.create_workspace_with_options(cwd, true) {
+            Ok(_) => {
+                if preserve_checkpoint {
+                    // Automatic replacement is part of pane removal, not a new user mutation.
+                    self.pane_exit_checkpoint_pending = true;
+                    self.finish_checkpointed_pane_exit();
+                }
+                true
+            }
+            Err(err) => {
+                tracing::error!(err = %err, "failed to create default workspace");
+                self.state.mode = Mode::Navigate;
+                false
+            }
+        }
+    }
+
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::detect::{Agent, AgentState};
+    use crate::workspace::Workspace;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::sync::Mutex;
+
+    fn test_app() -> App {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.default_shell = exiting_test_command().into();
+        app
+    }
+
+    fn unique_temp_path(name: &str) -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test precondition")
+            .as_nanos();
+        std::env::temp_dir().join(format!("shepr-{name}-{}-{stamp}", std::process::id()))
+    }
+
+    fn config_env_lock() -> &'static Mutex<()> {
+        crate::config::test_config_env_lock()
+    }
+
+    fn temp_config_path(name: &str) -> std::path::PathBuf {
+        let unique = format!(
+            "shepr-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test precondition")
+                .as_nanos()
+        );
+        std::env::temp_dir().join(unique).join("config.toml")
+    }
+
+    #[test]
+    fn git_refresh_deadline_is_suppressed_while_in_flight() {
+        let mut app = test_app();
+        app.state.workspaces.push(Workspace::test_new("one"));
+        app.git_refresh_in_flight = true;
+
+        assert_eq!(app.git_refresh_deadline(), None);
+    }
+
+    #[test]
+    fn unchanged_git_status_event_has_no_render_impact() {
+        let mut app = test_app();
+        app.git_refresh_in_flight = true;
+
+        let changed = app.handle_internal_event_with_render_impact(AppEvent::GitStatusRefreshed {
+            results: Vec::new(),
+            cache_updates: Vec::new(),
+        });
+
+        assert!(!changed);
+        assert!(!app.git_refresh_in_flight);
+    }
+
+    #[test]
+    fn tab_bar_command_events_render_only_when_visible_output_changes() {
+        let mut app = test_app();
+        app.configure_tab_bar_status(
+            &[crate::config::TabBarRightEntryConfig::Command {
+                command: "status".into(),
+                interval_seconds: 5,
+                timeout_seconds: 2,
+            }],
+            " ",
+        );
+        let generation = app.tab_bar_status_generation;
+        let event = |generation, output: Option<&str>| AppEvent::TabBarCommandFinished {
+            generation,
+            segment_index: 0,
+            result: Ok(output.map(str::to_string)),
+        };
+
+        assert!(!app.handle_internal_event_with_render_impact(event(generation, None)));
+        assert!(app.handle_internal_event_with_render_impact(event(generation, Some("ready"))));
+        assert!(!app.handle_internal_event_with_render_impact(event(generation, Some("ready"))));
+        assert!(!app.handle_internal_event_with_render_impact(event(
+            generation.wrapping_add(1),
+            Some("stale"),
+        )));
+    }
+
+    #[test]
+    fn git_status_event_clears_in_flight_refresh() {
+        let mut app = test_app();
+        app.git_refresh_in_flight = true;
+        let previous_refresh = Instant::now() - Duration::from_secs(10);
+        app.last_git_remote_status_refresh = previous_refresh;
+
+        app.handle_internal_event(AppEvent::GitStatusRefreshed {
+            results: Vec::new(),
+            cache_updates: Vec::new(),
+        });
+
+        assert!(!app.git_refresh_in_flight);
+        assert!(app.last_git_remote_status_refresh > previous_refresh);
+    }
+
+    #[test]
+    fn git_status_event_marks_render_dirty_when_status_changes() {
+        let mut app = test_app();
+        app.state.workspaces.push(Workspace::test_new("one"));
+        let _ = app.render_dirty.take();
+        let workspace_id = app.state.workspaces[0].id.clone();
+        let resolved_identity_cwd = app.state.workspaces[0].resolved_identity_cwd().expect("test precondition");
+
+        app.handle_internal_event(AppEvent::GitStatusRefreshed {
+            results: vec![crate::workspace::WorkspaceGitStatus {
+                workspace_id,
+                resolved_identity_cwd: resolved_identity_cwd.clone(),
+                status_cache_key: resolved_identity_cwd,
+                demand: crate::workspace::GitStatusRefreshDemand::ALL,
+                auto_label: "one".into(),
+                branch: Some("render-dirty-test".into()),
+                ahead_behind: Some((1, 0)),
+                space: None,
+            }],
+            cache_updates: Vec::new(),
+        });
+
+        assert!(app.render_dirty.is_pending());
+    }
+
+    #[test]
+    fn unchanged_git_status_drain_has_no_render_impact() {
+        let mut app = test_app();
+        app.git_refresh_in_flight = true;
+        app.event_tx
+            .try_send(AppEvent::GitStatusRefreshed {
+                results: Vec::new(),
+                cache_updates: Vec::new(),
+            })
+            .expect("test precondition");
+
+        assert!(!app.drain_internal_events());
+        assert!(!app.git_refresh_in_flight);
+    }
+
+    #[test]
+    fn internal_event_drain_limits_work_per_tick() {
+        let mut app = test_app();
+        for _ in 0..=APP_EVENT_DRAIN_LIMIT {
+            app.event_tx
+                .try_send(AppEvent::GitStatusRefreshed {
+                    results: Vec::new(),
+                    cache_updates: Vec::new(),
+                })
+                .expect("test precondition");
+        }
+
+        app.drain_internal_events();
+
+        assert!(app.event_rx.try_recv().is_ok());
+        assert!(app.event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn api_request_drains_all_pending_internal_events_before_reading_state() {
+        let mut app = test_app();
+        for _ in 0..=APP_EVENT_DRAIN_LIMIT {
+            app.event_tx
+                .try_send(AppEvent::GitStatusRefreshed {
+                    results: Vec::new(),
+                    cache_updates: Vec::new(),
+                })
+                .expect("test precondition");
+        }
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_server_stop_after_events".into(),
+            method: crate::api::schema::Method::ServerStop(
+                crate::api::schema::EmptyParams::default(),
+            ),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+
+        assert_eq!(response["result"]["type"], "ok");
+        assert!(app.event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn startup_uses_configured_agent_panel_sort() {
+        let mut config = Config::default();
+        config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let app = App::new(
+            &config,
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+
+        assert_eq!(app.state.agent_panel_sort, state::AgentPanelSort::Priority);
+    }
+
+    #[test]
+    fn theme_uses_configured_name() {
+        let mut config = Config::default();
+        config.theme.name = Some("tokyo-night".to_string());
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let app = App::new(
+            &config,
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+
+        assert_eq!(app.state.palette, state::Palette::tokyo_night());
+    }
+
+    #[test]
+    fn read_only_api_requests_do_not_force_rerender() {
+        let read_only = crate::api::schema::Request {
+            id: "req_1".into(),
+            method: crate::api::schema::Method::WorkspaceList(
+                crate::api::schema::EmptyParams::default(),
+            ),
+        };
+        let mutating = crate::api::schema::Request {
+            id: "req_2".into(),
+            method: crate::api::schema::Method::WorkspaceFocus(
+                crate::api::schema::WorkspaceTarget {
+                    workspace_id: "w1".into(),
+                },
+            ),
+        };
+        let pane_rename = crate::api::schema::Request {
+            id: "req_3".into(),
+            method: crate::api::schema::Method::PaneRename(crate::api::schema::PaneRenameParams {
+                pane_id: "w1:p1".into(),
+                label: Some("logs".into()),
+            }),
+        };
+        let pane_swap = crate::api::schema::Request {
+            id: "req_6".into(),
+            method: crate::api::schema::Method::PaneSwap(crate::api::schema::PaneSwapParams {
+                pane_id: Some("w1:p1".into()),
+                direction: Some(crate::api::schema::PaneDirection::Right),
+                ..crate::api::schema::PaneSwapParams::default()
+            }),
+        };
+        let pane_focus_direction = crate::api::schema::Request {
+            id: "req_7".into(),
+            method: crate::api::schema::Method::PaneFocusDirection(
+                crate::api::schema::PaneFocusDirectionParams {
+                    pane_id: Some("w1:p1".into()),
+                    direction: crate::api::schema::PaneDirection::Right,
+                },
+            ),
+        };
+        let pane_resize = crate::api::schema::Request {
+            id: "req_8".into(),
+            method: crate::api::schema::Method::PaneResize(crate::api::schema::PaneResizeParams {
+                pane_id: Some("w1:p1".into()),
+                direction: crate::api::schema::PaneDirection::Right,
+                amount: Some(0.05),
+            }),
+        };
+        assert!(!crate::api::request_changes_ui(&read_only));
+        assert!(crate::api::request_changes_ui(&mutating));
+        assert!(crate::api::request_changes_ui(&pane_rename));
+        assert!(crate::api::request_changes_ui(&pane_swap));
+        assert!(crate::api::request_changes_ui(&pane_focus_direction));
+        assert!(crate::api::request_changes_ui(&pane_resize));
+    }
+
+    #[test]
+    fn workspace_create_response_includes_initial_tab_and_root_pane() {
+        let mut app = test_app();
+        app.state.workspaces = vec![Workspace::test_new("api-root-pane")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let crate::api::schema::ResponseResult::WorkspaceCreated {
+            workspace,
+            tab,
+            root_pane,
+        } = app.workspace_created_result(0).expect("test precondition")
+        else {
+            panic!("expected workspace_created response");
+        };
+
+        assert_eq!(workspace.label, "api-root-pane");
+        assert_eq!(tab.workspace_id, workspace.workspace_id);
+        assert_eq!(root_pane.workspace_id, workspace.workspace_id);
+        assert_eq!(root_pane.tab_id, tab.tab_id);
+        assert!(root_pane.terminal_id.starts_with("term_"));
+        assert_ne!(root_pane.terminal_id, root_pane.pane_id);
+    }
+
+    #[test]
+    fn tab_create_response_includes_root_pane() {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("api-tab-root-pane");
+        workspace.test_add_tab(None);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let crate::api::schema::ResponseResult::TabCreated { tab, root_pane } =
+            app.tab_created_result(0, 1).expect("test precondition")
+        else {
+            panic!("expected tab_created response");
+        };
+
+        assert_eq!(tab.workspace_id, root_pane.workspace_id);
+        assert_eq!(root_pane.tab_id, tab.tab_id);
+        assert_eq!(tab.pane_count, 1);
+    }
+
+    #[test]
+    fn tab_info_number_uses_stable_public_tab_number() {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("api-tab-public-number");
+        let removed_tab = workspace.test_add_tab(None);
+        let survivor_tab = workspace.test_add_tab(None);
+        let survivor_pane = workspace.tabs[survivor_tab].root_pane;
+        assert!(workspace.close_tab(removed_tab));
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let survivor_idx = app.state.workspaces[0]
+            .find_tab_index_for_pane(survivor_pane)
+            .expect("test precondition");
+
+        let tab = app.tab_info(0, survivor_idx).expect("test precondition");
+
+        assert_eq!(tab.tab_id, format!("{}:t3", app.state.workspaces[0].id));
+        assert_eq!(tab.number, 3);
+        assert_eq!(tab.label, "2");
+    }
+
+    #[test]
+    fn legacy_bare_tab_id_uses_tab_position_not_public_tab_number() {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("legacy-tab-id");
+        let removed_tab = workspace.test_add_tab(None);
+        workspace.test_add_tab(None);
+        let public_four_tab = workspace.test_add_tab(None);
+        let fourth_position_tab = workspace.test_add_tab(None);
+        let public_four_pane = workspace.tabs[public_four_tab].root_pane;
+        let fourth_position_pane = workspace.tabs[fourth_position_tab].root_pane;
+        assert!(workspace.close_tab(removed_tab));
+        app.state.workspaces = vec![workspace];
+
+        let public_four_idx = app.state.workspaces[0]
+            .find_tab_index_for_pane(public_four_pane)
+            .expect("test precondition");
+        let fourth_position_idx = app.state.workspaces[0]
+            .find_tab_index_for_pane(fourth_position_pane)
+            .expect("test precondition");
+
+        assert_eq!(app.state.workspaces[0].tabs[public_four_idx].number, 4);
+        assert_eq!(app.state.workspaces[0].tabs[fourth_position_idx].number, 5);
+        assert_eq!(
+            app.parse_tab_id(&format!("{}:t4", app.state.workspaces[0].id)),
+            Some((0, public_four_idx))
+        );
+        assert_eq!(
+            app.parse_tab_id(&format!("{}:4", app.state.workspaces[0].id)),
+            Some((0, fourth_position_idx))
+        );
+    }
+
+    #[test]
+    fn workspace_creation_in_navigate_mode_uses_selected_workspace_seed_cwd() {
+        let mut app = test_app();
+        let mut first = Workspace::test_new("shepr");
+        first.identity_cwd = std::path::PathBuf::from("/tmp/shepr");
+        let mut second = Workspace::test_new("pion");
+        second.identity_cwd = std::path::PathBuf::from("/tmp/pion");
+
+        app.state.workspaces = vec![first, second];
+        app.state.active = Some(0);
+        app.state.selected = 1;
+        app.state.mode = Mode::Navigate;
+
+        let ws_idx = app.workspace_creation_source().expect("test precondition");
+        let seed_cwd = app.seed_cwd_from_workspace(ws_idx).expect("test precondition");
+
+        assert_eq!(ws_idx, 1);
+        assert_eq!(seed_cwd, std::path::PathBuf::from("/tmp/pion"));
+    }
+
+    #[test]
+    fn new_terminal_cwd_follow_uses_source_cwd() {
+        let cwd = creation::resolve_new_terminal_cwd(
+            &crate::config::NewTerminalCwdConfig::Follow,
+            Some(std::path::PathBuf::from("/tmp/shepr-source")),
+        );
+
+        assert_eq!(cwd, std::path::PathBuf::from("/tmp/shepr-source"));
+    }
+
+    #[test]
+    fn new_terminal_cwd_follow_without_source_uses_home() {
+        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+            return;
+        };
+
+        let cwd =
+            creation::resolve_new_terminal_cwd(&crate::config::NewTerminalCwdConfig::Follow, None);
+
+        assert_eq!(cwd, home);
+    }
+
+    #[test]
+    fn new_terminal_cwd_path_uses_configured_path() {
+        let cwd = creation::resolve_new_terminal_cwd(
+            &crate::config::NewTerminalCwdConfig::Path("/tmp/shepr-fixed".into()),
+            Some(std::path::PathBuf::from("/tmp/shepr-source")),
+        );
+
+        assert_eq!(cwd, std::path::PathBuf::from("/tmp/shepr-fixed"));
+    }
+
+    #[test]
+    fn server_stop_request_sets_should_quit_flag() {
+        let mut app = test_app();
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_server_stop".into(),
+            method: crate::api::schema::Method::ServerStop(
+                crate::api::schema::EmptyParams::default(),
+            ),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+
+        assert_eq!(response["result"]["type"], "ok");
+        assert!(app.state.should_quit);
+    }
+
+    #[test]
+    fn pane_rename_request_sets_and_clears_manual_label() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("api-pane-rename");
+        let pane = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let pane_id = app.pane_info(0, pane).expect("test precondition").pane_id;
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_pane_rename".into(),
+            method: crate::api::schema::Method::PaneRename(crate::api::schema::PaneRenameParams {
+                pane_id: pane_id.clone(),
+                label: Some("reviewer".into()),
+            }),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+
+        assert_eq!(response["result"]["type"], "pane_info");
+        assert_eq!(response["result"]["pane"]["label"], "reviewer");
+        let terminal_id = app.state.workspaces[0]
+            .pane_state(pane)
+            .expect("test precondition")
+            .attached_terminal_id
+            .clone();
+        assert_eq!(
+            app.state
+                .terminals
+                .get(&terminal_id)
+                .expect("test precondition")
+                .manual_label
+                .as_deref(),
+            Some("reviewer")
+        );
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_pane_rename_clear".into(),
+            method: crate::api::schema::Method::PaneRename(crate::api::schema::PaneRenameParams {
+                pane_id,
+                label: None,
+            }),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+
+        assert_eq!(response["result"]["type"], "pane_info");
+        assert!(response["result"]["pane"].get("label").is_none());
+        assert!(app
+            .state
+            .terminals
+            .get(&terminal_id)
+            .expect("test precondition")
+            .manual_label
+            .is_none());
+    }
+
+    #[test]
+    fn terminal_and_agent_targets_treat_terminal_ids_differently() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("terminal-target-id");
+        let pane = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane).expect("test precondition").to_string();
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let resolved = app.resolve_terminal_target(&terminal_id).expect("test precondition");
+        assert_eq!(resolved.pane_id, pane);
+        assert_eq!(resolved.terminal_id, terminal_id);
+
+        assert!(matches!(
+            app.resolve_agent_target(&resolved.terminal_id),
+            Err(crate::app::terminal_targets::TerminalTargetError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn agent_target_rejects_a_pane_that_only_has_a_launch_command() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("terminal-target-command");
+        let pane = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane).expect("test precondition").clone();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition")
+            .launch_argv = Some(vec!["just".into(), "dev".into()]);
+        let pane_id = app.public_pane_id(0, pane).expect("test precondition");
+
+        assert!(app.resolve_terminal_target(&pane_id).is_ok());
+        assert!(matches!(
+            app.resolve_agent_target(&pane_id),
+            Err(crate::app::terminal_targets::TerminalTargetError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn terminal_target_resolves_pane_id_for_an_agent() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("terminal-target-pane");
+        let pane = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane).expect("test precondition").to_string();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let attached_terminal_id = app.state.workspaces[0].terminal_id(pane).cloned().expect("test precondition");
+        app.state
+            .terminals
+            .get_mut(&attached_terminal_id)
+            .expect("test precondition")
+            .set_detected_state(
+                Some(crate::detect::Agent::Pi),
+                crate::detect::AgentState::Idle,
+            );
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let pane_id = app.public_pane_id(0, pane).expect("test precondition");
+
+        let resolved = app.resolve_terminal_target(&pane_id).expect("test precondition");
+
+        assert_eq!(resolved.pane_id, pane);
+        assert_eq!(resolved.terminal_id, terminal_id);
+    }
+
+    #[test]
+    fn terminal_target_resolves_unique_agent_name() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("terminal-target-name");
+        let pane = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane).expect("test precondition").to_string();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let attached_terminal_id = app.state.workspaces[0]
+            .pane_state(pane)
+            .expect("test precondition")
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&attached_terminal_id)
+            .expect("test precondition")
+            .set_agent_name("reviewer".into());
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let resolved = app.resolve_terminal_target("reviewer").expect("test precondition");
+
+        assert_eq!(resolved.pane_id, pane);
+        assert_eq!(resolved.terminal_id, terminal_id);
+    }
+
+    #[test]
+    fn agent_target_treats_legacy_pane_syntax_as_a_name() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("agent-target-name");
+        let pane = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane).expect("test precondition").clone();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let terminal = app.state.terminals.get_mut(&terminal_id).expect("test precondition");
+        terminal.set_detected_state(
+            Some(crate::detect::Agent::Pi),
+            crate::detect::AgentState::Idle,
+        );
+        terminal.set_agent_name("p_1".into());
+
+        let resolved = app.resolve_agent_target("p_1").expect("test precondition");
+
+        assert_eq!(resolved.pane_id, pane);
+        assert_eq!(resolved.terminal_id, terminal_id.to_string());
+    }
+
+    #[test]
+    fn terminal_target_reports_missing_target() {
+        let mut app = test_app();
+        app.state.workspaces = vec![Workspace::test_new("terminal-target-missing")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let err = app.resolve_terminal_target("missing-agent").expect_err("test precondition");
+
+        assert_eq!(
+            err,
+            crate::app::terminal_targets::TerminalTargetError::NotFound {
+                target: "missing-agent".into()
+            }
+        );
+    }
+
+    #[test]
+    fn terminal_target_reports_ambiguous_duplicate_agent_name() {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("terminal-target-ambiguous");
+        let first = workspace.tabs[0].root_pane;
+        let second = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let first_terminal_id = app.state.workspaces[0]
+            .pane_state(first)
+            .expect("test precondition")
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&first_terminal_id)
+            .expect("test precondition")
+            .set_agent_name("worker".into());
+        let second_terminal_id = app.state.workspaces[0]
+            .pane_state(second)
+            .expect("test precondition")
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&second_terminal_id)
+            .expect("test precondition")
+            .set_agent_name("worker".into());
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let err = app.resolve_terminal_target("worker").expect_err("test precondition");
+
+        let crate::app::terminal_targets::TerminalTargetError::Ambiguous { target, candidates } =
+            err
+        else {
+            panic!("expected ambiguous terminal target");
+        };
+        assert_eq!(target, "worker");
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().all(|candidate| {
+            candidate.terminal_id.starts_with("term_")
+                && candidate.pane_id.starts_with(&app.state.workspaces[0].id)
+                && candidate.workspace_id == app.state.workspaces[0].id
+                && candidate.cwd.is_some()
+        }));
+    }
+
+    #[tokio::test]
+    async fn pane_split_request_focuses_new_pane_when_requested() {
+        let _guard = config_env_lock().lock().expect("test precondition");
+        let original_shell = std::env::var_os("SHELL");
+        std::env::set_var("SHELL", exiting_test_command());
+
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("api-pane-split-focus-background-tab");
+        let background_tab = workspace.test_add_tab(Some("worker"));
+        workspace.switch_tab(0);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let target_pane = app.state.workspaces[0].tabs[background_tab].root_pane;
+        let target_pane_id = app.pane_info(0, target_pane).expect("test precondition").pane_id;
+        let target_tab_id = app.public_tab_id(0, background_tab).expect("test precondition");
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_pane_split_focus_background_tab".into(),
+            method: crate::api::schema::Method::PaneSplit(crate::api::schema::PaneSplitParams {
+                workspace_id: None,
+                target_pane_id: Some(target_pane_id),
+                direction: crate::api::schema::SplitDirection::Right,
+                ratio: None,
+                cwd: None,
+                focus: true,
+                right_click: Default::default(),
+                env: Default::default(),
+            }),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+
+        assert_eq!(response["result"]["type"], "pane_info");
+        assert_eq!(response["result"]["pane"]["tab_id"], target_tab_id);
+        assert_eq!(response["result"]["pane"]["focused"], true);
+        assert_eq!(app.state.active, Some(0));
+        assert_eq!(app.state.workspaces[0].active_tab, background_tab);
+
+        let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
+        for (_terminal_id, runtime) in runtimes {
+            runtime.shutdown();
+        }
+        match original_shell {
+            Some(value) => std::env::set_var("SHELL", value),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
+    #[tokio::test]
+    async fn pane_split_request_applies_ratio() {
+        let _guard = config_env_lock().lock().expect("test precondition");
+        let original_shell = std::env::var_os("SHELL");
+        std::env::set_var("SHELL", exiting_test_command());
+
+        let mut app = test_app();
+        let workspace = Workspace::test_new("api-pane-split-ratio");
+        let target_pane = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let target_pane_id = app.pane_info(0, target_pane).expect("test precondition").pane_id;
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_pane_split_ratio".into(),
+            method: crate::api::schema::Method::PaneSplit(crate::api::schema::PaneSplitParams {
+                workspace_id: None,
+                target_pane_id: Some(target_pane_id),
+                direction: crate::api::schema::SplitDirection::Right,
+                ratio: Some(0.333),
+                cwd: None,
+                focus: false,
+                right_click: crate::api::schema::PaneRightClickTarget::Pane,
+                env: Default::default(),
+            }),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+
+        assert_eq!(response["result"]["type"], "pane_info");
+        let splits = app.state.workspaces[0].tabs[0]
+            .layout
+            .splits(ratatui::layout::Rect::new(0, 0, 100, 20));
+        assert_eq!(splits.len(), 1);
+        assert!((splits[0].ratio - 0.333).abs() < f32::EPSILON);
+        let response_pane_id = response["result"]["pane"]["pane_id"].as_str().expect("test precondition");
+        let (_, response_pane_id) = app.parse_pane_id(response_pane_id).expect("test precondition");
+        assert!(
+            app.state.workspaces[0]
+                .pane_state(response_pane_id)
+                .expect("test precondition")
+                .right_click_passthrough
+        );
+
+        let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
+        for (_terminal_id, runtime) in runtimes {
+            runtime.shutdown();
+        }
+        match original_shell {
+            Some(value) => std::env::set_var("SHELL", value),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
+    #[tokio::test]
+    async fn pane_split_request_uses_active_focused_pane_when_target_is_omitted() {
+        let _guard = config_env_lock().lock().expect("test precondition");
+        let original_shell = std::env::var_os("SHELL");
+        std::env::set_var("SHELL", exiting_test_command());
+
+        let mut app = test_app();
+        let workspace = Workspace::test_new("api-pane-split-current");
+        let target_pane = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.focus_pane_in_workspace(0, target_pane);
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_pane_split_current".into(),
+            method: crate::api::schema::Method::PaneSplit(crate::api::schema::PaneSplitParams {
+                workspace_id: None,
+                target_pane_id: None,
+                direction: crate::api::schema::SplitDirection::Right,
+                ratio: None,
+                cwd: None,
+                focus: false,
+                right_click: Default::default(),
+                env: Default::default(),
+            }),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+
+        assert_eq!(response["result"]["type"], "pane_info");
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_count(), 2);
+        assert_eq!(
+            app.state.workspaces[0].tabs[0].layout.focused(),
+            target_pane
+        );
+
+        let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
+        for (_terminal_id, runtime) in runtimes {
+            runtime.shutdown();
+        }
+        match original_shell {
+            Some(value) => std::env::set_var("SHELL", value),
+            None => std::env::remove_var("SHELL"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_agent_start_does_not_mutate_topology() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("agent-start-target");
+        let root = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let pane_id = app.pane_info(0, root).expect("test precondition").pane_id;
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_agent_start_target".into(),
+            method: crate::api::schema::Method::AgentStart(crate::api::schema::AgentStartParams {
+                name: "worker".into(),
+                kind: "pi".into(),
+                pane_id,
+                args: Vec::new(),
+                timeout_ms: Some(1_000),
+            }),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+
+        assert_eq!(response["error"]["code"], "agent_pane_unavailable");
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_count(), 1);
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(root));
+    }
+
+    #[tokio::test]
+    async fn failed_agent_start_input_rolls_back_and_can_retry() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("agent-start-input-failure");
+        let root = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let pane_id = app.pane_info(0, root).expect("test precondition").pane_id;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&root]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition")
+            .set_manual_label("shell".into());
+        let (runtime, mut receiver) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 1);
+        runtime
+            .try_send_bytes(bytes::Bytes::from_static(b"occupied"))
+            .expect("test precondition");
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+
+        let request = || crate::api::schema::Request {
+            id: "req_agent_start_input".into(),
+            method: crate::api::schema::Method::AgentStart(crate::api::schema::AgentStartParams {
+                name: "worker".into(),
+                kind: "codex".into(),
+                pane_id: pane_id.clone(),
+                args: vec!["resume".into(), "codex-session".into()],
+                timeout_ms: Some(4_000),
+            }),
+        };
+        let response = app.handle_api_request(request());
+        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+        assert_eq!(response["error"]["code"], "agent_start_input_failed");
+        assert_eq!(app.state.terminals[&terminal_id].agent_name, None);
+        assert!(app.state.terminals[&terminal_id]
+            .persisted_agent_session
+            .is_none());
+        assert_eq!(
+            app.state.terminals[&terminal_id].manual_label.as_deref(),
+            Some("shell")
+        );
+
+        assert_eq!(
+            receiver.try_recv().expect("test precondition"),
+            bytes::Bytes::from_static(b"occupied")
+        );
+        let retry = app.handle_api_request(request());
+        let retry: serde_json::Value = serde_json::from_str(&retry).expect("test precondition");
+        assert_eq!(retry["result"]["type"], "agent_started");
+        assert_eq!(
+            retry["result"]["agent"]["agent_session"],
+            serde_json::json!({
+                "source": "shepr:codex",
+                "agent": "codex",
+                "kind": "id",
+                "value": "codex-session",
+            })
+        );
+        assert_eq!(
+            app.state.terminals[&terminal_id].agent_name.as_deref(),
+            Some("worker")
+        );
+        let rename = app.handle_api_request(crate::api::schema::Request {
+            id: "req_agent_rename_pending".into(),
+            method: crate::api::schema::Method::AgentRename(
+                crate::api::schema::AgentRenameParams {
+                    target: pane_id,
+                    name: Some("replacement".into()),
+                },
+            ),
+        });
+        let rename: serde_json::Value = serde_json::from_str(&rename).expect("test precondition");
+        assert_eq!(rename["error"]["code"], "agent_launch_pending");
+        assert_eq!(
+            app.state.terminals[&terminal_id].agent_name.as_deref(),
+            Some("worker")
+        );
+    }
+
+    #[test]
+    fn pane_close_request_closes_only_the_target_tab_when_other_tabs_exist() {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("api-pane-close");
+        let second_tab = workspace.test_add_tab(Some("logs"));
+        workspace.switch_tab(second_tab);
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let target_pane = app.state.workspaces[0].tabs[second_tab].root_pane;
+        let target_pane_id = app.pane_info(0, target_pane).expect("test precondition").pane_id;
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_pane_close".into(),
+            method: crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget {
+                pane_id: target_pane_id,
+            }),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+
+        assert_eq!(response["result"]["type"], "ok");
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        assert_eq!(app.state.workspaces[0].display_name(), "api-pane-close");
+    }
+
+    #[test]
+    fn pane_close_request_closes_workspace_when_it_removes_the_last_pane() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("api-pane-close-last");
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let target_pane = app.state.workspaces[0].tabs[0].root_pane;
+        let target_pane_id = app.pane_info(0, target_pane).expect("test precondition").pane_id;
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req_pane_close_last".into(),
+            method: crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget {
+                pane_id: target_pane_id,
+            }),
+        });
+        let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+
+        assert_eq!(response["result"]["type"], "ok");
+        assert!(app.state.workspaces.is_empty());
+    }
+
+    #[test]
+    fn session_dirty_flag_schedules_debounced_save() {
+        let mut app = test_app();
+        app.policy.persist_session = true;
+        app.state.session_dirty = true;
+
+        app.sync_session_save_schedule();
+
+        assert!(!app.state.session_dirty);
+        assert!(app.session_save_deadline.is_some());
+    }
+
+    #[test]
+    fn headless_next_loop_deadline_ignores_resize_poll() {
+        let mut app = test_app();
+        let now = Instant::now();
+        app.session_save_deadline = Some(now + Duration::from_secs(2));
+
+        assert_eq!(
+            app.next_headless_loop_deadline_with_git_refresh(now, false, true),
+            app.session_save_deadline
+        );
+    }
+
+    #[test]
+    fn headless_next_loop_deadline_returns_none_when_resize_poll_is_only_deadline() {
+        let mut app = test_app();
+        let now = Instant::now();
+        app.config_diagnostic_deadline = None;
+        app.session_save_deadline = None;
+        app.state.workspaces.clear();
+
+        assert_eq!(
+            app.next_headless_loop_deadline_with_git_refresh(now, false, true),
+            None
+        );
+    }
+
+    #[test]
+    fn due_session_save_starts_background_writer() {
+        let _guard = crate::config::test_config_env_lock().lock().expect("test precondition");
+        let config_home = unique_temp_path("background-session-save");
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+
+        let mut app = test_app();
+        app.policy.persist_session = true;
+        app.state.workspaces = vec![Workspace::test_new("autosave")];
+        app.state.ensure_test_terminals();
+        app.session_save_deadline = Some(Instant::now() - Duration::from_secs(1));
+
+        app.start_background_session_save();
+
+        assert!(app.session_save_thread.is_some());
+        assert!(app.session_save_deadline.is_none());
+        app.save_session_now();
+        assert!(crate::session::data_dir().join("session.json").exists());
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = std::fs::remove_dir_all(config_home);
+    }
+
+    #[test]
+    fn background_session_save_reschedules_when_writer_is_busy() {
+        let mut app = test_app();
+        app.policy.persist_session = true;
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        app.session_save_thread = Some(std::thread::spawn(move || {
+            let _ = release_rx.recv();
+        }));
+
+        app.start_background_session_save();
+
+        assert!(app.session_save_thread.is_some());
+        assert!(app.session_save_deadline.is_some());
+
+        release_tx.send(()).expect("test precondition");
+        app.policy.persist_session = false;
+        app.save_session_now();
+    }
+
+    #[test]
+    fn final_session_save_joins_background_writer_before_returning() {
+        let mut app = test_app();
+        app.policy.persist_session = false;
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        app.session_save_thread = Some(std::thread::spawn(move || {
+            let _ = release_rx.recv();
+            done_tx.send(()).expect("test precondition");
+        }));
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            release_tx.send(()).expect("test precondition");
+        });
+
+        app.save_session_now();
+
+        releaser.join().expect("test precondition");
+        done_rx.try_recv().expect("test precondition");
+        assert!(app.session_save_thread.is_none());
+    }
+
+    #[tokio::test]
+    async fn pane_exit_checkpoint_survives_automatic_workspace_creation_on_shutdown() {
+        let _guard = crate::config::test_config_env_lock().lock().expect("test precondition");
+        let config_home = unique_temp_path("signaled-pane-session-checkpoint");
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+
+        let mut app = test_app();
+        app.policy.persist_session = true;
+        let mut workspace = Workspace::test_new("preserved");
+        let first_pane = workspace.tabs[0].root_pane;
+        let second_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id: first_pane,
+            exit_reason: crate::platform::ChildExitReason::Interrupted,
+        });
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id: second_pane,
+            exit_reason: crate::platform::ChildExitReason::Interrupted,
+        });
+        assert!(app.state.workspaces.is_empty());
+        assert!(app.ensure_default_workspace());
+
+        app.save_session_on_shutdown();
+
+        let snapshot = crate::persist::load().expect("checkpointed session should survive");
+        assert_eq!(snapshot.workspaces.len(), 1);
+        assert_eq!(snapshot.workspaces[0].tabs[0].panes.len(), 2);
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = std::fs::remove_dir_all(config_home);
+    }
+
+    #[test]
+    fn normal_autosave_replaces_a_signaled_exit_checkpoint() {
+        let _guard = crate::config::test_config_env_lock().lock().expect("test precondition");
+        let config_home = unique_temp_path("signaled-pane-autosave");
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+
+        let mut app = test_app();
+        app.policy.persist_session = true;
+        let workspace = Workspace::test_new("closed");
+        let pane_id = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id,
+            exit_reason: crate::platform::ChildExitReason::Interrupted,
+        });
+        assert!(crate::persist::load().is_some());
+
+        app.start_background_session_save();
+        if let Some(thread) = app.session_save_thread.take() {
+            thread.join().expect("test precondition");
+        }
+        app.save_session_on_shutdown();
+
+        assert!(crate::persist::load().is_none());
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = std::fs::remove_dir_all(config_home);
+    }
+
+    #[test]
+    fn durable_mutation_after_pane_exit_checkpoint_wins_on_shutdown() {
+        let _guard = crate::config::test_config_env_lock().lock().expect("test precondition");
+        let config_home = unique_temp_path("pane-exit-newer-session-state");
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        std::env::remove_var(crate::session::SESSION_ENV_VAR);
+
+        for another_interrupted_exit in [false, true] {
+            let mut app = test_app();
+            app.policy.persist_session = true;
+            let workspace = Workspace::test_new("old");
+            let pane_id = workspace.tabs[0].root_pane;
+            app.state.workspaces = vec![workspace];
+            app.state.active = Some(0);
+            app.state.ensure_test_terminals();
+
+            app.handle_internal_event(AppEvent::PaneDied {
+                pane_id,
+                exit_reason: crate::platform::ChildExitReason::Interrupted,
+            });
+            app.state.workspaces = vec![Workspace::test_new("newer")];
+            app.state.active = Some(0);
+            app.state.ensure_test_terminals();
+            app.state.mark_session_dirty();
+            if another_interrupted_exit {
+                app.handle_internal_event(AppEvent::PaneDied {
+                    pane_id: app.state.workspaces[0].tabs[0].root_pane,
+                    exit_reason: crate::platform::ChildExitReason::Interrupted,
+                });
+            }
+            app.save_session_on_shutdown();
+
+            let snapshot = crate::persist::load().expect("newer session should be saved");
+            assert_eq!(snapshot.workspaces.len(), 1);
+            assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("newer"));
+        }
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let _ = std::fs::remove_dir_all(config_home);
+    }
+
+    #[tokio::test]
+    async fn full_internal_event_queue_eventually_applies_working_to_idle_transition() {
+        let mut app = test_app();
+        let ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        let terminal_id = app.state.workspaces[0]
+            .pane_state(pane_id)
+            .expect("test precondition")
+            .attached_terminal_id
+            .clone();
+        app.handle_internal_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Working,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: std::time::Instant::now(),
+        });
+        assert_eq!(
+            app.state.terminals.get(&terminal_id).expect("test precondition").state,
+            AgentState::Working
+        );
+
+        for _ in 0..APP_EVENT_CHANNEL_CAPACITY {
+            app.event_tx
+                .try_send(AppEvent::GitStatusRefreshed {
+                    results: Vec::new(),
+                    cache_updates: Vec::new(),
+                })
+                .expect("test precondition");
+        }
+
+        let tx = app.event_tx.clone();
+        let send = tx.send(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: std::time::Instant::now(),
+        });
+        tokio::pin!(send);
+
+        let blocked =
+            tokio::time::timeout(Duration::from_millis(20), async { (&mut send).await }).await;
+        assert!(
+            blocked.is_err(),
+            "state change sender should wait for queue space instead of failing"
+        );
+
+        app.drain_internal_events();
+
+        tokio::time::timeout(Duration::from_millis(50), async { (&mut send).await })
+            .await
+            .expect("state change should enqueue once queue space is available")
+            .expect("app event receiver should still be alive");
+
+        let max_drains = (APP_EVENT_CHANNEL_CAPACITY / APP_EVENT_DRAIN_LIMIT) + 2;
+        for _ in 0..max_drains {
+            if app.state.terminals.get(&terminal_id).expect("test precondition").state == AgentState::Idle {
+                break;
+            }
+            app.drain_internal_events();
+        }
+
+        assert_eq!(
+            app.state.terminals.get(&terminal_id).expect("test precondition").state,
+            AgentState::Idle,
+            "Working→Idle should still apply after temporary queue pressure"
+        );
+    }
+}
