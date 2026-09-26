@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn dispatch_client_shell_actions(
     actions: Vec<shell::ClientShellAction>,
-    endpoint_commands: &mut endpoint_commands::EndpointCommands,
+    endpoint_commands: &mut endpoint::commands::EndpointCommands,
     endpoints: &mut endpoint::EndpointRegistry,
     mut shell: Option<&mut shell::ClientShellState>,
     scheduled_activation: &mut Option<ClientLoopEvent>,
@@ -110,7 +110,7 @@ fn reset_window_title(state: &mut ClientState, writer: &mut impl io::Write) -> i
 
 fn install_pending_activation(
     state: &mut ClientState,
-    endpoint_commands: &mut endpoint_commands::EndpointCommands,
+    endpoint_commands: &mut endpoint::commands::EndpointCommands,
     pending: &mut Option<endpoint::PendingEndpointActivation>,
     next_surface_serial: &mut u64,
     activation: endpoint::PendingEndpointActivation,
@@ -167,7 +167,7 @@ pub(super) fn take_ready_local_activation(
 pub(super) fn begin_endpoint_activation(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
-    endpoint_commands: &mut endpoint_commands::EndpointCommands,
+    endpoint_commands: &mut endpoint::commands::EndpointCommands,
     pending: &mut Option<endpoint::PendingEndpointActivation>,
     next_surface_serial: &mut u64,
     endpoint_id: endpoint::ClientEndpointId,
@@ -311,7 +311,7 @@ pub(super) fn complete_endpoint_activation(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
     pending: &mut Option<endpoint::PendingEndpointActivation>,
-    endpoint_commands: &mut endpoint_commands::EndpointCommands,
+    endpoint_commands: &mut endpoint::commands::EndpointCommands,
 ) -> Result<Option<ClientLoopEvent>, ClientError> {
     let sync_endpoint = pending
         .as_ref()
@@ -487,7 +487,7 @@ pub(super) fn rollback_endpoint_activation(
 pub(super) fn handle_endpoint_disconnect(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
-    endpoint_commands: &mut endpoint_commands::EndpointCommands,
+    endpoint_commands: &mut endpoint::commands::EndpointCommands,
     supervisors: &mut endpoint::EndpointSupervisors,
     pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
     endpoint_id: &endpoint::ClientEndpointId,
@@ -542,7 +542,7 @@ pub(super) fn handle_endpoint_disconnect(
 pub(super) fn handle_endpoint_attention(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
-    endpoint_commands: &mut endpoint_commands::EndpointCommands,
+    endpoint_commands: &mut endpoint::commands::EndpointCommands,
     supervisors: &mut endpoint::EndpointSupervisors,
     pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
     endpoint_id: &endpoint::ClientEndpointId,
@@ -652,7 +652,7 @@ pub(super) fn stale_freeze_recovery(
 pub(super) fn follow_endpoint_catalog(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
-    endpoint_commands: &mut endpoint_commands::EndpointCommands,
+    endpoint_commands: &mut endpoint::commands::EndpointCommands,
     supervisors: &mut endpoint::EndpointSupervisors,
     pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
     catalog: &mut endpoint::EndpointCatalog,
@@ -800,7 +800,7 @@ pub(super) fn finish_client_shell_input(
     frame: Option<super::frame_output::ComposedFrame>,
     endpoints: &mut endpoint::EndpointRegistry,
     pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
-    endpoint_commands: &mut endpoint_commands::EndpointCommands,
+    endpoint_commands: &mut endpoint::commands::EndpointCommands,
     scheduled_activation: &mut Option<ClientLoopEvent>,
 ) -> Result<bool, ClientError> {
     if outcome.detach {
@@ -1099,7 +1099,7 @@ mod tests {
         let mut endpoints = endpoint::EndpointRegistry::new(NullTransport, 1);
         endpoints.insert(build_id.clone(), NullTransport, 7, true);
         assert!(endpoints.set_active(&build_id));
-        let mut commands = endpoint_commands::EndpointCommands::default();
+        let mut commands = endpoint::commands::EndpointCommands::default();
         let mut pending = None;
         let mut supervisors = endpoint::EndpointSupervisors::with_ssh_settings(
             &crate::config::AppPaths::default(),

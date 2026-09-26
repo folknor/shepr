@@ -3,7 +3,7 @@ use std::io;
 use std::ops::Deref;
 
 use crate::api::client::{ApiClient, ConnectionTarget};
-use crate::client::endpoint::{EndpointCatalog, SavedSshEndpoint};
+use crate::machine::{EndpointCatalog, SavedSshEndpoint};
 
 struct MachineTarget {
     profile: SavedSshEndpoint,

@@ -4,3 +4,6 @@ project = "shepr"
 # glyphs, check marks, spinners); escaping it would make captures unreadable.
 [gremlins]
 exclude = ["src/detect/manifests"]
+
+[test]
+debug = true

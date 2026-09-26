@@ -1,13 +1,10 @@
 use std::io;
 use std::path::PathBuf;
 
-use crate::client::endpoint::ProfileId;
+use crate::machine::{ProfileId, RemoteExecutable, SshMetadataCache, SshTarget};
 
 use super::{
-    RemoteExecutable,
-    attach::{
-        DiscoveryProgress, RemoteSsh, SshStdioBridge, resume_installed_remote_shepr_discovery,
-    },
+    DiscoveryProgress, RemoteSsh, SshStdioBridge, resume_installed_remote_shepr_discovery,
 };
 
 pub(crate) struct SavedSshBridge {
@@ -60,7 +57,7 @@ pub(crate) struct SavedSshSettings {
 pub(crate) struct SavedSshConnector {
     paths: crate::config::AppPaths,
     profile_id: ProfileId,
-    target: super::SshTarget,
+    target: SshTarget,
     session: String,
     settings: SavedSshSettings,
     state: std::sync::Mutex<ConnectorState>,
@@ -80,7 +77,7 @@ impl SavedSshConnector {
     pub(crate) fn new(
         paths: &crate::config::AppPaths,
         profile_id: &ProfileId,
-        target: &super::SshTarget,
+        target: &SshTarget,
         session: &str,
         settings: SavedSshSettings,
     ) -> Self {
@@ -110,7 +107,7 @@ impl SavedSshConnector {
         crate::session::validate_name(&self.session)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let target = &self.target;
-        let metadata_cache = crate::client::endpoint::SshMetadataCache::new(
+        let metadata_cache = SshMetadataCache::new(
             &self.paths,
             &self.profile_id,
             target.as_str(),
@@ -153,7 +150,7 @@ impl SavedSshConnector {
         if let Some(known) = remote_shepr.clone() {
             match self.attempt(ssh, target, &known, deadline, &mut establish) {
                 Ok(connected) => return Ok(connected),
-                Err(error) if super::attach::is_ssh_link_failure(&error) => return Err(error),
+                Err(error) if super::is_ssh_link_failure(&error) => return Err(error),
                 Err(error) => {
                     tracing::debug!(
                         %error,
@@ -185,7 +182,7 @@ impl SavedSshConnector {
                 Ok(connected)
             }
             Err(error) => {
-                if !super::attach::is_ssh_link_failure(&error) {
+                if !super::is_ssh_link_failure(&error) {
                     *remote_shepr = None;
                 }
                 Err(error)
@@ -196,13 +193,13 @@ impl SavedSshConnector {
     fn attempt<T>(
         &self,
         ssh: &RemoteSsh,
-        target: &super::SshTarget,
+        target: &SshTarget,
         remote_shepr: &RemoteExecutable,
         deadline: std::time::Instant,
         establish: &mut impl FnMut(SavedSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
         if std::time::Instant::now() >= deadline {
-            return Err(super::attach::attempt_deadline_passed());
+            return Err(super::attempt_deadline_passed());
         }
         let path = saved_bridge_path(&self.profile_id);
         let bridge = SshStdioBridge::start(
@@ -224,7 +221,7 @@ impl SavedSshConnector {
 pub(crate) struct SavedSshApiBridge {
     path: PathBuf,
     bridge: SshStdioBridge,
-    metadata_cache: crate::client::endpoint::SshMetadataCache,
+    metadata_cache: SshMetadataCache,
     pub(crate) used_cached_metadata: bool,
 }
 
@@ -232,29 +229,24 @@ impl SavedSshApiBridge {
     pub(crate) fn start(
         paths: &crate::config::AppPaths,
         profile_id: &ProfileId,
-        target: &super::SshTarget,
+        target: &SshTarget,
         session: &str,
         use_cached_metadata: bool,
         settings: SavedSshSettings,
     ) -> io::Result<Self> {
         let ssh = validated_saved_ssh(paths, target, session, settings)?;
-        let metadata_cache = crate::client::endpoint::SshMetadataCache::new(
-            paths,
-            profile_id,
-            target.as_str(),
-            session,
-        );
+        let metadata_cache = SshMetadataCache::new(paths, profile_id, target.as_str(), session);
         let cached = use_cached_metadata.then(|| metadata_cache.load()).flatten();
         let used_cached_metadata = cached.is_some();
         let metadata = match cached {
             Some(metadata) => metadata,
             None => {
-                let metadata = super::attach::discover_remote_api_executable(&ssh, session)?;
+                let metadata = super::discover_remote_api_executable(&ssh, session)?;
                 metadata_cache.store(&metadata);
                 metadata
             }
         };
-        let command = super::attach::cached_remote_api_command(&metadata, session);
+        let command = super::cached_remote_api_command(&metadata, session);
         let path = crate::platform::remote_bridge_endpoint_path(
             &format!("shepr-api-ssh-{}-{profile_id}.sock", std::process::id()),
             &format!(
@@ -312,7 +304,7 @@ fn saved_bridge_path(profile_id: &ProfileId) -> PathBuf {
 
 fn validated_saved_ssh(
     paths: &crate::config::AppPaths,
-    target: &super::SshTarget,
+    target: &SshTarget,
     session: &str,
     settings: SavedSshSettings,
 ) -> io::Result<RemoteSsh> {
@@ -350,7 +342,7 @@ mod tests {
         let connector = SavedSshConnector::new(
             &crate::config::AppPaths::default(),
             &ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
-            &super::super::SshTarget::parse("build").expect("test precondition"),
+            &SshTarget::parse("build").expect("test precondition"),
             "bad session/name",
             settings,
         );

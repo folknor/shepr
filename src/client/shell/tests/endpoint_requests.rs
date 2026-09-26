@@ -39,7 +39,7 @@ impl crate::client::endpoint::EndpointTransport for TestTransport {
 #[test]
 fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
     use crate::client::{
-        ClientLoopEvent, endpoint::EndpointRegistry, endpoint_commands::EndpointCommands,
+        ClientLoopEvent, endpoint::EndpointRegistry, endpoint::commands::EndpointCommands,
     };
     let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 1);
     let mut commands = EndpointCommands::default();
@@ -68,7 +68,7 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
 #[test]
 fn dispatcher_cancels_pending_requests_on_frozen_surface_or_failed_send() {
     use crate::client::endpoint::EndpointRegistry;
-    use crate::client::endpoint_commands::EndpointCommands;
+    use crate::client::endpoint::commands::EndpointCommands;
 
     for fail_send in [false, true] {
         let (mut state, actions) = pending_request();
@@ -98,7 +98,7 @@ fn dispatcher_cancels_pending_requests_on_frozen_surface_or_failed_send() {
 #[test]
 fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
     use crate::client::endpoint::EndpointRegistry;
-    use crate::client::endpoint_commands::EndpointCommands;
+    use crate::client::endpoint::commands::EndpointCommands;
 
     let (mut state, actions) = pending_request();
     let stale_id = request_id(&actions).to_owned();

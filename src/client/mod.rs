@@ -14,8 +14,6 @@
 mod attach;
 mod clipboard_forwarding;
 pub(crate) mod endpoint;
-mod endpoint_commands;
-mod endpoint_selection;
 mod errors;
 mod events;
 mod frame_output;
@@ -392,7 +390,7 @@ async fn run_client_loop(
         tokio::sync::mpsc::channel::<endpoint::EndpointSupervisorEvent>(64);
     let stdin_tx = event_tx.clone();
 
-    let mut endpoint_commands = endpoint_commands::EndpointCommands::default();
+    let mut endpoint_commands = endpoint::commands::EndpointCommands::default();
 
     // Spawn the stdin reader thread.
     let will_query_host_terminal_theme =
@@ -497,7 +495,7 @@ async fn run_client_loop(
     let mut next_surface_serial = 1_u64;
     let mut pending_activation: Option<endpoint::PendingEndpointActivation> = None;
     let mut scheduled_activation = None;
-    let mut selection = endpoint_selection::EndpointSelectionTracker::new(&endpoint_catalog);
+    let mut selection = endpoint::selection::EndpointSelectionTracker::new(&endpoint_catalog);
 
     // Main event loop.
     let mut client_timer = timer::ClientLoopTimer::new();
@@ -887,7 +885,7 @@ async fn run_client_loop(
                 let generation = write_stream
                     .connection(&endpoint_id)
                     .map(|connection| connection.generation);
-                // Persisting waits for the handoff to commit; see `endpoint_selection`.
+                // Persisting waits for the handoff to commit; see `endpoint::selection`.
                 if !selection.begin(&endpoint_catalog, &endpoint_id, generation) {
                     continue;
                 }

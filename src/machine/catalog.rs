@@ -6,8 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::ProfileId;
-use crate::remote::{IntoSshTarget, SshTarget};
+use super::{IntoSshTarget, ProfileId, SshTarget};
 
 const CATALOG_VERSION: u32 = 1;
 const SELECTION_VERSION: u32 = 1;

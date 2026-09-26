@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use serde::Serialize;
 
-use crate::client::endpoint::EndpointCatalog;
+use crate::machine::{EndpointCatalog, SshMetadataCache, SshTarget};
 
 use super::matches::{flag, required, string};
 
@@ -237,7 +237,7 @@ fn add(
         label,
         session,
     } = args;
-    let target = match crate::remote::SshTarget::parse(target) {
+    let target = match SshTarget::parse(target) {
         Ok(target) => target,
         Err(error) => {
             eprintln!("error: {error}");
@@ -281,8 +281,7 @@ fn add(
             "remote prepared, but machine was not saved: {error}"
         ))
     })?;
-    crate::client::endpoint::SshMetadataCache::new(paths, &id, &target, &session)
-        .store(&executable);
+    SshMetadataCache::new(paths, &id, &target, &session).store(&executable);
     println!("Saved SSH machine {id}. Remote server is ready.");
     println!("Open Shepr clients connect automatically.");
     Ok(0)
@@ -308,12 +307,8 @@ fn remove(paths: &crate::config::AppPaths, selector: &str) -> std::io::Result<i3
     };
     let id = profile.id.clone();
     let was_selected = catalog.load_selection().as_ref() == Some(&id);
-    let metadata_cache = crate::client::endpoint::SshMetadataCache::new(
-        paths,
-        &id,
-        profile.target.as_str(),
-        &profile.session,
-    );
+    let metadata_cache =
+        SshMetadataCache::new(paths, &id, profile.target.as_str(), &profile.session);
     if !catalog.remove_ssh(&id) {
         eprintln!("machine profile {id} was not found");
         return Ok(1);

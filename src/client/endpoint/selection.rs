@@ -13,7 +13,7 @@
 
 use tracing::warn;
 
-use super::endpoint::{ClientEndpointId, EndpointCatalog, ProfileId};
+use super::{ClientEndpointId, EndpointCatalog, ProfileId};
 
 struct SelectionAttempt {
     endpoint_id: ClientEndpointId,
@@ -21,7 +21,7 @@ struct SelectionAttempt {
     previous: Option<ProfileId>,
 }
 
-pub(super) struct EndpointSelectionTracker {
+pub(in crate::client) struct EndpointSelectionTracker {
     /// The selected saved machine; `None` is Local.
     selected: Option<ProfileId>,
     persisted: Option<ProfileId>,
@@ -30,7 +30,7 @@ pub(super) struct EndpointSelectionTracker {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum SelectionOutcome {
+pub(in crate::client) enum SelectionOutcome {
     /// No attempt was outstanding, or it is still in flight.
     Unsettled,
     /// The target owns the surface; the selection should be persisted if it changed.
@@ -41,7 +41,7 @@ pub(super) enum SelectionOutcome {
 
 impl EndpointSelectionTracker {
     /// Starts from the selection the catalog's selection file saved.
-    pub(super) fn new(catalog: &EndpointCatalog) -> Self {
+    pub(in crate::client) fn new(catalog: &EndpointCatalog) -> Self {
         Self::with_selection(catalog.load_selection())
     }
 
@@ -55,7 +55,7 @@ impl EndpointSelectionTracker {
     }
 
     /// The endpoint this client wants to own the pane surface.
-    pub(super) fn selected_endpoint(&self) -> ClientEndpointId {
+    pub(in crate::client) fn selected_endpoint(&self) -> ClientEndpointId {
         self.selected
             .as_ref()
             .map_or(ClientEndpointId::Local, |profile_id| {
@@ -65,7 +65,7 @@ impl EndpointSelectionTracker {
 
     /// Selects `endpoint_id` for an activation request. Returns false for an endpoint
     /// the catalog does not contain.
-    pub(super) fn begin(
+    pub(in crate::client) fn begin(
         &mut self,
         catalog: &EndpointCatalog,
         endpoint_id: &ClientEndpointId,
@@ -102,7 +102,7 @@ impl EndpointSelectionTracker {
 
     /// Drops a selection that no longer names a saved machine after the catalog
     /// changed, falling back to Local.
-    pub(super) fn catalog_changed(&mut self, catalog: &EndpointCatalog) {
+    pub(in crate::client) fn catalog_changed(&mut self, catalog: &EndpointCatalog) {
         if self
             .selected
             .as_ref()
@@ -115,7 +115,7 @@ impl EndpointSelectionTracker {
     /// Resolves the outstanding attempt once no handoff work remains in flight.
     /// `busy` covers a pending activation, a deferred Local activation and a queued
     /// activation event; `active_surface` is whether `active_id` owns the surface.
-    pub(super) fn settle(
+    pub(in crate::client) fn settle(
         &mut self,
         catalog: &EndpointCatalog,
         busy: bool,
@@ -148,7 +148,7 @@ impl EndpointSelectionTracker {
 
     /// Whether automatic activation of `endpoint_id` on this connection generation
     /// already failed and must wait for a new connection or an explicit request.
-    pub(super) fn suppresses(
+    pub(in crate::client) fn suppresses(
         &self,
         endpoint_id: &ClientEndpointId,
         generation: Option<u64>,
@@ -161,7 +161,7 @@ impl EndpointSelectionTracker {
     }
 
     /// Settles the outstanding attempt and persists a committed selection change.
-    pub(super) fn settle_and_persist(
+    pub(in crate::client) fn settle_and_persist(
         &mut self,
         catalog: &EndpointCatalog,
         busy: bool,

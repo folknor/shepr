@@ -140,7 +140,7 @@ pub(super) fn decode_endpoint_response(
     request_id: &str,
     data: &[u8],
 ) -> Result<crate::api::schema::ResponseResult, crate::client::shell::ClientShellEndpointError> {
-    crate::client::endpoint_commands::parse_response(request_id, data)
+    crate::client::endpoint::commands::parse_response(request_id, data)
 }
 
 pub(super) fn surface_set_revision(

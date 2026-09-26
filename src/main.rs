@@ -28,6 +28,7 @@ mod integration;
 mod ipc;
 mod layout;
 mod logging;
+mod machine;
 mod pane;
 mod pathutil;
 mod persist;
@@ -249,7 +250,7 @@ fn main() -> io::Result<()> {
     exit_if_nested_disabled(&loaded_config);
 
     let saved_federation =
-        client::endpoint::EndpointCatalog::load(&paths).is_ok_and(|catalog| catalog.has_ssh());
+        machine::EndpointCatalog::load(&paths).is_ok_and(|catalog| catalog.has_ssh());
     if let Err(err) =
         server::autodetect::auto_detect_launch(saved_federation, &loaded_config, &paths)
     {

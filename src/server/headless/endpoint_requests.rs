@@ -10,10 +10,10 @@ impl HeadlessServer {
         let Some(client) = self.clients.get(&client_id) else {
             return false;
         };
-        if !matches!(client.mode, ClientConnectionMode::ClientShell) {
+        let Some(shell) = client.shell_state() else {
             self.remove_client_and_resize_if_needed(client_id);
             return true;
-        }
+        };
         let request_id = request.id.clone();
         if !crate::server::client_commands::supports_client_shell_method(&request.method) {
             let message = crate::server::client_commands::error_message(
@@ -35,7 +35,7 @@ impl HeadlessServer {
             self.send_to_client(client_id, &message);
             return false;
         }
-        let surface_active = client.shell_surface_active;
+        let surface_active = shell.surface_active;
         if let api::schema::Method::ClientShellSurfaceSet(params) = &request.method {
             let Some((changed, projection_revision)) =
                 self.set_client_shell_surface_active(client_id, params.active)
@@ -55,7 +55,7 @@ impl HeadlessServer {
             );
             return changed;
         }
-        if client.shell_endpoint_command_in_flight {
+        if shell.endpoint_command_in_flight {
             let message = crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
@@ -98,8 +98,10 @@ impl HeadlessServer {
             self.send_to_client(client_id, &message);
             return false;
         }
-        if let Some(client) = self.clients.get_mut(&client_id) {
-            client.shell_endpoint_command_in_flight = true;
+        if let Some(client) = self.clients.get_mut(&client_id)
+            && let Some(shell) = client.shell_state_mut()
+        {
+            shell.endpoint_command_in_flight = true;
         }
         let foreground_changed = self.promote_client_to_foreground(client_id);
         foreground_changed

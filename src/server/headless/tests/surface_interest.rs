@@ -78,7 +78,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         })
     );
     let _ = client_shell_snapshot(&control_rx);
-    assert_eq!(server.foreground_client_id, None);
+    assert_eq!(server.clients.foreground_client_id(), None);
     assert_eq!(server.effective_size, original_size);
 
     server.render_and_stream();
@@ -160,7 +160,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     else {
         panic!("expected typed surface activation result");
     };
-    assert_eq!(server.foreground_client_id, Some(client_id));
+    assert_eq!(server.clients.foreground_client_id(), Some(client_id));
     assert_eq!(server.effective_size, (101, 37));
 
     server.render_and_stream();
@@ -176,7 +176,9 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         .clients
         .get_mut(&client_id)
         .expect("surface client")
-        .shell_endpoint_command_in_flight = true;
+        .shell_state_mut()
+        .expect("shell state")
+        .endpoint_command_in_flight = true;
 
     assert!(
         server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
@@ -268,10 +270,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
     let focused_size = server.app.test_runtime(pane_id).current_size();
     assert_eq!(focused_size, (17, 67));
     let shared_tab_id = server.shell_tab_id_for_client(7).expect("focused tab");
-    assert_eq!(
-        server.tab_geometry_controllers.get(&shared_tab_id),
-        Some(&7)
-    );
+    assert_eq!(server.clients.geometry_controller(&shared_tab_id), Some(7));
 
     let (writer, background_control, _) = test_client_writer();
     assert!(
@@ -299,32 +298,46 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         server.shell_tab_id_for_client(8).as_deref(),
         Some(shared_tab_id.as_str())
     );
-    assert_eq!(server.clients[&7].outer_terminal_focus, Some(true));
-    assert_eq!(server.clients[&8].outer_terminal_focus, None);
+    assert_eq!(
+        server.clients[&7]
+            .shell_state()
+            .and_then(|shell| shell.outer_terminal_focus),
+        Some(true)
+    );
+    assert_eq!(
+        server.clients[&8]
+            .shell_state()
+            .and_then(|shell| shell.outer_terminal_focus),
+        None
+    );
     assert_eq!(
         server.app.test_runtime(pane_id).current_size(),
         focused_size,
         "surface activation must not transiently resize a focused viewer's tab"
     );
-    assert_eq!(
-        server.tab_geometry_controllers.get(&shared_tab_id),
-        Some(&7)
-    );
+    assert_eq!(server.clients.geometry_controller(&shared_tab_id), Some(7));
 
     assert!(server.handle_server_event(ServerEvent::ClientShellFocus {
         client_id: 8,
         focused: false,
     }));
-    assert_eq!(server.clients[&7].outer_terminal_focus, Some(true));
-    assert_eq!(server.clients[&8].outer_terminal_focus, Some(false));
+    assert_eq!(
+        server.clients[&7]
+            .shell_state()
+            .and_then(|shell| shell.outer_terminal_focus),
+        Some(true)
+    );
+    assert_eq!(
+        server.clients[&8]
+            .shell_state()
+            .and_then(|shell| shell.outer_terminal_focus),
+        Some(false)
+    );
     assert_eq!(
         server.app.test_runtime(pane_id).current_size(),
         focused_size
     );
-    assert_eq!(
-        server.tab_geometry_controllers.get(&shared_tab_id),
-        Some(&7)
-    );
+    assert_eq!(server.clients.geometry_controller(&shared_tab_id), Some(7));
 
     request_active_surface(&mut server, 8, "synchronize-background-surface");
     let _ = background_control
@@ -334,10 +347,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         server.app.test_runtime(pane_id).current_size(),
         focused_size
     );
-    assert_eq!(
-        server.tab_geometry_controllers.get(&shared_tab_id),
-        Some(&7)
-    );
+    assert_eq!(server.clients.geometry_controller(&shared_tab_id), Some(7));
     shutdown_test_runtimes(&mut server);
 }
 
@@ -363,12 +373,14 @@ async fn focused_surface_reassertion_reclaims_tab_geometry() {
         .recv()
         .expect("focused surface reassertion response");
 
-    assert_eq!(server.clients[&8].outer_terminal_focus, Some(true));
-    assert_eq!(server.app.test_runtime(pane_id).current_size(), (35, 99));
     assert_eq!(
-        server.tab_geometry_controllers.get(&shared_tab_id),
-        Some(&8)
+        server.clients[&8]
+            .shell_state()
+            .and_then(|shell| shell.outer_terminal_focus),
+        Some(true)
     );
+    assert_eq!(server.app.test_runtime(pane_id).current_size(), (35, 99));
+    assert_eq!(server.clients.geometry_controller(&shared_tab_id), Some(8));
     shutdown_test_runtimes(&mut server);
 }
 
@@ -399,7 +411,10 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
             .expect("test precondition");
         client.host_mouse_capture_active = Some(false);
         client.host_sgr_pixels_active = Some(false);
-        client.host_keyboard_report_all_active = Some(false);
+        client
+            .shell_state_mut()
+            .expect("shell state")
+            .host_keyboard_report_all_active = Some(false);
     }
 
     let boot_id = server.client_shell_boot_id.clone();
@@ -427,7 +442,9 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
         "the target mode is sent after, not during, the frozen handoff"
     );
     assert_eq!(
-        server.clients[&client_id].host_keyboard_report_all_active,
+        server.clients[&client_id]
+            .shell_state()
+            .and_then(|shell| shell.host_keyboard_report_all_active),
         Some(false)
     );
     let messages = (0..3)
@@ -631,11 +648,15 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         std::mem::take(&mut *target_sent.lock().expect("test precondition")),
     );
     assert_eq!(
-        target_server.clients[&target_client_id].outer_terminal_focus,
+        target_server.clients[&target_client_id]
+            .shell_state()
+            .and_then(|shell| shell.outer_terminal_focus),
         Some(true)
     );
     assert_eq!(
-        source_server.clients[&source_client_id].outer_terminal_focus,
+        source_server.clients[&source_client_id]
+            .shell_state()
+            .and_then(|shell| shell.outer_terminal_focus),
         Some(false)
     );
     let ServerMessage::ClientShellEndpointResponseChunk {
@@ -826,12 +847,16 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         std::mem::take(&mut *source_sent.lock().expect("test precondition")),
     );
     assert_eq!(
-        source_server.clients[&source_client_id].outer_terminal_focus,
+        source_server.clients[&source_client_id]
+            .shell_state()
+            .and_then(|shell| shell.outer_terminal_focus),
         Some(true),
         "returning to Local must restore focus without a host focus event"
     );
     assert_eq!(
-        target_server.clients[&target_client_id].outer_terminal_focus,
+        target_server.clients[&target_client_id]
+            .shell_state()
+            .and_then(|shell| shell.outer_terminal_focus),
         Some(false)
     );
     shutdown_test_runtimes(&mut source_server);

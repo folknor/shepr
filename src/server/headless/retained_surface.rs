@@ -1,4 +1,5 @@
 use super::*;
+use crate::server::clients::RenderTargetMode;
 
 fn rect_fits_frame(rect: protocol::SurfaceRect, frame: &FrameData) -> bool {
     rect.x.saturating_add(rect.width) <= frame.width
@@ -236,27 +237,27 @@ impl HeadlessServer {
         {
             fallback!("unsafe_state");
         }
-        let mut targets = render_targets(&self.clients, self.foreground_client_id);
-        targets.retain(|(client_id, _, _, _, mode)| {
-            !matches!(mode, ClientConnectionMode::ClientShell)
+        let mut targets = render_targets(&self.clients, self.clients.foreground_client_id());
+        targets.retain(|target| {
+            !matches!(&target.mode, RenderTargetMode::Shell)
                 || self
                     .clients
-                    .get(client_id)
-                    .is_some_and(|client| client.shell_surface_active)
+                    .get(&target.client_id)
+                    .is_some_and(ClientConnection::is_active_shell_client)
         });
         if targets.is_empty() {
             success!("no_active_surface");
         }
         if targets
             .iter()
-            .any(|target| !matches!(target.4, ClientConnectionMode::ClientShell))
+            .any(|target| !matches!(&target.mode, RenderTargetMode::Shell))
         {
             fallback!("non_shell_target");
         }
 
         let mut recipients = Vec::with_capacity(targets.len());
-        for (client_id, (cols, rows), _, _, _) in &targets {
-            let Some(client) = self.clients.get(client_id) else {
+        for target in &targets {
+            let Some(client) = self.clients.get(&target.client_id) else {
                 fallback!("client_missing");
             };
             if client.deferred_render() != DeferredRender::None {
@@ -269,9 +270,12 @@ impl HeadlessServer {
                 fallback!("no_baseline");
             };
             if surface.boot_id != self.client_shell_boot_id
-                || surface.projection_revision != client.shell_projection_revision
-                || surface.frame.width != *cols
-                || surface.frame.height != *rows
+                || surface.projection_revision
+                    != client
+                        .shell_state()
+                        .map_or(0, |shell| shell.projection_revision)
+                || surface.frame.width != target.terminal_size.0
+                || surface.frame.height != target.terminal_size.1
             {
                 fallback!("baseline_mismatch");
             }
@@ -279,7 +283,7 @@ impl HeadlessServer {
                 fallback!("synchronized_visible");
             }
             recipients.push(RetainedRecipient {
-                client_id: *client_id,
+                client_id: target.client_id,
                 surface,
             });
         }

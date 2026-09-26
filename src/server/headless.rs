@@ -45,8 +45,8 @@ use crate::server::client_shell::{
 };
 use crate::server::client_transport::ServerEvent;
 use crate::server::clients::{
-    ClientConnection, ClientConnectionMode, DeferredRender, latest_shell_client, render_targets,
-    terminal_stream_client_ids,
+    AttachClaim, ClientConnection, ClientConnectionMode, ClientRegistry, DeferredRender,
+    render_targets, terminal_stream_client_ids,
 };
 use crate::server::pane_input::{
     apply_client_pane_input_events, apply_terminal_attach_input, apply_terminal_attach_scroll,
@@ -54,6 +54,7 @@ use crate::server::pane_input::{
 };
 use crate::server::socket_paths::{client_socket_path, prepare_socket_path};
 
+mod api_dispatcher;
 mod bootstrap;
 mod client_views;
 mod endpoint_requests;
@@ -63,6 +64,7 @@ mod render;
 mod retained_surface;
 mod surface_interest;
 
+use api_dispatcher::{AltScreenReadConflict, ApiDispatcher};
 pub use bootstrap::run_server;
 use lifecycle::{ShutdownLifecycle, ShutdownPhase};
 
@@ -144,20 +146,6 @@ const CLIENT_ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 // Headless server
 // ---------------------------------------------------------------------------
 
-struct AltScreenReadSpec {
-    terminal_id: crate::terminal::TerminalId,
-    lines: usize,
-    unwrap: bool,
-    initial: crate::terminal::ScreenSnapshot,
-    content_seq: u64,
-}
-
-enum AltScreenReadConflict {
-    None,
-    Frozen(crate::pane::TerminalReadSnapshot),
-    Defer,
-}
-
 /// The headless server - runs the shepr event loop without a real terminal.
 pub struct HeadlessServer {
     app: app::App,
@@ -166,12 +154,7 @@ pub struct HeadlessServer {
     client_listener: LocalListener,
     client_socket_path: PathBuf,
     client_socket_identity: SocketFileIdentity,
-    clients: HashMap<u64, ClientConnection>,
-    next_client_id: u64,
-    /// The client currently driving session-wide host presentation and side effects.
-    foreground_client_id: Option<u64>,
-    /// Ephemeral shell connection controlling PTY geometry for each stable tab id.
-    tab_geometry_controllers: HashMap<String, u64>,
+    clients: ClientRegistry,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
     client_shell_boot_id: String,
     /// Outer window title last pushed, paired with the client that received it.
@@ -182,14 +165,8 @@ pub struct HeadlessServer {
     /// Window title set through `client.window_title.set`. While present it wins
     /// over the configured `ui.window_title` until the API clears it again.
     api_window_title: Option<String>,
-    /// Writable direct attach owner per terminal id string.
-    terminal_attach_owners: HashMap<String, u64>,
-    /// Deferred application-history reads currently driving alternate-screen viewports.
-    pending_alt_screen_reads: Vec<crate::server::alt_screen_read::PendingAltScreenRead>,
-    /// Reads waiting for an alternate-screen traversal of the same terminal to finish.
-    deferred_alt_screen_reads: Vec<api::ApiRequestMessage>,
-    /// Monotonic activity counter used to pick the most recently active client.
-    next_activity_stamp: u64,
+    /// Routes API work that is parked behind alternate-screen reads.
+    api_dispatcher: ApiDispatcher,
     /// Whether the set of panes whose PTY output should wake the loop at once
     /// (`sync_immediate_pty_sources`) may be stale. That set depends only on
     /// the clients and on workspace/tab/pane topology, which change only while
@@ -256,10 +233,7 @@ impl HeadlessServer {
             client_listener: listener,
             client_socket_path: client_path,
             client_socket_identity,
-            clients: HashMap::new(),
-            next_client_id: 1,
-            foreground_client_id: None,
-            tab_geometry_controllers: HashMap::new(),
+            clients: ClientRegistry::default(),
             client_shell_boot_id: format!(
                 "{}-{}",
                 std::process::id(),
@@ -270,10 +244,7 @@ impl HeadlessServer {
             ),
             sent_window_title: None,
             api_window_title: None,
-            terminal_attach_owners: HashMap::new(),
-            pending_alt_screen_reads: Vec::new(),
-            deferred_alt_screen_reads: Vec::new(),
-            next_activity_stamp: 1,
+            api_dispatcher: ApiDispatcher::default(),
             immediate_pty_sources_dirty: true,
             host_input_modes_dirty: true,
             headless_size,
@@ -392,7 +363,7 @@ impl HeadlessServer {
                 needs_full_render = true;
             }
 
-            if latest_shell_client(&self.clients).is_some() && self.app.ensure_default_workspace() {
+            if self.clients.latest_shell_client().is_some() && self.app.ensure_default_workspace() {
                 self.immediate_pty_sources_dirty = true;
                 needs_render = true;
                 needs_full_render = true;
@@ -472,11 +443,10 @@ impl HeadlessServer {
                 .map(|deadline| deadline.min(now + CLIENT_ACCEPT_POLL_INTERVAL))
                 .or(Some(now + CLIENT_ACCEPT_POLL_INTERVAL));
             let next_deadline = self
-                .pending_alt_screen_reads
-                .iter()
-                .map(crate::server::alt_screen_read::PendingAltScreenRead::next_deadline)
-                .fold(next_deadline, |deadline, pending| {
-                    Some(deadline.map_or(pending, |current| current.min(pending)))
+                .api_dispatcher
+                .next_deadline()
+                .map_or(next_deadline, |pending| {
+                    Some(next_deadline.map_or(pending, |current| current.min(pending)))
                 });
             let event = {
                 tokio::select! {
@@ -570,19 +540,13 @@ impl HeadlessServer {
         run_error.map_or(Ok(()), Err)
     }
 
-    fn allocate_activity_stamp(&mut self) -> u64 {
-        let stamp = self.next_activity_stamp;
-        self.next_activity_stamp = self.next_activity_stamp.saturating_add(1);
-        stamp
-    }
-
     /// Re-applies the foreground client's tab geometry when it controls that
     /// tab. The foreground client is always an active shell connection
-    /// (`promote_client_to_foreground` and `latest_shell_client` admit nothing
+    /// (`promote_client_to_foreground` and registry shell selection admit nothing
     /// else), so there is no whole-session resize path: pane geometry is owned
     /// per tab by its shell controller.
     fn resize_foreground_shell_tab_if_controller(&mut self, start_pending_agent_resumes: bool) {
-        if let Some(client_id) = self.foreground_client_id {
+        if let Some(client_id) = self.clients.foreground_client_id() {
             self.resize_shell_tab_if_controller(client_id, start_pending_agent_resumes);
         }
     }
@@ -596,12 +560,13 @@ impl HeadlessServer {
     }
 
     fn sync_foreground_client_state(&mut self) {
-        self.app.pixel_mouse_available = self.foreground_client_id.is_some_and(|id| {
+        let foreground_client_id = self.clients.foreground_client_id();
+        self.app.pixel_mouse_available = foreground_client_id.is_some_and(|id| {
             self.clients
                 .get(&id)
                 .is_some_and(|client| client.pixel_mouse)
         });
-        let Some(client_id) = self.foreground_client_id else {
+        let Some(client_id) = foreground_client_id else {
             self.effective_size = self.headless_size;
             self.app.state.outer_terminal_focus = None;
             self.app.state.host_cell_size = crate::terminal_cell_size::HostCellSize::default();
@@ -609,7 +574,15 @@ impl HeadlessServer {
             return;
         };
         let Some(client) = self.clients.get(&client_id) else {
-            self.foreground_client_id = None;
+            self.clients.set_foreground_client_id(None);
+            self.effective_size = self.headless_size;
+            self.app.state.outer_terminal_focus = None;
+            self.app.state.host_cell_size = crate::terminal_cell_size::HostCellSize::default();
+            self.sync_runtime_view_geometry();
+            return;
+        };
+        let Some(shell) = client.shell_state() else {
+            self.clients.set_foreground_client_id(None);
             self.effective_size = self.headless_size;
             self.app.state.outer_terminal_focus = None;
             self.app.state.host_cell_size = crate::terminal_cell_size::HostCellSize::default();
@@ -623,9 +596,9 @@ impl HeadlessServer {
         } else {
             crate::terminal_cell_size::HostCellSize::default()
         };
-        let host_terminal_theme = client.host_terminal_theme;
-        let host_terminal_appearance = client.host_terminal_appearance;
-        let host_terminal_appearance_explicit = client.host_terminal_appearance_explicit;
+        let host_terminal_theme = shell.host_terminal_theme;
+        let host_terminal_appearance = shell.host_terminal_appearance;
+        let host_terminal_appearance_explicit = shell.host_terminal_appearance_explicit;
 
         self.effective_size = terminal_size;
         self.sync_runtime_view_geometry();
@@ -646,46 +619,41 @@ impl HeadlessServer {
     /// `sync_foreground_client_state`.
     fn sync_foreground_focus_state(&mut self) {
         let Some(client) = self
-            .foreground_client_id
+            .clients
+            .foreground_client_id()
             .and_then(|client_id| self.clients.get(&client_id))
         else {
             self.app.state.outer_terminal_focus = None;
             return;
         };
-        self.app.state.outer_terminal_focus = client.outer_terminal_focus;
+        self.app.state.outer_terminal_focus = client
+            .shell_state()
+            .and_then(|shell| shell.outer_terminal_focus);
     }
 
     fn promote_client_to_foreground(&mut self, client_id: u64) -> bool {
-        let stamp = self.allocate_activity_stamp();
-        let Some(client) = self.clients.get_mut(&client_id) else {
-            return false;
-        };
         // Only an active shell connection may drive session-wide presentation;
         // a direct terminal stream never becomes the foreground client.
-        if !client.is_active_shell_client() {
+        let changed = self.clients.promote_to_foreground(client_id);
+        if !self
+            .clients
+            .get(&client_id)
+            .is_some_and(crate::server::clients::ClientConnection::is_active_shell_client)
+        {
             return false;
         }
-        client.last_activity = stamp;
-
-        let changed = self.foreground_client_id != Some(client_id);
-        self.foreground_client_id = Some(client_id);
         self.sync_foreground_client_state();
         changed
     }
 
     fn promote_latest_remaining_client(&mut self) -> bool {
-        let next_foreground = latest_shell_client(&self.clients);
-        let changed = next_foreground != self.foreground_client_id;
-        self.foreground_client_id = next_foreground;
+        let changed = self.clients.promote_latest_remaining();
         self.sync_foreground_client_state();
         changed
     }
 
     fn app_client_count(&self) -> usize {
-        self.clients
-            .values()
-            .filter(|client| client.is_active_shell_client() && client.writer.is_some())
-            .count()
+        self.clients.app_client_count()
     }
 
     fn has_app_client(&self) -> bool {
@@ -698,33 +666,34 @@ impl HeadlessServer {
             .clients
             .get(&client_id)
             .filter(|client| {
-                client.is_active_shell_client() && client.outer_terminal_focus == Some(true)
+                client.is_active_shell_client()
+                    && client
+                        .shell_state()
+                        .is_some_and(|shell| shell.outer_terminal_focus == Some(true))
             })
             .and_then(|_| self.shell_focus_target(client_id));
         let should_release_focus = disconnected_focus.as_ref().is_some_and(|target| {
             !self.clients.iter().any(|(&other_id, client)| {
                 other_id != client_id
                     && client.is_active_shell_client()
-                    && client.outer_terminal_focus == Some(true)
+                    && client
+                        .shell_state()
+                        .is_some_and(|shell| shell.outer_terminal_focus == Some(true))
                     && self.shell_tab_id_for_client(other_id).as_deref()
                         == Some(target.tab_id.as_str())
             })
         });
-        let was_foreground = self.foreground_client_id == Some(client_id);
-        let removed = self.clients.remove(&client_id);
-        self.tab_geometry_controllers
-            .retain(|_, controller_id| *controller_id != client_id);
+        let (removed, was_foreground) = self.clients.remove_client(client_id);
         if let Some(mut removed) = removed {
             let held_inputs = removed.drain_shell_held_inputs();
             self.release_client_shell_inputs(client_id, held_inputs);
-            if let ClientConnectionMode::TerminalAttach { terminal_id } = removed.mode {
-                self.terminal_attach_owners.remove(&terminal_id);
-                if let Some(terminal_id) = self.terminal_id_by_string(&terminal_id).cloned() {
-                    self.app
-                        .state
-                        .direct_attach_resize_locks
-                        .remove(&terminal_id);
-                }
+            if let ClientConnectionMode::TerminalAttach { terminal_id, .. } = removed.mode
+                && let Some(terminal_id) = self.terminal_id_by_string(&terminal_id).cloned()
+            {
+                self.app
+                    .state
+                    .direct_attach_resize_locks
+                    .remove(&terminal_id);
             }
         }
         if should_release_focus && let Some(target) = disconnected_focus.as_ref() {
@@ -790,7 +759,7 @@ impl HeadlessServer {
 
     fn remove_client_and_resize_if_needed(&mut self, client_id: u64) {
         let restore_shell_controller = self.clients.get(&client_id).and_then(|client| {
-            let ClientConnectionMode::TerminalAttach { terminal_id } = &client.mode else {
+            let ClientConnectionMode::TerminalAttach { terminal_id, .. } = &client.mode else {
                 return None;
             };
             self.shell_geometry_controller_for_terminal(terminal_id)
@@ -807,7 +776,7 @@ impl HeadlessServer {
     fn accept_client_connections(&mut self) -> io::Result<()> {
         accept_pending_client_connections(
             &self.client_listener,
-            &mut self.next_client_id,
+            &mut self.clients,
             self.lifecycle.stop_request_flag(),
             &self.server_event_tx,
         )
@@ -874,7 +843,7 @@ impl HeadlessServer {
         modifiers: u8,
     ) -> bool {
         let Some(ClientConnection {
-            mode: ClientConnectionMode::TerminalAttach { terminal_id },
+            mode: ClientConnectionMode::TerminalAttach { terminal_id, .. },
             ..
         }) = self.clients.get(&client_id)
         else {
@@ -905,7 +874,7 @@ impl HeadlessServer {
         let Some(client) = self.clients.get(&client_id) else {
             return false;
         };
-        let ClientConnectionMode::TerminalAttach { terminal_id } = &client.mode else {
+        let ClientConnectionMode::TerminalAttach { terminal_id, .. } = &client.mode else {
             return false;
         };
         let terminal_id = terminal_id.clone();
@@ -952,9 +921,17 @@ impl HeadlessServer {
         let Some(client) = self.clients.get_mut(&client_id) else {
             return;
         };
+        let terminal_id = match &client.mode {
+            ClientConnectionMode::TerminalAttach { terminal_id, .. } => terminal_id.clone(),
+            ClientConnectionMode::ClientShell(_) | ClientConnectionMode::TerminalPending => {
+                return;
+            }
+        };
         match delivery {
             AttachInputDelivery::Delivered => {
-                client.attach_input_drop_reported = false;
+                if let Some(state) = client.terminal_attach_state_mut() {
+                    state.input_drop_reported = false;
+                }
                 return;
             }
             // The pane is going away or the input was malformed; the log at
@@ -963,12 +940,12 @@ impl HeadlessServer {
             AttachInputDelivery::Failed => return,
             AttachInputDelivery::Dropped => {}
         }
-        if std::mem::replace(&mut client.attach_input_drop_reported, true) {
-            return;
-        }
-        let ClientConnectionMode::TerminalAttach { terminal_id } = &client.mode else {
+        let Some(state) = client.terminal_attach_state_mut() else {
             return;
         };
+        if std::mem::replace(&mut state.input_drop_reported, true) {
+            return;
+        }
         let message =
             format!("Input to terminal {terminal_id} dropped: the pane is not reading its input");
         self.send_to_client(client_id, &ServerMessage::DirectTerminalNotice { message });
@@ -1006,7 +983,8 @@ impl HeadlessServer {
     }
 
     fn foreground_window_title_target(&self) -> Option<crate::ui::TabSurfaceTarget> {
-        self.foreground_client_id
+        self.clients
+            .foreground_client_id()
             .filter(|client_id| {
                 self.clients
                     .get(client_id)
@@ -1040,9 +1018,10 @@ impl HeadlessServer {
             None if self.app.window_title_configured() => self.configured_window_title(),
             None => return,
         };
-        if let (Some(client_id), Some((sent_client_id, sent_title))) =
-            (self.foreground_client_id, self.sent_window_title.as_ref())
-            && *sent_client_id == client_id
+        if let (Some(client_id), Some((sent_client_id, sent_title))) = (
+            self.clients.foreground_client_id(),
+            self.sent_window_title.as_ref(),
+        ) && *sent_client_id == client_id
             && *sent_title == title
         {
             return;
@@ -1053,7 +1032,7 @@ impl HeadlessServer {
     /// Sends a window title and remembers it only when a foreground client took
     /// it, so the next client to attach is written to rather than skipped.
     fn send_window_title(&mut self, title: Option<String>) -> bool {
-        let Some(client_id) = self.foreground_client_id else {
+        let Some(client_id) = self.clients.foreground_client_id() else {
             self.sent_window_title = None;
             return false;
         };
@@ -1155,7 +1134,7 @@ impl HeadlessServer {
 
     /// Sends a client-local side effect to the foreground client only.
     fn send_to_foreground_client(&mut self, msg: &ServerMessage) -> bool {
-        let Some(client_id) = self.foreground_client_id else {
+        let Some(client_id) = self.clients.foreground_client_id() else {
             return false;
         };
         self.send_to_client(client_id, msg)
@@ -1253,9 +1232,8 @@ impl HeadlessServer {
         };
 
         if self
-            .pending_alt_screen_reads
-            .iter()
-            .any(|pending| pending.terminal_id == real_terminal_id)
+            .api_dispatcher
+            .has_pending_read_for(real_terminal_id.as_str())
         {
             self.send_to_client(
                 client_id,
@@ -1269,8 +1247,8 @@ impl HeadlessServer {
             return false;
         }
 
-        if let Some(existing_owner) = self.terminal_attach_owners.get(terminal_id).copied() {
-            if existing_owner != client_id && !takeover {
+        match self.clients.attach_claim(terminal_id, client_id, takeover) {
+            AttachClaim::Reject { .. } => {
                 self.send_to_client(
                     client_id,
                     &ServerMessage::ServerShutdown {
@@ -1282,36 +1260,38 @@ impl HeadlessServer {
                 self.remove_client_and_resize_if_needed(client_id);
                 return false;
             }
-            if existing_owner != client_id {
+            AttachClaim::Takeover { owner } => {
                 self.send_to_client(
-                    existing_owner,
+                    owner,
                     &ServerMessage::ServerShutdown {
                         reason: Some("terminal attach taken over".to_owned()),
                     },
                 );
-                self.remove_client_and_resize_if_needed(existing_owner);
+                self.remove_client_and_resize_if_needed(owner);
             }
+            AttachClaim::Available | AttachClaim::AlreadyOwned => {}
         }
 
-        let stamp = self.allocate_activity_stamp();
+        let stamp = self.clients.allocate_activity_stamp();
+        let was_foreground = self.clients.foreground_client_id() == Some(client_id);
         let Some(client) = self.clients.get_mut(&client_id) else {
             return false;
         };
         let (cols, rows) = client.terminal_size;
         let cell_size = client.cell_size;
-        client.mode = ClientConnectionMode::TerminalAttach {
-            terminal_id: terminal_id.to_owned(),
-        };
+        let transitioned = client.attach_to_terminal(terminal_id.to_owned());
+        if !transitioned {
+            return false;
+        }
         client.render_state.reset_baseline();
         client.last_activity = stamp;
-        let was_foreground = self.foreground_client_id == Some(client_id);
         if was_foreground {
             self.promote_latest_remaining_client();
         }
 
         info!(client_id, cols, rows, terminal_id = %terminal_id, "terminal attach client connected");
-        self.terminal_attach_owners
-            .insert(terminal_id.to_owned(), client_id);
+        self.clients
+            .set_attach_owner(terminal_id.to_owned(), client_id);
         self.app
             .state
             .direct_attach_resize_locks
@@ -1347,7 +1327,7 @@ impl HeadlessServer {
                     client_id,
                     cols, rows, cell_width_px, cell_height_px, "direct terminal client connected"
                 );
-                let last_activity = self.allocate_activity_stamp();
+                let last_activity = self.clients.allocate_activity_stamp();
                 let observed = crate::terminal_cell_size::HostCellSize {
                     width_px: cell_width_px,
                     height_px: cell_height_px,
@@ -1388,13 +1368,13 @@ impl HeadlessServer {
                 );
                 self.app.ensure_default_workspace();
                 let first_app_client = self.app_client_count() == 0;
-                let last_activity = self.allocate_activity_stamp();
+                let last_activity = self.clients.allocate_activity_stamp();
                 let observed = crate::terminal_cell_size::HostCellSize {
                     width_px: cell_width_px,
                     height_px: cell_height_px,
                 };
                 let mut connection = ClientConnection::new_with_mode(
-                    ClientConnectionMode::ClientShell,
+                    ClientConnectionMode::shell(),
                     (surface_cols, surface_rows),
                     observed,
                     last_activity,
@@ -1402,13 +1382,17 @@ impl HeadlessServer {
                     Some(writer),
                 );
                 connection.pixel_mouse = pixel_mouse && observed.is_known();
-                connection.shell_mouse_capture = mouse_capture;
-                connection.shell_surface_active = surface_active;
-                connection.shell_projection_revision = 1;
+                let Some(shell) = connection.shell_state_mut() else {
+                    warn!(client_id, "created shell connection without shell state");
+                    return false;
+                };
+                shell.mouse_capture = mouse_capture;
+                shell.surface_active = surface_active;
+                shell.projection_revision = 1;
                 let seed_snapshot = client_shell_snapshot(
                     &self.app,
                     &self.client_shell_boot_id,
-                    connection.shell_projection_revision,
+                    shell.projection_revision,
                     None,
                 );
                 let location =
@@ -1421,12 +1405,12 @@ impl HeadlessServer {
                             return false;
                         }
                     };
-                connection.shell_location = Some(location);
-                connection.shell_snapshot = Some(seed_snapshot);
+                shell.location = Some(location);
+                shell.snapshot = Some(seed_snapshot);
                 self.clients.insert(client_id, connection);
                 self.send_to_client(client_id, &snapshot_message);
                 if surface_active {
-                    self.foreground_client_id = Some(client_id);
+                    self.clients.set_foreground_client_id(Some(client_id));
                 }
                 if first_app_client {
                     self.app.mark_git_status_refresh_due(Instant::now());
@@ -1463,7 +1447,7 @@ impl HeadlessServer {
             ),
             ServerEvent::ClientInput { client_id, data } => {
                 let Some(ClientConnection {
-                    mode: ClientConnectionMode::TerminalAttach { terminal_id },
+                    mode: ClientConnectionMode::TerminalAttach { terminal_id, .. },
                     ..
                 }) = self.clients.get(&client_id)
                 else {
@@ -1487,7 +1471,7 @@ impl HeadlessServer {
                 let detail = format!("Input message is {size} bytes; Shepr's limit is {max} bytes");
                 if matches!(
                     self.clients.get(&client_id).map(|client| &client.mode),
-                    Some(ClientConnectionMode::ClientShell)
+                    Some(ClientConnectionMode::ClientShell(_))
                 ) {
                     self.send_to_client(
                         client_id,
@@ -1527,7 +1511,7 @@ impl HeadlessServer {
                 };
                 let pixel_mouse = pixel_mouse && observed.is_known();
                 let direct_terminal_id = if let Some(ClientConnection {
-                    mode: ClientConnectionMode::TerminalAttach { terminal_id },
+                    mode: ClientConnectionMode::TerminalAttach { terminal_id, .. },
                     terminal_size,
                     cell_size,
                     pixel_mouse: client_pixel_mouse,
@@ -1577,7 +1561,7 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;
                 };
-                if !matches!(client.mode, ClientConnectionMode::ClientShell) {
+                if !matches!(client.mode, ClientConnectionMode::ClientShell(_)) {
                     return false;
                 }
                 client.terminal_size = (surface_cols, surface_rows);
@@ -1589,7 +1573,7 @@ impl HeadlessServer {
                     client.cell_size = observed;
                 }
                 client.pixel_mouse = pixel_mouse && observed.is_known();
-                if !client.shell_surface_active {
+                if !client.is_active_shell_client() {
                     return false;
                 }
                 client.request_repaint();
@@ -1598,23 +1582,29 @@ impl HeadlessServer {
                 true
             }
             ServerEvent::ClientShellHostTheme { client_id, update } => {
+                let is_foreground = self.clients.foreground_client_id() == Some(client_id);
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;
                 };
-                if !matches!(client.mode, ClientConnectionMode::ClientShell) {
+                if !client.is_shell_client() {
                     return false;
                 }
                 if !client.update_host_theme(&update) {
                     return false;
                 }
-                if !client.shell_surface_active || self.foreground_client_id != Some(client_id) {
+                let Some(shell) = client.shell_state() else {
+                    return false;
+                };
+                if !shell.surface_active || !is_foreground {
                     return false;
                 }
-                let mut changed = self.app.set_host_terminal_appearance_state(
-                    client.host_terminal_appearance,
-                    client.host_terminal_appearance_explicit,
-                );
-                changed |= self.app.set_host_terminal_theme(client.host_terminal_theme);
+                let appearance = shell.host_terminal_appearance;
+                let appearance_explicit = shell.host_terminal_appearance_explicit;
+                let theme = shell.host_terminal_theme;
+                let mut changed = self
+                    .app
+                    .set_host_terminal_appearance_state(appearance, appearance_explicit);
+                changed |= self.app.set_host_terminal_theme(theme);
                 if changed {
                     self.resize_foreground_shell_tab_if_controller(false);
                 }
@@ -1624,7 +1614,10 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get(&client_id) else {
                     return false;
                 };
-                if !client.is_active_shell_client() || client.outer_terminal_focus == Some(focused)
+                if !client.is_active_shell_client()
+                    || client
+                        .shell_state()
+                        .is_none_or(|shell| shell.outer_terminal_focus == Some(focused))
                 {
                     return false;
                 }
@@ -1632,11 +1625,15 @@ impl HeadlessServer {
                 let another_focused_viewer = self.clients.iter().any(|(&other_id, client)| {
                     other_id != client_id
                         && client.is_active_shell_client()
-                        && client.outer_terminal_focus == Some(true)
+                        && client
+                            .shell_state()
+                            .is_some_and(|shell| shell.outer_terminal_focus == Some(true))
                         && self.shell_tab_id_for_client(other_id) == tab_id
                 });
-                if let Some(client) = self.clients.get_mut(&client_id) {
-                    client.outer_terminal_focus = Some(focused);
+                if let Some(client) = self.clients.get_mut(&client_id)
+                    && let Some(shell) = client.shell_state_mut()
+                {
+                    shell.outer_terminal_focus = Some(focused);
                 }
                 if focused {
                     self.promote_client_to_foreground(client_id);
@@ -1648,7 +1645,7 @@ impl HeadlessServer {
                     }
                     true
                 } else {
-                    if self.foreground_client_id == Some(client_id) {
+                    if self.clients.foreground_client_id() == Some(client_id) {
                         self.app.state.outer_terminal_focus = Some(false);
                     }
                     if !another_focused_viewer
@@ -1668,7 +1665,9 @@ impl HeadlessServer {
                 }
                 client.host_mouse_capture_active = None;
                 client.host_sgr_pixels_active = None;
-                client.host_keyboard_report_all_active = None;
+                if let Some(shell) = client.shell_state_mut() {
+                    shell.host_keyboard_report_all_active = None;
+                }
                 self.sent_window_title = None;
                 self.stream_host_mouse_capture_mode();
                 self.stream_direct_terminal_keyboard_mode();
@@ -1773,7 +1772,7 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get(&client_id) else {
                     return false;
                 };
-                if !matches!(client.mode, ClientConnectionMode::ClientShell) {
+                if !matches!(client.mode, ClientConnectionMode::ClientShell(_)) {
                     self.remove_client_and_resize_if_needed(client_id);
                     return true;
                 }
@@ -1798,14 +1797,16 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;
                 };
-                if !matches!(client.mode, ClientConnectionMode::ClientShell)
-                    || !client.shell_endpoint_command_in_flight
+                if !matches!(client.mode, ClientConnectionMode::ClientShell(_))
+                    || !client
+                        .shell_state()
+                        .is_some_and(|shell| shell.endpoint_command_in_flight)
                     || boot_id != self.client_shell_boot_id
                 {
                     return false;
                 }
-                if final_chunk {
-                    client.shell_endpoint_command_in_flight = false;
+                if final_chunk && let Some(shell) = client.shell_state_mut() {
+                    shell.endpoint_command_in_flight = false;
                 }
                 self.send_to_client(
                     client_id,
@@ -1851,245 +1852,12 @@ impl HeadlessServer {
         }
     }
 
+    #[cfg(test)]
     fn agent_read_not_idle_error(
         &self,
         request: &api::schema::Request,
     ) -> Option<api::schema::ErrorBody> {
-        use api::schema::{Method, ReadFormat, ReadSource};
-
-        let Method::AgentRead(params) = &request.method else {
-            return None;
-        };
-        let requested = params.lines?;
-        if params.format != ReadFormat::Text
-            || !matches!(
-                params.source,
-                ReadSource::Recent | ReadSource::RecentUnwrapped
-            )
-        {
-            return None;
-        }
-        let target = self.app.resolve_agent_target(&params.target).ok()?;
-        let terminal = self
-            .app
-            .state
-            .terminals
-            .values()
-            .find(|terminal| terminal.id.as_str() == target.terminal_id)?;
-        if terminal.effective_known_agent().is_none()
-            || terminal.state == crate::detect::AgentState::Idle
-        {
-            return None;
-        }
-        let runtime = self.app.terminal_runtimes.get(&terminal.id)?;
-        let (screen, snapshot) = runtime.screen_text_snapshot()?;
-        if screen != crate::ghostty::ActiveScreen::Alternate
-            || snapshot.rows.len() >= requested.min(1000) as usize
-        {
-            return None;
-        }
-        let status = crate::detect::manifest::agent_state_label(terminal.state);
-        Some(api::schema::ErrorBody {
-            code: "agent_not_idle".into(),
-            message: format!(
-                "cannot read {requested} lines while {} is {status}: its alternate-screen history can only be captured by scrolling while idle. Wait and retry, or use --source visible",
-                params.target
-            ),
-        })
-    }
-
-    fn alt_screen_read_spec(&self, request: &api::schema::Request) -> Option<AltScreenReadSpec> {
-        use api::schema::{Method, ReadFormat, ReadIntent, ReadSource};
-
-        let (target, source, lines, format) = match &request.method {
-            Method::AgentRead(params) => (
-                self.app.resolve_agent_target(&params.target).ok()?,
-                params.source,
-                params.lines,
-                params.format,
-            ),
-            Method::PaneRead(params) if params.intent == ReadIntent::Interactive => (
-                self.app.resolve_terminal_target(&params.pane_id).ok()?,
-                params.source,
-                params.lines,
-                params.format,
-            ),
-            _ => return None,
-        };
-        if format != ReadFormat::Text
-            || !matches!(source, ReadSource::Recent | ReadSource::RecentUnwrapped)
-        {
-            return None;
-        }
-        let lines = lines.unwrap_or(80).min(1000) as usize;
-        if lines == 0
-            || self
-                .terminal_attach_owners
-                .contains_key(target.terminal_id.as_str())
-            || self
-                .pending_alt_screen_reads
-                .iter()
-                .any(|pending| pending.terminal_id.as_str() == target.terminal_id)
-        {
-            return None;
-        }
-        let terminal = self
-            .app
-            .state
-            .terminals
-            .values()
-            .find(|terminal| terminal.id.as_str() == target.terminal_id)?;
-        if terminal.effective_known_agent().is_none()
-            || terminal.state != crate::detect::AgentState::Idle
-        {
-            return None;
-        }
-        let runtime = self.app.terminal_runtimes.get(&terminal.id)?;
-        if runtime.wheel_routing() != Some(crate::pane::WheelRouting::MouseReport) {
-            return None;
-        }
-        let (screen, initial, content_seq) = runtime.screen_text_snapshot_with_seq()?;
-        if screen != crate::ghostty::ActiveScreen::Alternate || initial.rows.len() >= lines {
-            return None;
-        }
-        Some(AltScreenReadSpec {
-            terminal_id: terminal.id.clone(),
-            lines,
-            unwrap: source == ReadSource::RecentUnwrapped,
-            initial,
-            content_seq,
-        })
-    }
-
-    fn poll_pending_alt_screen_reads(&mut self, now: Instant) {
-        let pending = std::mem::take(&mut self.pending_alt_screen_reads);
-        for read in pending {
-            let runtime = self.app.terminal_runtimes.get(&read.terminal_id);
-            let remains_idle = self
-                .app
-                .state
-                .terminals
-                .get(&read.terminal_id)
-                .is_some_and(|terminal| terminal.state == crate::detect::AgentState::Idle);
-            let attached = self
-                .terminal_attach_owners
-                .contains_key(read.terminal_id.as_str());
-            let outcome = if remains_idle && !attached {
-                read.poll(runtime, now)
-            } else {
-                read.abort(runtime, now)
-            };
-            if let Some(read) = outcome {
-                self.pending_alt_screen_reads.push(read);
-            }
-        }
-    }
-
-    fn alt_screen_read_conflict(&self, request: &api::schema::Request) -> AltScreenReadConflict {
-        let (target, source, lines, format) = match &request.method {
-            api::schema::Method::AgentRead(params) => (
-                self.app.resolve_agent_target(&params.target).ok(),
-                params.source,
-                params.lines,
-                params.format,
-            ),
-            api::schema::Method::PaneRead(params) => (
-                self.app.resolve_terminal_target(&params.pane_id).ok(),
-                params.source,
-                params.lines,
-                params.format,
-            ),
-            _ => return AltScreenReadConflict::None,
-        };
-        let Some(target) = target else {
-            return AltScreenReadConflict::None;
-        };
-        let Some(pending) = self
-            .pending_alt_screen_reads
-            .iter()
-            .find(|pending| pending.terminal_id.as_str() == target.terminal_id)
-        else {
-            return AltScreenReadConflict::None;
-        };
-        if format == api::schema::ReadFormat::Text {
-            AltScreenReadConflict::Frozen(pending.frozen_snapshot(source, lines))
-        } else {
-            AltScreenReadConflict::Defer
-        }
-    }
-
-    fn process_deferred_alt_screen_reads(&mut self) -> bool {
-        let deferred = std::mem::take(&mut self.deferred_alt_screen_reads);
-        let mut changed = false;
-        for msg in deferred {
-            match self.alt_screen_read_conflict(&msg.request) {
-                AltScreenReadConflict::None => {
-                    changed |= self.handle_api_request_with_shutdown_check(msg);
-                }
-                AltScreenReadConflict::Frozen(_) | AltScreenReadConflict::Defer => {
-                    self.deferred_alt_screen_reads.push(msg);
-                }
-            }
-        }
-        changed
-    }
-
-    /// Drains API requests with shutdown awareness.
-    ///
-    /// During shutdown, remaining requests get a `server_unavailable` error.
-    fn drain_api_requests_with_shutdown_check(&mut self) -> bool {
-        let mut changed = false;
-        while !self.lifecycle.stop_requested(self.app.state.should_quit) {
-            let Ok(msg) = self.app.api_rx.try_recv() else {
-                break;
-            };
-            changed |= self.handle_api_request_with_shutdown_check(msg);
-        }
-        changed
-    }
-
-    /// Closes the API request channel and answers everything still in it.
-    ///
-    /// Closing first means a request the API thread dispatches from here on
-    /// fails to send and is answered `server_unavailable` by that thread at
-    /// once, instead of sitting in the channel until the server drops it
-    /// after the session save.
-    fn reject_queued_api_requests_for_shutdown(&mut self) {
-        self.app.api_rx.close();
-        while let Ok(msg) = self.app.api_rx.try_recv() {
-            self.reject_api_request_for_shutdown(&msg);
-        }
-    }
-
-    /// Answers requests that were parked behind an alternate-screen traversal,
-    /// and the traversals themselves, before the loop that drives them exits.
-    fn finish_alt_screen_reads_for_shutdown(&mut self) {
-        for msg in std::mem::take(&mut self.deferred_alt_screen_reads) {
-            self.reject_api_request_for_shutdown(&msg);
-        }
-        for read in std::mem::take(&mut self.pending_alt_screen_reads) {
-            read.finish_for_shutdown();
-        }
-    }
-
-    fn reject_api_request_for_shutdown(&self, msg: &api::ApiRequestMessage) {
-        let error = self
-            .lifecycle
-            .shutdown_error()
-            .unwrap_or_else(|| api::schema::ErrorBody {
-                code: "server_unavailable".into(),
-                message: "server is shutting down".into(),
-            });
-        let request_id = msg.request.id.clone();
-        let method = msg.request.method.traits().name;
-        let response = api::serialize_response_or_error(
-            &request_id,
-            &api::schema::ErrorResponse {
-                id: request_id.clone(),
-                error,
-            },
-        );
-        api::send_api_response(&msg.respond_to, &request_id, method, response);
+        self.api_dispatcher.agent_read_not_idle_error(self, request)
     }
 
     fn handle_api_request_with_shutdown_check_inner(
@@ -2107,11 +1875,14 @@ impl HeadlessServer {
         let method = msg.request.method.traits().name;
         self.immediate_pty_sources_dirty = true;
 
-        let frozen_alt_screen_read = match self.alt_screen_read_conflict(&msg.request) {
+        let frozen_alt_screen_read = match self
+            .api_dispatcher
+            .alt_screen_read_conflict(self, &msg.request)
+        {
             AltScreenReadConflict::None => None,
             AltScreenReadConflict::Frozen(snapshot) => Some(snapshot),
             AltScreenReadConflict::Defer => {
-                self.deferred_alt_screen_reads.push(msg);
+                self.api_dispatcher.defer(msg);
                 return false;
             }
         };
@@ -2141,7 +1912,10 @@ impl HeadlessServer {
         // resume geometry, and an earlier request may have changed the layout
         // without anything cheaper recording that it did.
         self.sync_foreground_client_state();
-        if let Some(error) = self.agent_read_not_idle_error(&msg.request) {
+        if let Some(error) = self
+            .api_dispatcher
+            .agent_read_not_idle_error(self, &msg.request)
+        {
             let response = api::serialize_response_or_error(
                 &request_id,
                 &api::schema::ErrorResponse {
@@ -2152,18 +1926,22 @@ impl HeadlessServer {
             api::send_api_response(&msg.respond_to, &request_id, method, response);
             return changed;
         }
-        let alt_screen_read_spec = self.alt_screen_read_spec(&msg.request);
+        let alt_screen_read_spec = self.api_dispatcher.alt_screen_read_spec(self, &msg.request);
         if matches!(&msg.request.method, api::schema::Method::AgentPrompt(_)) {
             let deferred_changed = self
                 .app
                 .handle_deferred_agent_api_request(msg.request, msg.respond_to);
             return changed | deferred_changed;
         }
-        if self.foreground_client_id.is_some_and(|client_id| {
-            self.clients
-                .get(&client_id)
-                .is_some_and(|client| matches!(client.mode, ClientConnectionMode::ClientShell))
-        }) {
+        if self
+            .clients
+            .foreground_client_id()
+            .is_some_and(|client_id| {
+                self.clients.get(&client_id).is_some_and(|client| {
+                    matches!(client.mode, ClientConnectionMode::ClientShell(_))
+                })
+            })
+        {
             self.app.state.view.terminal_area =
                 Rect::new(0, 0, self.effective_size.0, self.effective_size.1);
         }
@@ -2196,12 +1974,12 @@ impl HeadlessServer {
                 spec.content_seq,
                 Instant::now(),
             );
-            self.pending_alt_screen_reads.push(pending);
+            self.api_dispatcher.push_pending_read(pending);
             return changed;
         }
         api::send_api_response(&msg.respond_to, &request_id, method, response);
 
-        if latest_shell_client(&self.clients).is_some() {
+        if self.clients.latest_shell_client().is_some() {
             changed |= self.app.ensure_default_workspace();
         }
 

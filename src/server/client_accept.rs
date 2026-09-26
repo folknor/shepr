@@ -7,11 +7,12 @@ use tracing::{debug, error, warn};
 
 use crate::ipc::LocalListener;
 use crate::server::client_transport::{self, ServerEvent};
+use crate::server::clients::ClientRegistry;
 
 /// Accepts pending thin-client connections and starts their handshake readers.
 pub(crate) fn accept_pending_client_connections(
     listener: &LocalListener,
-    next_client_id: &mut u64,
+    clients: &mut ClientRegistry,
     should_quit: &Arc<AtomicBool>,
     server_event_tx: &mpsc::Sender<ServerEvent>,
 ) -> io::Result<()> {
@@ -35,8 +36,7 @@ pub(crate) fn accept_pending_client_connections(
                         continue;
                     }
                 }
-                let client_id = *next_client_id;
-                *next_client_id = next_client_id.saturating_add(1);
+                let client_id = clients.allocate_client_id();
 
                 if let Err(err) = stream.set_nonblocking(true) {
                     warn!(err = %err, "failed to set client stream nonblocking");

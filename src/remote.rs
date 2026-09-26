@@ -1,14 +1,32 @@
 mod args;
+#[cfg(test)]
 mod attach;
+mod bridge;
+mod discovery;
 mod host;
+mod launch;
 mod process;
 mod saved;
+mod server_lifecycle;
+mod ssh;
 mod ssh_agent;
 
+use crate::machine::RemoteExecutable;
+use crate::platform::shell_quote;
+use bridge::*;
+use discovery::*;
+use launch::*;
+use server_lifecycle::*;
+use ssh::*;
+
+pub(crate) use crate::machine::SshTarget;
 pub(crate) use args::*;
-pub(crate) use attach::*;
+#[cfg(test)]
+pub(crate) use bridge::bridge_upload_cancellation_for_test;
 pub(crate) use host::run_remote_client_bridge;
+pub(crate) use launch::{check_saved_ssh, prepare_saved_ssh, run_remote};
 pub(crate) use saved::*;
+pub(crate) use ssh::{release_ssh_resources_before_exit, ssh_authentication_command};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SshFailure {
@@ -87,7 +105,7 @@ impl SshFailureDiagnostic {
 
     pub(crate) fn from_ssh_output(exit_code: Option<i32>, message: String) -> Self {
         let mut failure = classify_ssh_diagnostic(&message);
-        if failure == SshFailure::Other && exit_code == Some(attach::SSH_OWN_FAILURE_EXIT_CODE) {
+        if failure == SshFailure::Other && exit_code == Some(SSH_OWN_FAILURE_EXIT_CODE) {
             failure = SshFailure::Link;
         }
         Self {
@@ -115,9 +133,7 @@ impl SshFailureDiagnostic {
         }
         match self.origin {
             SshFailureOrigin::Io(kind) => is_ssh_link_error_kind(kind),
-            SshFailureOrigin::SshOutput(exit_code) => {
-                exit_code == Some(attach::SSH_OWN_FAILURE_EXIT_CODE)
-            }
+            SshFailureOrigin::SshOutput(exit_code) => exit_code == Some(SSH_OWN_FAILURE_EXIT_CODE),
             SshFailureOrigin::Message => false,
         }
     }
@@ -164,7 +180,7 @@ fn classify_ssh_diagnostic(message: &str) -> SshFailure {
     {
         return SshFailure::Authentication;
     }
-    if message.contains(attach::STALE_API_METADATA) {
+    if message.contains(STALE_API_METADATA) {
         return SshFailure::StaleMetadata;
     }
     if [
@@ -268,8 +284,6 @@ pub(crate) fn ssh_error_requires_authentication(message: &str) -> bool {
 fn ssh_check_command(target: &str) -> String {
     format!("ssh {}", shell_quote(target))
 }
-
-use crate::platform::shell_quote;
 
 #[cfg(test)]
 mod tests {

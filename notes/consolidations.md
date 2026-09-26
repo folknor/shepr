@@ -131,18 +131,6 @@ Proposed owner: a `UiSettings` (server) / `ClientSettings` (client) built once f
 
 Reported by: app-state, client.
 
-## CON-030 - Which client is the active shell / foreground, and who owns what
-
-Sites: `is_shell_client`, `is_active_shell_client`, `shell_surface_active`,
-`latest_shell_client`, `render_targets`, `foreground_client_id`,
-`tab_geometry_controllers`, `terminal_attach_owners`. Not audited for
-disagreement; the `ClientConnection` constructor comment shows one near-miss.
-
-Proposed owner: a state-carrying `ClientConnectionMode` and a `ClientRegistry`
-(STR-036).
-
-Reported by: server.
-
 ## CON-031 - Config diagnostics are classified by substring and selected per client
 
 Sites: `is_keybinding_config_diagnostic` (looks for `"keybinding"` / `"keys."`,

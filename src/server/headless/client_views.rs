@@ -68,7 +68,8 @@ impl HeadlessServer {
         let tab_id = self
             .clients
             .get(&client_id)?
-            .shell_location
+            .shell_state()?
+            .location
             .as_ref()
             .and_then(crate::server::clients::ClientShellLocation::focused_tab_id);
         tab_id
@@ -129,15 +130,16 @@ impl HeadlessServer {
     pub(super) fn reconcile_client_shell_locations(&mut self) {
         let topology = self.client_shell_topology();
         let live_clients = self.clients.keys().copied().collect::<HashSet<_>>();
-        self.tab_geometry_controllers.retain(|tab_id, client_id| {
-            topology.tab_workspace_ids.contains_key(tab_id) && live_clients.contains(client_id)
-        });
+        self.clients
+            .retain_geometry_controllers(|tab_id, client_id| {
+                topology.tab_workspace_ids.contains_key(tab_id) && live_clients.contains(&client_id)
+            });
         for client in self
             .clients
             .values_mut()
-            .filter(|client| client.is_shell_client())
+            .filter_map(|client| client.shell_state_mut())
         {
-            let location = client.shell_location.get_or_insert_with(|| {
+            let location = client.location.get_or_insert_with(|| {
                 crate::server::clients::ClientShellLocation {
                     focused_workspace_id: topology.focused_workspace_id.clone(),
                     active_tab_ids: topology.active_tab_ids.clone(),
@@ -160,9 +162,9 @@ impl HeadlessServer {
         for client in self
             .clients
             .values_mut()
-            .filter(|client| client.is_shell_client())
+            .filter_map(|client| client.shell_state_mut())
         {
-            if let Some(location) = client.shell_location.as_mut() {
+            if let Some(location) = client.location.as_mut() {
                 location.focus_tab(workspace_id.clone(), tab_id.clone());
             }
         }
@@ -180,14 +182,17 @@ impl HeadlessServer {
         let Some(client) = self.clients.get_mut(&client_id) else {
             return false;
         };
-        let Some(location) = client.shell_location.as_mut() else {
+        let Some(location) = client
+            .shell_state_mut()
+            .and_then(|shell| shell.location.as_mut())
+        else {
             return false;
         };
         location.focus_tab(workspace_id, tab_id.to_owned());
         true
     }
 
-    fn set_default_shell_target_from_client(&mut self, client_id: u64) -> bool {
+    pub(super) fn set_default_shell_target_from_client(&mut self, client_id: u64) -> bool {
         let Some(target) = self.shell_target_for_client(client_id) else {
             return false;
         };
@@ -199,7 +204,7 @@ impl HeadlessServer {
             .switch_workspace_tab(target.workspace_index, target.tab_index)
     }
 
-    fn focus_shell_client_on_default_target(&mut self, client_id: u64) -> bool {
+    pub(super) fn focus_shell_client_on_default_target(&mut self, client_id: u64) -> bool {
         let Some(tab_id) = self
             .default_shell_target()
             .and_then(|target| self.tab_id_for_target(target))
@@ -209,7 +214,7 @@ impl HeadlessServer {
         self.focus_shell_client_on_tab(client_id, &tab_id)
     }
 
-    fn shell_locations_may_need_reconcile(method: &api::schema::Method) -> bool {
+    pub(super) fn shell_locations_may_need_reconcile(method: &api::schema::Method) -> bool {
         use api::schema::Method;
 
         matches!(
@@ -224,7 +229,7 @@ impl HeadlessServer {
         )
     }
 
-    fn shell_endpoint_claims_geometry(method: &api::schema::Method) -> bool {
+    pub(super) fn shell_endpoint_claims_geometry(method: &api::schema::Method) -> bool {
         use api::schema::Method;
 
         matches!(
@@ -258,7 +263,7 @@ impl HeadlessServer {
         )
     }
 
-    fn public_request_may_change_geometry(method: &api::schema::Method) -> bool {
+    pub(super) fn public_request_may_change_geometry(method: &api::schema::Method) -> bool {
         use api::schema::Method;
 
         matches!(
@@ -281,7 +286,7 @@ impl HeadlessServer {
         )
     }
 
-    fn apply_shell_navigation_request(
+    pub(super) fn apply_shell_navigation_request(
         &mut self,
         client_id: u64,
         method: &api::schema::Method,
@@ -296,7 +301,10 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;
                 };
-                let Some(location) = client.shell_location.as_mut() else {
+                let Some(location) = client
+                    .shell_state_mut()
+                    .and_then(|shell| shell.location.as_mut())
+                else {
                     return false;
                 };
                 location.focus_workspace(workspace_id);
@@ -346,7 +354,10 @@ impl HeadlessServer {
         self.clients
             .iter()
             .filter(|(_, client)| {
-                client.is_active_shell_client() && client.outer_terminal_focus == Some(true)
+                client.is_active_shell_client()
+                    && client
+                        .shell_state()
+                        .is_some_and(|shell| shell.outer_terminal_focus == Some(true))
             })
             .filter_map(|(&client_id, _)| self.shell_tab_id_for_client(client_id))
             .collect()
@@ -598,11 +609,12 @@ impl HeadlessServer {
         }
         for (tab_id, viewers) in viewed_tabs {
             let controller_is_viewing = self
-                .tab_geometry_controllers
-                .get(&tab_id)
+                .clients
+                .geometry_controller(&tab_id)
+                .as_ref()
                 .is_some_and(|controller| viewers.contains(controller));
             if !controller_is_viewing {
-                self.tab_geometry_controllers.insert(tab_id, viewers[0]);
+                self.clients.set_geometry_controller(tab_id, viewers[0]);
             }
         }
 
@@ -611,7 +623,8 @@ impl HeadlessServer {
         }
 
         let mut controlled_tabs = self
-            .tab_geometry_controllers
+            .clients
+            .geometry_controllers()
             .iter()
             .filter_map(|(tab_id, &client_id)| {
                 self.app
@@ -654,7 +667,7 @@ impl HeadlessServer {
         let Some(tab_id) = self.shell_tab_id_for_client(client_id) else {
             return false;
         };
-        if self.tab_geometry_controllers.insert(tab_id, client_id) == Some(client_id) {
+        if !self.clients.claim_geometry(tab_id, client_id) {
             return false;
         }
         self.apply_shell_tab_geometry(client_id, start_pending_agent_resumes)
@@ -675,10 +688,9 @@ impl HeadlessServer {
         let Some(tab_id) = self.shell_tab_id_for_client(client_id) else {
             return false;
         };
-        if self.tab_geometry_controllers.contains_key(&tab_id) {
+        if !self.clients.claim_unowned_geometry(tab_id, client_id) {
             return false;
         }
-        self.tab_geometry_controllers.insert(tab_id, client_id);
         self.apply_shell_tab_geometry(client_id, start_pending_agent_resumes)
     }
 
@@ -697,7 +709,7 @@ impl HeadlessServer {
         let Some(tab_id) = self.shell_tab_id_for_client(client_id) else {
             return false;
         };
-        if self.tab_geometry_controllers.get(&tab_id) != Some(&client_id) {
+        if self.clients.geometry_controller(&tab_id) != Some(client_id) {
             return false;
         }
         self.apply_shell_tab_geometry(client_id, start_pending_agent_resumes)
@@ -725,9 +737,8 @@ impl HeadlessServer {
             },
         )?;
         let tab_id = self.tab_id_for_target(target)?;
-        self.tab_geometry_controllers
-            .get(&tab_id)
-            .copied()
+        self.clients
+            .geometry_controller(&tab_id)
             .map(|client_id| (client_id, target))
     }
 
@@ -737,150 +748,5 @@ impl HeadlessServer {
         target: crate::ui::TabSurfaceTarget,
     ) -> bool {
         self.apply_shell_tab_geometry_to_target(client_id, target, true)
-    }
-
-    /// Applies a public socket request, including its session-wide focus projection.
-    pub(super) fn handle_api_request_with_shutdown_check(
-        &mut self,
-        mut msg: api::ApiRequestMessage,
-    ) -> bool {
-        let request_id = msg.request.id.clone();
-        let method = msg.request.method.traits().name;
-        let target_before = self.default_shell_target();
-        let method_claims_geometry = Self::public_request_may_change_geometry(&msg.request.method);
-        let explicit_public_focus_target = match &msg.request.method {
-            api::schema::Method::WorkspaceFocus(params) => self
-                .app
-                .parse_workspace_id(&params.workspace_id)
-                .and_then(|workspace_index| {
-                    let workspace = self.app.state.workspaces.get(workspace_index)?;
-                    Some(crate::ui::TabSurfaceTarget {
-                        workspace_index,
-                        tab_index: workspace.active_tab_index(),
-                    })
-                }),
-            api::schema::Method::TabFocus(params) => {
-                self.app
-                    .parse_tab_id(&params.tab_id)
-                    .map(|(workspace_index, tab_index)| crate::ui::TabSurfaceTarget {
-                        workspace_index,
-                        tab_index,
-                    })
-            }
-            api::schema::Method::PaneFocus(params) => self
-                .app
-                .parse_pane_id(&params.pane_id)
-                .and_then(|(workspace_index, pane_id)| {
-                    let workspace = self.app.state.workspaces.get(workspace_index)?;
-                    Some(crate::ui::TabSurfaceTarget {
-                        workspace_index,
-                        tab_index: workspace.find_tab_index_for_pane(pane_id)?,
-                    })
-                }),
-            _ => None,
-        };
-        let agent_focus_target = match &msg.request.method {
-            api::schema::Method::AgentFocus(params) => Some(params.target.clone()),
-            _ => None,
-        };
-        let create_focus_requested = match &msg.request.method {
-            api::schema::Method::WorkspaceCreate(params) => params.focus,
-            api::schema::Method::TabCreate(params) => params.focus,
-            _ => false,
-        };
-        let inspect_pane_move = matches!(
-            &msg.request.method,
-            api::schema::Method::PaneMove(params) if params.focus
-        );
-        let response_proxy = (agent_focus_target.is_some() || inspect_pane_move).then(|| {
-            let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
-            let original = std::mem::replace(&mut msg.respond_to, proxy_tx);
-            (request_id.clone(), method, original, proxy_rx)
-        });
-        let reconcile = Self::shell_locations_may_need_reconcile(&msg.request.method);
-        let changed = self.handle_api_request_with_shutdown_check_inner(msg);
-        let proxied_result = forward_proxied_api_response(response_proxy);
-        let proxied_request_succeeded = proxied_result.is_some();
-        // Same-tab and zoomed moves succeed without moving or requesting focus.
-        let pane_move_focus_succeeded = inspect_pane_move
-            && matches!(
-                &proxied_result,
-                Some(api::schema::ResponseResult::PaneMove { move_result }) if move_result.changed
-            );
-        let successful_agent_focus_target = proxied_request_succeeded
-            .then(|| {
-                agent_focus_target.as_deref().and_then(|target| {
-                    self.app.resolve_agent_target(target).ok().map(|resolved| {
-                        crate::ui::TabSurfaceTarget {
-                            workspace_index: resolved.ws_idx,
-                            tab_index: resolved.tab_idx,
-                        }
-                    })
-                })
-            })
-            .flatten();
-        let target_changed = self.default_shell_target() != target_before;
-        let explicit_focus_succeeded = successful_agent_focus_target
-            .or(explicit_public_focus_target)
-            .is_some_and(|target| self.default_shell_target() == Some(target));
-        let public_focus_succeeded = explicit_focus_succeeded
-            || (create_focus_requested && target_changed)
-            || pane_move_focus_succeeded;
-        if public_focus_succeeded {
-            self.focus_all_shell_clients_on_default_target();
-        }
-        if reconcile || target_changed || pane_move_focus_succeeded {
-            self.reconcile_client_shell_locations();
-        }
-        let geometry_changed =
-            method_claims_geometry && self.reapply_controlled_shell_tab_geometry(false);
-        changed | geometry_changed
-    }
-
-    pub(super) fn handle_client_shell_api_request(
-        &mut self,
-        client_id: u64,
-        msg: api::ApiRequestMessage,
-    ) -> bool {
-        let focus_before = self.shell_focus_target(client_id);
-        let focused_tabs_before = self.focused_shell_tabs();
-        let method_claims_geometry = Self::shell_endpoint_claims_geometry(&msg.request.method);
-        let reconcile = Self::shell_locations_may_need_reconcile(&msg.request.method);
-        let all_focus_before = reconcile.then(|| self.shell_focus_targets());
-        let navigation_changed =
-            self.apply_shell_navigation_request(client_id, &msg.request.method);
-        self.set_default_shell_target_from_client(client_id);
-        let changed = self.handle_api_request_with_shutdown_check_inner(msg);
-        self.focus_shell_client_on_default_target(client_id);
-        if reconcile {
-            self.reconcile_client_shell_locations();
-        }
-        let focus_after = self.shell_focus_target(client_id);
-        if let Some(all_focus_before) = all_focus_before {
-            self.finish_shell_location_reconciliation(all_focus_before, &focused_tabs_before);
-        } else {
-            let focused_tabs_after = self.focused_shell_tabs();
-            self.app.accept_current_focus_without_events();
-            self.send_shell_navigation_focus_events(
-                focus_before.as_ref(),
-                focus_after.as_ref(),
-                &focused_tabs_before,
-                &focused_tabs_after,
-            );
-        }
-        if focus_before != focus_after
-            && let Some(target) = focus_after
-        {
-            self.app
-                .emit_focus_api_events(target.workspace_index, target.pane_id);
-        }
-        let geometry_changed = method_claims_geometry
-            && if reconcile {
-                self.reapply_controlled_shell_tab_geometry(false)
-            } else {
-                self.claim_shell_tab_geometry(client_id, false)
-                    || self.resize_shell_tab_if_controller(client_id, false)
-            };
-        changed | navigation_changed | geometry_changed
     }
 }

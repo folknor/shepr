@@ -5,8 +5,8 @@ use crate::api::client::ApiClientError;
 use crate::api::schema::{Request, ResponseResult};
 use crate::protocol::ClientMessage;
 
-use super::endpoint::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
-use super::shell::ClientShellEndpointError;
+use super::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
+use crate::client::shell::ClientShellEndpointError;
 
 const ENDPOINT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_RETIRED_REQUESTS_PER_ENDPOINT: usize = 128;
@@ -28,12 +28,12 @@ struct InFlightCommand {
     sent_at: Instant,
 }
 
-pub(super) struct EndpointCommandResult {
-    pub(super) endpoint_id: ClientEndpointId,
-    pub(super) generation: u64,
-    pub(super) boot_id: String,
-    pub(super) request_id: String,
-    pub(super) result: Result<ResponseResult, ClientShellEndpointError>,
+pub(in crate::client) struct EndpointCommandResult {
+    pub(in crate::client) endpoint_id: ClientEndpointId,
+    pub(in crate::client) generation: u64,
+    pub(in crate::client) boot_id: String,
+    pub(in crate::client) request_id: String,
+    pub(in crate::client) result: Result<ResponseResult, ClientShellEndpointError>,
 }
 
 #[derive(Default)]
@@ -66,12 +66,12 @@ impl EndpointCommandLane {
 }
 
 #[derive(Default)]
-pub(super) struct EndpointCommands {
+pub(in crate::client) struct EndpointCommands {
     lanes: HashMap<ClientEndpointId, EndpointCommandLane>,
 }
 
 impl EndpointCommands {
-    pub(super) fn enqueue(
+    pub(in crate::client) fn enqueue(
         &mut self,
         endpoint_id: ClientEndpointId,
         generation: u64,
@@ -89,7 +89,7 @@ impl EndpointCommands {
             });
     }
 
-    pub(super) fn send_next(
+    pub(in crate::client) fn send_next(
         &mut self,
         endpoint_id: &ClientEndpointId,
         endpoints: &mut EndpointRegistry,
@@ -133,7 +133,7 @@ impl EndpointCommands {
         cancelled
     }
 
-    pub(super) fn accepts_response(
+    pub(in crate::client) fn accepts_response(
         &self,
         endpoint_id: &ClientEndpointId,
         response_generation: u64,
@@ -153,7 +153,7 @@ impl EndpointCommands {
     /// Retire the complete source lane at source-off. The in-flight request is tombstoned for a
     /// late endpoint-local response; every queued request is cancelled before it can run in a
     /// later presentation epoch. Other endpoint lanes are deliberately untouched.
-    pub(super) fn retire_lane(&mut self, endpoint_id: &ClientEndpointId) -> Vec<String> {
+    pub(in crate::client) fn retire_lane(&mut self, endpoint_id: &ClientEndpointId) -> Vec<String> {
         let Some(lane) = self.lanes.get_mut(endpoint_id) else {
             return Vec::new();
         };
@@ -170,7 +170,7 @@ impl EndpointCommands {
         request_ids
     }
 
-    pub(super) fn expire(&mut self, now: Instant) -> Vec<EndpointCommandResult> {
+    pub(in crate::client) fn expire(&mut self, now: Instant) -> Vec<EndpointCommandResult> {
         self.lanes
             .iter_mut()
             .filter_map(|(endpoint_id, lane)| {
@@ -198,7 +198,7 @@ impl EndpointCommands {
             .collect()
     }
 
-    pub(super) fn receive_chunk(
+    pub(in crate::client) fn receive_chunk(
         &mut self,
         endpoint_id: &ClientEndpointId,
         response_generation: u64,
@@ -266,7 +266,7 @@ impl EndpointCommands {
 
     /// Disconnecting an endpoint also cancels its shell-pending requests. Connection generation
     /// rejection handles any late wire response after the lane itself is removed.
-    pub(super) fn disconnect(&mut self, endpoint_id: &ClientEndpointId) -> Vec<String> {
+    pub(in crate::client) fn disconnect(&mut self, endpoint_id: &ClientEndpointId) -> Vec<String> {
         let Some(lane) = self.lanes.remove(endpoint_id) else {
             return Vec::new();
         };
@@ -282,7 +282,7 @@ impl EndpointCommands {
     }
 }
 
-pub(super) fn parse_response(
+pub(in crate::client) fn parse_response(
     expected_id: &str,
     response: &[u8],
 ) -> Result<ResponseResult, ClientShellEndpointError> {

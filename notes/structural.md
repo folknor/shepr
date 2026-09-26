@@ -212,24 +212,6 @@ Split `ratio: f32` unvalidated; `SplitBorder.path: Vec<bool>` and wire
 
 Reported by: app-state, protocol, ui.
 
-## STR-019 - ClientConnection state that only means something in one mode
-
-`ClientConnection` is ~25 loose fields; `shell_surface_active`,
-`shell_mouse_capture`, `shell_location`, `shell_snapshot`,
-`shell_agent_completions`, `shell_projection_revision`,
-`shell_endpoint_command_in_flight`, `shell_uses_endpoint_keybindings`,
-`shell_held_inputs` only mean something for shell clients;
-`host_keyboard_protocol_active` only for attach; the constructor forces
-`shell_surface_active` to stay truthful for a terminal stream. `RenderTarget`
-(`clients.rs:17`) is `(u64, (u16,u16), HostCellSize, bool, ClientConnectionMode)`.
-`writer: Option<ClientWriter>` exists only for test fixtures, with
-`writer.is_none()` checks in production. Proposed:
-`ClientConnectionMode::Shell(ShellState) | TerminalPending |
-TerminalAttach(AttachState)`, a `RenderTarget` struct, a non-optional writer with
-a test channel.
-
-Reported by: server.
-
 ## STR-020 - Client-side primitives
 
 Cell size packed into `AtomicU64` as `width<<32 | height` with 0 = absent
@@ -332,6 +314,10 @@ Reported by: pane-detection.
 
 ## STR-031 - Make every mutation an AppState command with a typed outcome
 
+Decision: prepare first, then commit. App computes geometry and launch data from
+pure state, spawns the runtime, then a state command commits the change and
+returns a typed outcome; no rollback path.
+
 Production mutations live in `App` methods in `api/panes.rs` (4,747 lines) while
 `actions.rs` holds `#[cfg(test)]` twins (`AppState::close_pane`, `close_tab`,
 `toggle_zoom`, ...), so the pure-AppState tests partly exercise code production
@@ -381,21 +367,6 @@ Proposed `GitRefreshScheduler`, `SessionSaver`, `TabBarStatus`, each owning its
 deadline logic.
 
 Reported by: app-state.
-
-## STR-036 - HeadlessServer is a god object
-
-`HeadlessServer` owns the listener, client registry, foreground policy,
-tab-geometry arbitration, attach ownership, window-title state, config
-diagnostics, alt-screen read queues, dirty flags, shutdown/freeze state, signal
-flags and event channels; `headless.rs` exceeds 2200 lines with 8 submodules
-split by activity rather than owned state. Proposed rewrite: `ClientRegistry`
-(ids, foreground, activity, geometry controllers, attach owners; pure, testable
-like `AppState`), `ApiDispatcher` (routing, deferral, alt-screen reads, typed
-responses), `ShutdownController`, and a thin loop. Held-input tracking
-(`track_shell_input`) moves to `pane_input.rs`. Payoff named: most of the ≥3400
-lines of whole-server tests in `headless/tests/mod.rs` become unit tests.
-
-Reported by: server.
 
 ## STR-037 - session.rs and socket paths
 
@@ -527,38 +498,6 @@ the boundary porous. The client hunter raised whether `client/shell/`
 duplicates `app/` rendering and copy-mode logic; not yet reviewed.
 
 Reported by: ui, client.
-
-## STR-049 - Break the remote / client::endpoint cycle with a machine module
-
-`remote` imports `client::endpoint::{SshMachineMetadata, SshMetadataCache,
-EndpointCatalog}`; `client::endpoint` imports `remote::{SavedSshConnector,
-SavedSshSettings, SavedSshBridge, saved_ssh_failure_needs_attention}`. The
-catalog is used by the CLI and `remote::run_remote` too. Proposed: `ProfileId`,
-`SavedSshEndpoint`, `EndpointCatalog` (profiles only), `EndpointCatalogWatch`,
-`EndpointCatalogChanges`, `SshMetadataCache`, `SshMachineMetadata` into a neutral
-`src/machine/`; `remote/` becomes SSH transport, discovery and bridge;
-`client/endpoint/` becomes runtime supervision.
-
-Reported by: remote.
-
-## STR-051 - Split remote/attach.rs
-
-~2000 lines doing the `--remote` launcher, one-shot saved checks, remote
-command construction, managed ssh config, the process-global
-`TeardownRegistry`, the `RemoteSsh` runner, executable discovery and the API
-discovery script, server status/restart prompt/stop-wait, the stdio bridge pump
-and error types. Proposed `remote/ssh.rs`, `remote/discovery.rs`,
-`remote/server_lifecycle.rs`, `remote/bridge.rs`, `remote/launch.rs`, leaving
-`saved.rs` as the saved-machine connector.
-
-Reported by: remote.
-
-## STR-052 - Endpoint subsystems at the client root
-
-`endpoint_commands.rs` and `endpoint_selection.rs` belong under
-`client/endpoint/`.
-
-Reported by: remote.
 
 ## STR-053 - Delete the upstream remote compatibility fossils
 

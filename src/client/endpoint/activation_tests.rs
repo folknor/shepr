@@ -1109,7 +1109,7 @@ fn local_escape(source_state: &str) {
 #[test]
 fn local_selection_abandons_every_unfinished_remote_handoff_phase() {
     use crate::client::{
-        ClientState, endpoint_commands::EndpointCommands, shell_runtime::begin_endpoint_activation,
+        ClientState, endpoint::commands::EndpointCommands, shell_runtime::begin_endpoint_activation,
     };
     for phase in ["release", "target", "rollback", "restore"] {
         let (shell, mut endpoints, local_sent, _remote_sent) = shell_and_registry();
@@ -1198,7 +1198,7 @@ fn local_selection_abandons_every_unfinished_remote_handoff_phase() {
 fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
     use crate::client::{
         ClientLoopEvent, ClientState,
-        endpoint_commands::EndpointCommands,
+        endpoint::commands::EndpointCommands,
         shell_runtime::{begin_endpoint_activation, take_ready_local_activation},
     };
     for replaced_generation in [false, true] {
@@ -1326,7 +1326,7 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
 #[test]
 fn newer_remote_selection_cancels_deferred_local_selection() {
     use crate::client::{
-        ClientState, endpoint_commands::EndpointCommands, shell_runtime::begin_endpoint_activation,
+        ClientState, endpoint::commands::EndpointCommands, shell_runtime::begin_endpoint_activation,
     };
     let (shell, mut endpoints, _, _) = shell_and_registry();
     let mut state = ClientState::test_new();

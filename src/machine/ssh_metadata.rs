@@ -3,8 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::ProfileId;
-use crate::remote::RemoteExecutable;
+use super::{ProfileId, RemoteExecutable};
 
 const MAX_METADATA_BYTES: u64 = 16 * 1024;
 
@@ -94,22 +93,6 @@ fn load_metadata(path: &Path, target: &str, session: &str) -> Option<RemoteExecu
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn remote_executable_accepts_only_cacheable_absolute_paths() {
-        for (path, valid) in [
-            ("/home/a b/shepr", true),
-            ("$HOME/.local/bin/shepr", false),
-            ("/home/user/.local/share/mise/shims/shepr", false),
-            ("/bin/shepr\nmalformed", false),
-        ] {
-            assert_eq!(
-                RemoteExecutable::parse(path.to_owned()).is_ok(),
-                valid,
-                "{path}"
-            );
-        }
-    }
 
     #[test]
     fn metadata_is_disposable_fingerprinted_and_independent_per_profile() {

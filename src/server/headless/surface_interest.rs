@@ -15,21 +15,21 @@ impl HeadlessServer {
         let focused_tabs_before = self.focused_shell_tabs();
         let (changed, projection_revision, held_inputs) = {
             let client = self.clients.get_mut(&client_id)?;
-            if !client.is_shell_client() {
-                return None;
-            }
-            let changed = client.shell_surface_active != active;
-            if active {
-                client.shell_projection_revision =
-                    client.shell_projection_revision.saturating_add(1);
-                // Force the next control snapshot to carry this new floor instead of reusing a
-                // same-boot cached snapshot from the prior surface epoch.
-                client.shell_snapshot = None;
-            }
-            if !changed && !active {
-                return Some((false, client.shell_projection_revision));
-            }
-            client.shell_surface_active = active;
+            let (changed, projection_revision) = {
+                let shell = client.shell_state_mut()?;
+                let changed = shell.surface_active != active;
+                if active {
+                    shell.projection_revision = shell.projection_revision.saturating_add(1);
+                    // Force the next control snapshot to carry this new floor instead of reusing a
+                    // same-boot cached snapshot from the prior surface epoch.
+                    shell.snapshot = None;
+                }
+                if !changed && !active {
+                    return Some((false, shell.projection_revision));
+                }
+                shell.surface_active = active;
+                (changed, shell.projection_revision)
+            };
             client.request_repaint();
             // The client drops target effects while its old source frame is frozen. Reset the
             // dedupe state whenever a viewer is (re)activated so the post-commit replay can
@@ -37,14 +37,16 @@ impl HeadlessServer {
             if active {
                 client.host_mouse_capture_active = None;
                 client.host_sgr_pixels_active = None;
-                client.host_keyboard_report_all_active = None;
+                if let Some(shell) = client.shell_state_mut() {
+                    shell.host_keyboard_report_all_active = None;
+                }
             }
             client.clear_deferred_render();
             if !active && let Some(writer) = &client.writer {
                 writer.discard_pending_render();
             }
             let held_inputs = (!active && changed).then(|| client.drain_shell_held_inputs());
-            (changed, client.shell_projection_revision, held_inputs)
+            (changed, projection_revision, held_inputs)
         };
 
         if let Some(held_inputs) = held_inputs {
@@ -66,7 +68,9 @@ impl HeadlessServer {
                     self.clients.iter().any(|(&other_id, client)| {
                         other_id != client_id
                             && client.is_active_shell_client()
-                            && client.outer_terminal_focus == Some(true)
+                            && client
+                                .shell_state()
+                                .is_some_and(|shell| shell.outer_terminal_focus == Some(true))
                             && self.shell_tab_id_for_client(other_id).as_deref()
                                 == Some(tab_id.as_str())
                     })
@@ -75,9 +79,8 @@ impl HeadlessServer {
                 self.claim_shell_tab_geometry(client_id, true);
             }
         } else {
-            self.tab_geometry_controllers
-                .retain(|_, controller_id| *controller_id != client_id);
-            if self.foreground_client_id == Some(client_id) {
+            self.clients.remove_geometry_controllers_for(client_id);
+            if self.clients.foreground_client_id() == Some(client_id) {
                 self.promote_latest_remaining_client();
                 self.resize_foreground_shell_tab_if_controller(true);
             } else {
