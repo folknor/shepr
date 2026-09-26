@@ -864,9 +864,13 @@ impl AppState {
                 })
                 .into_iter()
                 .collect(),
-            AppEvent::CodexPromptObserved { pane_id, ready } => self
+            AppEvent::AgentPromptObserved {
+                pane_id,
+                agent,
+                ready,
+            } => self
                 .update_terminal_state(pane_id, |terminal| {
-                    terminal.observe_codex_prompt_ready(ready)
+                    terminal.observe_agent_prompt_ready(agent, ready)
                 })
                 .into_iter()
                 .collect(),
@@ -928,12 +932,12 @@ impl AppState {
                 session_start_source,
             } => self
                 .update_terminal_state(pane_id, |terminal| {
-                    terminal.set_agent_session_ref_for_session_start(
+                    terminal.set_agent_session_ref_for_typed_start_source(
                         source,
                         agent_label,
                         session_ref,
                         seq,
-                        session_start_source.as_deref(),
+                        session_start_source,
                     )
                 })
                 .into_iter()
@@ -1659,7 +1663,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_prompt_observation_changes_readiness_without_state_change() {
+    fn agent_prompt_observation_changes_readiness_without_state_change() {
         let mut app = app_with_workspaces(&["active", "background"]);
         let pane_id = app.workspaces[1].tabs[0].root_pane;
         let terminal_id = app.workspaces[1].panes[&pane_id]
@@ -1683,8 +1687,9 @@ mod tests {
             process_exited: false,
             observed_at: Instant::now(),
         });
-        app.handle_app_event(AppEvent::CodexPromptObserved {
+        app.handle_app_event(AppEvent::AgentPromptObserved {
             pane_id,
+            agent: Agent::Codex,
             ready: true,
         });
 
@@ -1829,7 +1834,7 @@ mod tests {
             .expect("test precondition");
         terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
             source: "shepr:pi".into(),
-            agent: "pi".into(),
+            agent: crate::agents::Agent::Pi,
             session_ref: crate::agent_resume::AgentSessionRef::path(
                 std::env::current_dir()
                     .expect("test precondition")

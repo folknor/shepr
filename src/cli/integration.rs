@@ -139,11 +139,10 @@ fn unknown_target(target: &str) -> i32 {
 
 /// Maps a `TARGET` value back to its target. The labels are the ones the spec
 /// offers as possible values (`integration_target_label` over
-/// `IntegrationTarget::ALL`), so there is no second list of names to keep in
+/// `IntegrationTarget::all()`), so there is no second list of names to keep in
 /// step.
 fn target_from_label(label: &str) -> Option<IntegrationTarget> {
-    IntegrationTarget::ALL
-        .into_iter()
+    IntegrationTarget::all()
         .find(|target| crate::integration::integration_target_label(*target) == label)
 }
 
@@ -154,7 +153,7 @@ mod tests {
     #[test]
     fn every_target_the_spec_accepts_resolves_to_a_target() {
         for action in ["install", "uninstall"] {
-            for target in IntegrationTarget::ALL {
+            for target in IntegrationTarget::all() {
                 let label = crate::integration::integration_target_label(target);
                 assert_eq!(
                     target_from_label(label),
@@ -174,7 +173,8 @@ mod tests {
     fn unknown_labels_do_not_resolve() {
         assert!(target_from_label("nope").is_none());
         assert!(target_from_label("").is_none());
-        // Only the hyphenated label is a target name.
+        // Process aliases are not integration command labels.
+        assert!(target_from_label("antigravity-cli").is_none());
         assert!(target_from_label("antigravity_cli").is_none());
     }
 

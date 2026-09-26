@@ -98,9 +98,9 @@ pub(super) struct IdleScreenScanSkipInput {
 pub(super) fn should_skip_idle_screen_scan(input: IdleScreenScanSkipInput) -> bool {
     let stable_state = input.state == AgentState::Idle
         || (input.state == AgentState::Unknown
-            && input.agent.is_some_and(|agent| {
-                agent == Agent::Codex || !Agent::SCREEN_MANIFEST_AGENTS.contains(&agent)
-            }));
+            && input
+                .agent
+                .is_some_and(|agent| agent == Agent::Codex || !agent.screen_manifest()));
     if !stable_state
         || input.agent.is_none()
         || input.pending_idle_active
@@ -351,23 +351,6 @@ pub(super) fn detection_update_for_publish_with_osc(
     (!detection.skip_state_update).then_some(detection)
 }
 
-pub(super) fn codex_prompt_ready(content: &str) -> bool {
-    // The composer can remain visible during a turn; this is startup evidence only.
-    let recent: String = content
-        .lines()
-        .rev()
-        .take(12)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .flat_map(str::chars)
-        .filter(|ch| !ch.is_whitespace())
-        .collect();
-    recent.contains("›AskCodextodoanything")
-        && !recent.contains("model:loading")
-        && !recent.contains("Resumingsession")
-}
-
 pub(super) fn observe_detection_content_change(bytes: &[u8], detection_content_seq: &AtomicU64) {
     if !bytes.is_empty() {
         detection_content_seq.fetch_add(1, Ordering::Relaxed);
@@ -466,8 +449,8 @@ mod tests {
     #[test]
     fn codex_startup_prompt_survives_terminal_wraps() {
         let wrapped = "header\n› Ask Codex to do\nanything\nfooter";
-        assert!(codex_prompt_ready(wrapped));
-        assert!(!codex_prompt_ready(&format!("model: load\ning\n{wrapped}")));
+        assert!(crate::agents::Agent::Codex.prompt_ready(wrapped));
+        assert!(!crate::agents::Agent::Codex.prompt_ready(&format!("model: load\ning\n{wrapped}")));
     }
 
     #[test]

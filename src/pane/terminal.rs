@@ -5,7 +5,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use ratatui::style::{Color, Modifier, Style};
+#[cfg(test)]
+use ratatui::style::Modifier;
+use ratatui::style::{Color, Style};
 use ratatui::{Frame, layout::Rect};
 #[cfg(test)]
 use serde::{Deserialize, Serialize};
@@ -3143,9 +3145,9 @@ fn blank_cell_data(default_fg: Option<Color>, default_bg: Option<Color>) -> Cell
 fn cell_data_from_style(symbol: String, style: Style) -> CellData {
     CellData {
         symbol,
-        fg: crate::protocol::color_to_u32(style.fg.unwrap_or(Color::Reset)),
-        bg: crate::protocol::color_to_u32(style.bg.unwrap_or(Color::Reset)),
-        modifier: crate::protocol::modifier_to_u16(style.add_modifier),
+        fg: crate::protocol::WireColor::from_ratatui(style.fg.unwrap_or(Color::Reset)),
+        bg: crate::protocol::WireColor::from_ratatui(style.bg.unwrap_or(Color::Reset)),
+        style: crate::protocol::WireStyle::from_ratatui_modifier(style.add_modifier),
         skip: false,
         hyperlink: None,
     }
@@ -3209,27 +3211,24 @@ fn ghostty_cell_style(
     {
         style = style.underline_color(underline_color);
     }
-    let mut modifiers = Modifier::empty();
+    let mut flags = crate::protocol::WireStyleFlags::default();
     if basic.style.bold {
-        modifiers |= Modifier::BOLD;
-    }
-    if basic.style.italic {
-        modifiers |= Modifier::ITALIC;
+        flags = flags.union(crate::protocol::WireStyleFlags::BOLD);
     }
     if basic.style.faint {
-        modifiers |= Modifier::DIM;
+        flags = flags.union(crate::protocol::WireStyleFlags::DIM);
     }
-    if basic.style.blink {
-        modifiers |= Modifier::SLOW_BLINK;
-    }
-    if basic.style.underlined {
-        modifiers |= Modifier::UNDERLINED;
+    if basic.style.italic {
+        flags = flags.union(crate::protocol::WireStyleFlags::ITALIC);
     }
     if basic.style.strikethrough {
-        modifiers |= Modifier::CROSSED_OUT;
+        flags = flags.union(crate::protocol::WireStyleFlags::CROSSED_OUT);
     }
-    modifiers = crate::protocol::modifier_with_underline_style(modifiers, basic.style.underline);
-    style.add_modifier(modifiers)
+    let wire_style = crate::protocol::WireStyle {
+        flags,
+        underline: basic.style.underline,
+    };
+    style.add_modifier(wire_style.to_ratatui_modifier())
 }
 
 fn osc_rgb_response(command: &str, r: u8, g: u8, b: u8) -> Bytes {
@@ -6052,8 +6051,8 @@ mod tests {
             crate::protocol::FrameData::from_ratatui_buffer(terminal.backend().buffer(), None);
         assert_eq!(frame.cells[0].symbol, "U");
         assert_eq!(
-            crate::protocol::underline_style_from_modifier(frame.cells[0].modifier),
-            3
+            frame.cells[0].style.underline,
+            crate::ghostty::UnderlineStyle::Curly
         );
     }
 

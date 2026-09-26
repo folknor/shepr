@@ -4750,11 +4750,10 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
         .terminals
         .get_mut(&terminal_id)
         .expect("test terminal should exist")
-        .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-        agent: "codex".into(),
-        argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
-        dedupe_key: "shepr:codex\0codex\0Id\0codex-session".into(),
-    });
+        .pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+        "shepr:codex\0codex\0Id\0codex-session",
+        vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+    ));
 
     server.render_and_stream();
     assert_ne!(server.app.state.view.terminal_area, Rect::default());
@@ -4803,11 +4802,10 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
         .terminals
         .get_mut(&terminal_id)
         .expect("test terminal should exist")
-        .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-        agent: "codex".into(),
-        argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
-        dedupe_key: "shepr:codex\0codex\0Id\0codex-session".into(),
-    });
+        .pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+        "shepr:codex\0codex\0Id\0codex-session",
+        vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+    ));
     server.render_and_stream();
 
     let now = Instant::now();

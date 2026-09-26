@@ -12,39 +12,6 @@ entry per question; every site answering it belongs to that entry.
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-## CON-001 - Per-agent facts are scattered across detect, integration and resume
-
-Decision (owner): a new `src/agents.rs` domain module owns `Agent`, the
-per-agent descriptor table and the integration-target view (`api::schema`
-re-exports it); persisted resume identity is typed end to end, including
-`persist/snapshot.rs`, `persist/restore.rs`, `terminal/state.rs`,
-`app/actions.rs` and `app/api/panes.rs`. Single-agent wave (with STR-014 and
-STR-030).
-
-Question: what shepr knows about each agent (label, executable, integration
-source, whether native state is reserved, accepted session-ref kinds, resume
-argv, integration spec, hook-event-to-state mapping, env to scrub, title glyphs).
-
-Sites:
-- `agent_resume.rs`: `is_official_agent_source` (18 pairs), `is_reserved_native_state_source` (9 pairs), the `plan()` match arms (18), the `"pi" | "omp"` path-accepting special case in both `session_ref_from_report` and `session_ref_from_snapshot`.
-- `integration/registry.rs`: `integration_target_label`, the `[..; 18]` `integration_specs` array keyed by `api::schema::IntegrationTarget`; `integration/mod.rs` holds ~60 flat per-agent constants and the `*_HOOK_EVENTS` tables with states as strings (`("Stop", None, "idle")`), which the server re-decides on receipt.
-- `detect`: `agent_label`, `interactive_agent_executable`, `Agent::ALL` and `SCREEN_MANIFEST_AGENTS` (hardcoded arrays with length literals 24/22, not derived from or checked against the bundled manifests).
-- `pane.rs`: the env-scrub list in `apply_pane_launch_env` (`CODEX_THREAD_ID`, `OMPCODE`, `CLAUDECODE`...), `publish_codex_prompt_observation` / `AppEvent::CodexPromptObserved`.
-- `terminal/title.rs`: hard-codes Claude's activity glyphs (terminal-core hunter: check whether manifests also list them).
-
-Already disagree (pane-detection hunter): Antigravity is `"agy"` in `agent_label`,
-`"shepr:antigravity_cli"` as source, `"antigravity-cli"` as integration label.
-Resume argv hardcodes `"cursor-agent"` (and every other argv0) instead of using
-`interactive_agent_executable`. Nothing maps `IntegrationTarget` to `Agent`. The
-reason some official sources (kimi, opencode) are excluded from reserved native
-state is stated only in a test.
-
-Proposed owner: one per-agent descriptor table keyed by `Agent` (in `detect` or a
-new `agents` module); `IntegrationTarget` becomes a subset view. The domain enum
-should live there, with `api::schema` reusing it rather than owning it.
-
-Reported by: pane-detection, terminal-core.
-
 ## CON-004 - Is pixel/cell geometry known, and how is cell size clamped for the protocol?
 
 Sites:
@@ -188,15 +155,6 @@ Proposed owner: typed `ConfigDiagnostic { key, kind, message }`; the per-client
 choice becomes a function of `(diagnostics, KeybindingSource)`.
 
 Reported by: config-cli, server.
-
-## CON-038 - Wire colour and modifier layout
-
-Sites: `color_to_u32`, `u32_to_color`, the underline shift and mask,
-`u16_to_modifier`, and `render_ansi`'s own `REVERSED_MODIFIER = 1 << 6`.
-
-Proposed owner: one `WireStyle` type (see STR-006).
-
-Reported by: protocol.
 
 ## CON-039 - Is the client federated; does a Local failure end it?
 

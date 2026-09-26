@@ -497,9 +497,9 @@ mod tests {
     fn cell(symbol: &str) -> protocol::CellData {
         protocol::CellData {
             symbol: symbol.to_owned(),
-            fg: 0,
-            bg: 0,
-            modifier: 0,
+            fg: protocol::WireColor::Reset,
+            bg: protocol::WireColor::Reset,
+            style: protocol::WireStyle::default(),
             skip: false,
             hyperlink: None,
         }

@@ -84,7 +84,7 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
 
     // The cursor starts on the last line of history, which no scroll can lift above the
     // bar's usual row: the bar moves to the top row instead.
-    let accent = crate::protocol::color_to_u32(state.config.palette.accent);
+    let accent = crate::protocol::WireColor::from_ratatui(state.config.palette.accent);
     let bottom = area.bottom() - 1;
     let frame = state.compose(106, 20).expect("copy frame");
     let rows = frame_rows(&frame);
@@ -149,7 +149,7 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
         let fallback = state.compose(106, 20).expect("fallback frame");
         assert_eq!(
             fallback.cells[cell_index].bg,
-            crate::protocol::color_to_u32(Color::DarkGray)
+            crate::protocol::WireColor::from_ratatui(Color::DarkGray)
         );
         if explicit_appearance {
             state.handle_raw_events(vec![RawInputEvent::HostColorSchemeChanged(
@@ -175,7 +175,7 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
             let cell = &frame.cells[cell_index];
             assert_eq!(
                 cell.bg,
-                crate::protocol::color_to_u32(Color::Rgb(
+                crate::protocol::WireColor::from_ratatui(Color::Rgb(
                     selected_bg.0,
                     selected_bg.1,
                     selected_bg.2
@@ -183,7 +183,7 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
             );
             assert_eq!(
                 cell.fg,
-                crate::protocol::color_to_u32(Color::Rgb(
+                crate::protocol::WireColor::from_ratatui(Color::Rgb(
                     selected_fg.0,
                     selected_fg.1,
                     selected_fg.2
@@ -244,7 +244,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
         &selected.cells[usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x)];
     assert_ne!(
         selected_cell.bg,
-        crate::protocol::color_to_u32(ratatui::style::Color::Reset)
+        crate::protocol::WireColor::from_ratatui(ratatui::style::Color::Reset)
     );
 
     let release =

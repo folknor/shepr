@@ -329,7 +329,7 @@ fn codex_no_match_is_unknown_without_changing_other_agents() {
 #[test]
 fn agents_without_a_screen_manifest_are_unknown_not_idle() {
     for agent in [Agent::Omp, Agent::Mastracode] {
-        assert!(!Agent::SCREEN_MANIFEST_AGENTS.contains(&agent));
+        assert!(!agent.screen_manifest());
         assert!(!has_screen_manifest(agent));
         let detection = detect_with_manifest(agent, screen_input(" \n"), None);
         assert_eq!(detection.state, AgentState::Unknown);
@@ -734,7 +734,7 @@ fn screen_regions_extract_structure_without_classifying_agent_state() {
 
 #[test]
 fn all_bundled_manifests_parse_and_validate() {
-    for agent in Agent::SCREEN_MANIFEST_AGENTS {
+    for agent in Agent::screen_manifest_agents() {
         assert!(
             bundled_manifest(agent).is_some(),
             "missing bundled manifest for {}",

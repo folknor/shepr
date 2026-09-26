@@ -260,6 +260,18 @@ pub enum CellColor {
     Rgb(RgbColor),
 }
 
+/// The terminal underline shape carried by a cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum UnderlineStyle {
+    #[default]
+    None,
+    Single,
+    Double,
+    Curly,
+    Dotted,
+    Dashed,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CellStyle {
     pub fg_color: Option<CellColor>,
@@ -268,16 +280,10 @@ pub struct CellStyle {
     pub bold: bool,
     pub italic: bool,
     pub faint: bool,
-    /// Always false: alacritty does not model blink.
-    pub blink: bool,
     pub inverse: bool,
     pub invisible: bool,
     pub strikethrough: bool,
-    /// Always false: alacritty does not model overline.
-    pub overline: bool,
-    /// 0 none, 1 single, 2 double, 3 curly, 4 dotted, 5 dashed.
-    pub underline: u8,
-    pub underlined: bool,
+    pub underline: UnderlineStyle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1682,17 +1688,17 @@ fn resolve_cell_color(color: CellColor, colors: &RenderColors) -> RgbColor {
 fn cell_style(cell: &Cell) -> CellStyle {
     let flags = cell.flags;
     let underline = if flags.contains(Flags::UNDERLINE) {
-        1
+        UnderlineStyle::Single
     } else if flags.contains(Flags::DOUBLE_UNDERLINE) {
-        2
+        UnderlineStyle::Double
     } else if flags.contains(Flags::UNDERCURL) {
-        3
+        UnderlineStyle::Curly
     } else if flags.contains(Flags::DOTTED_UNDERLINE) {
-        4
+        UnderlineStyle::Dotted
     } else if flags.contains(Flags::DASHED_UNDERLINE) {
-        5
+        UnderlineStyle::Dashed
     } else {
-        0
+        UnderlineStyle::None
     };
     CellStyle {
         fg_color: cell_color(cell.fg),
@@ -1701,13 +1707,10 @@ fn cell_style(cell: &Cell) -> CellStyle {
         bold: flags.contains(Flags::BOLD),
         italic: flags.contains(Flags::ITALIC),
         faint: flags.contains(Flags::DIM),
-        blink: false,
         inverse: flags.contains(Flags::INVERSE),
         invisible: flags.contains(Flags::HIDDEN),
         strikethrough: flags.contains(Flags::STRIKEOUT),
-        overline: false,
         underline,
-        underlined: underline != 0,
     }
 }
 

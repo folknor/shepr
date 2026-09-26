@@ -261,14 +261,14 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{FrameData, PaneSurfacePatch, PaneSurfacePatchRow};
+    use crate::protocol::{FrameData, PaneSurfacePatch, PaneSurfacePatchRow, WireColor, WireStyle};
 
     fn cell(symbol: &str) -> CellData {
         CellData {
             symbol: symbol.into(),
-            fg: 0,
-            bg: 0,
-            modifier: 0,
+            fg: WireColor::Reset,
+            bg: WireColor::Reset,
+            style: WireStyle::default(),
             skip: false,
             hyperlink: None,
         }

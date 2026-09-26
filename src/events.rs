@@ -23,8 +23,12 @@ pub enum AppEvent {
         agent: Agent,
         observed_at: Instant,
     },
-    /// The current Codex input screen is visible during managed startup.
-    CodexPromptObserved { pane_id: PaneId, ready: bool },
+    /// An agent-specific prompt signal changed during managed startup.
+    AgentPromptObserved {
+        pane_id: PaneId,
+        agent: Agent,
+        ready: bool,
+    },
     /// Fallback detector state changed in a pane.
     StateChanged {
         pane_id: PaneId,
@@ -51,7 +55,7 @@ pub enum AppEvent {
         agent_label: String,
         seq: Option<u64>,
         session_ref: Option<crate::agent_resume::AgentSessionRef>,
-        session_start_source: Option<String>,
+        session_start_source: Option<crate::agent_resume::AgentSessionStartSource>,
     },
     /// Display-only agent metadata was reported for a pane.
     HookMetadataReported {

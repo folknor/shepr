@@ -92,11 +92,9 @@ pub const MAX_INPUT_PAYLOAD: usize = 1024 * 1024;
 
 /// Encoded bytes budgeted per cell of a full pane surface or terminal redraw.
 ///
-/// A typical worst cell is a one-byte symbol with RGB foreground and
-/// background (4-byte varints each), an underline-styled modifier and a
-/// hyperlink index: about 16 bytes. Cells with long grapheme clusters can
-/// still exceed it, so a frame at this budget can be oversized; the render
-/// path has to cope with that, but ordinary content always fits.
+/// A typical cell with RGB foreground and background, style flags, underline
+/// shape and a hyperlink is about 16 bytes. More complex styles or long
+/// graphemes can exceed it; the render path handles oversized frames.
 pub const SURFACE_BYTES_PER_CELL: usize = 16;
 
 /// Largest grid, in cells, a client may request for a pane surface or a
@@ -651,24 +649,228 @@ pub enum AttachScrollSource {
 // Server → Client messages
 // ---------------------------------------------------------------------------
 
+/// A terminal color represented without packing a tag into a scalar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireColor {
+    Reset,
+    Black,
+    Red,
+    Green,
+    Yellow,
+    Blue,
+    Magenta,
+    Cyan,
+    Gray,
+    DarkGray,
+    LightRed,
+    LightGreen,
+    LightYellow,
+    LightBlue,
+    LightMagenta,
+    LightCyan,
+    White,
+    Indexed(u8),
+    Rgb(u8, u8, u8),
+}
+
+impl WireColor {
+    pub(crate) fn from_ratatui(color: ratatui::style::Color) -> Self {
+        match color {
+            ratatui::style::Color::Reset => Self::Reset,
+            ratatui::style::Color::Black => Self::Black,
+            ratatui::style::Color::Red => Self::Red,
+            ratatui::style::Color::Green => Self::Green,
+            ratatui::style::Color::Yellow => Self::Yellow,
+            ratatui::style::Color::Blue => Self::Blue,
+            ratatui::style::Color::Magenta => Self::Magenta,
+            ratatui::style::Color::Cyan => Self::Cyan,
+            ratatui::style::Color::Gray => Self::Gray,
+            ratatui::style::Color::DarkGray => Self::DarkGray,
+            ratatui::style::Color::LightRed => Self::LightRed,
+            ratatui::style::Color::LightGreen => Self::LightGreen,
+            ratatui::style::Color::LightYellow => Self::LightYellow,
+            ratatui::style::Color::LightBlue => Self::LightBlue,
+            ratatui::style::Color::LightMagenta => Self::LightMagenta,
+            ratatui::style::Color::LightCyan => Self::LightCyan,
+            ratatui::style::Color::White => Self::White,
+            ratatui::style::Color::Indexed(index) => Self::Indexed(index),
+            ratatui::style::Color::Rgb(red, green, blue) => Self::Rgb(red, green, blue),
+        }
+    }
+
+    pub(crate) fn to_ratatui(self) -> ratatui::style::Color {
+        match self {
+            Self::Reset => ratatui::style::Color::Reset,
+            Self::Black => ratatui::style::Color::Black,
+            Self::Red => ratatui::style::Color::Red,
+            Self::Green => ratatui::style::Color::Green,
+            Self::Yellow => ratatui::style::Color::Yellow,
+            Self::Blue => ratatui::style::Color::Blue,
+            Self::Magenta => ratatui::style::Color::Magenta,
+            Self::Cyan => ratatui::style::Color::Cyan,
+            Self::Gray => ratatui::style::Color::Gray,
+            Self::DarkGray => ratatui::style::Color::DarkGray,
+            Self::LightRed => ratatui::style::Color::LightRed,
+            Self::LightGreen => ratatui::style::Color::LightGreen,
+            Self::LightYellow => ratatui::style::Color::LightYellow,
+            Self::LightBlue => ratatui::style::Color::LightBlue,
+            Self::LightMagenta => ratatui::style::Color::LightMagenta,
+            Self::LightCyan => ratatui::style::Color::LightCyan,
+            Self::White => ratatui::style::Color::White,
+            Self::Indexed(index) => ratatui::style::Color::Indexed(index),
+            Self::Rgb(red, green, blue) => ratatui::style::Color::Rgb(red, green, blue),
+        }
+    }
+}
+
+/// Cell style flags sent with a rendered frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct WireStyleFlags(u8);
+
+impl WireStyleFlags {
+    pub const BOLD: Self = Self(1 << 0);
+    pub const DIM: Self = Self(1 << 1);
+    pub const ITALIC: Self = Self(1 << 2);
+    pub const SLOW_BLINK: Self = Self(1 << 3);
+    pub const RAPID_BLINK: Self = Self(1 << 4);
+    pub const REVERSED: Self = Self(1 << 5);
+    pub const HIDDEN: Self = Self(1 << 6);
+    pub const CROSSED_OUT: Self = Self(1 << 7);
+
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    pub(crate) fn toggle(&mut self, flag: Self) {
+        self.0 ^= flag.0;
+    }
+}
+
+/// Semantic cell style, with underline shape independent from the flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct WireStyle {
+    pub flags: WireStyleFlags,
+    pub underline: crate::ghostty::UnderlineStyle,
+}
+
+impl WireStyle {
+    pub(crate) fn from_ratatui_modifier(modifier: ratatui::style::Modifier) -> Self {
+        use ratatui::style::Modifier;
+
+        let underline = if modifier.contains(Modifier::UNDERLINED) {
+            match (modifier.bits() & RATATUI_UNDERLINE_STYLE_MASK) >> RATATUI_UNDERLINE_STYLE_SHIFT
+            {
+                2 => crate::ghostty::UnderlineStyle::Double,
+                3 => crate::ghostty::UnderlineStyle::Curly,
+                4 => crate::ghostty::UnderlineStyle::Dotted,
+                5 => crate::ghostty::UnderlineStyle::Dashed,
+                _ => crate::ghostty::UnderlineStyle::Single,
+            }
+        } else {
+            crate::ghostty::UnderlineStyle::None
+        };
+
+        Self {
+            flags: {
+                let mut flags = WireStyleFlags::default();
+                if modifier.contains(Modifier::BOLD) {
+                    flags = flags.union(WireStyleFlags::BOLD);
+                }
+                if modifier.contains(Modifier::DIM) {
+                    flags = flags.union(WireStyleFlags::DIM);
+                }
+                if modifier.contains(Modifier::ITALIC) {
+                    flags = flags.union(WireStyleFlags::ITALIC);
+                }
+                if modifier.contains(Modifier::SLOW_BLINK) {
+                    flags = flags.union(WireStyleFlags::SLOW_BLINK);
+                }
+                if modifier.contains(Modifier::RAPID_BLINK) {
+                    flags = flags.union(WireStyleFlags::RAPID_BLINK);
+                }
+                if modifier.contains(Modifier::REVERSED) {
+                    flags = flags.union(WireStyleFlags::REVERSED);
+                }
+                if modifier.contains(Modifier::HIDDEN) {
+                    flags = flags.union(WireStyleFlags::HIDDEN);
+                }
+                if modifier.contains(Modifier::CROSSED_OUT) {
+                    flags = flags.union(WireStyleFlags::CROSSED_OUT);
+                }
+                flags
+            },
+            underline,
+        }
+    }
+
+    pub(crate) fn to_ratatui_modifier(self) -> ratatui::style::Modifier {
+        use ratatui::style::Modifier;
+
+        let mut modifier = Modifier::empty();
+        if self.flags.contains(WireStyleFlags::BOLD) {
+            modifier |= Modifier::BOLD;
+        }
+        if self.flags.contains(WireStyleFlags::DIM) {
+            modifier |= Modifier::DIM;
+        }
+        if self.flags.contains(WireStyleFlags::ITALIC) {
+            modifier |= Modifier::ITALIC;
+        }
+        if self.flags.contains(WireStyleFlags::SLOW_BLINK) {
+            modifier |= Modifier::SLOW_BLINK;
+        }
+        if self.flags.contains(WireStyleFlags::RAPID_BLINK) {
+            modifier |= Modifier::RAPID_BLINK;
+        }
+        if self.flags.contains(WireStyleFlags::REVERSED) {
+            modifier |= Modifier::REVERSED;
+        }
+        if self.flags.contains(WireStyleFlags::HIDDEN) {
+            modifier |= Modifier::HIDDEN;
+        }
+        if self.flags.contains(WireStyleFlags::CROSSED_OUT) {
+            modifier |= Modifier::CROSSED_OUT;
+        }
+
+        let underline_style = match self.underline {
+            crate::ghostty::UnderlineStyle::None => return modifier,
+            crate::ghostty::UnderlineStyle::Single => {
+                modifier |= Modifier::UNDERLINED;
+                return modifier;
+            }
+            crate::ghostty::UnderlineStyle::Double => 2,
+            crate::ghostty::UnderlineStyle::Curly => 3,
+            crate::ghostty::UnderlineStyle::Dotted => 4,
+            crate::ghostty::UnderlineStyle::Dashed => 5,
+        };
+        modifier |= Modifier::UNDERLINED;
+        modifier |= Modifier::from_bits_retain(underline_style << RATATUI_UNDERLINE_STYLE_SHIFT);
+        modifier
+    }
+}
+
+// Ratatui's Modifier has no underline-shape field. Preserve this metadata only
+// while a frame crosses its in-memory Buffer during client composition; wire
+// cells themselves carry the typed UnderlineStyle above.
+const RATATUI_UNDERLINE_STYLE_SHIFT: u16 = 12;
+const RATATUI_UNDERLINE_STYLE_MASK: u16 = 0xF000;
+
 /// A single cell in a rendered frame, serialized independently from ratatui's
-/// `Cell` type to keep the wire protocol stable.
-// Keep the scalar fields in step with the terminal adapter: `src/pane/terminal.rs`
-// constructs `CellData` directly and supplies these values through the packed
-// conversion helpers below. Moving the color and underline layout into typed
-// wire fields requires migrating that adapter in the same change. The terminal
-// core also still exposes underline as a `u8` in `ghostty::CellStyle`, so the
-// adapter and core style need to move with the wire fields.
+/// `Cell` type to keep the wire protocol semantic and explicit.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CellData {
     /// Grapheme cluster displayed in this cell (usually 1-2 chars).
     pub symbol: String,
-    /// Packed color with a high-byte tag: 0 for named colors, 1 for indexed, 2 for RGB.
-    pub fg: u32,
-    /// Background color as a packed u32.
-    pub bg: u32,
-    /// Bitmask of style modifiers (bold, italic, etc.) plus Shepr extension bits.
-    pub modifier: u16,
+    /// Foreground color.
+    pub fg: WireColor,
+    /// Background color.
+    pub bg: WireColor,
+    /// Style flags and underline shape.
+    pub style: WireStyle,
     /// Whether this cell should be skipped during diff-based rendering.
     pub skip: bool,
     /// Index into `FrameData::hyperlinks` for this cell's OSC 8 target, if any.
@@ -694,9 +896,9 @@ impl CellData {
     pub(crate) fn from_ratatui_cell(cell: &ratatui::buffer::Cell) -> Self {
         Self {
             symbol: cell.symbol().to_owned(),
-            fg: color_to_u32(cell.fg),
-            bg: color_to_u32(cell.bg),
-            modifier: modifier_to_u16(cell.modifier),
+            fg: WireColor::from_ratatui(cell.fg),
+            bg: WireColor::from_ratatui(cell.bg),
+            style: WireStyle::from_ratatui_modifier(cell.modifier),
             skip: cell.diff_option == ratatui::buffer::CellDiffOption::Skip,
             hyperlink: None,
         }
@@ -855,9 +1057,9 @@ impl FrameData {
                 let cell_data = &self.cells[idx];
                 let cell = buffer.cell_mut((col, row))?;
                 cell.set_symbol(&cell_data.symbol);
-                cell.fg = u32_to_color(cell_data.fg);
-                cell.bg = u32_to_color(cell_data.bg);
-                cell.modifier = u16_to_modifier(cell_data.modifier);
+                cell.fg = cell_data.fg.to_ratatui();
+                cell.bg = cell_data.bg.to_ratatui();
+                cell.modifier = cell_data.style.to_ratatui_modifier();
                 cell.set_diff_option(if cell_data.skip {
                     ratatui::buffer::CellDiffOption::Skip
                 } else {
@@ -1334,115 +1536,6 @@ pub enum ServerMessage {
 }
 
 // ---------------------------------------------------------------------------
-// Color / Modifier conversion helpers
-// ---------------------------------------------------------------------------
-
-/// Converts a ratatui `Color` to a packed u32 for wire transport.
-///
-/// Encoding:
-/// - Named colors (Reset, Black, …, White) → `0x00_00_00_XX` where XX is 0..=16
-/// - Indexed palette → `0x01_00_00_XX` where XX is the palette index
-/// - RGB → `0x02_RR_GG_BB` with components in the lower 3 bytes
-pub(crate) fn color_to_u32(color: ratatui::style::Color) -> u32 {
-    match color {
-        ratatui::style::Color::Reset => 0x00_00_00_00,
-        ratatui::style::Color::Black => 0x00_00_00_01,
-        ratatui::style::Color::Red => 0x00_00_00_02,
-        ratatui::style::Color::Green => 0x00_00_00_03,
-        ratatui::style::Color::Yellow => 0x00_00_00_04,
-        ratatui::style::Color::Blue => 0x00_00_00_05,
-        ratatui::style::Color::Magenta => 0x00_00_00_06,
-        ratatui::style::Color::Cyan => 0x00_00_00_07,
-        ratatui::style::Color::Gray => 0x00_00_00_08,
-        ratatui::style::Color::DarkGray => 0x00_00_00_09,
-        ratatui::style::Color::LightRed => 0x00_00_00_0A,
-        ratatui::style::Color::LightGreen => 0x00_00_00_0B,
-        ratatui::style::Color::LightYellow => 0x00_00_00_0C,
-        ratatui::style::Color::LightBlue => 0x00_00_00_0D,
-        ratatui::style::Color::LightMagenta => 0x00_00_00_0E,
-        ratatui::style::Color::LightCyan => 0x00_00_00_0F,
-        ratatui::style::Color::White => 0x00_00_00_10,
-        ratatui::style::Color::Indexed(i) => 0x01_00_00_00 | (i as u32),
-        ratatui::style::Color::Rgb(r, g, b) => {
-            0x02_00_00_00 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-        }
-    }
-}
-
-/// Converts a packed u32 back to a ratatui `Color`.
-fn u32_to_color(val: u32) -> ratatui::style::Color {
-    match val >> 24 {
-        0x00 => match val & 0xFF {
-            0x00 => ratatui::style::Color::Reset,
-            0x01 => ratatui::style::Color::Black,
-            0x02 => ratatui::style::Color::Red,
-            0x03 => ratatui::style::Color::Green,
-            0x04 => ratatui::style::Color::Yellow,
-            0x05 => ratatui::style::Color::Blue,
-            0x06 => ratatui::style::Color::Magenta,
-            0x07 => ratatui::style::Color::Cyan,
-            0x08 => ratatui::style::Color::Gray,
-            0x09 => ratatui::style::Color::DarkGray,
-            0x0A => ratatui::style::Color::LightRed,
-            0x0B => ratatui::style::Color::LightGreen,
-            0x0C => ratatui::style::Color::LightYellow,
-            0x0D => ratatui::style::Color::LightBlue,
-            0x0E => ratatui::style::Color::LightMagenta,
-            0x0F => ratatui::style::Color::LightCyan,
-            0x10 => ratatui::style::Color::White,
-            _ => ratatui::style::Color::Reset, // unknown named → Reset
-        },
-        0x01 => ratatui::style::Color::Indexed((val & 0xFF) as u8),
-        0x02 => {
-            let r = ((val >> 16) & 0xFF) as u8;
-            let g = ((val >> 8) & 0xFF) as u8;
-            let b = (val & 0xFF) as u8;
-            ratatui::style::Color::Rgb(r, g, b)
-        }
-        _ => ratatui::style::Color::Reset, // unknown tag → Reset
-    }
-}
-
-const UNDERLINE_STYLE_SHIFT: u16 = 12;
-const UNDERLINE_STYLE_MASK: u16 = 0xF000;
-
-/// Converts a ratatui `Modifier` bitmask to a u16 for wire transport.
-pub(crate) fn modifier_to_u16(modifier: ratatui::style::Modifier) -> u16 {
-    modifier.bits()
-}
-
-pub(crate) fn underline_style_from_modifier(modifier: u16) -> u8 {
-    ((modifier & UNDERLINE_STYLE_MASK) >> UNDERLINE_STYLE_SHIFT) as u8
-}
-
-pub(crate) fn modifier_with_underline_style(
-    modifier: ratatui::style::Modifier,
-    underline_style: u8,
-) -> ratatui::style::Modifier {
-    let bits = modifier.bits() | ((u16::from(underline_style) & 0x0F) << UNDERLINE_STYLE_SHIFT);
-    ratatui::style::Modifier::from_bits_retain(bits)
-}
-
-/// Converts a u16 back to a ratatui `Modifier`, the inverse of
-/// `modifier_to_u16`.
-///
-/// The underline style in bits 12-15 is kept (`from_bits_retain`): the client
-/// shell round-trips whole frames through a ratatui buffer whenever it draws a
-/// selection, copy-mode highlight, banner, notice or overlay, and truncating
-/// here turned every curly, dotted or dashed underline into a plain one for as
-/// long as any of those was on screen. The style is dropped only when the
-/// cell is not underlined, so a stale style cannot resurface as a styled
-/// underline if an overlay later adds a plain `UNDERLINED`.
-fn u16_to_modifier(val: u16) -> ratatui::style::Modifier {
-    let val = if val & ratatui::style::Modifier::UNDERLINED.bits() == 0 {
-        val & !UNDERLINE_STYLE_MASK
-    } else {
-        val
-    };
-    ratatui::style::Modifier::from_bits_retain(val)
-}
-
-// ---------------------------------------------------------------------------
 // Framing: length-prefixed binary messages
 // ---------------------------------------------------------------------------
 
@@ -1862,49 +1955,52 @@ mod tests {
             cells: vec![
                 CellData {
                     symbol: "H".into(),
-                    fg: color_to_u32(Color::Red),
-                    bg: color_to_u32(Color::Black),
-                    modifier: Modifier::BOLD.bits(),
+                    fg: WireColor::from_ratatui(Color::Red),
+                    bg: WireColor::from_ratatui(Color::Black),
+                    style: WireStyle::from_ratatui_modifier(Modifier::BOLD),
                     skip: false,
                     hyperlink: None,
                 },
                 CellData {
                     symbol: "i".into(),
-                    fg: color_to_u32(Color::Green),
-                    bg: color_to_u32(Color::Reset),
-                    modifier: Modifier::ITALIC.bits(),
+                    fg: WireColor::from_ratatui(Color::Green),
+                    bg: WireColor::from_ratatui(Color::Reset),
+                    style: WireStyle::from_ratatui_modifier(Modifier::ITALIC),
                     skip: false,
                     hyperlink: None,
                 },
                 CellData {
                     symbol: "!".into(),
-                    fg: color_to_u32(Color::Rgb(255, 128, 0)),
-                    bg: color_to_u32(Color::Indexed(220)),
-                    modifier: (Modifier::BOLD | Modifier::UNDERLINED).bits(),
+                    fg: WireColor::from_ratatui(Color::Rgb(255, 128, 0)),
+                    bg: WireColor::from_ratatui(Color::Indexed(220)),
+                    style: WireStyle {
+                        flags: WireStyleFlags::BOLD,
+                        underline: crate::ghostty::UnderlineStyle::Curly,
+                    },
                     skip: false,
                     hyperlink: Some(0),
                 },
                 CellData {
                     symbol: " ".into(),
-                    fg: color_to_u32(Color::Reset),
-                    bg: color_to_u32(Color::Reset),
-                    modifier: Modifier::empty().bits(),
+                    fg: WireColor::from_ratatui(Color::Reset),
+                    bg: WireColor::from_ratatui(Color::Reset),
+                    style: WireStyle::default(),
                     skip: true,
                     hyperlink: None,
                 },
                 CellData {
                     symbol: "→".into(), // multi-byte grapheme
-                    fg: color_to_u32(Color::Cyan),
-                    bg: color_to_u32(Color::Blue),
-                    modifier: Modifier::REVERSED.bits(),
+                    fg: WireColor::from_ratatui(Color::Cyan),
+                    bg: WireColor::from_ratatui(Color::Blue),
+                    style: WireStyle::from_ratatui_modifier(Modifier::REVERSED),
                     skip: false,
                     hyperlink: None,
                 },
                 CellData {
                     symbol: "\u{1F980}".into(), // emoji, wide grapheme cluster
-                    fg: color_to_u32(Color::Yellow),
-                    bg: color_to_u32(Color::Magenta),
-                    modifier: Modifier::empty().bits(),
+                    fg: WireColor::from_ratatui(Color::Yellow),
+                    bg: WireColor::from_ratatui(Color::Magenta),
+                    style: WireStyle::default(),
                     skip: false,
                     hyperlink: None,
                 },
@@ -1954,9 +2050,9 @@ mod tests {
                 y: 4,
                 cells: vec![CellData {
                     symbol: "x".into(),
-                    fg: 1,
-                    bg: 2,
-                    modifier: 3,
+                    fg: WireColor::Indexed(1),
+                    bg: WireColor::Rgb(0, 0, 2),
+                    style: WireStyle::from_ratatui_modifier(Modifier::BOLD | Modifier::ITALIC),
                     skip: false,
                     hyperlink: None,
                 }],
@@ -2167,13 +2263,17 @@ mod tests {
                 } else {
                     format!("{:03}", i % 1000)
                 },
-                fg: color_to_u32(Color::Rgb(
+                fg: WireColor::from_ratatui(Color::Rgb(
                     u8::try_from(i % 256).unwrap_or(u8::MAX),
                     u8::try_from((i / 256) % 256).unwrap_or(u8::MAX),
                     128,
                 )),
-                bg: color_to_u32(Color::Indexed(u8::try_from(i % 256).unwrap_or(u8::MAX))),
-                modifier: u16::try_from(i % 16).unwrap_or(u16::MAX),
+                bg: WireColor::from_ratatui(Color::Indexed(
+                    u8::try_from(i % 256).unwrap_or(u8::MAX),
+                )),
+                style: WireStyle::from_ratatui_modifier(Modifier::from_bits_retain(
+                    u16::try_from(i % 256).unwrap_or(u16::MAX),
+                )),
                 skip: i % 100 == 0,
                 hyperlink: None,
             })
@@ -2438,16 +2538,22 @@ mod tests {
 
         // Verify specific cells survived the conversion.
         assert_eq!(frame.cells[0].symbol, "H");
-        assert_eq!(frame.cells[0].fg, color_to_u32(Color::Red));
-        assert_eq!(frame.cells[0].modifier, Modifier::BOLD.bits());
+        assert_eq!(frame.cells[0].fg, WireColor::from_ratatui(Color::Red));
+        assert!(frame.cells[0].style.flags.contains(WireStyleFlags::BOLD));
 
         assert_eq!(frame.cells[1].symbol, "i");
-        assert_eq!(frame.cells[1].fg, color_to_u32(Color::Green));
-        assert_eq!(frame.cells[1].modifier, Modifier::ITALIC.bits());
+        assert_eq!(frame.cells[1].fg, WireColor::from_ratatui(Color::Green));
+        assert!(frame.cells[1].style.flags.contains(WireStyleFlags::ITALIC));
 
         assert_eq!(frame.cells[2].symbol, "!");
-        assert_eq!(frame.cells[2].fg, color_to_u32(Color::Rgb(255, 128, 0)));
-        assert_eq!(frame.cells[2].bg, color_to_u32(Color::Indexed(220)));
+        assert_eq!(
+            frame.cells[2].fg,
+            WireColor::from_ratatui(Color::Rgb(255, 128, 0))
+        );
+        assert_eq!(
+            frame.cells[2].bg,
+            WireColor::from_ratatui(Color::Indexed(220))
+        );
 
         let with_links = FrameData::from_ratatui_buffer_with_hyperlinks(
             &buffer,
@@ -2495,9 +2601,9 @@ mod tests {
             cells: vec![
                 CellData {
                     symbol: "X".into(),
-                    fg: 0,
-                    bg: 0,
-                    modifier: 0,
+                    fg: WireColor::Reset,
+                    bg: WireColor::Reset,
+                    style: WireStyle::default(),
                     skip: false,
                     hyperlink: None,
                 };
@@ -2536,7 +2642,7 @@ mod tests {
         ];
         for c in named {
             assert_eq!(
-                u32_to_color(color_to_u32(c)),
+                WireColor::from_ratatui(c).to_ratatui(),
                 c,
                 "roundtrip failed for {c:?}"
             );
@@ -2548,7 +2654,7 @@ mod tests {
         for i in 0..=255u8 {
             let c = Color::Indexed(i);
             assert_eq!(
-                u32_to_color(color_to_u32(c)),
+                WireColor::from_ratatui(c).to_ratatui(),
                 c,
                 "roundtrip failed for Indexed({i})"
             );
@@ -2558,19 +2664,19 @@ mod tests {
     #[test]
     fn color_roundtrip_rgb() {
         let c = Color::Rgb(0xAB, 0xCD, 0xEF);
-        assert_eq!(u32_to_color(color_to_u32(c)), c);
+        assert_eq!(WireColor::from_ratatui(c).to_ratatui(), c);
 
         let c = Color::Rgb(0, 0, 0);
-        assert_eq!(u32_to_color(color_to_u32(c)), c);
+        assert_eq!(WireColor::from_ratatui(c).to_ratatui(), c);
 
         let c = Color::Rgb(255, 255, 255);
-        assert_eq!(u32_to_color(color_to_u32(c)), c);
+        assert_eq!(WireColor::from_ratatui(c).to_ratatui(), c);
     }
 
-    // ---- Modifier conversion ----
+    // ---- Style conversion ----
 
     #[test]
-    fn modifier_roundtrip() {
+    fn wire_style_roundtrip_through_ratatui_modifier() {
         let all_mods = [
             Modifier::BOLD,
             Modifier::ITALIC,
@@ -2584,30 +2690,31 @@ mod tests {
             Modifier::empty(),
         ];
         for m in all_mods {
-            assert_eq!(
-                u16_to_modifier(modifier_to_u16(m)),
-                m,
-                "roundtrip failed for {m:?}"
-            );
+            let style = WireStyle::from_ratatui_modifier(m);
+            assert_eq!(style.to_ratatui_modifier(), m, "roundtrip failed for {m:?}");
         }
     }
 
     #[test]
     fn underline_style_survives_ratatui_buffer_roundtrip() {
-        // Curly (3), dotted (4) and dashed (5) underlines ride in the
-        // modifier's high bits and must survive the client's composition
-        // round trip through a ratatui buffer.
-        for style in [2u8, 3, 4, 5] {
-            let modifier = modifier_to_u16(modifier_with_underline_style(
-                Modifier::UNDERLINED | Modifier::BOLD,
-                style,
-            ));
+        // The ratatui buffer has no underline-shape field, so the adapter
+        // preserves non-single underline styles in its temporary modifier.
+        for underline in [
+            crate::ghostty::UnderlineStyle::Double,
+            crate::ghostty::UnderlineStyle::Curly,
+            crate::ghostty::UnderlineStyle::Dotted,
+            crate::ghostty::UnderlineStyle::Dashed,
+        ] {
+            let style = WireStyle {
+                flags: WireStyleFlags::BOLD,
+                underline,
+            };
             let frame = FrameData {
                 cells: vec![CellData {
                     symbol: "u".into(),
-                    fg: 0,
-                    bg: 0,
-                    modifier,
+                    fg: WireColor::Reset,
+                    bg: WireColor::Reset,
+                    style,
                     skip: false,
                     hyperlink: None,
                 }],
@@ -2619,18 +2726,18 @@ mod tests {
             let buffer = frame.to_ratatui_buffer().expect("test precondition");
             let mut restored = frame.clone();
             restored.replace_from_ratatui_buffer_preserving_effects(&buffer, None);
-            assert_eq!(restored.cells[0].modifier, modifier, "style {style}");
-            assert_eq!(
-                underline_style_from_modifier(restored.cells[0].modifier),
-                style
-            );
+            assert_eq!(restored.cells[0].style, style, "style {underline:?}");
         }
     }
 
     #[test]
-    fn underline_style_is_dropped_from_cells_that_are_not_underlined() {
-        let stale = modifier_to_u16(modifier_with_underline_style(Modifier::BOLD, 3));
-        assert_eq!(u16_to_modifier(stale), Modifier::BOLD);
+    fn stale_ratatui_underline_style_is_dropped_from_ununderlined_cells() {
+        let stale = Modifier::from_bits_retain(
+            Modifier::BOLD.bits() | (3 << RATATUI_UNDERLINE_STYLE_SHIFT),
+        );
+        let style = WireStyle::from_ratatui_modifier(stale);
+        assert_eq!(style.underline, crate::ghostty::UnderlineStyle::None);
+        assert_eq!(style.to_ratatui_modifier(), Modifier::BOLD);
     }
 
     #[test]

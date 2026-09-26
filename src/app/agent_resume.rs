@@ -576,11 +576,10 @@ mod tests {
             assert!(!missing.exists());
             for terminal in app.state.terminals.values_mut() {
                 terminal.cwd = missing.clone();
-                terminal.pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-                    agent: "codex".into(),
-                    argv: vec!["codex".into()],
-                    dedupe_key: terminal.id.to_string(),
-                });
+                terminal.pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+                    &terminal.id.to_string(),
+                    vec!["codex".into()],
+                ));
             }
             let now = Instant::now();
             app.sync_pending_agent_resume_deadline(now);
@@ -655,11 +654,10 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test terminal should exist")
-            .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-            agent: "codex".into(),
-            argv: Vec::new(),
-            dedupe_key: "shepr:codex\0codex\0Id\0failing-session".into(),
-        });
+            .pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+            "shepr:codex\0codex\0Id\0failing-session",
+            Vec::new(),
+        ));
 
         let now = Instant::now();
         app.pending_agent_resume_deadline = Some(now - std::time::Duration::from_millis(1));
@@ -708,11 +706,10 @@ mod tests {
             .terminals
             .get_mut(&pending_terminal)
             .expect("test terminal should exist")
-            .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-            agent: "codex".into(),
-            argv: long_running_test_argv(),
-            dedupe_key: "shepr:codex\0codex\0Id\0probe-session".into(),
-        });
+            .pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+            "shepr:codex\0codex\0Id\0probe-session",
+            long_running_test_argv(),
+        ));
         assert!(app.has_pending_agent_resume_candidates());
         let candidates = app.pending_agent_resume_candidates();
         assert_eq!(candidates.len(), 1);
@@ -766,16 +763,15 @@ mod tests {
             }
             let session = crate::agent_resume::PersistedAgentSession {
                 source: "shepr:codex".into(),
-                agent: "codex".into(),
+                agent: crate::agents::Agent::Codex,
                 session_ref: crate::agent_resume::AgentSessionRef::id("resume-test")
                     .expect("test precondition"),
             };
             terminal.persisted_agent_session = Some(session.clone());
-            terminal.pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-                agent: "codex".into(),
-                argv: long_running_test_argv(),
-                dedupe_key: "resume-test".into(),
-            });
+            terminal.pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+                "resume-test",
+                long_running_test_argv(),
+            ));
             // Restore seeds the resumed agent as detected and names it.
             terminal.restore_managed_agent_for_resume("worker".into(), crate::detect::Agent::Codex);
             let _ = terminal.set_detected_state_with_screen_signals_at(
@@ -823,11 +819,10 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test terminal should exist");
-        terminal.pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-            agent: "codex".into(),
-            argv: marker_resume_test_argv(),
-            dedupe_key: "shepr:codex\0codex\0Id\0codex-session".into(),
-        });
+        terminal.pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+            "shepr:codex\0codex\0Id\0codex-session",
+            marker_resume_test_argv(),
+        ));
 
         assert!(!app.start_pending_agent_resumes(Instant::now(), false));
         assert!(app.terminal_runtimes.get(&terminal_id).is_none());
@@ -902,11 +897,10 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test terminal should exist")
-            .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-            agent: "codex".into(),
-            argv: long_running_test_argv(),
-            dedupe_key: "shepr:codex\0codex\0Id\0codex-session".into(),
-        });
+            .pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+            "shepr:codex\0codex\0Id\0codex-session",
+            long_running_test_argv(),
+        ));
 
         app.sync_pending_agent_resume_deadline(std::time::Instant::now());
         assert!(!app.start_pending_agent_resumes(Instant::now(), false));
@@ -941,11 +935,10 @@ mod tests {
             .expect("test terminal should exist");
         terminal.restore_managed_agent_for_resume("worker".into(), crate::detect::Agent::Codex);
         // A resume command that runs, but never becomes the agent.
-        terminal.pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-            agent: "codex".into(),
-            argv: long_running_test_argv(),
-            dedupe_key: "shepr:codex\0codex\0Id\0never-appears".into(),
-        });
+        terminal.pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+            "shepr:codex\0codex\0Id\0never-appears",
+            long_running_test_argv(),
+        ));
         assert_eq!(app.state.next_managed_agent_deadline(), None);
 
         let launched_at = Instant::now();
@@ -1013,11 +1006,10 @@ mod tests {
                 .terminals
                 .get_mut(terminal_id)
                 .expect("test terminal should exist")
-                .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-                agent: "codex".into(),
-                argv: long_running_test_argv(),
-                dedupe_key: format!("shepr:codex\0codex\0Id\0{terminal_id}"),
-            });
+                .pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+                &format!("shepr:codex\0codex\0Id\0{terminal_id}"),
+                long_running_test_argv(),
+            ));
         }
         app.pending_agent_resume_deadline =
             Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
@@ -1083,11 +1075,10 @@ mod tests {
             .terminals
             .get_mut(&inactive_terminal)
             .expect("inactive tab terminal should exist")
-            .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-            agent: "codex".into(),
-            argv: long_running_test_argv(),
-            dedupe_key: "shepr:codex\0codex\0Id\0inactive-tab-session".into(),
-        });
+            .pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+            "shepr:codex\0codex\0Id\0inactive-tab-session",
+            long_running_test_argv(),
+        ));
 
         assert!(app.start_pending_agent_resumes(Instant::now(), false));
         assert!(app.terminal_runtimes.get(&inactive_terminal).is_some());
@@ -1146,11 +1137,10 @@ mod tests {
             .terminals
             .get_mut(&hidden_terminal)
             .expect("hidden zoom pane terminal should exist")
-            .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-            agent: "codex".into(),
-            argv: long_running_test_argv(),
-            dedupe_key: "shepr:codex\0codex\0Id\0zoom-hidden-session".into(),
-        });
+            .pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+            "shepr:codex\0codex\0Id\0zoom-hidden-session",
+            long_running_test_argv(),
+        ));
 
         assert!(app.start_pending_agent_resumes(Instant::now(), false));
         assert!(app.terminal_runtimes.get(&hidden_terminal).is_some());
@@ -1203,11 +1193,10 @@ mod tests {
             .terminals
             .get_mut(&previous_terminal)
             .expect("test terminal should exist")
-            .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-            agent: "codex".into(),
-            argv: long_running_test_argv(),
-            dedupe_key: "shepr:codex\0codex\0Id\0codex-session".into(),
-        });
+            .pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+            "shepr:codex\0codex\0Id\0codex-session",
+            long_running_test_argv(),
+        ));
 
         app.sync_pending_agent_resume_deadline(std::time::Instant::now());
         assert!(app.pending_agent_resume_deadline.is_some());
@@ -1266,11 +1255,10 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test terminal should exist")
-            .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-            agent: "codex".into(),
-            argv: long_running_test_argv(),
-            dedupe_key: "shepr:codex\0codex\0Id\0codex-session".into(),
-        });
+            .pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+            "shepr:codex\0codex\0Id\0codex-session",
+            long_running_test_argv(),
+        ));
 
         assert!(app.start_pending_agent_resumes(Instant::now(), false));
         assert_eq!(

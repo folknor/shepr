@@ -2,7 +2,8 @@
 //!
 //! # Where manifests come from
 //!
-//! Every agent in `Agent::SCREEN_MANIFEST_AGENTS` has a bundled manifest in
+//! Every agent marked for screen detection in the agent descriptor table has
+//! a bundled manifest in
 //! `src/detect/manifests/`. A local override at
 //! `<config dir>/agent-detection/<agent label>.toml` replaces the bundled one
 //! wholesale when its `id` (or one of its `aliases`) names that agent. An
@@ -528,8 +529,7 @@ fn registry() -> &'static ManifestRegistry {
 
 fn build_manifest_cache(override_dir: Option<&Path>) -> ManifestCache {
     ManifestCache {
-        manifests: Agent::SCREEN_MANIFEST_AGENTS
-            .into_iter()
+        manifests: Agent::screen_manifest_agents()
             .map(|agent| {
                 (
                     agent,

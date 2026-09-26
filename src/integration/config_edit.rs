@@ -821,8 +821,16 @@ pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> i
 
     result.push_str(KIMI_CONFIG_BLOCK_BEGIN);
     result.push('\n');
-    for (event, matcher, action) in KIMI_HOOK_EVENTS {
-        result.push_str(&kimi_hook_table(event, matcher, hook_path, action));
+    for hook in KIMI_HOOK_EVENTS {
+        let Some(action) = hook.action else {
+            continue;
+        };
+        result.push_str(&kimi_hook_table(
+            hook.event,
+            hook.matcher,
+            hook_path,
+            action.as_str(),
+        ));
     }
     result.push_str(KIMI_CONFIG_BLOCK_END);
     result.push('\n');

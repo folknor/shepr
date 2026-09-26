@@ -543,12 +543,16 @@ impl HeadlessServer {
                 }
             }
         } else {
-            crate::ui::compute_tab_surface_for(
+            let layout = crate::ui::compute_tab_surface_for(
                 &self.app.state,
                 &self.app.terminal_runtimes,
                 Some(target),
                 area,
-                true,
+            );
+            crate::ui::resize_tab_surface_layout(
+                &self.app.state,
+                &self.app.terminal_runtimes,
+                &layout,
                 cell_size,
             );
         }

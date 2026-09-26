@@ -49,7 +49,7 @@ if session_id is None:
 seq = time.time_ns()
 params = {
     "pane_id": os.environ["SHEPR_PANE_ID"],
-    "source": "shepr:antigravity_cli",
+    "source": "shepr:agy",
     "agent": "agy",
     "seq": seq,
     "agent_session_id": session_id,

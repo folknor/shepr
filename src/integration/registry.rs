@@ -2,38 +2,193 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::agents::IntegrationTarget as Target;
+
 use super::command::hook_command;
 
-pub(crate) fn integration_target_label(
-    target: crate::api::schema::IntegrationTarget,
-) -> &'static str {
-    match target {
-        crate::api::schema::IntegrationTarget::Pi => "pi",
-        crate::api::schema::IntegrationTarget::Omp => "omp",
-        crate::api::schema::IntegrationTarget::Claude => "claude",
-        crate::api::schema::IntegrationTarget::Codex => "codex",
-        crate::api::schema::IntegrationTarget::Copilot => "copilot",
-        crate::api::schema::IntegrationTarget::Devin => "devin",
-        crate::api::schema::IntegrationTarget::Droid => "droid",
-        crate::api::schema::IntegrationTarget::Kimi => "kimi",
-        crate::api::schema::IntegrationTarget::Opencode => "opencode",
-        crate::api::schema::IntegrationTarget::Kilo => "kilo",
-        crate::api::schema::IntegrationTarget::Hermes => "hermes",
-        crate::api::schema::IntegrationTarget::Qodercli => "qodercli",
-        crate::api::schema::IntegrationTarget::Qwen => "qwen",
-        crate::api::schema::IntegrationTarget::Cursor => "cursor",
-        crate::api::schema::IntegrationTarget::Mastracode => "mastracode",
-        crate::api::schema::IntegrationTarget::AntigravityCli => "antigravity-cli",
-        crate::api::schema::IntegrationTarget::Grok => "grok",
-        crate::api::schema::IntegrationTarget::Letta => "letta",
-    }
+pub(crate) fn integration_target_label(target: crate::agents::IntegrationTarget) -> &'static str {
+    target.label()
+}
+
+#[derive(Clone, Copy)]
+struct IntegrationSpec {
+    target: Target,
+    asset: &'static str,
+    directory: &'static str,
+    path: &'static [&'static str],
+    version: u32,
+    events: &'static [crate::agents::IntegrationHookEvent],
+}
+
+const INTEGRATION_SPECS: &[IntegrationSpec] = &[
+    IntegrationSpec {
+        target: Target::Pi,
+        asset: super::PI_EXTENSION_ASSET,
+        directory: "pi_extension",
+        path: &[super::PI_EXTENSION_INSTALL_NAME],
+        version: super::PI_INTEGRATION_VERSION,
+        events: Target::Pi.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Omp,
+        asset: super::OMP_EXTENSION_ASSET,
+        directory: "omp_extension",
+        path: &[super::OMP_EXTENSION_INSTALL_NAME],
+        version: super::OMP_INTEGRATION_VERSION,
+        events: Target::Omp.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Claude,
+        asset: super::CLAUDE_HOOK_ASSET,
+        directory: "claude",
+        path: &["hooks", super::CLAUDE_HOOK_INSTALL_NAME],
+        version: super::CLAUDE_INTEGRATION_VERSION,
+        events: Target::Claude.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Codex,
+        asset: super::CODEX_HOOK_ASSET,
+        directory: "codex",
+        path: &[super::CODEX_HOOK_INSTALL_NAME],
+        version: super::CODEX_INTEGRATION_VERSION,
+        events: Target::Codex.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Copilot,
+        asset: super::COPILOT_HOOK_ASSET,
+        directory: "copilot",
+        path: &["hooks", super::COPILOT_HOOK_INSTALL_NAME],
+        version: super::COPILOT_INTEGRATION_VERSION,
+        events: Target::Copilot.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Devin,
+        asset: super::DEVIN_HOOK_ASSET,
+        directory: "devin",
+        path: &[super::DEVIN_HOOK_INSTALL_NAME],
+        version: super::DEVIN_INTEGRATION_VERSION,
+        events: Target::Devin.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Droid,
+        asset: super::DROID_HOOK_ASSET,
+        directory: "droid",
+        path: &["hooks", super::DROID_HOOK_INSTALL_NAME],
+        version: super::DROID_INTEGRATION_VERSION,
+        events: Target::Droid.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Kimi,
+        asset: super::KIMI_HOOK_ASSET,
+        directory: "kimi",
+        path: &["hooks", super::KIMI_HOOK_INSTALL_NAME],
+        version: super::KIMI_INTEGRATION_VERSION,
+        events: Target::Kimi.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Opencode,
+        asset: super::OPENCODE_PLUGIN_ASSET,
+        directory: "opencode",
+        path: &["plugins", super::OPENCODE_PLUGIN_INSTALL_NAME],
+        version: super::OPENCODE_INTEGRATION_VERSION,
+        events: Target::Opencode.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Kilo,
+        asset: super::KILO_PLUGIN_ASSET,
+        directory: "kilo",
+        path: &["plugin", super::KILO_PLUGIN_INSTALL_NAME],
+        version: super::KILO_INTEGRATION_VERSION,
+        events: Target::Kilo.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Hermes,
+        asset: super::HERMES_PLUGIN_INIT_ASSET,
+        directory: "hermes_plugin",
+        path: &[super::HERMES_PLUGIN_INIT_INSTALL_NAME],
+        version: super::HERMES_INTEGRATION_VERSION,
+        events: Target::Hermes.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Qodercli,
+        asset: super::QODERCLI_HOOK_ASSET,
+        directory: "qodercli",
+        path: &["hooks", super::QODERCLI_HOOK_INSTALL_NAME],
+        version: super::QODERCLI_INTEGRATION_VERSION,
+        events: Target::Qodercli.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Qwen,
+        asset: super::QWEN_HOOK_ASSET,
+        directory: "qwen",
+        path: &["hooks", super::QWEN_HOOK_INSTALL_NAME],
+        version: super::QWEN_INTEGRATION_VERSION,
+        events: Target::Qwen.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Cursor,
+        asset: super::CURSOR_HOOK_ASSET,
+        directory: "cursor",
+        path: &[super::CURSOR_HOOK_INSTALL_NAME],
+        version: super::CURSOR_INTEGRATION_VERSION,
+        events: Target::Cursor.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Mastracode,
+        asset: super::MASTRACODE_HOOK_ASSET,
+        directory: "mastracode",
+        path: &["hooks", super::MASTRACODE_HOOK_INSTALL_NAME],
+        version: super::MASTRACODE_INTEGRATION_VERSION,
+        events: Target::Mastracode.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::AntigravityCli,
+        asset: super::ANTIGRAVITY_CLI_HOOK_ASSET,
+        directory: "antigravity_cli",
+        path: &["hooks", super::ANTIGRAVITY_CLI_HOOK_INSTALL_NAME],
+        version: super::ANTIGRAVITY_CLI_INTEGRATION_VERSION,
+        events: Target::AntigravityCli.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Grok,
+        asset: super::GROK_HOOK_ASSET,
+        directory: "grok",
+        path: &["hooks", super::GROK_HOOK_INSTALL_NAME],
+        version: super::GROK_INTEGRATION_VERSION,
+        events: Target::Grok.hook_events(),
+    },
+    IntegrationSpec {
+        target: Target::Letta,
+        asset: super::LETTA_HOOK_ASSET,
+        directory: "letta",
+        path: &["hooks", super::LETTA_HOOK_INSTALL_NAME],
+        version: super::LETTA_INTEGRATION_VERSION,
+        events: Target::Letta.hook_events(),
+    },
+];
+
+pub(crate) fn integration_asset(target: crate::agents::IntegrationTarget) -> Option<&'static str> {
+    INTEGRATION_SPECS
+        .iter()
+        .copied()
+        .find(|spec| spec.target == target)
+        .map(|spec| spec.asset)
+}
+
+fn integration_hook_events(
+    target: crate::agents::IntegrationTarget,
+) -> &'static [crate::agents::IntegrationHookEvent] {
+    INTEGRATION_SPECS
+        .iter()
+        .find(|spec| spec.target == target)
+        .map(|spec| spec.events)
+        .unwrap_or(&[])
 }
 
 pub(crate) fn installed_integration_statuses(
     paths: &super::env::AgentIntegrationPaths,
 ) -> Vec<super::IntegrationStatus> {
     integration_specs(paths)
-        .into_iter()
         .filter_map(|(target, path, expected_version)| {
             Some(integration_status_at(target, path.ok()?, expected_version))
         })
@@ -51,145 +206,20 @@ pub(crate) fn outdated_installed_integrations(
 
 fn integration_specs(
     paths: &super::env::AgentIntegrationPaths,
-) -> [(
-    crate::api::schema::IntegrationTarget,
-    io::Result<PathBuf>,
-    u32,
-); 18] {
-    [
-        (
-            crate::api::schema::IntegrationTarget::Pi,
-            paths
-                .directory("pi_extension")
-                .map(|dir| dir.join(super::PI_EXTENSION_INSTALL_NAME)),
-            super::PI_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Omp,
-            paths
-                .directory("omp_extension")
-                .map(|dir| dir.join(super::OMP_EXTENSION_INSTALL_NAME)),
-            super::OMP_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Claude,
-            paths
-                .directory("claude")
-                .map(|dir| dir.join("hooks").join(super::CLAUDE_HOOK_INSTALL_NAME)),
-            super::CLAUDE_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Codex,
-            paths
-                .directory("codex")
-                .map(|dir| dir.join(super::CODEX_HOOK_INSTALL_NAME)),
-            super::CODEX_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Copilot,
-            paths
-                .directory("copilot")
-                .map(|dir| dir.join("hooks").join(super::COPILOT_HOOK_INSTALL_NAME)),
-            super::COPILOT_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Devin,
-            paths
-                .directory("devin")
-                .map(|dir| dir.join(super::DEVIN_HOOK_INSTALL_NAME)),
-            super::DEVIN_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Droid,
-            paths
-                .directory("droid")
-                .map(|dir| dir.join("hooks").join(super::DROID_HOOK_INSTALL_NAME)),
-            super::DROID_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Kimi,
-            paths
-                .directory("kimi")
-                .map(|dir| dir.join("hooks").join(super::KIMI_HOOK_INSTALL_NAME)),
-            super::KIMI_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Opencode,
-            paths.directory("opencode").map(|dir| {
-                dir.join("plugins")
-                    .join(super::OPENCODE_PLUGIN_INSTALL_NAME)
-            }),
-            super::OPENCODE_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Kilo,
-            paths
-                .directory("kilo")
-                .map(|dir| dir.join("plugin").join(super::KILO_PLUGIN_INSTALL_NAME)),
-            super::KILO_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Hermes,
-            paths
-                .directory("hermes_plugin")
-                .map(|dir| dir.join(super::HERMES_PLUGIN_INIT_INSTALL_NAME)),
-            super::HERMES_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Qodercli,
-            paths
-                .directory("qodercli")
-                .map(|dir| dir.join("hooks").join(super::QODERCLI_HOOK_INSTALL_NAME)),
-            super::QODERCLI_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Qwen,
-            paths
-                .directory("qwen")
-                .map(|dir| dir.join("hooks").join(super::QWEN_HOOK_INSTALL_NAME)),
-            super::QWEN_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Cursor,
-            paths
-                .directory("cursor")
-                .map(|dir| dir.join(super::CURSOR_HOOK_INSTALL_NAME)),
-            super::CURSOR_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Mastracode,
-            paths
-                .directory("mastracode")
-                .map(|dir| dir.join("hooks").join(super::MASTRACODE_HOOK_INSTALL_NAME)),
-            super::MASTRACODE_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::AntigravityCli,
-            paths.directory("antigravity_cli").map(|dir| {
-                dir.join("hooks")
-                    .join(super::ANTIGRAVITY_CLI_HOOK_INSTALL_NAME)
-            }),
-            super::ANTIGRAVITY_CLI_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Grok,
-            paths
-                .directory("grok")
-                .map(|dir| dir.join("hooks").join(super::GROK_HOOK_INSTALL_NAME)),
-            super::GROK_INTEGRATION_VERSION,
-        ),
-        (
-            crate::api::schema::IntegrationTarget::Letta,
-            paths
-                .directory("letta")
-                .map(|dir| dir.join("hooks").join(super::LETTA_HOOK_INSTALL_NAME)),
-            super::LETTA_INTEGRATION_VERSION,
-        ),
-    ]
+) -> impl Iterator<Item = (crate::agents::IntegrationTarget, io::Result<PathBuf>, u32)> + '_ {
+    INTEGRATION_SPECS.iter().copied().map(move |spec| {
+        let path = paths.directory(spec.directory).map(|mut path| {
+            for part in spec.path {
+                path.push(part);
+            }
+            path
+        });
+        (spec.target, path, spec.version)
+    })
 }
 
 pub(crate) fn integration_update_instructions(
-    targets: &[crate::api::schema::IntegrationTarget],
+    targets: &[crate::agents::IntegrationTarget],
 ) -> String {
     let commands: Vec<String> = targets
         .iter()
@@ -342,23 +372,32 @@ fn kimi_hooks_registered(config_path: &Path, hook_path: &Path) -> bool {
     let Some(entries) = config.get("hooks").and_then(toml::Value::as_array) else {
         return false;
     };
-    super::KIMI_HOOK_EVENTS
+    integration_hook_events(crate::agents::IntegrationTarget::Kimi)
         .iter()
-        .all(|(event, matcher, action)| {
-            let command = hook_command(hook_path, Some(*action));
-            entries.iter().any(|entry| {
-                entry.get("event").and_then(toml::Value::as_str) == Some(*event)
-                    && entry.get("command").and_then(toml::Value::as_str) == Some(command.as_str())
-                    && entry.get("matcher").and_then(toml::Value::as_str) == *matcher
+        .all(|hook| {
+            hook.action.is_some_and(|action| {
+                let command = hook_command(hook_path, Some(action.as_str()));
+                entries.iter().any(|entry| {
+                    entry.get("event").and_then(toml::Value::as_str) == Some(hook.event)
+                        && entry.get("command").and_then(toml::Value::as_str)
+                            == Some(command.as_str())
+                        && entry.get("matcher").and_then(toml::Value::as_str) == hook.matcher
+                })
             })
         })
 }
 
-/// `(event, action)` pairs to the `(event, command)` pairs install registers.
-fn hook_event_commands<'a>(hook_path: &Path, events: &[(&'a str, &str)]) -> Vec<(&'a str, String)> {
+/// Convert an agent's hook events into the commands its integration registers.
+fn hook_event_commands(
+    hook_path: &Path,
+    events: &[crate::agents::IntegrationHookEvent],
+) -> Vec<(&'static str, String)> {
     events
         .iter()
-        .map(|&(event, action)| (event, hook_command(hook_path, Some(action))))
+        .filter_map(|hook| {
+            hook.action
+                .map(|action| (hook.event, hook_command(hook_path, Some(action.as_str()))))
+        })
         .collect()
 }
 
@@ -370,10 +409,10 @@ fn hook_event_commands<'a>(hook_path: &Path, events: &[(&'a str, &str)]) -> Vec<
 /// Pi, OMP and Kilo load every file in their plugin directory, so the file is
 /// its own registration. Grok and opencode are checked by their own helpers.
 fn hook_registration_is_current(
-    target: crate::api::schema::IntegrationTarget,
+    target: crate::agents::IntegrationTarget,
     hook_path: &Path,
 ) -> bool {
-    use crate::api::schema::IntegrationTarget as Target;
+    use crate::agents::IntegrationTarget as Target;
 
     let json_in = |levels: usize, file: &str, root: HooksRoot, expected: &[(&str, String)]| {
         ancestor(hook_path, levels)
@@ -385,14 +424,20 @@ fn hook_registration_is_current(
             2,
             "settings.json",
             HooksRoot::HooksKey,
-            &[("SessionStart", hook_command(hook_path, Some("session")))],
+            &hook_event_commands(
+                hook_path,
+                integration_hook_events(crate::agents::IntegrationTarget::Claude),
+            ),
         ),
         Target::Codex => {
             json_in(
                 1,
                 "hooks.json",
                 HooksRoot::HooksKey,
-                &[("SessionStart", hook_command(hook_path, Some("session")))],
+                &hook_event_commands(
+                    hook_path,
+                    integration_hook_events(crate::agents::IntegrationTarget::Codex),
+                ),
             ) && ancestor(hook_path, 1)
                 .is_some_and(|dir| codex_hooks_feature_enabled(&dir.join("config.toml")))
         }
@@ -400,52 +445,82 @@ fn hook_registration_is_current(
             2,
             "settings.json",
             HooksRoot::HooksKey,
-            &super::COPILOT_HOOK_EVENTS
+            &integration_hook_events(crate::agents::IntegrationTarget::Copilot)
                 .iter()
-                .map(|&event| (event, hook_command(hook_path, None)))
+                .map(|hook| {
+                    (
+                        hook.event,
+                        hook_command(
+                            hook_path,
+                            hook.action
+                                .map(crate::agents::IntegrationHookAction::as_str),
+                        ),
+                    )
+                })
                 .collect::<Vec<_>>(),
         ),
         Target::Devin => json_in(
             1,
             "config.json",
             HooksRoot::HooksKey,
-            &hook_event_commands(hook_path, &super::DEVIN_HOOK_EVENTS),
+            &hook_event_commands(
+                hook_path,
+                integration_hook_events(crate::agents::IntegrationTarget::Devin),
+            ),
         ),
         Target::Droid => json_in(
             2,
             "settings.json",
             HooksRoot::HooksKey,
-            &hook_event_commands(hook_path, &super::DROID_HOOK_EVENTS),
+            &hook_event_commands(
+                hook_path,
+                integration_hook_events(crate::agents::IntegrationTarget::Droid),
+            ),
         ),
         Target::Qodercli => json_in(
             2,
             "settings.json",
             HooksRoot::HooksKey,
-            &hook_event_commands(hook_path, &super::QODERCLI_HOOK_EVENTS),
+            &hook_event_commands(
+                hook_path,
+                integration_hook_events(crate::agents::IntegrationTarget::Qodercli),
+            ),
         ),
         Target::Qwen => json_in(
             2,
             "settings.json",
             HooksRoot::HooksKey,
-            &hook_event_commands(hook_path, &super::QWEN_HOOK_EVENTS),
+            &hook_event_commands(
+                hook_path,
+                integration_hook_events(crate::agents::IntegrationTarget::Qwen),
+            ),
         ),
         Target::Letta => json_in(
             2,
             "settings.json",
             HooksRoot::HooksKey,
-            &[("SessionStart", hook_command(hook_path, Some("session")))],
+            &hook_event_commands(
+                hook_path,
+                integration_hook_events(crate::agents::IntegrationTarget::Letta),
+            ),
         ),
         Target::Cursor => json_in(
             1,
             "hooks.json",
             HooksRoot::HooksKey,
-            &[("sessionStart", hook_command(hook_path, Some("session")))],
+            &hook_event_commands(
+                hook_path,
+                integration_hook_events(crate::agents::IntegrationTarget::Cursor),
+            ),
         ),
         Target::Mastracode => json_in(
             2,
             "hooks.json",
             HooksRoot::Document,
-            &hook_event_commands(hook_path, &super::MASTRACODE_HOOK_EVENTS),
+            &hook_event_commands(
+                hook_path,
+                integration_hook_events(crate::agents::IntegrationTarget::Mastracode),
+            ),
         ),
         Target::AntigravityCli => ancestor(hook_path, 2).is_some_and(|dir| {
             read_json(&dir.join("hooks.json")).is_some_and(|document| {
@@ -490,7 +565,7 @@ fn integration_state_for_path(
 }
 
 pub(crate) fn integration_status_at(
-    target: crate::api::schema::IntegrationTarget,
+    target: crate::agents::IntegrationTarget,
     path: PathBuf,
     expected_version: u32,
 ) -> super::IntegrationStatus {
@@ -500,13 +575,13 @@ pub(crate) fn integration_status_at(
     // registers it, so a current hook script with a missing or broken config
     // is a nonfunctional install: report it as outdated so `shepr integration
     // status` flags it and a reinstall rewrites both files.
-    if target == crate::api::schema::IntegrationTarget::Grok
+    if target == crate::agents::IntegrationTarget::Grok
         && state == super::IntegrationStatusKind::Current
         && !grok_hook_config_is_valid(&path)
     {
         state = super::IntegrationStatusKind::Outdated;
     }
-    if target == crate::api::schema::IntegrationTarget::Opencode
+    if target == crate::agents::IntegrationTarget::Opencode
         && state == super::IntegrationStatusKind::Current
         && !opencode_tui_integration_is_valid(&path, expected_version)
     {
@@ -548,8 +623,16 @@ pub(crate) fn parse_integration_version(content: &str) -> Option<u32> {
 #[cfg(test)]
 mod registration_tests {
     use super::*;
-    use crate::api::schema::IntegrationTarget;
+    use crate::agents::IntegrationTarget;
     use crate::integration::IntegrationStatusKind;
+
+    #[test]
+    fn antigravity_integration_uses_the_canonical_agent_label() {
+        assert_eq!(
+            integration_target_label(IntegrationTarget::AntigravityCli),
+            crate::agents::Agent::Antigravity.label()
+        );
+    }
 
     fn base(name: &str) -> PathBuf {
         crate::test_support::ScratchDir::new(name).keep_until_exit()
@@ -668,10 +751,13 @@ mod registration_tests {
         let hook = dir.join("hooks").join("shepr-agent-state.sh");
         write_current_hook(&hook);
         let mut document = serde_json::Map::new();
-        for (event, action) in super::super::MASTRACODE_HOOK_EVENTS {
+        for event_spec in integration_hook_events(IntegrationTarget::Mastracode) {
+            let Some(action) = event_spec.action else {
+                continue;
+            };
             document.insert(
-                event.to_string(),
-                serde_json::json!([{ "type": "command", "command": hook_command(&hook, Some(action)) }]),
+                event_spec.event.to_string(),
+                serde_json::json!([{ "type": "command", "command": hook_command(&hook, Some(action.as_str())) }]),
             );
         }
         fs::write(
@@ -769,8 +855,8 @@ mod registration_tests {
     #[test]
     fn every_target_has_exactly_one_status_spec() {
         let paths = super::super::env::AgentIntegrationPaths::resolve();
-        let specs = integration_specs(&paths);
-        for target in IntegrationTarget::ALL {
+        let specs = integration_specs(&paths).collect::<Vec<_>>();
+        for target in IntegrationTarget::all() {
             assert_eq!(
                 specs.iter().filter(|(spec, _, _)| *spec == target).count(),
                 1,

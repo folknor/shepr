@@ -12,6 +12,7 @@ const NESTED_SHEPR_MESSAGES: [&str; 6] = [
 ];
 
 mod agent_resume;
+mod agents;
 mod api;
 mod app;
 mod build_info;

@@ -75,7 +75,7 @@ fn multi_machine_sidebar_draws_the_workspace_drop_marker() {
     assert_eq!(cell.symbol, "─");
     assert_eq!(
         cell.fg,
-        crate::protocol::color_to_u32(state.config.palette.accent)
+        crate::protocol::WireColor::from_ratatui(state.config.palette.accent)
     );
 }
 

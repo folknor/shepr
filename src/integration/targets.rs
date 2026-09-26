@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
+use crate::agents::IntegrationTarget as Target;
+
 use super::claude_settings::{
     install as install_claude_settings, uninstall as uninstall_claude_settings,
 };
@@ -35,21 +37,18 @@ use super::types::{
     QodercliInstallPaths, QodercliUninstallResult, QwenInstallPaths, QwenUninstallResult,
 };
 use super::{
-    ANTIGRAVITY_CLI_HOOK_ASSET, ANTIGRAVITY_CLI_HOOK_BLOCK_NAME, ANTIGRAVITY_CLI_HOOK_EVENTS,
-    ANTIGRAVITY_CLI_HOOK_INSTALL_NAME, ANTIGRAVITY_CLI_HOOK_TIMEOUT_SEC, CLAUDE_HOOK_ASSET,
-    CLAUDE_HOOK_INSTALL_NAME, CODEX_HOOK_ASSET, CODEX_HOOK_INSTALL_NAME, COPILOT_HOOK_ASSET,
-    COPILOT_HOOK_EVENTS, COPILOT_HOOK_INSTALL_NAME, CURSOR_HOOK_ASSET, CURSOR_HOOK_INSTALL_NAME,
-    DEVIN_HOOK_ASSET, DEVIN_HOOK_EVENTS, DEVIN_HOOK_INSTALL_NAME, DROID_HOOK_ASSET,
-    DROID_HOOK_EVENTS, DROID_HOOK_INSTALL_NAME, GROK_HOOK_ASSET, GROK_HOOK_CONFIG_INSTALL_NAME,
-    GROK_HOOK_INSTALL_NAME, HERMES_PLUGIN_INIT_ASSET, HERMES_PLUGIN_INIT_INSTALL_NAME,
-    HERMES_PLUGIN_MANIFEST_ASSET, HERMES_PLUGIN_MANIFEST_INSTALL_NAME, KILO_PLUGIN_ASSET,
-    KILO_PLUGIN_INSTALL_NAME, KIMI_HOOK_ASSET, KIMI_HOOK_INSTALL_NAME, LETTA_HOOK_ASSET,
-    LETTA_HOOK_INSTALL_NAME, LETTA_HOOK_TIMEOUT_MS, MASTRACODE_HOOK_ASSET, MASTRACODE_HOOK_EVENTS,
-    MASTRACODE_HOOK_INSTALL_NAME, MASTRACODE_HOOK_TIMEOUT_MS, OMP_EXTENSION_ASSET,
-    OMP_EXTENSION_INSTALL_NAME, OPENCODE_PLUGIN_ASSET, OPENCODE_PLUGIN_INSTALL_NAME,
-    OPENCODE_TUI_PLUGIN_ASSET, OPENCODE_TUI_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_SPEC,
-    PI_EXTENSION_ASSET, PI_EXTENSION_INSTALL_NAME, QODERCLI_HOOK_ASSET, QODERCLI_HOOK_EVENTS,
-    QODERCLI_HOOK_INSTALL_NAME, QWEN_HOOK_ASSET, QWEN_HOOK_EVENTS, QWEN_HOOK_INSTALL_NAME,
+    ANTIGRAVITY_CLI_HOOK_BLOCK_NAME, ANTIGRAVITY_CLI_HOOK_EVENTS,
+    ANTIGRAVITY_CLI_HOOK_INSTALL_NAME, ANTIGRAVITY_CLI_HOOK_TIMEOUT_SEC, CLAUDE_HOOK_INSTALL_NAME,
+    CODEX_HOOK_INSTALL_NAME, COPILOT_HOOK_EVENTS, COPILOT_HOOK_INSTALL_NAME,
+    CURSOR_HOOK_INSTALL_NAME, DEVIN_HOOK_EVENTS, DEVIN_HOOK_INSTALL_NAME, DROID_HOOK_EVENTS,
+    DROID_HOOK_INSTALL_NAME, GROK_HOOK_CONFIG_INSTALL_NAME, GROK_HOOK_INSTALL_NAME,
+    HERMES_PLUGIN_INIT_INSTALL_NAME, HERMES_PLUGIN_MANIFEST_ASSET,
+    HERMES_PLUGIN_MANIFEST_INSTALL_NAME, KILO_PLUGIN_INSTALL_NAME, KIMI_HOOK_INSTALL_NAME,
+    LETTA_HOOK_INSTALL_NAME, LETTA_HOOK_TIMEOUT_MS, MASTRACODE_HOOK_EVENTS,
+    MASTRACODE_HOOK_INSTALL_NAME, MASTRACODE_HOOK_TIMEOUT_MS, OMP_EXTENSION_INSTALL_NAME,
+    OPENCODE_PLUGIN_INSTALL_NAME, OPENCODE_TUI_PLUGIN_ASSET, OPENCODE_TUI_PLUGIN_INSTALL_NAME,
+    OPENCODE_TUI_PLUGIN_SPEC, PI_EXTENSION_INSTALL_NAME, QODERCLI_HOOK_EVENTS,
+    QODERCLI_HOOK_INSTALL_NAME, QWEN_HOOK_EVENTS, QWEN_HOOK_INSTALL_NAME,
 };
 
 // Install order for targets that register the hook in an agent config: read,
@@ -58,10 +57,15 @@ use super::{
 // anything is written, instead of leaving a hook script that `integration
 // status` would see while the agent never runs it.
 
-/// Write an executable hook script via temp-file-and-rename (see
-/// `write_managed_asset` for why it must not be rewritten in place).
-fn write_hook_script(path: &Path, asset: &str) -> io::Result<()> {
-    write_managed_asset(path, asset.as_bytes(), true)
+/// Write one asset described by the integration spec via temp-file-and-rename.
+fn write_target_asset(target: Target, path: &Path, executable: bool) -> io::Result<()> {
+    let asset = super::registry::integration_asset(target)
+        .ok_or_else(|| io::Error::other(format!("missing asset for integration {target:?}")))?;
+    write_managed_asset(path, asset.as_bytes(), executable)
+}
+
+fn write_hook_script(target: Target, path: &Path) -> io::Result<()> {
+    write_target_asset(target, path, true)
 }
 
 fn read_json_config(path: &Path, default: Value) -> io::Result<Value> {
@@ -90,7 +94,7 @@ pub(crate) fn install_pi(paths: &AgentIntegrationPaths) -> io::Result<PathBuf> {
     ensure_extension_dir(&dir, "pi")?;
 
     let path = dir.join(PI_EXTENSION_INSTALL_NAME);
-    write_managed_asset(&path, PI_EXTENSION_ASSET.as_bytes(), false)?;
+    write_target_asset(Target::Pi, &path, false)?;
     Ok(path)
 }
 
@@ -106,7 +110,7 @@ pub(crate) fn install_omp(paths: &AgentIntegrationPaths) -> io::Result<OmpInstal
     ensure_extension_dir(&dir, "omp")?;
 
     let extension_path = dir.join(OMP_EXTENSION_INSTALL_NAME);
-    write_managed_asset(&extension_path, OMP_EXTENSION_ASSET.as_bytes(), false)?;
+    write_target_asset(Target::Omp, &extension_path, false)?;
     Ok(OmpInstallPaths { extension_path })
 }
 
@@ -134,7 +138,7 @@ pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<Claude
     let updated_settings = install_claude_settings(&existing_settings, &settings_path, &hook_path)?;
 
     fs::create_dir_all(&hooks_dir)?;
-    write_hook_script(&hook_path, CLAUDE_HOOK_ASSET)?;
+    write_hook_script(Target::Claude, &hook_path)?;
 
     if updated_settings != existing_settings {
         write_config(&settings_path, updated_settings)?;
@@ -185,7 +189,7 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<CodexIn
     };
     let new_config = build_codex_config_with_hooks(&existing_config)?;
 
-    write_hook_script(&hook_path, CODEX_HOOK_ASSET)?;
+    write_hook_script(Target::Codex, &hook_path)?;
     write_config(&hooks_path, hooks_contents)?;
     if new_config != existing_config {
         write_config(&config_path, new_config)?;
@@ -222,7 +226,7 @@ pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiInst
     // be edited safely leaves nothing installed.
     let new_config = build_kimi_config_with_hooks(&existing_config, &hook_path)?;
 
-    write_hook_script(&hook_path, KIMI_HOOK_ASSET)?;
+    write_hook_script(Target::Kimi, &hook_path)?;
 
     if new_config != existing_config {
         write_config(&config_path, new_config)?;
@@ -256,17 +260,28 @@ pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<Copil
         "copilot settings",
         "copilot settings hooks",
     )?;
-    let command = hook_command(&hook_path, None);
-    for event in COPILOT_HOOK_EVENTS {
-        remove_direct_hook_commands(hooks, event, &hook_path, None)?;
+    for hook in COPILOT_HOOK_EVENTS {
+        let action = hook
+            .action
+            .map(crate::agents::IntegrationHookAction::as_str);
+        remove_direct_hook_commands(hooks, hook.event, &hook_path, action)?;
     }
-    for event in COPILOT_HOOK_EVENTS {
-        ensure_direct_command_hook(hooks, event, command.clone(), 10, None)?;
+    for hook in COPILOT_HOOK_EVENTS {
+        let action = hook
+            .action
+            .map(crate::agents::IntegrationHookAction::as_str);
+        ensure_direct_command_hook(
+            hooks,
+            hook.event,
+            hook_command(&hook_path, action),
+            10,
+            action,
+        )?;
     }
     let settings_contents = serde_json::to_string_pretty(&settings)?;
 
     fs::create_dir_all(&hooks_dir)?;
-    write_hook_script(&hook_path, COPILOT_HOOK_ASSET)?;
+    write_hook_script(Target::Copilot, &hook_path)?;
     write_config(&settings_path, settings_contents)?;
 
     Ok(CopilotInstallPaths {
@@ -296,21 +311,27 @@ pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<DevinIn
         "devin settings",
         "devin settings hooks",
     )?;
-    for (event, action) in DEVIN_HOOK_EVENTS {
-        remove_hook_commands(hooks, event, &hook_path, Some(action))?;
+    for hook in DEVIN_HOOK_EVENTS {
+        let action = hook
+            .action
+            .map(crate::agents::IntegrationHookAction::as_str);
+        remove_hook_commands(hooks, hook.event, &hook_path, action)?;
     }
-    for (event, action) in DEVIN_HOOK_EVENTS {
+    for hook in DEVIN_HOOK_EVENTS {
+        let action = hook
+            .action
+            .map(crate::agents::IntegrationHookAction::as_str);
         ensure_command_hook(
             hooks,
-            event,
-            &hook_command(&hook_path, Some(action)),
+            hook.event,
+            &hook_command(&hook_path, action),
             10,
             None,
         )?;
     }
     let settings_contents = serde_json::to_string_pretty(&settings)?;
 
-    write_hook_script(&hook_path, DEVIN_HOOK_ASSET)?;
+    write_hook_script(Target::Devin, &hook_path)?;
     write_config(&settings_path, settings_contents)?;
 
     Ok(DevinInstallPaths {
@@ -341,14 +362,20 @@ pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<DroidIn
         "droid settings",
         "droid settings hooks",
     )?;
-    for (event, action) in DROID_HOOK_EVENTS {
-        remove_hook_commands(hooks, event, &hook_path, Some(action))?;
+    for hook in DROID_HOOK_EVENTS {
+        let action = hook
+            .action
+            .map(crate::agents::IntegrationHookAction::as_str);
+        remove_hook_commands(hooks, hook.event, &hook_path, action)?;
     }
-    for (event, action) in DROID_HOOK_EVENTS {
+    for hook in DROID_HOOK_EVENTS {
+        let action = hook
+            .action
+            .map(crate::agents::IntegrationHookAction::as_str);
         ensure_command_hook(
             hooks,
-            event,
-            &hook_command(&hook_path, Some(action)),
+            hook.event,
+            &hook_command(&hook_path, action),
             10,
             None,
         )?;
@@ -356,7 +383,7 @@ pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<DroidIn
     let settings_contents = serde_json::to_string_pretty(&settings)?;
 
     fs::create_dir_all(&hooks_dir)?;
-    write_hook_script(&hook_path, DROID_HOOK_ASSET)?;
+    write_hook_script(Target::Droid, &hook_path)?;
     write_config(&settings_path, settings_contents)?;
 
     Ok(DroidInstallPaths {
@@ -380,7 +407,7 @@ pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<Open
     fs::create_dir_all(&plugins_dir)?;
 
     let plugin_path = plugins_dir.join(OPENCODE_PLUGIN_INSTALL_NAME);
-    write_managed_asset(&plugin_path, OPENCODE_PLUGIN_ASSET.as_bytes(), false)?;
+    write_target_asset(Target::Opencode, &plugin_path, false)?;
     let tui_plugin_path = dir.join(OPENCODE_TUI_PLUGIN_INSTALL_NAME);
     write_managed_asset(
         &tui_plugin_path,
@@ -422,7 +449,7 @@ pub(crate) fn install_kilo(paths: &AgentIntegrationPaths) -> io::Result<KiloInst
     fs::create_dir_all(&plugins_dir)?;
 
     let plugin_path = plugins_dir.join(KILO_PLUGIN_INSTALL_NAME);
-    write_managed_asset(&plugin_path, KILO_PLUGIN_ASSET.as_bytes(), false)?;
+    write_target_asset(Target::Kilo, &plugin_path, false)?;
 
     Ok(KiloInstallPaths { plugin_path })
 }
@@ -452,9 +479,9 @@ pub(crate) fn install_hermes(paths: &AgentIntegrationPaths) -> io::Result<Hermes
         HERMES_PLUGIN_MANIFEST_ASSET.as_bytes(),
         false,
     )?;
-    write_managed_asset(
+    write_target_asset(
+        Target::Hermes,
         &plugin_dir.join(HERMES_PLUGIN_INIT_INSTALL_NAME),
-        HERMES_PLUGIN_INIT_ASSET.as_bytes(),
         false,
     )?;
 
@@ -609,8 +636,14 @@ pub(crate) fn uninstall_copilot(
             "copilot settings",
             "copilot settings hooks",
         )? {
-            for event in COPILOT_HOOK_EVENTS {
-                updated_settings |= remove_direct_hook_commands(hooks, event, &hook_path, None)?;
+            for hook in COPILOT_HOOK_EVENTS {
+                updated_settings |= remove_direct_hook_commands(
+                    hooks,
+                    hook.event,
+                    &hook_path,
+                    hook.action
+                        .map(crate::agents::IntegrationHookAction::as_str),
+                )?;
             }
         }
 
@@ -651,8 +684,14 @@ pub(crate) fn uninstall_devin(paths: &AgentIntegrationPaths) -> io::Result<Devin
             "devin settings",
             "devin settings hooks",
         )? {
-            for (event, action) in DEVIN_HOOK_EVENTS {
-                updated_settings |= remove_hook_commands(hooks, event, &hook_path, Some(action))?;
+            for hook in DEVIN_HOOK_EVENTS {
+                updated_settings |= remove_hook_commands(
+                    hooks,
+                    hook.event,
+                    &hook_path,
+                    hook.action
+                        .map(crate::agents::IntegrationHookAction::as_str),
+                )?;
             }
         }
 
@@ -692,8 +731,14 @@ pub(crate) fn uninstall_droid(paths: &AgentIntegrationPaths) -> io::Result<Droid
             "droid settings",
             "droid settings hooks",
         )? {
-            for (event, action) in DROID_HOOK_EVENTS {
-                updated_settings |= remove_hook_commands(hooks, event, &hook_path, Some(action))?;
+            for hook in DROID_HOOK_EVENTS {
+                updated_settings |= remove_hook_commands(
+                    hooks,
+                    hook.event,
+                    &hook_path,
+                    hook.action
+                        .map(crate::agents::IntegrationHookAction::as_str),
+                )?;
             }
         }
 
@@ -823,14 +868,20 @@ pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<Qode
         "qodercli settings",
         "qodercli settings hooks",
     )?;
-    for (event, action) in QODERCLI_HOOK_EVENTS {
-        remove_hook_commands(hooks, event, &hook_path, Some(action))?;
+    for hook in QODERCLI_HOOK_EVENTS {
+        let action = hook
+            .action
+            .map(crate::agents::IntegrationHookAction::as_str);
+        remove_hook_commands(hooks, hook.event, &hook_path, action)?;
     }
-    for (event, action) in QODERCLI_HOOK_EVENTS {
+    for hook in QODERCLI_HOOK_EVENTS {
+        let action = hook
+            .action
+            .map(crate::agents::IntegrationHookAction::as_str);
         ensure_command_hook(
             hooks,
-            event,
-            &hook_command(&hook_path, Some(action)),
+            hook.event,
+            &hook_command(&hook_path, action),
             10,
             Some("*"),
         )?;
@@ -838,7 +889,7 @@ pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<Qode
     let settings_contents = serde_json::to_string_pretty(&settings)?;
 
     fs::create_dir_all(&hooks_dir)?;
-    write_hook_script(&hook_path, QODERCLI_HOOK_ASSET)?;
+    write_hook_script(Target::Qodercli, &hook_path)?;
     write_config(&settings_path, settings_contents)?;
 
     Ok(QodercliInstallPaths {
@@ -869,12 +920,15 @@ pub(crate) fn install_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenInst
         "qwen settings",
         "qwen settings hooks",
     )?;
-    for (event, action) in QWEN_HOOK_EVENTS {
-        remove_hook_commands(hooks, event, &hook_path, Some(action))?;
+    for hook in QWEN_HOOK_EVENTS {
+        let action = hook
+            .action
+            .map(crate::agents::IntegrationHookAction::as_str);
+        remove_hook_commands(hooks, hook.event, &hook_path, action)?;
         ensure_command_hook(
             hooks,
-            event,
-            &hook_command(&hook_path, Some(action)),
+            hook.event,
+            &hook_command(&hook_path, action),
             10_000,
             Some("*"),
         )?;
@@ -882,7 +936,7 @@ pub(crate) fn install_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenInst
     let settings_contents = serde_json::to_string_pretty(&settings)?;
 
     fs::create_dir_all(&hooks_dir)?;
-    write_hook_script(&hook_path, QWEN_HOOK_ASSET)?;
+    write_hook_script(Target::Qwen, &hook_path)?;
     write_config(&settings_path, settings_contents)?;
 
     Ok(QwenInstallPaths {
@@ -965,7 +1019,7 @@ pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<LettaIn
         Err(err) if err.kind() == io::ErrorKind::NotFound => None,
         Err(err) => return Err(err),
     };
-    let result = write_hook_script(&hook_path, LETTA_HOOK_ASSET)
+    let result = write_hook_script(Target::Letta, &hook_path)
         .and_then(|()| write_config(&settings_path, &settings_contents));
     if let Err(err) = result {
         return Err(
@@ -1025,7 +1079,7 @@ pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<Cursor
     ensure_simple_command_hook(hooks, "sessionStart", &session_command)?;
     let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
-    write_hook_script(&hook_path, CURSOR_HOOK_ASSET)?;
+    write_hook_script(Target::Cursor, &hook_path)?;
     write_config(&hooks_path, hooks_contents)?;
 
     Ok(CursorInstallPaths {
@@ -1058,8 +1112,14 @@ pub(crate) fn uninstall_qodercli(
             "qodercli settings",
             "qodercli settings hooks",
         )? {
-            for (event, action) in QODERCLI_HOOK_EVENTS {
-                updated_settings |= remove_hook_commands(hooks, event, &hook_path, Some(action))?;
+            for hook in QODERCLI_HOOK_EVENTS {
+                updated_settings |= remove_hook_commands(
+                    hooks,
+                    hook.event,
+                    &hook_path,
+                    hook.action
+                        .map(crate::agents::IntegrationHookAction::as_str),
+                )?;
             }
         }
 
@@ -1100,8 +1160,14 @@ pub(crate) fn uninstall_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenUn
             "qwen settings",
             "qwen settings hooks",
         )? {
-            for (event, action) in QWEN_HOOK_EVENTS {
-                updated_settings |= remove_hook_commands(hooks, event, &hook_path, Some(action))?;
+            for hook in QWEN_HOOK_EVENTS {
+                updated_settings |= remove_hook_commands(
+                    hooks,
+                    hook.event,
+                    &hook_path,
+                    hook.action
+                        .map(crate::agents::IntegrationHookAction::as_str),
+                )?;
             }
         }
 
@@ -1221,11 +1287,17 @@ pub(crate) fn install_mastracode(
         ))
     })?;
 
-    for (event, action) in MASTRACODE_HOOK_EVENTS {
-        remove_flat_command_hook(hooks, event, &hook_command(&hook_path, Some(action)))?;
+    for hook in MASTRACODE_HOOK_EVENTS {
+        let Some(action) = hook
+            .action
+            .map(crate::agents::IntegrationHookAction::as_str)
+        else {
+            continue;
+        };
+        remove_flat_command_hook(hooks, hook.event, &hook_command(&hook_path, Some(action)))?;
         ensure_flat_command_hook(
             hooks,
-            event,
+            hook.event,
             &mastracode_hook_command(&hook_path, action),
             MASTRACODE_HOOK_TIMEOUT_MS,
         )?;
@@ -1233,7 +1305,7 @@ pub(crate) fn install_mastracode(
     let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
     fs::create_dir_all(&hook_dir)?;
-    write_hook_script(&hook_path, MASTRACODE_HOOK_ASSET)?;
+    write_hook_script(Target::Mastracode, &hook_path)?;
     write_config(&hooks_path, hooks_contents)?;
 
     Ok(MastracodeInstallPaths {
@@ -1265,9 +1337,18 @@ pub(crate) fn uninstall_mastracode(
             ))
         })?;
 
-        for (event, action) in MASTRACODE_HOOK_EVENTS {
-            updated_hooks |=
-                remove_flat_command_hook(hooks, event, &hook_command(&hook_path, Some(action)))?;
+        for hook in MASTRACODE_HOOK_EVENTS {
+            let Some(action) = hook
+                .action
+                .map(crate::agents::IntegrationHookAction::as_str)
+            else {
+                continue;
+            };
+            updated_hooks |= remove_flat_command_hook(
+                hooks,
+                hook.event,
+                &hook_command(&hook_path, Some(action)),
+            )?;
         }
 
         if updated_hooks {
@@ -1319,7 +1400,7 @@ pub(crate) fn install_antigravity_cli(
     let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
     fs::create_dir_all(&hooks_dir)?;
-    write_hook_script(&hook_path, ANTIGRAVITY_CLI_HOOK_ASSET)?;
+    write_hook_script(Target::AntigravityCli, &hook_path)?;
     write_config(&hooks_path, hooks_contents)?;
 
     Ok(AntigravityCliInstallPaths {
@@ -1338,13 +1419,19 @@ pub(crate) fn antigravity_cli_hook_command(hook_path: &Path, action: &str) -> St
 /// group is only valid for the tool events, which Shepr does not use.
 pub(crate) fn antigravity_cli_hook_block(hook_path: &Path) -> Value {
     let mut block = Map::new();
-    for (event, action) in ANTIGRAVITY_CLI_HOOK_EVENTS {
+    for hook in ANTIGRAVITY_CLI_HOOK_EVENTS {
+        let Some(action) = hook
+            .action
+            .map(crate::agents::IntegrationHookAction::as_str)
+        else {
+            continue;
+        };
         let handler = json!({
             "type": "command",
             "command": antigravity_cli_hook_command(hook_path, action),
             "timeout": ANTIGRAVITY_CLI_HOOK_TIMEOUT_SEC,
         });
-        block.insert(event.to_string(), json!([handler]));
+        block.insert(hook.event.to_string(), json!([handler]));
     }
     Value::Object(block)
 }
@@ -1432,7 +1519,7 @@ pub(crate) fn install_grok(paths: &AgentIntegrationPaths) -> io::Result<GrokInst
     fs::create_dir_all(&hooks_dir)?;
 
     let hook_path = hooks_dir.join(GROK_HOOK_INSTALL_NAME);
-    write_hook_script(&hook_path, GROK_HOOK_ASSET)?;
+    write_hook_script(Target::Grok, &hook_path)?;
 
     let config_path = hooks_dir.join(GROK_HOOK_CONFIG_INSTALL_NAME);
     write_managed_asset(

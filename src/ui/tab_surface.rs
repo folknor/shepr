@@ -1,6 +1,6 @@
 use ratatui::{Frame, layout::Rect};
 
-use super::panes::{compute_pane_infos_for_tab, render_panes, resize_tab_panes};
+use super::panes::{compute_pane_infos_for_tab, render_panes, resize_pane_infos};
 use crate::app::AppState;
 use crate::layout::{PaneInfo, SplitBorder};
 use crate::protocol::CursorState;
@@ -29,8 +29,6 @@ pub(crate) fn compute_tab_surface(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
     area: Rect,
-    resize_panes: bool,
-    cell_size: crate::terminal_cell_size::HostCellSize,
 ) -> TabSurfaceLayout {
     let target = app.active.and_then(|workspace_index| {
         let workspace = app.workspaces.get(workspace_index)?;
@@ -39,14 +37,7 @@ pub(crate) fn compute_tab_surface(
             tab_index: workspace.active_tab_index(),
         })
     });
-    compute_tab_surface_for(
-        app,
-        terminal_runtimes,
-        target,
-        area,
-        resize_panes,
-        cell_size,
-    )
+    compute_tab_surface_for(app, terminal_runtimes, target, area)
 }
 
 pub(crate) fn compute_tab_surface_for(
@@ -54,8 +45,6 @@ pub(crate) fn compute_tab_surface_for(
     terminal_runtimes: &TerminalRuntimeRegistry,
     target: Option<TabSurfaceTarget>,
     area: Rect,
-    resize_panes: bool,
-    cell_size: crate::terminal_cell_size::HostCellSize,
 ) -> TabSurfaceLayout {
     let tab = target.and_then(|target| {
         app.workspaces
@@ -79,8 +68,6 @@ pub(crate) fn compute_tab_surface_for(
             target.workspace_index,
             target.tab_index,
             area,
-            resize_panes,
-            cell_size,
         )
     });
 
@@ -99,14 +86,35 @@ pub(crate) fn resize_tab_surface(
     area: Rect,
     cell_size: crate::terminal_cell_size::HostCellSize,
 ) {
-    let Some(tab) = app
-        .workspaces
-        .get(workspace_index)
-        .and_then(|workspace| workspace.tabs.get(tab_index))
-    else {
+    let pane_infos =
+        compute_pane_infos_for_tab(app, terminal_runtimes, workspace_index, tab_index, area);
+    resize_pane_infos(
+        app,
+        terminal_runtimes,
+        workspace_index,
+        tab_index,
+        &pane_infos,
+        cell_size,
+    );
+}
+
+pub(crate) fn resize_tab_surface_layout(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    layout: &TabSurfaceLayout,
+    cell_size: crate::terminal_cell_size::HostCellSize,
+) {
+    let Some(target) = layout.target else {
         return;
     };
-    resize_tab_panes(app, terminal_runtimes, tab, area, cell_size);
+    resize_pane_infos(
+        app,
+        terminal_runtimes,
+        target.workspace_index,
+        target.tab_index,
+        &layout.pane_infos,
+        cell_size,
+    );
 }
 
 pub(crate) fn render_tab_surface(
@@ -238,13 +246,7 @@ mod tests {
 
         let full_area = Rect::new(0, 0, 106, 20);
         let area = full_area;
-        let surface = compute_tab_surface(
-            &app,
-            &runtimes,
-            area,
-            false,
-            crate::terminal_cell_size::HostCellSize::default(),
-        );
+        let surface = compute_tab_surface(&app, &runtimes, area);
         assert_eq!(surface.pane_infos.len(), 2);
         assert!(!surface.split_borders.is_empty());
 

@@ -125,7 +125,7 @@ fn focused_last_overflow_tab_shows_its_full_label() {
     let right = state.hits.tab_scroll_right;
     assert_eq!(
         frame.cells[(right.y * frame.width + right.x + 1) as usize].fg,
-        crate::protocol::color_to_u32(state.config.palette.overlay1),
+        crate::protocol::WireColor::from_ratatui(state.config.palette.overlay1),
         "right arrow stays enabled while the final tab is clipped"
     );
     state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
@@ -139,7 +139,7 @@ fn focused_last_overflow_tab_shows_its_full_label() {
     assert!(frame_rows(&frame)[0].contains("nvim test"));
     assert_eq!(
         frame.cells[(right.y * frame.width + right.x + 1) as usize].fg,
-        crate::protocol::color_to_u32(state.config.palette.overlay0),
+        crate::protocol::WireColor::from_ratatui(state.config.palette.overlay0),
         "right arrow dims at the useful scroll limit"
     );
 }

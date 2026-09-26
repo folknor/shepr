@@ -184,43 +184,45 @@ fn stable_scrollbar_gutter(
     (inner_rect, scrollbar_rect)
 }
 
-/// Resize every visible runtime in a tab to the geometry it would receive if the tab were selected.
-pub(super) fn resize_tab_panes(
+/// Apply a computed pane layout to every runtime it contains.
+pub(super) fn resize_pane_infos(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
-    tab: &crate::workspace::Tab,
-    area: Rect,
+    ws_idx: usize,
+    tab_idx: usize,
+    pane_infos: &[PaneInfo],
     cell_size: crate::terminal_cell_size::HostCellSize,
 ) {
-    for info in app
-        .pane_geometry_in(area)
-        .tab_panes(&tab.layout, tab.zoomed)
-    {
-        let pane_inner = pane_inner_rect(info.rect, info.borders);
+    let Some(tab) = app
+        .workspaces
+        .get(ws_idx)
+        .and_then(|workspace| workspace.tabs.get(tab_idx))
+    else {
+        return;
+    };
 
-        if let Some((terminal_id, rt)) = runtime_for_tab_pane(terminal_runtimes, tab, info.id) {
-            let inner_rect = terminal_inner_rect(rt, pane_inner, app.pane_scrollbars);
-            if !app.direct_attach_resize_locks.contains(terminal_id) {
-                rt.resize(
-                    inner_rect.height,
-                    inner_rect.width,
-                    cell_size.width_px,
-                    cell_size.height_px,
-                );
-            }
+    for info in pane_infos {
+        let Some((terminal_id, rt)) = runtime_for_tab_pane(terminal_runtimes, tab, info.id) else {
+            continue;
+        };
+        if !app.direct_attach_resize_locks.contains(terminal_id) {
+            rt.resize(
+                info.inner_rect.height,
+                info.inner_rect.width,
+                cell_size.width_px,
+                cell_size.height_px,
+            );
         }
     }
 }
 
-/// Compute pane layout info and optionally resize pane runtimes to match.
+/// Compute pane layout info without mutating pane runtimes.
 pub(super) fn compute_pane_infos_for_tab(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
     ws_idx: usize,
     tab_idx: usize,
     area: Rect,
-    resize_panes: bool,
-    cell_size: crate::terminal_cell_size::HostCellSize,
 ) -> Vec<PaneInfo> {
     let Some(tab) = app
         .workspaces
@@ -242,18 +244,6 @@ pub(super) fn compute_pane_infos_for_tab(
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
             (inner_rect, scrollbar_rect) =
                 stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
-            if resize_panes
-                && tab.terminal_id(info.id).is_some_and(|terminal_id| {
-                    !app.direct_attach_resize_locks.contains(terminal_id)
-                })
-            {
-                rt.resize(
-                    inner_rect.height,
-                    inner_rect.width,
-                    cell_size.width_px,
-                    cell_size.height_px,
-                );
-            }
         }
 
         info.inner_rect = inner_rect;
@@ -268,8 +258,6 @@ fn compute_pane_infos(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
     area: Rect,
-    resize_panes: bool,
-    cell_size: crate::terminal_cell_size::HostCellSize,
 ) -> Vec<PaneInfo> {
     let Some(workspace_index) = app.active else {
         return Vec::new();
@@ -281,15 +269,7 @@ fn compute_pane_infos(
     else {
         return Vec::new();
     };
-    compute_pane_infos_for_tab(
-        app,
-        terminal_runtimes,
-        workspace_index,
-        tab_index,
-        area,
-        resize_panes,
-        cell_size,
-    )
+    compute_pane_infos_for_tab(app, terminal_runtimes, workspace_index, tab_index, area)
 }
 
 pub(super) fn render_panes(
@@ -794,8 +774,6 @@ mod tests {
                 tab_index: 0,
             }),
             area,
-            false,
-            Default::default(),
         );
         let (buffer, cursor, _, _) =
             crate::server::render_stream::render_tab_surface_virtual(&app, &runtimes, layout, area);
@@ -1172,13 +1150,7 @@ mod tests {
         app.active = Some(0);
 
         let area = Rect::new(10, 3, 40, 8);
-        let infos = compute_pane_infos(
-            &app,
-            &terminal_runtimes,
-            area,
-            false,
-            crate::terminal_cell_size::HostCellSize::default(),
-        );
+        let infos = compute_pane_infos(&app, &terminal_runtimes, area);
         let info = &infos[0];
 
         assert_eq!(info.rect, area);
@@ -1187,7 +1159,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn alternate_screen_reclaims_scrollbar_gutter_and_restores_it_on_exit() {
+    async fn alternate_screen_reclaims_scrollbar_gutter_without_resizing_panes() {
         let mut app = AppState::test_new();
         let workspace = Workspace::test_new("test");
         let root_pane = workspace.tabs[0].root_pane;
@@ -1213,19 +1185,13 @@ mod tests {
 
         let area = Rect::new(10, 3, 40, 8);
         let assert_geometry = |expected_width, has_scrollbar| {
-            let infos = compute_pane_infos(
-                &app,
-                &terminal_runtimes,
-                area,
-                true,
-                crate::terminal_cell_size::HostCellSize::default(),
-            );
+            let infos = compute_pane_infos(&app, &terminal_runtimes, area);
             assert_eq!(
                 infos[0].inner_rect,
                 Rect::new(area.x, area.y, expected_width, area.height)
             );
             assert_eq!(infos[0].scrollbar_rect.is_some(), has_scrollbar);
-            assert_eq!(runtime.current_size(), (area.height, expected_width));
+            assert_eq!(runtime.current_size(), (8, 40));
         };
 
         assert_geometry(39, true);
@@ -1250,13 +1216,7 @@ mod tests {
         app.active = Some(0);
 
         let area = Rect::new(10, 3, 40, 8);
-        let infos = compute_pane_infos(
-            &app,
-            &terminal_runtimes,
-            area,
-            false,
-            crate::terminal_cell_size::HostCellSize::default(),
-        );
+        let infos = compute_pane_infos(&app, &terminal_runtimes, area);
         let info = &infos[0];
 
         assert_eq!(info.rect, area);
@@ -1279,13 +1239,7 @@ mod tests {
         app.active = Some(0);
 
         let area = Rect::new(10, 3, 40, 8);
-        let infos = compute_pane_infos(
-            &app,
-            &terminal_runtimes,
-            area,
-            false,
-            crate::terminal_cell_size::HostCellSize::default(),
-        );
+        let infos = compute_pane_infos(&app, &terminal_runtimes, area);
         let info = &infos[0];
 
         assert_eq!(info.id, focused_pane);
@@ -1308,13 +1262,7 @@ mod tests {
         app.active = Some(0);
 
         let area = Rect::new(10, 3, 4, 8);
-        let infos = compute_pane_infos(
-            &app,
-            &terminal_runtimes,
-            area,
-            false,
-            crate::terminal_cell_size::HostCellSize::default(),
-        );
+        let infos = compute_pane_infos(&app, &terminal_runtimes, area);
         let info = &infos[0];
 
         assert_eq!(info.rect, area);
@@ -1354,13 +1302,7 @@ mod tests {
                 app.workspaces = vec![workspace];
                 app.active = Some(0);
 
-                let infos = compute_pane_infos(
-                    &app,
-                    &terminal_runtimes,
-                    area,
-                    false,
-                    crate::terminal_cell_size::HostCellSize::default(),
-                );
+                let infos = compute_pane_infos(&app, &terminal_runtimes, area);
                 let geometry = app.pane_geometry();
                 assert_eq!(infos.len(), if zoomed { 1 } else { 2 });
                 for info in &infos {
@@ -1396,13 +1338,7 @@ mod tests {
         app.active = Some(0);
 
         let area = Rect::new(10, 3, 40, 8);
-        let infos = compute_pane_infos(
-            &app,
-            &terminal_runtimes,
-            area,
-            false,
-            crate::terminal_cell_size::HostCellSize::default(),
-        );
+        let infos = compute_pane_infos(&app, &terminal_runtimes, area);
         let info = &infos[0];
 
         assert_eq!(info.rect, area);
@@ -1410,13 +1346,7 @@ mod tests {
         assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
 
         app.pane_scrollbars = false;
-        let infos = compute_pane_infos(
-            &app,
-            &terminal_runtimes,
-            area,
-            false,
-            crate::terminal_cell_size::HostCellSize::default(),
-        );
+        let infos = compute_pane_infos(&app, &terminal_runtimes, area);
         let info = &infos[0];
 
         assert_eq!(info.rect, area);

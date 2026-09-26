@@ -1,5 +1,3 @@
-const CLAUDE_ACTIVITY_GLYPHS: &str = "·\u{2722}\u{2733}\u{2736}\u{273B}\u{273D}◐◓◑◒";
-
 pub(crate) fn stripped_terminal_title(title: &str) -> Option<String> {
     let title = title.trim();
     if title.is_empty() {
@@ -9,8 +7,8 @@ pub(crate) fn stripped_terminal_title(title: &str) -> Option<String> {
     let mut chars = title.char_indices();
     let (_, first) = chars.next()?;
     let after_first = &title[first.len_utf8()..];
-    let recognized =
-        matches!(first, '\u{2800}'..='\u{28ff}') || CLAUDE_ACTIVITY_GLYPHS.contains(first);
+    let recognized = matches!(first, '\u{2800}'..='\u{28ff}')
+        || crate::agents::Agent::all().any(|agent| agent.activity_glyphs().contains(first));
     let stripped = if recognized
         && (after_first.is_empty() || after_first.chars().next().is_some_and(char::is_whitespace))
     {

@@ -1,15 +1,13 @@
+use std::fmt;
+use std::hash::Hash;
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Visitor};
+
+use crate::agents::{Agent, AgentSource, ResumeArgs, SessionRefPolicy};
 
 const MAX_SESSION_ID_LEN: usize = 512;
 const MAX_SESSION_PATH_LEN: usize = 4096;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentSessionRef {
-    pub kind: AgentSessionRefKind,
-    pub value: String,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -18,287 +16,386 @@ pub enum AgentSessionRefKind {
     Path,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentResumePlan {
-    pub agent: String,
-    pub argv: Vec<String>,
-    pub dedupe_key: String,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AgentSessionStartSource {
+    Startup,
+    Resume,
+    Clear,
+    Compact,
+    Branch,
+    New,
+    Fork,
+    Select,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct SessionId(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct AbsoluteSessionPath(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LettaAgentId(String);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum AgentSessionRef {
+    Id(SessionId),
+    Path(AbsoluteSessionPath),
+    LettaDefaultAgent(LettaAgentId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AgentResumeKey {
+    source: AgentSource,
+    agent: Agent,
+    session_ref: AgentSessionRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentResumePlan {
+    pub source: AgentSource,
+    pub agent: Agent,
+    pub argv: Vec<String>,
+    pub dedupe_key: AgentResumeKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedAgentSession {
-    pub source: String,
-    pub agent: String,
+    pub source: AgentSource,
+    pub agent: Agent,
     pub session_ref: AgentSessionRef,
+}
+
+impl SessionId {
+    fn new(value: String) -> Option<Self> {
+        valid_session_id(&value).then_some(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AbsoluteSessionPath {
+    fn new(value: String) -> Option<Self> {
+        valid_session_path(&value).then_some(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl LettaAgentId {
+    fn new(mut value: String) -> Option<Self> {
+        if !valid_session_id(&value) || value.starts_with('-') {
+            return None;
+        }
+        value.insert_str(0, "default:");
+        Some(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn id(&self) -> &str {
+        self.0.strip_prefix("default:").unwrap_or_default()
+    }
 }
 
 impl AgentSessionRef {
     pub fn id(value: impl Into<String>) -> Option<Self> {
-        let value = value.into();
-        valid_session_id(&value).then_some(Self {
-            kind: AgentSessionRefKind::Id,
-            value,
-        })
+        Some(Self::Id(SessionId::new(value.into())?))
     }
 
     pub fn path(value: impl Into<String>) -> Option<Self> {
-        let value = value.into();
-        valid_session_path(&value).then_some(Self {
-            kind: AgentSessionRefKind::Path,
-            value,
+        Some(Self::Path(AbsoluteSessionPath::new(value.into())?))
+    }
+
+    fn for_agent_id(agent: Agent, value: String) -> Option<Self> {
+        if agent == Agent::Letta
+            && let Some(agent_id) = value.strip_prefix("default:")
+        {
+            return Some(Self::LettaDefaultAgent(LettaAgentId::new(
+                agent_id.to_owned(),
+            )?));
+        }
+        Self::id(value)
+    }
+
+    pub const fn kind(&self) -> AgentSessionRefKind {
+        match self {
+            Self::Id(_) | Self::LettaDefaultAgent(_) => AgentSessionRefKind::Id,
+            Self::Path(_) => AgentSessionRefKind::Path,
+        }
+    }
+
+    pub fn value(&self) -> String {
+        self.value_str().to_owned()
+    }
+
+    pub fn value_str(&self) -> &str {
+        match self {
+            Self::Id(session) => session.as_str(),
+            Self::Path(path) => path.as_str(),
+            Self::LettaDefaultAgent(agent_id) => agent_id.as_str(),
+        }
+    }
+
+    fn accepted_for(&self, agent: Agent) -> bool {
+        match (agent.descriptor().session_ref_policy, self) {
+            (Some(SessionRefPolicy::Id), Self::Id(session)) => {
+                agent != Agent::Letta || !session.as_str().starts_with("default:")
+            }
+            (Some(SessionRefPolicy::Id), Self::LettaDefaultAgent(_)) => agent == Agent::Letta,
+            (Some(SessionRefPolicy::IdOrPath), Self::Id(_) | Self::Path(_)) => true,
+            _ => false,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct IdVisitor;
+        impl Visitor<'_> for IdVisitor {
+            type Value = SessionId;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a valid agent session ID")
+            }
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                SessionId::new(value.to_owned())
+                    .ok_or_else(|| E::custom("invalid agent session ID"))
+            }
+        }
+        deserializer.deserialize_str(IdVisitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for AbsoluteSessionPath {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct PathVisitor;
+        impl Visitor<'_> for PathVisitor {
+            type Value = AbsoluteSessionPath;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an absolute agent session path")
+            }
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                AbsoluteSessionPath::new(value.to_owned())
+                    .ok_or_else(|| E::custom("invalid agent session path"))
+            }
+        }
+        deserializer.deserialize_str(PathVisitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for LettaAgentId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct AgentIdVisitor;
+        impl Visitor<'_> for AgentIdVisitor {
+            type Value = LettaAgentId;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a valid Letta agent ID")
+            }
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                LettaAgentId::new(value.to_owned())
+                    .ok_or_else(|| E::custom("invalid Letta agent ID"))
+            }
+        }
+        deserializer.deserialize_str(AgentIdVisitor)
+    }
+}
+
+impl Serialize for LettaAgentId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.id())
+    }
+}
+
+impl PersistedAgentSession {
+    pub fn new(source: AgentSource, agent: Agent, session_ref: AgentSessionRef) -> Option<Self> {
+        (source
+            .agent()
+            .is_none_or(|source_agent| source_agent == agent)
+            && session_ref.accepted_for(agent))
+        .then_some(Self {
+            source,
+            agent,
+            session_ref,
+        })
+    }
+
+    pub fn from_report(
+        source: &str,
+        agent_label: &str,
+        session_ref: AgentSessionRef,
+    ) -> Option<Self> {
+        let agent = Agent::parse_canonical_label(agent_label)?;
+        let source = AgentSource::parse(source);
+        Self::new(source, agent, session_ref)
+    }
+}
+
+impl AgentResumePlan {
+    fn with_argv(session: &PersistedAgentSession, argv: Vec<String>) -> Option<Self> {
+        (session.source == AgentSource::Official(session.agent)
+            && session.session_ref.accepted_for(session.agent))
+        .then(|| Self {
+            source: session.source.clone(),
+            agent: session.agent,
+            argv,
+            dedupe_key: AgentResumeKey {
+                source: session.source.clone(),
+                agent: session.agent,
+                session_ref: session.session_ref.clone(),
+            },
         })
     }
 }
 
 pub fn session_ref_from_report(
     source: &str,
-    agent: &str,
+    agent_label: &str,
     agent_session_id: Option<String>,
     agent_session_path: Option<String>,
 ) -> Option<AgentSessionRef> {
-    if !is_official_agent_source(source, agent) {
-        return None;
+    let source = AgentSource::from_pair(source, agent_label)?;
+    let agent = source.agent()?;
+    let descriptor = agent.descriptor();
+    match (
+        descriptor.session_ref_policy,
+        agent_session_path,
+        agent_session_id,
+    ) {
+        (Some(SessionRefPolicy::IdOrPath), Some(path), agent_session_id) => {
+            AgentSessionRef::path(path).or_else(|| {
+                agent_session_id.and_then(|id| AgentSessionRef::for_agent_id(agent, id))
+            })
+        }
+        (Some(SessionRefPolicy::IdOrPath), None, Some(id)) => {
+            AgentSessionRef::for_agent_id(agent, id)
+        }
+        (Some(SessionRefPolicy::Id), _, Some(id)) => AgentSessionRef::for_agent_id(agent, id),
+        _ => None,
     }
-
-    if agent == "pi" || agent == "omp" {
-        return agent_session_path
-            .and_then(AgentSessionRef::path)
-            .or_else(|| agent_session_id.and_then(AgentSessionRef::id));
-    }
-
-    agent_session_id.and_then(AgentSessionRef::id)
 }
 
 pub fn persisted_session_from_launch_args(
-    agent: crate::detect::Agent,
+    agent: Agent,
     args: &[String],
 ) -> Option<PersistedAgentSession> {
     let [command, session_id] = args else {
         return None;
     };
-    if agent != crate::detect::Agent::Codex || command != "resume" || session_id.starts_with('-') {
+    let ResumeArgs::Subcommand(subcommand) = agent.descriptor().resume_args? else {
+        return None;
+    };
+    if command != subcommand || session_id.starts_with('-') {
         return None;
     }
-
-    Some(PersistedAgentSession {
-        source: "shepr:codex".into(),
-        agent: "codex".into(),
-        session_ref: AgentSessionRef::id(session_id.clone())?,
-    })
-}
-
-pub fn normalize_session_start_source(value: Option<&str>) -> Option<String> {
-    match value.map(str::trim) {
-        Some(
-            source @ ("startup" | "resume" | "clear" | "compact" | "branch" | "new" | "fork"
-            | "select"),
-        ) => Some(source.to_string()),
-        _ => None,
-    }
-}
-
-pub fn is_reserved_native_state_source(source: &str, agent: &str) -> bool {
-    matches!(
-        (source, agent),
-        ("shepr:claude", "claude")
-            | ("shepr:codex", "codex")
-            | ("shepr:copilot", "copilot")
-            | ("shepr:devin", "devin")
-            | ("shepr:droid", "droid")
-            | ("shepr:qodercli", "qodercli")
-            | ("shepr:qwen", "qwen")
-            | ("shepr:cursor", "cursor")
-            | ("shepr:grok", "grok")
+    PersistedAgentSession::new(
+        AgentSource::official(agent)?,
+        agent,
+        AgentSessionRef::id(session_id.clone())?,
     )
 }
 
 pub fn session_ref_from_snapshot(
-    source: &str,
-    agent: &str,
-    kind: AgentSessionRefKind,
-    value: &str,
+    source: &AgentSource,
+    agent: Agent,
+    session_ref: &AgentSessionRef,
 ) -> Option<PersistedAgentSession> {
-    if !is_official_agent_source(source, agent) {
-        return None;
-    }
-    let session_ref = match (agent, kind) {
-        ("pi" | "omp", AgentSessionRefKind::Path) => AgentSessionRef::path(value)?,
-        (_, AgentSessionRefKind::Id) => AgentSessionRef::id(value)?,
-        _ => return None,
-    };
-    Some(PersistedAgentSession {
-        source: source.to_string(),
-        agent: agent.to_string(),
-        session_ref,
-    })
+    PersistedAgentSession::new(source.clone(), agent, session_ref.clone())
 }
 
-pub fn plan(source: &str, agent: &str, session_ref: &AgentSessionRef) -> Option<AgentResumePlan> {
-    if !is_official_agent_source(source, agent) {
+pub fn plan(session: &PersistedAgentSession) -> Option<AgentResumePlan> {
+    let agent = session.agent;
+    let descriptor = agent.descriptor();
+    if session.source != AgentSource::Official(agent) || !session.session_ref.accepted_for(agent) {
         return None;
     }
 
-    // Session refs can come from serde and their fields are public, so the
-    // constructors are not a trust boundary. Revalidate before any value is
-    // copied into a command, even when the caller built the struct directly.
-    let valid = match session_ref.kind {
-        AgentSessionRefKind::Id => valid_session_id(&session_ref.value),
-        AgentSessionRefKind::Path => valid_session_path(&session_ref.value),
+    let executable = agent.executable().to_owned();
+    let argv = match (descriptor.resume_args?, &session.session_ref) {
+        (ResumeArgs::FlagValue(flag), reference) => {
+            vec![executable, flag.to_owned(), reference.value()]
+        }
+        (ResumeArgs::InlineFlag(flag), reference) => {
+            vec![executable, format!("{flag}{}", reference.value())]
+        }
+        (ResumeArgs::Subcommand(subcommand), reference) => {
+            vec![executable, subcommand.to_owned(), reference.value()]
+        }
+        (ResumeArgs::LettaConversation, AgentSessionRef::LettaDefaultAgent(agent_id)) => vec![
+            executable,
+            "--conversation".into(),
+            "default".into(),
+            "--agent".into(),
+            agent_id.id().to_owned(),
+        ],
+        (ResumeArgs::LettaConversation, reference) => {
+            vec![executable, "--conversation".into(), reference.value()]
+        }
     };
-    if !valid {
-        return None;
+    AgentResumePlan::with_argv(session, argv)
+}
+
+impl AgentSessionStartSource {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "startup" => Some(Self::Startup),
+            "resume" => Some(Self::Resume),
+            "clear" => Some(Self::Clear),
+            "compact" => Some(Self::Compact),
+            "branch" => Some(Self::Branch),
+            "new" => Some(Self::New),
+            "fork" => Some(Self::Fork),
+            "select" => Some(Self::Select),
+            _ => None,
+        }
     }
-
-    let argv = match (source, agent, session_ref.kind) {
-        ("shepr:claude", "claude", AgentSessionRefKind::Id) => {
-            vec![
-                "claude".into(),
-                "--resume".into(),
-                session_ref.value.clone(),
-            ]
-        }
-        ("shepr:codex", "codex", AgentSessionRefKind::Id) => {
-            vec!["codex".into(), "resume".into(), session_ref.value.clone()]
-        }
-        ("shepr:copilot", "copilot", AgentSessionRefKind::Id) => {
-            vec!["copilot".into(), format!("--resume={}", session_ref.value)]
-        }
-        ("shepr:devin", "devin", AgentSessionRefKind::Id) => {
-            vec!["devin".into(), "--resume".into(), session_ref.value.clone()]
-        }
-        ("shepr:droid", "droid", AgentSessionRefKind::Id) => {
-            vec!["droid".into(), "--resume".into(), session_ref.value.clone()]
-        }
-        ("shepr:kimi", "kimi", AgentSessionRefKind::Id) => {
-            vec!["kimi".into(), "--session".into(), session_ref.value.clone()]
-        }
-        ("shepr:mastracode", "mastracode", AgentSessionRefKind::Id) => {
-            vec![
-                "mastracode".into(),
-                "--thread".into(),
-                session_ref.value.clone(),
-            ]
-        }
-        ("shepr:pi", "pi", AgentSessionRefKind::Path | AgentSessionRefKind::Id) => {
-            vec!["pi".into(), "--session".into(), session_ref.value.clone()]
-        }
-        ("shepr:omp", "omp", AgentSessionRefKind::Path | AgentSessionRefKind::Id) => {
-            // omp resume is `-r, --resume=<value>` (ID prefix or path); it has no
-            // `--session` flag, unlike pi.
-            vec!["omp".into(), format!("--resume={}", session_ref.value)]
-        }
-        ("shepr:hermes", "hermes", AgentSessionRefKind::Id) => {
-            vec![
-                "hermes".into(),
-                "--resume".into(),
-                session_ref.value.clone(),
-            ]
-        }
-        ("shepr:opencode", "opencode", AgentSessionRefKind::Id) => {
-            vec![
-                "opencode".into(),
-                "--session".into(),
-                session_ref.value.clone(),
-            ]
-        }
-        ("shepr:qodercli", "qodercli", AgentSessionRefKind::Id) => {
-            vec![
-                "qodercli".into(),
-                "--resume".into(),
-                session_ref.value.clone(),
-            ]
-        }
-        ("shepr:qwen", "qwen", AgentSessionRefKind::Id) => {
-            vec!["qwen".into(), "--resume".into(), session_ref.value.clone()]
-        }
-        ("shepr:kilo", "kilo", AgentSessionRefKind::Id) => {
-            vec!["kilo".into(), "--session".into(), session_ref.value.clone()]
-        }
-        ("shepr:cursor", "cursor", AgentSessionRefKind::Id) => {
-            vec![
-                "cursor-agent".into(),
-                "--resume".into(),
-                session_ref.value.clone(),
-            ]
-        }
-        ("shepr:antigravity_cli", "agy", AgentSessionRefKind::Id) => {
-            vec![
-                "agy".into(),
-                "--conversation".into(),
-                session_ref.value.clone(),
-            ]
-        }
-        ("shepr:grok", "grok", AgentSessionRefKind::Id) => {
-            vec!["grok".into(), "--resume".into(), session_ref.value.clone()]
-        }
-        ("shepr:letta", "letta", AgentSessionRefKind::Id) => {
-            if let Some(agent_id) = session_ref.value.strip_prefix("default:") {
-                // The agent ID becomes the argument of `--agent`; like session
-                // IDs it must not be readable as a flag.
-                if agent_id.is_empty() || agent_id.starts_with('-') {
-                    return None;
-                }
-                vec![
-                    "letta".into(),
-                    "--conversation".into(),
-                    "default".into(),
-                    "--agent".into(),
-                    agent_id.into(),
-                ]
-            } else {
-                vec![
-                    "letta".into(),
-                    "--conversation".into(),
-                    session_ref.value.clone(),
-                ]
-            }
-        }
-        _ => return None,
-    };
-
-    Some(AgentResumePlan {
-        agent: agent.to_string(),
-        argv,
-        dedupe_key: dedupe_key(source, agent, session_ref),
-    })
 }
 
-pub fn dedupe_key(source: &str, agent: &str, session_ref: &AgentSessionRef) -> String {
-    format!(
-        "{source}\u{0}{agent}\u{0}{:?}\u{0}{}",
-        session_ref.kind, session_ref.value
-    )
+pub fn normalize_session_start_source(value: Option<&str>) -> Option<AgentSessionStartSource> {
+    value.and_then(AgentSessionStartSource::parse)
 }
 
-pub(crate) fn is_official_agent_source(source: &str, agent: &str) -> bool {
-    matches!(
-        (source, agent),
-        ("shepr:claude", "claude")
-            | ("shepr:codex", "codex")
-            | ("shepr:copilot", "copilot")
-            | ("shepr:devin", "devin")
-            | ("shepr:droid", "droid")
-            | ("shepr:kimi", "kimi")
-            | ("shepr:omp", "omp")
-            | ("shepr:mastracode", "mastracode")
-            | ("shepr:pi", "pi")
-            | ("shepr:hermes", "hermes")
-            | ("shepr:opencode", "opencode")
-            | ("shepr:qodercli", "qodercli")
-            | ("shepr:qwen", "qwen")
-            | ("shepr:kilo", "kilo")
-            | ("shepr:cursor", "cursor")
-            | ("shepr:antigravity_cli", "agy")
-            | ("shepr:grok", "grok")
-            | ("shepr:letta", "letta")
-    )
+pub fn is_reserved_native_state_source(source: &str, agent_label: &str) -> bool {
+    AgentSource::from_pair(source, agent_label)
+        .and_then(|source| source.agent())
+        .is_some_and(|agent| agent.descriptor().reserves_native_state)
 }
 
-// A session ID ends up as its own argv element after flags such as `--resume`
-// and `--session`, and the resume argv is typed into an interactive shell. An
-// ID starting with `-` would be parsed by the agent as another flag, so a hook
-// report, API call or edited session file could smuggle options into the
-// resumed agent. No agent issues IDs of that shape.
+pub(crate) fn is_official_agent_source(source: &str, agent_label: &str) -> bool {
+    AgentSource::from_pair(source, agent_label).is_some()
+}
+
+// An ID is passed as one argument after a resume flag. Reject leading dashes
+// and control characters at construction and again when deserializing.
 fn valid_session_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_SESSION_ID_LEN
@@ -314,8 +411,45 @@ fn valid_session_path(value: &str) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) fn test_codex_plan(identity: &str, argv: Vec<String>) -> AgentResumePlan {
+    let session_id = identity.rsplit('\0').next().unwrap_or(identity);
+    let session = PersistedAgentSession::new(
+        AgentSource::Official(Agent::Codex),
+        Agent::Codex,
+        AgentSessionRef::id(session_id).expect("test precondition"),
+    )
+    .expect("test precondition");
+    AgentResumePlan::with_argv(&session, argv).expect("test precondition")
+}
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plan_for_labels(
+        source: &str,
+        agent_label: &str,
+        session_ref: &AgentSessionRef,
+    ) -> Option<AgentResumePlan> {
+        let source = AgentSource::from_pair(source, agent_label)?;
+        let agent = source.agent()?;
+        let session = PersistedAgentSession::new(source, agent, session_ref.clone())?;
+        plan(&session)
+    }
+
+    fn snapshot_session_for_labels(
+        source: &str,
+        agent_label: &str,
+        kind: AgentSessionRefKind,
+        value: &str,
+    ) -> Option<PersistedAgentSession> {
+        let source = AgentSource::from_pair(source, agent_label)?;
+        let agent = source.agent()?;
+        let session_ref = match kind {
+            AgentSessionRefKind::Id => AgentSessionRef::for_agent_id(agent, value.to_owned())?,
+            AgentSessionRefKind::Path => AgentSessionRef::path(value.to_owned())?,
+        };
+        PersistedAgentSession::new(source, agent, session_ref)
+    }
 
     fn absolute_test_path(name: &str) -> String {
         std::env::current_dir()
@@ -346,7 +480,7 @@ mod tests {
             )
             .expect("test precondition")
             .session_ref
-            .value,
+            .value_str(),
             "codex-session"
         );
         assert!(
@@ -382,7 +516,7 @@ mod tests {
         let pi_session = absolute_test_path("pi-session.jsonl");
         let omp_session = absolute_test_path("omp-session.jsonl");
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:claude",
                 "claude",
                 &AgentSessionRef::id("claude-session").expect("test precondition")
@@ -392,7 +526,7 @@ mod tests {
             vec!["claude", "--resume", "claude-session"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:codex",
                 "codex",
                 &AgentSessionRef::id("codex-session").expect("test precondition")
@@ -402,7 +536,7 @@ mod tests {
             vec!["codex", "resume", "codex-session"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:copilot",
                 "copilot",
                 &AgentSessionRef::id("copilot-session").expect("test precondition")
@@ -412,7 +546,7 @@ mod tests {
             vec!["copilot", "--resume=copilot-session"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:devin",
                 "devin",
                 &AgentSessionRef::id("devin-session").expect("test precondition")
@@ -422,7 +556,7 @@ mod tests {
             vec!["devin", "--resume", "devin-session"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:droid",
                 "droid",
                 &AgentSessionRef::id("droid-session").expect("test precondition")
@@ -432,7 +566,7 @@ mod tests {
             vec!["droid", "--resume", "droid-session"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:kimi",
                 "kimi",
                 &AgentSessionRef::id("kimi-session").expect("test precondition")
@@ -442,7 +576,7 @@ mod tests {
             vec!["kimi", "--session", "kimi-session"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:mastracode",
                 "mastracode",
                 &AgentSessionRef::id("mastracode-session").expect("test precondition")
@@ -452,7 +586,7 @@ mod tests {
             vec!["mastracode", "--thread", "mastracode-session"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:pi",
                 "pi",
                 &AgentSessionRef::path(&pi_session).expect("test precondition")
@@ -462,7 +596,7 @@ mod tests {
             vec!["pi", "--session", pi_session.as_str()]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:omp",
                 "omp",
                 &AgentSessionRef::path(&omp_session).expect("test precondition")
@@ -472,7 +606,7 @@ mod tests {
             vec!["omp", format!("--resume={omp_session}").as_str()]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:hermes",
                 "hermes",
                 &AgentSessionRef::id("hermes-session").expect("test precondition")
@@ -482,7 +616,7 @@ mod tests {
             vec!["hermes", "--resume", "hermes-session"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:opencode",
                 "opencode",
                 &AgentSessionRef::id("opencode-session").expect("test precondition")
@@ -492,7 +626,7 @@ mod tests {
             vec!["opencode", "--session", "opencode-session"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:qodercli",
                 "qodercli",
                 &AgentSessionRef::id("qoder-session").expect("test precondition")
@@ -502,7 +636,7 @@ mod tests {
             vec!["qodercli", "--resume", "qoder-session"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:qwen",
                 "qwen",
                 &AgentSessionRef::id("qwen-session").expect("test precondition")
@@ -512,7 +646,7 @@ mod tests {
             vec!["qwen", "--resume", "qwen-session"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:kilo",
                 "kilo",
                 &AgentSessionRef::id("kilo-session").expect("test precondition")
@@ -522,7 +656,7 @@ mod tests {
             vec!["kilo", "--session", "kilo-session"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:cursor",
                 "cursor",
                 &AgentSessionRef::id("cursor-session").expect("test precondition")
@@ -532,8 +666,8 @@ mod tests {
             vec!["cursor-agent", "--resume", "cursor-session",]
         );
         assert_eq!(
-            plan(
-                "shepr:antigravity_cli",
+            plan_for_labels(
+                "shepr:agy",
                 "agy",
                 &AgentSessionRef::id("agy-session").expect("test precondition")
             )
@@ -542,7 +676,7 @@ mod tests {
             vec!["agy", "--conversation", "agy-session"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:grok",
                 "grok",
                 &AgentSessionRef::id("grok-session").expect("test precondition")
@@ -552,7 +686,7 @@ mod tests {
             vec!["grok", "--resume", "grok-session"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:letta",
                 "letta",
                 &AgentSessionRef::id("conversation-123").expect("test precondition")
@@ -562,17 +696,23 @@ mod tests {
             vec!["letta", "--conversation", "conversation-123"]
         );
         assert_eq!(
-            plan(
+            plan_for_labels(
                 "shepr:letta",
                 "letta",
-                &AgentSessionRef::id("default:agent-123").expect("test precondition")
+                &session_ref_from_report(
+                    "shepr:letta",
+                    "letta",
+                    Some("default:agent-123".into()),
+                    None
+                )
+                .expect("test precondition")
             )
             .expect("test precondition")
             .argv,
             vec!["letta", "--conversation", "default", "--agent", "agent-123"]
         );
         assert!(
-            plan(
+            plan_for_labels(
                 "shepr:letta",
                 "letta",
                 &AgentSessionRef::id("default:").expect("test precondition")
@@ -585,7 +725,7 @@ mod tests {
     fn planner_rejects_custom_and_unsupported_path_refs() {
         let claude_session = absolute_test_path("claude-session");
         assert!(
-            plan(
+            plan_for_labels(
                 "custom:claude",
                 "claude",
                 &AgentSessionRef::id("session").expect("test precondition")
@@ -593,7 +733,7 @@ mod tests {
             .is_none()
         );
         assert!(
-            plan(
+            plan_for_labels(
                 "shepr:claude",
                 "claude",
                 &AgentSessionRef::path(&claude_session).expect("test precondition")
@@ -615,8 +755,8 @@ mod tests {
             Some(pi_session.clone()),
         )
         .expect("test precondition");
-        assert_eq!(session_ref.kind, AgentSessionRefKind::Path);
-        assert_eq!(session_ref.value, pi_session);
+        assert_eq!(session_ref.kind(), AgentSessionRefKind::Path);
+        assert_eq!(session_ref.value_str(), pi_session);
 
         assert!(session_ref_from_report("shepr:pi", "pi", Some("bad\nid".into()), None).is_none());
         assert!(
@@ -632,13 +772,13 @@ mod tests {
             Some(omp_session.clone()),
         )
         .expect("test precondition");
-        assert_eq!(session_ref.kind, AgentSessionRefKind::Path);
-        assert_eq!(session_ref.value, omp_session);
+        assert_eq!(session_ref.kind(), AgentSessionRefKind::Path);
+        assert_eq!(session_ref.value_str(), omp_session);
 
         let session_ref = session_ref_from_report("shepr:omp", "omp", Some("omp-id".into()), None)
             .expect("test precondition");
-        assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
-        assert_eq!(session_ref.value, "omp-id");
+        assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
+        assert_eq!(session_ref.value_str(), "omp-id");
         let session_ref = session_ref_from_report(
             "shepr:omp",
             "omp",
@@ -646,8 +786,8 @@ mod tests {
             Some("relative.jsonl".into()),
         )
         .expect("test precondition");
-        assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
-        assert_eq!(session_ref.value, "omp-id");
+        assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
+        assert_eq!(session_ref.value_str(), "omp-id");
         assert!(
             session_ref_from_report("shepr:omp", "omp", None, Some("relative.jsonl".into()))
                 .is_none()
@@ -660,8 +800,8 @@ mod tests {
         let session_ref =
             session_ref_from_report("shepr:copilot", "copilot", Some("copilot-id".into()), None)
                 .expect("test precondition");
-        assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
-        assert_eq!(session_ref.value, "copilot-id");
+        assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
+        assert_eq!(session_ref.value_str(), "copilot-id");
         assert!(
             session_ref_from_report("shepr:copilot", "copilot", None, Some(copilot_session))
                 .is_none()
@@ -670,14 +810,14 @@ mod tests {
         let session_ref =
             session_ref_from_report("shepr:devin", "devin", Some("devin-id".into()), None)
                 .expect("test precondition");
-        assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
-        assert_eq!(session_ref.value, "devin-id");
+        assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
+        assert_eq!(session_ref.value_str(), "devin-id");
 
         let session_ref =
             session_ref_from_report("shepr:droid", "droid", Some("droid-id".into()), None)
                 .expect("test precondition");
-        assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
-        assert_eq!(session_ref.value, "droid-id");
+        assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
+        assert_eq!(session_ref.value_str(), "droid-id");
         assert!(
             session_ref_from_report(
                 "shepr:droid",
@@ -691,8 +831,8 @@ mod tests {
         let session_ref =
             session_ref_from_report("shepr:kimi", "kimi", Some("kimi-id".into()), None)
                 .expect("test precondition");
-        assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
-        assert_eq!(session_ref.value, "kimi-id");
+        assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
+        assert_eq!(session_ref.value_str(), "kimi-id");
 
         let session_ref = session_ref_from_report(
             "shepr:mastracode",
@@ -701,71 +841,70 @@ mod tests {
             None,
         )
         .expect("test precondition");
-        assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
-        assert_eq!(session_ref.value, "mastracode-id");
+        assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
+        assert_eq!(session_ref.value_str(), "mastracode-id");
 
         let session_ref =
             session_ref_from_report("shepr:kilo", "kilo", Some("kilo-id".into()), None)
                 .expect("test precondition");
-        assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
-        assert_eq!(session_ref.value, "kilo-id");
+        assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
+        assert_eq!(session_ref.value_str(), "kilo-id");
 
         let session_ref =
             session_ref_from_report("shepr:qodercli", "qodercli", Some("qoder-id".into()), None)
                 .expect("test precondition");
-        assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
-        assert_eq!(session_ref.value, "qoder-id");
+        assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
+        assert_eq!(session_ref.value_str(), "qoder-id");
 
         let session_ref =
             session_ref_from_report("shepr:qwen", "qwen", Some("qwen-id".into()), None)
                 .expect("test precondition");
-        assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
-        assert_eq!(session_ref.value, "qwen-id");
+        assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
+        assert_eq!(session_ref.value_str(), "qwen-id");
 
-        let session_ref =
-            session_ref_from_report("shepr:antigravity_cli", "agy", Some("agy-id".into()), None)
-                .expect("test precondition");
-        assert_eq!(session_ref.kind, AgentSessionRefKind::Id);
-        assert_eq!(session_ref.value, "agy-id");
+        let session_ref = session_ref_from_report("shepr:agy", "agy", Some("agy-id".into()), None)
+            .expect("test precondition");
+        assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
+        assert_eq!(session_ref.value_str(), "agy-id");
     }
 
     #[test]
     fn normalize_session_start_source_allows_known_values() {
         assert_eq!(
             normalize_session_start_source(Some("startup")),
-            Some("startup".into())
+            Some(AgentSessionStartSource::Startup)
         );
         assert_eq!(
             normalize_session_start_source(Some("resume")),
-            Some("resume".into())
+            Some(AgentSessionStartSource::Resume)
         );
         assert_eq!(
             normalize_session_start_source(Some("clear")),
-            Some("clear".into())
+            Some(AgentSessionStartSource::Clear)
         );
         assert_eq!(
             normalize_session_start_source(Some("compact")),
-            Some("compact".into())
+            Some(AgentSessionStartSource::Compact)
         );
         assert_eq!(
             normalize_session_start_source(Some("branch")),
-            Some("branch".into())
+            Some(AgentSessionStartSource::Branch)
         );
         assert_eq!(
             normalize_session_start_source(Some("new")),
-            Some("new".into())
+            Some(AgentSessionStartSource::New)
         );
         assert_eq!(
             normalize_session_start_source(Some("fork")),
-            Some("fork".into())
+            Some(AgentSessionStartSource::Fork)
         );
         assert_eq!(
             normalize_session_start_source(Some("select")),
-            Some("select".into())
+            Some(AgentSessionStartSource::Select)
         );
         assert_eq!(
             normalize_session_start_source(Some(" resume ")),
-            Some("resume".into())
+            Some(AgentSessionStartSource::Resume)
         );
         assert_eq!(normalize_session_start_source(Some("other")), None);
         assert_eq!(normalize_session_start_source(None), None);
@@ -774,7 +913,7 @@ mod tests {
     #[test]
     fn ids_are_data_not_shell_text() {
         let id = "abc; rm -rf /";
-        let codex_plan = plan(
+        let codex_plan = plan_for_labels(
             "shepr:codex",
             "codex",
             &AgentSessionRef::id(id).expect("test precondition"),
@@ -788,7 +927,7 @@ mod tests {
             Some("codex resume 'abc; rm -rf /'")
         );
 
-        let copilot_plan = plan(
+        let copilot_plan = plan_for_labels(
             "shepr:copilot",
             "copilot",
             &AgentSessionRef::id(id).expect("test precondition"),
@@ -796,7 +935,7 @@ mod tests {
         .expect("test precondition");
         assert_eq!(copilot_plan.argv, vec!["copilot", "--resume=abc; rm -rf /"]);
 
-        let devin_plan = plan(
+        let devin_plan = plan_for_labels(
             "shepr:devin",
             "devin",
             &AgentSessionRef::id(id).expect("test precondition"),
@@ -813,34 +952,29 @@ mod tests {
                 session_ref_from_report("shepr:claude", "claude", Some(id.into()), None).is_none()
             );
             assert!(
-                session_ref_from_snapshot("shepr:claude", "claude", AgentSessionRefKind::Id, id)
+                snapshot_session_for_labels("shepr:claude", "claude", AgentSessionRefKind::Id, id)
                     .is_none()
             );
         }
         // A value only has to avoid a leading dash; dashes inside are fine.
         assert!(AgentSessionRef::id("abc-def").is_some());
-        let letta_flag = AgentSessionRef {
-            kind: AgentSessionRefKind::Id,
-            value: "default:--yolo".into(),
-        };
-        assert!(plan("shepr:letta", "letta", &letta_flag).is_none());
+        let letta_flag = AgentSessionRef::id("default:--yolo").expect("valid ordinary ID");
+        assert!(plan_for_labels("shepr:letta", "letta", &letta_flag).is_none());
     }
 
     #[test]
-    fn planner_revalidates_session_refs_built_without_constructors() {
+    fn session_reference_deserialization_revalidates_values() {
         for value in ["--dangerously-skip-permissions", "bad\nid"] {
-            let forged = AgentSessionRef {
-                kind: AgentSessionRefKind::Id,
-                value: value.into(),
-            };
-            assert!(plan("shepr:codex", "codex", &forged).is_none(), "{value:?}");
+            let encoded = serde_json::to_string(value).expect("test precondition");
+            let json = format!(r#"{{"kind":"id","value":{encoded}}}"#);
+            assert!(
+                serde_json::from_str::<AgentSessionRef>(&json).is_err(),
+                "{value:?}"
+            );
         }
-
-        let forged_path = AgentSessionRef {
-            kind: AgentSessionRefKind::Path,
-            value: "relative-session.jsonl".into(),
-        };
-        assert!(plan("shepr:pi", "pi", &forged_path).is_none());
+        assert!(AgentSessionRef::id("--dangerously-skip-permissions").is_none());
+        assert!(AgentSessionRef::path("relative-session.jsonl").is_none());
+        assert!(AgentSessionRef::id("abc-def").is_some());
     }
 
     #[test]
@@ -851,7 +985,7 @@ mod tests {
         let copilot_session = absolute_test_path("copilot-session");
         let devin_session = absolute_test_path("devin-session");
         assert!(
-            plan(
+            plan_for_labels(
                 "shepr:hermes",
                 "hermes",
                 &AgentSessionRef::path(&hermes_session).expect("test precondition")
@@ -859,7 +993,7 @@ mod tests {
             .is_none()
         );
         assert!(
-            plan(
+            plan_for_labels(
                 "shepr:opencode",
                 "opencode",
                 &AgentSessionRef::path(&opencode_session).expect("test precondition")
@@ -867,7 +1001,7 @@ mod tests {
             .is_none()
         );
         assert!(
-            plan(
+            plan_for_labels(
                 "shepr:kilo",
                 "kilo",
                 &AgentSessionRef::path(&kilo_session).expect("test precondition")
@@ -875,7 +1009,7 @@ mod tests {
             .is_none()
         );
         assert!(
-            plan(
+            plan_for_labels(
                 "shepr:copilot",
                 "copilot",
                 &AgentSessionRef::path(&copilot_session).expect("test precondition")
@@ -883,7 +1017,7 @@ mod tests {
             .is_none()
         );
         assert!(
-            plan(
+            plan_for_labels(
                 "shepr:devin",
                 "devin",
                 &AgentSessionRef::path(&devin_session).expect("test precondition")
@@ -891,7 +1025,7 @@ mod tests {
             .is_none()
         );
         assert!(
-            session_ref_from_snapshot(
+            snapshot_session_for_labels(
                 "shepr:mastracode",
                 "mastracode",
                 AgentSessionRefKind::Id,
@@ -900,7 +1034,7 @@ mod tests {
             .is_some()
         );
         assert!(
-            session_ref_from_snapshot(
+            snapshot_session_for_labels(
                 "shepr:hermes",
                 "hermes",
                 AgentSessionRefKind::Id,
@@ -909,7 +1043,7 @@ mod tests {
             .is_some()
         );
         assert!(
-            session_ref_from_snapshot(
+            snapshot_session_for_labels(
                 "shepr:opencode",
                 "opencode",
                 AgentSessionRefKind::Id,
@@ -918,7 +1052,7 @@ mod tests {
             .is_some()
         );
         assert!(
-            session_ref_from_snapshot(
+            snapshot_session_for_labels(
                 "shepr:kilo",
                 "kilo",
                 AgentSessionRefKind::Id,
@@ -927,7 +1061,7 @@ mod tests {
             .is_some()
         );
         assert!(
-            session_ref_from_snapshot(
+            snapshot_session_for_labels(
                 "shepr:copilot",
                 "copilot",
                 AgentSessionRefKind::Id,
@@ -936,7 +1070,7 @@ mod tests {
             .is_some()
         );
         assert!(
-            session_ref_from_snapshot(
+            snapshot_session_for_labels(
                 "shepr:devin",
                 "devin",
                 AgentSessionRefKind::Id,
@@ -945,18 +1079,13 @@ mod tests {
             .is_some()
         );
         assert!(
-            session_ref_from_snapshot(
-                "shepr:antigravity_cli",
-                "agy",
-                AgentSessionRefKind::Id,
-                "agy-session"
-            )
-            .is_some()
+            snapshot_session_for_labels("shepr:agy", "agy", AgentSessionRefKind::Id, "agy-session")
+                .is_some()
         );
         let agy_session = absolute_test_path("agy-session");
         assert!(
-            plan(
-                "shepr:antigravity_cli",
+            plan_for_labels(
+                "shepr:agy",
                 "agy",
                 &AgentSessionRef::path(&agy_session).expect("test precondition")
             )

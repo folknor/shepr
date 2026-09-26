@@ -720,7 +720,7 @@ rows = [[{ token = "$status", rules = [{ contains = "error", bold = true }] }]]
 
     #[test]
     fn accepts_every_canonical_agent_override_key() {
-        let agents = Agent::ALL;
+        let agents = Agent::all().collect::<Vec<_>>();
         let entries = agents
             .iter()
             .map(|agent| format!("{} = [[\"agent\"]]", crate::detect::agent_label(*agent)))

@@ -354,17 +354,17 @@ impl HeadlessServer {
             let (cols, rows) = self.effective_size;
             let area = Rect::new(0, 0, cols, rows);
             let resize_panes = self.app.state.view.pane_infos.is_empty();
+            crate::ui::compute_view_with_runtime_registry(
+                &mut self.app.state,
+                &self.app.terminal_runtimes,
+                area,
+            );
             if resize_panes {
-                crate::ui::compute_view_with_runtime_registry(
-                    &mut self.app.state,
+                crate::ui::resize_all_tab_surfaces(
+                    &self.app.state,
                     &self.app.terminal_runtimes,
                     area,
-                );
-            } else {
-                crate::ui::compute_view_without_resizing_panes(
-                    &mut self.app.state,
-                    &self.app.terminal_runtimes,
-                    area,
+                    crate::terminal_cell_size::HostCellSize::default(),
                 );
             }
             self.app.full_redraw_pending = false;
@@ -419,8 +419,6 @@ impl HeadlessServer {
                     &self.app.terminal_runtimes,
                     Some(target),
                     area,
-                    false,
-                    *cell_size,
                 );
                 if layout.pane_infos.iter().any(|pane| {
                     self.app
@@ -434,12 +432,10 @@ impl HeadlessServer {
                 }) {
                     continue;
                 }
-                crate::ui::resize_tab_surface(
+                crate::ui::resize_tab_surface_layout(
                     &self.app.state,
                     &self.app.terminal_runtimes,
-                    target.workspace_index,
-                    target.tab_index,
-                    area,
+                    &layout,
                     if cell_size.is_known() {
                         *cell_size
                     } else {
@@ -484,7 +480,6 @@ impl HeadlessServer {
                     &mut self.app,
                     shell_target,
                     area,
-                    false,
                     render_cell_size,
                 );
                 match result {

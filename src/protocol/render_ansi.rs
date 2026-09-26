@@ -36,11 +36,10 @@ use std::io::Write;
 
 use unicode_width::UnicodeWidthStr;
 
+use crate::ghostty::UnderlineStyle;
 use crate::protocol::{
-    CellData, CursorState, FrameData, PaneSurfacePatchRow, underline_style_from_modifier,
+    CellData, CursorState, FrameData, PaneSurfacePatchRow, WireColor, WireStyle, WireStyleFlags,
 };
-
-const REVERSED_MODIFIER: u16 = 1 << 6;
 
 /// Bytes produced by a [`BlitEncoder`] for one terminal frame.
 pub(crate) struct EncodedBlit {
@@ -176,7 +175,7 @@ impl BlitEncoder {
             && patch_cell_mut(&mut rows, x, y).is_none()
         {
             let mut cell = frame.cells.get(frame_cell_index(frame, x, y)?)?.clone();
-            cell.modifier ^= REVERSED_MODIFIER;
+            cell.style.flags.toggle(WireStyleFlags::REVERSED);
             rows.push(PaneSurfacePatchRow {
                 x,
                 y,
@@ -185,10 +184,10 @@ impl BlitEncoder {
         }
         if let Some((x, y)) = next {
             if let Some(cell) = patch_cell_mut(&mut rows, x, y) {
-                cell.modifier ^= REVERSED_MODIFIER;
+                cell.style.flags.toggle(WireStyleFlags::REVERSED);
             } else if previous != next {
                 let mut cell = frame.cells.get(frame_cell_index(frame, x, y)?)?.clone();
-                cell.modifier ^= REVERSED_MODIFIER;
+                cell.style.flags.toggle(WireStyleFlags::REVERSED);
                 rows.push(PaneSurfacePatchRow {
                     x,
                     y,
@@ -238,7 +237,7 @@ pub(crate) fn frame_with_drawn_cursor(mut frame: FrameData) -> FrameData {
             .saturating_mul(frame.width as usize)
             .saturating_add(x as usize);
         if let Some(cell) = frame.cells.get_mut(idx) {
-            cell.modifier ^= REVERSED_MODIFIER;
+            cell.style.flags.toggle(WireStyleFlags::REVERSED);
         }
     }
     frame
@@ -248,75 +247,53 @@ pub(crate) fn frame_with_drawn_cursor(mut frame: FrameData) -> FrameData {
 // Color → escape sequence
 // ---------------------------------------------------------------------------
 
-/// Converts a packed u32 color to an SGR escape sequence fragment.
-///
-/// Returns a string like `38;5;123` (indexed) or `38;2;255;128;64` (RGB)
-/// or `39` (reset), without the leading `\x1b[` or trailing `m`.
-fn color_to_sgr_fg(val: u32) -> String {
-    match val >> 24 {
-        0x00 => match val & 0xFF {
-            0x00 => "39".to_owned(), // Reset
-            0x01 => "30".to_owned(), // Black
-            0x02 => "31".to_owned(), // Red
-            0x03 => "32".to_owned(), // Green
-            0x04 => "33".to_owned(), // Yellow
-            0x05 => "34".to_owned(), // Blue
-            0x06 => "35".to_owned(), // Magenta
-            0x07 => "36".to_owned(), // Cyan
-            0x08 => "37".to_owned(), // Gray (light gray)
-            0x09 => "90".to_owned(), // DarkGray
-            0x0A => "91".to_owned(), // LightRed
-            0x0B => "92".to_owned(), // LightGreen
-            0x0C => "93".to_owned(), // LightYellow
-            0x0D => "94".to_owned(), // LightBlue
-            0x0E => "95".to_owned(), // LightMagenta
-            0x0F => "96".to_owned(), // LightCyan
-            0x10 => "97".to_owned(), // White
-            _ => "39".to_owned(),    // Unknown → Reset
-        },
-        0x01 => format!("38;5;{}", val & 0xFF), // Indexed
-        0x02 => {
-            // RGB
-            let r = (val >> 16) & 0xFF;
-            let g = (val >> 8) & 0xFF;
-            let b = val & 0xFF;
-            format!("38;2;{r};{g};{b}")
-        }
-        _ => "39".to_owned(), // Unknown → Reset
+/// Returns a foreground SGR fragment for a typed wire color.
+fn color_to_sgr_fg(color: WireColor) -> String {
+    match color {
+        WireColor::Reset => "39".to_owned(),
+        WireColor::Black => "30".to_owned(),
+        WireColor::Red => "31".to_owned(),
+        WireColor::Green => "32".to_owned(),
+        WireColor::Yellow => "33".to_owned(),
+        WireColor::Blue => "34".to_owned(),
+        WireColor::Magenta => "35".to_owned(),
+        WireColor::Cyan => "36".to_owned(),
+        WireColor::Gray => "37".to_owned(),
+        WireColor::DarkGray => "90".to_owned(),
+        WireColor::LightRed => "91".to_owned(),
+        WireColor::LightGreen => "92".to_owned(),
+        WireColor::LightYellow => "93".to_owned(),
+        WireColor::LightBlue => "94".to_owned(),
+        WireColor::LightMagenta => "95".to_owned(),
+        WireColor::LightCyan => "96".to_owned(),
+        WireColor::White => "97".to_owned(),
+        WireColor::Indexed(index) => format!("38;5;{index}"),
+        WireColor::Rgb(red, green, blue) => format!("38;2;{red};{green};{blue}"),
     }
 }
 
-/// Converts a packed u32 color to a background SGR fragment.
-fn color_to_sgr_bg(val: u32) -> String {
-    match val >> 24 {
-        0x00 => match val & 0xFF {
-            0x00 => "49".to_owned(),  // Reset
-            0x01 => "40".to_owned(),  // Black
-            0x02 => "41".to_owned(),  // Red
-            0x03 => "42".to_owned(),  // Green
-            0x04 => "43".to_owned(),  // Yellow
-            0x05 => "44".to_owned(),  // Blue
-            0x06 => "45".to_owned(),  // Magenta
-            0x07 => "46".to_owned(),  // Cyan
-            0x08 => "47".to_owned(),  // Gray (light gray)
-            0x09 => "100".to_owned(), // DarkGray
-            0x0A => "101".to_owned(), // LightRed
-            0x0B => "102".to_owned(), // LightGreen
-            0x0C => "103".to_owned(), // LightYellow
-            0x0D => "104".to_owned(), // LightBlue
-            0x0E => "105".to_owned(), // LightMagenta
-            0x0F => "106".to_owned(), // LightCyan
-            0x10 => "107".to_owned(), // White
-            _ => "49".to_owned(),     // Unknown → Reset
-        },
-        0x01 => format!("48;5;{}", val & 0xFF), // Indexed
-        0x02 => {
-            let r = (val >> 16) & 0xFF;
-            let g = (val >> 8) & 0xFF;
-            let b = val & 0xFF;
-            format!("48;2;{r};{g};{b}")
-        }
-        _ => "49".to_owned(),
+/// Returns a background SGR fragment for a typed wire color.
+fn color_to_sgr_bg(color: WireColor) -> String {
+    match color {
+        WireColor::Reset => "49".to_owned(),
+        WireColor::Black => "40".to_owned(),
+        WireColor::Red => "41".to_owned(),
+        WireColor::Green => "42".to_owned(),
+        WireColor::Yellow => "43".to_owned(),
+        WireColor::Blue => "44".to_owned(),
+        WireColor::Magenta => "45".to_owned(),
+        WireColor::Cyan => "46".to_owned(),
+        WireColor::Gray => "47".to_owned(),
+        WireColor::DarkGray => "100".to_owned(),
+        WireColor::LightRed => "101".to_owned(),
+        WireColor::LightGreen => "102".to_owned(),
+        WireColor::LightYellow => "103".to_owned(),
+        WireColor::LightBlue => "104".to_owned(),
+        WireColor::LightMagenta => "105".to_owned(),
+        WireColor::LightCyan => "106".to_owned(),
+        WireColor::White => "107".to_owned(),
+        WireColor::Indexed(index) => format!("48;5;{index}"),
+        WireColor::Rgb(red, green, blue) => format!("48;2;{red};{green};{blue}"),
     }
 }
 
@@ -324,53 +301,40 @@ fn color_to_sgr_bg(val: u32) -> String {
 // Modifier → SGR
 // ---------------------------------------------------------------------------
 
-/// Converts a u16 modifier bitmask to SGR escape sequence fragments.
-///
-/// Returns a Vec of SGR parameter strings (e.g., "1" for bold, "3" for italic).
-fn modifier_to_sgr_parts(val: u16) -> Vec<&'static str> {
+/// Converts semantic style flags to SGR escape sequence fragments.
+fn style_to_sgr_parts(style: WireStyle) -> Vec<&'static str> {
     let mut parts = Vec::new();
 
-    // ratatui::Modifier bits (from bitflags)
-    const BOLD: u16 = 1 << 0; // 0x01
-    const DIM: u16 = 1 << 1; // 0x02
-    const ITALIC: u16 = 1 << 2; // 0x04
-    const UNDERLINED: u16 = 1 << 3; // 0x08
-    const SLOW_BLINK: u16 = 1 << 4; // 0x10
-    const RAPID_BLINK: u16 = 1 << 5; // 0x20
-    const HIDDEN: u16 = 1 << 7; // 0x80
-    const CROSSED_OUT: u16 = 1 << 8; // 0x100
-
-    if val & BOLD != 0 {
+    if style.flags.contains(WireStyleFlags::BOLD) {
         parts.push("1");
     }
-    if val & DIM != 0 {
+    if style.flags.contains(WireStyleFlags::DIM) {
         parts.push("2");
     }
-    if val & ITALIC != 0 {
+    if style.flags.contains(WireStyleFlags::ITALIC) {
         parts.push("3");
     }
-    if val & UNDERLINED != 0 {
-        parts.push(match underline_style_from_modifier(val) {
-            2 => "4:2",
-            3 => "4:3",
-            4 => "4:4",
-            5 => "4:5",
-            _ => "4",
-        });
+    match style.underline {
+        UnderlineStyle::None => {}
+        UnderlineStyle::Single => parts.push("4"),
+        UnderlineStyle::Double => parts.push("4:2"),
+        UnderlineStyle::Curly => parts.push("4:3"),
+        UnderlineStyle::Dotted => parts.push("4:4"),
+        UnderlineStyle::Dashed => parts.push("4:5"),
     }
-    if val & SLOW_BLINK != 0 {
+    if style.flags.contains(WireStyleFlags::SLOW_BLINK) {
         parts.push("5");
     }
-    if val & RAPID_BLINK != 0 {
+    if style.flags.contains(WireStyleFlags::RAPID_BLINK) {
         parts.push("6");
     }
-    if val & REVERSED_MODIFIER != 0 {
+    if style.flags.contains(WireStyleFlags::REVERSED) {
         parts.push("7");
     }
-    if val & HIDDEN != 0 {
+    if style.flags.contains(WireStyleFlags::HIDDEN) {
         parts.push("8");
     }
-    if val & CROSSED_OUT != 0 {
+    if style.flags.contains(WireStyleFlags::CROSSED_OUT) {
         parts.push("9");
     }
 
@@ -378,13 +342,9 @@ fn modifier_to_sgr_parts(val: u16) -> Vec<&'static str> {
 }
 
 /// Builds a complete SGR escape sequence for a cell's style.
-fn build_sgr(fg: u32, bg: u32, modifier: u16) -> String {
+fn build_sgr(fg: WireColor, bg: WireColor, style: WireStyle) -> String {
     let mut parts = vec!["0".to_owned()];
-    parts.extend(
-        modifier_to_sgr_parts(modifier)
-            .into_iter()
-            .map(str::to_owned),
-    );
+    parts.extend(style_to_sgr_parts(style).into_iter().map(str::to_owned));
     parts.push(color_to_sgr_fg(fg));
     parts.push(color_to_sgr_bg(bg));
     format!("\x1b[{}m", parts.join(";"))
@@ -399,7 +359,7 @@ fn cells_equal(a: &CellData, b: &CellData) -> bool {
     a.symbol == b.symbol
         && a.fg == b.fg
         && a.bg == b.bg
-        && a.modifier == b.modifier
+        && a.style == b.style
         && a.hyperlink == b.hyperlink
     // Skip flag is only for ratatui internal use, not visual.
 }
@@ -846,7 +806,7 @@ fn write_cell(
     cursor_position: Option<(u16, u16)>,
     cell: &CellData,
     last_sgr: &mut String,
-    last_style: &mut Option<(u32, u32, u16)>,
+    last_style: &mut Option<(WireColor, WireColor, WireStyle)>,
     active_hyperlink: &mut Option<String>,
     frame: &FrameData,
 ) {
@@ -858,9 +818,9 @@ fn write_cell(
         write_cursor_position(writer, position);
     }
 
-    let style = (cell.fg, cell.bg, cell.modifier);
+    let style = (cell.fg, cell.bg, cell.style);
     if *last_style != Some(style) {
-        let sgr = build_sgr(cell.fg, cell.bg, cell.modifier);
+        let sgr = build_sgr(cell.fg, cell.bg, cell.style);
         if sgr != *last_sgr {
             let _ = writer.write_all(sgr.as_bytes());
             *last_sgr = sgr;
@@ -882,7 +842,7 @@ fn cells_visually_equal(
     cell.symbol == prev_cell.symbol
         && cell.fg == prev_cell.fg
         && cell.bg == prev_cell.bg
-        && cell.modifier == prev_cell.modifier
+        && cell.style == prev_cell.style
         && sanitized_cell_hyperlink_uri(sanitized_hyperlinks, cell)
             == sanitized_cell_hyperlink_uri(prev_sanitized_hyperlinks, prev_cell)
     // Skip flag is only for ratatui internal use, not visual.
@@ -957,19 +917,28 @@ mod tests {
     const WIDE_GRAPHEME: &str = "\u{1F4A1}";
     const HALFWIDTH_VOICED_KANA: &str = "ｶ\u{ff9e}";
 
-    fn make_cell(symbol: &str, fg: u32, bg: u32, modifier: u16) -> CellData {
+    fn make_cell(symbol: &str, fg: WireColor, bg: WireColor, style: WireStyle) -> CellData {
         CellData {
             symbol: symbol.to_owned(),
             fg,
             bg,
-            modifier,
+            style,
             skip: false,
             hyperlink: None,
         }
     }
 
-    fn make_skip_cell(symbol: &str, fg: u32, bg: u32, modifier: u16) -> CellData {
-        let mut cell = make_cell(symbol, fg, bg, modifier);
+    fn default_cell(symbol: &str) -> CellData {
+        make_cell(
+            symbol,
+            WireColor::Reset,
+            WireColor::Reset,
+            WireStyle::default(),
+        )
+    }
+
+    fn make_skip_cell(symbol: &str) -> CellData {
+        let mut cell = default_cell(symbol);
         cell.skip = true;
         cell
     }
@@ -985,62 +954,81 @@ mod tests {
     }
 
     fn linked_cell(symbol: &str, index: u32) -> CellData {
-        let mut cell = make_cell(symbol, 0, 0, 0);
+        let mut cell = default_cell(symbol);
         cell.hyperlink = Some(index);
         cell
     }
 
     #[test]
     fn color_to_sgr_fg_named_colors() {
-        assert_eq!(color_to_sgr_fg(0x00_00_00_00), "39"); // Reset
-        assert_eq!(color_to_sgr_fg(0x00_00_00_01), "30"); // Black
-        assert_eq!(color_to_sgr_fg(0x00_00_00_02), "31"); // Red
-        assert_eq!(color_to_sgr_fg(0x00_00_00_10), "97"); // White
+        assert_eq!(color_to_sgr_fg(WireColor::Reset), "39");
+        assert_eq!(color_to_sgr_fg(WireColor::Black), "30");
+        assert_eq!(color_to_sgr_fg(WireColor::Red), "31");
+        assert_eq!(color_to_sgr_fg(WireColor::White), "97");
     }
 
     #[test]
     fn color_to_sgr_fg_indexed() {
-        assert_eq!(color_to_sgr_fg(0x01_00_00_AB), "38;5;171");
+        assert_eq!(color_to_sgr_fg(WireColor::Indexed(171)), "38;5;171");
     }
 
     #[test]
     fn color_to_sgr_fg_rgb() {
-        assert_eq!(color_to_sgr_fg(0x02_FF_80_40), "38;2;255;128;64");
+        assert_eq!(
+            color_to_sgr_fg(WireColor::Rgb(255, 128, 64)),
+            "38;2;255;128;64"
+        );
     }
 
     #[test]
     fn color_to_sgr_bg_named_colors() {
-        assert_eq!(color_to_sgr_bg(0x00_00_00_00), "49"); // Reset
-        assert_eq!(color_to_sgr_bg(0x00_00_00_01), "40"); // Black
-        assert_eq!(color_to_sgr_bg(0x00_00_00_10), "107"); // White
+        assert_eq!(color_to_sgr_bg(WireColor::Reset), "49");
+        assert_eq!(color_to_sgr_bg(WireColor::Black), "40");
+        assert_eq!(color_to_sgr_bg(WireColor::White), "107");
     }
 
     #[test]
     fn color_to_sgr_bg_rgb() {
-        assert_eq!(color_to_sgr_bg(0x02_FF_80_40), "48;2;255;128;64");
+        assert_eq!(
+            color_to_sgr_bg(WireColor::Rgb(255, 128, 64)),
+            "48;2;255;128;64"
+        );
     }
 
     #[test]
-    fn modifier_to_sgr_parts_bold() {
-        let parts = modifier_to_sgr_parts(1); // BOLD
+    fn style_to_sgr_parts_bold() {
+        let parts = style_to_sgr_parts(WireStyle {
+            flags: WireStyleFlags::BOLD,
+            ..WireStyle::default()
+        });
         assert!(parts.contains(&"1"));
     }
 
     #[test]
-    fn modifier_to_sgr_parts_italic() {
-        let parts = modifier_to_sgr_parts(4); // ITALIC
+    fn style_to_sgr_parts_italic() {
+        let parts = style_to_sgr_parts(WireStyle {
+            flags: WireStyleFlags::ITALIC,
+            ..WireStyle::default()
+        });
         assert!(parts.contains(&"3"));
     }
 
     #[test]
-    fn modifier_to_sgr_parts_empty() {
-        let parts = modifier_to_sgr_parts(0);
+    fn style_to_sgr_parts_empty() {
+        let parts = style_to_sgr_parts(WireStyle::default());
         assert!(parts.is_empty());
     }
 
     #[test]
     fn build_sgr_produces_valid_sequence() {
-        let sgr = build_sgr(0x00_00_00_02, 0x00_00_00_01, 1); // fg=Red, bg=Black, bold
+        let sgr = build_sgr(
+            WireColor::Red,
+            WireColor::Black,
+            WireStyle {
+                flags: WireStyleFlags::BOLD,
+                ..WireStyle::default()
+            },
+        );
         assert!(sgr.starts_with("\x1b["));
         assert!(sgr.ends_with("m"));
         assert!(sgr.contains("0")); // reset existing style first
@@ -1051,17 +1039,20 @@ mod tests {
 
     #[test]
     fn build_sgr_resets_previous_modifiers_when_cell_is_plain() {
-        assert_eq!(build_sgr(0x00_00_00_00, 0x00_00_00_00, 0), "\x1b[0;39;49m");
+        assert_eq!(
+            build_sgr(WireColor::Reset, WireColor::Reset, WireStyle::default()),
+            "\x1b[0;39;49m"
+        );
     }
 
     #[test]
     fn repeated_and_equivalent_styles_keep_text_and_link_changes() {
         let mut cells = vec![
-            make_cell("a", 0, 0, 0),
-            make_cell("b", 0, 0, 0),
-            make_cell("c", 0xff_00_00_00, 0, 0), // Unknown color also encodes as reset.
-            make_cell("d", 2, 0, 0),
-            make_cell("e", 0, 0, 0),
+            default_cell("a"),
+            default_cell("b"),
+            default_cell("c"),
+            make_cell("d", WireColor::Red, WireColor::Reset, WireStyle::default()),
+            default_cell("e"),
         ];
         cells[1].hyperlink = Some(0);
         let mut frame = make_frame(5, 1, cells);
@@ -1076,34 +1067,42 @@ mod tests {
 
     #[test]
     fn build_sgr_preserves_curly_underline_style() {
-        let modifier = crate::protocol::modifier_to_u16(
-            crate::protocol::modifier_with_underline_style(ratatui::style::Modifier::UNDERLINED, 3),
-        );
-
         assert_eq!(
-            build_sgr(0x00_00_00_00, 0x00_00_00_00, modifier),
+            build_sgr(
+                WireColor::Reset,
+                WireColor::Reset,
+                WireStyle {
+                    underline: UnderlineStyle::Curly,
+                    ..WireStyle::default()
+                }
+            ),
             "\x1b[0;4:3;39;49m"
         );
     }
 
     #[test]
     fn cells_equal_identical() {
-        let a = make_cell("A", 2, 1, 0);
-        let b = make_cell("A", 2, 1, 0);
+        let a = make_cell("A", WireColor::Red, WireColor::Black, WireStyle::default());
+        let b = make_cell("A", WireColor::Red, WireColor::Black, WireStyle::default());
         assert!(cells_equal(&a, &b));
     }
 
     #[test]
     fn cells_equal_different_symbol() {
-        let a = make_cell("A", 2, 1, 0);
-        let b = make_cell("B", 2, 1, 0);
+        let a = make_cell("A", WireColor::Red, WireColor::Black, WireStyle::default());
+        let b = make_cell("B", WireColor::Red, WireColor::Black, WireStyle::default());
         assert!(!cells_equal(&a, &b));
     }
 
     #[test]
     fn cells_equal_different_color() {
-        let a = make_cell("A", 2, 1, 0);
-        let b = make_cell("A", 3, 1, 0);
+        let a = make_cell("A", WireColor::Red, WireColor::Black, WireStyle::default());
+        let b = make_cell(
+            "A",
+            WireColor::Green,
+            WireColor::Black,
+            WireStyle::default(),
+        );
         assert!(!cells_equal(&a, &b));
     }
 
@@ -1113,10 +1112,10 @@ mod tests {
             2,
             2,
             vec![
-                make_cell("H", 0, 0, 0),
-                make_cell("i", 0, 0, 0),
-                make_cell("!", 0, 0, 0),
-                make_cell(" ", 0, 0, 0),
+                default_cell("H"),
+                default_cell("i"),
+                default_cell("!"),
+                default_cell(" "),
             ],
         );
 
@@ -1136,10 +1135,10 @@ mod tests {
             2,
             2,
             vec![
-                make_cell("H", 0, 0, 0),
-                make_cell("i", 0, 0, 0),
-                make_cell("!", 0, 0, 0),
-                make_cell(" ", 0, 0, 0),
+                default_cell("H"),
+                default_cell("i"),
+                default_cell("!"),
+                default_cell(" "),
             ],
         );
 
@@ -1147,10 +1146,10 @@ mod tests {
             2,
             2,
             vec![
-                make_cell("X", 0, 0, 0), // Changed
-                make_cell("i", 0, 0, 0), // Same
-                make_cell("!", 0, 0, 0), // Same
-                make_cell(" ", 0, 0, 0), // Same
+                default_cell("X"), // Changed
+                default_cell("i"), // Same
+                default_cell("!"), // Same
+                default_cell(" "), // Same
             ],
         );
 
@@ -1166,7 +1165,7 @@ mod tests {
 
     #[test]
     fn blit_frame_wraps_frame_in_synchronized_output() {
-        let frame = make_frame(1, 1, vec![make_cell("A", 0, 0, 0)]);
+        let frame = make_frame(1, 1, vec![default_cell("A")]);
 
         let mut output = Vec::new();
         blit_frame_to(&mut output, &frame, None);
@@ -1188,7 +1187,7 @@ mod tests {
     #[test]
     fn blit_frame_begins_sync_before_hiding_cursor_after_visible_cursor_repeat() {
         let visible = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0); 9],
+            cells: vec![default_cell("A"); 9],
             width: 3,
             height: 3,
             cursor: Some(CursorState {
@@ -1200,7 +1199,7 @@ mod tests {
             hyperlinks: Vec::new(),
         };
         let mut changed = visible.clone();
-        changed.cells[0] = make_cell("B", 0, 0, 0);
+        changed.cells[0] = default_cell("B");
 
         let mut last_visible_cursor = None;
         let mut last_cursor_shape = 0;
@@ -1254,7 +1253,7 @@ mod tests {
     #[test]
     fn blit_frame_can_repeat_final_cursor_state_after_synchronized_output() {
         let frame = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0); 9],
+            cells: vec![default_cell("A"); 9],
             width: 3,
             height: 3,
             cursor: Some(CursorState {
@@ -1293,7 +1292,7 @@ mod tests {
     #[test]
     fn blit_frame_can_skip_final_cursor_state_after_synchronized_output() {
         let frame = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0); 9],
+            cells: vec![default_cell("A"); 9],
             width: 3,
             height: 3,
             cursor: Some(CursorState {
@@ -1332,7 +1331,7 @@ mod tests {
     #[test]
     fn drawn_cursor_reverses_visible_cursor_cell() {
         let frame = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0); 9],
+            cells: vec![default_cell("A"); 9],
             width: 3,
             height: 3,
             cursor: Some(CursorState {
@@ -1345,8 +1344,18 @@ mod tests {
         };
         let drawn = frame_with_drawn_cursor(frame.clone());
 
-        assert_eq!(drawn.cells[5].modifier, REVERSED_MODIFIER);
-        assert_eq!(frame.cells[5].modifier, 0);
+        assert!(
+            drawn.cells[5]
+                .style
+                .flags
+                .contains(WireStyleFlags::REVERSED)
+        );
+        assert!(
+            !frame.cells[5]
+                .style
+                .flags
+                .contains(WireStyleFlags::REVERSED)
+        );
 
         let encoded = BlitEncoder::new().encode_with_suppressed_visible_cursor(&drawn, false);
         let output_str = String::from_utf8(encoded.bytes).expect("test precondition");
@@ -1368,7 +1377,7 @@ mod tests {
     #[test]
     fn drawn_cursor_ignores_hidden_cursor() {
         let frame = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0)],
+            cells: vec![default_cell("A")],
             width: 1,
             height: 1,
             cursor: Some(CursorState {
@@ -1386,7 +1395,7 @@ mod tests {
     #[test]
     fn blit_frame_emits_cursor_shape_before_visibility_without_touching_ime_anchor() {
         let frame = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0)],
+            cells: vec![default_cell("A")],
             width: 1,
             height: 1,
             cursor: Some(CursorState {
@@ -1432,7 +1441,7 @@ mod tests {
     #[test]
     fn blit_frame_repeats_explicit_hidden_cursor_anchor_after_synchronized_output() {
         let visible = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0); 9],
+            cells: vec![default_cell("A"); 9],
             width: 3,
             height: 3,
             cursor: Some(CursorState {
@@ -1444,7 +1453,7 @@ mod tests {
             hyperlinks: Vec::new(),
         };
         let hidden = FrameData {
-            cells: vec![make_cell("B", 0, 0, 0); 9],
+            cells: vec![default_cell("B"); 9],
             width: 3,
             height: 3,
             cursor: Some(CursorState {
@@ -1495,11 +1504,7 @@ mod tests {
         let mut frame = make_frame(
             3,
             1,
-            vec![
-                linked_cell("L", 0),
-                linked_cell("i", 0),
-                make_cell("!", 0, 0, 0),
-            ],
+            vec![linked_cell("L", 0), linked_cell("i", 0), default_cell("!")],
         );
         frame.hyperlinks.push("https://example.com".to_owned());
 
@@ -1532,10 +1537,10 @@ mod tests {
             2,
             2,
             vec![
-                make_cell("H", 0, 0, 0),
-                make_cell("i", 0, 0, 0),
-                make_cell("!", 0, 0, 0),
-                make_cell(" ", 0, 0, 0),
+                default_cell("H"),
+                default_cell("i"),
+                default_cell("!"),
+                default_cell(" "),
             ],
         );
 
@@ -1560,10 +1565,10 @@ mod tests {
             2,
             2,
             vec![
-                make_cell("H", 0, 0, 0),
-                make_cell("i", 0, 0, 0),
-                make_cell("!", 0, 0, 0),
-                make_cell(" ", 0, 0, 0),
+                default_cell("H"),
+                default_cell("i"),
+                default_cell("!"),
+                default_cell(" "),
             ],
         );
 
@@ -1572,10 +1577,10 @@ mod tests {
             2,
             2,
             vec![
-                make_cell("X", 0, 0, 0), // Changed
-                make_cell("i", 0, 0, 0), // Same
-                make_cell("!", 0, 0, 0), // Same
-                make_cell(" ", 0, 0, 0), // Same
+                default_cell("X"), // Changed
+                default_cell("i"), // Same
+                default_cell("!"), // Same
+                default_cell(" "), // Same
             ],
         );
 
@@ -1599,12 +1604,12 @@ mod tests {
         let prev = make_frame(
             WIDTH,
             HEIGHT,
-            vec![make_cell("A", 0, 0, 0); usize::from(WIDTH) * usize::from(HEIGHT)],
+            vec![default_cell("A"); usize::from(WIDTH) * usize::from(HEIGHT)],
         );
         let curr = make_frame(
             WIDTH,
             HEIGHT,
-            vec![make_cell("B", 0, 0, 0); usize::from(WIDTH) * usize::from(HEIGHT)],
+            vec![default_cell("B"); usize::from(WIDTH) * usize::from(HEIGHT)],
         );
 
         let mut output = Vec::new();
@@ -1624,8 +1629,8 @@ mod tests {
 
     #[test]
     fn batched_ascii_diff_replays_to_current_frame() {
-        let prev = make_frame(4, 3, vec![make_cell("A", 0, 0, 0); 12]);
-        let curr = make_frame(4, 3, vec![make_cell("B", 0, 0, 0); 12]);
+        let prev = make_frame(4, 3, vec![default_cell("A"); 12]);
+        let curr = make_frame(4, 3, vec![default_cell("B"); 12]);
         let mut terminal = crate::ghostty::Terminal::new(4, 3, 0);
 
         let mut initial = Vec::new();
@@ -1646,8 +1651,8 @@ mod tests {
 
     #[test]
     fn encoder_size_change_repaints_without_clearing() {
-        let prev = make_frame(2, 2, vec![make_cell("A", 0, 0, 0); 4]);
-        let curr = make_frame(3, 2, vec![make_cell("B", 0, 0, 0); 6]);
+        let prev = make_frame(2, 2, vec![default_cell("A"); 4]);
+        let curr = make_frame(3, 2, vec![default_cell("B"); 6]);
         let mut encoder = BlitEncoder::new();
         let initial = encoder.encode(&prev, false);
         encoder.commit(prev, &initial);
@@ -1661,7 +1666,7 @@ mod tests {
 
     #[test]
     fn encoder_forced_repaint_writes_all_cells_without_clearing() {
-        let frame = make_frame(3, 2, vec![make_cell("A", 0, 0, 0); 6]);
+        let frame = make_frame(3, 2, vec![default_cell("A"); 6]);
         let mut encoder = BlitEncoder::new();
         let initial = encoder.encode(&frame, false);
         encoder.commit(frame.clone(), &initial);
@@ -1679,14 +1684,14 @@ mod tests {
             4,
             2,
             vec![
-                make_cell("a", 0, 0, 0),
-                make_cell("b", 0, 0, 0),
-                make_cell("c", 0, 0, 0),
-                make_cell("d", 0, 0, 0),
-                make_cell("e", 0, 0, 0),
-                make_cell("f", 0, 0, 0),
-                make_cell("g", 0, 0, 0),
-                make_cell("h", 0, 0, 0),
+                default_cell("a"),
+                default_cell("b"),
+                default_cell("c"),
+                default_cell("d"),
+                default_cell("e"),
+                default_cell("f"),
+                default_cell("g"),
+                default_cell("h"),
             ],
         );
         let mut encoder = BlitEncoder::new();
@@ -1697,10 +1702,10 @@ mod tests {
             x: 0,
             y: 1,
             cells: vec![
-                make_cell("E", 0, 0, 0),
-                make_cell("f", 0, 0, 0),
-                make_cell("G", 0, 0, 0),
-                make_cell("h", 0, 0, 0),
+                default_cell("E"),
+                default_cell("f"),
+                default_cell("G"),
+                default_cell("h"),
             ],
         }];
         let cursor = Some(CursorState {
@@ -1727,11 +1732,7 @@ mod tests {
         let previous = make_frame(
             3,
             1,
-            vec![
-                make_cell("界", 0, 0, 0),
-                make_cell("z", 0, 0, 0),
-                make_cell("q", 0, 0, 0),
-            ],
+            vec![default_cell("界"), default_cell("z"), default_cell("q")],
         );
         let mut encoder = BlitEncoder::new();
         let initial = encoder.encode(&previous, false);
@@ -1740,7 +1741,7 @@ mod tests {
         let rows = vec![PaneSurfacePatchRow {
             x: 0,
             y: 0,
-            cells: vec![make_cell("x", 0, 0, 0), make_cell("z", 0, 0, 0)],
+            cells: vec![default_cell("x"), default_cell("z")],
         }];
         let mut expected = previous;
         expected.cells[0..2].clone_from_slice(&rows[0].cells);
@@ -1757,11 +1758,7 @@ mod tests {
         let frame = make_frame(
             3,
             1,
-            vec![
-                make_cell("a", 0, 0, 0),
-                make_cell("b", 0, 0, 0),
-                make_cell("c", 0, 0, 0),
-            ],
+            vec![default_cell("a"), default_cell("b"), default_cell("c")],
         );
         let mut encoder = BlitEncoder::new();
         let initial = encoder.encode(&frame, false);
@@ -1770,12 +1767,12 @@ mod tests {
             PaneSurfacePatchRow {
                 x: 0,
                 y: 0,
-                cells: vec![make_cell("A", 0, 0, 0), make_cell("B", 0, 0, 0)],
+                cells: vec![default_cell("A"), default_cell("B")],
             },
             PaneSurfacePatchRow {
                 x: 1,
                 y: 0,
-                cells: vec![make_cell("C", 0, 0, 0)],
+                cells: vec![default_cell("C")],
             },
         ];
 
@@ -1788,7 +1785,7 @@ mod tests {
         let tail = PaneSurfacePatchRow {
             x: 2,
             y: 0,
-            cells: vec![make_cell("Z", 0, 0, 0)],
+            cells: vec![default_cell("Z")],
         };
         let unsorted = vec![tail.clone(), rows[0].clone()];
         assert!(encoder.encode_patch(&unsorted, None, false).is_none());
@@ -1806,7 +1803,7 @@ mod tests {
 
     #[test]
     fn metadata_only_patches_do_not_write_but_cursor_changes_do() {
-        let mut frame = make_frame(3, 1, vec![make_cell("a", 0, 0, 0); 3]);
+        let mut frame = make_frame(3, 1, vec![default_cell("a"); 3]);
         let mut encoder = BlitEncoder::new();
         for cursor in [
             None,
@@ -1868,11 +1865,7 @@ mod tests {
         let mut previous = make_frame(
             3,
             1,
-            vec![
-                make_cell("a", 0, 0, 0),
-                make_cell("b", 0, 0, 0),
-                make_cell("c", 0, 0, 0),
-            ],
+            vec![default_cell("a"), default_cell("b"), default_cell("c")],
         );
         previous.cursor = Some(CursorState {
             x: 0,
@@ -1888,11 +1881,7 @@ mod tests {
         let rows = vec![PaneSurfacePatchRow {
             x: 0,
             y: 0,
-            cells: vec![
-                make_cell("A", 0, 0, 0),
-                make_cell("b", 0, 0, 0),
-                make_cell("c", 0, 0, 0),
-            ],
+            cells: vec![default_cell("A"), default_cell("b"), default_cell("c")],
         }];
         let cursor = Some(CursorState {
             x: 1,
@@ -1920,7 +1909,7 @@ mod tests {
     #[test]
     fn blit_frame_positions_cursor() {
         let frame = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0)],
+            cells: vec![default_cell("A")],
             width: 1,
             height: 1,
             cursor: Some(CursorState {
@@ -1945,7 +1934,7 @@ mod tests {
     #[test]
     fn blit_frame_hides_cursor_when_invisible() {
         let frame = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0)],
+            cells: vec![default_cell("A")],
             width: 1,
             height: 1,
             cursor: Some(CursorState {
@@ -1970,7 +1959,7 @@ mod tests {
     #[test]
     fn blit_frame_no_cursor_hides_cursor() {
         let frame = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0)],
+            cells: vec![default_cell("A")],
             width: 1,
             height: 1,
             cursor: None,
@@ -1991,7 +1980,7 @@ mod tests {
     fn blit_frame_restores_cursor_visibility() {
         // First frame: cursor hidden.
         let prev = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0)],
+            cells: vec![default_cell("A")],
             width: 1,
             height: 1,
             cursor: Some(CursorState {
@@ -2014,7 +2003,7 @@ mod tests {
 
         // Second frame: cursor visible - should restore visibility.
         let curr = FrameData {
-            cells: vec![make_cell("B", 0, 0, 0)],
+            cells: vec![default_cell("B")],
             width: 1,
             height: 1,
             cursor: Some(CursorState {
@@ -2042,7 +2031,7 @@ mod tests {
     #[test]
     fn blit_frame_positions_cursor_before_showing_it() {
         let prev = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0); 9],
+            cells: vec![default_cell("A"); 9],
             width: 3,
             height: 3,
             cursor: Some(CursorState {
@@ -2054,7 +2043,7 @@ mod tests {
             hyperlinks: Vec::new(),
         };
         let mut curr = prev.clone();
-        curr.cells[0] = make_cell("B", 0, 0, 0);
+        curr.cells[0] = default_cell("B");
         curr.cursor = Some(CursorState {
             x: 2,
             y: 2,
@@ -2081,7 +2070,7 @@ mod tests {
     #[test]
     fn blit_frame_parks_hidden_cursor_at_last_visible_position() {
         let visible = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0); 9],
+            cells: vec![default_cell("A"); 9],
             width: 3,
             height: 3,
             cursor: Some(CursorState {
@@ -2093,7 +2082,7 @@ mod tests {
             hyperlinks: Vec::new(),
         };
         let hidden = FrameData {
-            cells: vec![make_cell("B", 0, 0, 0); 9],
+            cells: vec![default_cell("B"); 9],
             width: 3,
             height: 3,
             cursor: None,
@@ -2134,7 +2123,7 @@ mod tests {
     #[test]
     fn blit_frame_parks_hidden_cursor_at_bottom_right_without_history() {
         let frame = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0); 6],
+            cells: vec![default_cell("A"); 6],
             width: 3,
             height: 2,
             cursor: None,
@@ -2163,7 +2152,7 @@ mod tests {
     #[test]
     fn blit_frame_hides_previous_visible_cursor_when_next_frame_has_none() {
         let prev = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0)],
+            cells: vec![default_cell("A")],
             width: 1,
             height: 1,
             cursor: Some(CursorState {
@@ -2175,7 +2164,7 @@ mod tests {
             hyperlinks: Vec::new(),
         };
         let curr = FrameData {
-            cells: vec![make_cell("B", 0, 0, 0)],
+            cells: vec![default_cell("B")],
             width: 1,
             height: 1,
             cursor: None,
@@ -2197,9 +2186,9 @@ mod tests {
     fn full_redraw_skips_trailing_cells_covered_by_wide_graphemes() {
         let frame = FrameData {
             cells: vec![
-                make_cell(WIDE_GRAPHEME, 0, 0, 0),
-                make_cell(" ", 0, 0, 0),
-                make_cell("Z", 0, 0, 0),
+                default_cell(WIDE_GRAPHEME),
+                default_cell(" "),
+                default_cell("Z"),
             ],
             width: 3,
             height: 1,
@@ -2220,9 +2209,9 @@ mod tests {
     fn full_redraw_skips_trailing_cells_covered_by_halfwidth_voiced_kana() {
         let frame = FrameData {
             cells: vec![
-                make_cell(HALFWIDTH_VOICED_KANA, 0, 0, 0),
-                make_skip_cell(" ", 0, 0, 0),
-                make_cell("Z", 0, 0, 0),
+                default_cell(HALFWIDTH_VOICED_KANA),
+                make_skip_cell(" "),
+                default_cell("Z"),
             ],
             width: 3,
             height: 1,
@@ -2243,9 +2232,9 @@ mod tests {
     fn diff_redraw_reveals_cells_hidden_by_previous_wide_graphemes() {
         let prev = FrameData {
             cells: vec![
-                make_cell(WIDE_GRAPHEME, 0, 0, 0),
-                make_cell(" ", 0, 0, 0),
-                make_cell("Z", 0, 0, 0),
+                default_cell(WIDE_GRAPHEME),
+                default_cell(" "),
+                default_cell("Z"),
             ],
             width: 3,
             height: 1,
@@ -2253,11 +2242,7 @@ mod tests {
             hyperlinks: Vec::new(),
         };
         let curr = FrameData {
-            cells: vec![
-                make_cell("A", 0, 0, 0),
-                make_cell(" ", 0, 0, 0),
-                make_cell("Z", 0, 0, 0),
-            ],
+            cells: vec![default_cell("A"), default_cell(" "), default_cell("Z")],
             width: 3,
             height: 1,
             cursor: None,
@@ -2278,11 +2263,7 @@ mod tests {
     #[test]
     fn diff_redraw_skips_new_trailing_cells_covered_by_wide_graphemes() {
         let prev = FrameData {
-            cells: vec![
-                make_cell("A", 0, 0, 0),
-                make_cell("B", 0, 0, 0),
-                make_cell("Z", 0, 0, 0),
-            ],
+            cells: vec![default_cell("A"), default_cell("B"), default_cell("Z")],
             width: 3,
             height: 1,
             cursor: None,
@@ -2290,9 +2271,9 @@ mod tests {
         };
         let curr = FrameData {
             cells: vec![
-                make_cell(WIDE_GRAPHEME, 0, 0, 0),
-                make_cell(" ", 0, 0, 0),
-                make_cell("Z", 0, 0, 0),
+                default_cell(WIDE_GRAPHEME),
+                default_cell(" "),
+                default_cell("Z"),
             ],
             width: 3,
             height: 1,
@@ -2312,9 +2293,9 @@ mod tests {
     fn diff_redraw_reveals_cells_hidden_by_previous_halfwidth_voiced_kana() {
         let prev = FrameData {
             cells: vec![
-                make_cell(HALFWIDTH_VOICED_KANA, 0, 0, 0),
-                make_skip_cell(" ", 0, 0, 0),
-                make_cell("Z", 0, 0, 0),
+                default_cell(HALFWIDTH_VOICED_KANA),
+                make_skip_cell(" "),
+                default_cell("Z"),
             ],
             width: 3,
             height: 1,
@@ -2322,11 +2303,7 @@ mod tests {
             hyperlinks: Vec::new(),
         };
         let curr = FrameData {
-            cells: vec![
-                make_cell("A", 0, 0, 0),
-                make_cell(" ", 0, 0, 0),
-                make_cell("Z", 0, 0, 0),
-            ],
+            cells: vec![default_cell("A"), default_cell(" "), default_cell("Z")],
             width: 3,
             height: 1,
             cursor: None,

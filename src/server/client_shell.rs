@@ -246,17 +246,10 @@ pub(super) fn render_pane_surface(
     app: &mut app::App,
     target: Option<crate::ui::TabSurfaceTarget>,
     area: Rect,
-    resize_panes: bool,
     cell_size: crate::terminal_cell_size::HostCellSize,
 ) -> Result<RenderedPaneSurface, SurfaceRenderDeferred> {
-    let layout = crate::ui::compute_tab_surface_for(
-        &app.state,
-        &app.terminal_runtimes,
-        target,
-        area,
-        resize_panes,
-        cell_size,
-    );
+    let layout =
+        crate::ui::compute_tab_surface_for(&app.state, &app.terminal_runtimes, target, area);
     let mut content_revisions_before = std::collections::HashMap::new();
     if let Some(target) = target {
         for pane in &layout.pane_infos {

@@ -126,10 +126,9 @@ pub struct PaneSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneAgentSessionSnapshot {
-    pub source: String,
-    pub agent: String,
-    pub kind: crate::agent_resume::AgentSessionRefKind,
-    pub value: String,
+    pub source: crate::agents::AgentSource,
+    pub agent: crate::agents::Agent,
+    pub session_ref: crate::agent_resume::AgentSessionRef,
 }
 
 /// Saved screen history of one pane. Files written by older builds also carry
@@ -260,10 +259,12 @@ fn capture_tab(
                 && let Some(session_ref) = authority.session_ref.as_ref()
             {
                 return Some(PaneAgentSessionSnapshot {
-                    source: authority.source.clone(),
-                    agent: authority.agent_label.clone(),
-                    kind: session_ref.kind,
-                    value: session_ref.value.clone(),
+                    source: crate::agents::AgentSource::from_pair(
+                        &authority.source,
+                        &authority.agent_label,
+                    )?,
+                    agent: crate::agents::Agent::parse_canonical_label(&authority.agent_label)?,
+                    session_ref: session_ref.clone(),
                 });
             }
             terminal
@@ -271,9 +272,8 @@ fn capture_tab(
                 .as_ref()
                 .map(|session| PaneAgentSessionSnapshot {
                     source: session.source.clone(),
-                    agent: session.agent.clone(),
-                    kind: session.session_ref.kind,
-                    value: session.session_ref.value.clone(),
+                    agent: session.agent,
+                    session_ref: session.session_ref.clone(),
                 })
         });
         panes.insert(
@@ -1372,7 +1372,7 @@ mod tests {
         );
         terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
             source: "shepr:pi".into(),
-            agent: "pi".into(),
+            agent: crate::agents::Agent::Pi,
             session_ref: crate::agent_resume::AgentSessionRef::path(session_path.clone())
                 .expect("test precondition"),
         });
@@ -1394,10 +1394,10 @@ mod tests {
         assert_eq!(agent_session.source, "shepr:pi");
         assert_eq!(agent_session.agent, "pi");
         assert_eq!(
-            agent_session.kind,
+            agent_session.session_ref.kind(),
             crate::agent_resume::AgentSessionRefKind::Path
         );
-        assert_eq!(agent_session.value, session_path);
+        assert_eq!(agent_session.session_ref.value_str(), session_path);
     }
 
     #[test]
@@ -1414,7 +1414,7 @@ mod tests {
             .expect("test precondition")
             .set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
                 source: "shepr:opencode".into(),
-                agent: "opencode".into(),
+                agent: crate::agents::Agent::OpenCode,
                 session_ref: crate::agent_resume::AgentSessionRef::id("opencode-session")
                     .expect("test precondition"),
             });
@@ -1428,10 +1428,10 @@ mod tests {
         assert_eq!(agent_session.source, "shepr:opencode");
         assert_eq!(agent_session.agent, "opencode");
         assert_eq!(
-            agent_session.kind,
+            agent_session.session_ref.kind(),
             crate::agent_resume::AgentSessionRefKind::Id
         );
-        assert_eq!(agent_session.value, "opencode-session");
+        assert_eq!(agent_session.session_ref.value_str(), "opencode-session");
     }
 
     #[test]

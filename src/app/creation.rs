@@ -410,8 +410,8 @@ fn terminal_agent_session_info(
         return Some(crate::api::schema::AgentSessionInfo {
             source: authority.source.clone(),
             agent: authority.agent_label.clone(),
-            kind: session_ref.kind,
-            value: session_ref.value.clone(),
+            kind: session_ref.kind(),
+            value: session_ref.value(),
         });
     }
 
@@ -419,9 +419,9 @@ fn terminal_agent_session_info(
         .persisted_agent_session
         .as_ref()
         .map(|session| crate::api::schema::AgentSessionInfo {
-            source: session.source.clone(),
-            agent: session.agent.clone(),
-            kind: session.session_ref.kind,
-            value: session.session_ref.value.clone(),
+            source: session.source.to_source_string(),
+            agent: session.agent.label().to_owned(),
+            kind: session.session_ref.kind(),
+            value: session.session_ref.value(),
         })
 }

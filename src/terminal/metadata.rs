@@ -142,7 +142,7 @@ impl TerminalState {
         agent_label
             .and_then(crate::detect::parse_agent_label)
             .or_else(|| {
-                crate::detect::Agent::ALL.iter().copied().find(|agent| {
+                crate::detect::Agent::all().find(|agent| {
                     let agent_label = crate::detect::agent_label(*agent);
                     crate::agent_resume::is_official_agent_source(source, agent_label)
                         || applies_to_source.is_some_and(|source| {

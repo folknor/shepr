@@ -89,18 +89,6 @@ bitflags.
 
 Reported by: terminal-core, protocol, app-state.
 
-## STR-006 - Cell style and wire style are untyped
-
-`CellStyle.underline: u8` ("0 none, 1 single...") beside a redundant
-`underlined: bool`; `blink` and `overline` always false. On the wire,
-`CellData.fg`/`bg: u32` use a private tag scheme (0x00 named, 0x01 indexed, 0x02
-RGB) where an unknown tag decodes to `Reset`; `modifier: u16` packs ratatui bits
-plus a 4-bit underline in bits 12-15. Proposed: `UnderlineStyle` enum, drop dead
-fields, `WireColor` enum and a `WireStyle { flags, underline }` owning the layout
-(CON-038).
-
-Reported by: terminal-core, protocol.
-
 ## STR-007 - Revisions and generations as bare u64
 
 `projection_revision`, `surface_revision`, `base_surface_revision` side by side in
@@ -182,23 +170,6 @@ presentation sync/ready, agent completions, surface delta, surface reuse; most
 of `endpoint.rs` then disappears.
 
 Reported by: protocol, client.
-
-## STR-014 - Agent identity and session references in resume
-
-`agent: &str` and `source: &str` beside `detect::Agent` in `AgentResumePlan`,
-`PersistedAgentSession`, `plan`, `session_ref_from_report`,
-`session_ref_from_snapshot`, `is_official_agent_source` (swappable pair);
-`persisted_session_from_launch_args` builds `"shepr:codex"`/`"codex"` by hand.
-`AgentSessionRef { kind, value: String }` has public fields, bypassed by the
-letta test (`value: "default:--yolo"`, BUG-034) and trusted by `plan()`; the letta
-`default:<agent_id>` sub-grammar is parsed at plan time.
-`normalize_session_start_source` returns `Option<String>` over 8 values;
-`dedupe_key` is a `format!`/`{:?}` string joined by NUL. Proposed:
-`Source::Official(Agent) | Custom(String)`, `enum AgentSessionRef { Id(SessionId),
-Path(AbsSessionPath), ... }` with private newtypes, a start-source enum, a derived
-key struct.
-
-Reported by: pane-detection.
 
 ## STR-015 - Pane runtime primitives
 
@@ -356,18 +327,6 @@ Proposed `pane/launch.rs`, `pane/teardown.rs`, `pane/process_probe.rs`,
 `DetectorState` struct with methods would let the detection loop be unit-tested
 without a runtime. Agent-specific code moves to the per-agent descriptor
 (CON-001).
-
-Reported by: pane-detection.
-
-## STR-030 - Integration layout and dependency direction
-
-`integration/registry.rs` depends on `crate::api::schema::IntegrationTarget`, so
-the wire schema owns the domain enum; proposed inversion. ~60 flat per-agent
-constants in `integration/mod.rs` hand-assembled into `[..; 18]`; adding an agent
-touches mod.rs, registry, targets, agent_resume and detect. Proposed: per-target
-module or `IntegrationSpec` bundling asset, version, events and path. With a
-descriptor table, `agent_resume.rs`'s large table tests become one loop over
-`Agent::ALL`.
 
 Reported by: pane-detection.
 
@@ -554,15 +513,6 @@ making messages nondeterministic in tests. Proposed: build the message at
 construction time.
 
 Reported by: client.
-
-## STR-047 - compute_view resizes PTYs as a side effect
-
-The sidebar kit and metadata tokens have moved. Remaining: `compute_view_*` and
-`compute_tab_surface(resize_panes: bool)` resize PTYs (including background
-tabs) as a side effect; proposed: return the layout and apply sizes in a separate
-`apply_pane_sizes(layout)`.
-
-Reported by: ui.
 
 ## STR-048 - Restructure client/shell
 
