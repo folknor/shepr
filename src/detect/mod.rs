@@ -1683,11 +1683,12 @@ mod tests {
 
         let job = foreground_job(pid);
         let process_group_id = job.as_ref().map(|job| job.process_group_id).unwrap_or(pid);
+        let process_group_id =
+            i32::try_from(process_group_id).expect("test process group fits pid_t");
+        // SAFETY: the process group belongs to this test's PTY child; a negative PID
+        // targets that group and the value was checked before conversion.
         unsafe {
-            libc::kill(
-                -i32::try_from(process_group_id).unwrap_or(i32::MAX),
-                libc::SIGKILL,
-            );
+            libc::kill(-process_group_id, libc::SIGKILL);
         }
         child.wait().ok();
 

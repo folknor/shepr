@@ -11,7 +11,7 @@ pub fn parse_raw_input_bytes_sync(data: &[u8]) -> Vec<RawInputEvent> {
     events
 }
 
-use crate::input::{TerminalKey, TextCommit, parse_terminal_key_sequence};
+use crate::input::{TerminalKey, parse_terminal_key_sequence};
 use crate::terminal_theme::{
     DefaultColorKind, HostAppearance, RgbColor, parse_default_color_response,
     parse_palette_color_response,
@@ -84,7 +84,6 @@ fn partial_suffix_len(haystack: &[u8], needle: &[u8]) -> usize {
 #[derive(Debug)]
 pub enum RawInputEvent {
     Key(TerminalKey),
-    Text(TextCommit),
     Paste(String),
     Mouse(MouseEvent),
     OuterFocusGained,
@@ -108,7 +107,6 @@ pub enum RawInputEvent {
 fn raw_input_event_kind(event: &RawInputEvent) -> &'static str {
     match event {
         RawInputEvent::Key(_) => "key",
-        RawInputEvent::Text(_) => "text",
         RawInputEvent::Paste(_) => "paste",
         RawInputEvent::Mouse(_) => "mouse",
         RawInputEvent::OuterFocusGained => "focus_gained",

@@ -1,5 +1,15 @@
 use super::*;
 
+/// Cell range of a one-row `bar` inside `frame`, or `None` when any of it lies outside.
+fn mode_bar_range(frame: &FrameData, bar: Rect) -> Option<std::ops::Range<usize>> {
+    if bar.y >= frame.height || bar.right() > frame.width {
+        return None;
+    }
+    let start = usize::from(bar.y) * usize::from(frame.width) + usize::from(bar.x);
+    let end = start + usize::from(bar.width);
+    (end <= frame.cells.len()).then_some(start..end)
+}
+
 fn restore_mode_bar(
     frame: &mut FrameData,
     bar: Option<Rect>,
@@ -8,8 +18,10 @@ fn restore_mode_bar(
     let (Some(bar), Some(cells)) = (bar, cells) else {
         return;
     };
-    let start = usize::from(bar.y) * usize::from(frame.width) + usize::from(bar.x);
-    frame.cells[start..start + usize::from(bar.width)].clone_from_slice(cells);
+    let Some(range) = mode_bar_range(frame, bar).filter(|range| range.len() == cells.len()) else {
+        return;
+    };
+    frame.cells[range].clone_from_slice(cells);
     if frame
         .cursor
         .as_ref()
@@ -46,7 +58,8 @@ impl ClientShellState {
                     && pending.target.endpoint_id == self.active_endpoint_id
                     && self.navigation_target_valid(&pending.target)
             });
-        // A resize invalidates pane geometry, not the healthy Local workspace chrome.
+        // No pane surface yet (a fresh connection or projection) says nothing against a
+        // healthy Local's workspace chrome; keep it rather than the machine list.
         let local_snapshot = self.snapshot.as_deref().filter(|_| {
             self.endpoints.len() == 1
                 && !self.sidebar_collapsed
@@ -230,54 +243,66 @@ impl ClientShellState {
                 workspace_drop_indicator_row,
             },
         );
-        // Pane hits are the surface's own geometry offset into this layout, not clipped to
-        // `layout.pane_surface`. The surface may have been produced for another layout: a
-        // resize or sidebar toggle can race a surface already in flight, and the tab bar
-        // appears (shrinking the pane area by a row) when a second tab opens without the
-        // surface being invalidated. `blit_pane_surface` clips; every later draw that uses
-        // these rects must stay bounds-safe (`Buffer::cell_mut`, never `buffer[(x, y)]`).
+        // The surface may have been produced for another layout: a resize or sidebar toggle
+        // keeps the retained surface until the resized one arrives, a resize can race a surface
+        // already in flight, and the tab bar appears (shrinking the pane area by a row) when a
+        // second tab opens. `blit_pane_surface` clips the cells; the hits are clipped to match
+        // (`clip_pane_hit`), so mouse input and the copy cursor never target rows or
+        // columns that are not on screen. Later draws that use these rects still go through
+        // `Buffer::cell_mut`, never `buffer[(x, y)]`.
+        let surface_overflows = surface_overflows_area(surface, layout.pane_surface);
         self.hits.panes = surface
             .panes
             .iter()
-            .map(|pane| PaneHit {
-                rect: Rect::new(
-                    layout.pane_surface.x.saturating_add(pane.rect.x),
-                    layout.pane_surface.y.saturating_add(pane.rect.y),
-                    pane.rect.width,
-                    pane.rect.height,
-                ),
-                inner_rect: Rect::new(
-                    layout.pane_surface.x.saturating_add(pane.inner_rect.x),
-                    layout.pane_surface.y.saturating_add(pane.inner_rect.y),
-                    pane.inner_rect.width,
-                    pane.inner_rect.height,
-                ),
-                scrollbar_rect: pane.scrollbar_rect.map(|rect| {
-                    Rect::new(
-                        layout.pane_surface.x.saturating_add(rect.x),
-                        layout.pane_surface.y.saturating_add(rect.y),
-                        rect.width,
-                        rect.height,
-                    )
-                }),
-                scroll: pane.scroll.map(|metrics| crate::pane::ScrollMetrics {
-                    offset_from_bottom: usize::try_from(metrics.offset_from_bottom)
-                        .unwrap_or(usize::MAX),
-                    max_offset_from_bottom: usize::try_from(metrics.max_offset_from_bottom)
-                        .unwrap_or(usize::MAX),
-                    viewport_rows: usize::try_from(metrics.viewport_rows).unwrap_or(usize::MAX),
-                }),
-                pane_id: pane.pane_id.clone(),
-                mouse_reporting: pane.mouse_reporting,
-                sgr_pixel_mouse: pane.sgr_pixel_mouse,
-                pixel_width: pane.pixel_width,
-                pixel_height: pane.pixel_height,
+            .filter_map(|pane| {
+                let hit = PaneHit {
+                    rect: Rect::new(
+                        layout.pane_surface.x.saturating_add(pane.rect.x),
+                        layout.pane_surface.y.saturating_add(pane.rect.y),
+                        pane.rect.width,
+                        pane.rect.height,
+                    ),
+                    inner_rect: Rect::new(
+                        layout.pane_surface.x.saturating_add(pane.inner_rect.x),
+                        layout.pane_surface.y.saturating_add(pane.inner_rect.y),
+                        pane.inner_rect.width,
+                        pane.inner_rect.height,
+                    ),
+                    scrollbar_rect: pane.scrollbar_rect.map(|rect| {
+                        Rect::new(
+                            layout.pane_surface.x.saturating_add(rect.x),
+                            layout.pane_surface.y.saturating_add(rect.y),
+                            rect.width,
+                            rect.height,
+                        )
+                    }),
+                    scroll: pane.scroll.map(|metrics| crate::pane::ScrollMetrics {
+                        offset_from_bottom: usize::try_from(metrics.offset_from_bottom)
+                            .unwrap_or(usize::MAX),
+                        max_offset_from_bottom: usize::try_from(metrics.max_offset_from_bottom)
+                            .unwrap_or(usize::MAX),
+                        viewport_rows: usize::try_from(metrics.viewport_rows).unwrap_or(usize::MAX),
+                    }),
+                    pane_id: pane.pane_id.clone(),
+                    mouse_reporting: pane.mouse_reporting,
+                    sgr_pixel_mouse: pane.sgr_pixel_mouse,
+                    pixel_width: pane.pixel_width,
+                    pixel_height: pane.pixel_height,
+                };
+                if surface_overflows {
+                    clip_pane_hit(hit, layout.pane_surface)
+                } else {
+                    Some(hit)
+                }
             })
             .collect();
         let topology_signature = pane_surface_topology_signature(surface);
         self.hits.pane_splits = surface
             .splits
             .iter()
+            // A split dragged against geometry the screen does not show would send ratios
+            // computed from the wrong extent; splits wait for a surface that fits.
+            .filter(|_| !surface_overflows)
             .map(|split| PaneSplitHit {
                 direction: split.direction,
                 pos: match split.direction {
@@ -355,10 +380,9 @@ impl ClientShellState {
             self.hits.tab_scroll_right = Rect::default();
         }
         let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
-        let mode_bar_cells = mode_bar.map(|bar| {
-            let start = usize::from(bar.y) * usize::from(frame.width) + usize::from(bar.x);
-            frame.cells[start..start + usize::from(bar.width)].to_vec()
-        });
+        let mode_bar_cells = mode_bar
+            .and_then(|bar| mode_bar_range(&frame, bar))
+            .map(|range| frame.cells[range].to_vec());
         blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let has_selection = self
@@ -579,6 +603,49 @@ impl ClientShellState {
         self.endpoint_notice_drawn(now);
         Some(crate::client::frame_output::ComposedFrame { frame })
     }
+}
+
+/// Whether the retained surface reaches past the pane area it is drawn into. A smaller surface
+/// (the panes have not grown into a larger area yet) is drawn whole and its hits stay exact.
+pub(super) fn surface_overflows_area(surface: &PaneSurfaceFrame, area: Rect) -> bool {
+    surface.frame.width > area.width || surface.frame.height > area.height
+}
+
+fn clip_rect(rect: Rect, area: Rect) -> Rect {
+    let x = rect.x.max(area.x);
+    let y = rect.y.max(area.y);
+    let right = rect.right().min(area.right());
+    let bottom = rect.bottom().min(area.bottom());
+    Rect {
+        x,
+        y,
+        width: right.saturating_sub(x),
+        height: bottom.saturating_sub(y),
+    }
+}
+
+/// Clips a pane hit from an oversized surface to the visible pane area. Surface rects start at
+/// or after the area's origin, so clipping keeps each origin and mouse coordinates keep mapping
+/// to the same pane cells; a pane with no visible content cell is dropped. Pixel extents
+/// describe the whole pane and would stretch over the clipped rect, so a clipped hit reports
+/// cell positions only. Copy-mode coherence compares geometry with `inner_rect`, so the copy
+/// cursor and search highlights of a clipped pane wait for a surface that fits.
+fn clip_pane_hit(mut hit: PaneHit, area: Rect) -> Option<PaneHit> {
+    let inner = clip_rect(hit.inner_rect, area);
+    if inner.is_empty() {
+        return None;
+    }
+    if inner != hit.inner_rect {
+        hit.pixel_width = 0;
+        hit.pixel_height = 0;
+    }
+    hit.inner_rect = inner;
+    hit.rect = clip_rect(hit.rect, area);
+    hit.scrollbar_rect = hit
+        .scrollbar_rect
+        .map(|rect| clip_rect(rect, area))
+        .filter(|rect| !rect.is_empty());
+    Some(hit)
 }
 
 fn client_copy_surface_coherent(copy_mode: Option<&ClientCopyModeState>, hit: &PaneHit) -> bool {

@@ -79,6 +79,8 @@ impl App {
         let resolved = self.resolve_agent_target(target)?;
         self.state
             .focus_pane_in_workspace(resolved.ws_idx, resolved.pane_id);
+        // Asking for an agent by name acknowledges its result even when the
+        // host terminal is unfocused (see `mark_active_tab_seen`).
         self.state.mark_active_tab_seen();
         self.state.mode = crate::app::Mode::Terminal;
         self.agent_info(resolved.ws_idx, resolved.pane_id)
@@ -207,17 +209,27 @@ impl App {
             return Err(AgentStartError::InvalidTimeout);
         }
 
-        let now = Instant::now();
         let terminal = self
             .state
             .terminals
             .get_mut(&terminal_id)
             .ok_or_else(|| AgentStartError::TargetUnavailable(params.pane_id.clone()))?;
-        terminal.begin_managed_agent(name.clone(), kind, now, AGENT_START_SETTLE_DELAY, timeout);
-        if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
-            terminal.clear_agent_name();
-            return Err(AgentStartError::InputFailed(err.to_string()));
-        }
+        // Queue the command before registering the managed launch: a rejected
+        // write then leaves the terminal untouched, so there is no rollback to
+        // keep in step with everything `begin_managed_agent` sets (name, owner,
+        // managed phase, process-acquisition flag). Nothing can observe the
+        // pane between the two calls: the write is only queued here, and
+        // detection results reach this state through the same main loop.
+        runtime
+            .try_send_bytes(Bytes::from(bytes))
+            .map_err(|err| AgentStartError::InputFailed(err.to_string()))?;
+        terminal.begin_managed_agent(
+            name.clone(),
+            kind,
+            Instant::now(),
+            AGENT_START_SETTLE_DELAY,
+            timeout,
+        );
         if let Some(session) = persisted_agent_session {
             terminal.set_managed_agent_launch_session(session);
         }

@@ -178,7 +178,6 @@ pub(super) fn render_collapsed(
                 rect,
                 endpoint_id: endpoint.endpoint_id.clone(),
                 workspace_id: workspace.workspace_id.clone(),
-                indented: false,
             });
             y = y.saturating_add(1);
         }
@@ -298,7 +297,6 @@ pub(super) fn render_expanded(
                         let len = super::sidebar::workspace_rows(
                             workspace,
                             super::sidebar::displayed_workspace_status(workspace),
-                            entry.indented,
                             &config.spaces,
                         )
                         .len()
@@ -317,9 +315,9 @@ pub(super) fn render_expanded(
                 Row::Workspace { endpoint, .. },
                 Some(Row::Workspace {
                     endpoint: next_endpoint,
-                    entry,
+                    ..
                 }),
-            ) if endpoint == next_endpoint => u16::from(!entry.indented) * config.spaces.row_gap,
+            ) if endpoint == next_endpoint => config.spaces.row_gap,
             _ => 0,
         })
         .collect::<Vec<_>>();
@@ -416,12 +414,7 @@ pub(super) fn render_expanded(
                     continue;
                 };
                 let status = super::sidebar::displayed_workspace_status(workspace);
-                let tokens = super::sidebar::workspace_rows(
-                    workspace,
-                    status,
-                    entry.indented,
-                    &config.spaces,
-                );
+                let tokens = super::sidebar::workspace_rows(workspace, status, &config.spaces);
                 let height = u16::try_from(tokens.len().max(1))
                     .unwrap_or(u16::MAX)
                     .min(body.height);
@@ -447,7 +440,6 @@ pub(super) fn render_expanded(
                     nested,
                     status,
                     config.status_indicators,
-                    entry,
                     &tokens,
                     endpoint_active && workspace.focused,
                     selected,
@@ -467,7 +459,6 @@ pub(super) fn render_expanded(
                     rect,
                     endpoint_id: endpoint.endpoint_id.clone(),
                     workspace_id: workspace.workspace_id.clone(),
-                    indented: entry.indented,
                 });
                 y = y
                     .saturating_add(height)

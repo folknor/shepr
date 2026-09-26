@@ -12,8 +12,20 @@ impl App {
             .find_map(|(ws_idx, ws)| ws.pane_state(pane_id).map(|pane| (ws_idx, pane)))
     }
 
+    /// Public id of the workspace at `ws_idx`. Callers pass an index they just
+    /// resolved; a stale one is a caller bug, reported and answered with an
+    /// empty id rather than a panic that would take the server down.
     pub(crate) fn public_workspace_id(&self, ws_idx: usize) -> String {
-        self.state.workspaces[ws_idx].id.clone()
+        match self.state.workspaces.get(ws_idx) {
+            Some(ws) => ws.id.clone(),
+            None => {
+                tracing::warn!(
+                    ws_idx,
+                    "public workspace id requested for a missing workspace"
+                );
+                String::new()
+            }
+        }
     }
 
     pub(crate) fn public_tab_id(&self, ws_idx: usize, tab_idx: usize) -> Option<String> {
@@ -37,15 +49,29 @@ impl App {
         ))
     }
 
+    /// The tab holding `pane_id` in workspace `ws_idx`, or `None` when either
+    /// is gone. API handlers hold an index parsed from a public id earlier in
+    /// the same request; looking it up rather than indexing keeps a stale
+    /// index a not-found answer instead of a server panic.
+    pub(crate) fn tab_index_for_pane(
+        &self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+    ) -> Option<usize> {
+        self.state
+            .workspaces
+            .get(ws_idx)?
+            .find_tab_index_for_pane(pane_id)
+    }
+
     pub(super) fn pane_launch_env(
         &self,
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
         extra_env: Vec<(String, String)>,
     ) -> Option<crate::pane::PaneLaunchEnv> {
+        let tab_idx = self.tab_index_for_pane(ws_idx, pane_id)?;
         let workspace_id = self.public_workspace_id(ws_idx);
-        let ws = self.state.workspaces.get(ws_idx)?;
-        let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
         let tab_id = self.public_tab_id(ws_idx, tab_idx)?;
         let pane_id = self.public_pane_id(ws_idx, pane_id)?;
         Some(

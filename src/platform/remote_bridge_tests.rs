@@ -14,8 +14,7 @@ fn bridge_child() {
     };
     let stream = crate::ipc::connect_local_stream(&PathBuf::from(path)).expect("test precondition");
     let timeout = (std::env::var_os("SHEPR_BRIDGE_TEST_LEGACY").is_none()).then_some(TIMEOUT);
-    super::unix_common::forward_remote_bridge_stdio_with_timeout(stream, timeout)
-        .expect("test precondition");
+    super::forward_remote_bridge_stdio_with_timeout(stream, timeout).expect("test precondition");
 }
 
 struct Bridge {

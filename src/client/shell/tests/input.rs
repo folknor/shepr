@@ -237,9 +237,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
         KeyCode::Char('/'),
         KeyModifiers::empty(),
     ))]);
-    state.handle_raw_events(vec![RawInputEvent::Text(crate::input::TextCommit::new(
-        "needle",
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Paste("needle".into())]);
     let initial = state.handle_raw_events(vec![RawInputEvent::Key(
         crate::input::TerminalKey::new(KeyCode::Enter, KeyModifiers::empty()),
     )]);
@@ -660,7 +658,7 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
     );
     state.set_pane_surface(pane_surface);
     let mut selection =
-        crate::selection::Selection::absolute_range("pane_1".to_owned(), (0, 0), (0, 1));
+        crate::selection::Selection::absolute_range("pane_1".to_owned(), (0u64, 0), (0, 1));
     assert!(selection.finish());
     state.selection = Some(selection);
     let frame = state.compose(106, 20).expect("composed frame");

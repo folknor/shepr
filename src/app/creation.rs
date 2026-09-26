@@ -20,7 +20,8 @@ pub(crate) fn resolve_new_terminal_cwd(
         NewTerminalCwdConfig::Current => {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
         }
-        NewTerminalCwdConfig::Path(path) => crate::pathutil::expand_tilde_path(path),
+        NewTerminalCwdConfig::Path(path) => crate::pathutil::expand_tilde_path(path)
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))),
     }
 }
 
@@ -311,16 +312,21 @@ impl App {
                 .focused_pane_id()
                 .is_some_and(|focused| focused == pane_id);
         let presentation = terminal.effective_presentation();
+        let tab = ws.tabs.get(tab_idx)?;
         Some(crate::api::schema::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             terminal_id: terminal.id.to_string(),
             workspace_id: self.public_workspace_id(ws_idx),
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             focused,
-            cwd: ws.tabs[tab_idx]
+            cwd: tab
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
-            foreground_cwd: ws.tabs[tab_idx]
+            // Runs on the server main loop once per pane for every `pane.get`,
+            // `pane.list`, `session.snapshot` and `pane.updated` event, so the
+            // runtime accessor behind it must stay a few /proc reads and never
+            // wait on the PTY actor thread.
+            foreground_cwd: tab
                 .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
             restore_error: terminal.restore_error.clone(),

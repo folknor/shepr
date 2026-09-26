@@ -397,9 +397,8 @@ impl ClientPaneInputEvent {
                 let _ = (attach_windows_source, windows_record);
                 crate::raw_input::RawInputEvent::Key(key)
             }
-            Self::TextCommit(text) => {
-                crate::raw_input::RawInputEvent::Text(crate::input::TextCommit::new(text.clone()))
-            }
+            // Text commits are handled directly by pane input before this conversion.
+            Self::TextCommit(_) => crate::raw_input::RawInputEvent::Unsupported,
             Self::Mouse {
                 kind,
                 position,
@@ -1060,6 +1059,18 @@ pub enum ServerMessage {
 
     /// Named JSON control message for client-owned shells.
     EndpointControl { kind: String, data: String },
+
+    /// Something a direct terminal-attach client must tell its user because
+    /// the server could not do what the user asked: input dropped because the
+    /// pane stopped reading, a paste over the input limit rejected, or a
+    /// screen too large to send in one frame. The text is complete and
+    /// human-readable; the client shows it as-is.
+    ///
+    /// The server rate-limits it: a repeating condition (dropped input,
+    /// oversized frames) is sent once until it clears, a rejected paste once
+    /// per paste. The connection stays up either way, so the client must not
+    /// treat this as fatal and must keep the attached terminal usable.
+    DirectTerminalNotice { message: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -1938,6 +1949,15 @@ mod tests {
         let msg = ServerMessage::DirectTerminalKeyboardProtocol {
             flags: 15,
             modify_other_keys_level: 1,
+        };
+        assert_eq!(roundtrip(&msg)?, msg);
+        Ok(())
+    }
+
+    #[test]
+    fn direct_terminal_notice_roundtrip() -> TestResult {
+        let msg = ServerMessage::DirectTerminalNotice {
+            message: "Paste rejected: too large".to_owned(),
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())

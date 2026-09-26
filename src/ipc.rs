@@ -122,13 +122,48 @@ pub(crate) fn set_local_stream_polling(stream: &mut LocalStream, enabled: bool) 
 /// Mode applied by [`bind_private_local_listener`]: owner read/write only.
 const PRIVATE_SOCKET_MODE: u32 = 0o600;
 
-/// Binds a listener and restricts the socket file to its owner before
-/// returning. Callers may still tighten or re-apply the mode afterwards.
+/// How many staging directory names are tried before giving up on staging.
+/// A collision needs another process to have created exactly that name, so
+/// more than one retry only matters against someone guessing names in a
+/// shared parent directory.
+const STAGING_ATTEMPTS: u32 = 4;
+
+/// Binds a listener at `path` so the socket is never reachable with anything
+/// looser than owner-only permissions.
 ///
-/// The socket file exists with umask-derived permissions for the moment
-/// between `bind` and `chmod`; closing that window needs a private parent
-/// directory, which is the caller's to provide.
+/// Binding at `path` and then chmodding leaves the socket connectable with
+/// umask-derived permissions in between. Instead the socket is bound inside a
+/// fresh 0700 staging directory next to `path`, restricted to 0600 there, and
+/// then hard-linked into place. `link` fails if `path` already exists, so a
+/// listener that raced us to the path is never replaced (a `bind` at the path
+/// would have failed the same way); that is reported as `AddrInUse`. The
+/// listener is bound to the inode, so connections through the new name reach
+/// it, and a socket identity recorded from `path` afterwards is that inode.
+///
+/// If staging cannot be used (a staged path over the socket path length
+/// limit, or a filesystem without hard links), this falls back to
+/// bind-then-chmod at `path`, which still ends owner-only. Callers may tighten
+/// or re-apply the mode afterwards. Access is also checked per connection by
+/// [`peer_is_same_user`]; the file mode is not the only control.
 pub(crate) fn bind_private_local_listener(path: &Path) -> io::Result<LocalListener> {
+    match bind_via_private_staging(path) {
+        Ok(listener) => Ok(listener),
+        Err(StagedBindError::Busy) => Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!("socket busy at {}", path.display()),
+        )),
+        Err(StagedBindError::Unavailable(err)) => {
+            tracing::warn!(
+                path = %path.display(),
+                err = %err,
+                "private socket staging failed; binding in place"
+            );
+            bind_in_place_then_restrict(path)
+        }
+    }
+}
+
+fn bind_in_place_then_restrict(path: &Path) -> io::Result<LocalListener> {
     let listener = bind_local_listener(path)?;
     if let Err(error) = restrict_socket_permissions(path, PRIVATE_SOCKET_MODE) {
         drop(listener);
@@ -136,6 +171,117 @@ pub(crate) fn bind_private_local_listener(path: &Path) -> io::Result<LocalListen
         return Err(error);
     }
     Ok(listener)
+}
+
+enum StagedBindError {
+    /// Something already exists at the target path.
+    Busy,
+    /// Staging itself failed; binding in place may still work.
+    Unavailable(io::Error),
+}
+
+fn bind_via_private_staging(path: &Path) -> Result<LocalListener, StagedBindError> {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut last_error = None;
+    for attempt in 0..STAGING_ATTEMPTS {
+        // Kept short: the staged path must fit the socket path length limit.
+        let staging_dir = parent.join(format!(".shepr-{}-{nanos:x}-{attempt}", std::process::id()));
+        // A name somebody else already created is never used: the directory
+        // must be ours and fresh for the 0700 guarantee to hold.
+        match fs::DirBuilder::new().mode(0o700).create(&staging_dir) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                last_error = Some(err);
+                continue;
+            }
+            Err(err) => return Err(StagedBindError::Unavailable(err)),
+        }
+        let staged = staging_dir.join("s");
+        let result = bind_staged_and_link(&staged, path);
+        let _ = fs::remove_file(&staged);
+        let _ = fs::remove_dir(&staging_dir);
+        return result;
+    }
+    Err(StagedBindError::Unavailable(last_error.unwrap_or_else(
+        || {
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "no free staging directory name",
+            )
+        },
+    )))
+}
+
+fn bind_staged_and_link(staged: &Path, path: &Path) -> Result<LocalListener, StagedBindError> {
+    let listener = bind_local_listener(staged).map_err(StagedBindError::Unavailable)?;
+    restrict_socket_permissions(staged, PRIVATE_SOCKET_MODE)
+        .map_err(StagedBindError::Unavailable)?;
+    match fs::hard_link(staged, path) {
+        Ok(()) => Ok(listener),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Err(StagedBindError::Busy),
+        Err(err) => Err(StagedBindError::Unavailable(err)),
+    }
+}
+
+/// Reports whether the peer of an accepted local connection runs as the same
+/// user as this process (its effective uid), or as root.
+///
+/// Every shepr socket is owner-only, so in normal operation this always
+/// holds; it is a second check that does not depend on the socket file's
+/// mode, which can be loosened after the fact or, on the in-place bind
+/// fallback, briefly be umask-derived. Root is admitted because root can
+/// connect through the 0600 mode anyway, and refusing it would only break
+/// `sudo` use without protecting anything. The credentials are the ones the
+/// peer had when it connected (`SO_PEERCRED`), so a later privilege drop by
+/// the peer does not change the answer.
+pub(crate) fn peer_is_same_user(stream: &LocalStream) -> io::Result<bool> {
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+
+    let fd = match stream {
+        LocalStream::UdSocket(inner) => inner.as_fd().as_raw_fd(),
+    };
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    // `size_of::<ucred>()` is a small compile-time constant, well within
+    // `socklen_t` (u32) range, so this cast never truncates.
+    #[allow(clippy::cast_possible_truncation)]
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `cred` is a valid, exclusively borrowed `ucred` and `len` holds
+    // its exact size, which is what `SO_PEERCRED` writes; `fd` stays open for
+    // the call because `stream` is borrowed.
+    let result = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut cred).cast::<libc::c_void>(),
+            &raw mut len,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if len as usize != std::mem::size_of::<libc::ucred>() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "SO_PEERCRED returned a short credential record",
+        ));
+    }
+    // SAFETY: `geteuid` has no preconditions and cannot fail.
+    let own_uid = unsafe { libc::geteuid() };
+    Ok(cred.uid == own_uid || cred.uid == 0)
 }
 
 /// Reader that enforces one overall deadline across any number of reads.
@@ -289,6 +435,51 @@ mod tests {
         drop(listener);
         let _ = fs::remove_file(&path);
         assert_eq!(mode, PRIVATE_SOCKET_MODE);
+    }
+
+    #[test]
+    fn private_listener_is_linked_into_place_and_never_replaces_a_path() {
+        use interprocess::local_socket::traits::Listener as _;
+
+        let dir = test_socket_path("staging-dir");
+        fs::create_dir_all(&dir).expect("test precondition");
+        let path = dir.join("api.sock");
+
+        let listener = bind_private_local_listener(&path).expect("bind");
+        assert_eq!(
+            fs::metadata(&path).expect("socket exists").mode() & 0o777,
+            PRIVATE_SOCKET_MODE
+        );
+        // The staging directory is gone; only the socket is left, and the
+        // linked name reaches the listener.
+        let entries = fs::read_dir(&dir)
+            .expect("test precondition")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec![std::ffi::OsString::from("api.sock")]);
+        let _client = connect_local_stream(&path).expect("connect through the linked name");
+        assert!(listener.accept().is_ok());
+
+        // A second bind never replaces what is already there.
+        let err = bind_private_local_listener(&path).expect_err("path is taken");
+        assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
+        drop(listener);
+
+        let plain = dir.join("plain");
+        fs::write(&plain, b"keep").expect("test precondition");
+        let err = bind_private_local_listener(&plain).expect_err("path is taken");
+        assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
+        assert_eq!(fs::read(&plain).expect("file kept"), b"keep");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn peer_credentials_admit_this_user() {
+        let (client, server) = connected_pair("peercred");
+        assert!(peer_is_same_user(&server).expect("SO_PEERCRED"));
+        assert!(peer_is_same_user(&client).expect("SO_PEERCRED"));
     }
 
     fn connected_pair(name: &str) -> (LocalStream, LocalStream) {

@@ -192,36 +192,10 @@ pub(super) fn resize_tab_panes(
     area: Rect,
     cell_size: crate::terminal_cell_size::HostCellSize,
 ) {
-    let multi_pane = tab.layout.pane_count() > 1;
-
-    if tab.zoomed {
-        let focused_id = tab.layout.focused();
-        if let Some((terminal_id, rt)) = runtime_for_tab_pane(terminal_runtimes, tab, focused_id) {
-            let borders = if app.pane_borders.shows_borders(multi_pane) && app.pane_outer_borders {
-                Borders::ALL
-            } else {
-                Borders::NONE
-            };
-            let pane_inner = pane_inner_rect(area, borders);
-            let inner_rect = terminal_inner_rect(rt, pane_inner, app.pane_scrollbars);
-            if !app.direct_attach_resize_locks.contains(terminal_id) {
-                rt.resize(
-                    inner_rect.height,
-                    inner_rect.width,
-                    cell_size.width_px,
-                    cell_size.height_px,
-                );
-            }
-        }
-        return;
-    }
-
-    for info in apply_pane_chrome(
-        &tab.layout.panes(area),
-        app.pane_borders,
-        app.pane_gaps,
-        app.pane_outer_borders,
-    ) {
+    for info in app
+        .pane_geometry_in(area)
+        .tab_panes(&tab.layout, tab.zoomed)
+    {
         let pane_inner = pane_inner_rect(info.rect, info.borders);
 
         if let Some((terminal_id, rt)) = runtime_for_tab_pane(terminal_runtimes, tab, info.id) {
@@ -256,50 +230,9 @@ pub(super) fn compute_pane_infos_for_tab(
         return Vec::new();
     };
 
-    let multi_pane = tab.layout.pane_count() > 1;
-
-    if tab.zoomed {
-        let focused_id = tab.layout.focused();
-        let borders = if app.pane_borders.shows_borders(multi_pane) && app.pane_outer_borders {
-            Borders::ALL
-        } else {
-            Borders::NONE
-        };
-        let pane_inner = pane_inner_rect(area, borders);
-        let mut inner_rect = pane_inner;
-        let mut scrollbar_rect = None;
-        if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, focused_id) {
-            (inner_rect, scrollbar_rect) =
-                stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
-            if resize_panes
-                && tab.terminal_id(focused_id).is_some_and(|terminal_id| {
-                    !app.direct_attach_resize_locks.contains(terminal_id)
-                })
-            {
-                rt.resize(
-                    inner_rect.height,
-                    inner_rect.width,
-                    cell_size.width_px,
-                    cell_size.height_px,
-                );
-            }
-        }
-        return vec![PaneInfo {
-            id: focused_id,
-            rect: area,
-            inner_rect,
-            scrollbar_rect,
-            borders,
-            is_focused: true,
-        }];
-    }
-
-    let mut pane_infos = apply_pane_chrome(
-        &tab.layout.panes(area),
-        app.pane_borders,
-        app.pane_gaps,
-        app.pane_outer_borders,
-    );
+    let mut pane_infos = app
+        .pane_geometry_in(area)
+        .tab_panes(&tab.layout, tab.zoomed);
 
     for info in &mut pane_infos {
         let pane_inner = pane_inner_rect(info.rect, info.borders);
@@ -1396,7 +1329,9 @@ mod tests {
             PaneBordersConfig::Auto,
             PaneBordersConfig::Always,
         ] {
-            for pane_scrollbars in [true, false] {
+            for (pane_scrollbars, zoomed) in
+                [(true, false), (false, false), (true, true), (false, true)]
+            {
                 let mut app = AppState::test_new();
                 app.pane_borders = pane_borders;
                 app.pane_scrollbars = pane_scrollbars;
@@ -1405,6 +1340,7 @@ mod tests {
                 let mut workspace = Workspace::test_new("test");
                 let root = workspace.tabs[0].root_pane;
                 let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
+                workspace.tabs[0].zoomed = zoomed;
                 let mut terminal_runtimes = TerminalRuntimeRegistry::new();
                 for pane in [root, right] {
                     terminal_runtimes.insert(
@@ -1426,12 +1362,12 @@ mod tests {
                     crate::terminal_cell_size::HostCellSize::default(),
                 );
                 let geometry = app.pane_geometry();
-                assert_eq!(infos.len(), 2);
+                assert_eq!(infos.len(), if zoomed { 1 } else { 2 });
                 for info in &infos {
                     assert_eq!(
-                        geometry.pane_size(&app.workspaces[0].tabs[0].layout, info.id),
+                        geometry.pane_size(&app.workspaces[0].tabs[0].layout, zoomed, info.id),
                         Some((info.inner_rect.height, info.inner_rect.width)),
-                        "borders {pane_borders:?}, scrollbars {pane_scrollbars}"
+                        "borders {pane_borders:?}, scrollbars {pane_scrollbars}, zoomed {zoomed}"
                     );
                 }
                 for (_, runtime) in terminal_runtimes.drain() {
@@ -1503,7 +1439,7 @@ mod tests {
         let expected_style = automatic_selection_style(&palette, host_theme);
         let selection = Some(Selection::absolute_range(
             PaneId::from_raw(1),
-            (0, 0),
+            (0u64, 0),
             (0, 2),
         ));
         let backend = ratatui::backend::TestBackend::new(4, 1);
@@ -1562,7 +1498,7 @@ mod tests {
         let expected = automatic_selection_style(&palette, host_theme);
         let selection = Some(Selection::absolute_range(
             PaneId::from_raw(1),
-            (0, 0),
+            (0u64, 0),
             (2, 3),
         ));
         let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 2));

@@ -32,11 +32,20 @@ pub(crate) fn init_file_logging(file_name: &str) {
         .try_init();
 }
 
+/// The log the headless server writes.
+pub(crate) const SERVER_LOG_FILE: &str = "shepr-server.log";
+/// The log every client process appends to.
+pub(crate) const CLIENT_LOG_FILE: &str = "shepr-client.log";
+
+/// The log files `--help` names: the only two any process writes.
 pub(crate) fn help_log_paths_summary() -> String {
-    let dir = crate::session::data_dir();
+    log_paths_summary(&crate::session::data_dir())
+}
+
+fn log_paths_summary(dir: &Path) -> String {
     format!(
-        "{} (plus shepr-client.log, shepr-server.log)",
-        dir.join("shepr.log").display()
+        "{} (and {CLIENT_LOG_FILE} beside it)",
+        dir.join(SERVER_LOG_FILE).display()
     )
 }
 
@@ -632,6 +641,14 @@ mod tests {
                 .as_nanos()
         );
         std::env::temp_dir().join(unique).join("shepr.log")
+    }
+
+    #[test]
+    fn help_names_only_the_logs_that_are_written() {
+        let summary = log_paths_summary(Path::new("/data"));
+        assert!(summary.starts_with("/data/shepr-server.log"), "{summary}");
+        assert!(summary.contains(CLIENT_LOG_FILE), "{summary}");
+        assert!(!summary.contains("/shepr.log"), "{summary}");
     }
 
     #[test]

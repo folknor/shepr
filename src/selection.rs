@@ -9,8 +9,22 @@
 //!
 //! Double-click selects a word; the caller decides whether to copy it immediately.
 //!
-//! Rows are stored in screen-buffer coordinates instead of viewport-relative
-//! coordinates. That keeps selection stable while the pane scrolls.
+//! Rows are stored as buffer rows, not viewport rows, so the selection stays
+//! on its text while the viewport scrolls. Which buffer rows depends on what
+//! the caller hands in to place the viewport:
+//!
+//! * `Option<ScrollMetrics>` (the methods without a suffix): screen rows, 0
+//!   being the oldest retained line. They do not survive output once the
+//!   pane's history is full: each new line evicts the oldest one and every
+//!   screen row then names the line below the one it named before.
+//! * the absolute row of the viewport's top row (the `_at` methods; the pane
+//!   terminal's `ScrollPosition::viewport_top_row`): absolute rows,
+//!   `history_origin + screen row`, which keep naming the same line while
+//!   history is trimmed. A selection held or dragged during output needs
+//!   these, and its text is read with `extract_selection_absolute`, which
+//!   refuses rows that have been evicted.
+//!
+//! A selection must be built and read in one row space throughout.
 
 use ratatui::layout::Rect;
 use std::{ffi::OsStr, io::Write};
@@ -35,10 +49,10 @@ enum Phase {
 pub struct Selection<P = PaneId> {
     /// Which pane the selection belongs to.
     pub pane_id: P,
-    /// Anchor position in screen-buffer coordinates (row, col).
-    anchor: (u32, u16),
-    /// Current/final position in screen-buffer coordinates (row, col).
-    cursor: (u32, u16),
+    /// Anchor position in buffer rows (row, col); see the module docs.
+    anchor: (u64, u16),
+    /// Current/final position in buffer rows (row, col).
+    cursor: (u64, u16),
     /// Selection phase.
     phase: Phase,
 }
@@ -47,7 +61,13 @@ impl<P> Selection<P> {
     /// Start a potential selection. This records the anchor but doesn't
     /// make anything visible yet - the user might just be clicking.
     pub fn anchor(pane_id: P, viewport_row: u16, col: u16, metrics: Option<ScrollMetrics>) -> Self {
-        let anchor = (absolute_row_for_viewport_row(viewport_row, metrics), col);
+        Self::anchor_at(pane_id, viewport_row, col, viewport_top_row(metrics))
+    }
+
+    /// [`Selection::anchor`] in absolute rows: `viewport_top` is the
+    /// absolute row of the viewport's top row.
+    pub fn anchor_at(pane_id: P, viewport_row: u16, col: u16, viewport_top: u64) -> Self {
+        let anchor = (row_below(viewport_top, viewport_row), col);
         Self {
             pane_id,
             anchor,
@@ -56,7 +76,8 @@ impl<P> Selection<P> {
         }
     }
 
-    pub(crate) fn absolute_anchor(pane_id: P, anchor: (u32, u16)) -> Self {
+    pub(crate) fn absolute_anchor<R: Into<u64>>(pane_id: P, anchor: (R, u16)) -> Self {
+        let anchor = (anchor.0.into(), anchor.1);
         Self {
             pane_id,
             anchor,
@@ -65,16 +86,26 @@ impl<P> Selection<P> {
         }
     }
 
-    pub(crate) fn absolute_range(pane_id: P, anchor: (u32, u16), cursor: (u32, u16)) -> Self {
+    pub(crate) fn absolute_range<R: Into<u64>>(
+        pane_id: P,
+        anchor: (R, u16),
+        cursor: (R, u16),
+    ) -> Self {
         Self {
             pane_id,
-            anchor,
-            cursor,
+            anchor: (anchor.0.into(), anchor.1),
+            cursor: (cursor.0.into(), cursor.1),
             phase: Phase::Dragging,
         }
     }
 
-    pub(crate) fn line_range(pane_id: P, anchor_row: u32, cursor_row: u32, end_col: u16) -> Self {
+    pub(crate) fn line_range<R: Into<u64>>(
+        pane_id: P,
+        anchor_row: R,
+        cursor_row: R,
+        end_col: u16,
+    ) -> Self {
+        let (anchor_row, cursor_row) = (anchor_row.into(), cursor_row.into());
         let (anchor_col, cursor_col) = if anchor_row <= cursor_row {
             (0, end_col)
         } else {
@@ -88,7 +119,7 @@ impl<P> Selection<P> {
         }
     }
 
-    /// Convert the anchor's absolute row and pane-relative column back to
+    /// Convert the anchor's buffer row and pane-relative column back to
     /// screen coordinates. Adds the pane origin before clamping so the
     /// returned (screen_row, screen_col) can be compared directly against
     /// mouse screen positions.
@@ -97,7 +128,12 @@ impl<P> Selection<P> {
         pane_inner: Rect,
         metrics: Option<ScrollMetrics>,
     ) -> (u16, u16) {
-        let viewport_row = viewport_row_for_absolute_row(self.anchor.0, metrics);
+        self.anchor_screen_pos_at(pane_inner, viewport_top_row(metrics))
+    }
+
+    /// [`Selection::anchor_screen_pos`] in absolute rows.
+    pub fn anchor_screen_pos_at(&self, pane_inner: Rect, viewport_top: u64) -> (u16, u16) {
+        let viewport_row = viewport_row_for_row(self.anchor.0, viewport_top);
         // Convert pane-relative to screen coordinates, then clamp.
         let row = (viewport_row.saturating_add(pane_inner.y)).clamp(
             pane_inner.y,
@@ -120,8 +156,24 @@ impl<P> Selection<P> {
         pane_inner: Rect,
         metrics: Option<ScrollMetrics>,
     ) {
+        self.drag_at(
+            screen_col,
+            screen_row,
+            pane_inner,
+            viewport_top_row(metrics),
+        );
+    }
+
+    /// [`Selection::drag`] in absolute rows.
+    pub fn drag_at(
+        &mut self,
+        screen_col: u16,
+        screen_row: u16,
+        pane_inner: Rect,
+        viewport_top: u64,
+    ) {
         let (viewport_row, col) = clamp_to_pane(screen_col, screen_row, pane_inner);
-        self.cursor = (absolute_row_for_viewport_row(viewport_row, metrics), col);
+        self.cursor = (row_below(viewport_top, viewport_row), col);
         if self.cursor != self.anchor {
             self.phase = Phase::Dragging;
         }
@@ -174,7 +226,7 @@ impl<P> Selection<P> {
     }
 
     /// Returns (start, end) in reading order (top-left to bottom-right).
-    fn ordered(&self) -> ((u32, u16), (u32, u16)) {
+    fn ordered(&self) -> ((u64, u16), (u64, u16)) {
         let (ar, ac) = self.anchor;
         let (cr, cc) = self.cursor;
         if ar < cr || (ar == cr && ac <= cc) {
@@ -184,16 +236,32 @@ impl<P> Selection<P> {
         }
     }
 
+    /// The selected range in reading order, rows in the form screen rows
+    /// take (a selection built with `ScrollMetrics`). Rows of an absolute
+    /// selection past `u32::MAX` saturate; read those with
+    /// [`Selection::ordered_rows`].
     pub(crate) fn ordered_cells(&self) -> ((u32, u16), (u32, u16)) {
+        let ((sr, sc), (er, ec)) = self.ordered();
+        let narrow = |row: u64| u32::try_from(row).unwrap_or(u32::MAX);
+        ((narrow(sr), sc), (narrow(er), ec))
+    }
+
+    /// The selected range in reading order, rows as stored.
+    pub(crate) fn ordered_rows(&self) -> ((u64, u16), (u64, u16)) {
         self.ordered()
     }
 
     /// Check whether a pane-relative cell (row, col) is inside the selection.
     pub fn contains(&self, viewport_row: u16, col: u16, metrics: Option<ScrollMetrics>) -> bool {
+        self.contains_at(viewport_row, col, viewport_top_row(metrics))
+    }
+
+    /// [`Selection::contains`] in absolute rows.
+    pub fn contains_at(&self, viewport_row: u16, col: u16, viewport_top: u64) -> bool {
         if !self.is_visible() {
             return false;
         }
-        let row = absolute_row_for_viewport_row(viewport_row, metrics);
+        let row = row_below(viewport_top, viewport_row);
         let ((sr, sc), (er, ec)) = self.ordered();
         if row < sr || row > er {
             return false;
@@ -210,7 +278,8 @@ impl<P> Selection<P> {
     }
 }
 
-fn viewport_top_row(metrics: Option<ScrollMetrics>) -> u32 {
+/// The screen row of the viewport's top row.
+fn viewport_top_row(metrics: Option<ScrollMetrics>) -> u64 {
     let value = metrics
         .map(|metrics| {
             metrics
@@ -218,22 +287,31 @@ fn viewport_top_row(metrics: Option<ScrollMetrics>) -> u32 {
                 .saturating_sub(metrics.offset_from_bottom)
         })
         .unwrap_or(0);
-    u32::try_from(value).unwrap_or(u32::MAX)
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
+/// The screen row of a viewport row. Despite the name, not an absolute row:
+/// see [`row_for_viewport_at`] for those.
 pub(crate) fn absolute_row_for_viewport(viewport_row: u16, metrics: Option<ScrollMetrics>) -> u32 {
-    absolute_row_for_viewport_row(viewport_row, metrics)
+    u32::try_from(row_below(viewport_top_row(metrics), viewport_row)).unwrap_or(u32::MAX)
 }
 
-fn absolute_row_for_viewport_row(viewport_row: u16, metrics: Option<ScrollMetrics>) -> u32 {
-    viewport_top_row(metrics) + u32::from(viewport_row)
+/// The absolute row of a viewport row, `viewport_top` being the absolute row
+/// of the viewport's top row.
+// Not called yet: the client shell still works in screen rows (see the
+// module docs); this is the absolute counterpart of
+// `absolute_row_for_viewport` for when it moves over.
+#[allow(dead_code)]
+pub(crate) fn row_for_viewport_at(viewport_row: u16, viewport_top: u64) -> u64 {
+    row_below(viewport_top, viewport_row)
 }
 
-fn viewport_row_for_absolute_row(absolute_row: u32, metrics: Option<ScrollMetrics>) -> u16 {
-    absolute_row
-        .saturating_sub(viewport_top_row(metrics))
-        .try_into()
-        .unwrap_or(0)
+fn row_below(viewport_top: u64, viewport_row: u16) -> u64 {
+    viewport_top.saturating_add(u64::from(viewport_row))
+}
+
+fn viewport_row_for_row(row: u64, viewport_top: u64) -> u16 {
+    row.saturating_sub(viewport_top).try_into().unwrap_or(0)
 }
 
 fn clamp_to_pane(screen_col: u16, screen_row: u16, pane_inner: Rect) -> (u16, u16) {
@@ -331,8 +409,8 @@ mod tests {
             sc,
             None,
         );
-        sel.anchor = (sr, sc);
-        sel.cursor = (er, ec);
+        sel.anchor = (u64::from(sr), sc);
+        sel.cursor = (u64::from(er), ec);
         sel.phase = Phase::Dragging;
         sel
     }
@@ -530,6 +608,35 @@ mod tests {
         assert!(sel.contains(1, 40, metrics));
         assert!(sel.contains(2, 4, metrics));
         assert!(!sel.contains(3, 4, metrics));
+    }
+
+    #[test]
+    fn absolute_selection_follows_its_lines_when_the_viewport_top_moves() {
+        let pane_inner = Rect::new(0, 5, 80, 10);
+        // Anchored on viewport row 2 while the viewport's top is absolute
+        // row 1000, dragged to viewport row 3.
+        let mut sel = Selection::anchor_at(PaneId::from_raw(0), 2, 4, 1_000);
+        sel.drag_at(9, 8, pane_inner, 1_000);
+        assert_eq!(sel.ordered_rows(), ((1_002, 4), (1_003, 9)));
+
+        // One line of output evicted a line and the viewport followed the
+        // bottom: the selected lines now sit one viewport row higher.
+        let top = 1_001;
+        assert!(sel.contains_at(1, 4, top));
+        assert!(sel.contains_at(2, 9, top));
+        assert!(!sel.contains_at(3, 4, top));
+        assert_eq!(sel.anchor_screen_pos_at(pane_inner, top), (6, 4));
+        assert_eq!(row_for_viewport_at(1, top), 1_002);
+    }
+
+    #[test]
+    fn absolute_rows_past_u32_keep_their_value() {
+        let top = u64::from(u32::MAX) + 10;
+        let sel = Selection::absolute_range(PaneId::from_raw(0), (top, 0), (top + 1, 3));
+        assert_eq!(sel.ordered_rows(), ((top, 0), (top + 1, 3)));
+        // The screen-row form cannot hold them.
+        assert_eq!(sel.ordered_cells(), ((u32::MAX, 0), (u32::MAX, 3)));
+        assert!(sel.contains_at(1, 2, top));
     }
 
     #[test]

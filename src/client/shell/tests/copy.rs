@@ -876,16 +876,12 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         KeyCode::Char('/'),
         KeyModifiers::empty(),
     ))]);
-    state.handle_raw_events(vec![RawInputEvent::Text(crate::input::TextCommit::new(
-        "junk",
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Paste("junk".into())]);
     state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
         KeyCode::Char('u'),
         KeyModifiers::CONTROL,
     ))]);
-    state.handle_raw_events(vec![RawInputEvent::Text(crate::input::TextCommit::new(
-        "nee",
-    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Paste("nee".into())]);
     state.handle_raw_events(vec![RawInputEvent::Paste("dleX".into())]);
     state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
         KeyCode::Backspace,
@@ -1984,7 +1980,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     assert_eq!(state.mode, ClientShellMode::Terminal);
 
     let mut other_selection =
-        crate::selection::Selection::absolute_range("pane_2".to_owned(), (0, 0), (0, 1));
+        crate::selection::Selection::absolute_range("pane_2".to_owned(), (0u64, 0), (0, 1));
     assert!(other_selection.finish());
     state.selection = Some(other_selection);
     state.set_snapshot(Box::new(unfocused));
@@ -2022,9 +2018,6 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .as_ref()
             .is_some_and(|selection| selection.pane_id == "pane_1")
     );
-    state.handle_raw_events(vec![RawInputEvent::Text(crate::input::TextCommit::new(
-        "ignored",
-    ))]);
     state.handle_raw_events(vec![RawInputEvent::Paste("ignored".into())]);
     assert!(
         state
@@ -2067,7 +2060,7 @@ fn retained_selection_copy_suppresses_key_repeats() {
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let mut selection =
-        crate::selection::Selection::absolute_range("pane_1".to_owned(), (0, 0), (0, 1));
+        crate::selection::Selection::absolute_range("pane_1".to_owned(), (0u64, 0), (0, 1));
     assert!(selection.finish());
     state.selection = Some(selection);
 

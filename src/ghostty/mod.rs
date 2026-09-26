@@ -29,6 +29,8 @@
 //! * the window title, taken from alacritty's own `Title`/`ResetTitle`
 //!   events (so OSC 0/2, the CSI 22/23 t title stack and RIS all count);
 //! * byte-denominated scrollback limits converted to line counts;
+//! * absolute row ids that stay attached to their lines while history is
+//!   trimmed ([`Terminal::history_origin`], `rows.rs`);
 //! * synchronized-output (mode 2026) timeout flushing.
 
 // The adapter keeps a complete surface (mode constants, colour/scheme types,
@@ -37,6 +39,7 @@
 
 mod format;
 mod handler;
+mod rows;
 mod scan;
 
 use std::fmt;
@@ -57,6 +60,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use self::format::Format;
 use self::handler::{CoreHandler, KeyboardStackDepth};
+use self::rows::RowOrigin;
 use self::scan::{ScanEvent, Scanner};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,10 +311,22 @@ pub enum CellWide {
     SpacerHead,
 }
 
+/// An owned copy of one cell's text. Building these costs an allocation per
+/// non-blank cell; readers that run per tick or over the whole history use
+/// [`Terminal::visit_screen_row_text`] instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScreenTextCell {
     pub wide: CellWide,
     pub graphemes: Vec<u32>,
+}
+
+/// How a row joins its neighbours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct RowWrap {
+    /// The row's text continues on the next row.
+    pub soft_wrapped: bool,
+    /// The row continues the previous row's text.
+    pub wrap_continuation: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -573,6 +589,9 @@ pub struct Terminal {
     full_damage_generation: u64,
     /// Per viewport row: generation of the most recent damage to that row.
     row_damage_generations: Vec<u64>,
+    /// Absolute row accounting (`rows.rs`): lines evicted from the top of
+    /// the primary screen, so `origin + screen row` never shifts.
+    rows: RowOrigin,
 }
 
 impl Terminal {
@@ -616,6 +635,7 @@ impl Terminal {
             damage_generation: 1,
             full_damage_generation: 1,
             row_damage_generations: vec![0; screen_lines],
+            rows: RowOrigin::default(),
         })
     }
 
@@ -657,6 +677,7 @@ impl Terminal {
     }
 
     fn advance(&mut self, bytes: &[u8]) {
+        self.rows.begin(&self.term);
         let mut handler = CoreHandler {
             term: &mut self.term,
             keyboard_depth: &mut self.keyboard_depth,
@@ -665,8 +686,11 @@ impl Terminal {
             cell_height_px: self.cell_height_px,
             events: &self.events,
             default_color_set: &mut self.default_color_set,
+            rows: &mut self.rows,
+            history_limit: self.history_lines,
         };
         self.parser.advance(&mut handler, bytes);
+        self.rows.finish(&self.term, self.history_lines);
         self.drain_events();
     }
 
@@ -688,6 +712,7 @@ impl Terminal {
             .sync_timeout()
             .is_some_and(|deadline| Instant::now() >= deadline);
         if expired {
+            self.rows.begin(&self.term);
             let mut handler = CoreHandler {
                 term: &mut self.term,
                 keyboard_depth: &mut self.keyboard_depth,
@@ -696,8 +721,11 @@ impl Terminal {
                 cell_height_px: self.cell_height_px,
                 events: &self.events,
                 default_color_set: &mut self.default_color_set,
+                rows: &mut self.rows,
+                history_limit: self.history_lines,
             };
             self.parser.stop_sync(&mut handler);
+            self.rows.finish(&self.term, self.history_lines);
             self.drain_events();
             self.collect_damage();
         }
@@ -1005,10 +1033,26 @@ impl Terminal {
     ) -> Result<(), Error> {
         let columns = usize::from(cols).max(MIN_COLUMNS);
         let screen_lines = usize::from(rows).max(1);
-        let geometry_changed = columns != self.term.columns()
-            || screen_lines != self.term.screen_lines()
+        let columns_changed = columns != self.term.columns();
+        let lines_changed = screen_lines != self.term.screen_lines();
+        let geometry_changed = columns_changed
+            || lines_changed
             || cell_width_px != self.cell_width_px
             || cell_height_px != self.cell_height_px;
+
+        // A column change re-wraps every line, so no earlier row id may keep
+        // naming one. So does any reflow of the primary screen while the
+        // alternate one is active: the tracker cannot see the inactive grid.
+        // A height change on the primary screen only moves lines between
+        // screen and history (evicting at the history limit), which the
+        // tracker follows.
+        let alternate = self.term.mode().contains(TermMode::ALT_SCREEN);
+        let rewraps = columns_changed || (alternate && lines_changed);
+        if rewraps {
+            self.rows.invalidate_primary(&self.term);
+        } else {
+            self.rows.begin(&self.term);
+        }
 
         // The byte budget buys fewer lines at a wider width. Grow the line
         // limit before reflowing into more lines; afterwards lower it at most
@@ -1028,6 +1072,11 @@ impl Terminal {
         let history_lines = budget_lines.max(self.term.history_size().min(self.history_lines));
         if history_lines != self.history_lines {
             self.set_history_lines(history_lines);
+        }
+        if rewraps {
+            self.rows.observe(&self.term);
+        } else {
+            self.rows.finish(&self.term, self.history_lines);
         }
         self.cell_width_px = cell_width_px;
         self.cell_height_px = cell_height_px;
@@ -1102,6 +1151,7 @@ impl Terminal {
             return Err(Error("synchronized output is driven by the parser"));
         }
         let private_mode = handler::private_mode(mode);
+        self.rows.begin(&self.term);
         let mut handler = CoreHandler {
             term: &mut self.term,
             keyboard_depth: &mut self.keyboard_depth,
@@ -1110,12 +1160,15 @@ impl Terminal {
             cell_height_px: self.cell_height_px,
             events: &self.events,
             default_color_set: &mut self.default_color_set,
+            rows: &mut self.rows,
+            history_limit: self.history_lines,
         };
         if value {
             Handler::set_private_mode(&mut handler, private_mode);
         } else {
             Handler::unset_private_mode(&mut handler, private_mode);
         }
+        self.rows.finish(&self.term, self.history_lines);
         self.drain_events();
         self.collect_damage();
         Ok(())
@@ -1170,6 +1223,70 @@ impl Terminal {
             total: self.term.total_lines(),
             offset: history.saturating_sub(self.term.grid().display_offset()),
             len: self.term.screen_lines(),
+        })
+    }
+
+    /// The absolute row id of screen row 0, the oldest retained line.
+    ///
+    /// A line's absolute row id is `history_origin() + its screen row`.
+    /// Screen rows shift under a caller whenever lines leave the top of the
+    /// retained buffer (history at its line limit evicting its oldest line on
+    /// every new one, `ED 3`, the host's clear); absolute ids do not: an id
+    /// names the same line for as long as it is retained and is never reused,
+    /// and ids below the origin name lines that are gone. A column change
+    /// (which re-wraps every line) and RIS move the origin past every earlier
+    /// id. On the alternate screen, and on a primary screen without
+    /// scrollback, nothing identifies a line once it scrolls off: rows there
+    /// are viewport rows and the origin stays put (`rows.rs`).
+    pub fn history_origin(&self) -> u64 {
+        self.rows.origin()
+    }
+
+    /// The screen row of an absolute row id, `None` for a line that is no
+    /// longer (or not yet) retained.
+    pub fn screen_row_for_absolute(&self, row: u64) -> Option<usize> {
+        let y = usize::try_from(row.checked_sub(self.rows.origin())?).ok()?;
+        (y < self.term.total_lines()).then_some(y)
+    }
+
+    /// The absolute row id of screen row `y`.
+    pub fn absolute_row_for_screen(&self, y: usize) -> u64 {
+        self.rows
+            .origin()
+            .saturating_add(u64::try_from(y).unwrap_or(u64::MAX))
+    }
+
+    /// Visits the cells of screen row `y` without allocating: `visit` gets
+    /// each cell's column, width class and text. The text is what readers
+    /// show for the cell: its grapheme, or a single space for blank cells,
+    /// wide-character spacers and kitty placeholder cells; callers skip
+    /// `SpacerTail` cells where a wide character's second column must not
+    /// produce text. `scratch` holds the text between calls. `None` when the
+    /// row is not retained.
+    pub(crate) fn visit_screen_row_text(
+        &self,
+        y: usize,
+        scratch: &mut String,
+        mut visit: impl FnMut(u16, CellWide, &str),
+    ) -> Option<RowWrap> {
+        let line = self.screen_line(u64::try_from(y).ok()?)?;
+        let grid = self.term.grid();
+        let columns = grid.columns();
+        let last_column = Column(columns - 1);
+        let row = &grid[line];
+        for (x, cell) in row[..].iter().take(columns).enumerate() {
+            let Ok(x) = u16::try_from(x) else {
+                break;
+            };
+            cell_text_into(cell, scratch);
+            visit(x, cell_wide(cell), scratch.as_str());
+        }
+        Some(RowWrap {
+            soft_wrapped: row[last_column].flags.contains(Flags::WRAPLINE),
+            wrap_continuation: line > grid.topmost_line()
+                && grid[Line(line.0 - 1)][last_column]
+                    .flags
+                    .contains(Flags::WRAPLINE),
         })
     }
 
@@ -1363,6 +1480,7 @@ impl Terminal {
         }
         let screen_lines = self.term.screen_lines();
         let last_column = self.term.last_column();
+        let history = self.term.history_size();
         let grid = self.term.grid_mut();
         // This is a host action, not the child's erase, so vacated rows are
         // blank in default colours rather than filled with the child's current
@@ -1401,6 +1519,9 @@ impl Terminal {
         }
         grid.cursor.template = pen;
         grid.clear_history();
+        // Everything above the kept line is gone: the history and the
+        // `shift` screen rows the kept line moved up over.
+        self.rows.evict(history.saturating_add(shift));
         self.bump_full_damage();
         true
     }
@@ -1519,6 +1640,23 @@ fn cell_graphemes(cell: &Cell) -> Vec<u32> {
     graphemes.push(u32::from(base));
     graphemes.extend(zerowidth.iter().map(|&ch| u32::from(ch)));
     graphemes
+}
+
+/// The cell's text as readers show it, into `out`: the grapheme, or a single
+/// space for blank cells, wide-character spacers and kitty placeholders (the
+/// same text [`cell_graphemes`] yields once empty cells read as a space).
+fn cell_text_into(cell: &Cell, out: &mut String) {
+    out.clear();
+    if cell
+        .flags
+        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+        || u32::from(cell.c) == KITTY_UNICODE_PLACEHOLDER
+    {
+        out.push(' ');
+        return;
+    }
+    out.push(if cell.c == '\t' { ' ' } else { cell.c });
+    out.extend(cell_zerowidth(cell).iter().copied());
 }
 
 fn cell_color(color: Color) -> Option<CellColor> {

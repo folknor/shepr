@@ -779,11 +779,10 @@ fn integration_target_arg() -> Arg {
 }
 
 fn integration_target_values() -> Vec<&'static str> {
-    let mut values: Vec<&'static str> = crate::api::schema::IntegrationTarget::ALL
+    let values: Vec<&'static str> = crate::api::schema::IntegrationTarget::ALL
         .into_iter()
         .map(crate::integration::integration_target_label)
         .collect();
-    values.extend_from_slice(crate::integration::EXPERIMENTAL_INTEGRATION_TARGET_LABELS);
     values
 }
 
@@ -1128,15 +1127,10 @@ mod tests {
     fn spec_matches_all_integration_targets() {
         let cmd = super::command();
         let install = command_path(&cmd, &["integration", "install"]);
-        let mut expected: Vec<String> = crate::api::schema::IntegrationTarget::ALL
+        let expected: Vec<String> = crate::api::schema::IntegrationTarget::ALL
             .map(crate::integration::integration_target_label)
             .map(str::to_string)
             .to_vec();
-        expected.extend(
-            crate::integration::EXPERIMENTAL_INTEGRATION_TARGET_LABELS
-                .iter()
-                .map(|label| (*label).to_string()),
-        );
         assert_eq!(
             argument(install, "target")
                 .get_value_parser()

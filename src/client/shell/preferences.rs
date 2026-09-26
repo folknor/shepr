@@ -7,6 +7,14 @@ static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
 
 use serde::{Deserialize, Serialize};
 
+/// Sidebar chrome the user changed by hand, remembered per endpoint across
+/// launches.
+///
+/// Three of these values also have `[ui]` config keys (`sidebar_width`,
+/// `sidebar_start_collapsed`, `agent_panel_sort`). The documented key wins:
+/// a remembered value is used only while its key is absent from config.toml,
+/// and is neither loaded nor stored once the key is set. Manual changes still
+/// apply for the rest of the session either way.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub(super) struct ClientChromePreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -17,6 +25,45 @@ pub(super) struct ClientChromePreferences {
     pub(super) sidebar_collapsed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) agent_panel_sort: Option<crate::config::AgentPanelSortConfig>,
+    /// Which of the values above config.toml sets. Taken from the config at
+    /// launch, never from the file.
+    #[serde(skip)]
+    pub(super) configured: ConfiguredChrome,
+}
+
+/// Which remembered chrome values have a `[ui]` key set in config.toml.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct ConfiguredChrome {
+    pub(super) sidebar_width: bool,
+    pub(super) sidebar_collapsed: bool,
+    pub(super) agent_panel_sort: bool,
+}
+
+impl ConfiguredChrome {
+    pub(super) fn from_config(config: &crate::config::Config) -> Self {
+        Self {
+            sidebar_width: config.ui.is_user_configured("sidebar_width"),
+            sidebar_collapsed: config.ui.is_user_configured("sidebar_start_collapsed"),
+            agent_panel_sort: config.ui.is_user_configured("agent_panel_sort"),
+        }
+    }
+}
+
+impl ClientChromePreferences {
+    /// These preferences with every value config.toml owns dropped.
+    pub(super) fn without_configured(mut self, configured: ConfiguredChrome) -> Self {
+        if configured.sidebar_width {
+            self.sidebar_width = None;
+        }
+        if configured.sidebar_collapsed {
+            self.sidebar_collapsed = None;
+        }
+        if configured.agent_panel_sort {
+            self.agent_panel_sort = None;
+        }
+        self.configured = configured;
+        self
+    }
 }
 
 pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {
@@ -78,6 +125,54 @@ mod tests {
                 .expect("legacy client chrome preferences");
 
         assert_eq!(preferences.sidebar_width, Some(24));
+    }
+
+    #[test]
+    fn configured_chrome_drops_only_the_values_config_owns() {
+        let remembered = || ClientChromePreferences {
+            sidebar_width: Some(31),
+            sidebar_section_split: Some(0.3),
+            sidebar_collapsed: Some(true),
+            agent_panel_sort: Some(crate::config::AgentPanelSortConfig::Priority),
+            configured: ConfiguredChrome::default(),
+        };
+
+        let untouched = remembered().without_configured(ConfiguredChrome::default());
+        assert_eq!(untouched.sidebar_width, Some(31));
+        assert_eq!(untouched.sidebar_collapsed, Some(true));
+        assert!(untouched.agent_panel_sort.is_some());
+
+        let configured = ConfiguredChrome {
+            sidebar_width: true,
+            sidebar_collapsed: true,
+            agent_panel_sort: true,
+        };
+        let owned = remembered().without_configured(configured);
+        assert_eq!(owned.sidebar_width, None);
+        assert_eq!(owned.sidebar_collapsed, None);
+        assert_eq!(owned.agent_panel_sort, None);
+        assert_eq!(owned.sidebar_section_split, Some(0.3));
+        assert_eq!(owned.configured, configured);
+    }
+
+    #[test]
+    fn configured_chrome_follows_the_keys_the_user_set() {
+        let mut config = crate::config::Config::default();
+        assert_eq!(
+            ConfiguredChrome::from_config(&config),
+            ConfiguredChrome::default()
+        );
+        config
+            .ui
+            .user_fields
+            .insert("sidebar_start_collapsed".to_owned());
+        assert_eq!(
+            ConfiguredChrome::from_config(&config),
+            ConfiguredChrome {
+                sidebar_collapsed: true,
+                ..ConfiguredChrome::default()
+            }
+        );
     }
 
     #[test]

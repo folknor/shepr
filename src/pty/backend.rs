@@ -40,6 +40,10 @@ pub(crate) fn open_pty(rows: u16, cols: u16) -> io::Result<OpenedPty> {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
+    // SAFETY: `master` and `slave` are live locals openpty writes one fd each
+    // into; the name buffer is null (openpty then writes no name), the termios
+    // pointer is null (keep defaults), and `size` is a valid winsize it only
+    // reads. None of the pointers is retained after the call.
     let result = unsafe {
         libc::openpty(
             &mut master,
@@ -53,7 +57,10 @@ pub(crate) fn open_pty(rows: u16, cols: u16) -> io::Result<OpenedPty> {
         return Err(io::Error::last_os_error());
     }
     // Own both fds before anything else can fail so they are always closed.
+    // SAFETY: openpty succeeded, so both are fresh open fds that nothing else
+    // in this process owns; each is wrapped exactly once.
     let master = unsafe { OwnedFd::from_raw_fd(master) };
+    // SAFETY: as for `master`.
     let slave = unsafe { OwnedFd::from_raw_fd(slave) };
     fd::set_cloexec(master.as_raw_fd())?;
     fd::set_cloexec(slave.as_raw_fd())?;
@@ -64,11 +71,16 @@ pub(crate) fn open_pty(rows: u16, cols: u16) -> io::Result<OpenedPty> {
 /// Mark the line discipline as UTF-8 so canonical-mode erase removes whole
 /// characters. Best effort, as in alacritty's tty setup.
 fn enable_utf8_input(master: &OwnedFd) {
+    // SAFETY: termios is a plain C struct of integers and arrays, for which
+    // all-zero bytes are a valid value; tcgetattr overwrites it below.
     let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+    // SAFETY: `master` is an open fd borrowed for the call, and `termios` is a
+    // live, writable termios that tcgetattr fills in and does not retain.
     if unsafe { libc::tcgetattr(master.as_raw_fd(), &mut termios) } != 0 {
         return;
     }
     termios.c_iflag |= libc::IUTF8;
+    // SAFETY: as above; tcsetattr only reads `termios`.
     let _ = unsafe { libc::tcsetattr(master.as_raw_fd(), libc::TCSANOW, &termios) };
 }
 
@@ -109,34 +121,50 @@ pub(crate) fn spawn_pty(rows: u16, cols: u16, cmd: &PtyCommand) -> io::Result<Sp
 
 /// Runs in the forked child before exec. std has already dup'd the slave onto
 /// fds 0-2 and changed directory.
+///
+/// Every call here is async-signal-safe (the forked child of a multithreaded
+/// process may only make such calls), apart from the old-kernel fallback in
+/// `mark_inherited_fds_cloexec`, and touches only this child's own process
+/// state, never memory shared with the parent.
 fn prepare_pty_child() -> io::Result<()> {
-    unsafe {
-        // Clear dispositions and the signal mask inherited from the server
-        // (ignored signals survive exec; handlers do not).
-        for signo in [
-            libc::SIGCHLD,
-            libc::SIGHUP,
-            libc::SIGINT,
-            libc::SIGQUIT,
-            libc::SIGTERM,
-            libc::SIGALRM,
-            libc::SIGPIPE,
-        ] {
+    // Clear dispositions and the signal mask inherited from the server
+    // (ignored signals survive exec; handlers do not).
+    for signo in [
+        libc::SIGCHLD,
+        libc::SIGHUP,
+        libc::SIGINT,
+        libc::SIGQUIT,
+        libc::SIGTERM,
+        libc::SIGALRM,
+        libc::SIGPIPE,
+    ] {
+        // SAFETY: signal(2) with SIG_DFL installs no Rust handler and reads
+        // no memory; the child has not exec'd yet and runs no other threads.
+        unsafe {
             libc::signal(signo, libc::SIG_DFL);
         }
-        let mut empty_set: libc::sigset_t = std::mem::zeroed();
+    }
+    // SAFETY: sigset_t is a plain bit array; all-zero is a valid value, and
+    // sigemptyset below sets it properly anyway.
+    let mut empty_set: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: `empty_set` is a live, writable sigset_t on this stack frame;
+    // sigprocmask only reads it, and the old-mask pointer is null.
+    unsafe {
         libc::sigemptyset(&mut empty_set);
         libc::sigprocmask(libc::SIG_SETMASK, &empty_set, std::ptr::null_mut());
+    }
 
-        // New session, then take the PTY (already on stdin) as the controlling
-        // terminal so job control and SIGWINCH reach the child.
-        if libc::setsid() == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        #[allow(clippy::cast_lossless)] // TIOCSCTTY's type differs between libc targets.
-        if libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
-            return Err(io::Error::last_os_error());
-        }
+    // New session, then take the PTY (already on stdin) as the controlling
+    // terminal so job control and SIGWINCH reach the child.
+    // SAFETY: setsid(2) takes no arguments and touches no memory.
+    if unsafe { libc::setsid() } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: TIOCSCTTY on fd 0 (std has dup'd the PTY slave there) takes an
+    // integer argument, not a pointer, so no memory is read or written.
+    #[allow(clippy::cast_lossless)] // TIOCSCTTY's type differs between libc targets.
+    if unsafe { libc::ioctl(0, libc::TIOCSCTTY as _, 0) } == -1 {
+        return Err(io::Error::last_os_error());
     }
     mark_inherited_fds_cloexec();
     Ok(())
@@ -148,6 +176,8 @@ fn prepare_pty_child() -> io::Result<()> {
 /// reported by `spawn()`.
 fn mark_inherited_fds_cloexec() {
     let first_fd: libc::c_uint = 3;
+    // SAFETY: close_range(2) with CLOSE_RANGE_CLOEXEC only sets a flag on
+    // this child's own descriptor table; it takes integers and reads no memory.
     let result = unsafe {
         libc::syscall(
             libc::SYS_close_range,
@@ -173,8 +203,12 @@ fn mark_inherited_fds_cloexec() {
         .filter(|fd| *fd > 2)
         .collect();
     for fd in fds {
+        // SAFETY: F_GETFD/F_SETFD take and return integers only. An fd that
+        // closed since the listing (the read_dir handle's own) fails with
+        // EBADF, which is ignored.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
         if flags >= 0 {
+            // SAFETY: as above.
             unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
         }
     }
@@ -240,12 +274,14 @@ mod tests {
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let foreground = loop {
+            // SAFETY: tcgetpgrp(3) on an fd `spawned` keeps open; no memory.
             let pgrp = unsafe { libc::tcgetpgrp(spawned.master_fd.as_raw_fd()) };
             if pgrp == pid || std::time::Instant::now() >= deadline {
                 break pgrp;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         };
+        // SAFETY: getsid(2) takes a pid and touches no memory.
         let session = unsafe { libc::getsid(pid) };
 
         let _ = spawned.child.kill();

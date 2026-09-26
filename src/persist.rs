@@ -18,8 +18,8 @@ pub use self::restore::restore;
 #[cfg(test)]
 pub use self::snapshot::capture_history;
 pub use self::snapshot::{
-    DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot, TabSnapshot,
-    WorkspaceSnapshot, capture,
+    DirectionSnapshot, HistoryCarry, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot,
+    TabSnapshot, WorkspaceSnapshot, capture,
 };
 pub(crate) use self::snapshot::{PendingHistory, capture_pending_history};
 pub(crate) use self::writer::SessionWriter;

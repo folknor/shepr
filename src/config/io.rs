@@ -123,7 +123,8 @@ impl Config {
 
     fn load_from_str(content: &str) -> LoadedConfig {
         match toml::Deserializer::parse(content).and_then(deserialize_with_ignored::<Config, _>) {
-            Ok((config, ignored_keys)) => {
+            Ok((mut config, ignored_keys)) => {
+                config.ui.user_fields = ui_user_fields(content);
                 let (unknown_sections, mut diagnostics) =
                     unknown_top_level_sections_from_str(content);
                 diagnostics.extend(unknown_config_key_diagnostics(
@@ -196,6 +197,21 @@ pub fn config_diagnostic_summary(diagnostics: &[String]) -> Option<String> {
     };
 
     Some(format!("{target}{impact}; shepr config check"))
+}
+
+/// The keys written under `[ui]`, whatever their value. Serde fills unset keys
+/// with defaults, so this is the only record of which ones the user chose.
+fn ui_user_fields(content: &str) -> std::collections::BTreeSet<String> {
+    content
+        .parse::<toml::Table>()
+        .ok()
+        .and_then(|table| {
+            table
+                .get("ui")
+                .and_then(toml::Value::as_table)
+                .map(|ui| ui.keys().cloned().collect())
+        })
+        .unwrap_or_default()
 }
 
 fn unknown_top_level_sections_from_str(content: &str) -> (Vec<String>, Vec<String>) {
@@ -421,6 +437,28 @@ mouse_captur = true
         );
         assert_eq!(loaded.config.advanced.scrollback_limit_bytes, 42);
         assert!(!loaded.config.ui.mouse_capture);
+    }
+
+    #[test]
+    fn config_load_records_which_ui_keys_the_user_set() {
+        let loaded = Config::load_from_str(
+            r#"
+[ui]
+sidebar_width = 26
+agent_panel_sort = "priority"
+"#,
+        );
+        assert!(loaded.config.ui.is_user_configured("sidebar_width"));
+        assert!(loaded.config.ui.is_user_configured("agent_panel_sort"));
+        assert!(
+            !loaded
+                .config
+                .ui
+                .is_user_configured("sidebar_start_collapsed")
+        );
+
+        let empty = Config::load_from_str("[terminal]\n");
+        assert!(!empty.config.ui.is_user_configured("sidebar_width"));
     }
 
     #[test]

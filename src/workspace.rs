@@ -393,14 +393,12 @@ impl Workspace {
         )
     }
 
+    /// Makes `idx` the active tab. Whether its panes count as seen depends on
+    /// who is looking, which the workspace cannot know: `AppState` decides
+    /// that (`tab_is_observed`) after switching.
     pub fn switch_tab(&mut self, idx: usize) {
         if idx < self.tabs.len() {
             self.active_tab = idx;
-            if let Some(tab) = self.tabs.get_mut(idx) {
-                for pane in tab.panes.values_mut() {
-                    pane.seen = true;
-                }
-            }
         }
     }
 

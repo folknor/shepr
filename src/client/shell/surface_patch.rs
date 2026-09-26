@@ -57,8 +57,18 @@ fn apply_patch_to_surface(
 fn fast_path_blocker(
     state: &ClientShellState,
     patch: &crate::protocol::PaneSurfacePatch,
+    area: Rect,
 ) -> Option<&'static str> {
-    if state.pending_pane_surface.is_some()
+    if state
+        .pane_surface
+        .as_ref()
+        .is_some_and(|surface| super::composition::surface_overflows_area(surface, area))
+    {
+        // A surface produced for a larger pane area (before a resize or sidebar toggle took
+        // effect) is drawn clipped by `compose`. Its patch rows, offset into this layout, could
+        // land on the tab bar, the mode bar or past the frame, so they go through compose too.
+        Some("client_surface_patch.fallback.geometry")
+    } else if state.pending_pane_surface.is_some()
         || state.snapshot.as_deref().map(|snapshot| snapshot.revision)
             != state
                 .pane_surface
@@ -173,11 +183,10 @@ impl ClientShellState {
             }
         }
 
-        let fast_path_blocker = fast_path_blocker(self, patch);
-        let fast_path_area = fast_path_blocker.is_none().then(|| {
-            let (cols, rows) = self.last_composed_size.unwrap_or_default();
-            self.layout(cols, rows).pane_surface
-        });
+        let (cols, rows) = self.last_composed_size.unwrap_or_default();
+        let area = self.layout(cols, rows).pane_surface;
+        let fast_path_blocker = fast_path_blocker(self, patch, area);
+        let fast_path_area = fast_path_blocker.is_none().then_some(area);
         let composed_patch = fast_path_area.map(|area| ClientComposedSurfacePatch {
             rows: patch
                 .rows

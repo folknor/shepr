@@ -14,7 +14,8 @@ fn now() -> io::Result<u64> {
         tv_nsec: 0,
     };
     // This clock includes suspend, so short maintenance wakes can reap old bridges.
-    if unsafe { libc::clock_gettime(super::REMOTE_BRIDGE_CLOCK, &mut time) } != 0 {
+    // SAFETY: clock_gettime(2) writes one timespec into a live local.
+    if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut time) } != 0 {
         return Err(io::Error::last_os_error());
     }
     let secs = u64::try_from(time.tv_sec).unwrap_or(0);

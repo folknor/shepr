@@ -31,7 +31,11 @@ impl ClientShellState {
             agent_panel_sort: self
                 .agent_panel_sort_manual
                 .then_some(self.config.agent_panel_sort),
-        };
+            configured: preferences::ConfiguredChrome::default(),
+        }
+        // A value config.toml sets is only a session change: storing it would
+        // bring it back if the key were later removed from the config.
+        .without_configured(self.config.preferences.configured);
         if let Err(error) = preferences::store(path, &preferences) {
             self.set_endpoint_error(error);
             outcome.repaint = true;
@@ -55,15 +59,11 @@ impl ClientShellConfig {
             status_indicators: config.ui.status_indicators,
             copy_on_select: config.ui.copy_on_select,
             palette: crate::app::palette_from_config(config),
-            keybinds: config
-                .live_keybinds_with_diagnostics()
-                .map(|(keybinds, _diagnostics)| keybinds)
-                .unwrap_or_else(|_diagnostics| LiveKeybindConfig {
-                    prefix: config.prefix_key(),
-                    keybinds: config.keybinds(),
-                }),
-            local_keys: config.keys.clone(),
-            keybinding_source: ClientShellKeybindingSource::Local,
+            // One validation pass. An invalid prefix falls back to ctrl+b here;
+            // its diagnostic was logged by `Config::load` and reaches the banner
+            // through the startup config diagnostic.
+            keybinds: config.live_keybinds(),
+            keybinding_source: ClientShellKeybindingSource::RemoteLocal,
             prompt_new_tab_name: config.ui.prompt_new_tab_name,
             prompt_new_workspace_name: config.ui.prompt_new_workspace_name,
             confirm_close: config.ui.confirm_close,
@@ -72,7 +72,8 @@ impl ClientShellConfig {
             right_click_passthrough_modifiers: config.ui.right_click_passthrough_modifiers(),
             redraw_on_focus_gained: config.ui.redraw_on_focus_gained,
             preferences_path: None,
-            preferences: preferences::ClientChromePreferences::default(),
+            preferences: preferences::ClientChromePreferences::default()
+                .without_configured(preferences::ConfiguredChrome::from_config(config)),
             startup_config_diagnostic: None,
         }
     }
@@ -96,7 +97,10 @@ impl ClientShellConfig {
     }
 
     pub(super) fn with_preferences_path(mut self, path: std::path::PathBuf) -> Self {
-        self.preferences = preferences::load(&path).unwrap_or_default();
+        let configured = self.preferences.configured;
+        self.preferences = preferences::load(&path)
+            .unwrap_or_default()
+            .without_configured(configured);
         self.preferences_path = Some(path);
         self
     }
@@ -106,20 +110,18 @@ impl ClientShellConfig {
         profile: Option<&str>,
     ) -> Result<(), String> {
         let keybinds = match self.keybinding_source {
-            ClientShellKeybindingSource::Endpoint => crate::config::keybindings_from_profile_toml(
-                profile.ok_or("endpoint did not publish its keybindings")?,
-            )?,
-            ClientShellKeybindingSource::RemoteLocal => return Ok(()),
-            ClientShellKeybindingSource::Local => {
-                let config = crate::config::Config {
-                    keys: self.local_keys.clone(),
-                    ..Default::default()
-                };
-                config
-                    .live_keybinds_with_diagnostics()
-                    .map(|(keybinds, _diagnostics)| keybinds)
-                    .map_err(|diagnostics| diagnostics.join("; "))?
+            ClientShellKeybindingSource::Endpoint => {
+                let (keybinds, diagnostics) = crate::config::keybindings_from_profile_toml(
+                    profile.ok_or("endpoint did not publish its keybindings")?,
+                )?;
+                // Runs only when the endpoint publishes a changed profile, so
+                // each diagnostic is logged once per profile.
+                for diagnostic in &diagnostics {
+                    tracing::warn!(message = %diagnostic, "endpoint keybinding profile diagnostic");
+                }
+                keybinds
             }
+            ClientShellKeybindingSource::RemoteLocal => return Ok(()),
         };
         self.keybinds = keybinds;
         Ok(())
@@ -227,6 +229,55 @@ mod tests {
         let initial = config.initial_surface_size(100, 30);
         let state = ClientShellState::new(config);
         assert_eq!(initial, state.surface_size(100, 30));
+        std::fs::remove_file(path).expect("remove endpoint chrome");
+    }
+
+    #[test]
+    fn configured_ui_keys_win_over_remembered_chrome() {
+        let path = std::env::temp_dir().join(format!(
+            "shepr-configured-shell-preferences-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        preferences::store(
+            &path,
+            &preferences::ClientChromePreferences {
+                sidebar_width: Some(31),
+                sidebar_collapsed: Some(true),
+                agent_panel_sort: Some(crate::config::AgentPanelSortConfig::Priority),
+                ..preferences::ClientChromePreferences::default()
+            },
+        )
+        .expect("persist endpoint chrome");
+
+        let mut config = Config::default();
+        config.ui.sidebar_width = 24;
+        config.ui.user_fields.insert("sidebar_width".to_owned());
+        config.ui.user_fields.insert("agent_panel_sort".to_owned());
+        let shell_config =
+            ClientShellConfig::from_config(&config).with_preferences_path(path.clone());
+        let mut state = ClientShellState::new(shell_config);
+
+        // Set keys win; the unset one keeps the remembered toggle.
+        assert_eq!(state.sidebar_width, 24);
+        assert!(!state.sidebar_width_manual);
+        assert_eq!(
+            state.config.agent_panel_sort,
+            crate::config::AgentPanelSortConfig::Spaces
+        );
+        assert!(state.sidebar_collapsed);
+
+        // A manual change still applies for the session but is not stored
+        // for a key config.toml owns.
+        state.sidebar_width = 30;
+        state.sidebar_width_manual = true;
+        state.config.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
+        state.agent_panel_sort_manual = true;
+        state.persist_chrome_preferences(&mut ClientShellInput::default());
+        let stored = preferences::load(&path).expect("stored chrome");
+        assert_eq!(stored.sidebar_width, None);
+        assert_eq!(stored.agent_panel_sort, None);
+        assert_eq!(stored.sidebar_collapsed, Some(true));
         std::fs::remove_file(path).expect("remove endpoint chrome");
     }
 }

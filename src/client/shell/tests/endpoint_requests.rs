@@ -134,7 +134,7 @@ fn failed_selection_copy_does_not_send_terminal_input() {
     state.set_pane_surface(surface());
     state.selection = Some(crate::selection::Selection::absolute_range(
         "pane_1".into(),
-        (0, 0),
+        (0u64, 0),
         (0, 2),
     ));
     for result in [

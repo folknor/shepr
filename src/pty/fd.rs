@@ -5,10 +5,13 @@ use std::{
 };
 
 pub(crate) fn set_cloexec(fd: RawFd) -> std::io::Result<()> {
+    // SAFETY: F_GETFD/F_SETFD take and return integers and touch no memory;
+    // a bad fd fails with EBADF.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if flags < 0 {
         return Err(std::io::Error::last_os_error());
     }
+    // SAFETY: as above.
     if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -16,10 +19,13 @@ pub(crate) fn set_cloexec(fd: RawFd) -> std::io::Result<()> {
 }
 
 pub(crate) fn set_nonblocking(fd: RawFd) -> std::io::Result<()> {
+    // SAFETY: F_GETFL/F_SETFL take and return integers and touch no memory;
+    // a bad fd fails with EBADF.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 {
         return Err(std::io::Error::last_os_error());
     }
+    // SAFETY: as above.
     if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -35,6 +41,8 @@ impl WakeWriter {
     pub(crate) fn wake(&self) -> std::io::Result<()> {
         loop {
             let byte = [1u8];
+            // SAFETY: writes `byte.len()` bytes from a live stack array to an
+            // fd the `Arc<OwnedFd>` keeps open for the call.
             let written =
                 unsafe { libc::write(self.fd.as_raw_fd(), byte.as_ptr().cast(), byte.len()) };
             if written >= 0 {
@@ -59,11 +67,15 @@ pub(crate) struct WakePipe {
 
 pub(crate) fn create_wake_pipe() -> std::io::Result<WakePipe> {
     let mut fds = [-1; 2];
+    // SAFETY: pipe(2) writes exactly two fds into the two-element array.
     if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
         return Err(std::io::Error::last_os_error());
     }
 
+    // SAFETY: pipe succeeded, so both are fresh fds nothing else owns; each
+    // is wrapped exactly once.
     let read_fd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    // SAFETY: as above.
     let write_fd = unsafe { OwnedFd::from_raw_fd(fds[1]) };
     for fd in [read_fd.as_raw_fd(), write_fd.as_raw_fd()] {
         set_cloexec(fd).and_then(|_| set_nonblocking(fd))?;
@@ -80,6 +92,7 @@ pub(crate) fn create_wake_pipe() -> std::io::Result<WakePipe> {
 pub(crate) fn drain_wake_fd(fd: RawFd) -> std::io::Result<()> {
     let mut buf = [0u8; 64];
     loop {
+        // SAFETY: reads at most `buf.len()` bytes into a live stack buffer.
         let read = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
         if read == 0 {
             return Ok(());
@@ -136,6 +149,8 @@ pub(crate) fn poll_pty_and_wake(
         for poll_fd in &mut poll_fds {
             poll_fd.revents = 0;
         }
+        // SAFETY: `poll_fds` is a live two-element pollfd array and the
+        // count passed is its length.
         let result = unsafe {
             libc::poll(
                 poll_fds.as_mut_ptr(),
@@ -207,6 +222,7 @@ pub(crate) fn resize_pty_fd(
         )
         .unwrap_or(u16::MAX),
     };
+    // SAFETY: TIOCSWINSZ reads one winsize from `size`, a live local.
     if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &size) } < 0 {
         return Err(std::io::Error::last_os_error());
     }

@@ -67,8 +67,10 @@ inherited socket overrides so the debug binary talks to its own server:
 - **No god objects.** `app/` is split into state, actions and input; keep it
   that way.
 - **Linux only.** No `#[cfg(windows)]`, `#[cfg(target_os = "macos")]` or
-  `cfg!` branches for other platforms. OS-specific code lives in
-  `src/platform/linux.rs`; `src/platform/mod.rs` holds the shared interface.
+  `cfg!` branches for other platforms. libc, `/proc` and helper-program
+  plumbing lives in the flat `src/platform/` module (`mod.rs`, plus
+  self-contained submodules such as the logind shutdown monitor); there is no
+  per-OS layer and no shims standing in for other platforms.
 - **Detection is decoupled.** The detector reads a screen snapshot and never
   touches the parser or viewport state. When changing a manifest, capture the
   pane with `shepr agent read <pane> --source detection --format text`, encode

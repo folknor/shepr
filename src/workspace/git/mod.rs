@@ -8,7 +8,7 @@ pub(super) mod test_support;
 
 pub(crate) use self::discovery::automatic_workspace_label;
 #[cfg(test)]
-pub(crate) use self::{discovery::git_space_metadata, status::git_status_snapshot_for_cwd};
+pub(crate) use self::status::git_status_snapshot_for_cwd;
 
 pub use self::{
     discovery::{GitSpaceMetadata, derive_label_from_cwd, fallback_label_from_cwd},

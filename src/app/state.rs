@@ -615,6 +615,27 @@ pub(crate) struct PaneFocusTarget {
     pub pane_id: PaneId,
 }
 
+/// Who is looking at which tab, for "seen" bookkeeping: a pane whose agent
+/// finishes counts as seen only while a person is looking at its tab, and a
+/// tab gets marked seen on navigation only when that navigation puts it in
+/// front of a person. See `AppState::tab_is_observed`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum TabViewer {
+    /// Nothing has said who is looking; the global active tab stands in.
+    /// This is the state of an app no server drives (tests), and of a server
+    /// that has not published its foreground client's tab.
+    #[default]
+    ActiveTab,
+    /// No client is attached, so nothing is observed.
+    Nobody,
+    /// The foreground client is showing this tab (workspace id and stable
+    /// tab number, so the reference survives reordering).
+    Tab {
+        workspace_id: String,
+        tab_number: usize,
+    },
+}
+
 /// One right-hand tab bar segment as last rendered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TabBarStatusSegment {
@@ -647,6 +668,8 @@ pub struct AppState {
     /// Last reported focus state for the outer terminal hosting shepr.
     /// None means unsupported or not yet reported, which preserves active-pane suppression.
     pub outer_terminal_focus: Option<bool>,
+    /// The tab `outer_terminal_focus` applies to.
+    pub(crate) tab_viewer: TabViewer,
     // Config
     /// Virtual terminal size (columns, rows) used when no client is attached.
     pub(crate) headless_size: (u16, u16),
@@ -710,6 +733,11 @@ impl AppState {
         } else {
             self.view.terminal_area
         };
+        self.pane_geometry_in(area)
+    }
+
+    /// The configured pane chrome applied to a tab laid out in `area`.
+    pub(crate) fn pane_geometry_in(&self, area: Rect) -> crate::workspace::PaneGeometry {
         crate::workspace::PaneGeometry {
             area,
             pane_borders: self.pane_borders,
@@ -769,6 +797,7 @@ impl AppState {
                 pane_infos: Vec::new(),
             },
             outer_terminal_focus: None,
+            tab_viewer: TabViewer::default(),
             headless_size: (
                 crate::config::DEFAULT_HEADLESS_COLS,
                 crate::config::DEFAULT_HEADLESS_ROWS,
@@ -959,7 +988,7 @@ mod tests {
 
         // Right three quarters (90 cols), minus left+right border and the
         // scrollbar gutter; rows minus top+bottom border.
-        assert_eq!(geometry.pane_size(&layout, new_pane), Some((38, 87)));
+        assert_eq!(geometry.pane_size(&layout, false, new_pane), Some((38, 87)));
     }
 
     #[tokio::test]

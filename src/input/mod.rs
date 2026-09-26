@@ -20,7 +20,6 @@ pub use model::MouseProtocolMode;
 pub use model::WindowsKeyRecord;
 pub use model::ime_compatible_keyboard_enhancement_flags;
 pub use model::{
-    KeyIdentity, KeyboardProtocol, MouseProtocolEncoding, TerminalKey, TextCommit,
-    host_modify_other_keys_mode,
+    KeyIdentity, KeyboardProtocol, MouseProtocolEncoding, TerminalKey, host_modify_other_keys_mode,
 };
 pub use parse::parse_terminal_key_sequence;

@@ -15,31 +15,18 @@
 
 Surfaced in three scopes: persistence, terminal core, pane/terminal state.
 
-- Capture is now split: `persist::capture_pending_history` runs on the loop, `PendingHistory::resolve` and the layout fingerprint run on the save thread, and unchanged history is not rewritten. But `live_history_read` (`src/persist/snapshot.rs`) still formats each pane's whole scrollback eagerly on the loop, because a `TerminalRuntime` can't leave the loop and there is no `Send` handle to the terminal core.
-- **Needs:** a `Send` history reader on `TerminalRuntime`/`PaneRuntime` (e.g. a clone of `Arc<PaneTerminal>` behind a small type), ideally formatting in bounded chunks under short lock holds, which needs row addresses stable while scrollback grows or is trimmed (see TERM-015). Then `live_history_read` returns a closure over it.
-
-## PER-007 - When a workspace or tab is dropped during restore, the saved indices point at the wrong item
-
-Surfaced in two scopes: persistence, app core.
-
-- `restore_workspace` returns `None` for a workspace with no tabs, and `restore_tab` can drop a tab (including for layout leaves without saved state).
-- `snap.active`, `snap.selected` (in `App::new`) and `snap.active_tab` are only clamped, never remapped, so after a drop they select a different workspace or tab. `zoomed` can survive pruning down to a single pane.
-- `generate_workspace_id()` (for a snapshot with no `id`) runs before `reserve_workspace_ids`. It can hand out an ID that a later saved workspace already owns, giving duplicate workspace IDs.
+- Capture is split (`persist::capture_pending_history` on the loop, `PendingHistory::resolve` on the save thread) and unchanged history isn't rewritten, but `live_history_read` (`src/persist/snapshot.rs`) still formats each pane's whole scrollback eagerly on the loop: a `TerminalRuntime` can't leave the loop and there is no `Send` handle to the terminal core.
+- The terminal now has stable absolute rows (`Terminal::history_origin()`): an absolute id stays valid while it is at or above the origin, and rows below `origin + history size` are append-only. A `Send` reader could remember the last absolute row it saved and resume from the later of that and the current origin (full re-read if the origin passed it), re-reading the screen rows each time, in bounded chunks under short lock holds.
 
 ## PER-011 - A restored managed-agent name can stick to a plain shell
 
-- In the pending-plan branch, `restore_managed_agent` marks the agent `Active` before any process exists.
-- If the typed resume command fails (for example, binary not found), `reconcile_managed_agent_at` never clears the name, because `Active` with no known agent does not trigger a clear.
-
-## PER-013 - The `cjk_ime` docs talk about macOS
-
-- The `cjk_ime` docs in `src/config/model.rs` talk about macOS in a Linux-only fork.
+- The pending-resume path calls `TerminalState::restore_managed_agent`, which sets `ManagedAgentPhase::Active` before any process exists; if the typed resume command fails, `reconcile_managed_agent_at` never clears the name. Restore can't fix this alone (commented in `restored_terminal`).
+- **Needs:** a phase such as `ManagedAgentPhase::AwaitingResume` set by `restore_managed_agent_for_resume(name, kind)` in `src/terminal/state.rs` (not counted by `managed_agent_launch_pending()`, a no-op in `reconcile_managed_agent_at`); in `start_pending_agent_resume` (`src/app/agent_resume.rs`), after the resume command is sent, move it to `Pending { ready_after, deadline, observed_expected: false }` so the existing deadline releases the name if the agent never appears. Then swap the call in `restored_terminal`'s `PendingResume` arm. Decide too whether a failed deferred resume (missing cwd, failed spawn) should move it back to Active or keep it waiting.
 
 ## PER-015 - Structural recommendation from the persistence hunter
 
-- Persistence is spread out: capture, writing, the history pairing and the resume schedule sit in separate places with no single owner. The data directory is now locked (`src/persist/lock.rs`). The hunter suggests one persistence actor that owns the lock, takes cheap snapshots on the loop and formats history off it (PER-003), and writes layout plus history as one bundle.
-- History for panes without a runtime is carried through a process-wide map in `src/persist/snapshot.rs`; the actor should own that state instead of a hidden global.
-- Restore should carry every saved `PaneSnapshot` field forward whether it succeeds or fails, instead of rebuilding it per branch (PER-011).
+- Persistence is spread out: capture, writing, the history pairing and the resume schedule sit in separate places with no single owner. The data directory is locked (`src/persist/lock.rs`). The hunter suggests one persistence actor that owns the lock, takes cheap snapshots on the loop and formats history off it (PER-003), and writes layout plus history as one bundle.
+- Carried history (restored screens for runtime-less panes, and each live pane's last primary history for saves taken on the alternate screen) is owned per app as `HistoryCarry` (`src/persist/snapshot.rs`, `App.pane_history_carry`); an actor would own it.
 - `persist::restore` takes one size for every pane in the session; restored panes start at that size, not their own layout size, until the first resize.
 
 ## PER-017 - Duplicate-session panes lose their saved screen on the first save

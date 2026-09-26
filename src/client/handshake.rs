@@ -34,7 +34,7 @@ pub(super) fn client_shell_keybinding_source() -> shell::ClientShellKeybindingSo
     {
         Some("server") => shell::ClientShellKeybindingSource::Endpoint,
         Some(_) => shell::ClientShellKeybindingSource::RemoteLocal,
-        None => shell::ClientShellKeybindingSource::Local,
+        None => shell::ClientShellKeybindingSource::RemoteLocal,
     }
 }
 

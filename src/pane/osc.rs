@@ -347,6 +347,8 @@ fn foreground_job_is_shell(job: &crate::platform::ForegroundJob, shell_pid: u32)
     job.processes.iter().any(|process| process.pid == shell_pid)
 }
 
+/// The process group of the foreground program when it is not the shell.
+/// Scans `/proc`: never call it with the terminal lock held.
 pub(super) fn current_transient_default_color_owner(shell_pid: u32) -> Option<u32> {
     let job = crate::detect::foreground_job(shell_pid)?;
     (!foreground_job_is_shell(&job, shell_pid)).then_some(job.process_group_id)

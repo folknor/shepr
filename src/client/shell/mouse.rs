@@ -5,6 +5,9 @@ const SELECTION_AUTOSCROLL_INTERVAL: std::time::Duration = std::time::Duration::
 const SELECTION_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 
 impl ClientShellState {
+    /// Moves the sidebar edge during a width drag. The retained pane surface stays on screen,
+    /// clipped to the new pane area; the endpoint resize waits for the release (see
+    /// `ClientChromeDrag::SidebarWidth`).
     fn set_sidebar_width_from_column(&mut self, column: u16, outcome: &mut ClientShellInput) {
         let (min, max) = crate::config::validated_sidebar_bounds(
             self.config.sidebar_min_width,
@@ -15,9 +18,14 @@ impl ClientShellState {
         if self.sidebar_width != width {
             self.sidebar_width = width;
             self.sidebar_width_manual = true;
-            self.invalidate_pane_surface();
             outcome.repaint = true;
-            outcome.resize = true;
+            if let Some(ClientChromeDrag::SidebarWidth { resize_pending }) =
+                self.chrome_drag.as_mut()
+            {
+                *resize_pending = true;
+            } else {
+                outcome.resize = true;
+            }
         }
     }
 
@@ -523,7 +531,7 @@ impl ClientShellState {
             .hits
             .workspaces
             .iter()
-            .filter(|hit| hit.endpoint_id == self.active_endpoint_id && !hit.indented)
+            .filter(|hit| hit.endpoint_id == self.active_endpoint_id)
             .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
             .collect::<Vec<_>>();
         let snapshot = self.snapshot.as_deref()?;
@@ -540,18 +548,15 @@ impl ClientShellState {
                 .get(entry.index)
                 .is_some_and(|workspace| workspace.workspace_id == last_hit.workspace_id)
         })?;
-        let next = entries.get(last_position + 1);
-        if !next.is_some_and(|entry| entry.indented) {
-            let before = next.and_then(|entry| {
-                snapshot
-                    .workspaces
-                    .get(entry.index)
-                    .map(|workspace| workspace.workspace_id.clone())
-            });
-            let row = last_hit.rect.bottom();
-            if row < self.hits.new_workspace.y {
-                slots.push((before, row));
-            }
+        let before = entries.get(last_position + 1).and_then(|entry| {
+            snapshot
+                .workspaces
+                .get(entry.index)
+                .map(|workspace| workspace.workspace_id.clone())
+        });
+        let row = last_hit.rect.bottom();
+        if row < self.hits.new_workspace.y {
+            slots.push((before, row));
         }
         slots
             .into_iter()
@@ -673,7 +678,7 @@ impl ClientShellState {
         }
         if mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
             match self.chrome_drag.as_ref() {
-                Some(ClientChromeDrag::SidebarWidth) => {
+                Some(ClientChromeDrag::SidebarWidth { .. }) => {
                     self.set_sidebar_width_from_column(mouse.column, outcome);
                     return;
                 }
@@ -997,7 +1002,11 @@ impl ClientShellState {
                             );
                         }
                     }
-                    ClientChromeDrag::SidebarWidth | ClientChromeDrag::SidebarSection => {
+                    ClientChromeDrag::SidebarWidth { resize_pending } => {
+                        outcome.resize |= resize_pending;
+                        self.persist_chrome_preferences(outcome);
+                    }
+                    ClientChromeDrag::SidebarSection => {
                         self.persist_chrome_preferences(outcome);
                     }
                     ClientChromeDrag::WorkspaceScrollbar { .. }
@@ -1450,7 +1459,14 @@ impl ClientShellState {
                 let previous_pane_click = self.last_pane_click.take();
                 self.workspace_press = None;
                 self.tab_press = None;
-                self.chrome_drag = None;
+                // A width drag whose release never arrived (the button went up outside the
+                // terminal) still owes the endpoint its resize.
+                if let Some(ClientChromeDrag::SidebarWidth {
+                    resize_pending: true,
+                }) = self.chrome_drag.take()
+                {
+                    outcome.resize = true;
+                }
                 if super::contains(self.hits.sidebar_divider, point)
                     && !super::contains(self.hits.sidebar_toggle, point)
                 {
@@ -1462,12 +1478,13 @@ impl ClientShellState {
                     if double_click {
                         self.sidebar_width = self.config.sidebar_width;
                         self.sidebar_width_manual = false;
-                        self.invalidate_pane_surface();
                         outcome.repaint = true;
                         outcome.resize = true;
                         self.persist_chrome_preferences(outcome);
                     } else {
-                        self.chrome_drag = Some(ClientChromeDrag::SidebarWidth);
+                        self.chrome_drag = Some(ClientChromeDrag::SidebarWidth {
+                            resize_pending: false,
+                        });
                         self.set_sidebar_width_from_column(mouse.column, outcome);
                     }
                     return;
@@ -1594,7 +1611,6 @@ impl ClientShellState {
                 if super::contains(self.hits.sidebar_toggle, point) {
                     self.sidebar_collapsed = !self.sidebar_collapsed;
                     self.sidebar_collapsed_manual = true;
-                    self.invalidate_pane_surface();
                     outcome.repaint = true;
                     outcome.resize = true;
                     self.persist_chrome_preferences(outcome);

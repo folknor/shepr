@@ -266,35 +266,103 @@ pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
     Some(hex)
 }
 
-type CarriedHistory = HashMap<TerminalId, String>;
-
-/// Saved screen history of restored panes that have no runtime: panes waiting
-/// for a deferred agent resume, and panes whose restore failed (missing cwd
-/// or shell). History capture reads live runtimes only, so without this a
-/// save made before such a pane runs would write a history file without it,
-/// and a resume that then fails would have lost the pane's saved screen for
-/// good. Entries are keyed by the globally unique terminal ID and are dropped
-/// as soon as a capture sees a runtime for that terminal, whose live history
-/// supersedes them. An entry for a pane closed before it ever ran stays until
-/// the process exits; that is bounded by the history file loaded at startup.
-///
-/// This lives here rather than on `TerminalState` so restore and capture can
-/// share it without widening the terminal or app interfaces.
-static CARRIED_HISTORY: std::sync::LazyLock<std::sync::Mutex<CarriedHistory>> =
-    std::sync::LazyLock::new(Default::default);
-
-fn carried_history() -> std::sync::MutexGuard<'static, CarriedHistory> {
-    // The map holds plain strings with no invariant a panic could break.
-    CARRIED_HISTORY
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+/// One pane's history kept across saves; see `HistoryCarry`.
+struct CarriedEntry {
+    ansi: String,
+    /// Where `ansi` came from. `Restored`: the history file loaded at
+    /// startup, for a pane that has not run yet. `Live`: this pane's own
+    /// runtime, on its last successful primary-screen read.
+    origin: CarriedOrigin,
 }
 
-/// Keeps a restored pane's saved history for later saves until the pane has a
-/// runtime of its own.
-pub(super) fn carry_history(terminal: &TerminalId, history: Option<&PaneHistorySnapshot>) {
-    if let Some(history) = history {
-        carried_history().insert(terminal.clone(), history.ansi.clone());
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CarriedOrigin {
+    Restored,
+    Live,
+}
+
+type CarriedHistory = HashMap<TerminalId, CarriedEntry>;
+
+/// Primary-screen history kept across saves, for two cases the live screen
+/// cannot cover:
+///
+/// - A restored pane without a runtime (deferred agent resume, failed
+///   restore) keeps its `Restored` history from the loaded file until it
+///   runs. Capture reads live runtimes only, so without this a save made
+///   before the pane runs would lose its saved screen for good. The first
+///   capture that sees a runtime for the pane drops that entry: from then on
+///   the pane's own screen supersedes it, even if its first read happens on
+///   the alternate screen.
+/// - A running pane on the alternate screen (vim, an agent TUI) cannot have
+///   its primary screen read (`primary_history_ansi` returns `None`), so
+///   saves fall back to its `Live` entry, the last primary history read
+///   successfully. Every successful read replaces it and an empty read
+///   removes it, so it never holds anything older than the pane's own last
+///   primary screen.
+///
+/// Entries are keyed by terminal ID, one per pane at most, and each capture
+/// drops those of panes no longer in the layout. That pruning is why the map
+/// belongs to one app (restore creates it, the app hands it to every
+/// capture) instead of being process-wide: a capture only knows its own
+/// layout, and would drop every other owner's entries.
+///
+/// Capture (event loop) and resolve (save thread) both use it, hence the
+/// shared lock. This lives here rather than on `TerminalState` so restore and
+/// capture can share it without widening the terminal interface.
+#[derive(Clone, Default)]
+pub struct HistoryCarry(std::sync::Arc<std::sync::Mutex<CarriedHistory>>);
+
+impl HistoryCarry {
+    fn lock(&self) -> std::sync::MutexGuard<'_, CarriedHistory> {
+        // The map holds plain strings with no invariant a panic could break.
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Keeps a restored pane's saved history for later saves until the pane
+    /// has a runtime of its own.
+    pub(super) fn carry_restored(
+        &self,
+        terminal: &TerminalId,
+        history: Option<&PaneHistorySnapshot>,
+    ) {
+        if let Some(history) = history {
+            self.lock().insert(
+                terminal.clone(),
+                CarriedEntry {
+                    ansi: history.ansi.clone(),
+                    origin: CarriedOrigin::Restored,
+                },
+            );
+        }
+    }
+
+    /// The save-thread half of a live pane's history: records a successful
+    /// primary-screen read as the pane's fallback, or falls back to the last
+    /// one while the alternate screen hides the primary screen.
+    fn resolve_live(&self, terminal: &TerminalId, read: Option<String>) -> Option<String> {
+        let mut carried = self.lock();
+        match read {
+            Some(ansi) if ansi.trim().is_empty() => {
+                carried.remove(terminal);
+                None
+            }
+            Some(ansi) => {
+                carried.insert(
+                    terminal.clone(),
+                    CarriedEntry {
+                        ansi: ansi.clone(),
+                        origin: CarriedOrigin::Live,
+                    },
+                );
+                Some(ansi)
+            }
+            None => carried
+                .get(terminal)
+                .filter(|entry| entry.origin == CarriedOrigin::Live)
+                .map(|entry| entry.ansi.clone()),
+        }
     }
 }
 
@@ -305,7 +373,7 @@ type PaneHistoryRead = Box<dyn FnOnce() -> Option<String> + Send>;
 enum PendingPaneHistory {
     /// Saved history carried for a pane without a runtime.
     Carried(String),
-    Live(PaneHistoryRead),
+    Live(TerminalId, PaneHistoryRead),
 }
 
 /// Pane history captured on the event loop in the cheapest form available,
@@ -313,6 +381,7 @@ enum PendingPaneHistory {
 /// mirrors the workspaces and tabs it was captured from.
 pub(crate) struct PendingHistory {
     workspaces: Vec<Vec<Vec<(u32, PendingPaneHistory)>>>,
+    carry: HistoryCarry,
 }
 
 impl PendingHistory {
@@ -320,6 +389,7 @@ impl PendingHistory {
     /// it was captured alongside. Meant for the save thread: it can take as
     /// long as formatting every pane's scrollback does.
     pub(crate) fn resolve(self, snapshot: &SessionSnapshot) -> SessionHistorySnapshot {
+        let carry = self.carry;
         SessionHistorySnapshot {
             version: SNAPSHOT_VERSION,
             layout_fingerprint: layout_fingerprint(snapshot),
@@ -335,7 +405,9 @@ impl PendingHistory {
                                 .filter_map(|(id, pending)| {
                                     let ansi = match pending {
                                         PendingPaneHistory::Carried(ansi) => Some(ansi),
-                                        PendingPaneHistory::Live(read) => read(),
+                                        PendingPaneHistory::Live(terminal, read) => {
+                                            carry.resolve_live(&terminal, read())
+                                        }
                                     }?;
                                     Some((id, PaneHistorySnapshot { ansi }))
                                 })
@@ -355,27 +427,39 @@ pub fn capture_history(
     snapshot: &SessionSnapshot,
     workspaces: &[Workspace],
     terminal_runtimes: &TerminalRuntimeRegistry,
+    carry: &HistoryCarry,
 ) -> SessionHistorySnapshot {
-    capture_pending_history(workspaces, terminal_runtimes).resolve(snapshot)
+    capture_pending_history(workspaces, terminal_runtimes, carry).resolve(snapshot)
 }
 
 /// The event-loop half of a history capture; see `PendingHistory`.
 pub(crate) fn capture_pending_history(
     workspaces: &[Workspace],
     terminal_runtimes: &TerminalRuntimeRegistry,
+    carry: &HistoryCarry,
 ) -> PendingHistory {
-    let mut carried = carried_history();
+    let mut carried = carry.lock();
+    let workspaces_history = workspaces
+        .iter()
+        .map(|workspace| {
+            workspace
+                .tabs
+                .iter()
+                .map(|tab| capture_tab_history(tab, terminal_runtimes, &mut carried))
+                .collect()
+        })
+        .collect();
+    let live_ids: std::collections::HashSet<_> = workspaces
+        .iter()
+        .flat_map(|workspace| workspace.tabs.iter())
+        .flat_map(|tab| tab.panes.values())
+        .map(|pane| &pane.attached_terminal_id)
+        .collect();
+    carried.retain(|id, _| live_ids.contains(id));
+    drop(carried);
     PendingHistory {
-        workspaces: workspaces
-            .iter()
-            .map(|workspace| {
-                workspace
-                    .tabs
-                    .iter()
-                    .map(|tab| capture_tab_history(tab, terminal_runtimes, &mut carried))
-                    .collect()
-            })
-            .collect(),
+        workspaces: workspaces_history,
+        carry: carry.clone(),
     }
 }
 
@@ -402,11 +486,22 @@ fn capture_pane_history(
     let Some(runtime) = terminal_runtimes.get(terminal) else {
         return carried
             .get(terminal)
-            .cloned()
-            .map(PendingPaneHistory::Carried);
+            .map(|entry| PendingPaneHistory::Carried(entry.ansi.clone()));
     };
-    carried.remove(terminal);
-    Some(PendingPaneHistory::Live(live_history_read(runtime)))
+    // The pane has a runtime of its own now: its own screen supersedes the
+    // history restored for it, permanently, even while that screen is on the
+    // alternate buffer and cannot be read. Its own last primary read stays
+    // as the alternate-screen fallback.
+    if carried
+        .get(terminal)
+        .is_some_and(|entry| entry.origin == CarriedOrigin::Restored)
+    {
+        carried.remove(terminal);
+    }
+    Some(PendingPaneHistory::Live(
+        terminal.clone(),
+        live_history_read(runtime),
+    ))
 }
 
 /// How a live pane's history gets read. The save path is built to run this
@@ -518,8 +613,16 @@ mod tests {
         state: &AppState,
         terminal_runtimes: &TerminalRuntimeRegistry,
     ) -> SessionHistorySnapshot {
+        capture_history_with_carry(state, terminal_runtimes, &HistoryCarry::default())
+    }
+
+    fn capture_history_with_carry(
+        state: &AppState,
+        terminal_runtimes: &TerminalRuntimeRegistry,
+        carry: &HistoryCarry,
+    ) -> SessionHistorySnapshot {
         let snapshot = capture_from_state_with_runtimes(state, terminal_runtimes);
-        capture_history(&snapshot, &state.workspaces, terminal_runtimes)
+        capture_history(&snapshot, &state.workspaces, terminal_runtimes, carry)
     }
 
     fn root_split_ratio(tab: &TabSnapshot) -> Option<f32> {
@@ -1054,6 +1157,127 @@ mod tests {
 
         assert!(first_history.ansi.contains("first-pane-history"));
         assert!(second_history.ansi.contains("second-pane-history"));
+    }
+
+    fn root_history(history: &SessionHistorySnapshot, root: crate::layout::PaneId) -> Option<&str> {
+        history.workspaces[0].tabs[0]
+            .panes
+            .get(&root.raw())
+            .map(|pane| pane.ansi.as_str())
+    }
+
+    /// The alternate screen hides the primary one from saves; a save made
+    /// meanwhile keeps the pane's last primary history instead of dropping it
+    /// or writing the alternate frame, and the fallback follows every fresh
+    /// primary read.
+    #[tokio::test]
+    async fn running_pane_saved_on_alternate_screen_keeps_last_primary_history() {
+        let state = state_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
+            .attached_terminal_id
+            .clone();
+        let mut terminal_runtimes = TerminalRuntimeRegistry::new();
+        terminal_runtimes.insert(
+            terminal_id.clone(),
+            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+                20,
+                3,
+                4096,
+                b"PRIMARY_ONE\r\n",
+            ),
+        );
+        let runtime = |runtimes: &TerminalRuntimeRegistry, bytes: &[u8]| {
+            runtimes
+                .get(&terminal_id)
+                .expect("test precondition")
+                .test_process_pty_bytes(bytes);
+        };
+        let carry = HistoryCarry::default();
+
+        let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+        assert!(root_history(&saved, root).is_some_and(|ansi| ansi.contains("PRIMARY_ONE")));
+
+        runtime(&terminal_runtimes, b"\x1b[?1049hALT_FRAME");
+        for _ in 0..2 {
+            let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+            let ansi = root_history(&saved, root).expect("alternate screen keeps the history");
+            assert!(ansi.contains("PRIMARY_ONE"));
+            assert!(!ansi.contains("ALT_FRAME"));
+        }
+
+        runtime(&terminal_runtimes, b"\x1b[?1049lPRIMARY_TWO\r\n");
+        let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+        assert!(root_history(&saved, root).is_some_and(|ansi| ansi.contains("PRIMARY_TWO")));
+        runtime(&terminal_runtimes, b"\x1b[?1049hALT_AGAIN");
+        let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+        let ansi = root_history(&saved, root).expect("alternate screen keeps the history");
+        assert!(ansi.contains("PRIMARY_TWO"));
+        assert!(!ansi.contains("ALT_AGAIN"));
+
+        // Closing the pane drops its fallback.
+        let other = state_with_workspaces(&["other"]);
+        capture_history_with_carry(&other, &TerminalRuntimeRegistry::new(), &carry);
+        assert!(carry.lock().is_empty());
+        for (_, runtime) in terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    /// A restored pane without a runtime keeps its saved history in every
+    /// save until it runs. From then on only its own screen counts: the
+    /// restored copy is gone even while the pane is on the alternate screen,
+    /// and even if the pane later loses its runtime again.
+    #[tokio::test]
+    async fn restored_history_is_carried_until_the_pane_runs_then_superseded() {
+        let state = state_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
+            .attached_terminal_id
+            .clone();
+        let carry = HistoryCarry::default();
+        carry.carry_restored(
+            &terminal_id,
+            Some(&PaneHistorySnapshot {
+                ansi: "RESTORED_HISTORY\r\n".into(),
+            }),
+        );
+        let mut terminal_runtimes = TerminalRuntimeRegistry::new();
+        for _ in 0..2 {
+            let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+            assert_eq!(root_history(&saved, root), Some("RESTORED_HISTORY\r\n"));
+        }
+
+        // The pane starts straight into an alternate-screen program, as a
+        // resumed agent does: no primary history of its own yet.
+        terminal_runtimes.insert(
+            terminal_id.clone(),
+            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+                20,
+                3,
+                4096,
+                b"\x1b[?1049hAGENT_TUI",
+            ),
+        );
+        let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+        assert_eq!(root_history(&saved, root), None);
+
+        terminal_runtimes
+            .get(&terminal_id)
+            .expect("test precondition")
+            .test_process_pty_bytes(b"\x1b[?1049lLIVE_SCREEN\r\n");
+        let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+        let ansi = root_history(&saved, root).expect("live history is saved");
+        assert!(ansi.contains("LIVE_SCREEN"));
+        assert!(!ansi.contains("RESTORED_HISTORY"));
+
+        if let Some(runtime) = terminal_runtimes.remove(&terminal_id) {
+            runtime.shutdown();
+        }
+        let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
+        let ansi = root_history(&saved, root).expect("last live history is kept");
+        assert!(ansi.contains("LIVE_SCREEN"));
+        assert!(!ansi.contains("RESTORED_HISTORY"));
     }
 
     #[test]

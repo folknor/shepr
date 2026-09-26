@@ -11,24 +11,16 @@ mod targets;
 mod types;
 mod version;
 
-pub(crate) use actions::{
-    install_experimental_letta, install_target, uninstall_experimental_letta, uninstall_target,
-};
+pub(crate) use actions::{install_target, uninstall_target};
 #[cfg(test)]
 pub(crate) use env::integration_env_lock;
 pub(crate) use env::{
     SHEPR_PANE_ID_ENV_VAR, SHEPR_TAB_ID_ENV_VAR, SHEPR_WORKSPACE_ID_ENV_VAR, apply_pane_base_env,
 };
 pub(crate) use registry::{
-    experimental_letta_integration_status, installed_integration_statuses,
-    integration_target_label, print_outdated_update_notice,
+    installed_integration_statuses, integration_target_label, print_outdated_update_notice,
 };
-pub(crate) use types::{ExperimentalIntegrationStatus, IntegrationStatus, IntegrationStatusKind};
-
-/// CLI labels for experimental integrations that are not part of the
-/// `IntegrationTarget` enum. Nothing on the wire keeps them out of it; they
-/// are separate only until they are folded in.
-pub(crate) const EXPERIMENTAL_INTEGRATION_TARGET_LABELS: &[&str] = &["letta"];
+pub(crate) use types::{IntegrationStatus, IntegrationStatusKind};
 
 const PI_EXTENSION_INSTALL_NAME: &str = "shepr-agent-state.ts";
 const PI_EXTENSION_ASSET: &str = include_str!("assets/pi/shepr-agent-state.ts");
@@ -38,10 +30,10 @@ const OMP_EXTENSION_ASSET: &str = include_str!("assets/omp/shepr-agent-state.ts"
 const OMP_INTEGRATION_VERSION: u32 = 1;
 const CLAUDE_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const CLAUDE_HOOK_ASSET: &str = include_str!("assets/claude/shepr-agent-state.sh");
-const CLAUDE_INTEGRATION_VERSION: u32 = 1;
+const CLAUDE_INTEGRATION_VERSION: u32 = 2;
 const CODEX_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const CODEX_HOOK_ASSET: &str = include_str!("assets/codex/shepr-agent-state.sh");
-const CODEX_INTEGRATION_VERSION: u32 = 1;
+const CODEX_INTEGRATION_VERSION: u32 = 2;
 const KIMI_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const KIMI_HOOK_ASSET: &str = include_str!("assets/kimi/shepr-agent-state.sh");
 const KIMI_INTEGRATION_VERSION: u32 = 3;
@@ -93,7 +85,7 @@ const DEVIN_HOOK_EVENTS: [(&str, &str); 6] = [
 ];
 const DROID_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const DROID_HOOK_ASSET: &str = include_str!("assets/droid/shepr-agent-state.sh");
-const DROID_INTEGRATION_VERSION: u32 = 1;
+const DROID_INTEGRATION_VERSION: u32 = 2;
 const DROID_HOOK_EVENTS: [(&str, &str); 1] = [("SessionStart", "session")];
 const OPENCODE_PLUGIN_INSTALL_NAME: &str = "shepr-agent-state.js";
 const OPENCODE_PLUGIN_ASSET: &str = include_str!("assets/opencode/shepr-agent-state.js");
@@ -167,7 +159,7 @@ const MASTRACODE_HOOK_EVENTS: [(&str, &str); 11] = [
 const GROK_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const GROK_HOOK_CONFIG_INSTALL_NAME: &str = "shepr.json";
 const GROK_HOOK_ASSET: &str = include_str!("assets/grok/shepr-agent-state.sh");
-const GROK_INTEGRATION_VERSION: u32 = 1;
+const GROK_INTEGRATION_VERSION: u32 = 2;
 
 pub(crate) const INSTALL_WARNING_PREFIX: &str = "warning:";
 

@@ -1358,3 +1358,232 @@ fn mode_set_does_not_disturb_a_partial_child_sequence() {
     );
     assert!(terminal.mode_set(MODE_SYNCHRONIZED_OUTPUT, true).is_err());
 }
+
+/// Writes lines `"{i:06}"` for `i` in `lines`, `per_write` lines per write.
+fn write_line_range(terminal: &mut Terminal, lines: std::ops::Range<usize>, per_write: usize) {
+    let lines: Vec<String> = lines.map(|i| format!("{i:06}\r\n")).collect();
+    for chunk in lines.chunks(per_write.max(1)) {
+        terminal.write(chunk.concat().as_bytes());
+    }
+}
+
+/// The text of the line an absolute row id names, `None` once it is gone.
+fn absolute_row_text(terminal: &Terminal, row: u64) -> Option<String> {
+    let y = u32::try_from(terminal.screen_row_for_absolute(row)?).ok()?;
+    let last = terminal.cols().ok()?.saturating_sub(1);
+    terminal.read_text_screen((0, y), (last, y), false).ok()
+}
+
+/// Line `i` of `write_line_range` output was written on absolute row `i`.
+fn assert_rows_name_their_lines(terminal: &Terminal, rows: impl IntoIterator<Item = u64>) {
+    for row in rows {
+        assert_eq!(
+            absolute_row_text(terminal, row),
+            Some(format!("{row:06}")),
+            "absolute row {row} (origin {})",
+            terminal.history_origin()
+        );
+    }
+}
+
+#[test]
+fn absolute_rows_keep_naming_their_lines_while_full_history_evicts() {
+    // One byte of budget buys the minimum history.
+    let mut terminal = Terminal::new(10, 3, 1).expect("test precondition");
+    let limit = u64::try_from(MIN_SCROLLBACK_LINES).expect("test precondition");
+    write_line_range(&mut terminal, 0..900, 1);
+    assert_eq!(terminal.history_origin(), 0, "history is not full yet");
+    assert_rows_name_their_lines(&terminal, [0, 450, 899]);
+
+    write_line_range(&mut terminal, 900..1_500, 1);
+    write_line_range(&mut terminal, 1_500..2_500, 37);
+    // 2500 lines and the cursor's empty row were written; three screen rows
+    // and a full history are retained.
+    let origin = terminal.history_origin();
+    assert_eq!(origin, 2_501 - (limit + 3));
+    assert_eq!(absolute_row_text(&terminal, origin - 1), None);
+    assert_rows_name_their_lines(&terminal, [origin, origin + 500, 2_499]);
+    assert_eq!(terminal.absolute_row_for_screen(0), origin);
+
+    // A single write longer than the whole history evicts the tracker's
+    // reference row as well: every earlier id is retired rather than guessed.
+    write_line_range(&mut terminal, 2_500..6_000, 3_500);
+    assert!(terminal.history_origin() > 2_499);
+    assert_eq!(absolute_row_text(&terminal, 2_499), None);
+}
+
+#[test]
+fn purges_retire_the_ids_of_purged_lines() {
+    let mut terminal = Terminal::new(10, 3, 100_000).expect("test precondition");
+    write_line_range(&mut terminal, 0..50, 1);
+    assert_rows_name_their_lines(&terminal, [0, 49]);
+
+    // ED 3 drops the history; the screen's lines keep their ids.
+    terminal.write(b"\x1b[3J");
+    assert_eq!(terminal.history_origin(), 48);
+    assert_eq!(absolute_row_text(&terminal, 47), None);
+    assert_rows_name_their_lines(&terminal, [48, 49]);
+
+    // So does the `CSI ? 3 J` spelling the scanner feeds through.
+    write_line_range(&mut terminal, 50..60, 1);
+    terminal.write(b"\x1b[?3J");
+    assert_eq!(terminal.history_origin(), 58);
+    assert_rows_name_their_lines(&terminal, [58, 59]);
+
+    // The host's clear keeps the cursor line, moved to the top.
+    terminal.write(b"$ prompt");
+    assert!(terminal.clear_screen());
+    assert_eq!(terminal.history_origin(), 60);
+    assert_eq!(
+        absolute_row_text(&terminal, 60).as_deref(),
+        Some("$ prompt")
+    );
+    assert_eq!(absolute_row_text(&terminal, 59), None);
+
+    // RIS resets every line.
+    terminal.write(b"\x1bc");
+    assert!(terminal.history_origin() > 60);
+    assert_eq!(absolute_row_text(&terminal, 60), None);
+}
+
+#[test]
+fn the_alternate_screen_leaves_primary_row_ids_alone() {
+    let mut terminal = Terminal::new(10, 3, 1).expect("test precondition");
+    write_line_range(&mut terminal, 0..1_200, 1);
+    let origin = terminal.history_origin();
+    assert!(origin > 0);
+
+    terminal.write(b"\x1b[?1049h");
+    for _ in 0..50 {
+        terminal.write(b"full-screen\r\n");
+    }
+    assert_eq!(terminal.history_origin(), origin);
+    terminal.write(b"\x1b[?1049l");
+    assert_eq!(terminal.history_origin(), origin);
+    assert_rows_name_their_lines(&terminal, [origin, 1_199]);
+
+    write_line_range(&mut terminal, 1_200..1_300, 5);
+    assert_rows_name_their_lines(&terminal, [terminal.history_origin(), 1_299]);
+
+    // RIS from the alternate screen discards the primary screen too.
+    terminal.write(b"\x1b[?1049h\x1bc");
+    assert_eq!(absolute_row_text(&terminal, 1_299), None);
+}
+
+#[test]
+fn height_resizes_keep_row_ids_and_column_resizes_retire_them() {
+    let mut terminal = Terminal::new(10, 5, 1).expect("test precondition");
+    write_line_range(&mut terminal, 0..1_500, 1);
+
+    // Height changes move lines between screen and history, evicting at the
+    // history limit.
+    terminal.resize(10, 3, 0, 0).expect("test precondition");
+    assert_rows_name_their_lines(&terminal, [terminal.history_origin(), 1_499]);
+    terminal.resize(10, 8, 0, 0).expect("test precondition");
+    assert_rows_name_their_lines(&terminal, [terminal.history_origin(), 1_499]);
+
+    // A column change re-wraps every line.
+    let retained_end =
+        terminal.absolute_row_for_screen(terminal.total_rows().expect("test precondition"));
+    terminal.resize(12, 8, 0, 0).expect("test precondition");
+    assert!(terminal.history_origin() >= retained_end);
+    assert_eq!(absolute_row_text(&terminal, 1_499), None);
+}
+
+#[test]
+fn visited_rows_match_the_owned_text_rows() {
+    let mut terminal = Terminal::new(6, 3, 100_000).expect("test precondition");
+    terminal.write("ab界e\u{301}\u{10eeee}x\r\nwrapped-row-text\r\n".as_bytes());
+    let owned = terminal.screen_text_rows().expect("test precondition");
+    let mut scratch = String::new();
+    for (y, row) in owned.iter().enumerate() {
+        let mut cells = Vec::new();
+        let wrap = terminal
+            .visit_screen_row_text(y, &mut scratch, |x, wide, text| {
+                cells.push((x, wide, text.to_owned()));
+            })
+            .expect("row is retained");
+        assert_eq!(
+            (wrap.soft_wrapped, wrap.wrap_continuation),
+            (row.soft_wrapped, row.wrap_continuation),
+            "row {y}"
+        );
+        let expected: Vec<_> = row
+            .cells
+            .iter()
+            .enumerate()
+            .map(|(x, cell)| {
+                let text = if cell.graphemes.is_empty()
+                    || cell.graphemes.first() == Some(&KITTY_UNICODE_PLACEHOLDER)
+                {
+                    " ".to_owned()
+                } else {
+                    cell.graphemes
+                        .iter()
+                        .filter_map(|&codepoint| char::from_u32(codepoint))
+                        .collect()
+                };
+                (
+                    u16::try_from(x).expect("test precondition"),
+                    cell.wide,
+                    text,
+                )
+            })
+            .collect();
+        assert_eq!(cells, expected, "row {y}");
+    }
+    assert!(
+        terminal
+            .visit_screen_row_text(owned.len(), &mut scratch, |_, _, _| {})
+            .is_none()
+    );
+}
+
+#[test]
+fn ris_drops_the_childs_colour_overrides() {
+    let host_fg = RgbColor {
+        r: 0xaa,
+        g: 0xbb,
+        b: 0xcc,
+    };
+    let host_bg = RgbColor {
+        r: 0x11,
+        g: 0x22,
+        b: 0x33,
+    };
+    let mut terminal = Terminal::new(20, 3, 0).expect("test precondition");
+    terminal.set_default_colors(Some(host_fg), Some(host_bg));
+    terminal.write(
+        b"\x1b]10;rgb:01/02/03\x07\x1b]11;rgb:04/05/06\x07\
+          \x1b]12;rgb:0a/0b/0c\x07\x1b]4;1;rgb:07/08/09\x07",
+    );
+    assert!(
+        terminal
+            .default_color_override(DefaultColor::Foreground)
+            .is_some()
+    );
+    assert!(
+        terminal
+            .effective_cursor_color()
+            .expect("test precondition")
+            .is_some()
+    );
+
+    terminal.write(b"\x1bc");
+
+    assert_eq!(
+        terminal.default_color_override(DefaultColor::Foreground),
+        None
+    );
+    assert_eq!(
+        terminal.default_color_override(DefaultColor::Background),
+        None
+    );
+    assert_eq!(terminal.effective_cursor_color(), Ok(None));
+    let mut render_state = RenderState::new().expect("test precondition");
+    render_state.update(&terminal).expect("test precondition");
+    let colors = render_state.colors().expect("test precondition");
+    // The host's colours show again underneath.
+    assert_eq!((colors.foreground, colors.background), (host_fg, host_bg));
+    assert_eq!(colors.palette[1], default_palette()[1]);
+}

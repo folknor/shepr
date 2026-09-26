@@ -97,7 +97,6 @@ impl ClientShellState {
     }
 
     pub(super) fn move_navigate_workspace(&mut self, delta: isize) {
-        let surface_available = self.snapshot.is_some() && self.pane_surface.is_some();
         let mut targets = Vec::new();
         for endpoint in &self.endpoints {
             if endpoint.status != ClientEndpointStatus::Online {
@@ -106,21 +105,7 @@ impl ClientShellState {
             let Some(snapshot) = endpoint.snapshot.as_deref() else {
                 continue;
             };
-            let entries = if self.sidebar_collapsed && surface_available {
-                snapshot
-                    .workspaces
-                    .iter()
-                    .enumerate()
-                    .map(|(index, _)| WorkspaceEntry {
-                        index,
-                        indented: false,
-                        last_child: false,
-                    })
-                    .collect()
-            } else {
-                render::workspace_entries(snapshot)
-            };
-            for entry in entries {
+            for entry in render::workspace_entries(snapshot) {
                 targets.push(WorkspaceNavigationTarget {
                     endpoint_id: endpoint.endpoint_id.clone(),
                     workspace_id: snapshot.workspaces[entry.index].workspace_id.clone(),

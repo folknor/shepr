@@ -20,10 +20,6 @@ Surfaced in three scopes: detection, app core, pane/terminal state.
 - `AgentDetection::visible_working` is documented as "diagnostic metadata" (`detect/mod.rs`), but it drives publishing (`should_publish_detection_update`, the refresh timestamp).
 - Either the detector's signal was lost in stripping, or the field and parameters should be removed.
 
-## DET-008 - Letta sits outside `IntegrationTarget`
-
-- Letta install/uninstall go through the protected config writer. What remains is structural: Letta still has its own experimental path (types, registry, CLI) instead of being an `IntegrationTarget` variant. Folding it in touches `src/api/schema.rs`. The comments in `src/cli/integration.rs` and the `EXPERIMENTAL_INTEGRATION_TARGET_LABELS` doc in `src/integration/mod.rs` describe it as leftover structure awaiting the fold.
-
 ## DET-012 - Hook report ordering is decided by wall-clock seqs from separate processes
 
 - Kimi and Mastracode take their seq first thing in the shell (`date +%s%N`), which shrinks but doesn't close the window: separate hook processes still race, and a wall clock stepping backwards still drops reports until it catches up.
@@ -35,10 +31,7 @@ Surfaced in three scopes: detection, app core, pane/terminal state.
 
 - The `permission_required` rules in the opencode and Kilo manifests also require one of "allow once", "allow always", "reject" or "enter confirm". Those labels were written from memory of opencode's TUI. Confirm them against a live dialog with `shepr agent read <pane> --source detection --format text`.
 
-## DET-019 - Session-only python hooks crash on a non-object payload
+## DET-021 - Two hooks still depend on stderr suppression or crash loudly
 
-- The Claude and Grok hooks (and probably Codex, Copilot, Devin, Droid, Qoder, Qwen, Cursor and Antigravity, which share the pattern) do `json.loads` then `hook_input.get` under `set -eu`, with python's stderr not redirected. A non-object JSON payload makes the hook exit 1 and print a traceback, which the agent may show. No report is lost (they only send session reports). Fixing each needs an integration version bump; Kimi and Mastracode already treat non-dicts as `{}`.
-
-## DET-020 - Two `expand_tilde_path` implementations
-
-- `src/integration/env.rs::expand_tilde_path` duplicates `crate::pathutil::expand_tilde_path`. They differ when `HOME` is unset (env.rs errors, pathutil falls back to the literal path). Merging them needs a decision on which behaviour to keep.
+- The Mastracode hook runs its python heredoc under `set -eu` without `2>/dev/null || true`: non-object payloads are handled, but any other python exception exits non-zero with a traceback.
+- The Cursor hook only hides an AttributeError on non-object payloads because stderr is suppressed; add an `isinstance` guard at its next version bump.

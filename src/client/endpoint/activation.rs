@@ -44,7 +44,7 @@ impl PendingEndpointActivation {
         serial: u64,
         now: Instant,
     ) -> Result<Self, ActivationBeginError> {
-        resize_geometry(&resize).ok_or_else(|| {
+        let geometry = resize_geometry(&resize).ok_or_else(|| {
             ActivationBeginError::Preflight(
                 "endpoint activation did not include a surface resize".to_owned(),
             )
@@ -97,6 +97,7 @@ impl PendingEndpointActivation {
             focus,
             host_focused: shell.host_focus_baseline(),
             resize,
+            geometry,
             phase: ActivationPhase::ReleasingSource {
                 request_id: format!("client-shell-surface:{serial}:off"),
             },
@@ -189,7 +190,14 @@ impl PendingEndpointActivation {
     }
 
     fn geometry(&self) -> crate::protocol::ClientSurfaceSize {
-        resize_geometry(&self.resize).expect("activation resize was validated before construction")
+        self.geometry
+    }
+
+    /// The surface size this handoff asked its endpoint to render. It was computed from the
+    /// shell layout of the projection current when the handoff started (or last resized), which
+    /// can differ from the committed projection's layout: the tab bar hides for a single tab.
+    pub(crate) fn requested_surface_size(&self) -> crate::protocol::ClientSurfaceSize {
+        self.geometry
     }
 
     pub(crate) fn presentation_sync_endpoint(&self) -> Option<&ClientEndpointId> {
@@ -546,7 +554,8 @@ impl PendingEndpointActivation {
             | ActivationPhase::SynchronizingPresentation { evidence, .. } => {
                 evidence.record_surface(surface);
             }
-            _ => unreachable!("checked activation phase"),
+            // The lease match above only succeeds in the three phases handled here.
+            _ => return SurfaceActivationProgress::Stale,
         }
         self.progress()
     }
@@ -602,7 +611,7 @@ impl PendingEndpointActivation {
         resize: &crate::protocol::ClientMessage,
         endpoints: &mut EndpointRegistry,
     ) -> Result<(), String> {
-        resize_geometry(resize)
+        self.geometry = resize_geometry(resize)
             .ok_or_else(|| "endpoint activation did not include a surface resize".to_owned())?;
         self.resize = resize.clone();
         let restart_effects_fence = match &self.phase {
@@ -1120,9 +1129,10 @@ impl PendingEndpointActivation {
         ) {
             return Ok(());
         }
-        let request_id = self
-            .next_focus_request_id()
-            .expect("desired focus creates a request id");
+        // `desired` is `self.focus`, so this always yields an id.
+        let Some(request_id) = self.next_focus_request_id() else {
+            return Ok(());
+        };
         if let ActivationPhase::ActivatingTarget {
             focus_request_id,
             focus_request_target,

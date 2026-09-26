@@ -33,9 +33,10 @@ use crate::api;
 use crate::app;
 use crate::config;
 use crate::events::AppEvent;
+#[cfg(test)]
+use crate::ipc::bind_local_listener;
 use crate::ipc::{
-    LocalListener, SocketFileIdentity, bind_local_listener, remove_socket_file_if_owned,
-    socket_file_identity,
+    LocalListener, SocketFileIdentity, remove_socket_file_if_owned, socket_file_identity,
 };
 use crate::protocol::{self, AttachScrollDirection, AttachScrollSource, FrameData, ServerMessage};
 use crate::server::client_accept::accept_pending_client_connections;
@@ -52,9 +53,7 @@ use crate::server::pane_input::{
     apply_client_pane_input_events, apply_terminal_attach_input, apply_terminal_attach_scroll,
     terminal_attach_mouse_position,
 };
-use crate::server::socket_paths::{
-    client_socket_path, prepare_socket_path, restrict_socket_permissions,
-};
+use crate::server::socket_paths::{client_socket_path, prepare_socket_path};
 
 mod bootstrap;
 mod client_views;
@@ -98,6 +97,35 @@ enum LoopEvent {
 enum RenderImpact {
     None,
     Full,
+}
+
+/// Whether one direct terminal-attach input reached the pane, for
+/// `report_terminal_attach_input`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AttachInputDelivery {
+    Delivered,
+    /// Dropped because the pane's PTY input queue is full.
+    Dropped,
+    /// Failed for another reason (pane closing, input not encodable).
+    Failed,
+}
+
+impl AttachInputDelivery {
+    fn of(result: &Result<(), crate::server::pane_input::PaneInputError>) -> Self {
+        match result {
+            Ok(()) => Self::Delivered,
+            Err(crate::server::pane_input::PaneInputError::Backpressure(_)) => Self::Dropped,
+            Err(_) => Self::Failed,
+        }
+    }
+
+    fn of_batch(result: &Result<(), crate::server::pane_input::PaneInputFailures>) -> Self {
+        match result {
+            Ok(()) => Self::Delivered,
+            Err(failures) if failures.dropped_for_backpressure() > 0 => Self::Dropped,
+            Err(_) => Self::Failed,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -611,6 +639,7 @@ impl HeadlessServer {
         let Some(client_id) = self.foreground_client_id else {
             self.effective_size = self.headless_size;
             self.app.state.outer_terminal_focus = None;
+            self.app.state.tab_viewer = crate::app::state::TabViewer::Nobody;
             self.app.state.host_cell_size = crate::terminal_cell_size::HostCellSize::default();
             self.sync_runtime_view_geometry();
             return;
@@ -619,6 +648,7 @@ impl HeadlessServer {
             self.foreground_client_id = None;
             self.effective_size = self.headless_size;
             self.app.state.outer_terminal_focus = None;
+            self.app.state.tab_viewer = crate::app::state::TabViewer::Nobody;
             self.app.state.host_cell_size = crate::terminal_cell_size::HostCellSize::default();
             self.sync_runtime_view_geometry();
             return;
@@ -666,10 +696,22 @@ impl HeadlessServer {
             .and_then(|client_id| Some((client_id, self.clients.get(&client_id)?)));
         let Some((client_id, client)) = foreground else {
             self.app.state.outer_terminal_focus = None;
+            self.app.state.tab_viewer = crate::app::state::TabViewer::Nobody;
             return;
         };
         let outer_terminal_focus = client.outer_terminal_focus;
         self.app.state.outer_terminal_focus = outer_terminal_focus;
+        self.app.state.tab_viewer = self
+            .shell_target_for_client(client_id)
+            .and_then(|target| {
+                let workspace = self.app.state.workspaces.get(target.workspace_index)?;
+                let tab = workspace.tabs.get(target.tab_index)?;
+                Some(crate::app::state::TabViewer::Tab {
+                    workspace_id: workspace.id.clone(),
+                    tab_number: tab.number,
+                })
+            })
+            .unwrap_or(crate::app::state::TabViewer::Nobody);
         if outer_terminal_focus == Some(true) {
             self.mark_client_shell_tab_seen(client_id);
         }
@@ -927,11 +969,12 @@ impl HeadlessServer {
             return false;
         };
 
-        if let Err(err) =
-            apply_terminal_attach_scroll(runtime, source, direction, lines, column, row, modifiers)
-        {
+        let result =
+            apply_terminal_attach_scroll(runtime, source, direction, lines, column, row, modifiers);
+        if let Err(err) = &result {
             warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach scroll failed");
         }
+        self.report_terminal_attach_input(client_id, AttachInputDelivery::of(&result));
         true
     }
 
@@ -976,10 +1019,44 @@ impl HeadlessServer {
             modifiers,
             lines: lines.max(1),
         };
-        if let Err(err) = apply_client_pane_input_events(runtime, &[event]) {
+        let result = apply_client_pane_input_events(runtime, &[event]);
+        if let Err(err) = &result {
             warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach mouse input failed");
         }
+        self.report_terminal_attach_input(client_id, AttachInputDelivery::of_batch(&result));
         true
+    }
+
+    /// Tells a direct terminal-attach client when its input stops reaching
+    /// the pane because the pane's PTY queue is full (the child is not
+    /// reading). Losing keystrokes silently is worse than a visible notice,
+    /// but one is enough: the notice is sent on the first drop and re-armed
+    /// by the next input that gets through. Runs per attach input event, so
+    /// the delivered case is one map lookup and a flag store.
+    fn report_terminal_attach_input(&mut self, client_id: u64, delivery: AttachInputDelivery) {
+        let Some(client) = self.clients.get_mut(&client_id) else {
+            return;
+        };
+        match delivery {
+            AttachInputDelivery::Delivered => {
+                client.attach_input_drop_reported = false;
+                return;
+            }
+            // The pane is going away or the input was malformed; the log at
+            // the call site covers it, and a closing pane ends the attach
+            // with its own shutdown message.
+            AttachInputDelivery::Failed => return,
+            AttachInputDelivery::Dropped => {}
+        }
+        if std::mem::replace(&mut client.attach_input_drop_reported, true) {
+            return;
+        }
+        let ClientConnectionMode::TerminalAttach { terminal_id } = &client.mode else {
+            return;
+        };
+        let message =
+            format!("Input to terminal {terminal_id} dropped: the pane is not reading its input");
+        self.send_to_client(client_id, &ServerMessage::DirectTerminalNotice { message });
     }
 
     /// Pulls only titles reported dirty by the PTY parser. A focused pane title
@@ -1125,6 +1202,15 @@ impl HeadlessServer {
 
     /// Sends a message to all connected clients.
     /// Broken connections are tracked and cleaned up.
+    ///
+    /// Each client gets its own copy of the framed bytes. That is deliberate:
+    /// the only callers are the two shutdown notices (a few dozen bytes, once
+    /// per server lifetime). Render output never goes through here; every
+    /// client's frame or patch is diffed against that client's own baseline
+    /// (`render_and_stream`, `render_retained_pane_surface_and_stream`), so
+    /// there is no shared frame to hand out. Making the writer queue carry
+    /// `Arc<[u8]>` would add a refcount to every per-client render send to
+    /// save one tiny copy here.
     fn send_to_all_clients(&mut self, msg: &ServerMessage) {
         let serialized = match Self::frame_server_message(msg) {
             Ok(framed) => framed,
@@ -1485,15 +1571,14 @@ impl HeadlessServer {
                 else {
                     return false;
                 };
-                // A direct attach client is a raw byte stream into the host
-                // terminal with no shell chrome to show an error in, so input
-                // dropped on a full PTY queue is only logged here; shell
-                // clients get a visible error instead.
-                if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id)
-                    && let Err(err) = apply_terminal_attach_input(runtime, data)
-                {
+                let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) else {
+                    return true;
+                };
+                let result = apply_terminal_attach_input(runtime, data);
+                if let Err(err) = &result {
                     warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach input failed");
                 }
+                self.report_terminal_attach_input(client_id, AttachInputDelivery::of(&result));
                 true
             }
             ServerEvent::ClientPasteRejected {
@@ -1513,7 +1598,16 @@ impl HeadlessServer {
                         },
                     );
                 } else {
+                    // Direct attach has no shell chrome, so it gets its own
+                    // notice; every rejection is a separate user action, so
+                    // each one is reported.
                     warn!(client = client_id, %detail, "paste rejected for direct terminal client");
+                    self.send_to_client(
+                        client_id,
+                        &ServerMessage::DirectTerminalNotice {
+                            message: format!("Paste rejected: {detail}"),
+                        },
+                    );
                 }
                 false
             }
@@ -2308,72 +2402,23 @@ async fn sleep_until_or_pending(deadline: Option<Instant>) {
     }
 }
 
-/// Binds the client socket at `path` so it is never reachable with anything
-/// looser than owner-only permissions.
-///
-/// Binding at `path` and then chmodding leaves the socket connectable with
-/// umask-derived permissions in between. Instead the socket is bound inside a
-/// fresh 0700 staging directory next to `path`, restricted to 0600 there, and
-/// then hard-linked into place. `link` fails if `path` already exists, so a
-/// server that raced us to the path is never replaced (a `bind` at the path
-/// would have failed the same way). The listener is bound to the inode, so
-/// connections through the new name reach it, and the socket identity the
-/// server records for cleanup is the same inode.
-///
-/// If staging cannot be used (a staged path over the socket path length limit,
-/// or a filesystem without hard links), this falls back to bind-then-chmod at
-/// `path`, which still ends owner-only. File mode stays the only access
-/// control: no peer credential check is made on accept.
+/// Binds the client socket owner-only from the moment it is reachable (see
+/// `ipc::bind_private_local_listener`), naming the server in the error when
+/// another one won the race to the path.
 fn bind_owner_only_listener(path: &Path) -> io::Result<LocalListener> {
-    match bind_via_private_staging(path) {
-        Ok(listener) => Ok(listener),
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Err(io::Error::new(
-            io::ErrorKind::AddrInUse,
-            format!(
-                "shepr server is already running (socket busy at {})",
-                path.display()
-            ),
-        )),
-        Err(err) => {
-            warn!(
-                path = %path.display(),
-                err = %err,
-                "private socket staging failed; binding in place"
-            );
-            let listener = bind_local_listener(path)?;
-            restrict_socket_permissions(path)?;
-            Ok(listener)
+    crate::ipc::bind_private_local_listener(path).map_err(|err| {
+        if err.kind() == io::ErrorKind::AddrInUse {
+            io::Error::new(
+                io::ErrorKind::AddrInUse,
+                format!(
+                    "shepr server is already running (socket busy at {})",
+                    path.display()
+                ),
+            )
+        } else {
+            err
         }
-    }
-}
-
-fn bind_via_private_staging(path: &Path) -> io::Result<LocalListener> {
-    use std::os::unix::fs::DirBuilderExt as _;
-
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let staging_dir = parent.join(format!(".shepr-bind-{}-{nanos:x}", std::process::id()));
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&staging_dir)?;
-    let staged = staging_dir.join("s.sock");
-    let result = bind_staged_and_link(&staged, path);
-    let _ = std::fs::remove_file(&staged);
-    let _ = std::fs::remove_dir(&staging_dir);
-    result
-}
-
-fn bind_staged_and_link(staged: &Path, path: &Path) -> io::Result<LocalListener> {
-    let listener = bind_local_listener(staged)?;
-    restrict_socket_permissions(staged)?;
-    std::fs::hard_link(staged, path)?;
-    Ok(listener)
+    })
 }
 
 fn server_config_diagnostic_summaries(diagnostics: &[String]) -> (Option<String>, Option<String>) {

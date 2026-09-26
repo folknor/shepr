@@ -230,7 +230,8 @@ fn client_owned_sidebar_dividers_resize_live() {
     assert_eq!(state.sidebar_width, 32);
     assert!(state.sidebar_width_manual);
     assert!(resize.repaint);
-    assert!(resize.resize);
+    // The endpoint is resized once, on release, not once per column crossed.
+    assert!(!resize.resize);
     let waiting_frame = state.compose(106, 30).expect("waiting for resized surface");
     let waiting_text: String = waiting_frame
         .cells
@@ -243,11 +244,10 @@ fn client_owned_sidebar_dividers_resize_live() {
     );
     assert!(!waiting_text.contains(" machines"));
     assert!(!waiting_text.contains("Select a connected machine"));
-    assert!(!waiting_text.contains("LIVE"));
-    assert!(waiting_frame.cursor.is_none());
-    assert!(state.pane_surface.is_none());
-    assert!(state.hits.panes.is_empty());
-    assert!(state.hits.pane_splits.is_empty());
+    // The retained surface stays on screen while the drag is in progress.
+    assert!(waiting_text.contains("LIVE"));
+    assert!(state.pane_surface.is_some());
+    assert!(!state.hits.panes.is_empty());
     assert!(state.hits.machines.is_empty());
     assert_eq!(state.hits.sidebar_divider.x, 31);
     assert_eq!(state.hits.workspaces[0].workspace_id, "ws_1");
@@ -259,15 +259,17 @@ fn client_owned_sidebar_dividers_resize_live() {
             row: width_divider.y + 2,
             modifiers: KeyModifiers::empty(),
         })]);
-    assert!(next_resize.resize);
+    assert!(!next_resize.resize);
     state.compose(106, 30).expect("continued resize");
     assert_eq!(state.hits.sidebar_divider.x, 32);
-    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Up(MouseButton::Left),
-        column: 32,
-        row: width_divider.y + 2,
-        modifiers: KeyModifiers::empty(),
-    })]);
+    let release =
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 32,
+            row: width_divider.y + 2,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    assert!(release.resize);
     assert!(state.chrome_drag.is_none());
 
     state.set_pane_surface(surface());
@@ -480,52 +482,91 @@ fn new_tab_overlay_owns_text_cursor_and_submits_public_api_request() {
 }
 
 #[test]
-fn close_confirmation_error_becomes_client_owned_overlay_and_stable_group_close() {
+fn lost_sidebar_drag_release_still_resizes_on_the_next_press() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
-    let mut close = ClientShellInput::default();
-    state.record_binding(
-        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::ClosePane),
-        &mut close,
-    );
-    let [ClientShellAction::Endpoint { request, .. }] = &close.actions[..] else {
-        panic!("pane close should use endpoint API");
-    };
-    let request_id = request.id.clone();
-    assert!(
-        state
-            .handle_endpoint_result(
-                "boot-1",
-                &request_id,
-                Err(ClientShellEndpointError {
-                    code: Some("confirmation_required".into()),
-                    message: "confirmation required".into(),
-                }),
-            )
-            .repaint
-    );
-    let frame = state.compose(106, 20).expect("confirmation overlay");
-    let text = frame
-        .cells
-        .chunks(frame.width as usize)
-        .map(|row| {
-            row.iter()
-                .map(|cell| cell.symbol.as_str())
-                .collect::<String>()
+    state.compose(106, 30).expect("expanded sidebar");
+    let divider = state.hits.sidebar_divider;
+    let mouse = |kind, column| {
+        RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column,
+            row: divider.y + 2,
+            modifiers: KeyModifiers::empty(),
         })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(text.contains("Close workspace?"));
-    assert!(text.contains("1 pane"));
-
-    let confirm = state.handle_input_bytes(b"\r");
-    let [ClientShellAction::Endpoint { request, .. }] = &confirm.actions[..] else {
-        panic!("confirmation should use endpoint API");
     };
-    assert!(matches!(
-        &request.method,
-        crate::api::schema::Method::WorkspaceClose(params)
-            if params.workspace_id == "ws_1"
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        divider.x,
+    )]);
+    let drag = state.handle_raw_events(vec![mouse(MouseEventKind::Drag(MouseButton::Left), 31)]);
+    assert!(!drag.resize);
+    // The release happened outside the terminal; the next press elsewhere settles the drag.
+    let press = state.handle_raw_events(vec![mouse(MouseEventKind::Down(MouseButton::Left), 80)]);
+    assert!(press.resize);
+    assert!(state.chrome_drag.is_none());
+}
+
+#[test]
+fn oversized_retained_surface_is_clipped_with_its_hits() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    // A surface produced for a pane area far larger than the one composed below, as after a
+    // resize or sidebar toggle before the resized surface arrives.
+    let lines = (0..60).map(|_| "x".repeat(200)).collect::<Vec<_>>();
+    let mut oversized = surface();
+    oversized.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
+        &Buffer::with_lines(lines.iter().map(String::as_str)),
+        None,
+        &[],
+    );
+    let full = SurfaceRect {
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 60,
+    };
+    oversized.panes[0].rect = full;
+    oversized.panes[0].inner_rect = full;
+    oversized.panes[0].pixel_width = 1600;
+    oversized.panes[0].pixel_height = 960;
+    let mut off_screen = oversized.panes[0].clone();
+    off_screen.pane_id = "pane_off_screen".into();
+    let far = SurfaceRect {
+        x: 190,
+        y: 0,
+        width: 10,
+        height: 60,
+    };
+    off_screen.rect = far;
+    off_screen.inner_rect = far;
+    oversized.panes.push(off_screen);
+    state.set_pane_surface(oversized);
+
+    state.compose(106, 30).expect("clipped frame");
+    let area = state.layout(106, 30).pane_surface;
+    assert_eq!(
+        state.hits.panes.len(),
+        1,
+        "a pane with no visible cell has no hit"
+    );
+    let hit = &state.hits.panes[0];
+    assert_eq!(hit.pane_id, "pane_1");
+    assert_eq!(hit.inner_rect, area);
+    assert_eq!((hit.pixel_width, hit.pixel_height), (0, 0));
+    assert!(state.hits.pane_splits.is_empty());
+}
+
+#[test]
+fn selection_without_a_previous_surface_is_dropped_by_the_next_surface() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.selection = Some(crate::selection::Selection::absolute_range(
+        "pane_1".to_owned(),
+        (0u64, 0),
+        (0, 2),
     ));
+    state.set_pane_surface(surface());
+    assert!(state.selection.is_none());
 }

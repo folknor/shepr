@@ -14,7 +14,8 @@ impl ClientShellState {
                 self.sidebar_collapsed = !self.sidebar_collapsed;
                 self.sidebar_collapsed_manual = true;
                 self.reveal_navigation_workspace = true;
-                self.invalidate_pane_surface();
+                // The retained surface stays on screen, clipped to the new pane area, until the
+                // endpoint answers the resize.
                 outcome.repaint = true;
                 outcome.resize = true;
                 self.persist_chrome_preferences(outcome);
@@ -251,19 +252,6 @@ impl ClientShellState {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return false;
         };
-        let confirmation_workspace_id = match &method {
-            crate::api::schema::Method::TabClose(target) => snapshot
-                .tabs
-                .iter()
-                .find(|tab| tab.tab_id == target.tab_id)
-                .map(|tab| tab.workspace_id.clone()),
-            crate::api::schema::Method::PaneClose(target) => snapshot
-                .panes
-                .iter()
-                .find(|pane| pane.pane_id == target.pane_id)
-                .map(|pane| pane.workspace_id.clone()),
-            _ => None,
-        };
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.saturating_add(1);
         let request_id = format!("client-shell:{request_id}");
@@ -272,7 +260,6 @@ impl ClientShellState {
             PendingEndpointRequest {
                 boot_id: snapshot.boot_id.clone(),
                 method_name,
-                confirmation_workspace_id,
                 kind,
             },
         );
@@ -404,10 +391,7 @@ impl ClientShellState {
                 self.pending_workspace_highlight = None;
             }
             let code = error.code.as_deref().unwrap_or("invalid_response");
-            if !matches!(
-                code,
-                "confirmation_required" | "stale_content" | "stale_target"
-            ) {
+            if !matches!(code, "stale_content" | "stale_target") {
                 let (kind, notice_code, title, body) = match code {
                     "endpoint_timeout" => (
                         ClientEndpointNoticeKind::Timeout,
@@ -566,21 +550,9 @@ impl ClientShellState {
                 return (repaint, Vec::new());
             }
         }
-        let repaint = match result {
-            Ok(_) => false,
-            Err(error)
-                if self.config.confirm_close
-                    && error.code.as_deref() == Some("confirmation_required")
-                    && pending.confirmation_workspace_id.is_some() =>
-            {
-                if let Some(workspace_id) = pending.confirmation_workspace_id {
-                    self.open_confirm_close_overlay(workspace_id);
-                }
-                true
-            }
-            Err(_) => true,
-        };
-        (repaint, Vec::new())
+        // Close confirmation is client-owned (`open_confirm_close_overlay` runs before the
+        // close is sent); endpoints close without asking back.
+        (result.is_err(), Vec::new())
     }
 
     pub(super) fn endpoint_method_for_action(

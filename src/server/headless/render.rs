@@ -9,7 +9,8 @@ fn shell_session_snapshot(app: &app::App) -> crate::api::schema::SessionSnapshot
     snapshot
 }
 
-/// Error shown to a shell client whose screen cannot be sent in one frame.
+/// Error shown to a shell or direct terminal-attach client whose screen
+/// cannot be sent in one frame.
 pub(super) fn oversized_frame_notice(claimed: usize, max: usize) -> String {
     format!(
         "The screen is too large to send ({claimed} bytes; the limit is {max}). \
@@ -457,7 +458,8 @@ impl HeadlessServer {
             .filter(|(_, _, _, _, mode)| matches!(mode, ClientConnectionMode::ClientShell))
             .count();
         let mut shared_session_snapshot: Option<crate::api::schema::SessionSnapshot> = None;
-        let mut oversized_notices: Vec<(u64, usize, usize)> = Vec::new();
+        // (client, is shell client, claimed bytes, frame limit)
+        let mut oversized_notices: Vec<(u64, bool, usize, usize)> = Vec::new();
         for (client_id, (cols, rows), cell_size, _is_foreground, mode) in render_targets {
             let last_shell_client = if matches!(mode, ClientConnectionMode::ClientShell) {
                 shell_clients_left = shell_clients_left.saturating_sub(1);
@@ -688,12 +690,7 @@ impl HeadlessServer {
                             claimed, max, "skipping oversized frame for client"
                         );
                         client.oversized_frame_reported = true;
-                        // A shell client can show an error. A direct terminal
-                        // attach is a raw byte stream into the host terminal
-                        // with no message for this, so it only gets the log.
-                        if client.is_shell_client() {
-                            oversized_notices.push((client_id, claimed, max));
-                        }
+                        oversized_notices.push((client_id, client.is_shell_client(), claimed, max));
                     }
                     continue;
                 }
@@ -719,16 +716,17 @@ impl HeadlessServer {
             }
         }
 
-        for (client_id, claimed, max) in oversized_notices {
+        for (client_id, shell, claimed, max) in oversized_notices {
             if broken_clients.contains(&client_id) {
                 continue;
             }
-            self.send_to_client(
-                client_id,
-                &ServerMessage::ClientShellError {
-                    message: oversized_frame_notice(claimed, max),
-                },
-            );
+            let message = oversized_frame_notice(claimed, max);
+            let notice = if shell {
+                ServerMessage::ClientShellError { message }
+            } else {
+                ServerMessage::DirectTerminalNotice { message }
+            };
+            self.send_to_client(client_id, &notice);
         }
 
         if !broken_clients.is_empty() {

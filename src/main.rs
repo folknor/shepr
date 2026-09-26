@@ -28,7 +28,6 @@ mod ipc;
 mod layout;
 mod logging;
 mod metadata_tokens;
-mod noninteractive_process;
 mod pane;
 mod pathutil;
 mod persist;
@@ -161,6 +160,8 @@ const DEFAULT_CONFIG: &str = r##"# shepr configuration
 [ui]
 # Sidebar width (auto-scaled based on workspace names, this sets the default)
 # sidebar_width = 26
+# While unset, mouse or key changes to sidebar width are remembered per server.
+# Once set, this value wins at every launch.
 
 # Minimum sidebar width when expanded (columns)
 # sidebar_min_width = 18
@@ -170,6 +171,8 @@ const DEFAULT_CONFIG: &str = r##"# shepr configuration
 
 # Start with the sidebar collapsed. Changes take effect on the next launch.
 # sidebar_start_collapsed = false
+# While unset, mouse or key changes to the collapsed state are remembered per server.
+# Once set, this value wins at every launch.
 
 # Collapsed sidebar presentation: "compact" keeps the narrow status rail, "hidden" uses zero width.
 # sidebar_collapsed_mode = "compact"
@@ -255,6 +258,8 @@ const DEFAULT_CONFIG: &str = r##"# shepr configuration
 
 # Agent panel ordering: "spaces" (grouped by space) or "priority" (attention queue).
 # agent_panel_sort = "spaces"
+# While unset, mouse or key changes to panel order are remembered per server.
+# Once set, this value wins at every launch.
 
 # Agent status indicators: "dots" preserves the compact color marks; "symbols" uses
 # distinct static glyphs for blocked, working, done, idle, and unknown states.

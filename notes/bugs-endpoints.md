@@ -21,27 +21,6 @@
   - The `reconnect` message is only true for an endpoint already in `Attention`.
 - A `SavedSshConnector` is built per enabled profile at startup; a live-catalog fix should create and drop connectors per profile.
 
-## EP-006 - The activation's surface geometry is computed from the source's layout
+## EP-011 - Bridge socket paths are predictable
 
-- **Where:** `shell_runtime.rs`.
-- The surface height depends on `focused_tab_count()` when `hide_tab_bar_when_single_tab` is set (`shell/config.rs`).
-- `complete()` (`activation.rs`) switches the projection to the target and commits a surface built at the source's geometry. No resize follows.
-- `install_client_shell_snapshot` only compares sizes before and after its own install, so it never corrects this.
-- Result: switching between a single-tab and a multi-tab workspace leaves pane geometry wrong by one row. The client no longer panics on the mismatch, but see UI-016 for what the oversized surface still does.
-
-## EP-011 - Bridge sockets use predictable paths in `$TMPDIR`
-
-- Names are pid-derived (`unix_common.rs`), and the socket is bound before its mode is set to 0600 (`bind_private_local_listener`), so there is a small window. The headless server's socket now avoids this with `bind_owner_only_listener` (staging directory + hard link); that helper could move into `ipc.rs` and serve here too.
-- A socket another user leaves at that path can block a connect attempt.
-
-## EP-015 - Presentation freeze handling looks inverted relative to its comments
-
-Raised by the client UI hunter for this scope.
-
-- `install_client_shell_snapshot` calls `present_frame` (which respects the freeze) when `projection_pending`, and otherwise `present_frozen_chrome` (which bypasses it) (`shell_runtime.rs`).
-- `finish_client_shell_input` bypasses the freeze whenever no activation is pending, including after `present_handoff_unavailable` froze presentation with `pending = None`. That lets full frames with the stale pane surface through. Endpoint-result input also goes through `finish_client_shell_input`.
-
-## EP-017 - Production `expect()` in the client endpoint code
-
-- **Claim:** no `unwrap` in production code.
-- `activation.rs`: `geometry()`, `send_latest_focus`. `shell_runtime.rs`: `handle_endpoint_attention`, `complete_endpoint_activation`. `client/mod.rs`: "checked shell mode", "checked pending activation".
+- Bridge socket names are pid-derived, so a socket another user leaves at that path can block a connect attempt. The bind is owner-only (`ipc::bind_private_local_listener`) and the bridge accept checks its peer, so this is only a denial of a connect attempt, not an access problem.

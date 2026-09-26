@@ -244,7 +244,7 @@ mod tests {
     #[test]
     fn help_lists_every_default_pane_binding() {
         let config = crate::config::Config::default();
-        let groups = keybind_help_groups(&config.keybinds(), config.prefix_key());
+        let groups = keybind_help_groups(&config.keybinds(), config.live_keybinds().prefix);
         let entries: Vec<_> = groups.iter().flat_map(|(_, entries)| entries).collect();
         for (key, label) in [
             ("prefix+[", "copy mode"),

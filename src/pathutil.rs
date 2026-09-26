@@ -1,50 +1,120 @@
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
 
-pub(crate) fn expand_tilde_path(path: &str) -> PathBuf {
-    expand_tilde_path_from_env(path, |key| std::env::var_os(key))
+/// `$HOME`. An unset or empty `HOME` is an error rather than a fallback:
+/// every caller builds a path under it, and an empty home would silently turn
+/// `~/x` into the relative path `x`.
+pub(crate) fn home_dir() -> io::Result<PathBuf> {
+    home_dir_from_env(&|key| std::env::var_os(key))
 }
 
-fn expand_tilde_path_from_env(path: &str, env: impl Fn(&str) -> Option<OsString>) -> PathBuf {
-    let home = || env("HOME").map(PathBuf::from);
-    if path == "~" {
-        return home().unwrap_or_else(|| PathBuf::from(path));
+/// Expands a leading bare `~` or `~/` to `$HOME`. The `~user` form is left
+/// untouched: resolving another user's home needs a passwd lookup, and
+/// silently turning `~bob/x` into `$HOME/bob/x` would point at the wrong place.
+///
+/// A path that needs `$HOME` fails when `HOME` is unset or empty instead of
+/// being returned literally. The literal `~/x` is a relative path, so every
+/// caller would go on to resolve it against its working directory: an
+/// integration install would create a directory named `~` there, and
+/// `--cwd ~/x` would name `$PWD/~/x`. Callers that have a sensible default
+/// (the new-terminal cwd policy) apply it on the error themselves.
+pub(crate) fn expand_tilde_path(path: impl AsRef<Path>) -> io::Result<PathBuf> {
+    expand_tilde_path_from_env(path.as_ref(), &|key| std::env::var_os(key))
+}
+
+fn home_dir_from_env(env: &dyn Fn(&str) -> Option<OsString>) -> io::Result<PathBuf> {
+    env("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::other("home directory is not set; cannot locate home directory"))
+}
+
+fn expand_tilde_path_from_env(
+    path: &Path,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> io::Result<PathBuf> {
+    let Some(raw) = path.to_str() else {
+        return Ok(path.to_path_buf());
+    };
+    if raw == "~" {
+        return home_dir_from_env(env);
     }
-    if let Some(rest) = path.strip_prefix("~/") {
-        return home()
-            .map(|home| home.join(rest))
-            .unwrap_or_else(|| PathBuf::from(path));
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return Ok(home_dir_from_env(env)?.join(rest));
     }
-    PathBuf::from(path)
+    Ok(path.to_path_buf())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn home(key: &str) -> Option<OsString> {
+        (key == "HOME").then(|| "/home/me".into())
+    }
+
+    fn expand(path: &str, env: &dyn Fn(&str) -> Option<OsString>) -> io::Result<PathBuf> {
+        expand_tilde_path_from_env(Path::new(path), env)
+    }
+
     #[test]
     fn expand_tilde_path_uses_home_when_available() {
         assert_eq!(
-            expand_tilde_path_from_env("~/.shepr/state", |key| match key {
-                "HOME" => Some("/home/me".into()),
-                _ => None,
-            }),
+            expand("~/.shepr/state", &home).expect("test precondition"),
             PathBuf::from("/home/me/.shepr/state")
         );
         assert_eq!(
-            expand_tilde_path_from_env("/tmp/state", |_| None),
+            expand("~", &home).expect("test precondition"),
+            PathBuf::from("/home/me")
+        );
+        assert_eq!(
+            expand("/tmp/state", &|_| None).expect("test precondition"),
             PathBuf::from("/tmp/state")
+        );
+    }
+
+    #[test]
+    fn expand_tilde_path_expands_only_bare_tilde_and_tilde_slash() {
+        assert_eq!(
+            expand("~bob/x", &home).expect("test precondition"),
+            PathBuf::from("~bob/x")
+        );
+        assert_eq!(
+            expand("/abs/~/x", &home).expect("test precondition"),
+            PathBuf::from("/abs/~/x")
+        );
+        assert_eq!(
+            expand("relative/x", &home).expect("test precondition"),
+            PathBuf::from("relative/x")
         );
     }
 
     #[test]
     fn tilde_expansion_keeps_backslash_literal() {
         assert_eq!(
-            expand_tilde_path_from_env(r"~\.shepr\state", |key| match key {
-                "HOME" => Some("/home/me".into()),
-                _ => None,
-            }),
+            expand(r"~\.shepr\state", &home).expect("test precondition"),
             PathBuf::from(r"~\.shepr\state")
         );
+    }
+
+    #[test]
+    fn tilde_paths_fail_without_a_home() {
+        let unset = |_: &str| None;
+        let empty = |_: &str| Some(OsString::new());
+        for env in [&unset as &dyn Fn(&str) -> Option<OsString>, &empty] {
+            assert!(expand("~", env).is_err());
+            assert!(expand("~/x", env).is_err());
+            // Paths that do not need the home directory still pass through.
+            assert_eq!(
+                expand("/abs", env).expect("test precondition"),
+                PathBuf::from("/abs")
+            );
+            assert_eq!(
+                expand("~bob/x", env).expect("test precondition"),
+                PathBuf::from("~bob/x")
+            );
+            assert!(home_dir_from_env(env).is_err());
+        }
     }
 }

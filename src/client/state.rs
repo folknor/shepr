@@ -143,6 +143,9 @@ impl ClientState {
 
     /// Present a composed error/chrome frame while retaining the handoff input freeze. The pane
     /// cells are still the last coherent surface; only client chrome (including the error) moves.
+    /// That holds because the client loop does not advance the pane projection while frozen:
+    /// active-endpoint snapshots are cached rather than projected, and non-handoff pane surfaces
+    /// and patches are dropped. A handoff commit installs a fresh coherent pair on unfreeze.
     pub(super) fn present_frozen_chrome(
         &mut self,
         frame_data: impl Into<frame_output::ComposedFrame>,

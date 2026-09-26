@@ -161,6 +161,9 @@ pub(crate) struct PendingEndpointActivation {
     pub(super) focus: Option<crate::client::shell::ClientEndpointFocusTarget>,
     pub(super) host_focused: bool,
     pub(super) resize: crate::protocol::ClientMessage,
+    /// The surface size carried by `resize`, kept typed so it never has to be re-extracted
+    /// from the message. Every assignment of `resize` assigns this too.
+    pub(super) geometry: crate::protocol::ClientSurfaceSize,
     pub(super) phase: ActivationPhase,
     pub(super) deadline: Instant,
     pub(super) epoch: u64,

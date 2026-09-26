@@ -22,58 +22,6 @@ pub(crate) fn install_target(
     result
 }
 
-/// Experimental Letta install outside the `IntegrationTarget` enum.
-pub(crate) fn install_experimental_letta() -> io::Result<Vec<String>> {
-    let result = install_letta().map(|installed| {
-        vec![
-            format!(
-                "installed letta integration hook to {}",
-                installed.hook_path.display()
-            ),
-            format!(
-                "ensured letta settings at {}",
-                installed.settings_path.display()
-            ),
-        ]
-    });
-    let outcome = if result.is_ok() { "ok" } else { "error" };
-    crate::logging::integration_action("install", "letta", outcome);
-    result
-}
-
-/// Experimental Letta uninstall counterpart.
-pub(crate) fn uninstall_experimental_letta() -> io::Result<Vec<String>> {
-    let result = uninstall_letta().map(|result| {
-        let mut messages = Vec::new();
-        if result.removed_hook_file {
-            messages.push(format!(
-                "removed letta hook at {}",
-                result.hook_path.display()
-            ));
-        } else {
-            messages.push(format!(
-                "no letta hook found at {}",
-                result.hook_path.display()
-            ));
-        }
-        if result.updated_settings {
-            messages.push(format!(
-                "removed shepr letta hook entry from {}",
-                result.settings_path.display()
-            ));
-        } else {
-            messages.push(format!(
-                "no shepr letta hook entry found in {}",
-                result.settings_path.display()
-            ));
-        }
-        messages
-    });
-    let outcome = if result.is_ok() { "ok" } else { "error" };
-    crate::logging::integration_action("uninstall", "letta", outcome);
-    result
-}
-
 fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Result<Vec<String>> {
     let version_warning = match agent_version_requirement(target) {
         Some(requirement) => enforce_agent_version(&requirement)?,
@@ -285,6 +233,19 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
                 format!(
                     "registered grok hook config at {}",
                     installed.config_path.display()
+                ),
+            ]
+        }
+        crate::api::schema::IntegrationTarget::Letta => {
+            let installed = install_letta()?;
+            vec![
+                format!(
+                    "installed letta integration hook to {}",
+                    installed.hook_path.display()
+                ),
+                format!(
+                    "ensured letta settings at {}",
+                    installed.settings_path.display()
                 ),
             ]
         }
@@ -735,6 +696,33 @@ fn uninstall_target_inner(
                 messages.push(format!(
                     "no grok hook config found at {}",
                     result.config_path.display()
+                ));
+            }
+            messages
+        }
+        crate::api::schema::IntegrationTarget::Letta => {
+            let result = uninstall_letta()?;
+            let mut messages = Vec::new();
+            if result.removed_hook_file {
+                messages.push(format!(
+                    "removed letta hook at {}",
+                    result.hook_path.display()
+                ));
+            } else {
+                messages.push(format!(
+                    "no letta hook found at {}",
+                    result.hook_path.display()
+                ));
+            }
+            if result.updated_settings {
+                messages.push(format!(
+                    "removed shepr letta hook entry from {}",
+                    result.settings_path.display()
+                ));
+            } else {
+                messages.push(format!(
+                    "no shepr letta hook entry found in {}",
+                    result.settings_path.display()
                 ));
             }
             messages

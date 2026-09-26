@@ -1,22 +1,13 @@
 use super::*;
 
-/// How long after a host shutdown warning the server waits for its
-/// termination signal before concluding the shutdown was cancelled, while no
-/// monitor is watching to report the cancellation. logind sends SIGTERM to the
-/// session within seconds of its delay locks being released, so a minute
-/// without one means nothing is shutting down.
-pub(super) const HOST_SHUTDOWN_CANCEL_GRACE: Duration = Duration::from_secs(60);
-
 /// Session-save freeze held from a host shutdown warning until the shutdown
 /// completes or is cancelled.
 pub(super) struct HostShutdownFreeze {
-    /// When the warning was answered with a checkpoint.
-    pub(super) since: Instant,
     /// `policy.persist_session` before the freeze turned it off.
     pub(super) persist_session: bool,
-    /// Whether a monitor was running (and was dropped) when the warning came,
-    /// so a thaw knows to start one again.
-    monitor_was_running: bool,
+    /// The warning this checkpoint answered. A cancellation followed quickly
+    /// by another warning may never expose `requested = false` to the loop.
+    generation: Option<u64>,
 }
 
 impl HeadlessServer {
@@ -50,55 +41,49 @@ impl HeadlessServer {
     ///   restoring `persist_session` and marking the session dirty so the
     ///   current state is saved again.
     ///
-    /// What the monitor (`platform::linux::shutdown`) has to do for this: on
-    /// `true`, set the flag and wake the loop; release its delay inhibitor once
-    /// the server has checkpointed (the server needs a way to tell it, e.g. a
-    /// second flag plus a wake, which `HostShutdownMonitor::start` does not take
-    /// yet); keep watching instead of parking; on `false`, clear the flag, wake
-    /// the loop and take a fresh delay inhibitor for the next warning.
-    ///
-    /// Until the monitor does that it holds the delay lock until it is dropped
-    /// and never reports a cancellation. The server therefore drops the monitor
-    /// right after the checkpoint (releasing the lock, so the shutdown is not
-    /// held up to logind's `InhibitDelayMaxSec`), and, with no monitor left to
-    /// report a cancellation, thaws by itself if no termination signal arrives
-    /// within `HOST_SHUTDOWN_CANCEL_GRACE`, starting a new monitor. Once the
-    /// monitor reports cancellations and releases the lock itself, the drop and
-    /// the grace timeout go.
-    pub(super) fn sync_host_shutdown_freeze(&mut self, now: Instant) {
+    /// The monitor (`platform::shutdown`) reports both warning and cancellation;
+    /// the checkpoint releases its delay inhibitor so logind can proceed.
+    pub(super) fn sync_host_shutdown_freeze(&mut self, _now: Instant) {
         let requested = self.host_shutdown_requested.load(Ordering::Acquire);
-        let Some(freeze) = self.host_shutdown_freeze.as_ref() else {
+        if self.host_shutdown_freeze.is_none() {
             if requested && !self.shutting_down {
-                self.freeze_for_host_shutdown(now);
+                self.freeze_for_host_shutdown();
             }
             return;
         };
         if !requested {
             self.thaw_after_host_shutdown();
-        } else if self.host_shutdown_monitor.is_none()
-            && now.saturating_duration_since(freeze.since) >= HOST_SHUTDOWN_CANCEL_GRACE
+        } else if let (Some(freeze), Some(monitor)) = (
+            self.host_shutdown_freeze.as_ref(),
+            self.host_shutdown_monitor.as_ref(),
+        ) && freeze.generation != Some(monitor.warning_generation())
         {
-            info!("no termination followed the host shutdown warning; treating it as cancelled");
-            self.host_shutdown_requested.store(false, Ordering::Release);
-            self.thaw_after_host_shutdown();
+            let persist_session = freeze.persist_session;
+            self.host_shutdown_freeze = None;
+            self.app.policy.persist_session = persist_session;
+            self.freeze_for_host_shutdown();
         }
     }
 
-    fn freeze_for_host_shutdown(&mut self, now: Instant) {
+    fn freeze_for_host_shutdown(&mut self) {
         info!("host shutdown announced; checkpointing the session and freezing saves");
+        let generation = self
+            .host_shutdown_monitor
+            .as_ref()
+            .map(crate::platform::HostShutdownMonitor::warning_generation);
         let persist_session = self.app.policy.persist_session;
         if persist_session {
             self.app.save_session_now();
         }
         self.app.policy.persist_session = false;
         self.app.session_save_deadline = None;
-        // Dropping the monitor releases its delay lock now that the checkpoint
-        // is on disk.
-        let monitor_was_running = self.host_shutdown_monitor.take().is_some();
+        if let (Some(monitor), Some(generation)) = (self.host_shutdown_monitor.as_ref(), generation)
+        {
+            monitor.release_delay_lock(generation);
+        }
         self.host_shutdown_freeze = Some(HostShutdownFreeze {
-            since: now,
             persist_session,
-            monitor_was_running,
+            generation,
         });
     }
 
@@ -109,9 +94,6 @@ impl HeadlessServer {
         info!("host shutdown cancelled; resuming session saves");
         self.app.policy.persist_session = freeze.persist_session;
         self.app.state.mark_session_dirty();
-        if freeze.monitor_was_running && self.host_shutdown_monitor.is_none() {
-            self.start_host_shutdown_monitor();
-        }
     }
     /// Initiates graceful shutdown.
     pub(super) fn initiate_shutdown(&mut self) {

@@ -1,5 +1,3 @@
-use crossterm::event::{KeyCode, KeyModifiers};
-
 mod io;
 mod keybinds;
 mod model;
@@ -40,8 +38,6 @@ pub(crate) use self::{
     window_title::{sanitize_window_title_text, window_title_diagnostics},
 };
 
-pub(crate) use self::model::KeysConfig;
-
 pub const CONFIG_PATH_ENV_VAR: &str = "SHEPR_CONFIG_PATH";
 
 pub(crate) fn is_keybinding_config_diagnostic(diagnostic: &str) -> bool {
@@ -79,10 +75,6 @@ pub(crate) fn test_config_env_lock() -> &'static std::sync::Mutex<()> {
 }
 
 impl Config {
-    pub fn prefix_key(&self) -> (KeyCode, KeyModifiers) {
-        self.validated_keybinds().1
-    }
-
     /// Parsed keybinds for Shepr actions.
     pub fn keybinds(&self) -> Keybinds {
         self.validated_keybinds().3
@@ -130,6 +122,14 @@ impl Config {
             })
     }
 
+    /// The prefix and keybinds from one validation pass. An invalid prefix
+    /// falls back to ctrl+b, as `prefix_key()` does; use
+    /// `live_keybinds_with_diagnostics` to treat that as an error instead.
+    pub(crate) fn live_keybinds(&self) -> LiveKeybindConfig {
+        let (_, prefix, _, keybinds) = self.validated_keybinds();
+        LiveKeybindConfig { prefix, keybinds }
+    }
+
     pub(crate) fn live_keybinds_with_diagnostics(
         &self,
     ) -> Result<(LiveKeybindConfig, Vec<String>), Vec<String>> {
@@ -147,18 +147,24 @@ impl Config {
             keys: model::KeysConfigOverlay,
         }
 
-        let mut keys = self.keys.local_profile(&self.keybinds());
-        keys.set_prefix(format_key_combo(self.prefix_key()));
+        let live = self.live_keybinds();
+        let mut keys = self.keys.local_profile(&live.keybinds);
+        keys.set_prefix(format_key_combo(live.prefix));
         toml::to_string_pretty(&KeysProfile { keys })
     }
 }
 
-pub(crate) fn keybindings_from_profile_toml(profile: &str) -> Result<LiveKeybindConfig, String> {
+/// Keybinds from an endpoint's published keybinding profile, with the
+/// non-fatal diagnostics its validation produced. Keybinding validation does
+/// not log, and this profile never passes through `Config::load`, so the
+/// caller is the only place those diagnostics can be reported.
+pub(crate) fn keybindings_from_profile_toml(
+    profile: &str,
+) -> Result<(LiveKeybindConfig, Vec<String>), String> {
     let config = toml::from_str::<Config>(profile)
         .map_err(|err| format!("invalid keybinding profile: {err}"))?;
     config
         .live_keybinds_with_diagnostics()
-        .map(|(keybinds, _diagnostics)| keybinds)
         .map_err(|diagnostics| diagnostics.join("; "))
 }
 
@@ -199,10 +205,51 @@ prefix = "ctrl+"
         let profile = config
             .local_keybindings_profile_toml()
             .expect("test precondition");
-        let keybinds = keybindings_from_profile_toml(&profile).expect("test precondition");
+        let (keybinds, diagnostics) =
+            keybindings_from_profile_toml(&profile).expect("test precondition");
 
         assert!(profile.contains("prefix = \"ctrl+b\""));
-        assert_eq!(keybinds.prefix, config.prefix_key());
+        assert_eq!(keybinds.prefix, config.live_keybinds().prefix);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn keybinding_profile_returns_its_non_fatal_diagnostics() {
+        let (keybinds, diagnostics) = keybindings_from_profile_toml(
+            r#"
+[keys]
+zoom = "prefix+nonsense-key"
+"#,
+        )
+        .expect("a bad binding is not fatal");
+
+        assert_eq!(keybinds.prefix, Config::default().live_keybinds().prefix);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("keys.zoom")),
+            "{diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn keybinding_profile_with_invalid_prefix_is_an_error() {
+        let error = keybindings_from_profile_toml("[keys]\nprefix = \"ctrl+\"\n")
+            .expect_err("an invalid prefix rejects the profile");
+        assert!(error.contains("keys.prefix"), "{error}");
+    }
+
+    #[test]
+    fn live_keybinds_matches_the_separate_accessor() {
+        for profile in [
+            "",
+            "[keys]\nprefix = \"ctrl+a\"\n",
+            "[keys]\nprefix = \"ctrl+\"\n",
+        ] {
+            let config: Config = toml::from_str(profile).expect("test precondition");
+            let live = config.live_keybinds();
+            assert_eq!(live.keybinds.detach, config.keybinds().detach);
+        }
     }
 
     #[test]

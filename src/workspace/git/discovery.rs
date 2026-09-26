@@ -58,12 +58,6 @@ pub fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
     })
 }
 
-#[cfg(test)]
-pub(crate) fn git_space_metadata(cwd: &Path) -> Option<GitSpaceMetadata> {
-    let info = git_worktree_info(cwd)?;
-    Some(git_space_metadata_from_info(&info))
-}
-
 pub(crate) fn automatic_workspace_label(cwd: &Path, repo_root: &Path) -> String {
     repo_root
         .file_name()
@@ -184,19 +178,6 @@ pub(super) fn read_git_ref_file(path: &Path) -> Option<String> {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn git_branch(cwd: &Path) -> Option<String> {
-    let repo_root = git_repo_root(cwd)?;
-    let git_dir = git_dir_for_repo_root(&repo_root)?;
-    let git_common_dir = git_common_dir_for_git_dir(&git_dir);
-    if git_ref_storage_is_reftable(&git_common_dir) {
-        return git_symbolic_head_short(&repo_root);
-    }
-
-    let head = read_git_ref_file(&git_dir.join("HEAD"))?;
-    parse_git_head_branch(&head)
-}
-
 pub(super) fn git_dir_for_repo_root(repo_root: &Path) -> Option<PathBuf> {
     let git_path = repo_root.join(".git");
     if git_path.is_dir() {
@@ -229,11 +210,6 @@ pub(super) fn git_symbolic_head_full(repo_root: &Path) -> Option<String> {
     git_trimmed_stdout(repo_root, &["symbolic-ref", "--quiet", "HEAD"])
 }
 
-#[cfg(test)]
-fn git_symbolic_head_short(repo_root: &Path) -> Option<String> {
-    git_trimmed_stdout(repo_root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
-}
-
 pub(super) fn git_rev_parse_verify(repo_root: &Path, revision: &str) -> Option<String> {
     git_trimmed_stdout(repo_root, &["rev-parse", "--verify", revision])
 }
@@ -246,12 +222,6 @@ pub(super) fn git_ref_storage_is_reftable(git_common_dir: &Path) -> bool {
 fn git_dir_is_bare(git_dir: &Path) -> bool {
     read_git_config_value(&git_dir.join("config"), "core", "bare")
         .is_some_and(|value| value.eq_ignore_ascii_case("true"))
-}
-
-#[cfg(test)]
-fn parse_git_head_branch(head: &str) -> Option<String> {
-    let branch = head.trim().strip_prefix("ref: refs/heads/")?;
-    (!branch.is_empty()).then(|| branch.to_string())
 }
 
 fn read_git_config_value(path: &Path, section: &str, key: &str) -> Option<String> {
@@ -297,7 +267,7 @@ fn strip_git_config_comment(value: &str) -> &str {
 }
 
 fn git_trimmed_stdout(repo_root: &Path, args: &[&str]) -> Option<String> {
-    let output = crate::noninteractive_process::command("git")
+    let output = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)
         .args(args)
@@ -374,7 +344,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::workspace::git::test_support::run_git;
+    use crate::workspace::git::test_support::{live_git_space, run_git};
 
     fn temp_test_dir(name: &str) -> PathBuf {
         let unique = format!(
@@ -389,18 +359,6 @@ mod tests {
         let path = std::env::temp_dir().join(unique);
         std::fs::create_dir_all(&path).expect("test precondition");
         path
-    }
-
-    #[test]
-    fn git_branch_reads_head_from_standard_repo() {
-        let root = temp_test_dir("standard-repo");
-        std::fs::create_dir_all(root.join(".git")).expect("test precondition");
-        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n")
-            .expect("test precondition");
-
-        assert_eq!(git_branch(&root).as_deref(), Some("main"));
-
-        std::fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
@@ -572,74 +530,6 @@ mod tests {
     }
 
     #[test]
-    fn oversized_git_head_is_rejected() {
-        let root = temp_test_dir("oversized-head");
-        let git_dir = root.join(".git");
-        std::fs::create_dir_all(&git_dir).expect("test precondition");
-        let head = git_dir.join("HEAD");
-        std::fs::write(&head, "ref: refs/heads/main\n").expect("test precondition");
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(head)
-            .expect("test precondition")
-            .set_len(60 * 1024 * 1024)
-            .expect("test precondition");
-
-        let branch = git_branch(&root);
-        let branch_len = branch.as_ref().map(String::len);
-        std::fs::remove_dir_all(root).expect("test precondition");
-
-        assert!(
-            branch.is_none(),
-            "oversized Git HEAD produced branch with {branch_len:?} bytes"
-        );
-    }
-
-    #[test]
-    fn git_branch_reads_head_from_worktree_gitdir_file() {
-        let root = temp_test_dir("worktree");
-        let worktree_git_dir = root.join(".bare/worktrees/feature");
-        std::fs::create_dir_all(&worktree_git_dir).expect("test precondition");
-        std::fs::write(root.join(".git"), "gitdir: .bare/worktrees/feature\n")
-            .expect("test precondition");
-        std::fs::write(worktree_git_dir.join("HEAD"), "ref: refs/heads/feature\n")
-            .expect("test precondition");
-
-        assert_eq!(git_branch(&root).as_deref(), Some("feature"));
-
-        std::fs::remove_dir_all(root).expect("test precondition");
-    }
-
-    #[test]
-    fn git_branch_returns_none_for_detached_head() {
-        let root = temp_test_dir("detached-head");
-        std::fs::create_dir_all(root.join(".git")).expect("test precondition");
-        std::fs::write(root.join(".git/HEAD"), "3e1b9a8d\n").expect("test precondition");
-
-        assert_eq!(git_branch(&root), None);
-
-        std::fs::remove_dir_all(root).expect("test precondition");
-    }
-
-    #[test]
-    fn git_branch_reads_symbolic_head_from_reftable_repo() {
-        let root = temp_test_dir("reftable-branch");
-        let root_arg = root.to_string_lossy().to_string();
-        let output = std::process::Command::new("git")
-            .args(["init", "--ref-format=reftable", "-b", "main", &root_arg])
-            .output()
-            .expect("test precondition");
-        if !output.status.success() {
-            std::fs::remove_dir_all(root).expect("test precondition");
-            return;
-        }
-
-        assert_eq!(git_branch(&root).as_deref(), Some("main"));
-
-        std::fs::remove_dir_all(root).expect("test precondition");
-    }
-
-    #[test]
     fn git_repo_root_ignores_invalid_git_marker() {
         let base = temp_test_dir("invalid-git-root");
         let cwd = base.join("workspace");
@@ -675,7 +565,7 @@ mod tests {
         assert!(!info.is_linked_worktree);
         assert_eq!(info.git_dir, canonicalize_best_effort_path(&bare));
 
-        let metadata = git_space_metadata(&nested).expect("bare repo should map to a git space");
+        let metadata = live_git_space(&nested).expect("bare repo should map to a git space");
         assert_eq!(
             canonicalize_best_effort_path(&metadata.repo_root),
             canonicalize_best_effort_path(&bare)
@@ -692,8 +582,8 @@ mod tests {
                 "bare-linked-labels",
             );
 
-        let bare_space = git_space_metadata(&bare).expect("test precondition");
-        let checkout_space = git_space_metadata(&checkout).expect("test precondition");
+        let bare_space = live_git_space(&bare).expect("test precondition");
+        let checkout_space = live_git_space(&checkout).expect("test precondition");
         let bare_auto_label = automatic_workspace_label(&bare, &bare_space.repo_root);
         let checkout_auto_label = automatic_workspace_label(&checkout, &checkout_space.repo_root);
 
@@ -759,8 +649,8 @@ mod tests {
             ],
         );
 
-        let source = git_space_metadata(&repo).expect("test precondition");
-        let linked = git_space_metadata(&checkout).expect("test precondition");
+        let source = live_git_space(&repo).expect("test precondition");
+        let linked = live_git_space(&checkout).expect("test precondition");
 
         assert_eq!(source.repo_name, "reported-repo");
         assert_eq!(linked.repo_name, source.repo_name);
@@ -781,7 +671,7 @@ mod tests {
             canonicalize_best_effort_path(&root.join(".git"))
         );
 
-        let metadata = git_space_metadata(&root).expect("bare .git repo should map to a git space");
+        let metadata = live_git_space(&root).expect("bare .git repo should map to a git space");
         assert_eq!(
             canonicalize_best_effort_path(&metadata.repo_root),
             canonicalize_best_effort_path(&root)

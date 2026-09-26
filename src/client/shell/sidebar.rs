@@ -160,7 +160,6 @@ pub(crate) fn render_collapsed_sidebar(
             rect,
             endpoint_id: ClientEndpointId::Local,
             workspace_id: workspace.workspace_id.clone(),
-            indented: false,
         });
     }
 
@@ -294,7 +293,6 @@ pub(crate) fn render_sidebar(
                     let len = workspace_rows(
                         workspace,
                         displayed_workspace_status(workspace),
-                        entry.indented,
                         &config.spaces,
                     )
                     .len()
@@ -304,13 +302,14 @@ pub(crate) fn render_sidebar(
                 .unwrap_or(1)
         })
         .collect::<Vec<_>>();
-    let gaps = entries
-        .iter()
-        .enumerate()
-        .map(|(index, _)| {
-            entries
-                .get(index + 1)
-                .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap)
+    // A gap follows every workspace but the last.
+    let gaps = (0..entries.len())
+        .map(|index| {
+            if index + 1 < entries.len() {
+                config.spaces.row_gap
+            } else {
+                0
+            }
         })
         .collect::<Vec<_>>();
     let mut metrics = super::scroll::list_scroll_metrics(
@@ -352,7 +351,7 @@ pub(crate) fn render_sidebar(
             continue;
         };
         let status = displayed_workspace_status(workspace);
-        let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
+        let rows = workspace_rows(workspace, status, &config.spaces);
         let row_height = u16::try_from(rows.len().max(1))
             .unwrap_or(u16::MAX)
             .min(body.height);
@@ -376,7 +375,6 @@ pub(crate) fn render_sidebar(
             rect,
             status,
             config.status_indicators,
-            entry,
             &rows,
             workspace.focused,
             selected,
@@ -388,11 +386,8 @@ pub(crate) fn render_sidebar(
             rect,
             endpoint_id: ClientEndpointId::Local,
             workspace_id: workspace.workspace_id.clone(),
-            indented: entry.indented,
         });
-        let gap = entries
-            .get(entry_position + 1)
-            .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap);
+        let gap = gaps.get(entry_position).copied().unwrap_or(0);
         y = y.saturating_add(row_height + gap);
     }
 
@@ -475,11 +470,7 @@ pub(crate) fn render_sidebar(
 
 pub(crate) fn workspace_entries(snapshot: &ClientShellSnapshot) -> Vec<WorkspaceEntry> {
     (0..snapshot.workspaces.len())
-        .map(|index| WorkspaceEntry {
-            index,
-            indented: false,
-            last_child: false,
-        })
+        .map(|index| WorkspaceEntry { index })
         .collect()
 }
 
@@ -492,28 +483,17 @@ pub(in crate::client::shell) fn displayed_workspace_status(
 pub(in crate::client::shell) fn workspace_rows(
     workspace: &ClientShellWorkspace,
     status: crate::api::schema::AgentStatus,
-    indented: bool,
     config: &SpacesSidebarConfig,
 ) -> Vec<Vec<crate::ui::ResolvedToken>> {
-    let label = if indented && !workspace.custom_label {
-        workspace
-            .branch
-            .as_deref()
-            .and_then(|branch| branch.strip_prefix("worktree/").or(Some(branch)))
-            .unwrap_or(&workspace.label)
-    } else {
-        &workspace.label
-    };
     let token_values = workspace.tokens.iter().cloned().collect::<HashMap<_, _>>();
     crate::ui::sidebar_space_rows(
         config,
         &crate::ui::SpaceTokenContext {
-            workspace: label,
+            workspace: &workspace.label,
             branch: workspace.branch.as_deref(),
             state_text: status_text(status),
             ahead_behind: workspace.git_ahead_behind,
             tokens: &token_values,
-            suppress_git_details: indented,
         },
     )
 }
@@ -523,7 +503,6 @@ pub(in crate::client::shell) fn render_workspace_rows(
     area: Rect,
     status: crate::api::schema::AgentStatus,
     indicators: crate::config::StatusIndicatorStyle,
-    entry: &WorkspaceEntry,
     rows: &[Vec<crate::ui::ResolvedToken>],
     focused: bool,
     selected: bool,
@@ -531,37 +510,15 @@ pub(in crate::client::shell) fn render_workspace_rows(
     dragged: bool,
     palette: &Palette,
 ) {
+    // Callers' rects come from the sidebar layout; clip to the buffer anyway so nothing below
+    // writes past it.
+    let area = area.intersection(buffer.area);
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + u16::try_from(row_index).unwrap_or(u16::MAX);
         if y >= area.bottom() {
             break;
         }
-        let mut x = area.x;
-        if entry.indented {
-            let prefix = if row_index == 0 {
-                if entry.last_child {
-                    "   └─ "
-                } else {
-                    "   ├─ "
-                }
-            } else if entry.last_child {
-                "        "
-            } else {
-                "   │    "
-            };
-            x = put_segment(
-                buffer,
-                x,
-                y,
-                area.right(),
-                prefix,
-                Style::default().fg(palette.overlay0),
-            );
-        } else if row_index == 0 {
-            x = x.saturating_add(1);
-        } else {
-            x = x.saturating_add(3);
-        }
+        let x = area.x.saturating_add(if row_index == 0 { 1 } else { 3 });
         let highlighted = focused || dragged;
         let workspace_style = Style::default()
             .fg(if highlighted {
@@ -610,7 +567,9 @@ pub(in crate::client::shell) fn render_workspace_rows(
     if let Some(background) = background {
         for y in area.y..area.bottom() {
             for x in area.x..area.right() {
-                buffer[(x, y)].set_bg(background);
+                if let Some(cell) = buffer.cell_mut((x, y)) {
+                    cell.set_bg(background);
+                }
             }
         }
     }

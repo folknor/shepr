@@ -359,10 +359,10 @@ pub(super) fn complete_endpoint_activation(
         // The coherent target frame can replace the frozen source now, but the registry keeps
         // pane input disabled until a second projection epoch has replayed host modes/effects.
         state.unfreeze_presentation();
-        let frame = {
-            let shell = state.shell.as_mut().expect("checked client shell");
-            shell.compose(state.reported_size.0, state.reported_size.1)
-        };
+        let frame = state
+            .shell
+            .as_mut()
+            .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1));
         if let Some(frame) = frame {
             state.present_frame(frame);
         }
@@ -372,7 +372,9 @@ pub(super) fn complete_endpoint_activation(
         return Ok(None);
     }
 
-    let _ = pending.take();
+    let requested_surface_size = pending
+        .take()
+        .map(|activation| activation.requested_surface_size());
     endpoints.unfreeze_input();
     let successor = match completion {
         endpoint::ActivationCompletion::RestoredSource {
@@ -387,12 +389,14 @@ pub(super) fn complete_endpoint_activation(
             }
             next
         }
-        endpoint::ActivationCompletion::Activated => None,
-        endpoint::ActivationCompletion::AwaitingPresentationSync { .. }
-        | endpoint::ActivationCompletion::AwaitingPresentationEffects => unreachable!(),
+        // Both awaiting variants returned above; neither carries a successor.
+        endpoint::ActivationCompletion::Activated
+        | endpoint::ActivationCompletion::AwaitingPresentationSync { .. }
+        | endpoint::ActivationCompletion::AwaitingPresentationEffects => None,
     };
     state.unfreeze_presentation();
     if successor.is_none() {
+        correct_committed_surface_size(state, endpoints, requested_surface_size);
         let active_endpoint = endpoints.active_id().clone();
         let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints);
         if let Some(shell) = state.shell.as_mut() {
@@ -401,10 +405,10 @@ pub(super) fn complete_endpoint_activation(
             }
         }
     }
-    let frame = {
-        let shell = state.shell.as_mut().expect("checked client shell");
-        shell.compose(state.reported_size.0, state.reported_size.1)
-    };
+    let frame = state
+        .shell
+        .as_mut()
+        .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1));
     if let Some(frame) = frame {
         state.present_frame(frame);
     }
@@ -417,6 +421,41 @@ pub(super) fn complete_endpoint_activation(
         }));
     }
     Ok(None)
+}
+
+/// A handoff asks its endpoint for a surface sized by the shell layout of the projection that
+/// was current when it started (the source's), and the committed projection can lay out
+/// differently: with `hide_tab_bar_when_single_tab`, switching between a single-tab and a
+/// multi-tab workspace moves the pane area by the tab bar's row. Nothing else resizes after the
+/// commit (snapshot installs only compare their own before/after), so the committed endpoint
+/// would keep panes one row off. Once the handoff has committed, compare the size it asked for
+/// with the committed layout and resize the committed endpoint when they disagree.
+fn correct_committed_surface_size(
+    state: &ClientState,
+    endpoints: &mut endpoint::EndpointRegistry,
+    requested: Option<crate::protocol::ClientSurfaceSize>,
+) {
+    if let Some(resize) = requested.and_then(|requested| committed_resize(state, requested)) {
+        // A failed send surfaces through the registry's failure list.
+        endpoints.send(&resize);
+    }
+}
+
+fn committed_resize(
+    state: &ClientState,
+    requested: crate::protocol::ClientSurfaceSize,
+) -> Option<ClientMessage> {
+    let shell = state.shell.as_ref()?;
+    (shell.surface_size(state.reported_size.0, state.reported_size.1) != requested).then(|| {
+        client_shell_resize_message(
+            shell,
+            state.reported_size.0,
+            state.reported_size.1,
+            state.reported_cell_size.0,
+            state.reported_cell_size.1,
+            state.pixel_geometry_exact,
+        )
+    })
 }
 
 pub(super) fn present_handoff_unavailable(state: &mut ClientState, message: String) {
@@ -465,18 +504,15 @@ pub(super) fn handle_endpoint_disconnect(
     notice: &str,
 ) -> bool {
     supervisors.disconnected(endpoint_id, generation, now);
-    if pending_activation
-        .as_ref()
-        .is_some_and(|pending| pending.involves_endpoint(endpoint_id))
+    if let Some(pending) = pending_activation
+        .as_mut()
+        .filter(|pending| pending.involves_endpoint(endpoint_id))
     {
-        let outcome = pending_activation
-            .as_mut()
-            .expect("checked pending activation")
-            .endpoint_disconnected(
-                endpoints,
-                endpoint_id,
-                format!("endpoint connection was lost while activating {notice}"),
-            );
+        let outcome = pending.endpoint_disconnected(
+            endpoints,
+            endpoint_id,
+            format!("endpoint connection was lost while activating {notice}"),
+        );
         match outcome {
             endpoint::ActivationRollback::Pending => {}
             endpoint::ActivationRollback::Unavailable(error) => {
@@ -524,18 +560,15 @@ pub(super) fn handle_endpoint_attention(
         endpoint::ClientEndpointStatus::Attention,
         now,
     );
-    if pending_activation
-        .as_ref()
-        .is_some_and(|pending| pending.involves_endpoint(endpoint_id))
+    if let Some(pending) = pending_activation
+        .as_mut()
+        .filter(|pending| pending.involves_endpoint(endpoint_id))
     {
-        let outcome = pending_activation
-            .as_mut()
-            .expect("checked pending activation")
-            .endpoint_disconnected(
-                endpoints,
-                endpoint_id,
-                "endpoint reported attention while activating".into(),
-            );
+        let outcome = pending.endpoint_disconnected(
+            endpoints,
+            endpoint_id,
+            "endpoint reported attention while activating".into(),
+        );
         if let endpoint::ActivationRollback::Unavailable(error) = outcome {
             *pending_activation = None;
             present_handoff_unavailable(state, error);
@@ -574,8 +607,14 @@ pub(super) fn install_client_shell_snapshot(
         return Ok(());
     };
     let generation = connection.generation;
-    let project_snapshot =
-        !projection_pending && endpoints.active_id() == endpoint_id && connection.surface_active;
+    // While presentation is frozen the projection on screen must not move: a frame composed
+    // now may bypass the freeze as client chrome (below), and that is only sound if its
+    // snapshot and pane surface are the ones frozen. Metadata is cached instead and projected
+    // when the next handoff commits.
+    let project_snapshot = !projection_pending
+        && !state.presentation_frozen
+        && endpoints.active_id() == endpoint_id
+        && connection.surface_active;
     let (composed, resize) = if let Some(shell) = &mut state.shell {
         let waits_for_selected_surface = projection_pending
             || (endpoints.active_id() == endpoint_id
@@ -615,6 +654,13 @@ pub(super) fn install_client_shell_snapshot(
         endpoints.send_to(endpoint_id, &resize);
     }
     if let Some(frame) = composed {
+        // Not inverted, though it reads that way. A snapshot that belongs to an in-flight
+        // handoff (`projection_pending`) is the target's (or the restoring source's) metadata:
+        // the source frame stays authoritative until the handoff commits, so this frame obeys
+        // the freeze. Any other snapshot only moves client chrome (machine list, statuses),
+        // because a frozen projection is not advanced (see `project_snapshot`) and frozen pane
+        // surfaces are not taken (the `PaneSurface` and patch arms in the client loop); it can
+        // pass the freeze without exposing pane output.
         if projection_pending {
             state.present_frame(frame);
         } else {
@@ -637,8 +683,9 @@ pub(super) fn finish_client_shell_input(
         let _ = write_to_server(endpoints, &ClientMessage::Detach);
         return Ok(true);
     }
-    if outcome.resize {
-        let shell = state.shell.as_ref().expect("shell mode remains active");
+    if outcome.resize
+        && let Some(shell) = state.shell.as_ref()
+    {
         let resize = client_shell_resize_message(
             shell,
             state.reported_size.0,
@@ -734,6 +781,11 @@ pub(super) fn finish_client_shell_input(
         write_to_server(endpoints, &request).map_err(ClientError::ConnectionLost)?;
     }
     if let Some(frame) = frame {
+        // With no handoff in flight, input frames pass a freeze left by
+        // `present_handoff_unavailable` so mode changes, overlays and the machine list stay
+        // responsive while no endpoint owns presentation. That is sound because nothing moves
+        // the pane projection while frozen (see `install_client_shell_snapshot` and the pane
+        // surface arms of the client loop): the pane cells in this frame are the frozen ones.
         if pending_activation.is_some() {
             state.present_frame(frame);
         } else {
@@ -746,6 +798,30 @@ pub(super) fn finish_client_shell_input(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn committed_handoff_resizes_only_when_its_requested_size_is_stale() {
+        let state = ClientState::test_new();
+        let committed = state
+            .shell
+            .as_ref()
+            .expect("test shell")
+            .surface_size(state.reported_size.0, state.reported_size.1);
+        assert!(committed_resize(&state, committed).is_none());
+
+        // A surface requested under the source's layout, one row off (the tab bar hides for a
+        // single-tab workspace), is corrected to the committed layout.
+        let stale = crate::protocol::ClientSurfaceSize {
+            cols: committed.cols,
+            rows: committed.rows.saturating_add(1),
+        };
+        match committed_resize(&state, stale) {
+            Some(ClientMessage::ClientShellResize { surface_size, .. }) => {
+                assert_eq!(surface_size, committed);
+            }
+            other => panic!("expected a corrective resize, got {other:?}"),
+        }
+    }
 
     #[test]
     fn window_title_reset_only_undoes_a_title_this_client_wrote() {

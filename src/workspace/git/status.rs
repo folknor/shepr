@@ -1,8 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-#[cfg(test)]
-use crate::workspace::GitSpaceMetadata;
 use crate::workspace::WorkspaceGitStatusSnapshot;
 
 use super::{
@@ -85,11 +83,6 @@ pub struct GitUpstreamIdentity {
 
 pub fn git_status_cache_key(cwd: &Path) -> Option<PathBuf> {
     git_worktree_info(cwd).map(|info| canonicalize_best_effort_path(&info.repo_root))
-}
-
-#[cfg(test)]
-pub(crate) fn git_status_cache_key_for_space(space: &GitSpaceMetadata) -> PathBuf {
-    canonicalize_best_effort_path(&space.repo_root)
 }
 
 #[cfg(test)]
@@ -323,7 +316,7 @@ fn git_ahead_behind_between(
     upstream_oid: &str,
 ) -> Option<(usize, usize)> {
     let range = format!("{head_oid}...{upstream_oid}");
-    let output = crate::noninteractive_process::command("git")
+    let output = std::process::Command::new("git")
         .arg("-C")
         .arg(cwd)
         .args(["rev-list", "--left-right", "--count", &range])
@@ -348,13 +341,12 @@ fn parse_git_ahead_behind_output(stdout: &str) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::git::{
-        git_space_metadata,
-        test_support::{run_git, temp_test_dir, write_fake_tracked_repo},
+    use crate::workspace::git::test_support::{
+        live_git_space, run_git, temp_test_dir, write_fake_tracked_repo,
     };
 
     #[test]
-    fn cache_key_from_space_preserves_non_utf8_checkout_path() {
+    fn cache_key_preserves_non_utf8_checkout_path() {
         use std::os::unix::ffi::OsStringExt;
 
         let base = temp_test_dir("non-utf8-key");
@@ -362,14 +354,108 @@ mod tests {
             b'r', b'e', b'p', b'o', 0x80,
         ]));
         write_fake_tracked_repo(&root);
-        let space = git_space_metadata(&root).expect("Git metadata");
 
         assert_eq!(
-            git_status_cache_key_for_space(&space),
-            std::fs::canonicalize(&root).expect("test precondition")
+            git_status_cache_key(&root),
+            Some(std::fs::canonicalize(&root).expect("test precondition"))
         );
 
         std::fs::remove_dir_all(base).expect("test precondition");
+    }
+
+    // HEAD edge cases, read through the status refresh the sidebar uses.
+
+    #[test]
+    fn branch_reads_head_from_standard_repo() {
+        let root = temp_test_dir("standard-repo");
+        std::fs::create_dir_all(root.join(".git")).expect("test precondition");
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n")
+            .expect("test precondition");
+
+        let (snapshot, _) = git_status_snapshot_for_cwd(&root, None);
+        std::fs::remove_dir_all(root).expect("test precondition");
+
+        assert_eq!(snapshot.branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn oversized_head_reports_no_branch() {
+        let root = temp_test_dir("oversized-head");
+        let git_dir = root.join(".git");
+        std::fs::create_dir_all(&git_dir).expect("test precondition");
+        let head = git_dir.join("HEAD");
+        std::fs::write(&head, "ref: refs/heads/main\n").expect("test precondition");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(head)
+            .expect("test precondition")
+            .set_len(60 * 1024 * 1024)
+            .expect("test precondition");
+
+        let (snapshot, _) = git_status_snapshot_for_cwd(&root, None);
+        std::fs::remove_dir_all(root).expect("test precondition");
+
+        let branch_len = snapshot.branch.as_ref().map(String::len);
+        assert!(
+            snapshot.branch.is_none(),
+            "oversized Git HEAD produced branch with {branch_len:?} bytes"
+        );
+    }
+
+    #[test]
+    fn branch_reads_head_from_worktree_gitdir_file() {
+        let root = temp_test_dir("worktree");
+        let worktree_git_dir = root.join(".bare/worktrees/feature");
+        std::fs::create_dir_all(&worktree_git_dir).expect("test precondition");
+        std::fs::write(root.join(".git"), "gitdir: .bare/worktrees/feature\n")
+            .expect("test precondition");
+        std::fs::write(worktree_git_dir.join("HEAD"), "ref: refs/heads/feature\n")
+            .expect("test precondition");
+
+        let (snapshot, _) = git_status_snapshot_for_cwd(&root, None);
+        std::fs::remove_dir_all(root).expect("test precondition");
+
+        assert_eq!(snapshot.branch.as_deref(), Some("feature"));
+    }
+
+    #[test]
+    fn detached_head_reports_no_branch() {
+        let root = temp_test_dir("detached-head");
+        std::fs::create_dir_all(root.join(".git")).expect("test precondition");
+        std::fs::write(root.join(".git/HEAD"), "3e1b9a8d\n").expect("test precondition");
+
+        let (snapshot, update) = git_status_snapshot_for_cwd(&root, None);
+        std::fs::remove_dir_all(root).expect("test precondition");
+
+        assert_eq!(snapshot.branch, None);
+        assert!(snapshot.space.is_some(), "a detached HEAD is still a repo");
+        assert!(
+            update
+                .and_then(|entry| entry.fingerprint)
+                .is_some_and(|fingerprint| fingerprint.head
+                    == GitHeadIdentity::Detached {
+                        oid: "3e1b9a8d".into()
+                    })
+        );
+    }
+
+    #[test]
+    fn branch_reads_unborn_symbolic_head_from_reftable_repo() {
+        let root = temp_test_dir("reftable-branch");
+        let root_arg = root.to_string_lossy().to_string();
+        let output = std::process::Command::new("git")
+            .args(["init", "--ref-format=reftable", "-b", "main", &root_arg])
+            .output()
+            .expect("test precondition");
+        if !output.status.success() {
+            std::fs::remove_dir_all(root).expect("test precondition");
+            return;
+        }
+
+        let (snapshot, _) = git_status_snapshot_for_cwd(&root, None);
+        std::fs::remove_dir_all(root).expect("test precondition");
+
+        assert_eq!(snapshot.branch.as_deref(), Some("main"));
     }
 
     #[test]
@@ -461,7 +547,7 @@ mod tests {
                 auto_label: "repo".into(),
                 branch: Some("main".into()),
                 ahead_behind: Some((2, 1)),
-                space: git_space_metadata(&root),
+                space: live_git_space(&root),
             },
         };
 
@@ -489,7 +575,7 @@ mod tests {
                 auto_label: "repo".into(),
                 branch: Some("main".into()),
                 ahead_behind: Some((4, 0)),
-                space: git_space_metadata(&root),
+                space: live_git_space(&root),
             },
         };
         std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/feature\n")
@@ -525,7 +611,7 @@ mod tests {
                 auto_label: "repo".into(),
                 branch: Some("main".into()),
                 ahead_behind: Some((0, 3)),
-                space: git_space_metadata(&root),
+                space: live_git_space(&root),
             },
         };
         std::fs::write(root.join(".git/config"), "").expect("test precondition");

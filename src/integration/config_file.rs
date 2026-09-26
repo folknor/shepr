@@ -21,7 +21,7 @@ pub(super) fn check_config_targets(dir: &Path, names: &[&str]) -> io::Result<()>
 
 pub(super) fn check_config_target(path: &Path) -> io::Result<()> {
     reject_hard_links(path)?;
-    crate::platform::check_config_write_target(&resolve_target(path)?)
+    resolve_target(path).map(|_| ())
 }
 
 fn reject_hard_links(path: &Path) -> io::Result<()> {
@@ -72,9 +72,6 @@ fn resolve_target(path: &Path) -> io::Result<PathBuf> {
 pub(super) fn write_config(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
     check_config_target(path)?;
     let target = resolve_target(path)?;
-    if crate::platform::write_existing_config(&target, contents.as_ref())? {
-        return Ok(());
-    }
     let replacement = Replacement::prepare(&target, contents.as_ref())?;
     replacement.commit()
 }
@@ -131,7 +128,7 @@ impl Replacement {
 
     fn commit(self) -> io::Result<()> {
         reject_hard_links(&self.target)?;
-        crate::platform::replace_file(&self.temporary, &self.target)
+        fs::rename(&self.temporary, &self.target)
     }
 }
 

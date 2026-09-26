@@ -271,7 +271,7 @@ impl Tab {
         };
         // The split un-zooms the tab (below), so size against the tiled layout.
         let (rows, cols) = geometry
-            .pane_size(&self.layout, new_id)
+            .pane_size(&self.layout, false, new_id)
             .unwrap_or_else(|| geometry.sole_pane_size());
         let actual_cwd =
             cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));

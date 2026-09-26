@@ -429,7 +429,12 @@ impl App {
                 workspace_id: self.public_workspace_id(ws_idx),
             },
         });
-        if let Some(tab_id) = self.public_tab_id(ws_idx, self.state.workspaces[ws_idx].active_tab) {
+        if let Some(tab_id) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| self.public_tab_id(ws_idx, ws.active_tab))
+        {
             self.emit_event(crate::api::schema::EventEnvelope {
                 event: crate::api::schema::EventKind::TabFocused,
                 data: crate::api::schema::EventData::TabFocused {

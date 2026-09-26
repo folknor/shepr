@@ -1,5 +1,5 @@
 use super::*;
-use crate::input::{KeybindAction, KeybindMatch, TerminalKey, TextCommit};
+use crate::input::{KeybindAction, KeybindMatch, TerminalKey};
 
 fn shell(field: usize) -> ClientShellState {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
@@ -87,7 +87,7 @@ fn text_delivery_paths_insert_at_the_cursor() {
                 TerminalKey::new(KeyCode::Char('x'), KeyModifiers::NONE)
                     .with_generated_text(Some("X".into())),
             )]),
-            1 => state.handle_raw_events(vec![RawInputEvent::Text(TextCommit::new("X"))]),
+            1 => state.handle_raw_events(vec![RawInputEvent::Paste("X".into())]),
             2 => state.handle_raw_events(vec![RawInputEvent::Paste("X".into())]),
             _ => {
                 let mut result = ClientShellInput::default();
@@ -233,7 +233,7 @@ fn copy_search_owns_prefix_but_parked_prompt_does_not_steal_input() {
     *editor(&mut state) = TextEditor::from("ab");
     press(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);
     assert_eq!(state.mode, ClientShellMode::Copy);
-    state.handle_raw_events(vec![RawInputEvent::Text(TextCommit::new("X"))]);
+    state.handle_raw_events(vec![RawInputEvent::Paste("X".into())]);
     assert_eq!(editor(&mut state).as_str(), "aXb");
     state.open_rename_pane_overlay();
     assert!(state.modal_paste_target_active());
@@ -243,9 +243,9 @@ fn copy_search_owns_prefix_but_parked_prompt_does_not_steal_input() {
     assert_eq!(editor(&mut state).as_str(), "aXb");
     state.mode = ClientShellMode::Terminal;
     assert!(!state.modal_paste_target_active());
-    let input = state.handle_raw_events(vec![RawInputEvent::Text(TextCommit::new("terminal"))]);
+    let input = state.handle_raw_events(vec![RawInputEvent::Paste("terminal".into())]);
     assert!(
-        matches!(&input.requests[..], [ClientMessage::ClientShellPaneInput { events, .. }] if matches!(&events[..], [ClientPaneInputEvent::TextCommit(text)] if text == "terminal"))
+        matches!(&input.requests[..], [ClientMessage::ClientShellPaneInput { events, .. }] if matches!(&events[..], [ClientPaneInputEvent::Paste(text)] if text == "terminal"))
     );
     assert_eq!(editor(&mut state).as_str(), "aXb");
     state.mode = ClientShellMode::Copy;

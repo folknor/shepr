@@ -293,7 +293,8 @@ fn mixed_reflow_reads_are_stable_and_chunk_independent() {
         assert!(
             whole
                 .pane
-                .recent_unwrapped_ansi(64)
+                .recent_unwrapped_ansi_snapshot(64)
+                .text
                 .contains("https://example.test/reflow"),
             "reflow at {width}x{height} must retain the link"
         );
@@ -425,7 +426,7 @@ fn complete_history_replay_supports_plain_append() {
     // non-wrapping printable cell with SGR and OSC8 closed; no pending tab/CSI.
     let mut source = Harness::new(24, 4);
     source.write(b"\x1b[31mred\x1b[0m\r\nplain");
-    let ansi = source.pane.recent_unwrapped_ansi(32);
+    let ansi = source.pane.recent_unwrapped_ansi_snapshot(32).text;
     let mut restored = Harness::new(24, 4);
     restored.pane.ghostty.seed_history_ansi(&ansi);
     assert_eq!(

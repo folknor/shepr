@@ -32,10 +32,6 @@ fn public_tab_id_for_index(ws: &crate::workspace::Workspace, tab_idx: usize) -> 
     ))
 }
 
-pub fn active_tab_is_seen(is_active_tab: bool, outer_terminal_focus: Option<bool>) -> bool {
-    is_active_tab && outer_terminal_focus != Some(false)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneStateUpdate {
     pub pane_id: PaneId,
@@ -173,7 +169,7 @@ impl AppState {
         pane_terminals
             .into_iter()
             .filter_map(|(ws_idx, pane_id, terminal_id)| {
-                let previous_seen = self.workspaces[ws_idx].pane_state(pane_id)?.seen;
+                let previous_seen = self.workspaces.get(ws_idx)?.pane_state(pane_id)?.seen;
                 let mutation = self
                     .terminals
                     .get_mut(&terminal_id)?
@@ -246,16 +242,70 @@ impl AppState {
         (changed_panes, changed_workspaces)
     }
 
-    pub(crate) fn pane_is_in_active_tab(&self, ws_idx: usize, pane_id: PaneId) -> bool {
-        let Some(active_ws_idx) = self.active else {
-            return false;
-        };
-        if active_ws_idx != ws_idx {
+    /// Whether a person is looking at tab `tab_idx` of workspace `ws_idx`:
+    /// it is the viewer's tab (`tab_viewer`) and the viewer's terminal has not
+    /// reported losing focus. An unknown focus (`None`: the terminal does not
+    /// report focus, or has not yet) counts as looking, so terminals without
+    /// focus reporting keep the old behaviour. This is the one rule behind
+    /// every implicit "seen": completions and navigation. Explicit
+    /// acknowledgements (`mark_active_tab_seen`) do not go through it.
+    pub(crate) fn tab_is_observed(&self, ws_idx: usize, tab_idx: usize) -> bool {
+        if self.outer_terminal_focus == Some(false) {
             return false;
         }
-        self.workspaces[ws_idx]
-            .find_tab_index_for_pane(pane_id)
-            .is_some_and(|tab_idx| tab_idx == self.workspaces[ws_idx].active_tab)
+        let Some(ws) = self.workspaces.get(ws_idx) else {
+            return false;
+        };
+        match &self.tab_viewer {
+            super::state::TabViewer::ActiveTab => {
+                self.active == Some(ws_idx) && ws.active_tab == tab_idx
+            }
+            super::state::TabViewer::Nobody => false,
+            super::state::TabViewer::Tab {
+                workspace_id,
+                tab_number,
+            } => {
+                ws.id == *workspace_id
+                    && ws
+                        .tabs
+                        .get(tab_idx)
+                        .is_some_and(|tab| tab.number == *tab_number)
+            }
+        }
+    }
+
+    /// `tab_is_observed` for the tab holding `pane_id`.
+    pub(crate) fn pane_is_observed(&self, ws_idx: usize, pane_id: PaneId) -> bool {
+        self.workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.find_tab_index_for_pane(pane_id))
+            .is_some_and(|tab_idx| self.tab_is_observed(ws_idx, tab_idx))
+    }
+
+    fn mark_tab_seen(&mut self, ws_idx: usize, tab_idx: usize) -> bool {
+        let Some(tab) = self
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+        else {
+            return false;
+        };
+        let mut changed = false;
+        for pane in tab.panes.values_mut() {
+            if !pane.seen {
+                pane.seen = true;
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Marks a tab seen after navigation only when the navigation put it in
+    /// front of a person. A scripted `workspace focus` or `tab focus` while
+    /// the user is away, or one that moves the global active tab while the
+    /// foreground client shows another, must not clear "done" markers.
+    fn mark_tab_seen_if_observed(&mut self, ws_idx: usize, tab_idx: usize) -> bool {
+        self.tab_is_observed(ws_idx, tab_idx) && self.mark_tab_seen(ws_idx, tab_idx)
     }
 
     pub fn switch_workspace(&mut self, idx: usize) {
@@ -272,6 +322,7 @@ impl AppState {
                 let tab_id =
                     public_tab_id_for_index(ws, active_tab).unwrap_or_else(|| workspace_id.clone());
                 crate::logging::tab_focused(&workspace_id, &tab_id);
+                self.mark_tab_seen_if_observed(idx, active_tab);
             }
             self.record_pane_focus_after_navigation(previous_focus);
         }
@@ -304,6 +355,7 @@ impl AppState {
                 public_tab_id_for_index(ws, tab_idx).unwrap_or_else(|| workspace_id.clone());
             crate::logging::tab_focused(&workspace_id, &tab_id);
         }
+        self.mark_tab_seen_if_observed(ws_idx, tab_idx);
         self.record_pane_focus_after_navigation(previous_focus);
         true
     }
@@ -319,31 +371,24 @@ impl AppState {
             let workspace_id = ws.id.clone();
             let tab_id = public_tab_id_for_index(ws, idx).unwrap_or_else(|| workspace_id.clone());
             crate::logging::tab_focused(&workspace_id, &tab_id);
+            self.mark_tab_seen_if_observed(ws_idx, idx);
             self.mark_session_dirty();
             self.record_pane_focus_after_navigation(previous_focus);
         }
     }
 
+    /// Explicit acknowledgement: `pane focus` and `agent focus` name the pane
+    /// to bring up, and asking for an agent by name is taken as having seen
+    /// its result, whoever is looking. Implicit navigation goes through
+    /// `mark_tab_seen_if_observed` instead.
     pub(crate) fn mark_active_tab_seen(&mut self) -> bool {
         let Some(ws_idx) = self.active else {
             return false;
         };
-        let Some(tab) = self
-            .workspaces
-            .get_mut(ws_idx)
-            .and_then(crate::workspace::Workspace::active_tab_mut)
-        else {
+        let Some(tab_idx) = self.workspaces.get(ws_idx).map(|ws| ws.active_tab) else {
             return false;
         };
-
-        let mut changed = false;
-        for pane in tab.panes.values_mut() {
-            if !pane.seen {
-                pane.seen = true;
-                changed = true;
-            }
-        }
-        changed
+        self.mark_tab_seen(ws_idx, tab_idx)
     }
 
     pub fn move_workspace(&mut self, source_idx: usize, insert_idx: usize) -> bool {
@@ -1257,9 +1302,10 @@ impl AppState {
         change: &EffectiveStateChange,
         suppress_completion: bool,
     ) -> Option<bool> {
-        let is_active_tab = self.pane_is_in_active_tab(ws_idx, pane_id);
-        let active_tab_seen = active_tab_is_seen(is_active_tab, self.outer_terminal_focus);
-        let pane = self.workspaces[ws_idx]
+        let observed = self.pane_is_observed(ws_idx, pane_id);
+        let pane = self
+            .workspaces
+            .get_mut(ws_idx)?
             .tabs
             .iter_mut()
             .find_map(|tab| tab.panes.get_mut(&pane_id))?;
@@ -1267,7 +1313,7 @@ impl AppState {
         if change.state != AgentState::Idle {
             pane.seen = true;
         } else if !suppress_completion && is_completion_transition(change) {
-            pane.seen = active_tab_seen;
+            pane.seen = observed;
         }
         let seen = pane.seen;
 
@@ -2609,10 +2655,117 @@ mod tests {
 
     #[test]
     fn active_tab_suppression_preserves_unknown_focus_behavior() {
-        assert!(active_tab_is_seen(true, None));
-        assert!(active_tab_is_seen(true, Some(true)));
-        assert!(!active_tab_is_seen(true, Some(false)));
-        assert!(!active_tab_is_seen(false, None));
+        let mut state = app_with_workspaces(&["active", "background"]);
+        state.active = Some(0);
+        for (focus, observed) in [(None, true), (Some(true), true), (Some(false), false)] {
+            state.outer_terminal_focus = focus;
+            assert_eq!(state.tab_is_observed(0, 0), observed, "focus {focus:?}");
+            assert!(!state.tab_is_observed(1, 0), "focus {focus:?}");
+        }
+    }
+
+    #[test]
+    fn observed_tab_follows_the_viewer_not_the_global_active_tab() {
+        let mut state = app_with_workspaces(&["active", "viewed"]);
+        state.active = Some(0);
+        state.outer_terminal_focus = Some(true);
+        state.tab_viewer = crate::app::state::TabViewer::Tab {
+            workspace_id: state.workspaces[1].id.clone(),
+            tab_number: state.workspaces[1].tabs[0].number,
+        };
+        assert!(!state.tab_is_observed(0, 0));
+        assert!(state.tab_is_observed(1, 0));
+
+        state.tab_viewer = crate::app::state::TabViewer::Nobody;
+        state.outer_terminal_focus = None;
+        assert!(!state.tab_is_observed(0, 0));
+        assert!(!state.tab_is_observed(1, 0));
+    }
+
+    fn mark_first_pane_unseen(state: &mut AppState, ws_idx: usize) -> PaneId {
+        let pane_id = state.workspaces[ws_idx].tabs[0].root_pane;
+        state.workspaces[ws_idx]
+            .pane_state_mut(pane_id)
+            .expect("test precondition")
+            .seen = false;
+        pane_id
+    }
+
+    #[test]
+    fn scripted_focus_while_the_user_is_away_keeps_done_markers() {
+        let mut state = app_with_workspaces(&["a", "b"]);
+        state.active = Some(0);
+        state.outer_terminal_focus = Some(false);
+        let pane_id = mark_first_pane_unseen(&mut state, 1);
+
+        state.switch_workspace(1);
+        assert!(
+            !state.workspaces[1]
+                .pane_state(pane_id)
+                .expect("test precondition")
+                .seen
+        );
+        assert!(state.switch_workspace_tab(1, 0));
+        assert!(
+            !state.workspaces[1]
+                .pane_state(pane_id)
+                .expect("test precondition")
+                .seen
+        );
+
+        // Once the user is back, landing on the tab is seeing it.
+        state.outer_terminal_focus = Some(true);
+        state.switch_workspace(0);
+        state.switch_workspace(1);
+        assert!(
+            state.workspaces[1]
+                .pane_state(pane_id)
+                .expect("test precondition")
+                .seen
+        );
+    }
+
+    #[test]
+    fn focus_that_moves_the_global_active_tab_away_from_the_viewer_keeps_done_markers() {
+        let mut state = app_with_workspaces(&["viewed", "scripted"]);
+        state.active = Some(0);
+        state.outer_terminal_focus = Some(true);
+        state.tab_viewer = crate::app::state::TabViewer::Tab {
+            workspace_id: state.workspaces[0].id.clone(),
+            tab_number: state.workspaces[0].tabs[0].number,
+        };
+        let pane_id = mark_first_pane_unseen(&mut state, 1);
+
+        state.switch_workspace(1);
+
+        assert_eq!(state.active, Some(1));
+        assert!(
+            !state.workspaces[1]
+                .pane_state(pane_id)
+                .expect("test precondition")
+                .seen
+        );
+    }
+
+    #[test]
+    fn no_op_zoom_while_the_user_is_away_keeps_done_markers() {
+        let mut state = app_with_workspaces(&["a", "b"]);
+        state.active = Some(0);
+        state.outer_terminal_focus = Some(false);
+        let pane_id = mark_first_pane_unseen(&mut state, 1);
+
+        let outcome = state
+            .apply_pane_zoom(1, pane_id, PaneZoomCommand::Off)
+            .expect("test precondition");
+
+        assert!(!outcome.changed);
+        assert_eq!(state.active, Some(1));
+        assert!(
+            !state.workspaces[1]
+                .pane_state(pane_id)
+                .expect("test precondition")
+                .seen
+        );
     }
 
     #[test]
@@ -2808,7 +2961,7 @@ mod tests {
             .publish_pane_process_exit_if_agent(pane_id, false)
             .expect("process exit update");
 
-        assert!(!state.pane_is_in_active_tab(update.ws_idx, pane_id));
+        assert!(!state.pane_is_observed(update.ws_idx, pane_id));
         assert_eq!(update.previous_state, AgentState::Working);
         assert_eq!(update.state, AgentState::Idle);
         assert_eq!(update.agent_label.as_deref(), Some("pi"));

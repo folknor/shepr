@@ -40,7 +40,7 @@ impl SocketTest {
             std::process::id(),
             NEXT_SOCKET.fetch_add(1, Ordering::Relaxed)
         ));
-        let listener = bind_local_listener(&path).expect("test precondition");
+        let listener = crate::ipc::bind_local_listener(&path).expect("test precondition");
         self.paths.push(path.clone());
         let mut stream = crate::ipc::connect_local_stream(&path).expect("test precondition");
         let server = listener.accept().expect("test precondition");

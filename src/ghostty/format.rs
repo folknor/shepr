@@ -1,7 +1,7 @@
 //! Plain-text and VT formatters over an alacritty grid.
 //!
 //! The VT output is replayed into a fresh terminal when history is restored
-//! (`recent_unwrapped_ansi` -> `seed_history_ansi`) and after some resizes, so
+//! (`recent_unwrapped_ansi_snapshot` -> `seed_history_ansi`) and after some resizes, so
 //! it must round-trip through our own parser: every style change is written as
 //! a full `SGR 0;...` reset, soft-wrapped rows are joined when unwrapping so the
 //! replay reflows them, hard line breaks are `\r\n`, and no SGR or OSC 8 state

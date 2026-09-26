@@ -97,6 +97,10 @@ pub struct App {
     /// Parsed `ui.window_title` plus the hostname resolved when it was applied.
     window_title_template: Option<(crate::config::WindowTitleTemplate, String)>,
     pub(crate) persist_pane_history: bool,
+    /// Pane history kept across saves (restored panes not yet running, the
+    /// last primary screen of panes on the alternate screen); every history
+    /// capture takes it.
+    pub(crate) pane_history_carry: crate::persist::HistoryCarry,
     /// Last render-loop attempt, including a throttled hidden-only PTY skip.
     pub(crate) last_render_at: Option<Instant>,
     /// Last attempt that could update a connected presentation surface.
@@ -160,6 +164,7 @@ impl App {
         // Try to restore previous session
         let mut restored_terminals = std::collections::HashMap::new();
         let mut restored_terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut pane_history_carry = crate::persist::HistoryCarry::default();
         let snapshot = policy.restore_session.then(crate::persist::load).flatten();
         let session_writer = Arc::new(std::sync::Mutex::new(crate::persist::SessionWriter::new(
             policy.restore_session && snapshot.is_none(),
@@ -185,7 +190,7 @@ impl App {
                 pane_scrollbars: config.ui.pane_scrollbars,
             }
             .sole_pane_size();
-            let (ws, terminals, terminal_runtimes) = crate::persist::restore(
+            let restored = crate::persist::restore(
                 &snap,
                 history.as_ref(),
                 restore_rows,
@@ -198,16 +203,15 @@ impl App {
                 &render_notify,
                 &render_dirty,
             );
-            restored_terminals = terminals;
-            restored_terminal_runtimes = terminal_runtimes.into();
-            if ws.is_empty() {
+            restored_terminals = restored.terminals;
+            restored_terminal_runtimes = restored.terminal_runtimes.into();
+            pane_history_carry = restored.history_carry;
+            if restored.workspaces.is_empty() {
                 crate::logging::session_restored(0, "empty");
                 (Vec::new(), None, 0)
             } else {
-                crate::logging::session_restored(ws.len(), "ok");
-                let active = snap.active.filter(|&i| i < ws.len());
-                let selected = snap.selected.min(ws.len().saturating_sub(1));
-                (ws, active, selected)
+                crate::logging::session_restored(restored.workspaces.len(), "ok");
+                (restored.workspaces, restored.active, restored.selected)
             }
         } else {
             (Vec::new(), None, 0)
@@ -246,6 +250,7 @@ impl App {
                 pane_infos: Vec::new(),
             },
             outer_terminal_focus: None,
+            tab_viewer: state::TabViewer::default(),
             headless_size: config.headless_size(),
             sidebar_agents: config.ui.sidebar.agents.clone(),
             sidebar_spaces: config.ui.sidebar.spaces.clone(),
@@ -317,6 +322,7 @@ impl App {
             next_tab_bar_datetime_refresh: None,
             window_title_template: None,
             persist_pane_history: config.experimental.pane_history,
+            pane_history_carry,
             last_render_at: None,
             last_presentation_at: None,
             api_rx,
@@ -1342,6 +1348,11 @@ mod tests {
             serde_json::from_str(&response).expect("test precondition");
         assert_eq!(response["error"]["code"], "agent_start_input_failed");
         assert_eq!(app.state.terminals[&terminal_id].agent_name, None);
+        // A rejected write must not leave a managed launch behind: no phase
+        // that would block renames or prompts, no kind that marks it busy.
+        assert!(!app.state.terminals[&terminal_id].managed_agent_launch_pending());
+        assert_eq!(app.state.terminals[&terminal_id].managed_agent_kind(), None);
+        assert!(!app.state.terminals[&terminal_id].is_agent_terminal());
         assert!(
             app.state.terminals[&terminal_id]
                 .persisted_agent_session

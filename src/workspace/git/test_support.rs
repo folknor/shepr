@@ -98,6 +98,21 @@ pub(super) fn write_fake_tracked_repo(root: &Path) {
     .expect("test precondition");
 }
 
+/// The Git space production derives for `cwd`: the `space` a branch-only
+/// status refresh reports, the same call the background refresh makes.
+pub(super) fn live_git_space(cwd: &Path) -> Option<crate::workspace::GitSpaceMetadata> {
+    super::status::git_status_snapshot_for_cwd_with_demand(
+        cwd,
+        None,
+        super::status::GitStatusRefreshDemand {
+            branch: true,
+            ahead_behind: false,
+        },
+    )
+    .0
+    .space
+}
+
 pub(super) fn run_git(cwd: &Path, args: &[&str]) {
     let output = std::process::Command::new("git")
         .arg("-C")

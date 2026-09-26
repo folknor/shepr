@@ -3688,6 +3688,64 @@ fn terminal_attach_detach_sends_shutdown_before_removal() {
 }
 
 #[test]
+fn terminal_attach_is_told_about_rejected_pastes_and_dropped_input_once() {
+    with_terminal_session_test_server(|server, _terminal_id, terminal_id_string, _| {
+        let control_rx = connect_pending_terminal_client_with_control_rx(server, 7);
+        assert!(
+            server.handle_server_event(ServerEvent::ClientAttachTerminal {
+                client_id: 7,
+                terminal_id: terminal_id_string.clone(),
+                takeover: false,
+            })
+        );
+        let notices = || {
+            std::iter::from_fn(|| {
+                control_rx
+                    .recv_timeout(std::time::Duration::from_millis(300))
+                    .ok()
+            })
+            .map(read_server_message)
+            .filter_map(|message| match message {
+                ServerMessage::DirectTerminalNotice { message } => Some(message),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+        };
+
+        // Every rejected paste is its own user action and is reported.
+        for _ in 0..2 {
+            server.handle_server_event(ServerEvent::ClientPasteRejected {
+                client_id: 7,
+                size: 2_000_000,
+                max: 1_048_576,
+            });
+        }
+        let pastes = notices();
+        assert_eq!(pastes.len(), 2);
+        assert!(pastes[0].starts_with("Paste rejected"));
+
+        // Dropped input is reported once until input gets through again.
+        server.report_terminal_attach_input(7, AttachInputDelivery::Dropped);
+        server.report_terminal_attach_input(7, AttachInputDelivery::Dropped);
+        server.report_terminal_attach_input(7, AttachInputDelivery::Failed);
+        let dropped = notices();
+        assert_eq!(dropped.len(), 1);
+        assert!(dropped[0].contains(&terminal_id_string));
+        server.report_terminal_attach_input(7, AttachInputDelivery::Delivered);
+        server.report_terminal_attach_input(7, AttachInputDelivery::Dropped);
+        assert_eq!(
+            notices().len(),
+            1,
+            "a new streak of drops is reported again"
+        );
+        assert!(
+            server.clients.contains_key(&7),
+            "notices never end the attach"
+        );
+    });
+}
+
+#[test]
 fn unchanged_git_refresh_does_not_request_headless_render() {
     let mut server = test_headless_server();
     server.app.git_refresh_in_flight = true;
@@ -3948,7 +4006,7 @@ fn client_socket_is_owner_only_from_the_moment_it_is_reachable() {
 }
 
 #[tokio::test]
-async fn host_shutdown_freeze_thaws_after_grace_without_a_monitor() {
+async fn host_shutdown_freeze_waits_for_monitor_cancellation() {
     let mut server = test_headless_server();
     server
         .host_shutdown_requested
@@ -3957,14 +4015,19 @@ async fn host_shutdown_freeze_thaws_after_grace_without_a_monitor() {
     server.sync_host_shutdown_freeze(warned_at);
     assert!(server.host_shutdown_freeze.is_some());
 
-    server.sync_host_shutdown_freeze(warned_at + lifecycle::HOST_SHUTDOWN_CANCEL_GRACE / 2);
+    server.sync_host_shutdown_freeze(warned_at + Duration::from_secs(30));
     assert!(server.host_shutdown_freeze.is_some());
     assert!(server.host_shutdown_requested.load(Ordering::Acquire));
 
-    server.sync_host_shutdown_freeze(warned_at + lifecycle::HOST_SHUTDOWN_CANCEL_GRACE);
+    server.sync_host_shutdown_freeze(warned_at + Duration::from_secs(60));
+    assert!(server.host_shutdown_freeze.is_some());
+    server
+        .host_shutdown_requested
+        .store(false, Ordering::Release);
+    server.sync_host_shutdown_freeze(warned_at + Duration::from_secs(61));
     assert!(server.host_shutdown_freeze.is_none());
     assert!(!server.host_shutdown_requested.load(Ordering::Acquire));
-    // No monitor ran before the warning, so none is started by the thaw.
+    // No monitor ran before the warning, so none was started by the thaw.
     assert!(server.host_shutdown_monitor.is_none());
 }
 

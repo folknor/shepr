@@ -21,6 +21,20 @@ pub(crate) fn accept_pending_client_connections(
         }
         match listener.accept() {
             Ok(stream) => {
+                // The socket file is owner-only; this is the second check,
+                // for a socket whose mode was loosened or a path bound in a
+                // shared directory. Dropping the stream closes it.
+                match crate::ipc::peer_is_same_user(&stream) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        warn!("client connection from another user refused");
+                        continue;
+                    }
+                    Err(err) => {
+                        warn!(err = %err, "client peer credentials unavailable; refused");
+                        continue;
+                    }
+                }
                 let client_id = *next_client_id;
                 *next_client_id = next_client_id.saturating_add(1);
 

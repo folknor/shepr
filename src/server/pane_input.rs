@@ -376,6 +376,15 @@ fn apply_client_pane_input_event(
         return send_input(runtime, Bytes::from(bytes), "mouse input");
     }
 
+    if let ClientPaneInputEvent::TextCommit(text) = event {
+        runtime.scroll_reset();
+        return send_input(
+            runtime,
+            Bytes::copy_from_slice(text.as_bytes()),
+            "text input",
+        );
+    }
+
     match event.to_raw_input_event() {
         crate::raw_input::RawInputEvent::Key(key) => {
             let key_event = key.as_key_event();
@@ -403,14 +412,6 @@ fn apply_client_pane_input_event(
                 return Ok(());
             }
             send_input(runtime, Bytes::from(bytes), "key input")
-        }
-        crate::raw_input::RawInputEvent::Text(text) => {
-            runtime.scroll_reset();
-            send_input(
-                runtime,
-                Bytes::copy_from_slice(text.as_str().as_bytes()),
-                "text input",
-            )
         }
         crate::raw_input::RawInputEvent::Paste(text) => {
             runtime.scroll_reset();

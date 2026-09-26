@@ -849,14 +849,6 @@ impl PaneRuntimeIo {
         }
     }
 
-    fn foreground_process_group_id(&self) -> Option<u32> {
-        match self {
-            PaneRuntimeIo::Actor(actor) => actor.foreground_process_group_id(),
-            #[cfg(test)]
-            PaneRuntimeIo::TestChannel { .. } => None,
-        }
-    }
-
     fn resize(
         &self,
         rows: u16,
@@ -1006,11 +998,13 @@ impl Drop for PaneTeardownInFlight {
 /// closed because its child exited, the leader is long reaped.
 ///
 /// Returns at once. The leader, if still running, is sent SIGHUP here through
-/// its pidfd; finding the other members (a `/proc` scan) and the
+/// its process handle; finding the other members (a `/proc` scan) and the
 /// SIGHUP/SIGTERM/SIGKILL escalation with its grace periods run on a
 /// background thread, so closing a workspace never stalls the caller for
-/// them. Every signal goes through a pidfd, so a pid the kernel has handed to
-/// an unrelated process is never signalled.
+/// them. Every signal goes through a `platform::ProcessHandle` (a pidfd, or
+/// on kernels without pidfds a pid checked against its start time right
+/// before the kill), so a pid the kernel has handed to an unrelated process
+/// is not signalled.
 fn shutdown_pane_processes(
     pane_id: PaneId,
     session_id: u32,
@@ -1453,7 +1447,7 @@ impl PaneRuntime {
         if session_leader.is_none() {
             warn!(
                 pane = pane_id.raw(),
-                "no pidfd for the pane's child; closing the pane cannot signal it directly"
+                "no process handle for the pane's child; closing the pane cannot signal it directly"
             );
         }
         {
@@ -1516,6 +1510,13 @@ impl PaneRuntime {
                 let result = terminal.process_pty_bytes(pane_id, shell_pid, bytes);
                 content_seq.fetch_add(1, Ordering::Release);
                 drop(_content_write_guard);
+                if result.default_color_owner_pending {
+                    terminal.resolve_default_color_owner(
+                        pane_id,
+                        shell_pid,
+                        result.default_color_generation,
+                    );
+                }
                 observe_detection_content_change(bytes, &detection_content_seq);
                 let title_requested =
                     result.terminal_title_changed && render_dirty.request_terminal_title(pane_id);
@@ -1562,6 +1563,13 @@ impl PaneRuntime {
                             );
                             content_seq.fetch_add(1, Ordering::Release);
                             drop(_content_write_guard);
+                            if result.default_color_owner_pending {
+                                terminal.resolve_default_color_owner(
+                                    pane_id,
+                                    child_pid.load(Ordering::Acquire),
+                                    result.default_color_generation,
+                                );
+                            }
                             if result.request_render {
                                 detection_content_seq.fetch_add(1, Ordering::AcqRel);
                             }
@@ -2310,17 +2318,12 @@ impl PaneRuntime {
         self.terminal.recent_unwrapped_text_snapshot(lines)
     }
 
-    pub fn recent_unwrapped_ansi(&self, lines: usize) -> String {
-        self.terminal.recent_unwrapped_ansi(lines)
-    }
-
     pub(crate) fn recent_unwrapped_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
         self.terminal.recent_unwrapped_ansi_snapshot(lines)
     }
 
     pub fn snapshot_history(&self) -> Option<String> {
-        let ansi = self.recent_unwrapped_ansi(usize::MAX);
-        (!ansi.trim().is_empty()).then_some(ansi)
+        self.terminal.primary_history_ansi()
     }
 
     pub fn extract_selection(&self, selection: &crate::selection::Selection) -> Option<String> {
@@ -2400,7 +2403,8 @@ impl PaneRuntime {
     fn paste_payload(&self, text: String) -> Bytes {
         let bracketed = self.bracketed_paste_enabled();
         let payload = if bracketed {
-            format!("\x1b[200~{text}\x1b[201~")
+            let safe = text.replace("\x1b[201~", "").replace("\x1b[200~", "");
+            format!("\x1b[200~{safe}\x1b[201~")
         } else {
             text
         };
@@ -2536,8 +2540,8 @@ impl PaneRuntime {
 
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
         let leader_cwd = self
-            .io
-            .foreground_process_group_id()
+            .child_pid()
+            .and_then(crate::platform::foreground_process_group_id)
             .and_then(usable_process_cwd);
         leader_cwd.or_else(|| self.cwd())
     }
@@ -2545,18 +2549,17 @@ impl PaneRuntime {
     /// Get the current working directory of the process group controlling the pane PTY.
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
         let pid = self.child_pid.load(Ordering::Acquire);
-        let shell_cwd = absolute_process_cwd(pid);
-        let foreground_pgid = self
-            .io
-            .foreground_process_group_id()
-            .or_else(|| crate::platform::foreground_process_group_id(pid));
+        let foreground_pgid = crate::platform::foreground_process_group_id(pid);
         let leader_cwd = foreground_pgid.and_then(absolute_process_cwd);
 
         // The group leader's cwd is authoritative (issue #3270): a helper
         // process that chdirs elsewhere inside the same foreground group
         // must not override it. Scan other members only when the leader's
         // cwd cannot be read at all.
-        leader_cwd.or_else(|| foreground_member_cwd_different_from_shell(pid, shell_cwd.as_ref()))
+        leader_cwd.or_else(|| {
+            let shell_cwd = absolute_process_cwd(pid);
+            foreground_member_cwd_different_from_shell(pid, shell_cwd.as_ref())
+        })
     }
 }
 
@@ -3019,6 +3022,27 @@ mod tests {
         *runtime.reported_cwd.lock().expect("test precondition") = Some(cwd.clone());
 
         assert_eq!(runtime.follow_cwd(), Some(cwd));
+    }
+
+    #[tokio::test]
+    async fn bracketed_paste_neutralizes_embedded_markers() {
+        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(b"\x1b[?2004h");
+        let payload = runtime.paste_payload("before\x1b[201~middle\x1b[200~after".into());
+        assert_eq!(payload.as_ref(), b"\x1b[200~beforemiddleafter\x1b[201~");
+    }
+
+    #[tokio::test]
+    async fn alternate_screen_does_not_replace_primary_saved_history() {
+        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(b"primary history");
+        assert!(
+            runtime
+                .snapshot_history()
+                .is_some_and(|text| text.contains("primary history"))
+        );
+        runtime.test_process_pty_bytes(b"\x1b[?1049halt frame");
+        assert_eq!(runtime.snapshot_history(), None);
     }
 
     #[test]

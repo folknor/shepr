@@ -127,7 +127,6 @@ pub(crate) struct SpaceTokenContext<'a> {
     pub(crate) state_text: &'a str,
     pub(crate) ahead_behind: Option<(usize, usize)>,
     pub(crate) tokens: &'a std::collections::HashMap<String, String>,
-    pub(crate) suppress_git_details: bool,
 }
 
 pub(crate) fn space_rows(
@@ -150,15 +149,13 @@ pub(crate) fn space_rows(
                         SpaceSidebarToken::Workspace => {
                             Some(ResolvedTokenKind::Workspace(context.workspace.to_string()))
                         }
-                        SpaceSidebarToken::Branch if !context.suppress_git_details => context
+                        SpaceSidebarToken::Branch => context
                             .branch
                             .map(|branch| ResolvedTokenKind::Branch(branch.to_string())),
-                        SpaceSidebarToken::Branch => None,
-                        SpaceSidebarToken::GitStatus if !context.suppress_git_details => context
+                        SpaceSidebarToken::GitStatus => context
                             .ahead_behind
                             .filter(|(ahead, behind)| *ahead > 0 || *behind > 0)
                             .map(|(ahead, behind)| ResolvedTokenKind::GitStatus { ahead, behind }),
-                        SpaceSidebarToken::GitStatus => None,
                         SpaceSidebarToken::Custom(name) => context
                             .tokens
                             .get(name)
@@ -334,7 +331,6 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
                     branch: None,
                     state_text: "working",
                     ahead_behind: None,
-                    suppress_git_details: false,
                     tokens: &entry.tokens,
                 },
             );
@@ -384,7 +380,6 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     branch: None,
                     state_text: "working",
                     ahead_behind: None,
-                    suppress_git_details: false,
                     tokens: &entry.tokens,
                 },
             );
@@ -542,29 +537,6 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
     }
 
     #[test]
-    fn grouped_children_suppress_all_builtin_git_details() {
-        let config = SpacesSidebarConfig::default();
-
-        assert_eq!(
-            space_rows(
-                &config,
-                &SpaceTokenContext {
-                    workspace: "feature",
-                    branch: Some("worktree/feature"),
-                    state_text: "idle",
-                    ahead_behind: Some((2, 1)),
-                    tokens: &std::collections::HashMap::new(),
-                    suppress_git_details: true,
-                },
-            ),
-            vec![vec![
-                ResolvedToken::unstyled(ResolvedTokenKind::StateIcon),
-                ResolvedToken::unstyled(ResolvedTokenKind::Workspace("feature".into())),
-            ]]
-        );
-    }
-
-    #[test]
     fn workspace_custom_token_can_replace_git_specific_details() {
         let tokens = std::collections::HashMap::from([("jj_status".into(), "2 changes".into())]);
         let config = SpacesSidebarConfig {
@@ -581,7 +553,6 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     state_text: "idle",
                     ahead_behind: None,
                     tokens: &tokens,
-                    suppress_git_details: false,
                 },
             ),
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Custom(

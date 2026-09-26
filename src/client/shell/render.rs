@@ -37,6 +37,9 @@ pub(super) fn render_mode_bar(
     keybinds: &LiveKeybindConfig,
     palette: &Palette,
 ) -> Option<Rect> {
+    // The returned bar is copied out of the composed frame by cell index, so it must lie
+    // inside the buffer: clip the area first.
+    let pane_area = pane_area.intersection(buffer.area);
     if (mode == ClientShellMode::Terminal && endpoint_error.is_none()) || pane_area.is_empty() {
         return None;
     }
@@ -48,8 +51,10 @@ pub(super) fn render_mode_bar(
         1,
     );
     let base = Style::default().fg(palette.overlay0).bg(palette.panel_bg);
-    for x in bar.x..bar.x + bar.width {
-        buffer[(x, bar.y)].set_symbol(" ").set_style(base);
+    for x in bar.x..bar.right() {
+        if let Some(cell) = buffer.cell_mut((x, bar.y)) {
+            cell.set_symbol(" ").set_style(base);
+        }
     }
 
     let key = Style::default()
@@ -149,9 +154,9 @@ pub(super) fn render_mode_bar(
                         field,
                         &prompt.query,
                         Style::default().fg(palette.text).bg(palette.panel_bg),
-                    ) {
-                        buffer[(cursor.x, cursor.y)]
-                            .set_style(Style::default().fg(palette.panel_bg).bg(palette.text));
+                    ) && let Some(cell) = buffer.cell_mut((cursor.x, cursor.y))
+                    {
+                        cell.set_style(Style::default().fg(palette.panel_bg).bg(palette.text));
                     }
                     if footer_width > 0 {
                         buffer.set_string(bar.right() - footer_width, bar.y, footer, base);
@@ -192,7 +197,8 @@ pub(super) fn render_mode_bar(
                     ]);
                 }
             }
-            ClientShellMode::Terminal => unreachable!(),
+            // Terminal mode without an error returned at the top.
+            ClientShellMode::Terminal => return None,
         }
     }
 
@@ -321,19 +327,6 @@ pub(super) fn put_right_text(buffer: &mut Buffer, area: Rect, y: u16, text: &str
         text,
         style,
     );
-}
-
-pub(super) fn put_segment(
-    buffer: &mut Buffer,
-    x: u16,
-    y: u16,
-    right: u16,
-    text: &str,
-    style: Style,
-) -> u16 {
-    let width = display_width(text).min(right.saturating_sub(x));
-    put_text(buffer, x, y, width, text, style);
-    x.saturating_add(width)
 }
 
 pub(super) fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Style) {

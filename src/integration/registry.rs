@@ -26,6 +26,7 @@ pub(crate) fn integration_target_label(
         crate::api::schema::IntegrationTarget::Mastracode => "mastracode",
         crate::api::schema::IntegrationTarget::AntigravityCli => "antigravity-cli",
         crate::api::schema::IntegrationTarget::Grok => "grok",
+        crate::api::schema::IntegrationTarget::Letta => "letta",
     }
 }
 
@@ -49,7 +50,7 @@ fn integration_specs() -> [(
     crate::api::schema::IntegrationTarget,
     io::Result<PathBuf>,
     u32,
-); 17] {
+); 18] {
     [
         (
             crate::api::schema::IntegrationTarget::Pi,
@@ -141,6 +142,11 @@ fn integration_specs() -> [(
             crate::api::schema::IntegrationTarget::Grok,
             grok_dir().map(|dir| dir.join("hooks").join(super::GROK_HOOK_INSTALL_NAME)),
             super::GROK_INTEGRATION_VERSION,
+        ),
+        (
+            crate::api::schema::IntegrationTarget::Letta,
+            letta_dir().map(|dir| dir.join("hooks").join(super::LETTA_HOOK_INSTALL_NAME)),
+            super::LETTA_INTEGRATION_VERSION,
         ),
     ]
 }
@@ -386,6 +392,12 @@ fn hook_registration_is_current(
             HooksRoot::HooksKey,
             &hook_event_commands(hook_path, &super::QWEN_HOOK_EVENTS),
         ),
+        Target::Letta => json_in(
+            2,
+            "settings.json",
+            HooksRoot::HooksKey,
+            &[("SessionStart", hook_command(hook_path, Some("session")))],
+        ),
         Target::Cursor => json_in(
             1,
             "hooks.json",
@@ -479,35 +491,6 @@ pub(crate) fn integration_status_at(
         installed_version,
         expected_version,
     }
-}
-
-/// Letta is an experimental CLI-only target outside `IntegrationTarget`.
-pub(crate) fn experimental_letta_integration_status() -> Option<super::ExperimentalIntegrationStatus>
-{
-    let path = letta_dir()
-        .ok()?
-        .join("hooks")
-        .join(super::LETTA_HOOK_INSTALL_NAME);
-    let (mut state, installed_version) =
-        integration_state_for_path(&path, super::LETTA_INTEGRATION_VERSION);
-    if state == super::IntegrationStatusKind::Current
-        && !ancestor(&path, 2).is_some_and(|dir| {
-            json_hook_commands_registered(
-                &dir.join("settings.json"),
-                HooksRoot::HooksKey,
-                &[("SessionStart", hook_command(&path, Some("session")))],
-            )
-        })
-    {
-        state = super::IntegrationStatusKind::Outdated;
-    }
-    Some(super::ExperimentalIntegrationStatus {
-        label: "letta",
-        path,
-        state,
-        installed_version,
-        expected_version: super::LETTA_INTEGRATION_VERSION,
-    })
 }
 
 pub(crate) fn parse_integration_version(content: &str) -> Option<u32> {
@@ -729,6 +712,48 @@ mod registration_tests {
         assert!(result.is_err());
         assert!(!copilot.join("hooks").exists());
         let _ = fs::remove_dir_all(copilot);
+    }
+
+    #[test]
+    fn letta_is_listed_and_needs_its_settings_entry() {
+        let dir = base("letta");
+        let hook = dir
+            .join("hooks")
+            .join(super::super::LETTA_HOOK_INSTALL_NAME);
+        write_current_hook(&hook);
+        assert_eq!(
+            state(IntegrationTarget::Letta, &hook),
+            IntegrationStatusKind::Outdated
+        );
+        let settings = serde_json::json!({
+            "hooks": { "SessionStart": [
+                { "hooks": [{ "type": "command", "command": hook_command(&hook, Some("session")) }] }
+            ] }
+        });
+        fs::write(dir.join("settings.json"), settings.to_string()).expect("test precondition");
+        assert_eq!(
+            state(IntegrationTarget::Letta, &hook),
+            IntegrationStatusKind::Current
+        );
+        fs::write(dir.join("settings.json"), "{\"hooks\":{}}").expect("test precondition");
+        assert_eq!(
+            state(IntegrationTarget::Letta, &hook),
+            IntegrationStatusKind::Outdated
+        );
+        assert_eq!(integration_target_label(IntegrationTarget::Letta), "letta");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn every_target_has_exactly_one_status_spec() {
+        let specs = integration_specs();
+        for target in IntegrationTarget::ALL {
+            assert_eq!(
+                specs.iter().filter(|(spec, _, _)| *spec == target).count(),
+                1,
+                "{target:?}"
+            );
+        }
     }
 
     #[test]

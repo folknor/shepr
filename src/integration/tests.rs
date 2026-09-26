@@ -3047,6 +3047,114 @@ fn kimi_hook_reports_state_when_the_payload_is_not_a_json_object() {
     let _ = fs::remove_dir_all(base);
 }
 
+/// Runs a session-only python hook asset with `payload` on stdin. Returns the
+/// hook's exit success, its stderr, and the request it sent to a stand-in
+/// server socket (if any).
+#[cfg(unix)]
+// The `expect` calls below are test preconditions (fixture setup).
+#[allow(clippy::unwrap_in_result)]
+fn run_session_hook(base: &Path, asset: &str, payload: &[u8]) -> (bool, Vec<u8>, Option<String>) {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    use std::process::{Command, Stdio};
+
+    fs::create_dir_all(base).expect("test precondition");
+    let hook = base.join("hook.sh");
+    fs::write(&hook, asset).expect("test precondition");
+    let socket_path = base.join("s.sock");
+    let listener = UnixListener::bind(&socket_path).expect("test precondition");
+    listener.set_nonblocking(true).expect("test precondition");
+
+    let mut child = Command::new("sh")
+        .arg(&hook)
+        .arg("session")
+        .env("SHEPR_ENV", "1")
+        .env("SHEPR_PANE_ID", "w1:p2")
+        .env("SHEPR_SOCKET_PATH", &socket_path)
+        .env("TMPDIR", base)
+        // Inherited agent variables change what these hooks report.
+        .env_remove("CURSOR_VERSION")
+        .env_remove("CODEX_THREAD_ID")
+        .env_remove("GROK_SESSION_ID")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("test precondition");
+    child
+        .stdin
+        .take()
+        .expect("test precondition")
+        .write_all(payload)
+        .expect("test precondition");
+    let output = child.wait_with_output().expect("test precondition");
+
+    let request = listener.accept().ok().map(|(mut stream, _)| {
+        stream.set_nonblocking(false).expect("test precondition");
+        let mut request = String::new();
+        stream
+            .read_to_string(&mut request)
+            .expect("test precondition");
+        request
+    });
+    (output.status.success(), output.stderr, request)
+}
+
+#[cfg(unix)]
+#[test]
+fn session_hooks_ignore_non_object_payloads_quietly() {
+    let _lock = integration_env_lock();
+    if !python3_available() {
+        eprintln!("skipping: python3 is not installed");
+        return;
+    }
+    let base = unique_base();
+    let hooks: [(&str, &str, &[u8]); 4] = [
+        (
+            "claude",
+            CLAUDE_HOOK_ASSET,
+            br#"{"hook_event_name":"SessionStart","session_id":"abc"}"#,
+        ),
+        (
+            "codex",
+            CODEX_HOOK_ASSET,
+            br#"{"hook_event_name":"SessionStart","session_id":"abc","transcript_path":"/t"}"#,
+        ),
+        (
+            "grok",
+            GROK_HOOK_ASSET,
+            br#"{"hook_event_name":"session_start","session_id":"abc"}"#,
+        ),
+        ("droid", DROID_HOOK_ASSET, br#"{"session_id":"abc"}"#),
+    ];
+    let non_objects: [&[u8]; 4] = [b"[1, 2]", b"\"text\"", b"null", b"7"];
+
+    for (name, asset, valid) in hooks {
+        for (index, payload) in non_objects.into_iter().enumerate() {
+            let (success, stderr, request) =
+                run_session_hook(&base.join(format!("{name}-{index}")), asset, payload);
+            let shown = String::from_utf8_lossy(payload);
+            assert!(success, "{name} hook failed on {shown}");
+            assert!(
+                stderr.is_empty(),
+                "{name} hook wrote to stderr on {shown}: {}",
+                String::from_utf8_lossy(&stderr)
+            );
+            assert!(request.is_none(), "{name} hook reported on {shown}");
+        }
+
+        let (success, _, request) =
+            run_session_hook(&base.join(format!("{name}-valid")), asset, valid);
+        assert!(success, "{name} hook failed on a valid payload");
+        let request = request.unwrap_or_else(|| panic!("{name} hook sent no session report"));
+        let request: Value = serde_json::from_str(request.trim()).expect("test precondition");
+        assert_eq!(request["method"], "pane.report_agent_session");
+        assert_eq!(request["params"]["agent_session_id"], "abc");
+    }
+
+    let _ = fs::remove_dir_all(base);
+}
+
 #[test]
 fn install_letta_errors_when_config_dir_missing() {
     let _lock = integration_env_lock();

@@ -58,22 +58,20 @@ impl<'de> Deserialize<'de> for RightClickPassthroughModifierConfig {
         let value = String::deserialize(deserializer)?;
         parse_right_click_passthrough_modifier(&value)
             .map(Self)
-            .ok_or_else(|| {
-                de::Error::custom(
-                    "right_click_passthrough_modifier must be empty, off, none, disabled, ctrl/control, alt/option/meta, cmd/command/super, hyper, or a + separated combination without shift",
-                )
-            })
+            .map_err(de::Error::custom)
     }
 }
 
-fn parse_right_click_passthrough_modifier(value: &str) -> Option<Option<KeyModifiers>> {
+const RIGHT_CLICK_PASSTHROUGH_MODIFIER_VALUES: &str = "right_click_passthrough_modifier must be empty, off, none, disabled, ctrl/control, alt/option/meta, or ctrl+alt";
+
+fn parse_right_click_passthrough_modifier(value: &str) -> Result<Option<KeyModifiers>, String> {
     let trimmed = value.trim();
     if trimmed.is_empty()
         || trimmed.eq_ignore_ascii_case("off")
         || trimmed.eq_ignore_ascii_case("none")
         || trimmed.eq_ignore_ascii_case("disabled")
     {
-        return Some(None);
+        return Ok(None);
     }
 
     let mut modifiers = KeyModifiers::empty();
@@ -85,15 +83,30 @@ fn parse_right_click_passthrough_modifier(value: &str) -> Option<Option<KeyModif
             // Meta in the Alt bit, so crossterm's META flag never appears on
             // a mouse event and a META mapping could never match.
             "alt" | "option" | "meta" => KeyModifiers::ALT,
-            "cmd" | "command" | "super" => KeyModifiers::SUPER,
-            "hyper" => KeyModifiers::HYPER,
-            "shift" => return None,
-            _ => return None,
+            // A mouse report's button byte has bits for shift, alt and ctrl
+            // only, so a super or hyper requirement could never be met.
+            "cmd" | "command" | "super" | "hyper" => {
+                return Err(format!(
+                    "right_click_passthrough_modifier cannot use {token:?}: terminal mouse reports only carry ctrl and alt"
+                ));
+            }
+            // Shift is left out on purpose: terminals commonly reserve
+            // Shift+mouse for their own selection.
+            "shift" => {
+                return Err(format!(
+                    "{RIGHT_CLICK_PASSTHROUGH_MODIFIER_VALUES}; shift is unsupported"
+                ));
+            }
+            _ => return Err(RIGHT_CLICK_PASSTHROUGH_MODIFIER_VALUES.to_owned()),
         };
         modifiers |= modifier;
     }
 
-    (!modifiers.is_empty()).then_some(Some(modifiers))
+    if modifiers.is_empty() {
+        Err(RIGHT_CLICK_PASSTHROUGH_MODIFIER_VALUES.to_owned())
+    } else {
+        Ok(Some(modifiers))
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -643,12 +656,17 @@ impl PaneBordersConfig {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
+    /// Expanded sidebar width (columns). Default: 26. While unset, the client
+    /// shell remembers a width set by dragging the sidebar divider; once set,
+    /// it wins at every launch.
     pub sidebar_width: u16,
     /// Minimum sidebar width (columns) when expanded. Default: 18.
     pub sidebar_min_width: u16,
     /// Maximum sidebar width (columns) when expanded. Default: 36.
     pub sidebar_max_width: u16,
-    /// Start with the sidebar collapsed. Default: false.
+    /// Start with the sidebar collapsed. Default: false. While unset, the
+    /// client shell remembers the last collapse toggle; once set, it wins at
+    /// every launch.
     pub sidebar_start_collapsed: bool,
     /// Collapsed sidebar presentation. Default: compact.
     pub sidebar_collapsed_mode: SidebarCollapsedModeConfig,
@@ -694,7 +712,9 @@ pub struct UiConfig {
     /// Format for the outer terminal window title. Empty leaves the title alone.
     /// Default: "{hostname}: {workspace}".
     pub window_title: String,
-    /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
+    /// Agent sidebar ordering: "spaces" or "priority". Default: "spaces".
+    /// While unset, the client shell remembers the last toggle of the agent
+    /// panel's sort control; once set, it wins at every launch.
     pub agent_panel_sort: AgentPanelSortConfig,
     /// Agent status indicator style. Saved values are "dots" or "symbols". Default: "dots".
     pub status_indicators: StatusIndicatorStyle,
@@ -703,6 +723,10 @@ pub struct UiConfig {
     /// Accent color for highlights, borders, and navigation UI.
     /// Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250)).
     pub accent: String,
+    /// Keys present under `[ui]` in the loaded config file, filled by
+    /// `Config::load`. Empty for a config built any other way.
+    #[serde(skip)]
+    pub(crate) user_fields: BTreeSet<String>,
 }
 
 /// Cursor shape (DECSCUSR) used for the forced IME anchor.
@@ -776,8 +800,9 @@ pub struct ExperimentalConfig {
     /// Persist pane screen history to session-history.json. Default: false.
     pub pane_history: bool,
     /// Expose the focused pane's cursor anchor to the outer terminal even when
-    /// the pane requested `?25l`, so macOS native input methods keep tracking
-    /// the candidate window when TUIs paint their own cursor (Claude Code, pi,
+    /// the pane requested `?25l`, so an input method (fcitx5, ibus) that
+    /// places its candidate window at the terminal cursor keeps tracking the
+    /// input position when TUIs paint their own cursor (Claude Code, pi,
     /// codex, etc.). Default: false.
     ///
     /// When the pane reports no cursor position, falls back to the pane's
@@ -785,7 +810,7 @@ pub struct ExperimentalConfig {
     ///
     /// Trade-off when enabled: an extra hardware cursor will be visible in the
     /// outer terminal for apps that hide the cursor without painting a
-    /// replacement (vim normal mode, etc.). See #149.
+    /// replacement (vim normal mode, etc.).
     pub reveal_hidden_cursor_for_cjk_ime: bool,
     /// Restrict `reveal_hidden_cursor_for_cjk_ime` to focused panes whose
     /// detected agent matches one of these names (case-insensitive). Empty
@@ -892,11 +917,17 @@ impl Default for UiConfig {
             status_indicators: StatusIndicatorStyle::Dots,
             sidebar: SidebarConfig::default(),
             accent: "cyan".into(),
+            user_fields: BTreeSet::new(),
         }
     }
 }
 
 impl UiConfig {
+    /// Whether the config file set `[ui] <field>`, even to its default value.
+    pub(crate) fn is_user_configured(&self, field: &str) -> bool {
+        self.user_fields.contains(field)
+    }
+
     pub fn mouse_scroll_lines(&self) -> usize {
         self.mouse_scroll_lines
             .map(NonZeroUsize::get)
@@ -1269,11 +1300,9 @@ right_click_passthrough_modifier = "{value}"
             ("control", KeyModifiers::CONTROL),
             ("alt", KeyModifiers::ALT),
             ("option", KeyModifiers::ALT),
-            ("cmd", KeyModifiers::SUPER),
-            ("command", KeyModifiers::SUPER),
-            ("super", KeyModifiers::SUPER),
             ("meta", KeyModifiers::ALT),
-            ("hyper", KeyModifiers::HYPER),
+            ("ctrl+alt", KeyModifiers::CONTROL | KeyModifiers::ALT),
+            ("Control + Meta", KeyModifiers::CONTROL | KeyModifiers::ALT),
         ] {
             let toml = format!(
                 r#"
@@ -1288,16 +1317,25 @@ right_click_passthrough_modifier = "{value}"
                 "value {value:?} should parse"
             );
         }
+    }
 
-        let toml = r#"
+    #[test]
+    fn right_click_passthrough_modifier_rejects_modifiers_mouse_reports_cannot_carry() {
+        for value in ["cmd", "command", "super", "hyper", "cmd+alt", "ctrl+hyper"] {
+            let toml = format!(
+                r#"
 [ui]
-right_click_passthrough_modifier = "cmd+alt"
-"#;
-        let config: Config = toml::from_str(toml).expect("test precondition");
-        assert_eq!(
-            config.ui.right_click_passthrough_modifiers(),
-            Some(KeyModifiers::SUPER | KeyModifiers::ALT)
-        );
+right_click_passthrough_modifier = "{value}"
+"#
+            );
+            let error = toml::from_str::<Config>(&toml)
+                .expect_err("a modifier mouse reports cannot carry must be rejected")
+                .to_string();
+            assert!(
+                error.contains("only carry ctrl and alt"),
+                "value {value:?} gave {error}"
+            );
+        }
     }
 
     #[test]

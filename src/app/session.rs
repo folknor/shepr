@@ -54,6 +54,7 @@ impl App {
                 crate::persist::capture_pending_history(
                     &self.state.workspaces,
                     &self.terminal_runtimes,
+                    &self.pane_history_carry,
                 )
             });
             SessionSaveJob::Save { snapshot, history }

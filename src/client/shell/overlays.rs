@@ -177,35 +177,41 @@ fn panel(
     let border = Style::default().fg(c).bg(bg).remove_modifier(Modifier::DIM);
     for y in a.y..a.bottom() {
         for x in a.x..a.right() {
-            b[(x, y)].set_symbol(" ").set_style(background);
+            set_cell(b, x, y, " ", background);
         }
     }
     for x in a.x..a.right() {
-        b[(x, a.y)]
-            .set_symbol(if x == a.x {
-                "┌"
-            } else if x + 1 == a.right() {
-                "┐"
-            } else {
-                "─"
-            })
-            .set_style(border);
-        let y = a.bottom() - 1;
-        b[(x, y)]
-            .set_symbol(if x == a.x {
-                "└"
-            } else if x + 1 == a.right() {
-                "┘"
-            } else {
-                "─"
-            })
-            .set_style(border);
+        let top = if x == a.x {
+            "┌"
+        } else if x + 1 == a.right() {
+            "┐"
+        } else {
+            "─"
+        };
+        set_cell(b, x, a.y, top, border);
+        let bottom = if x == a.x {
+            "└"
+        } else if x + 1 == a.right() {
+            "┘"
+        } else {
+            "─"
+        };
+        set_cell(b, x, a.bottom() - 1, bottom, border);
     }
     for y in a.y + 1..a.bottom() - 1 {
-        b[(a.x, y)].set_symbol("│").set_style(border);
-        b[(a.right() - 1, y)].set_symbol("│").set_style(border);
+        set_cell(b, a.x, y, "│", border);
+        set_cell(b, a.right() - 1, y, "│", border);
     }
     Some(Rect::new(a.x + 1, a.y + 1, a.width - 2, a.height - 2))
+}
+
+/// Writes one cell, skipping positions outside the buffer. Menus are placed from pointer
+/// positions and popups from the frame size; `Buffer` indexing would panic on any rect that
+/// reaches past the frame.
+fn set_cell(b: &mut Buffer, x: u16, y: u16, symbol: &str, style: Style) {
+    if let Some(cell) = b.cell_mut((x, y)) {
+        cell.set_symbol(symbol).set_style(style);
+    }
 }
 fn popup(a: Rect, w: u16, h: u16) -> Option<Rect> {
     let w = w.min(a.width.saturating_sub(4));
@@ -825,14 +831,22 @@ fn render_help_overlay(
         && let Some(thumb) = crate::ui::scrollbar_thumb(metrics, track)
     {
         for y in track.y..track.bottom() {
-            b[(track.x, y)]
-                .set_symbol("▐")
-                .set_style(Style::default().fg(p.overlay0).bg(p.panel_bg));
+            set_cell(
+                b,
+                track.x,
+                y,
+                "▐",
+                Style::default().fg(p.overlay0).bg(p.panel_bg),
+            );
         }
         for y in thumb.top..thumb.top.saturating_add(thumb.len) {
-            b[(track.x, y)]
-                .set_symbol("▐")
-                .set_style(Style::default().fg(p.overlay1).bg(p.panel_bg));
+            set_cell(
+                b,
+                track.x,
+                y,
+                "▐",
+                Style::default().fg(p.overlay1).bg(p.panel_bg),
+            );
         }
     }
 

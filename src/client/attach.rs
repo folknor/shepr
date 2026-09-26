@@ -4,18 +4,64 @@ use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
 use crate::protocol::{AttachScrollDirection, AttachScrollSource, ClientMessage};
 
-pub(super) fn forward_input(write_stream: &mut super::endpoint::EndpointRegistry, data: &[u8]) {
+type KeyCombo = (KeyCode, KeyModifiers);
+
+/// What `forward_input` did with its bytes.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ForwardOutcome {
+    /// Queued for the server (a failed write surfaces through the registry).
+    Sent,
+    /// A bracketed paste over the server's per-message input limit, dropped
+    /// here. The caller owns telling the user.
+    PasteRejected { size: usize, max: usize },
+}
+
+impl ForwardOutcome {
+    /// The notice for a rejected paste, worded like the client shell's.
+    pub(super) fn notice(&self) -> Option<String> {
+        match self {
+            Self::Sent => None,
+            Self::PasteRejected { size, max } => Some(format!(
+                "Paste is {size} bytes; Shepr's limit is {max} bytes"
+            )),
+        }
+    }
+}
+
+pub(super) fn forward_input(
+    write_stream: &mut super::endpoint::EndpointRegistry,
+    data: &[u8],
+) -> ForwardOutcome {
     use super::endpoint::EndpointSendOutcome;
 
-    let oversized = data.len() > crate::protocol::MAX_INPUT_PAYLOAD;
+    let max = crate::protocol::MAX_INPUT_PAYLOAD;
+    let oversized = data.len() > max;
+    // A paste gets one limit whichever client it comes from. The server
+    // handles a complete bracketed paste in one input message as a paste,
+    // re-bracketed only if the pane enabled bracketed paste. Split across
+    // messages, the host's raw markers would reach a pane that never asked
+    // for them. The client shell rejects a paste over the same limit before
+    // sending it.
+    if oversized && crate::raw_input::is_complete_text_bracketed_paste(data) {
+        tracing::warn!(
+            size = data.len(),
+            max,
+            "paste over the input limit; not sending it"
+        );
+        return ForwardOutcome::PasteRejected {
+            size: data.len(),
+            max,
+        };
+    }
     let flush = |stream: &mut super::endpoint::EndpointRegistry| {
         stream.flush_active(std::time::Instant::now() + std::time::Duration::from_secs(5))
     };
-    // The endpoint writer has a bounded queue. Stream a large paste through
-    // it one frame at a time so splitting the frame does not simply overflow
-    // that queue a few chunks later.
+    // Other oversized input is plain bytes the server writes to the pane
+    // as-is, so it can be split. The endpoint writer has a bounded queue:
+    // stream it through one frame at a time so splitting does not simply
+    // overflow that queue a few chunks later.
     if oversized && flush(write_stream) == EndpointSendOutcome::NotSent {
-        return;
+        return ForwardOutcome::Sent;
     }
     for message in input_messages(data) {
         if write_stream.send(&message) == EndpointSendOutcome::NotSent {
@@ -25,6 +71,7 @@ pub(super) fn forward_input(write_stream: &mut super::endpoint::EndpointRegistry
             break;
         }
     }
+    ForwardOutcome::Sent
 }
 
 fn input_messages(data: &[u8]) -> impl Iterator<Item = ClientMessage> + '_ {
@@ -34,8 +81,111 @@ fn input_messages(data: &[u8]) -> impl Iterator<Item = ClientMessage> + '_ {
         })
 }
 
+/// The keys direct attach intercepts, from `keys.prefix` and `keys.detach`.
+///
+/// Prefix then a prefix-bound detach key (default `prefix+q`) detaches; a
+/// directly bound detach key detaches on its own; the prefix twice sends one
+/// literal prefix to the pane. Plain PageUp/PageDown and mouse input are
+/// handled separately, by `attach_scroll_action`.
+#[derive(Debug, Clone)]
+pub(super) struct AttachKeys {
+    prefix: KeyCombo,
+    detach_after_prefix: Vec<KeyCombo>,
+    detach_direct: Vec<KeyCombo>,
+    /// Byte forms of the keys above for coalesced legacy input, which is
+    /// scanned byte by byte. Only single C0 control bytes are matched outside
+    /// a pending prefix, so a scan can never fire inside an escape sequence.
+    legacy_prefix: Option<u8>,
+    legacy_detach_direct: Vec<u8>,
+    legacy_detach_after_prefix: Vec<Vec<u8>>,
+}
+
+impl AttachKeys {
+    pub(super) fn from_config(config: &crate::config::Config) -> Self {
+        let live = config.live_keybinds();
+        let mut detach_after_prefix = Vec::new();
+        let mut detach_direct = Vec::new();
+        for binding in &live.keybinds.detach.bindings {
+            if binding.trigger.is_prefix() {
+                detach_after_prefix.push(binding.trigger.combo());
+            } else {
+                detach_direct.push(binding.trigger.combo());
+            }
+        }
+        // With `keys.detach` unset the client shell has no detach key, but it
+        // still has its menus. Direct attach intercepts nothing else, so
+        // without a key the only way out would be to kill the host terminal.
+        if detach_after_prefix.is_empty() && detach_direct.is_empty() {
+            detach_after_prefix.push((KeyCode::Char('q'), KeyModifiers::NONE));
+        }
+        Self {
+            prefix: live.prefix,
+            legacy_prefix: legacy_control_byte(live.prefix),
+            legacy_detach_direct: detach_direct
+                .iter()
+                .filter_map(|combo| legacy_control_byte(*combo))
+                .collect(),
+            legacy_detach_after_prefix: detach_after_prefix
+                .iter()
+                .filter_map(|combo| legacy_key_bytes(*combo))
+                .collect(),
+            detach_after_prefix,
+            detach_direct,
+        }
+    }
+}
+
+impl Default for AttachKeys {
+    fn default() -> Self {
+        Self::from_config(&crate::config::Config::default())
+    }
+}
+
+/// The single C0 byte a legacy terminal sends for `combo`, if it has one.
+/// Escape (ctrl+[) is left out: it starts every escape sequence.
+fn legacy_control_byte(combo: KeyCombo) -> Option<u8> {
+    let (KeyCode::Char(ch), modifiers) = crate::config::normalize_key_combo(combo) else {
+        return None;
+    };
+    if modifiers != KeyModifiers::CONTROL {
+        return None;
+    }
+    match ch {
+        'a'..='z' => Some(ch as u8 & 0x1f),
+        ' ' | '@' => Some(0x00),
+        '\\' | ']' | '^' | '_' => Some(ch as u8 & 0x1f),
+        _ => None,
+    }
+}
+
+/// The bytes a legacy terminal sends for `combo`: its control byte, or the
+/// text of an unmodified or shifted character.
+fn legacy_key_bytes(combo: KeyCombo) -> Option<Vec<u8>> {
+    if let Some(byte) = legacy_control_byte(combo) {
+        return Some(vec![byte]);
+    }
+    let (KeyCode::Char(ch), modifiers) = crate::config::normalize_key_combo(combo) else {
+        return None;
+    };
+    let ch = if modifiers.is_empty() {
+        ch
+    } else if modifiers == KeyModifiers::SHIFT && ch.is_ascii_lowercase() {
+        ch.to_ascii_uppercase()
+    } else {
+        return None;
+    };
+    Some(ch.to_string().into_bytes())
+}
+
+fn matches_any(key: &crate::input::TerminalKey, combos: &[KeyCombo]) -> bool {
+    combos
+        .iter()
+        .any(|combo| crate::config::terminal_key_matches_combo(key, *combo))
+}
+
 #[derive(Debug, Default)]
 pub(super) struct AttachEscapeState {
+    keys: AttachKeys,
     pending_prefix: Option<Vec<u8>>,
 }
 
@@ -46,6 +196,10 @@ pub(super) enum AttachInputAction {
     Semantic(AttachSemanticAction),
     ForwardThenSemantic(Vec<u8>, AttachSemanticAction),
     Detach,
+    /// Forward the input that came before the detach key (text coalesced into
+    /// the same read, or a pending prefix a direct detach key cut short),
+    /// then detach.
+    ForwardThenDetach(Vec<u8>),
     None,
 }
 
@@ -68,14 +222,20 @@ pub(super) enum AttachSemanticAction {
 }
 
 impl AttachEscapeState {
+    /// An escape state intercepting the prefix and detach keys `config` sets.
+    pub(super) fn from_config(config: &crate::config::Config) -> Self {
+        Self {
+            keys: AttachKeys::from_config(config),
+            pending_prefix: None,
+        }
+    }
+
     pub(super) fn filter_input(
         &mut self,
         data: Vec<u8>,
         viewport_rows: u16,
         mouse_scroll_lines: usize,
     ) -> AttachInputAction {
-        const PREFIX: u8 = 0x02; // Ctrl+B
-
         if crate::raw_input::is_complete_text_bracketed_paste(&data) {
             return if let Some(prefix) = self.pending_prefix.take() {
                 AttachInputAction::ForwardPair(prefix, data)
@@ -85,23 +245,24 @@ impl AttachEscapeState {
         }
 
         if let Some(key) = single_attach_key(&data) {
-            let is_prefix = key.code == crossterm::event::KeyCode::Char('b')
-                && key.modifiers == crossterm::event::KeyModifiers::CONTROL;
-            let is_quit = key.code == crossterm::event::KeyCode::Char('q')
-                && key.modifiers.is_empty()
-                && key.kind == crossterm::event::KeyEventKind::Press;
+            let press = key.kind == KeyEventKind::Press;
+            let is_prefix = crate::config::terminal_key_matches_combo(&key, self.keys.prefix);
+            let is_direct_detach = press && matches_any(&key, &self.keys.detach_direct);
 
             if let Some(mut prefix) = self.pending_prefix.take() {
-                if is_prefix && key.kind != crossterm::event::KeyEventKind::Press {
+                if is_prefix && !press {
                     prefix.extend(data);
                     self.pending_prefix = Some(prefix);
                     return AttachInputAction::None;
                 }
-                if is_quit {
+                if press && matches_any(&key, &self.keys.detach_after_prefix) {
                     return AttachInputAction::Detach;
                 }
                 if is_prefix {
                     return AttachInputAction::Forward(data);
+                }
+                if is_direct_detach {
+                    return AttachInputAction::ForwardThenDetach(prefix);
                 }
                 if let Some(action) = attach_scroll_action(&data, viewport_rows, mouse_scroll_lines)
                 {
@@ -111,7 +272,10 @@ impl AttachEscapeState {
                 return AttachInputAction::Forward(prefix);
             }
 
-            if is_prefix && key.kind == crossterm::event::KeyEventKind::Press {
+            if is_direct_detach {
+                return AttachInputAction::Detach;
+            }
+            if is_prefix && press {
                 self.pending_prefix = Some(data);
                 return AttachInputAction::None;
             }
@@ -126,26 +290,45 @@ impl AttachEscapeState {
         }
 
         // The host framer normally supplies one complete event. Preserve the legacy
-        // byte path for coalesced plain input used by older terminals.
+        // byte path for coalesced plain input used by older terminals. Only a
+        // prefix and direct detach key with a C0 byte form are recognised here;
+        // any other prefix only works as a separate event.
+        let detach_with = |output: Vec<u8>| {
+            if output.is_empty() {
+                AttachInputAction::Detach
+            } else {
+                AttachInputAction::ForwardThenDetach(output)
+            }
+        };
         let mut output = Vec::with_capacity(data.len());
-        for byte in data {
-            if let Some(mut prefix) = self.pending_prefix.take() {
-                match byte {
-                    b'q' => return AttachInputAction::Detach,
-                    PREFIX => output.extend(prefix),
-                    other => {
-                        prefix.push(other);
-                        output.extend(prefix);
-                    }
+        let mut rest = data.as_slice();
+        while let Some(&byte) = rest.first() {
+            if let Some(prefix) = self.pending_prefix.take() {
+                if self
+                    .keys
+                    .legacy_detach_after_prefix
+                    .iter()
+                    .any(|detach| rest.starts_with(detach))
+                {
+                    return detach_with(output);
+                }
+                // Prefix twice sends one literal prefix.
+                output.extend(prefix);
+                if self.keys.legacy_prefix == Some(byte) {
+                    rest = &rest[1..];
                 }
                 continue;
             }
 
-            if byte == PREFIX {
-                self.pending_prefix = Some(vec![PREFIX]);
+            if self.keys.legacy_detach_direct.contains(&byte) {
+                return detach_with(output);
+            }
+            if self.keys.legacy_prefix == Some(byte) {
+                self.pending_prefix = Some(vec![byte]);
             } else {
                 output.push(byte);
             }
+            rest = &rest[1..];
         }
 
         if output.is_empty() {
@@ -366,6 +549,163 @@ mod tests {
         );
         assert_eq!(sent.flushes, sent.chunks.len() + 1);
     }
+    #[test]
+    fn oversized_attach_paste_is_rejected_whole() {
+        use std::sync::{Arc, Mutex};
+
+        struct Capture(Arc<Mutex<usize>>);
+        impl super::super::endpoint::EndpointTransport for Capture {
+            fn send(&mut self, _message: &ClientMessage) -> std::io::Result<()> {
+                if let Ok(mut sent) = self.0.lock() {
+                    *sent += 1;
+                }
+                Ok(())
+            }
+            fn flush(&mut self, _deadline: std::time::Instant) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let sent = Arc::new(Mutex::new(0));
+        let mut registry =
+            super::super::endpoint::EndpointRegistry::new(Capture(Arc::clone(&sent)), 1);
+        let mut paste = b"\x1b[200~".to_vec();
+        paste.extend(vec![b'x'; crate::protocol::MAX_INPUT_PAYLOAD]);
+        paste.extend_from_slice(b"\x1b[201~");
+
+        let outcome = forward_input(&mut registry, &paste);
+        assert_eq!(
+            outcome,
+            ForwardOutcome::PasteRejected {
+                size: paste.len(),
+                max: crate::protocol::MAX_INPUT_PAYLOAD,
+            }
+        );
+        assert!(
+            outcome
+                .notice()
+                .is_some_and(|notice| notice.contains("limit"))
+        );
+        assert_eq!(*sent.lock().expect("test precondition"), 0);
+
+        let small = b"\x1b[200~hello\x1b[201~";
+        assert_eq!(forward_input(&mut registry, small), ForwardOutcome::Sent);
+        assert_eq!(*sent.lock().expect("test precondition"), 1);
+    }
+
+    fn escape_for(config: &str) -> AttachEscapeState {
+        let config: crate::config::Config = toml::from_str(config).expect("test precondition");
+        AttachEscapeState::from_config(&config)
+    }
+
+    #[test]
+    fn attach_escape_uses_the_configured_prefix() {
+        let mut escape = escape_for("[keys]\nprefix = \"ctrl+a\"\n");
+        assert!(matches!(
+            escape.filter_input(vec![0x02], 24, 3),
+            AttachInputAction::Forward(bytes) if bytes == vec![0x02]
+        ));
+        assert!(matches!(
+            escape.filter_input(vec![0x01], 24, 3),
+            AttachInputAction::None
+        ));
+        assert!(matches!(
+            escape.filter_input(vec![b'q'], 24, 3),
+            AttachInputAction::Detach
+        ));
+
+        let mut escape = escape_for("[keys]\nprefix = \"ctrl+a\"\n");
+        assert!(matches!(
+            escape.filter_input(b"\x1b[97;5u".to_vec(), 24, 3),
+            AttachInputAction::None
+        ));
+        assert!(matches!(
+            escape.filter_input(b"\x1b[113u".to_vec(), 24, 3),
+            AttachInputAction::Detach
+        ));
+    }
+
+    #[test]
+    fn attach_escape_uses_the_configured_detach_key() {
+        let mut escape = escape_for("[keys]\ndetach = \"prefix+d\"\n");
+        assert!(matches!(
+            escape.filter_input(vec![0x02], 24, 3),
+            AttachInputAction::None
+        ));
+        assert!(matches!(
+            escape.filter_input(vec![b'q'], 24, 3),
+            AttachInputAction::Forward(bytes) if bytes == vec![0x02, b'q']
+        ));
+        assert!(matches!(
+            escape.filter_input(vec![0x02], 24, 3),
+            AttachInputAction::None
+        ));
+        assert!(matches!(
+            escape.filter_input(vec![b'd'], 24, 3),
+            AttachInputAction::Detach
+        ));
+    }
+
+    #[test]
+    fn attach_escape_detaches_on_a_direct_detach_key() {
+        let mut escape = escape_for("[keys]\ndetach = \"f10\"\n");
+        assert!(matches!(
+            escape.filter_input(b"\x1b[21~".to_vec(), 24, 3),
+            AttachInputAction::Detach
+        ));
+
+        let mut escape = escape_for("[keys]\ndetach = \"ctrl+g\"\n");
+        assert!(matches!(
+            escape.filter_input(b"ab\x07cd".to_vec(), 24, 3),
+            AttachInputAction::ForwardThenDetach(bytes) if bytes == b"ab"
+        ));
+    }
+
+    #[test]
+    fn attach_escape_keeps_a_way_out_when_detach_is_unset() {
+        let mut escape = escape_for("[keys]\ndetach = \"\"\n");
+        assert!(matches!(
+            escape.filter_input(vec![0x02], 24, 3),
+            AttachInputAction::None
+        ));
+        assert!(matches!(
+            escape.filter_input(vec![b'q'], 24, 3),
+            AttachInputAction::Detach
+        ));
+    }
+
+    #[test]
+    fn coalesced_input_before_prefix_q_is_forwarded_before_detaching() {
+        let mut escape = AttachEscapeState::default();
+        assert!(matches!(
+            escape.filter_input(b"abc\x02q".to_vec(), 24, 3),
+            AttachInputAction::ForwardThenDetach(bytes) if bytes == b"abc"
+        ));
+
+        let mut escape = escape_for("[keys]\nprefix = \"ctrl+a\"\n");
+        assert!(matches!(
+            escape.filter_input(b"ab\x02q".to_vec(), 24, 3),
+            AttachInputAction::Forward(bytes) if bytes == b"ab\x02q"
+        ));
+        assert!(matches!(
+            escape.filter_input(b"ab\x01q".to_vec(), 24, 3),
+            AttachInputAction::ForwardThenDetach(bytes) if bytes == b"ab"
+        ));
+    }
+
+    #[test]
+    fn coalesced_double_prefix_sends_one_literal_prefix() {
+        let mut escape = AttachEscapeState::default();
+        assert!(matches!(
+            escape.filter_input(b"a\x02\x02b".to_vec(), 24, 3),
+            AttachInputAction::Forward(bytes) if bytes == b"a\x02b"
+        ));
+        assert!(matches!(
+            escape.filter_input(b"a\x02xb".to_vec(), 24, 3),
+            AttachInputAction::Forward(bytes) if bytes == b"a\x02xb"
+        ));
+    }
+
     #[test]
     fn attach_escape_detaches_on_prefix_q() {
         let mut escape = AttachEscapeState::default();

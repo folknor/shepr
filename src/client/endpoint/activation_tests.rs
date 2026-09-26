@@ -215,6 +215,7 @@ fn machine() -> PendingEndpointActivation {
         focus: None,
         host_focused: true,
         resize: resize(),
+        geometry: resize_geometry(&resize()).expect("test precondition"),
         phase: ActivationPhase::ActivatingTarget {
             request_id: "client-shell-surface:3:on".into(),
             acknowledged_revision: Some(1),
@@ -240,6 +241,7 @@ fn source_off_request_is_distinct_and_precedes_target_on_phase() {
         focus: None,
         host_focused: true,
         resize: resize(),
+        geometry: resize_geometry(&resize()).expect("test precondition"),
         phase: ActivationPhase::ReleasingSource {
             request_id: "client-shell-surface:9:off".into(),
         },

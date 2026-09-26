@@ -97,7 +97,6 @@ impl PtyIoDataCommand {
 }
 
 enum PtyIoControlCommand {
-    ForegroundProcessGroup(std_mpsc::Sender<Option<u32>>),
     Shutdown,
 }
 
@@ -223,15 +222,6 @@ impl PtyIoActorHandle {
             });
         }
         self.wake_actor();
-    }
-
-    pub(crate) fn foreground_process_group_id(&self) -> Option<u32> {
-        let (reply_tx, reply_rx) = std_mpsc::channel();
-        self.control_tx
-            .send(PtyIoControlCommand::ForegroundProcessGroup(reply_tx))
-            .ok()?;
-        self.wake_actor();
-        reply_rx.recv_timeout(Duration::from_secs(1)).ok()?
     }
 
     pub(crate) fn shutdown(&self) {
@@ -473,7 +463,7 @@ impl PtyIoActorRunner {
         loop {
             match self.control_rx.try_recv() {
                 Ok(command) => {
-                    if self.handle_control_command(command) {
+                    if self.handle_control_command(&command) {
                         should_exit = true;
                         break;
                     }
@@ -533,14 +523,8 @@ impl PtyIoActorRunner {
         }
     }
 
-    fn handle_control_command(&mut self, command: PtyIoControlCommand) -> bool {
+    fn handle_control_command(&mut self, command: &PtyIoControlCommand) -> bool {
         match command {
-            PtyIoControlCommand::ForegroundProcessGroup(reply) => {
-                let result =
-                    crate::platform::foreground_process_group_id_for_tty_fd(self.file.as_raw_fd());
-                let _ = reply.send(result);
-                false
-            }
             PtyIoControlCommand::Shutdown => true,
         }
     }

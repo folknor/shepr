@@ -106,7 +106,12 @@ impl App {
             Some(Err(err)) => return encode_error(id, "pane_split_failed", err.to_string()),
             None => return encode_error(id, "pane_not_found", "pane not found"),
         };
-        if let Some(pane) = self.state.workspaces[ws_idx].pane_state_mut(new_pane.pane_id) {
+        if let Some(pane) = self
+            .state
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.pane_state_mut(new_pane.pane_id))
+        {
             pane.right_click_passthrough = matches!(
                 params.right_click,
                 crate::api::schema::PaneRightClickTarget::Pane
@@ -455,11 +460,14 @@ impl App {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
-        let Some(_tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+        let Some(_tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
 
         self.state.focus_pane_in_workspace(ws_idx, pane_id);
+        // Naming a pane to bring up is an explicit acknowledgement, marked
+        // whoever is looking; `workspace focus`, `tab focus` and the other
+        // navigation paths mark only an observed tab.
         self.state.mark_active_tab_seen();
         self.state.mode = crate::app::Mode::Terminal;
 
@@ -473,7 +481,7 @@ impl App {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+        let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
             return pane_not_found(
                 id,
                 &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
@@ -541,7 +549,7 @@ impl App {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+        let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
             return pane_not_found(
                 id,
                 &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
@@ -574,7 +582,7 @@ impl App {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+        let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
             return pane_not_found(
                 id,
                 &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
@@ -631,8 +639,7 @@ impl App {
         else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(source_pane_id)
-        else {
+        let Some(tab_idx) = self.tab_index_for_pane(ws_idx, source_pane_id) else {
             return pane_not_found(
                 id,
                 &self
@@ -683,7 +690,7 @@ impl App {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+        let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
             return pane_not_found(
                 id,
                 &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
@@ -752,9 +759,7 @@ impl App {
             else {
                 return encode_error(id, "pane_not_found", "source pane not found");
             };
-            let Some(tab_idx) =
-                self.state.workspaces[ws_idx].find_tab_index_for_pane(source_pane_id)
-            else {
+            let Some(tab_idx) = self.tab_index_for_pane(ws_idx, source_pane_id) else {
                 return pane_not_found(
                     id,
                     &self
@@ -785,13 +790,13 @@ impl App {
             let source = self
                 .parse_pane_id(source_raw)
                 .and_then(|(ws_idx, pane_id)| {
-                    let tab_idx = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id)?;
+                    let tab_idx = self.tab_index_for_pane(ws_idx, pane_id)?;
                     Some((ws_idx, tab_idx, pane_id))
                 });
             let target = self
                 .parse_pane_id(target_raw)
                 .and_then(|(ws_idx, pane_id)| {
-                    let tab_idx = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id)?;
+                    let tab_idx = self.tab_index_for_pane(ws_idx, pane_id)?;
                     Some((ws_idx, tab_idx, pane_id))
                 });
             let response_context = source
@@ -915,11 +920,24 @@ impl App {
         let Some((source_ws_idx, source_pane_id)) = self.parse_pane_id(&pane_id) else {
             return encode_error(id, "pane_not_found", "source pane not found");
         };
-        let Some(source_tab_idx) =
-            self.state.workspaces[source_ws_idx].find_tab_index_for_pane(source_pane_id)
+        let Some(source_tab_idx) = self.tab_index_for_pane(source_ws_idx, source_pane_id) else {
+            return encode_error(id, "pane_not_found", "source pane not found");
+        };
+        let Some((source_ws, source_tab)) = self
+            .state
+            .workspaces
+            .get(source_ws_idx)
+            .and_then(|ws| Some((ws, ws.tabs.get(source_tab_idx)?)))
         else {
             return encode_error(id, "pane_not_found", "source pane not found");
         };
+        let Some(source_terminal_id) = source_tab.terminal_id(source_pane_id).cloned() else {
+            return encode_error(id, "pane_not_found", "source pane not found");
+        };
+        let source_tab_zoomed = source_tab.zoomed;
+        let previous_workspace_label = source_ws.custom_name.clone();
+        let previous_tab_label = source_tab.custom_name.clone();
+        let identity_cwd = source_ws.identity_cwd.clone();
         let previous_pane_id = self
             .public_pane_id(source_ws_idx, source_pane_id)
             .unwrap_or_else(|| pane_id.clone());
@@ -927,27 +945,15 @@ impl App {
         let Some(previous_tab_id) = self.public_tab_id(source_ws_idx, source_tab_idx) else {
             return encode_error(id, "tab_not_found", "source tab not found");
         };
-        let Some(source_terminal_id) = self
-            .state
-            .workspaces
-            .get(source_ws_idx)
-            .and_then(|ws| ws.tabs.get(source_tab_idx))
-            .and_then(|tab| tab.terminal_id(source_pane_id))
-            .cloned()
-        else {
-            return encode_error(id, "pane_not_found", "source pane not found");
-        };
         let recovery_context = PaneMoveRecoveryContext {
             source_ws_idx,
             previous_workspace_id: previous_workspace_id.clone(),
-            previous_workspace_label: self.state.workspaces[source_ws_idx].custom_name.clone(),
-            previous_tab_label: self.state.workspaces[source_ws_idx].tabs[source_tab_idx]
-                .custom_name
-                .clone(),
-            identity_cwd: self.state.workspaces[source_ws_idx].identity_cwd.clone(),
+            previous_workspace_label,
+            previous_tab_label,
+            identity_cwd,
         };
 
-        if self.state.workspaces[source_ws_idx].tabs[source_tab_idx].zoomed {
+        if source_tab_zoomed {
             let Some(layout) = self.pane_layout_snapshot(source_ws_idx, source_tab_idx) else {
                 return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
             };
@@ -976,6 +982,15 @@ impl App {
                 let Some((target_ws_idx, target_tab_idx)) = self.parse_tab_id(&tab_id) else {
                     return encode_error(id, "tab_not_found", format!("tab {tab_id} not found"));
                 };
+                let Some((target_tab_zoomed, target_tab_focused)) = self
+                    .state
+                    .workspaces
+                    .get(target_ws_idx)
+                    .and_then(|ws| ws.tabs.get(target_tab_idx))
+                    .map(|tab| (tab.zoomed, tab.layout.focused()))
+                else {
+                    return encode_error(id, "tab_not_found", format!("tab {tab_id} not found"));
+                };
                 if source_ws_idx == target_ws_idx && source_tab_idx == target_tab_idx {
                     let Some(layout) = self.pane_layout_snapshot(source_ws_idx, source_tab_idx)
                     else {
@@ -999,7 +1014,7 @@ impl App {
                         layout,
                     );
                 }
-                if self.state.workspaces[target_ws_idx].tabs[target_tab_idx].zoomed {
+                if target_tab_zoomed {
                     let Some(source_layout) =
                         self.pane_layout_snapshot(source_ws_idx, source_tab_idx)
                     else {
@@ -1041,8 +1056,7 @@ impl App {
                                 format!("target pane {raw} not found"),
                             );
                         };
-                        let pane_tab_idx =
-                            self.state.workspaces[pane_ws_idx].find_tab_index_for_pane(pane_id);
+                        let pane_tab_idx = self.tab_index_for_pane(pane_ws_idx, pane_id);
                         if pane_ws_idx != target_ws_idx || pane_tab_idx != Some(target_tab_idx) {
                             return encode_error(
                                 id,
@@ -1052,9 +1066,7 @@ impl App {
                         }
                         pane_id
                     }
-                    None => self.state.workspaces[target_ws_idx].tabs[target_tab_idx]
-                        .layout
-                        .focused(),
+                    None => target_tab_focused,
                 };
                 let Some(target_tab_id) = self.public_tab_id(target_ws_idx, target_tab_idx) else {
                     return encode_error(id, "tab_not_found", format!("tab {tab_id} not found"));
@@ -1163,15 +1175,18 @@ impl App {
                     return encode_error(id, "pane_move_failed", "target tab disappeared");
                 };
                 let direction = split_direction_to_layout(&split);
-                let moved_pane_id = match self.state.workspaces[target_ws_idx]
-                    .insert_moved_pane_into_tab(
+                let inserted = match self.state.workspaces.get_mut(target_ws_idx) {
+                    Some(ws) => ws.insert_moved_pane_into_tab(
                         target_tab_idx,
                         target_pane_id,
                         moved,
                         direction,
                         ratio,
                         focus,
-                    ) {
+                    ),
+                    None => Err(moved),
+                };
+                let moved_pane_id = match inserted {
                     Ok(pane_id) => pane_id,
                     Err(moved) => {
                         self.recover_failed_pane_move(recovery_context, moved);
@@ -1193,8 +1208,17 @@ impl App {
                     return encode_error(id, "pane_move_failed", "target workspace disappeared");
                 };
                 let moved_pane_id = moved.pane_id;
-                let target_tab_idx = self.state.workspaces[target_ws_idx]
-                    .create_tab_from_existing_pane(moved, label);
+                let target_tab_idx = match self.state.workspaces.get_mut(target_ws_idx) {
+                    Some(ws) => ws.create_tab_from_existing_pane(moved, label),
+                    None => {
+                        self.recover_failed_pane_move(recovery_context, moved);
+                        return encode_error(
+                            id,
+                            "pane_move_failed",
+                            "target workspace disappeared",
+                        );
+                    }
+                };
                 created_tab = true;
                 (target_ws_idx, target_tab_idx, moved_pane_id)
             }
@@ -1322,9 +1346,11 @@ impl App {
         context: PaneMoveRecoveryContext,
         moved: crate::workspace::MovedPane,
     ) {
-        if let Some(ws_idx) = self.parse_workspace_id(&context.previous_workspace_id) {
-            self.state.workspaces[ws_idx]
-                .create_tab_from_existing_pane(moved, context.previous_tab_label);
+        if let Some(ws) = self
+            .parse_workspace_id(&context.previous_workspace_id)
+            .and_then(|ws_idx| self.state.workspaces.get_mut(ws_idx))
+        {
+            ws.create_tab_from_existing_pane(moved, context.previous_tab_label);
         } else {
             let mut workspace = crate::workspace::Workspace::from_existing_pane(
                 context.previous_workspace_label,
@@ -1352,7 +1378,7 @@ impl App {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+        let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
             return pane_not_found(
                 id,
                 &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),

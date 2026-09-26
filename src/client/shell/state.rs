@@ -14,7 +14,6 @@ const ENDPOINT_NOTICE_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientShellKeybindingSource {
-    Local,
     RemoteLocal,
     Endpoint,
 }
@@ -34,7 +33,6 @@ pub(crate) struct ClientShellConfig {
     pub(super) copy_on_select: bool,
     pub(super) palette: Palette,
     pub(super) keybinds: LiveKeybindConfig,
-    pub(super) local_keys: crate::config::KeysConfig,
     pub(super) keybinding_source: ClientShellKeybindingSource,
     pub(super) prompt_new_tab_name: bool,
     pub(super) prompt_new_workspace_name: bool,
@@ -145,7 +143,12 @@ pub(super) struct ClientTabPress {
 }
 
 pub(super) enum ClientChromeDrag {
-    SidebarWidth,
+    /// Dragging the sidebar edge. The width follows the pointer, but the endpoint is resized
+    /// once, on release: each resize reflows every PTY, and one per column crossed would make
+    /// every pane redraw repeatedly mid-drag.
+    SidebarWidth {
+        resize_pending: bool,
+    },
     SidebarSection,
     WorkspaceScrollbar {
         grab_row_offset: u16,
@@ -187,7 +190,6 @@ pub(super) struct WorkspaceHit {
     pub(super) rect: Rect,
     pub(super) endpoint_id: ClientEndpointId,
     pub(super) workspace_id: String,
-    pub(super) indented: bool,
 }
 
 #[derive(Debug)]
@@ -462,7 +464,6 @@ pub(super) enum PendingEndpointKind {
 pub(super) struct PendingEndpointRequest {
     pub(super) boot_id: String,
     pub(super) method_name: String,
-    pub(super) confirmation_workspace_id: Option<String>,
     pub(super) kind: PendingEndpointKind,
 }
 
@@ -689,8 +690,6 @@ pub(crate) struct ClientShellState {
 #[derive(Clone, Copy)]
 pub(super) struct WorkspaceEntry {
     pub(super) index: usize,
-    pub(super) indented: bool,
-    pub(super) last_child: bool,
 }
 
 impl ClientShellState {
@@ -915,16 +914,10 @@ impl ClientShellState {
         let endpoint_profile_changed = self.snapshot.as_ref().is_none_or(|current| {
             current.server_keybindings_toml != snapshot.server_keybindings_toml
         });
-        let snapshot_keybindings_changed = match self.config.keybinding_source {
-            ClientShellKeybindingSource::Local => false,
-            ClientShellKeybindingSource::Endpoint => endpoint_profile_changed,
-            ClientShellKeybindingSource::RemoteLocal => false,
-        };
-        let active_keymap_changed = match self.config.keybinding_source {
-            ClientShellKeybindingSource::Local => false,
-            ClientShellKeybindingSource::Endpoint => endpoint_profile_changed,
-            ClientShellKeybindingSource::RemoteLocal => false,
-        };
+        // Only endpoint-sourced keymaps follow the snapshot; Local and RemoteLocal keep the
+        // keymap built from this client's own config at startup.
+        let snapshot_keybindings_changed =
+            self.config.uses_endpoint_keybindings() && endpoint_profile_changed;
         self.config_diagnostic = super::config::merged_config_diagnostic(
             self.local_config_diagnostic.as_deref(),
             snapshot.config_diagnostic.as_deref(),
@@ -961,12 +954,10 @@ impl ClientShellState {
                 .apply_snapshot_keybindings(snapshot.server_keybindings_toml.as_deref())
             {
                 self.set_endpoint_error(err);
-            } else if active_keymap_changed
-                && matches!(
-                    self.mode,
-                    ClientShellMode::Prefix | ClientShellMode::Navigate | ClientShellMode::Resize
-                )
-            {
+            } else if matches!(
+                self.mode,
+                ClientShellMode::Prefix | ClientShellMode::Navigate | ClientShellMode::Resize
+            ) {
                 self.mode = ClientShellMode::Terminal;
             }
         }
@@ -1185,8 +1176,10 @@ impl ClientShellState {
             None => self.selection.as_ref().map(|selection| &selection.pane_id),
         };
         let selection_invalidated = selection_pane.is_some_and(|pane_id| {
+            // With no surface to compare against, nothing shows the selection's coordinates
+            // still describe this pane's grid; highlighting them could mark stale cells.
             let Some(previous_surface) = self.pane_surface.as_ref() else {
-                return false;
+                return true;
             };
             let previous = previous_surface
                 .panes
@@ -1403,6 +1396,10 @@ impl ClientShellState {
             .unwrap_or(default)
     }
 
+    /// Drops the retained pane surface, leaving `compose` on its no-surface placeholder. Resize
+    /// and sidebar changes no longer do this (the retained surface is drawn clipped until the
+    /// resized one arrives); tests use it to reach the placeholder.
+    #[cfg(test)]
     pub(crate) fn invalidate_pane_surface(&mut self) {
         self.pane_surface = None;
         self.pending_pane_surface = None;

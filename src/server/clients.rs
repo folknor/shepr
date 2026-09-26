@@ -151,6 +151,11 @@ pub(crate) struct ClientConnection {
     /// send. Set on the first oversized frame, cleared once a frame goes out, so
     /// a client whose frames keep failing is warned once rather than per render.
     pub(crate) oversized_frame_reported: bool,
+    /// Whether a direct terminal-attach client has been told that its input
+    /// is being dropped because the pane stopped reading. Set on the first
+    /// drop, cleared by the next input that reaches the pane, so a user typing
+    /// into a wedged pane gets one notice rather than one per keystroke.
+    pub(crate) attach_input_drop_reported: bool,
     /// Whether this connection receives pane surfaces and may affect presentation state.
     pub(crate) shell_surface_active: bool,
     /// Whether this shell wants host mouse capture without pane demand.
@@ -232,6 +237,7 @@ impl ClientConnection {
             host_keyboard_report_all_active: None,
             render_pending: false,
             oversized_frame_reported: false,
+            attach_input_drop_reported: false,
             shell_surface_active,
             shell_mouse_capture: false,
             host_mouse_capture_active: None,

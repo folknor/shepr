@@ -44,7 +44,7 @@ fn agent_path_for(api_path: &Path) -> PathBuf {
 fn usable_socket(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|metadata| {
         // The API is user-private; do not redirect that user's panes to another user's agent.
-        metadata.file_type().is_socket() && metadata.uid() == unsafe { libc::geteuid() }
+        metadata.file_type().is_socket() && metadata.uid() == super::effective_uid()
     })
 }
 
@@ -279,6 +279,7 @@ mod tests {
         let stable = directory.join("agent");
         let listener_a = UnixListener::bind(&a).expect("test precondition");
         // Linux allows one queued connection with a zero backlog.
+        // SAFETY: listen(2) on a socket `listener_a` keeps open; no memory.
         assert_eq!(unsafe { libc::listen(listener_a.as_raw_fd(), 0) }, 0);
         let _queued = UnixStream::connect(&a).expect("test precondition");
         let _listener_b = UnixListener::bind(&b).expect("test precondition");

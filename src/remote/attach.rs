@@ -1270,6 +1270,19 @@ impl SshStdioBridge {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok(stream) => {
+                        match crate::ipc::peer_is_same_user(&stream) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                tracing::warn!(
+                                    "rejected remote bridge socket peer with different credentials"
+                                );
+                                continue;
+                            }
+                            Err(err) => {
+                                tracing::warn!(error = %err, "could not check remote bridge socket peer");
+                                continue;
+                            }
+                        }
                         let stream = match prepare_remote_bridge_stream(stream) {
                             Ok(stream) => stream,
                             Err(err) => {
@@ -1383,7 +1396,7 @@ fn write_managed_ssh_config(target: &str) -> io::Result<ManagedSshConfig> {
     contents.push_str("  ServerAliveCountMax 4\n");
 
     let write_result = (|| {
-        let mut file = crate::platform::create_remote_ssh_config_file(&path)?;
+        let mut file = crate::platform::create_private_file(&path)?;
         file.write_all(contents.as_bytes())
     })();
     if let Err(err) = write_result {
@@ -1861,9 +1874,7 @@ fn local_forward_socket_path(target: &str, session_name: &str) -> PathBuf {
 
 #[cfg(test)]
 fn fits_unix_socket_path(path: &Path) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-
-    path.as_os_str().as_bytes().len() <= 103
+    crate::platform::fits_unix_socket_path(path)
 }
 
 fn short_socket_hash(target: &str, session: &str) -> String {

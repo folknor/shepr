@@ -96,7 +96,15 @@ use crate::protocol::{self, ClientMessage, MAX_FRAME_SIZE, ServerMessage};
 use crate::server::socket_paths::client_socket_path;
 
 fn init_logging() {
-    crate::logging::init_file_logging("shepr-client.log");
+    crate::logging::init_file_logging(crate::logging::CLIENT_LOG_FILE);
+}
+
+fn remember_direct_notice(notices: &mut Vec<String>, message: String) {
+    const MAX_NOTICES: usize = 64;
+    if notices.len() == MAX_NOTICES {
+        notices.remove(0);
+    }
+    notices.push(message);
 }
 
 fn run_client_with_mode(
@@ -107,6 +115,8 @@ fn run_client_with_mode(
     init_logging();
 
     let loaded_config = crate::config::Config::load();
+    let attach_escape =
+        attach_escape.map(|_| AttachEscapeState::from_config(&loaded_config.config));
     crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let client_rendered_shell = attach_request.is_none();
     let socket_path = client_socket_path();
@@ -257,6 +267,7 @@ fn run_client_with_mode(
         warn!(%err, "failed to install termination handler; terminal restore relies on TerminalGuard::Drop and the panic hook");
     }
 
+    let mut direct_notices = Vec::new();
     let result = rt.block_on(async {
         run_client_loop(
             initial,
@@ -269,6 +280,7 @@ fn run_client_with_mode(
             should_quit,
             loop_config,
             attach_escape,
+            &mut direct_notices,
             &terminal_guard,
         )
         .await
@@ -276,6 +288,9 @@ fn run_client_with_mode(
 
     // Restore the terminal before printing any final status message.
     let terminal_restore_failed = terminal_guard.restore().is_err();
+    for notice in direct_notices {
+        let _ = writeln!(io::stderr(), "shepr: {notice}");
+    }
 
     if let Err(err) = result {
         let _ = writeln!(io::stderr(), "shepr: {err}");
@@ -311,6 +326,10 @@ fn run_client_with_mode(
 /// - resize poller thread → sends resize events to main loop
 /// - server reader thread → reads ServerMessages and sends to main loop
 /// - main loop: coordinates input, output, and server communication
+// Each parameter is an independent piece of startup state threaded through
+// from `main`; grouping them would just move the sprawl into an ad hoc
+// struct without making the call sites clearer.
+#[allow(clippy::too_many_arguments)]
 async fn run_client_loop(
     initial: Option<(LocalStream, handshake::HandshakeResult)>,
     mut endpoint_catalog: endpoint::EndpointCatalog,
@@ -322,6 +341,7 @@ async fn run_client_loop(
     should_quit: Arc<AtomicBool>,
     mut config: ClientLoopConfig,
     attach_escape: Option<AttachEscapeState>,
+    direct_notices: &mut Vec<String>,
     _terminal_guard: &TerminalGuard,
 ) -> Result<(), ClientError> {
     let draw_host_cursor = attach_escape.is_none() && should_draw_host_cursor(config.host_cursor);
@@ -559,15 +579,14 @@ async fn run_client_loop(
                             host_sgr_pixels_active.load(Ordering::Acquire),
                         );
                     }
-                    let (outcome, frame) = {
-                        let shell = state.shell.as_mut().expect("checked shell mode");
-                        let outcome = shell.handle_raw_events(events);
-                        let frame = outcome
-                            .repaint
-                            .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
-                            .flatten();
-                        (outcome, frame)
+                    let Some(shell) = state.shell.as_mut() else {
+                        continue;
                     };
+                    let outcome = shell.handle_raw_events(events);
+                    let frame = outcome
+                        .repaint
+                        .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
+                        .flatten();
                     if finish_client_shell_input(
                         &mut state,
                         outcome,
@@ -593,7 +612,11 @@ async fn run_client_loop(
                         // non-federated client whose Local connection broke.
                         AttachInputAction::ForwardPair(first, second) => {
                             for data in [first, second] {
-                                attach::forward_input(&mut write_stream, &data);
+                                if let Some(notice) =
+                                    attach::forward_input(&mut write_stream, &data).notice()
+                                {
+                                    remember_direct_notice(direct_notices, notice);
+                                }
                             }
                             continue;
                         }
@@ -604,13 +627,26 @@ async fn run_client_loop(
                             continue;
                         }
                         AttachInputAction::ForwardThenSemantic(prefix, action) => {
-                            attach::forward_input(&mut write_stream, &prefix);
+                            if let Some(notice) =
+                                attach::forward_input(&mut write_stream, &prefix).notice()
+                            {
+                                remember_direct_notice(direct_notices, notice);
+                            }
                             if let Some(message) = attach_semantic_message(action) {
                                 write_stream.send(&message);
                             }
                             continue;
                         }
                         AttachInputAction::Detach => {
+                            let _ = write_to_server(&mut write_stream, &ClientMessage::Detach);
+                            return Ok(());
+                        }
+                        AttachInputAction::ForwardThenDetach(data) => {
+                            if let Some(notice) =
+                                attach::forward_input(&mut write_stream, &data).notice()
+                            {
+                                remember_direct_notice(direct_notices, notice);
+                            }
                             let _ = write_to_server(&mut write_stream, &ClientMessage::Detach);
                             return Ok(());
                         }
@@ -635,19 +671,17 @@ async fn run_client_loop(
                     }
                     data
                 };
-                attach::forward_input(&mut write_stream, &data);
+                if let Some(notice) = attach::forward_input(&mut write_stream, &data).notice() {
+                    remember_direct_notice(direct_notices, notice);
+                }
             }
             ClientLoopEvent::PixelMouse(data, geometry) => {
-                if state.shell.is_some() {
-                    let (outcome, frame) = {
-                        let shell = state.shell.as_mut().expect("checked shell mode");
-                        let outcome = shell.handle_pixel_mouse(&data, geometry);
-                        let frame = outcome
-                            .repaint
-                            .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
-                            .flatten();
-                        (outcome, frame)
-                    };
+                if let Some(shell) = state.shell.as_mut() {
+                    let outcome = shell.handle_pixel_mouse(&data, geometry);
+                    let frame = outcome
+                        .repaint
+                        .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
+                        .flatten();
                     if finish_client_shell_input(
                         &mut state,
                         outcome,
@@ -662,8 +696,11 @@ async fn run_client_loop(
                     continue;
                 }
                 if let Some(attach_escape) = state.attach_escape.as_mut() {
-                    if let Some(prefix) = attach_escape.take_pending_prefix() {
-                        attach::forward_input(&mut write_stream, &prefix);
+                    if let Some(prefix) = attach_escape.take_pending_prefix()
+                        && let Some(notice) =
+                            attach::forward_input(&mut write_stream, &prefix).notice()
+                    {
+                        remember_direct_notice(direct_notices, notice);
                     }
                     if let Some((kind, position, modifiers)) =
                         direct_attach_pixel_mouse(&data, geometry)
@@ -719,11 +756,11 @@ async fn run_client_loop(
                 };
                 state.reported_cell_size = (cell_width_px, cell_height_px);
                 state.pixel_geometry_exact = pixel_geometry_exact;
-                // Resizing invalidates both the host-side blit baseline and pane hit geometry.
+                // Resizing invalidates the host-side blit baseline. The retained pane surface
+                // stays: until the resized one arrives, `compose` draws it clipped to the new
+                // pane area (with pane hits clipped to match) instead of dropping to the
+                // machine-list placeholder.
                 state.request_repaint();
-                if let Some(shell) = state.shell.as_mut() {
-                    shell.invalidate_pane_surface();
-                }
                 let msg = if let Some(shell) = &state.shell {
                     client_shell_resize_message(
                         shell,
@@ -755,6 +792,15 @@ async fn run_client_loop(
                 } else {
                     // A failed send surfaces through the registry's failure list.
                     write_stream.send(&msg);
+                }
+                // The host has already reflowed the old frame; redraw the chrome at the new
+                // size now rather than on the next input or surface.
+                if let Some(frame) = state
+                    .shell
+                    .as_mut()
+                    .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
+                {
+                    state.present_frame(frame);
                 }
             }
             ClientLoopEvent::EndpointSupervisor(event) => match event {
@@ -911,7 +957,10 @@ async fn run_client_loop(
                             }
                             continue;
                         }
-                        if !endpoint_active {
+                        // A frozen presentation keeps its pane projection: chrome frames pass
+                        // the freeze (`present_frozen_chrome`) and would otherwise carry this
+                        // surface with them. The handoff commit that unfreezes installs its own.
+                        if !endpoint_active || state.presentation_frozen {
                             continue;
                         }
                         let composed = if let Some(shell) = &mut state.shell {
@@ -925,6 +974,12 @@ async fn run_client_loop(
                         }
                     }
                     ServerMessage::PaneSurfacePatch(patch) => {
+                        // Same rule as full surfaces above. Dropping a patch leaves the
+                        // retained surface behind the server's, which is harmless here: the
+                        // handoff commit that ends the freeze replaces the surface outright.
+                        if state.presentation_frozen {
+                            continue;
+                        }
                         let outcome = state
                             .shell
                             .as_mut()
@@ -1094,6 +1149,11 @@ async fn run_client_loop(
                             &mut scheduled_activation,
                         )? {
                             return Ok(());
+                        }
+                    }
+                    ServerMessage::DirectTerminalNotice { message } => {
+                        if state.attach_escape.is_some() {
+                            remember_direct_notice(direct_notices, message);
                         }
                     }
                     ServerMessage::Clipboard { data } => {
@@ -1347,14 +1407,11 @@ async fn run_client_loop(
                 }
                 // A revoked transport changes the safe rollback destination. Handle those
                 // failures before applying a timeout to the remaining activation phase.
-                if pending_activation
+                if let Some(endpoint_id) = pending_activation
                     .as_ref()
-                    .is_some_and(|activation| activation.expired(now))
+                    .filter(|activation| activation.expired(now))
+                    .map(|activation| activation.target().clone())
                 {
-                    let endpoint_id = pending_activation
-                        .as_ref()
-                        .map(|activation| activation.target().clone())
-                        .expect("checked pending activation");
                     let label = state
                         .shell
                         .as_ref()
@@ -1376,8 +1433,10 @@ async fn run_client_loop(
                             write_stream.accepts(&expired.endpoint_id, expired.generation)
                         })
                         .collect::<Vec<_>>();
+                    let Some(shell) = state.shell.as_mut() else {
+                        continue;
+                    };
                     let (outcome, frame) = {
-                        let shell = state.shell.as_mut().expect("checked shell mode");
                         let mut outcome = shell.tick_selection_autoscroll(now);
                         for expired in expired_endpoints {
                             if !shell.endpoint_is_active(&expired.endpoint_id) {

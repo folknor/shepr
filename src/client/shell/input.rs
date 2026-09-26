@@ -196,20 +196,6 @@ impl ClientShellState {
             }
             match event {
                 RawInputEvent::Key(key) => self.handle_key(key, &mut outcome),
-                RawInputEvent::Text(text) => {
-                    let text = text.into_string();
-                    if self.prepare_committed_text(&text, &mut outcome) {
-                        continue;
-                    }
-                    if self.insert_overlay_text(&text) {
-                        outcome.repaint = true;
-                    } else if self.overlay.is_none() && self.mode == ClientShellMode::Terminal {
-                        self.push_focused_pane_event(
-                            ClientPaneInputEvent::TextCommit(text),
-                            &mut outcome,
-                        );
-                    }
-                }
                 RawInputEvent::Paste(text) => {
                     if self.prepare_committed_text(&text, &mut outcome) {
                         continue;
@@ -896,12 +882,6 @@ impl ClientShellState {
     ) {
         if let Some(event) = ClientPaneInputEvent::from_terminal_key(key) {
             super::push_target_event(target, event, outcome);
-        }
-    }
-
-    fn push_focused_pane_event(&self, event: ClientPaneInputEvent, outcome: &mut ClientShellInput) {
-        if let Some(pane_id) = self.focused_pane_id() {
-            super::push_target_event(ClientInputTarget::Pane(pane_id), event, outcome);
         }
     }
 

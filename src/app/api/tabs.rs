@@ -98,7 +98,7 @@ impl App {
                 self.terminal_runtimes.insert(terminal.id.clone(), runtime);
                 self.state.terminals.insert(terminal.id.clone(), terminal);
                 if let Some(label) = label {
-                    let workspace_id = self.state.workspaces[ws_idx].id.clone();
+                    let workspace_id = self.public_workspace_id(ws_idx);
                     let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
                         crate::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
                     });

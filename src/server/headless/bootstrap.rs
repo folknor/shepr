@@ -14,7 +14,7 @@ pub fn run_server() -> io::Result<()> {
         std::process::exit(1);
     }
 
-    crate::logging::init_file_logging("shepr-server.log");
+    crate::logging::init_file_logging(crate::logging::SERVER_LOG_FILE);
 
     let loaded_config = config::Config::load();
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -131,7 +131,7 @@ fn print_ready_message(api_socket: &Path, client_socket: &Path) {
     eprintln!(
         "logs: {}",
         crate::session::data_dir()
-            .join("shepr-server.log")
+            .join(crate::logging::SERVER_LOG_FILE)
             .display()
     );
     eprintln!("did you mean to open the Shepr TUI? run `shepr`; you do not need `shepr server`.");

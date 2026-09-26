@@ -867,7 +867,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
     {
         state.selection = Some(crate::selection::Selection::absolute_anchor(
             "pane_1".to_owned(),
-            (12, 0),
+            (12u64, 0),
         ));
         let mut changed_surface =
             surface_at(surface_revision, content_revision, alternate_screen_active);
@@ -1233,10 +1233,6 @@ fn context_menu_keyboard_and_outside_click_are_client_owned() {
             ..
         }))
     ));
-    let text = state.handle_raw_events(vec![RawInputEvent::Text(crate::input::TextCommit::new(
-        "not pane input",
-    ))]);
-    assert!(text.requests.is_empty());
     let paste = state.handle_raw_events(vec![RawInputEvent::Paste("not pane input".into())]);
     assert!(paste.requests.is_empty());
     let outside =

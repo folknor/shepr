@@ -17,15 +17,15 @@ use crate::api::subscriptions::{ActiveSubscription, SubscriptionStream};
 use crate::api::wait::{prompt_agent, wait_for_agent, wait_for_event, wait_for_output};
 use crate::api::{ApiRequestMessage, ApiRequestSender, EventHub, request_changes_ui, socket_path};
 use crate::ipc::{
-    LocalStream, LocalStreamRead, SocketFileIdentity, bind_local_listener,
-    is_connection_closed_error, local_stream_peer_closed, poll_local_stream_read,
-    remove_socket_file_if_owned, set_local_stream_polling, socket_file_identity,
+    LocalStream, LocalStreamRead, SocketFileIdentity, bind_private_local_listener,
+    is_connection_closed_error, local_stream_peer_closed, peer_is_same_user,
+    poll_local_stream_read, remove_socket_file_if_owned, set_local_stream_polling,
+    socket_file_identity,
 };
 
 #[cfg(test)]
 mod subscription_socket_tests;
 
-const SOCKET_PERMISSION_MODE: u32 = 0o600;
 pub(super) const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub(super) const APP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Bound on how long an ordinary (non-wait, non-stream) request waits for the
@@ -132,8 +132,9 @@ fn start_server_inner(
     let path = socket_path();
     prepare_socket_path(&path)?;
 
-    let listener = bind_local_listener(&path)?;
-    restrict_socket_permissions(&path)?;
+    // Owner-only from the moment the path is reachable (see
+    // `bind_private_local_listener`); peers are also checked by uid on accept.
+    let listener = bind_private_local_listener(&path)?;
     let identity = socket_file_identity(&path)?;
     info!(path = %path.display(), "api server listening");
 
@@ -163,6 +164,19 @@ fn start_server_inner(
     // ECONNABORTED are therefore logged and retried with a bounded backoff.
     let connection_running = Arc::clone(&running);
     let thread = spawn_listener_thread(listener, listener_running, move |stream| {
+        // Dropping the stream closes the refused connection; that is not an
+        // accept failure, so it does not feed the backoff.
+        match peer_is_same_user(&stream) {
+            Ok(true) => {}
+            Ok(false) => {
+                warn!("api connection from another user refused");
+                return Ok(());
+            }
+            Err(err) => {
+                warn!(err = %err, "api connection peer credentials unavailable; refused");
+                return Ok(());
+            }
+        }
         let api_tx = api_tx.clone();
         let event_hub = event_hub.clone();
         let capabilities = capabilities.clone();
@@ -278,10 +292,6 @@ fn prepare_socket_path(path: &Path) -> std::io::Result<()> {
             path.display()
         )
     })
-}
-
-fn restrict_socket_permissions(path: &Path) -> std::io::Result<()> {
-    crate::ipc::restrict_socket_permissions(path, SOCKET_PERMISSION_MODE)
 }
 
 #[cfg(test)]
@@ -1253,22 +1263,20 @@ mod tests {
     }
 
     #[test]
-    fn restrict_socket_permissions_sets_user_only_mode() {
+    fn api_socket_is_bound_owner_only() {
         let dir = unique_test_path("socket-perms");
         fs::create_dir_all(&dir).expect("test precondition");
         let path = dir.join("api.sock");
-        let _listener = UnixListener::bind(&path).expect("test precondition");
-
-        restrict_socket_permissions(&path).expect("test precondition");
+        let listener = bind_private_local_listener(&path).expect("test precondition");
 
         let mode = fs::metadata(&path)
             .expect("test precondition")
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(mode, SOCKET_PERMISSION_MODE);
+        assert_eq!(mode, 0o600);
 
-        drop(_listener);
+        drop(listener);
         let _ = fs::remove_file(&path);
         let _ = fs::remove_dir_all(&dir);
     }

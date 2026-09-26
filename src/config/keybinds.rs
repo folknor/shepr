@@ -369,8 +369,8 @@ impl BindingRegistry {
 
 impl Config {
     /// Parse and validate `[keys]`. This is pure and does not log: it runs
-    /// every time `prefix_key()`, `keybinds()` or `collect_diagnostics()` is
-    /// called, so logging here would repeat each warning per call. The
+    /// every time `live_keybinds()`, `keybinds()` or `collect_diagnostics()`
+    /// is called, so logging here would repeat each warning per call. The
     /// diagnostics are logged once, by `Config::load`.
     pub(super) fn validated_keybinds(&self) -> (Option<String>, KeyCombo, Vec<String>, Keybinds) {
         let mut diagnostics = Vec::new();
@@ -1245,7 +1245,7 @@ prefix = "ö"
         )
         .expect("test precondition");
         assert_eq!(
-            config.prefix_key(),
+            config.live_keybinds().prefix,
             (KeyCode::Char('ö'), KeyModifiers::empty())
         );
         assert!(config.collect_diagnostics().is_empty());

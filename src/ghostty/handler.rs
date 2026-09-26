@@ -21,8 +21,12 @@
 //!   a buffered frame in byte order, so a query inside a frame learns that
 //!   the update is still active.
 //! * `reset_state` (RIS) also resets those adapter modes and modifyOtherKeys,
-//!   the DECSCUSR override flag, and reports the title reset alacritty makes
-//!   without an event.
+//!   the DECSCUSR override flag and the child's OSC 4/10/11/12 colour
+//!   overrides (which alacritty keeps), and reports the title reset alacritty
+//!   makes without an event.
+//! * `ED 3`, RIS and the 1049 screen swap settle the absolute row accounting
+//!   (`rows.rs`) around themselves: they purge rows or change the grid the
+//!   tracker follows.
 //! * `set_title`/`push_title`/`pop_title` reach `Term`, whose `Title` and
 //!   `ResetTitle` events are the adapter's only title source; the pane never
 //!   parses OSC 0/2 itself.
@@ -55,7 +59,7 @@ use std::sync::{Mutex, PoisonError};
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Column;
-use alacritty_terminal::term::{Term, TermMode};
+use alacritty_terminal::term::{Term, TermMode, color};
 use alacritty_terminal::vte::ansi::cursor_icon::CursorIcon;
 use alacritty_terminal::vte::ansi::{
     Attr, CharsetIndex, ClearMode, CursorShape, CursorStyle, Handler, Hyperlink, KeyboardModes,
@@ -64,6 +68,7 @@ use alacritty_terminal::vte::ansi::{
 };
 
 use super::ExtraModes;
+use super::rows::RowOrigin;
 
 /// vte's private-mode numbering (`PrivateMode::new` is private to vte).
 pub(super) fn private_mode(mode: u16) -> PrivateMode {
@@ -165,9 +170,30 @@ pub(super) struct CoreHandler<'a, T: EventListener> {
     /// 10/11); the terminal hands it to the pane with
     /// `take_default_color_set`.
     pub(super) default_color_set: &'a mut bool,
+    /// Absolute row accounting. The terminal opens a batch before handing
+    /// the handler to the parser and closes it afterwards; the handler
+    /// settles it around the actions that purge rows or swap screens.
+    pub(super) rows: &'a mut RowOrigin,
+    /// The primary screen's history line limit.
+    pub(super) history_limit: usize,
 }
 
 impl<T: EventListener> CoreHandler<'_, T> {
+    /// Closes the row-accounting batch in progress, so the action about to
+    /// run is accounted for on its own.
+    fn settle_rows(&mut self) {
+        self.rows.finish(self.term, self.history_limit);
+    }
+
+    /// Opens a new row-accounting batch after such an action.
+    fn resume_rows(&mut self) {
+        self.rows.begin(self.term);
+    }
+
+    fn primary_screen_active(&self) -> bool {
+        !self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
     fn active_keyboard_depth(&mut self) -> &mut usize {
         let alternate_screen = self.term.mode().contains(TermMode::ALT_SCREEN);
         self.keyboard_depth.active(alternate_screen)
@@ -364,8 +390,19 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
         Handler::clear_line(self.term, mode);
     }
 
+    /// `ED 3` purges the primary screen's history: the purged lines are
+    /// counted as evicted (their rows are freed, so the row tracker could not
+    /// follow them).
     fn clear_screen(&mut self, mode: ClearMode) {
-        Handler::clear_screen(self.term, mode);
+        if matches!(mode, ClearMode::Saved) && self.primary_screen_active() {
+            self.settle_rows();
+            let purged = self.term.history_size();
+            Handler::clear_screen(self.term, mode);
+            self.rows.evict(purged);
+            self.resume_rows();
+        } else {
+            Handler::clear_screen(self.term, mode);
+        }
     }
 
     fn clear_tabs(&mut self, mode: TabulationClearMode) {
@@ -377,7 +414,22 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
     }
 
     fn reset_state(&mut self) {
+        // RIS empties the primary screen's history and resets every visible
+        // line (from the alternate screen too): no earlier row id names a
+        // line any more.
+        self.settle_rows();
+        self.rows.invalidate_primary(self.term);
         Handler::reset_state(self.term);
+        self.resume_rows();
+        // alacritty keeps OSC 4/10/11/12 colour overrides across RIS; xterm
+        // drops them with the rest of the terminal state. Only the child's
+        // overrides live in these slots (host colours sit underneath them in
+        // the adapter), so clearing them brings back exactly the host theme.
+        for index in 0..color::COUNT {
+            if self.term.colors()[index].is_some() {
+                Handler::reset_color(self.term, index);
+            }
+        }
         // alacritty's RIS empties both keyboard-mode stacks.
         *self.keyboard_depth = KeyboardStackDepth::default();
         // A synchronized update belongs to vte's parser, which RIS does not
@@ -459,6 +511,14 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
             PrivateMode::Named(NamedPrivateMode::SyncUpdate) => {
                 self.modes.synchronized_update = true;
             }
+            PrivateMode::Named(NamedPrivateMode::SwapScreenAndSetRestoreCursor) => {
+                // The row tracker follows the active grid; settle it before
+                // the swap and pick it up again on the other side.
+                self.settle_rows();
+                Handler::set_private_mode(self.term, mode);
+                self.resume_rows();
+                return;
+            }
             _ => {}
         }
         Handler::set_private_mode(self.term, mode);
@@ -481,6 +541,12 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
                     ) => self.modes.x10_mouse = false,
                     PrivateMode::Named(NamedPrivateMode::SyncUpdate) => {
                         self.modes.synchronized_update = false;
+                    }
+                    PrivateMode::Named(NamedPrivateMode::SwapScreenAndSetRestoreCursor) => {
+                        self.settle_rows();
+                        Handler::unset_private_mode(self.term, mode);
+                        self.resume_rows();
+                        return;
                     }
                     _ => {}
                 }
