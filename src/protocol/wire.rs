@@ -1,19 +1,12 @@
 //! Wire protocol for shepr server/client communication.
 //!
-//! Defines the message types, framing, version check, and safety
+//! Defines the message types, framing, and safety
 //! constraints for the binary protocol over local sockets.
 //!
-//! Client and server are always the same build. `PROTOCOL_VERSION` is derived
-//! from the build's source fingerprint (see `build.rs`), so any two different
-//! builds disagree on it and the handshake, `ping` and `status` report the
-//! mismatch; there is no number to bump by hand.
-//!
-//! Before any codec payload, both ends of a client-protocol connection
-//! exchange a fixed raw preamble (magic, `PROTOCOL_VERSION`, `BUILD_ID`; see
-//! `protocol::preamble`). A different build is reported from that preamble,
-//! so it fails with a clear mismatch even when its layout of the hello or
-//! welcome would not decode. The version fields inside `TerminalHello`,
-//! `Welcome` and the endpoint hello are a second check behind it.
+//! Client and server are always the same build. Before any codec payload, both
+//! ends of a client-protocol connection exchange a fixed raw preamble (magic,
+//! `PROTOCOL_VERSION`, `BUILD_ID`; see `protocol::preamble`). It compares the
+//! complete build identity before either side decodes messages.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -29,6 +22,52 @@ use super::codec::{self, CodecError};
 /// Protocol identity of this build: a fold of the source fingerprint into
 /// `1..u32::MAX`, so it changes whenever any source file does.
 pub const PROTOCOL_VERSION: u32 = crate::build_info::PROTOCOL_VERSION;
+
+/// How a server's advertised protocol relates to this build. Client-protocol
+/// connections are settled by the preamble; this is for the JSON API, which
+/// has none and only learns the server's protocol from its status reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compatibility {
+    /// The server reports this build's protocol.
+    Compatible,
+    /// The server reports another build's protocol.
+    DifferentBuild(u32),
+    /// The server did not report a protocol.
+    Unknown,
+}
+
+impl Compatibility {
+    pub fn of(server_protocol: Option<u32>) -> Self {
+        match server_protocol {
+            Some(protocol) if protocol == PROTOCOL_VERSION => Self::Compatible,
+            Some(protocol) => Self::DifferentBuild(protocol),
+            None => Self::Unknown,
+        }
+    }
+
+    pub fn is_compatible(self) -> bool {
+        self == Self::Compatible
+    }
+
+    /// `Some(true)` when compatible, `Some(false)` for another build, `None`
+    /// when the server did not say.
+    pub fn known(self) -> Option<bool> {
+        match self {
+            Self::Compatible => Some(true),
+            Self::DifferentBuild(_) => Some(false),
+            Self::Unknown => None,
+        }
+    }
+
+    /// `yes`, `no` or `unknown`, for status output.
+    pub fn label(self) -> &'static str {
+        match self.known() {
+            Some(true) => "yes",
+            Some(false) => "no",
+            None => "unknown",
+        }
+    }
+}
 
 /// Maximum allowed frame payload size (2 MB) in either direction. Readers
 /// reject larger length prefixes to prevent denial-of-service, and
@@ -76,17 +115,21 @@ pub const MAX_CELL_SIZE_PX: u32 = 4096;
 const LENGTH_PREFIX_BYTES: usize = 4;
 
 // ---------------------------------------------------------------------------
-// Client → Server messages
+// Server-side client render mode
 // ---------------------------------------------------------------------------
 
-/// Render payload encoding negotiated during client handshake.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RenderEncoding {
-    /// Send full semantic FrameData values. This is the local/default mode.
+/// Render pipeline selected by the kind of client handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RenderEncoding {
+    /// Send semantic surfaces for a client-owned shell.
     SemanticFrame,
-    /// Send already-diffed terminal ANSI byte streams.
+    /// Send terminal ANSI frames to a direct terminal client.
     TerminalAnsi,
 }
+
+// ---------------------------------------------------------------------------
+// Client → Server messages
+// ---------------------------------------------------------------------------
 
 /// Size of the pane surface requested by a client-owned shell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -405,9 +448,8 @@ impl ClientPaneInputEvent {
 /// Messages sent from the client to the server over the client protocol socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientMessage {
-    /// Direct terminal handshake: announces protocol version and terminal dimensions.
+    /// Direct terminal handshake: selects terminal ANSI frames and announces terminal dimensions.
     TerminalHello {
-        version: u32,
         cols: u16,
         rows: u16,
         cell_width_px: u32,
@@ -1030,12 +1072,9 @@ pub struct TerminalFrame {
 /// Messages sent from the server to the client over the client protocol socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServerMessage {
-    /// Handshake response: server acknowledges (or rejects) the client.
+    /// Direct-terminal handshake response. The hello variant already selects
+    /// terminal ANSI frames; errors report why the server rejected the hello.
     Welcome {
-        /// Protocol version the server speaks.
-        version: u32,
-        /// Render encoding selected by the server for this connection.
-        encoding: RenderEncoding,
         /// If present, the handshake failed and this describes why.
         /// The client should exit with a clear error message.
         error: Option<String>,
@@ -1369,23 +1408,6 @@ fn read_exact_or_eof<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<(), Fram
 }
 
 // ---------------------------------------------------------------------------
-// Version check
-// ---------------------------------------------------------------------------
-
-/// Checks that a peer is exactly this build (same `PROTOCOL_VERSION`).
-///
-/// Returns the error to report when it does not.
-pub fn check_client_version(client_version: u32) -> Result<(), String> {
-    if client_version == PROTOCOL_VERSION {
-        Ok(())
-    } else {
-        Err(format!(
-            "protocol mismatch: peer speaks version {client_version}, this build speaks {PROTOCOL_VERSION}; install the same shepr build on both sides"
-        ))
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1426,7 +1448,6 @@ mod tests {
     #[test]
     fn client_hello_roundtrip() -> TestResult {
         let msg = ClientMessage::TerminalHello {
-            version: PROTOCOL_VERSION,
             cols: 80,
             rows: 24,
             cell_width_px: 8,
@@ -1441,7 +1462,7 @@ mod tests {
     fn endpoint_control_roundtrip() -> TestResult {
         let msg = ClientMessage::EndpointControl {
             kind: "endpoint.hello.v1".into(),
-            data: r#"{"version":1}"#.into(),
+            data: r#"{"message":"hello"}"#.into(),
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
@@ -1640,11 +1661,7 @@ mod tests {
 
     #[test]
     fn server_welcome_roundtrip() -> TestResult {
-        let msg = ServerMessage::Welcome {
-            version: PROTOCOL_VERSION,
-            encoding: RenderEncoding::SemanticFrame,
-            error: None,
-        };
+        let msg = ServerMessage::Welcome { error: None };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
     }
@@ -1652,9 +1669,7 @@ mod tests {
     #[test]
     fn server_welcome_with_error_roundtrip() -> TestResult {
         let msg = ServerMessage::Welcome {
-            version: PROTOCOL_VERSION,
-            encoding: RenderEncoding::SemanticFrame,
-            error: Some("incompatible version".to_owned()),
+            error: Some("invalid handshake".to_owned()),
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
@@ -1945,7 +1960,6 @@ mod tests {
     #[test]
     fn framing_small_message_roundtrip() {
         let msg = ClientMessage::TerminalHello {
-            version: PROTOCOL_VERSION,
             cols: 80,
             rows: 24,
             cell_width_px: 8,
@@ -2029,7 +2043,6 @@ mod tests {
         for i in 0..150u32 {
             let msg = match i % 5 {
                 0 => ClientMessage::TerminalHello {
-                    version: PROTOCOL_VERSION,
                     cols: (80 + u16::try_from(i % 40).unwrap_or(u16::MAX)),
                     rows: (24 + u16::try_from(i % 20).unwrap_or(u16::MAX)),
                     cell_width_px: 8,
@@ -2149,15 +2162,6 @@ mod tests {
         let decoded: ClientMessage =
             read_message(&mut chunked, MAX_FRAME_SIZE).expect("test precondition");
         assert_eq!(msg, decoded);
-    }
-
-    // ---- Version check ----
-
-    #[test]
-    fn version_check_accepts_only_exact_match() {
-        assert_eq!(check_client_version(PROTOCOL_VERSION), Ok(()));
-        let error = check_client_version(PROTOCOL_VERSION + 1).expect_err("test precondition");
-        assert!(error.contains("protocol mismatch"), "{error}");
     }
 
     // ---- Malformed/oversized input ----
@@ -2487,7 +2491,6 @@ mod tests {
     fn read_message_accepts_exact_payload() {
         // A normally-framed message should decode without error.
         let msg = ClientMessage::TerminalHello {
-            version: PROTOCOL_VERSION,
             cols: 80,
             rows: 24,
             cell_width_px: 8,
@@ -2566,7 +2569,6 @@ mod tests {
 
         let messages = vec![
             ClientMessage::TerminalHello {
-                version: PROTOCOL_VERSION,
                 cols: 200,
                 rows: 60,
                 cell_width_px: 8,

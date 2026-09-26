@@ -675,7 +675,7 @@ pub struct AppState {
     /// DECSCUSR shape parameter (1-6) for the IME anchor cursor.
     pub cjk_ime_cursor_shape: u8,
     pub default_shell: String,
-    pub shell_mode: crate::config::ShellModeConfig,
+    pub login_shell: bool,
     pub new_terminal_cwd: NewTerminalCwdConfig,
     pub pane_scrollback_limit_bytes: usize,
     /// UI color palette - all sidebar/UI colors centralized for theming.
@@ -798,7 +798,7 @@ impl AppState {
             cjk_ime_agents: Vec::new(),
             cjk_ime_cursor_shape: 2, // steady_block
             default_shell: String::new(),
-            shell_mode: crate::config::ShellModeConfig::Auto,
+            login_shell: false,
             new_terminal_cwd: NewTerminalCwdConfig::Follow,
             pane_scrollback_limit_bytes: crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES,
             palette: Palette::catppuccin(),

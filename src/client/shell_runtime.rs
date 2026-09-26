@@ -1108,7 +1108,6 @@ mod tests {
             .expect("test precondition");
         let build_id = endpoint::ClientEndpointId::Ssh(build.clone());
         let local = endpoint::ClientEndpointId::Local;
-        assert!(catalog.select_ssh(&build));
 
         let mut state = ClientState::test_new();
         let shell = state.shell.as_mut().expect("test shell");

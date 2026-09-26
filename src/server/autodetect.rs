@@ -91,17 +91,18 @@ fn validate_running_server_compatibility(paths: &crate::config::AppPaths) -> io:
         )));
     };
 
-    if status.protocol == Some(crate::protocol::PROTOCOL_VERSION) {
+    let compatibility = crate::protocol::Compatibility::of(status.protocol);
+    if compatibility.is_compatible() {
         return Ok(());
     }
 
     Err(io::Error::other(format!(
         "the running shepr server is a different build; restart it before attaching.\n\nserver: v{} protocol {}\nclient: v{} protocol {}\n\n{}",
         status.version.as_deref().unwrap_or("unknown"),
-        status
-            .protocol
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "unavailable".to_string()),
+        match compatibility {
+            crate::protocol::Compatibility::DifferentBuild(protocol) => protocol.to_string(),
+            _ => "unavailable".to_string(),
+        },
         crate::build_info::version(),
         crate::protocol::PROTOCOL_VERSION,
         crate::session::restart_after_update_guidance_for(paths)

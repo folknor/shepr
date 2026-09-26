@@ -34,6 +34,38 @@ pub(crate) struct RemoteLaunch {
 }
 
 const MAX_SSH_TARGET_BYTES: usize = 1024;
+const MAX_REMOTE_EXECUTABLE_BYTES: usize = 4096;
+pub(crate) const REMOTE_EXECUTABLE_ROOT: &str = "/";
+pub(crate) const REMOTE_MISE_SHIM_SUFFIX: &str = "/mise/shims/shepr";
+
+/// A validated absolute path for a candidate Shepr executable on a remote host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemoteExecutable(String);
+
+impl RemoteExecutable {
+    pub(crate) fn parse(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        if value.is_empty() || !value.starts_with(REMOTE_EXECUTABLE_ROOT) {
+            return Err("remote Shepr executable path must be absolute".into());
+        }
+        if value.len() > MAX_REMOTE_EXECUTABLE_BYTES {
+            return Err(format!(
+                "remote Shepr executable path must be at most {MAX_REMOTE_EXECUTABLE_BYTES} bytes"
+            ));
+        }
+        if value.chars().any(char::is_control) {
+            return Err("remote Shepr executable path must not contain control characters".into());
+        }
+        if value.ends_with(REMOTE_MISE_SHIM_SUFFIX) {
+            return Err("remote Shepr executable path must not be a mise shim".into());
+        }
+        Ok(Self(value))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 /// A checked SSH destination. Every place that launches ssh takes this type so the
 /// argument-safety and saved-profile restrictions have one owner.

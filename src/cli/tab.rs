@@ -8,7 +8,7 @@ use super::matches::{flag, required, string, values, words};
 
 pub(super) fn run_tab_command(
     matches: &ArgMatches,
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
 ) -> std::io::Result<i32> {
     match matches.subcommand() {
         Some(("list", matches)) => super::runtime::tab_list(
@@ -37,7 +37,7 @@ pub(super) fn run_tab_command(
 
 fn create_params(
     matches: &ArgMatches,
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
 ) -> Result<TabCreateParams, String> {
     Ok(TabCreateParams {
         workspace_id: string(matches, "workspace"),
@@ -54,12 +54,12 @@ fn create_params(
 mod tests {
     use super::super::tests::command_matches;
 
-    fn test_paths() -> crate::config::AppPaths {
-        crate::config::AppPaths::test_with_context(
+    fn test_paths() -> super::super::target::CliContext {
+        super::super::target::CliContext::test_local(crate::config::AppPaths::test_with_context(
             std::path::Path::new("/tmp/shepr-cli-paths"),
             Some(std::path::Path::new("/home/me")),
             Some(std::path::Path::new("/home/me/proj")),
-        )
+        ))
     }
 
     #[test]

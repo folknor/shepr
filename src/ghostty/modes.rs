@@ -66,6 +66,7 @@ pub(super) enum Getter {
 /// How a write reaches the terminal.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Setter {
+    #[allow(dead_code)] // Documents the table; read by tests through `handler::private_mode`.
     Vte(NamedPrivateMode),
     Extra(ExtraMode),
 }

@@ -4,19 +4,9 @@ use std::io;
 use std::time::Duration;
 
 pub(crate) fn run_remote_client_bridge(
-    args: &[String],
+    idle_timeout: bool,
     paths: &crate::config::AppPaths,
 ) -> io::Result<()> {
-    let idle_timeout = match args {
-        [] => false,
-        [option] if option == "--idle-timeout-v1" => true,
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "unsupported remote client bridge option",
-            ));
-        }
-    };
     ensure_remote_server_running(paths)?;
     let _ssh_agent = super::ssh_agent::Registration::start(paths);
 
@@ -34,20 +24,13 @@ pub(crate) fn run_remote_client_bridge(
     crate::platform::forward_remote_bridge_stdio(stream, idle_timeout)
 }
 
+/// Starts the server when none is listening. A running server of another build
+/// is not screened here: the client's handshake through this bridge reads its
+/// build-identity preamble and reports the mismatch.
 fn ensure_remote_server_running(paths: &crate::config::AppPaths) -> io::Result<()> {
     let socket_path = crate::server::socket_paths::client_socket_path(paths);
     if crate::server::autodetect::is_server_listening(paths) {
-        let status = crate::api::read_runtime_status_at(
-            &crate::api::socket_path(paths),
-            Duration::from_millis(500),
-        )?
-        .ok_or_else(|| io::Error::other("remote server status API is unavailable"))?;
-        if status.protocol == Some(crate::protocol::PROTOCOL_VERSION) {
-            return Ok(());
-        }
-        return Err(io::Error::other(
-            "remote shepr server speaks a different protocol; rerun `shepr --remote` from an interactive terminal to restart it",
-        ));
+        return Ok(());
     }
 
     crate::server::autodetect::spawn_server_daemon(paths)?;

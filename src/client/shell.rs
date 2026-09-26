@@ -23,6 +23,7 @@ mod overlay_input;
 mod preferences;
 mod render;
 mod scroll;
+mod sidebar_tokens;
 mod state;
 mod surface_patch;
 mod text_editor;
@@ -31,6 +32,11 @@ use text_editor::TextEditor;
 use word_selection::ClientWordSelection;
 
 pub(in crate::client::shell) use render::sidebar;
+use sidebar_tokens::{
+    AgentTokenContext, ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
+    expanded_sidebar_sections, resolved_token_spans, sidebar_agent_rows,
+    sidebar_section_divider_rect, sidebar_space_rows,
+};
 pub(crate) use state::*;
 pub(super) use surface_patch::{ClientComposedSurfacePatch, ClientPaneSurfacePatchOutcome};
 
@@ -142,23 +148,44 @@ fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64 {
     hash
 }
 
-fn status_icon(
+#[derive(Clone, Copy)]
+pub(super) struct StatusGlyph {
+    pub(super) text: &'static str,
+    pub(super) style: Style,
+}
+
+fn status_glyph(
     status: crate::api::schema::AgentStatus,
-    style: crate::config::StatusIndicatorStyle,
-) -> &'static str {
+    indicator_style: crate::config::StatusIndicatorStyle,
+    palette: &Palette,
+    stale: bool,
+) -> StatusGlyph {
     use crate::api::schema::AgentStatus;
     use crate::config::StatusIndicatorStyle;
-    match (style, status) {
+    let text = match (indicator_style, status) {
         (StatusIndicatorStyle::Dots, AgentStatus::Working | AgentStatus::Blocked) => "●",
         (StatusIndicatorStyle::Dots, AgentStatus::Idle) => "○",
         (StatusIndicatorStyle::Symbols, AgentStatus::Blocked) => "×",
         (StatusIndicatorStyle::Symbols, AgentStatus::Working) => "◐",
         (StatusIndicatorStyle::Symbols, AgentStatus::Idle) => "○",
+    };
+    let color = if stale {
+        palette.overlay0
+    } else {
+        match status {
+            AgentStatus::Working => palette.yellow,
+            AgentStatus::Blocked => palette.red,
+            AgentStatus::Idle => palette.green,
+        }
+    };
+    StatusGlyph {
+        text,
+        style: Style::default().fg(color).add_modifier(if stale {
+            Modifier::DIM
+        } else {
+            Modifier::empty()
+        }),
     }
-}
-
-fn status_dot(status: crate::api::schema::AgentStatus) -> &'static str {
-    status_icon(status, crate::config::StatusIndicatorStyle::Dots)
 }
 
 fn status_priority(status: crate::api::schema::AgentStatus) -> u8 {
@@ -177,18 +204,6 @@ fn status_text(status: crate::api::schema::AgentStatus) -> &'static str {
         AgentStatus::Working => "working",
         AgentStatus::Blocked => "blocked",
         AgentStatus::Idle => "idle",
-    }
-}
-
-fn status_color(
-    status: crate::api::schema::AgentStatus,
-    palette: &Palette,
-) -> ratatui::style::Color {
-    use crate::api::schema::AgentStatus;
-    match status {
-        AgentStatus::Working => palette.yellow,
-        AgentStatus::Blocked => palette.red,
-        AgentStatus::Idle => palette.green,
     }
 }
 

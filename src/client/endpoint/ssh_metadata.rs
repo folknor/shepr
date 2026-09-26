@@ -4,37 +4,20 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::ProfileId;
+use crate::remote::RemoteExecutable;
 
 const MAX_METADATA_BYTES: u64 = 16 * 1024;
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SshMachineMetadata {
-    pub(crate) os: String,
-    pub(crate) executable: String,
-}
-
-impl SshMachineMetadata {
-    pub(crate) fn is_valid(&self) -> bool {
-        let path = &self.executable;
-        if path.is_empty() || path.len() > 4096 || path.chars().any(char::is_control) {
-            return false;
-        }
-        match self.os.as_str() {
-            "linux" => path.starts_with('/') && !path.ends_with("/mise/shims/shepr"),
-            _ => false,
-        }
-    }
-}
 
 #[derive(Serialize, Deserialize)]
 struct StoredMetadata {
     version: u32,
     target: String,
     session: String,
-    metadata: SshMachineMetadata,
+    executable: String,
 }
 
 pub(crate) struct SshMetadataCache {
+    // Saved endpoint discovery and the CLI API bridge use this same per-profile hint.
     path: PathBuf,
     target: String,
     session: String,
@@ -57,19 +40,16 @@ impl SshMetadataCache {
         }
     }
 
-    pub(crate) fn load(&self) -> Option<SshMachineMetadata> {
+    pub(crate) fn load(&self) -> Option<RemoteExecutable> {
         load_metadata(&self.path, &self.target, &self.session)
     }
 
-    pub(crate) fn store(&self, metadata: &SshMachineMetadata) {
-        if !metadata.is_valid() {
-            return;
-        }
+    pub(crate) fn store(&self, executable: &RemoteExecutable) {
         let stored = StoredMetadata {
             version: 1,
             target: self.target.clone(),
             session: self.session.clone(),
-            metadata: metadata.clone(),
+            executable: executable.as_str().to_owned(),
         };
         let result = serde_json::to_vec(&stored)
             .map_err(|error| error.to_string())
@@ -90,7 +70,7 @@ impl SshMetadataCache {
     }
 }
 
-fn load_metadata(path: &Path, target: &str, session: &str) -> Option<SshMachineMetadata> {
+fn load_metadata(path: &Path, target: &str, session: &str) -> Option<RemoteExecutable> {
     let file_type = std::fs::symlink_metadata(path).ok()?.file_type();
     if !file_type.is_file() {
         return None;
@@ -105,11 +85,10 @@ fn load_metadata(path: &Path, target: &str, session: &str) -> Option<SshMachineM
         return None;
     }
     let stored: StoredMetadata = serde_json::from_slice(&bytes).ok()?;
-    (stored.version == 1
-        && stored.target == target
-        && stored.session == session
-        && stored.metadata.is_valid())
-    .then_some(stored.metadata)
+    if stored.version != 1 || stored.target != target || stored.session != session {
+        return None;
+    }
+    RemoteExecutable::parse(stored.executable).ok()
 }
 
 #[cfg(test)]
@@ -117,23 +96,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metadata_accepts_only_supported_platforms_and_absolute_paths() {
-        for (os, path, valid) in [
-            ("linux", "/home/a b/shepr", true),
-            ("linux", "$HOME/.local/bin/shepr", false),
-            ("linux", "/home/user/.local/share/mise/shims/shepr", false),
-            ("linux", "/bin/shepr\nmalformed", false),
-            ("macos", "/opt/homebrew/bin/shepr", false),
-            ("unknown", "/bin/shepr", false),
+    fn remote_executable_accepts_only_cacheable_absolute_paths() {
+        for (path, valid) in [
+            ("/home/a b/shepr", true),
+            ("$HOME/.local/bin/shepr", false),
+            ("/home/user/.local/share/mise/shims/shepr", false),
+            ("/bin/shepr\nmalformed", false),
         ] {
             assert_eq!(
-                SshMachineMetadata {
-                    os: os.into(),
-                    executable: path.into()
-                }
-                .is_valid(),
+                RemoteExecutable::parse(path.to_owned()).is_ok(),
                 valid,
-                "{os}: {path}"
+                "{path}"
             );
         }
     }
@@ -154,10 +127,7 @@ mod tests {
             target: "mac".into(),
             session: "fleet".into(),
         };
-        let metadata = SshMachineMetadata {
-            os: "linux".into(),
-            executable: "/some path/shepr".into(),
-        };
+        let metadata = RemoteExecutable::parse("/some path/shepr").expect("test precondition");
         assert!(first.load().is_none());
         first.store(&metadata);
         second.store(&metadata);
@@ -178,6 +148,8 @@ mod tests {
         let mut stored: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&first.path).expect("test precondition"))
                 .expect("test precondition");
+        assert_eq!(stored["executable"], "/some path/shepr");
+        assert!(stored.get("os").is_none());
         stored["future_field"] = true.into();
         std::fs::write(
             &first.path,
@@ -216,10 +188,7 @@ mod tests {
         std::fs::write(&other, "untouched").expect("test precondition");
         std::os::unix::fs::symlink(&other, &cache.path).expect("test precondition");
         assert!(cache.load().is_none());
-        cache.store(&SshMachineMetadata {
-            os: "linux".into(),
-            executable: "/bin/shepr".into(),
-        });
+        cache.store(&RemoteExecutable::parse("/bin/shepr").expect("test precondition"));
         assert_eq!(
             std::fs::read_to_string(&other).expect("test precondition"),
             "untouched"

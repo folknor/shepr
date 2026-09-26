@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -134,12 +136,121 @@ pub(crate) fn public_workspace_number(id: &str) -> Option<usize> {
     id.strip_prefix('w').and_then(decode_public_number)
 }
 
-pub(crate) fn public_pane_id_for_number(workspace_id: &str, pane_number: usize) -> String {
-    format!("{workspace_id}:p{}", encode_public_number(pane_number))
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PublicTabId {
+    workspace_id: String,
+    number: usize,
 }
 
+impl PublicTabId {
+    pub(crate) fn new(workspace_id: impl Into<String>, number: usize) -> Self {
+        Self {
+            workspace_id: workspace_id.into(),
+            number,
+        }
+    }
+
+    pub(crate) fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
+    pub(crate) fn number(&self) -> usize {
+        self.number
+    }
+}
+
+impl fmt::Display for PublicTabId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}:t{}",
+            self.workspace_id,
+            encode_public_number(self.number)
+        )
+    }
+}
+
+impl FromStr for PublicTabId {
+    type Err = PublicIdParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (workspace_id, tab_number) = value.rsplit_once(':').ok_or(PublicIdParseError)?;
+        let encoded = tab_number.strip_prefix('t').ok_or(PublicIdParseError)?;
+        let number = parse_public_number(encoded)?;
+        if workspace_id.is_empty() {
+            return Err(PublicIdParseError);
+        }
+        Ok(Self::new(workspace_id, number))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PublicPaneId {
+    workspace_id: String,
+    number: usize,
+}
+
+impl PublicPaneId {
+    pub(crate) fn new(workspace_id: impl Into<String>, number: usize) -> Self {
+        Self {
+            workspace_id: workspace_id.into(),
+            number,
+        }
+    }
+
+    pub(crate) fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
+    pub(crate) fn number(&self) -> usize {
+        self.number
+    }
+}
+
+impl fmt::Display for PublicPaneId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}:p{}",
+            self.workspace_id,
+            encode_public_number(self.number)
+        )
+    }
+}
+
+impl FromStr for PublicPaneId {
+    type Err = PublicIdParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (workspace_id, pane_number) = value.rsplit_once(":p").ok_or(PublicIdParseError)?;
+        let number = parse_public_number(pane_number)?;
+        if workspace_id.is_empty() {
+            return Err(PublicIdParseError);
+        }
+        Ok(Self::new(workspace_id, number))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PublicIdParseError;
+
+fn parse_public_number(encoded: &str) -> Result<usize, PublicIdParseError> {
+    if encoded.is_empty() {
+        return Err(PublicIdParseError);
+    }
+    decode_public_number(encoded)
+        .filter(|number| *number > 0)
+        .ok_or(PublicIdParseError)
+}
+
+/// Canonical public pane ID renderer; parsing uses `PublicPaneId::from_str`.
+pub(crate) fn public_pane_id_for_number(workspace_id: &str, pane_number: usize) -> String {
+    PublicPaneId::new(workspace_id, pane_number).to_string()
+}
+
+/// Canonical public tab ID renderer; parsing uses `PublicTabId::from_str`.
 pub(crate) fn public_tab_id_for_number(workspace_id: &str, tab_number: usize) -> String {
-    format!("{workspace_id}:t{}", encode_public_number(tab_number))
+    PublicTabId::new(workspace_id, tab_number).to_string()
 }
 
 pub(crate) fn reserve_workspace_ids(workspaces: &[Workspace]) {
@@ -186,9 +297,18 @@ pub struct Workspace {
     pub(crate) cached_git_ahead_behind: Option<(usize, usize)>,
     /// Cached derived Git repo metadata for status display.
     pub(crate) cached_git_space: Option<GitSpaceMetadata>,
-    pub(crate) metadata_tokens: crate::metadata_tokens::MetadataTokens,
-    pub(crate) metadata_token_sequences: crate::metadata_tokens::SequenceMarks,
-    /// Public pane numbers within this workspace. Closed pane numbers are not reused.
+    pub(crate) metadata_tokens: crate::terminal::metadata_tokens::MetadataTokens,
+    pub(crate) metadata_token_sequences: crate::terminal::metadata_tokens::SequenceMarks,
+    /// Stable public numbers assigned to live panes in this workspace.
+    ///
+    /// This is identity metadata, not the authoritative pane set: the layout
+    /// owns pane order and geometry, while each tab's `panes` map owns pane
+    /// state. Its keys mirror the live pane set to map internal `PaneId`s to
+    /// stable public numbers; those values cannot be derived from either
+    /// store. Snapshot save/restore also persists these assignments directly
+    /// in `src/persist/snapshot.rs` and `src/persist/restore.rs`. Removing the
+    /// map means moving number ownership into pane state or changing the
+    /// snapshot model; neither choice is a derivation from the current stores.
     pub public_pane_numbers: HashMap<PaneId, usize>,
     pub(crate) next_public_pane_number: usize,
     pub(crate) next_public_tab_number: usize,
@@ -266,7 +386,7 @@ impl Workspace {
             cached_git_branch: None,
             cached_git_ahead_behind: None,
             cached_git_space: None,
-            metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
+            metadata_tokens: crate::terminal::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
             next_public_pane_number: 2,
@@ -450,7 +570,7 @@ impl Workspace {
             scrollback_limit_bytes,
             host_terminal_theme,
             host_terminal_appearance,
-            crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
+            crate::pane::PaneShellConfig::new("", false),
             Some(argv),
             extra_env,
             spawn,
@@ -648,7 +768,7 @@ impl Workspace {
             scrollback_limit_bytes,
             host_terminal_theme,
             host_terminal_appearance,
-            crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
+            crate::pane::PaneShellConfig::new("", false),
             extra_env,
             focus_new_pane,
             Some(argv),
@@ -972,7 +1092,7 @@ impl Workspace {
             cached_git_branch: None,
             cached_git_ahead_behind: None,
             cached_git_space: None,
-            metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
+            metadata_tokens: crate::terminal::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
             next_public_pane_number: 2,
@@ -1189,6 +1309,20 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_tab_and_pane_ids_share_one_canonical_format() {
+        let tab_id = PublicTabId::new("wA", 32);
+        let pane_id = PublicPaneId::new("wA", 33);
+
+        assert_eq!(tab_id.to_string(), "wA:t0");
+        assert_eq!(pane_id.to_string(), "wA:p11");
+        assert_eq!("wA:t0".parse::<PublicTabId>(), Ok(tab_id));
+        assert_eq!("wA:p11".parse::<PublicPaneId>(), Ok(pane_id));
+        assert!("wA:t".parse::<PublicTabId>().is_err());
+        assert!("wA:p".parse::<PublicPaneId>().is_err());
+        assert!("wA:1".parse::<PublicTabId>().is_err());
+    }
 
     #[test]
     fn generated_workspace_ids_are_short_base32_handles() {

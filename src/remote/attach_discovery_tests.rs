@@ -2,6 +2,10 @@
 
 use super::*;
 
+fn executable(path: &'static str) -> RemoteExecutable {
+    RemoteExecutable::parse(path).expect("test precondition")
+}
+
 /// A remote host reached through fake round trips. `fail_at` names the call (counted
 /// from zero over this fake's whole life) that times out, as an attempt deadline would.
 struct FakeHost {
@@ -48,28 +52,24 @@ impl FakeHost {
 }
 
 impl DiscoverySteps for FakeHost {
-    fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteShepr>> {
+    fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
         self.call("login".into())?;
-        Ok(self.login_shell.map(RemoteShepr::new))
+        Ok(self.login_shell.map(executable))
     }
 
-    fn path_via_sh(&mut self) -> io::Result<Option<RemoteShepr>> {
+    fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
         self.call("sh".into())?;
-        Ok(self.sh.map(RemoteShepr::new))
+        Ok(self.sh.map(executable))
     }
 
-    fn known_locations(&mut self) -> io::Result<Vec<RemoteShepr>> {
+    fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>> {
         self.call("known".into())?;
-        Ok(self
-            .known
-            .iter()
-            .map(|path| RemoteShepr::new(path))
-            .collect())
+        Ok(self.known.iter().map(|path| executable(path)).collect())
     }
 
-    fn matches(&mut self, candidate: &RemoteShepr) -> io::Result<bool> {
-        self.call(format!("probe {}", candidate.path))?;
-        Ok(candidate.path == self.matching)
+    fn matches(&mut self, candidate: &RemoteExecutable) -> io::Result<bool> {
+        self.call(format!("probe {}", candidate.as_str()))?;
+        Ok(candidate.as_str() == self.matching)
     }
 
     fn target(&self) -> &str {
@@ -87,7 +87,7 @@ fn uninterrupted_discovery_runs_each_round_trip_once() {
     let found = DiscoveryProgress::default()
         .advance(&mut host)
         .expect("a matching candidate is found");
-    assert_eq!(found.path, "/home/u/.cargo/bin/shepr");
+    assert_eq!(found.as_str(), "/home/u/.cargo/bin/shepr");
     // The login shell found a path, so the /bin/sh fallback is skipped, and the
     // duplicate from the known locations is probed once.
     assert_eq!(
@@ -124,7 +124,7 @@ fn a_timed_out_attempt_resumes_at_the_round_trip_it_did_not_finish() {
             }
         }
     };
-    assert_eq!(found.path, "/home/u/.local/bin/shepr");
+    assert_eq!(found.as_str(), "/home/u/.local/bin/shepr");
     // Nothing that completed ran again; only the interrupted round trip repeats.
     assert_eq!(
         host.calls,
@@ -149,7 +149,10 @@ fn a_first_round_trip_that_times_out_leaves_no_progress() {
     assert!(progress.advance(&mut host).is_err());
     assert!(!progress.has_progress());
     assert_eq!(
-        progress.advance(&mut host).expect("second attempt").path,
+        progress
+            .advance(&mut host)
+            .expect("second attempt")
+            .as_str(),
         "/usr/bin/shepr"
     );
 }
@@ -241,16 +244,16 @@ fn ssh_exit_255_from_a_discovery_command_is_a_link_failure() {
     // And discovery keeps its progress across it.
     struct LinkDrop(FakeHost);
     impl DiscoverySteps for LinkDrop {
-        fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteShepr>> {
+        fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
             self.0.path_via_login_shell()
         }
-        fn path_via_sh(&mut self) -> io::Result<Option<RemoteShepr>> {
+        fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
             self.0.path_via_sh()
         }
-        fn known_locations(&mut self) -> io::Result<Vec<RemoteShepr>> {
+        fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>> {
             self.0.known_locations()
         }
-        fn matches(&mut self, candidate: &RemoteShepr) -> io::Result<bool> {
+        fn matches(&mut self, candidate: &RemoteExecutable) -> io::Result<bool> {
             if self.0.calls.len() == 2 {
                 self.0.calls.push("dropped".into());
                 return Err(command_failed(

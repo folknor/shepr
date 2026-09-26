@@ -567,7 +567,7 @@ mod tests {
     #[test]
     fn surface_encodings_preserve_projection_and_patch_baselines() {
         let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
-        let mut decoder = crate::protocol::surface_reuse::Decoder::new(true);
+        let mut decoder = crate::protocol::surface_reuse::Decoder::default();
         let mut surface = test_surface("popup");
         let buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 240, 100));
         surface.frame = FrameData::from_ratatui_buffer(&buffer, None);

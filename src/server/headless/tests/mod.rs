@@ -1171,7 +1171,7 @@ impl PaneSurfaceReceiver {
     fn new(receiver: std::sync::mpsc::Receiver<Vec<u8>>) -> Self {
         Self {
             receiver,
-            decoder: crate::protocol::surface_reuse::Decoder::new(true),
+            decoder: crate::protocol::surface_reuse::Decoder::default(),
         }
     }
 

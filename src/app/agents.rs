@@ -110,12 +110,7 @@ impl App {
             }
         }
 
-        let Some(terminal) = self
-            .state
-            .terminals
-            .values_mut()
-            .find(|terminal| terminal.id.to_string() == resolved.terminal_id)
-        else {
+        let Some(terminal) = self.state.terminals.get_mut(&resolved.terminal_key) else {
             return Err(AgentRenameError::Target(TerminalTargetError::NotFound {
                 target: target.to_string(),
             }));

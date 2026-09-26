@@ -152,13 +152,14 @@ pub(crate) fn render_collapsed_sidebar(
             number_style,
         );
         let status = workspace.agent_status;
+        let glyph = status_glyph(status, config.status_indicators, palette, false);
         put_text(
             buffer,
             rect.x.saturating_add(2),
             rect.y,
             rect.width.saturating_sub(2),
-            status_icon(status, config.status_indicators),
-            Style::default().fg(status_color(status, palette)),
+            glyph.text,
+            glyph.style,
         );
         hits.workspaces.push(WorkspaceHit {
             rect,
@@ -217,13 +218,14 @@ pub(crate) fn render_collapsed_sidebar(
                 palette.overlay0
             }),
         );
+        let glyph = status_glyph(agent.agent_status, config.status_indicators, palette, false);
         put_text(
             buffer,
             rect.x.saturating_add(2),
             rect.y,
             rect.width.saturating_sub(2),
-            status_icon(agent.agent_status, config.status_indicators),
-            Style::default().fg(status_color(agent.agent_status, palette)),
+            glyph.text,
+            glyph.style,
         );
         hits.agents.push((rect, pane_id));
     }
@@ -263,9 +265,8 @@ pub(crate) fn render_sidebar(
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
     let (workspace_area, detail_area) =
-        crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
-    hits.sidebar_section_divider =
-        crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
+        expanded_sidebar_sections(area, state.sidebar_section_split);
+    hits.sidebar_section_divider = sidebar_section_divider_rect(area, state.sidebar_section_split);
     put_text(
         buffer,
         workspace_area.x,
@@ -489,11 +490,11 @@ pub(in crate::client::shell) fn workspace_rows(
     workspace: &ClientShellWorkspace,
     status: crate::api::schema::AgentStatus,
     config: &SpacesSidebarConfig,
-) -> Vec<Vec<crate::ui::ResolvedToken>> {
+) -> Vec<Vec<ResolvedToken>> {
     let token_values = workspace.tokens.iter().cloned().collect::<HashMap<_, _>>();
-    crate::ui::sidebar_space_rows(
+    sidebar_space_rows(
         config,
-        &crate::ui::SpaceTokenContext {
+        &SpaceTokenContext {
             workspace: &workspace.label,
             branch: workspace.branch.as_deref(),
             state_text: status_text(status),
@@ -509,7 +510,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
     workspace_number: usize,
     status: crate::api::schema::AgentStatus,
     indicators: crate::config::StatusIndicatorStyle,
-    rows: &[Vec<crate::ui::ResolvedToken>],
+    rows: &[Vec<ResolvedToken>],
     focused: bool,
     selected: bool,
     navigating: bool,
@@ -556,13 +557,11 @@ pub(in crate::client::shell) fn render_workspace_rows(
         } else {
             palette.overlay0
         });
-        let spans = crate::ui::resolved_token_spans(
+        let glyph = status_glyph(status, indicators, palette, false);
+        let spans = resolved_token_spans(
             rows.get(row_index).map_or(&[], Vec::as_slice),
-            (
-                status_icon(status, indicators),
-                Style::default().fg(status_color(status, palette)),
-            ),
-            Style::default().fg(status_color(status, palette)),
+            glyph,
+            glyph.style,
             workspace_style,
             secondary_style,
             Style::default().fg(palette.overlay1),

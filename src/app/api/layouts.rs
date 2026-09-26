@@ -128,7 +128,7 @@ impl App {
                     scrollback_limit_bytes,
                     host_terminal_theme,
                     host_terminal_appearance,
-                    crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
+                    crate::pane::PaneShellConfig::new(&default_shell, self.state.login_shell),
                     extra_env,
                     &spawn,
                 )
@@ -440,7 +440,7 @@ impl App {
                     scrollback_limit_bytes,
                     host_terminal_theme,
                     host_terminal_appearance,
-                    crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
+                    crate::pane::PaneShellConfig::new(&default_shell, self.state.login_shell),
                     extra_env,
                     false,
                     &spawn,
@@ -596,7 +596,7 @@ mod tests {
     use super::*;
     use crate::{
         api::schema::{ErrorResponse, ResponseResult, SuccessResponse},
-        config::{Config, ShellModeConfig},
+        config::Config,
         workspace::Workspace,
     };
 
@@ -609,7 +609,7 @@ mod tests {
             crate::api::EventHub::default(),
         );
         app.state.default_shell = exiting_test_command().into();
-        app.state.shell_mode = ShellModeConfig::NonLogin;
+        app.state.login_shell = false;
         app.state.workspaces = vec![Workspace::test_new("layout")];
         app.state.active = Some(0);
         app.state.selected = 0;

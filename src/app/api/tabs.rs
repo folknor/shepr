@@ -88,7 +88,7 @@ impl App {
                     scrollback_limit_bytes,
                     host_terminal_theme,
                     host_terminal_appearance,
-                    crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
+                    crate::pane::PaneShellConfig::new(&default_shell, self.state.login_shell),
                     extra_env,
                     &spawn,
                 )
@@ -294,11 +294,7 @@ fn tab_not_found(id: String, tab_id: &str) -> String {
 mod tests {
     use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
     use super::*;
-    use crate::{
-        api::schema::SuccessResponse,
-        config::{Config, ShellModeConfig},
-        workspace::Workspace,
-    };
+    use crate::{api::schema::SuccessResponse, config::Config, workspace::Workspace};
 
     #[test]
     fn api_tab_close_last_tab_closes_workspace_and_emits_both_events() {
@@ -488,7 +484,7 @@ mod tests {
             event_hub,
         );
         app.state.default_shell = exiting_test_command().into();
-        app.state.shell_mode = ShellModeConfig::NonLogin;
+        app.state.login_shell = false;
         let workspace = Workspace::test_new("tabs");
         let focused_pane = workspace.tabs[0].root_pane;
         app.state.workspaces = vec![workspace];

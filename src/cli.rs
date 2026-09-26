@@ -55,23 +55,129 @@ pub(crate) fn parse_env_assignment(raw: &str) -> Result<(String, String), String
     Ok((key.to_string(), value.to_string()))
 }
 
-pub enum CommandOutcome {
-    Handled(i32),
-    NotCli,
+/// A top-level command after clap has parsed argv once. The variants make
+/// launch modes and CLI command groups explicit while retaining each group's
+/// parsed values for the existing handlers.
+pub(crate) enum Launch {
+    Tui { attached_session: Option<String> },
+    HeadlessServer,
+    Client,
+    ApiBridge { check: bool },
+    ClientBridge { idle_timeout_v1: bool },
+    Cli(CliCommand),
 }
 
-/// The command line, parsed once by the clap spec in `spec.rs`. Launch options
-/// (`--session`, `--machine`, `--remote`, ...) are only recognised before the
-/// subcommand; everything after it belongs to the subcommand.
+pub(crate) enum CliCommand {
+    Status(ArgMatches),
+    Config(ArgMatches),
+    Machine(ArgMatches),
+    Server(ArgMatches),
+    Workspace(ArgMatches),
+    Tab(ArgMatches),
+    Agent(ArgMatches),
+    Pane(ArgMatches),
+    Terminal(ArgMatches),
+    Session(ArgMatches),
+    Integration(ArgMatches),
+    Other { name: String, matches: ArgMatches },
+}
+
+impl CliCommand {
+    fn from_matches(name: &str, matches: &ArgMatches) -> Self {
+        let matches = matches.clone();
+        match name {
+            "status" => Self::Status(matches),
+            "config" => Self::Config(matches),
+            "machine" => Self::Machine(matches),
+            "server" => Self::Server(matches),
+            "workspace" => Self::Workspace(matches),
+            "tab" => Self::Tab(matches),
+            "agent" => Self::Agent(matches),
+            "pane" => Self::Pane(matches),
+            "terminal" => Self::Terminal(matches),
+            "session" => Self::Session(matches),
+            "integration" => Self::Integration(matches),
+            _ => Self::Other {
+                name: name.to_owned(),
+                matches,
+            },
+        }
+    }
+
+    fn parts(&self) -> (&str, &ArgMatches) {
+        match self {
+            Self::Status(matches) => ("status", matches),
+            Self::Config(matches) => ("config", matches),
+            Self::Machine(matches) => ("machine", matches),
+            Self::Server(matches) => ("server", matches),
+            Self::Workspace(matches) => ("workspace", matches),
+            Self::Tab(matches) => ("tab", matches),
+            Self::Agent(matches) => ("agent", matches),
+            Self::Pane(matches) => ("pane", matches),
+            Self::Terminal(matches) => ("terminal", matches),
+            Self::Session(matches) => ("session", matches),
+            Self::Integration(matches) => ("integration", matches),
+            Self::Other { name, matches } => (name, matches),
+        }
+    }
+}
+
+/// Values parsed from the root options plus one typed launch. Launch options
+/// are only recognised before the subcommand; everything after it belongs to
+/// that subcommand.
 pub(crate) struct Invocation {
-    matches: ArgMatches,
+    pub(crate) launch: Launch,
+    session: Option<String>,
+    machine: Option<String>,
+    remote: Option<String>,
+    remote_keybindings: Option<String>,
+    help: bool,
+    version: bool,
+    default_config: bool,
 }
 
 /// Parses argv. On a usage error, or when `--help` for a subcommand was asked
 /// for, clap's message has already been printed and the exit code is returned.
 pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
     match spec::command().try_get_matches_from(args) {
-        Ok(matches) => Ok(Invocation { matches }),
+        Ok(matches) => {
+            let launch = match matches.subcommand() {
+                None => Launch::Tui {
+                    attached_session: None,
+                },
+                Some(("server", matches)) if matches.subcommand().is_none() => {
+                    Launch::HeadlessServer
+                }
+                Some(("client", _)) => Launch::Client,
+                Some(("remote-api-bridge", matches)) => Launch::ApiBridge {
+                    check: matches::flag(matches, "check"),
+                },
+                Some(("remote-client-bridge", matches)) => Launch::ClientBridge {
+                    idle_timeout_v1: matches::flag(matches, "idle-timeout-v1"),
+                },
+                Some(("session", matches))
+                    if matches
+                        .subcommand()
+                        .is_some_and(|(name, _)| name == "attach") =>
+                {
+                    let attached_session = matches
+                        .subcommand()
+                        .and_then(|(_, attach)| matches::string(attach, "name"));
+                    Launch::Tui { attached_session }
+                }
+                Some((name, matches)) => Launch::Cli(CliCommand::from_matches(name, matches)),
+            };
+            Ok(Invocation {
+                launch,
+                session: matches::string(&matches, "session"),
+                machine: matches::string(&matches, "machine"),
+                remote: matches::string(&matches, "remote"),
+                remote_keybindings: matches::string(&matches, "remote-keybindings"),
+                help: matches::flag(&matches, "help"),
+                version: matches::flag(&matches, "version"),
+                default_config: matches::flag(&matches, "default-config"),
+            })
+        }
         Err(error) => {
             crate::platform::begin_cli_output();
             if let Err(print_error) = error.print() {
@@ -84,47 +190,42 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
 
 impl Invocation {
     pub(crate) fn session(&self) -> Option<String> {
-        matches::string(&self.matches, "session")
+        self.session.clone()
     }
 
     pub(crate) fn machine(&self) -> Option<String> {
-        matches::string(&self.matches, "machine")
+        self.machine.clone()
     }
 
     pub(crate) fn remote(&self) -> Option<String> {
-        matches::string(&self.matches, "remote")
+        self.remote.clone()
     }
 
     pub(crate) fn remote_keybindings(&self) -> Option<String> {
-        matches::string(&self.matches, "remote-keybindings")
+        self.remote_keybindings.clone()
     }
 
     pub(crate) fn help_requested(&self) -> bool {
-        matches::flag(&self.matches, "help")
+        self.help
     }
 
     pub(crate) fn version_requested(&self) -> bool {
-        matches::flag(&self.matches, "version")
+        self.version
     }
 
     pub(crate) fn default_config_requested(&self) -> bool {
-        matches::flag(&self.matches, "default-config")
-    }
-
-    pub(crate) fn command_name(&self) -> Option<&str> {
-        self.matches.subcommand_name()
+        self.default_config
     }
 
     /// The name given to `session attach NAME`. That command is the default
     /// launch into the named session, the same as `--session NAME`.
     pub(crate) fn session_attach_name(&self) -> Option<String> {
-        let ("session", session) = self.matches.subcommand()? else {
-            return None;
-        };
-        let ("attach", attach) = session.subcommand()? else {
-            return None;
-        };
-        Some(matches::required(attach, "name"))
+        match &self.launch {
+            Launch::Tui {
+                attached_session: Some(name),
+            } => Some(name.clone()),
+            _ => None,
+        }
     }
 
     /// The session this invocation explicitly targets, if any.
@@ -136,36 +237,37 @@ impl Invocation {
             (session, attach) => Ok(session.or(attach)),
         }
     }
+}
 
-    /// Arguments for the hidden bridge commands, in the shape their runners take.
-    pub(crate) fn bridge_args(&self) -> Vec<String> {
-        let Some((name, matches)) = self.matches.subcommand() else {
-            return Vec::new();
-        };
-        let option = match name {
-            "remote-client-bridge" => "idle-timeout-v1",
-            "remote-api-bridge" => "check",
-            _ => return Vec::new(),
-        };
-        if matches::flag(matches, option) {
-            vec![format!("--{option}")]
-        } else {
-            Vec::new()
-        }
+impl Invocation {
+    pub(crate) fn has_subcommand(&self) -> bool {
+        !matches!(
+            &self.launch,
+            Launch::Tui {
+                attached_session: None
+            }
+        )
     }
 }
 
-/// Whether `shepr <words...>` names a command (or command group) in the spec.
-#[cfg(test)]
-pub(crate) fn command_path_exists(words: &[&str]) -> bool {
-    let mut command = spec::command();
-    for word in words {
-        let Some(next) = command.find_subcommand(word).cloned() else {
-            return false;
-        };
-        command = next;
+pub(crate) fn print_help(requested_session: Option<crate::session::SessionId>) {
+    crate::platform::begin_cli_output();
+    let help = spec::command().render_help().to_string();
+    print!("{help}");
+    if !help.ends_with("\n\n") {
+        println!();
     }
-    true
+    match crate::config::AppPaths::resolve_with_session(requested_session) {
+        Ok(paths) => {
+            println!("Config: {}", paths.config_file().display());
+            println!("Logs:   {}", crate::logging::help_log_paths_summary(&paths));
+        }
+        Err(errors) => {
+            println!("Config: unavailable ({})", errors.join("; "));
+            println!("Logs:   unavailable ({})", errors.join("; "));
+        }
+    }
+    println!("Env:    SHEPR_CONFIG_PATH overrides config file path");
 }
 
 pub(super) fn print_read_response(response: &serde_json::Value) -> std::io::Result<i32> {
@@ -181,100 +283,48 @@ pub(super) fn print_read_response(response: &serde_json::Value) -> std::io::Resu
 
 /// Runs the invocation's subcommand against the saved machine named by
 /// `--machine`.
-pub(crate) fn run_on_machine(
-    invocation: &Invocation,
-    selector: &str,
-) -> std::io::Result<CommandOutcome> {
+pub(crate) fn run_on_machine(command: Option<&CliCommand>, selector: &str) -> std::io::Result<i32> {
     let paths = resolve_machine_app_paths()?;
-    target::run_on_machine(selector, invocation.matches.subcommand(), &paths)
+    target::run_on_machine(selector, command, &paths)
 }
 
-/// Runs the invocation's subcommand. `NotCli` means the invocation launches
-/// something instead: the TUI (no subcommand, or `session attach`), the
-/// headless server (bare `server`), or one of the hidden client/bridge modes.
+/// Runs one parsed CLI command. Launch modes are handled by `main` directly.
 pub(crate) fn run(
-    invocation: &Invocation,
+    command: &CliCommand,
     requested_session: Option<crate::session::SessionId>,
-) -> std::io::Result<CommandOutcome> {
-    match invocation.matches.subcommand() {
-        Some(("server", matches)) if matches.subcommand().is_none() => Ok(CommandOutcome::NotCli),
-        Some(("session", matches))
-            if matches
-                .subcommand()
-                .is_some_and(|(name, _)| name == "attach") =>
-        {
-            Ok(CommandOutcome::NotCli)
-        }
-        Some(("remote-api-bridge" | "remote-client-bridge" | "client", _)) => {
-            Ok(CommandOutcome::NotCli)
-        }
-        Some(("config", matches))
-            if matches
-                .subcommand()
-                .is_some_and(|(name, _)| name == "check") =>
-        {
-            let Some((name, matches)) = invocation.matches.subcommand() else {
-                return Ok(CommandOutcome::NotCli);
-            };
-            dispatch_config_check(name, matches)
-        }
-        Some((name, matches)) => {
-            let paths = resolve_app_paths(requested_session)?;
-            dispatch(name, matches, &paths)
-        }
-        None => Ok(CommandOutcome::NotCli),
+) -> std::io::Result<i32> {
+    if let CliCommand::Config(matches) = command
+        && matches
+            .subcommand()
+            .is_some_and(|(name, _)| name == "check")
+    {
+        return Ok(run_config_command(matches));
     }
+    let paths = resolve_app_paths(requested_session)?;
+    let context = target::CliContext::local(paths);
+    dispatch_with_config(command, None, &context)
 }
 
-fn dispatch(
-    name: &str,
-    matches: &ArgMatches,
-    paths: &crate::config::AppPaths,
-) -> std::io::Result<CommandOutcome> {
-    dispatch_with_config(name, matches, None, paths)
-}
-
-pub(super) fn dispatch_with_config(
-    name: &str,
-    matches: &ArgMatches,
+fn dispatch_with_config(
+    command: &CliCommand,
     config: Option<crate::config::Config>,
-    paths: &crate::config::AppPaths,
-) -> std::io::Result<CommandOutcome> {
-    let exit_code = match name {
-        "server" => {
-            let Some(exit_code) = server::run_server_command(matches, paths)? else {
-                return Ok(CommandOutcome::NotCli);
-            };
-            exit_code
-        }
-        "status" => status::run_status_command(matches, paths)?,
-        "config" => run_config_command(matches),
-        "machine" => machine::run_machine_command(matches, paths)?,
-        "workspace" => workspace::run_workspace_command(matches, paths)?,
-        "tab" => tab::run_tab_command(matches, paths)?,
-        "agent" => agent::run_agent_command(matches, config, paths)?,
-        "terminal" => run_terminal_command(matches, config, paths)?,
-        "pane" => pane::run_pane_command(matches, paths)?,
-        "integration" => integration::run_integration_command(matches, paths)?,
-        "session" => {
-            let Some(exit_code) = run_session_command(matches, paths)? else {
-                return Ok(CommandOutcome::NotCli);
-            };
-            exit_code
-        }
-        _ => return Ok(CommandOutcome::NotCli),
-    };
-
-    Ok(CommandOutcome::Handled(exit_code))
-}
-
-fn dispatch_config_check(name: &str, matches: &ArgMatches) -> std::io::Result<CommandOutcome> {
-    let exit_code = if name == "config" {
-        run_config_command(matches)
-    } else {
-        return Ok(CommandOutcome::NotCli);
-    };
-    Ok(CommandOutcome::Handled(exit_code))
+    context: &target::CliContext,
+) -> std::io::Result<i32> {
+    let (_, matches) = command.parts();
+    match command {
+        CliCommand::Status(_) => status::run_status_command(matches, context),
+        CliCommand::Config(_) => Ok(run_config_command(matches)),
+        CliCommand::Machine(_) => machine::run_machine_command(matches, context),
+        CliCommand::Server(_) => server::run_server_command(matches, context),
+        CliCommand::Workspace(_) => workspace::run_workspace_command(matches, context),
+        CliCommand::Tab(_) => tab::run_tab_command(matches, context),
+        CliCommand::Agent(_) => agent::run_agent_command(matches, config, context),
+        CliCommand::Pane(_) => pane::run_pane_command(matches, context),
+        CliCommand::Terminal(_) => run_terminal_command(matches, config, context),
+        CliCommand::Session(_) => run_session_command(matches, context),
+        CliCommand::Integration(_) => integration::run_integration_command(matches, context),
+        CliCommand::Other { .. } => Ok(missing_subcommand()),
+    }
 }
 
 fn resolve_app_paths(
@@ -351,17 +401,17 @@ fn load_validated_config(
 fn run_terminal_command(
     matches: &ArgMatches,
     config: Option<crate::config::Config>,
-    paths: &crate::config::AppPaths,
+    context: &target::CliContext,
 ) -> std::io::Result<i32> {
     match matches.subcommand() {
         Some(("attach", matches)) => {
             let config = match config {
                 Some(config) => config,
-                None => load_validated_config(paths)?,
+                None => load_validated_config(context)?,
             };
             crate::client::run_terminal_attach(
                 &config,
-                paths,
+                context,
                 matches::required(matches, "terminal_id"),
                 matches::flag(matches, "takeover"),
             )?;
@@ -369,7 +419,7 @@ fn run_terminal_command(
         }
         Some(("title", matches)) => match matches.subcommand() {
             Some(("set", matches)) => print_response(&send_request(
-                paths,
+                context,
                 &Request {
                     id: "cli:terminal:title:set".into(),
                     method: Method::ClientWindowTitleSet(ClientWindowTitleSetParams {
@@ -378,7 +428,7 @@ fn run_terminal_command(
                 },
             )?),
             Some(("clear", _)) => print_response(&send_request(
-                paths,
+                context,
                 &Request {
                     id: "cli:terminal:title:clear".into(),
                     method: Method::ClientWindowTitleClear(EmptyParams::default()),
@@ -390,25 +440,21 @@ fn run_terminal_command(
     }
 }
 
-/// `None` for `session attach`, which is a TUI launch rather than a command.
-fn run_session_command(
-    matches: &ArgMatches,
-    paths: &crate::config::AppPaths,
-) -> std::io::Result<Option<i32>> {
+fn run_session_command(matches: &ArgMatches, paths: &target::CliContext) -> std::io::Result<i32> {
     match matches.subcommand() {
-        Some(("list", matches)) => session_list(paths, matches::flag(matches, "json")).map(Some),
-        Some(("attach", _)) => Ok(None),
-        Some(("stop", matches)) => Ok(Some(session_stop(
+        Some(("list", matches)) => session_list(paths, matches::flag(matches, "json")),
+        Some(("attach", _)) => Ok(missing_subcommand()),
+        Some(("stop", matches)) => Ok(session_stop(
             &matches::required(matches, "name"),
             matches::flag(matches, "json"),
             paths,
-        ))),
-        Some(("delete", matches)) => Ok(Some(session_delete(
+        )),
+        Some(("delete", matches)) => Ok(session_delete(
             &matches::required(matches, "name"),
             matches::flag(matches, "json"),
             paths,
-        ))),
-        _ => Ok(Some(missing_subcommand())),
+        )),
+        _ => Ok(missing_subcommand()),
     }
 }
 
@@ -498,12 +544,9 @@ pub(super) fn print_response(response: &serde_json::Value) -> std::io::Result<i3
     Ok(0)
 }
 
-pub(super) fn send_ok_request(
-    paths: &crate::config::AppPaths,
-    method: Method,
-) -> std::io::Result<i32> {
+fn send_ok_request(context: &target::CliContext, method: Method) -> std::io::Result<i32> {
     let response = send_request(
-        paths,
+        context,
         &Request {
             id: "cli:request".into(),
             method,
@@ -521,50 +564,56 @@ pub(super) fn send_ok_request(
     Ok(0)
 }
 
-pub(super) fn send_request(
-    paths: &crate::config::AppPaths,
+fn send_request(
+    context: &target::CliContext,
     request: &Request,
 ) -> std::io::Result<serde_json::Value> {
-    let client = target::api_client(paths)?;
-    ensure_server_protocol_compatible(paths, &client, &request.id)?;
+    let client = target::api_client(context)?;
+    ensure_server_protocol_compatible(context, &client, &request.id)?;
     client
         .request_value(request)
-        .map_err(|err| map_server_not_running_or_io(paths, err, &request.id, &client))
+        .map_err(|err| map_server_not_running_or_io(context, err, &request.id, &client))
 }
 
-pub(super) fn send_request_unchecked(
-    paths: &crate::config::AppPaths,
+fn send_request_unchecked(
+    context: &target::CliContext,
     request: &Request,
 ) -> std::io::Result<serde_json::Value> {
-    let client = target::api_client(paths)?;
+    let client = target::api_client(context)?;
     client
         .request_value(request)
-        .map_err(|err| map_server_not_running_or_io(paths, err, &request.id, &client))
+        .map_err(|err| map_server_not_running_or_io(context, err, &request.id, &client))
 }
 
 fn ensure_server_protocol_compatible(
-    paths: &crate::config::AppPaths,
+    context: &target::CliContext,
     client: &ApiClient,
     request_id: &str,
 ) -> std::io::Result<()> {
     // Checked once per target: a polling command must not pay a status round
     // trip (up to 15 s under `--machine`) before every request.
-    if target::protocol_checked() {
+    if context.protocol_checked() {
         return Ok(());
     }
-    let status = target::server_status(paths, client)
-        .map_err(|err| map_server_not_running_or_io(paths, err, request_id, client))?;
-    let server_protocol = status
-        .protocol
-        .ok_or_else(|| std::io::Error::other("server ping did not include a protocol version"))?;
-    let Some(response) = protocol_guard::mismatch_response(
+    let status = target::server_status(context, client)
+        .map_err(|err| map_server_not_running_or_io(context, err, request_id, client))?;
+    let server_protocol = match crate::protocol::Compatibility::of(status.protocol) {
+        crate::protocol::Compatibility::Compatible => {
+            context.mark_protocol_checked();
+            return Ok(());
+        }
+        crate::protocol::Compatibility::DifferentBuild(protocol) => protocol,
+        crate::protocol::Compatibility::Unknown => {
+            return Err(std::io::Error::other(
+                "server ping did not include a protocol version",
+            ));
+        }
+    };
+    let response = protocol_guard::mismatch_response(
         request_id,
         server_protocol,
-        &target::restart_guidance(paths),
-    ) else {
-        target::mark_protocol_checked();
-        return Ok(());
-    };
+        &target::restart_guidance(context),
+    );
 
     eprintln!(
         "{}",
@@ -602,20 +651,20 @@ pub(super) fn server_not_running_error(err: &std::io::Error) -> bool {
 /// friendly `server_not_running` JSON error plus a recognizable marker; all
 /// other errors fall through unchanged so existing handling is preserved.
 fn map_server_not_running_or_io(
-    paths: &crate::config::AppPaths,
+    context: &target::CliContext,
     err: ApiClientError,
     request_id: &str,
     client: &ApiClient,
 ) -> std::io::Error {
-    if target::is_remote() {
-        return target::remote_error(api_client_error_to_io(err));
+    if context.is_remote() {
+        return target::remote_error(context, api_client_error_to_io(err));
     }
     match err {
         ApiClientError::Io(io_err) if server_not_running_error(&io_err) => {
             server_not_running::reported_error(server_not_running::response(
                 request_id,
                 &client.socket_path(),
-                paths,
+                context,
             ))
         }
         err => api_client_error_to_io(err),
@@ -664,14 +713,14 @@ fn print_json(value: &serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandOutcome, Invocation};
+    use super::{CliCommand, Invocation, Launch};
 
     pub(super) fn parse(args: &[&str]) -> Invocation {
         let mut argv = vec!["shepr".to_string()];
         argv.extend(args.iter().map(ToString::to_string));
-        match super::spec::command().try_get_matches_from(&argv) {
-            Ok(matches) => Invocation { matches },
-            Err(error) => panic!("{args:?} should parse: {error}"),
+        match super::parse_invocation(&argv) {
+            Ok(invocation) => invocation,
+            Err(code) => panic!("{args:?} should parse (exit {code})"),
         }
     }
 
@@ -687,9 +736,11 @@ mod tests {
     /// The sub-matches of `shepr <group> <command> ...`.
     pub(super) fn command_matches(args: &[&str]) -> clap::ArgMatches {
         let invocation = parse(args);
-        let Some((_, group)) = invocation.matches.subcommand() else {
-            panic!("{args:?} has no command");
+        let Launch::Cli(command) = &invocation.launch else {
+            panic!("{args:?} is not a CLI command");
         };
+        // A CLI launch carries the group's matches (`pane`, `tab`, ...).
+        let (_, group) = command.parts();
         let Some((_, command)) = group.subcommand() else {
             panic!("{args:?} has no subcommand");
         };
@@ -700,11 +751,17 @@ mod tests {
     fn launch_options_are_read_before_the_subcommand() {
         let invocation = parse(&["--session", "work", "workspace", "list"]);
         assert_eq!(invocation.session().as_deref(), Some("work"));
-        assert_eq!(invocation.command_name(), Some("workspace"));
+        assert!(matches!(
+            invocation.launch,
+            Launch::Cli(CliCommand::Workspace(_))
+        ));
 
         let invocation = parse(&["--session=api", "server", "stop"]);
         assert_eq!(invocation.session().as_deref(), Some("api"));
-        assert_eq!(invocation.command_name(), Some("server"));
+        assert!(matches!(
+            invocation.launch,
+            Launch::Cli(CliCommand::Server(_))
+        ));
     }
 
     #[test]
@@ -758,10 +815,7 @@ mod tests {
             invocation.requested_session().expect("test precondition"),
             Some("work".to_string())
         );
-        assert!(matches!(
-            super::run(&invocation, None).expect("test precondition"),
-            CommandOutcome::NotCli
-        ));
+        assert!(matches!(invocation.launch, Launch::Tui { .. }));
 
         let invocation = parse(&["--session", "a", "session", "attach", "b"]);
         assert!(invocation.requested_session().is_err());
@@ -785,12 +839,15 @@ mod tests {
             &["terminal", "attach", "terminal-1"][..],
             &["agent", "attach", "agent-1"],
         ] {
-            let error = match super::run(&parse(args), None) {
+            let invocation = parse(args);
+            let Launch::Cli(command) = invocation.launch else {
+                panic!("{args:?} is not a CLI command");
+            };
+            let error = match super::run(&command, None) {
                 Err(error) => error,
-                Ok(CommandOutcome::Handled(code)) => {
+                Ok(code) => {
                     panic!("{args:?} unexpectedly returned exit code {code}")
                 }
-                Ok(CommandOutcome::NotCli) => panic!("{args:?} was not handled as a CLI command"),
             };
             assert!(
                 error.to_string().contains("configuration error"),
@@ -835,22 +892,27 @@ mod tests {
     }
 
     #[test]
-    fn remote_bridge_options_round_trip() {
-        assert_eq!(
+    fn hidden_launch_modes_keep_typed_options() {
+        assert!(matches!(
             parse(&[
                 "--session",
                 "work",
                 "remote-client-bridge",
                 "--idle-timeout-v1"
             ])
-            .bridge_args(),
-            vec!["--idle-timeout-v1"]
-        );
-        assert_eq!(
-            parse(&["remote-api-bridge", "--check"]).bridge_args(),
-            vec!["--check"]
-        );
-        assert!(parse(&["remote-api-bridge"]).bridge_args().is_empty());
+            .launch,
+            Launch::ClientBridge {
+                idle_timeout_v1: true
+            }
+        ));
+        assert!(matches!(
+            parse(&["remote-api-bridge", "--check"]).launch,
+            Launch::ApiBridge { check: true }
+        ));
+        assert!(matches!(
+            parse(&["remote-api-bridge"]).launch,
+            Launch::ApiBridge { check: false }
+        ));
     }
 
     #[test]
@@ -887,7 +949,8 @@ mod tests {
         use crate::api::client::{ApiClient, ApiClientError};
 
         let scratch = crate::test_support::ScratchDir::new("cli-socket-error");
-        let paths = crate::config::AppPaths::test_at(scratch.path());
+        let paths =
+            super::target::CliContext::test_local(crate::config::AppPaths::test_at(scratch.path()));
         let client = ApiClient::local(&paths);
         let socket = client.socket_path().display().to_string();
 
@@ -915,7 +978,8 @@ mod tests {
         use crate::api::client::{ApiClient, ApiClientError};
 
         let scratch = crate::test_support::ScratchDir::new("cli-socket-classifier");
-        let paths = crate::config::AppPaths::test_at(scratch.path());
+        let paths =
+            super::target::CliContext::test_local(crate::config::AppPaths::test_at(scratch.path()));
         let client = ApiClient::local(&paths);
         let mapped = super::map_server_not_running_or_io(
             &paths,

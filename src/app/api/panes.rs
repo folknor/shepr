@@ -76,7 +76,8 @@ impl App {
             crate::api::schema::SplitDirection::Right => ratatui::layout::Direction::Horizontal,
             crate::api::schema::SplitDirection::Down => ratatui::layout::Direction::Vertical,
         };
-        let shell_config = crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode);
+        let shell_config =
+            crate::pane::PaneShellConfig::new(&default_shell, self.state.login_shell);
         let split_result = match params.ratio {
             Some(ratio) => ws.split_pane_with_ratio(
                 target_pane_id,
@@ -1752,7 +1753,7 @@ impl App {
                     "metadata_sequence_source_limit",
                     format!(
                         "pane metadata may track at most {} sequenced sources",
-                        crate::metadata_tokens::MAX_SEQUENCE_SOURCES
+                        crate::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES
                     ),
                 );
             }

@@ -80,14 +80,14 @@ pub(super) fn metadata_tokens(
 /// so it must already be absolute.
 pub(super) fn cwd(
     matches: &ArgMatches,
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
 ) -> Result<Option<String>, String> {
     let Some(raw) = string(matches, "cwd") else {
         return Ok(None);
     };
     resolve_cwd(
         &raw,
-        super::target::is_remote(),
+        paths.is_remote(),
         paths.home_dir(),
         paths.current_dir(),
     )

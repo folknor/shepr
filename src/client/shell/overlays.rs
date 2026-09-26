@@ -489,7 +489,15 @@ fn render_navigator_overlay(
         let connector_x = rect.x + padding;
         let indent = format!("{:width$}{connector}", "", width = usize::from(padding));
         let current = if r.current { "◆ " } else { "" };
-        let status = r.status.map(status_dot).unwrap_or_default();
+        let glyph_option = r.status.map(|status| {
+            status_glyph(
+                status,
+                crate::config::StatusIndicatorStyle::Dots,
+                p,
+                r.stale,
+            )
+        });
+        let status = glyph_option.map_or("", |glyph| glyph.text);
         let status_separator = if status.is_empty() { "" } else { " " };
         let label = format!("{indent}{current}{status}{status_separator}{}", r.label);
         let st = if r.status.is_none() {
@@ -531,19 +539,23 @@ fn render_navigator_overlay(
                 },
             );
         }
-        if let Some(status) = r.status {
+        if let (Some(status), Some(glyph)) = (r.status, glyph_option) {
             let prefix = format!("{indent}{current}");
-            let status_style = if r.stale || ix == selected {
+            let status_style = if ix == selected && !r.stale {
                 st
             } else {
-                Style::default().fg(status_color(status, p)).bg(p.panel_bg)
+                glyph.style.bg(if ix == selected {
+                    p.surface0
+                } else {
+                    p.panel_bg
+                })
             };
             put_text(
                 b,
                 rect.x.saturating_add(display_width(&prefix)),
                 rect.y,
-                display_width(status_dot(status)),
-                status_dot(status),
+                display_width(glyph.text),
+                glyph.text,
                 status_style,
             );
             let meta_style = if r.stale || ix == selected {

@@ -24,7 +24,7 @@ async fn surface_delta_reconstructs_metadata_text_and_hyperlinks() {
         retained_test_server_with_control(b"initial text");
     server.render_and_stream();
     let (initial_bytes, initial_message) = receive_message(&render_rx);
-    let mut decoder = protocol::surface_reuse::Decoder::new(true);
+    let mut decoder = protocol::surface_reuse::Decoder::default();
     let initial = decode_surface_message(&mut decoder, initial_message);
     assert_eq!(
         &initial,

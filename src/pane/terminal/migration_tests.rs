@@ -32,10 +32,9 @@ struct Observation {
 
 impl Harness {
     fn new(width: u16, height: u16) -> Self {
-        let terminal =
-            crate::ghostty::Terminal::new(width, height, 256).expect("test precondition");
+        let terminal = crate::ghostty::Terminal::new(width, height, 256);
         Self {
-            pane: PaneTerminal::new(GhosttyPaneTerminal::new(terminal).expect("test precondition")),
+            pane: PaneTerminal::new(GhosttyPaneTerminal::new(terminal)),
             width,
             height,
             effects: Effects::default(),
@@ -370,20 +369,10 @@ fn sparse_dirty_patches_preserve_coordinates_and_clipped_rows() {
             .core
             .lock()
             .expect("test precondition");
-        let mut iterator = crate::ghostty::RowIterator::new().expect("test precondition");
-        let mut rows = core
-            .render_state
-            .populate_row_iterator(&mut iterator)
-            .expect("test precondition");
-        let mut y = 0;
-        while rows.next() {
-            assert_eq!(
-                rows.dirty().expect("test precondition"),
-                height == 3 && y == 4
-            );
-            y += 1;
+        for row in core.render_state.iter_rows() {
+            assert_eq!(row.is_dirty(), height == 3 && row.y() == 4);
         }
-        assert_eq!(y, 6);
+        assert_eq!(core.render_state.rows(), 6);
     }
 }
 
@@ -403,19 +392,15 @@ fn dirty_patch_fallback_keeps_previously_collected_rows_dirty() {
         .core
         .lock()
         .expect("test precondition");
-    let mut iterator = crate::ghostty::RowIterator::new().expect("test precondition");
-    let mut rows = core
+    // `RowView::y` takes `&self`, so it doesn't coerce to the `FnMut(RowView)`
+    // that `map` wants here; the closure below is not actually redundant.
+    #[allow(clippy::redundant_closure_for_method_calls)]
+    let dirty: Vec<_> = core
         .render_state
-        .populate_row_iterator(&mut iterator)
-        .expect("test precondition");
-    let mut dirty = Vec::new();
-    let mut y = 0;
-    while rows.next() {
-        if rows.dirty().expect("test precondition") {
-            dirty.push(y);
-        }
-        y += 1;
-    }
+        .iter_rows()
+        .filter(|row| row.is_dirty())
+        .map(|row| row.y())
+        .collect();
     assert_eq!(dirty, vec![1, 4]);
 }
 

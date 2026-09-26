@@ -49,19 +49,8 @@ SSH credentials and key material remain owned by OpenSSH.",
                 ),
         )
         .subcommand(
-            profile_command("rename", "Rename a saved SSH machine").arg(
-                option("label", "LABEL")
-                    .required(true)
-                    .help("Set the machine label shown in the sidebar"),
-            ),
+            Command::new("remove")
+                .about("Remove a saved SSH machine")
+                .arg(Arg::new("machine").value_name("LABEL_OR_ID").required(true)),
         )
-        .subcommand(profile_command("remove", "Remove a saved SSH machine"))
-}
-
-fn profile_command(name: &'static str, about: &'static str) -> Command {
-    Command::new(name).about(about).arg(
-        Arg::new("profile-id")
-            .value_name("PROFILE_ID")
-            .required(true),
-    )
 }

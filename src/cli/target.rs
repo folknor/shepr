@@ -1,26 +1,9 @@
 use std::cell::{Cell, RefCell};
 use std::io;
+use std::ops::Deref;
 
 use crate::api::client::{ApiClient, ConnectionTarget};
 use crate::client::endpoint::{EndpointCatalog, SavedSshEndpoint};
-
-thread_local! {
-    // CLI dispatch is synchronous. Scope routing to this command, never the runtime or TUI.
-    static TARGET: RefCell<Option<MachineTarget>> = const { RefCell::new(None) };
-    // Whether the current target's server already passed the protocol check.
-    // One CLI command talks to one server, so the status probe runs once per
-    // command rather than once per request (`agent start` and `agent wait`
-    // poll with many requests). Reset whenever the target changes.
-    static PROTOCOL_CHECKED: Cell<bool> = const { Cell::new(false) };
-}
-
-pub(super) fn protocol_checked() -> bool {
-    PROTOCOL_CHECKED.with(Cell::get)
-}
-
-pub(super) fn mark_protocol_checked() {
-    PROTOCOL_CHECKED.with(|checked| checked.set(true));
-}
 
 struct MachineTarget {
     profile: SavedSshEndpoint,
@@ -28,26 +11,89 @@ struct MachineTarget {
     ssh_settings: crate::remote::SavedSshSettings,
 }
 
-struct TargetScope(Option<MachineTarget>);
+enum ApiTarget {
+    Local,
+    Machine(Box<MachineTarget>),
+}
 
-impl Drop for TargetScope {
-    fn drop(&mut self) {
-        TARGET.with(|target| *target.borrow_mut() = self.0.take());
-        PROTOCOL_CHECKED.with(|checked| checked.set(false));
+pub(super) struct CliContext {
+    paths: crate::config::AppPaths,
+    target: RefCell<ApiTarget>,
+    protocol_checked: Cell<bool>,
+    caller_pane_id: Option<String>,
+    caller_socket: Option<std::ffi::OsString>,
+}
+
+impl CliContext {
+    pub(super) fn local(paths: crate::config::AppPaths) -> Self {
+        Self {
+            paths,
+            target: RefCell::new(ApiTarget::Local),
+            protocol_checked: Cell::new(false),
+            caller_pane_id: std::env::var(crate::integration::SHEPR_PANE_ID_ENV_VAR).ok(),
+            caller_socket: std::env::var_os(crate::api::SOCKET_PATH_ENV_VAR),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_local(paths: crate::config::AppPaths) -> Self {
+        Self {
+            paths,
+            target: RefCell::new(ApiTarget::Local),
+            protocol_checked: Cell::new(false),
+            caller_pane_id: None,
+            caller_socket: None,
+        }
+    }
+
+    fn machine(
+        paths: crate::config::AppPaths,
+        profile: SavedSshEndpoint,
+        ssh_settings: crate::remote::SavedSshSettings,
+    ) -> Self {
+        Self {
+            paths,
+            target: RefCell::new(ApiTarget::Machine(Box::new(MachineTarget {
+                profile,
+                bridge: None,
+                ssh_settings,
+            }))),
+            protocol_checked: Cell::new(false),
+            caller_pane_id: None,
+            caller_socket: None,
+        }
+    }
+
+    pub(super) fn protocol_checked(&self) -> bool {
+        self.protocol_checked.get()
+    }
+
+    pub(super) fn mark_protocol_checked(&self) {
+        self.protocol_checked.set(true);
+    }
+
+    pub(super) fn is_remote(&self) -> bool {
+        matches!(&*self.target.borrow(), ApiTarget::Machine(_))
     }
 }
 
-/// Runs `command` (the subcommand parsed after `--machine <selector>`) against
-/// the saved machine. The spec already rejects `--machine` combined with other
-/// launch options.
+impl Deref for CliContext {
+    type Target = crate::config::AppPaths;
+
+    fn deref(&self) -> &Self::Target {
+        &self.paths
+    }
+}
+
 pub(super) fn run_on_machine(
     selector: &str,
-    command: Option<(&str, &clap::ArgMatches)>,
+    command: Option<&super::CliCommand>,
     paths: &crate::config::AppPaths,
-) -> io::Result<super::CommandOutcome> {
-    let Some((name, matches)) = command else {
+) -> io::Result<i32> {
+    let Some(command) = command else {
         return usage_error("usage: shepr --machine <label-or-id> <command>");
     };
+    let (name, matches) = command.parts();
     if let Err(error) = validate_machine_command(name, matches) {
         return usage_error(&error);
     }
@@ -60,66 +106,53 @@ pub(super) fn run_on_machine(
         Ok(profile) => profile.clone(),
         Err(error) => return usage_error(&error),
     };
-    let _scope = TARGET.with(|target| {
-        TargetScope(target.replace(Some(MachineTarget {
-            profile,
-            bridge: None,
-            ssh_settings,
-        })))
-    });
-    PROTOCOL_CHECKED.with(|checked| checked.set(false));
-    super::dispatch_with_config(name, matches, Some(config), paths)
+    let context = CliContext::machine(paths.clone(), profile, ssh_settings);
+    super::dispatch_with_config(command, Some(config), &context)
 }
 
-fn usage_error(error: &str) -> io::Result<super::CommandOutcome> {
+fn usage_error(error: &str) -> io::Result<i32> {
     eprintln!("error: {error}");
-    Ok(super::CommandOutcome::Handled(2))
+    Ok(2)
 }
 
-pub(super) fn is_remote() -> bool {
-    TARGET.with(|target| target.borrow().is_some())
-}
-
-pub(super) fn api_client(paths: &crate::config::AppPaths) -> io::Result<ApiClient> {
-    TARGET.with(|target| {
-        let mut target = target.borrow_mut();
-        let Some(target) = target.as_mut() else {
-            return Ok(ApiClient::local(paths));
-        };
-        if target.bridge.is_none() {
-            target.bridge = Some(
-                crate::remote::SavedSshApiBridge::start(
-                    paths,
-                    &target.profile.id,
-                    &target.profile.target,
-                    &target.profile.session,
-                    true,
-                    target.ssh_settings,
+pub(super) fn api_client(context: &CliContext) -> io::Result<ApiClient> {
+    let mut target = context.target.borrow_mut();
+    let ApiTarget::Machine(target) = &mut *target else {
+        return Ok(ApiClient::local(context));
+    };
+    if target.bridge.is_none() {
+        target.bridge = Some(
+            crate::remote::SavedSshApiBridge::start(
+                context,
+                &target.profile.id,
+                &target.profile.target,
+                &target.profile.session,
+                true,
+                target.ssh_settings,
+            )
+            .map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("machine '{}': {error}", target.profile.label),
                 )
-                .map_err(|error| {
-                    io::Error::new(
-                        error.kind(),
-                        format!("machine '{}': {error}", target.profile.label),
-                    )
-                })?,
-            );
-        }
-        let bridge = target
-            .bridge
-            .as_ref()
-            .ok_or_else(|| io::Error::other("machine bridge unavailable"))?;
-        Ok(ApiClient::for_target(ConnectionTarget::SocketPath(
-            bridge.socket_path().to_owned(),
-        )))
-    })
+            })?,
+        );
+    }
+    let bridge = target
+        .bridge
+        .as_ref()
+        .ok_or_else(|| io::Error::other("machine bridge unavailable"))?;
+    Ok(ApiClient::for_target(ConnectionTarget::SocketPath(
+        bridge.socket_path().to_owned(),
+    )))
 }
 
 pub(super) fn server_status(
-    paths: &crate::config::AppPaths,
+    context: &CliContext,
     client: &ApiClient,
 ) -> Result<crate::api::RuntimeStatus, crate::api::client::ApiClientError> {
     let probe = || {
-        if is_remote() {
+        if context.is_remote() {
             client.status_with_timeout(std::time::Duration::from_secs(15))
         } else {
             client.status()
@@ -131,9 +164,9 @@ pub(super) fn server_status(
     };
     // Only this read-only probe may rediscover and retry. Requests that follow
     // the probe must never be replayed after an ambiguous SSH failure.
-    TARGET.with(|target| {
-        let mut target = target.borrow_mut();
-        let Some(target) = target.as_mut() else {
+    let retried: Result<(), crate::api::client::ApiClientError> = {
+        let mut target = context.target.borrow_mut();
+        let ApiTarget::Machine(target) = &mut *target else {
             return Err(error);
         };
         let Some(bridge) = target.bridge.as_ref() else {
@@ -150,7 +183,7 @@ pub(super) fn server_status(
         bridge.invalidate_metadata();
         target.bridge.take();
         target.bridge = Some(crate::remote::SavedSshApiBridge::start(
-            paths,
+            context,
             &target.profile.id,
             &target.profile.target,
             &target.profile.session,
@@ -158,53 +191,54 @@ pub(super) fn server_status(
             target.ssh_settings,
         )?);
         Ok(())
-    })?;
+    };
+    retried?;
     probe()
 }
 
-pub(super) fn remote_error(error: io::Error) -> io::Error {
-    TARGET.with(|target| {
-        let target = target.borrow();
-        let Some(target) = target.as_ref() else {
-            return error;
-        };
-        let error = target
-            .bridge
-            .as_ref()
-            .and_then(crate::remote::SavedSshApiBridge::reported_failure)
-            .unwrap_or(error);
-        io::Error::new(
-            error.kind(),
-            format!(
-                "machine '{}' (session {}): {error}",
-                target.profile.label, target.profile.session
-            ),
-        )
-    })
+pub(super) fn remote_error(context: &CliContext, error: io::Error) -> io::Error {
+    let target = context.target.borrow();
+    let ApiTarget::Machine(target) = &*target else {
+        return error;
+    };
+    let error = target
+        .bridge
+        .as_ref()
+        .and_then(crate::remote::SavedSshApiBridge::reported_failure)
+        .unwrap_or(error);
+    io::Error::new(
+        error.kind(),
+        format!(
+            "machine '{}' (session {}): {error}",
+            target.profile.label, target.profile.session
+        ),
+    )
 }
 
-pub(super) fn restart_guidance(paths: &crate::config::AppPaths) -> String {
-    TARGET.with(|target| match target.borrow().as_ref() {
-        Some(target) => format!("Update Shepr and restart the server on machine '{}' (session {}). Stopping the server exits its pane processes.", target.profile.label, target.profile.session),
-        None => crate::session::restart_after_update_guidance_for(paths),
-    })
+pub(super) fn restart_guidance(context: &CliContext) -> String {
+    match &*context.target.borrow() {
+        ApiTarget::Machine(target) => format!(
+            "Update Shepr and restart the server on machine '{}' (session {}). Stopping the server exits its pane processes.",
+            target.profile.label, target.profile.session
+        ),
+        ApiTarget::Local => crate::session::restart_after_update_guidance_for(context),
+    }
 }
 
-pub(super) fn remote_identity() -> Option<(String, String)> {
-    TARGET.with(|target| {
-        target.borrow().as_ref().map(|target| {
-            (
-                target.profile.id.to_string(),
-                target.profile.session.clone(),
-            )
-        })
-    })
+pub(super) fn remote_identity(context: &CliContext) -> Option<(String, String)> {
+    match &*context.target.borrow() {
+        ApiTarget::Machine(target) => Some((
+            target.profile.id.to_string(),
+            target.profile.session.clone(),
+        )),
+        ApiTarget::Local => None,
+    }
 }
 
-pub(super) fn socket_label(paths: &crate::config::AppPaths) -> String {
-    match remote_identity() {
+pub(super) fn socket_label(context: &CliContext) -> String {
+    match remote_identity(context) {
         Some((id, session)) => format!("machine:{id}/{session}"),
-        None => crate::api::socket_path(paths).display().to_string(),
+        None => crate::api::socket_path(context).display().to_string(),
     }
 }
 
@@ -260,14 +294,14 @@ impl CallerPane {
     }
 }
 
-pub(super) fn caller_pane(paths: &crate::config::AppPaths) -> CallerPane {
-    if is_remote() {
+pub(super) fn caller_pane(context: &CliContext) -> CallerPane {
+    if context.is_remote() {
         return CallerPane::Remote;
     }
     caller_pane_from(
-        std::env::var(crate::integration::SHEPR_PANE_ID_ENV_VAR).ok(),
-        std::env::var_os(crate::api::SOCKET_PATH_ENV_VAR),
-        &crate::api::socket_path(paths),
+        context.caller_pane_id.clone(),
+        context.caller_socket.clone(),
+        &crate::api::socket_path(context),
     )
 }
 
@@ -315,23 +349,10 @@ pub(super) fn resolve_machine<'a>(
 /// no local side effects (config, sessions, integrations, machine catalog), no
 /// TUI or terminal attach, and no local file evaluation (`agent explain --file`).
 fn validate_machine_command(command: &str, matches: &clap::ArgMatches) -> Result<(), String> {
-    let (subcommand, local_file) = match matches.subcommand() {
-        Some((name, sub_matches)) => (name, super::matches::string(sub_matches, "file").is_some()),
-        None => ("", false),
-    };
-    let supported = match command {
-        "workspace" | "tab" | "pane" => true,
-        "agent" => subcommand != "attach" && !(subcommand == "explain" && local_file),
-        "status" => subcommand == "server",
-        "server" => matches!(
-            subcommand,
-            "stop" | "agent-manifests" | "reload-agent-manifests"
-        ),
-        _ => false,
-    };
-    if supported {
+    if super::spec::locality(command, matches) == super::spec::CommandLocality::Api {
         Ok(())
     } else {
+        let subcommand = matches.subcommand().map(|(name, _)| name).unwrap_or("");
         Err(format!(
             "`{command} {subcommand}` is not an API-backed machine command; --machine does not run local management commands or attach a TUI"
         ))
@@ -430,7 +451,7 @@ mod tests {
         // catalog or network access.
         let outcome = run_on_machine("mac", None, &crate::config::AppPaths::default())
             .expect("test precondition");
-        assert!(matches!(outcome, super::super::CommandOutcome::Handled(2)));
+        assert_eq!(outcome, 2);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use crate::ipc::LocalStream;
 use crate::protocol::endpoint::{
     ENDPOINT_HELLO_KIND, ENDPOINT_WELCOME_KIND, EndpointClientHello, EndpointServerWelcome,
 };
-use crate::protocol::{self, ClientMessage, MAX_FRAME_SIZE, PROTOCOL_VERSION, ServerMessage};
+use crate::protocol::{self, ClientMessage, MAX_FRAME_SIZE, ServerMessage};
 
 use super::{ClientError, shell};
 
@@ -76,13 +76,9 @@ fn preamble_error(error: protocol::preamble::PreambleError) -> ClientError {
         error @ PreambleError::NotShepr => ClientError::Protocol(protocol::FramingError::Io(
             io::Error::new(io::ErrorKind::InvalidData, error.to_string()),
         )),
-        PreambleError::DifferentBuild(peer) => {
-            let version = peer.protocol_version;
-            ClientError::HandshakeRejected {
-                version,
-                error: PreambleError::DifferentBuild(peer).to_string(),
-            }
-        }
+        error @ PreambleError::DifferentBuild(_) => ClientError::HandshakeRejected {
+            error: error.to_string(),
+        },
     }
 }
 
@@ -92,7 +88,8 @@ fn preamble_error(error: protocol::preamble::PreambleError) -> ClientError {
 /// directions (`protocol::preamble`), so a server of any other build is
 /// reported as a mismatch before either side decodes a codec frame. Direct
 /// terminal clients then send `TerminalHello`; client-owned shells send a JSON
-/// endpoint hello. Both still carry `PROTOCOL_VERSION`.
+/// endpoint hello. The hello variant selects terminal ANSI or semantic surface
+/// delivery, so the welcome does not negotiate an encoding.
 ///
 /// `deadline`, when given, caps the wait for the reply below the usual read timeout: the
 /// saved-machine endpoint supervisor bounds each whole connection attempt by its
@@ -123,7 +120,6 @@ pub(super) fn do_handshake(
     let endpoint_shell = shell_surface_size.is_some();
     let hello = if let Some(surface_size) = shell_surface_size {
         let hello = EndpointClientHello {
-            version: PROTOCOL_VERSION,
             cell_width_px,
             cell_height_px,
             surface_size,
@@ -139,7 +135,6 @@ pub(super) fn do_handshake(
         }
     } else {
         ClientMessage::TerminalHello {
-            version: PROTOCOL_VERSION,
             cols,
             rows,
             cell_width_px,
@@ -206,30 +201,19 @@ pub(super) fn do_handshake(
         })?;
         if let Some(error) = welcome.error {
             return Err(ClientError::HandshakeRejected {
-                version: welcome.version,
                 error: error.message,
             });
         }
-        if let Err(error) = protocol::check_client_version(welcome.version) {
-            return Err(ClientError::HandshakeRejected {
-                version: welcome.version,
-                error,
-            });
-        }
-        info!(version = welcome.version, "endpoint handshake succeeded");
+        info!("endpoint handshake succeeded");
         return Ok(HandshakeResult);
     }
 
     match welcome {
-        ServerMessage::Welcome {
-            version,
-            encoding,
-            error,
-        } => {
+        ServerMessage::Welcome { error } => {
             if let Some(error) = error {
-                return Err(ClientError::HandshakeRejected { version, error });
+                return Err(ClientError::HandshakeRejected { error });
             }
-            info!(version, ?encoding, "handshake succeeded");
+            info!("terminal handshake succeeded");
             Ok(HandshakeResult)
         }
         _ => Err(ClientError::Protocol(protocol::FramingError::Io(
@@ -252,6 +236,7 @@ fn hello_write_error(error: protocol::FramingError) -> ClientError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::PROTOCOL_VERSION;
     use interprocess::local_socket::traits::Listener as _;
 
     fn socket_pair(name: &str) -> (LocalStream, LocalStream, std::path::PathBuf) {
@@ -397,8 +382,11 @@ mod tests {
         opening[id_start] = other_id;
         opening.extend_from_slice(&[0xff; 16]);
         match handshake_against_opening("preamble-other-build", opening) {
-            ClientError::HandshakeRejected { version, error } => {
-                assert_eq!(version, PROTOCOL_VERSION + 1);
+            ClientError::HandshakeRejected { error } => {
+                assert!(
+                    error.contains(&format!("protocol {}", PROTOCOL_VERSION + 1)),
+                    "{error}"
+                );
                 assert!(error.contains("different shepr build"), "{error}");
             }
             other => panic!("expected a build mismatch, got {other}"),
@@ -408,12 +396,8 @@ mod tests {
     #[test]
     fn peer_without_a_preamble_is_not_mistaken_for_a_closed_connection() {
         // A peer that answers straight with a codec frame.
-        let mut opening = protocol::encode_frame(&ServerMessage::Welcome {
-            version: PROTOCOL_VERSION,
-            encoding: crate::protocol::RenderEncoding::SemanticFrame,
-            error: None,
-        })
-        .expect("test precondition");
+        let mut opening = protocol::encode_frame(&ServerMessage::Welcome { error: None })
+            .expect("test precondition");
         opening.resize(opening.len().max(protocol::preamble::PREAMBLE_LEN), 0);
         match handshake_against_opening("preamble-missing", opening) {
             ClientError::Protocol(protocol::FramingError::Io(error)) => {

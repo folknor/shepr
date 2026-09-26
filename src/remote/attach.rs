@@ -3,7 +3,6 @@
 use super::{
     args::*,
     process::{PIPE_DRAIN_GRACE, PipeCapture, PipeEcho, wait_with_output_timeout},
-    restart_policy::*,
     shell_quote,
 };
 use std::fs;
@@ -47,21 +46,14 @@ pub(crate) fn run_remote(
         .unwrap_or_else(|| "shepr".to_string());
     let reattach_command =
         reattach_command(&program, &remote.target, &session_name, remote.keybindings);
-    let require_surface_interest = crate::client::endpoint::EndpointCatalog::load(paths)
-        .map(|catalog| catalog.contains_target_session(&remote.target, &session_name))
-        .unwrap_or(false);
     let remote_ssh = RemoteSsh::new(
         remote.target.clone(),
         settings.manage_ssh_config,
         session_name.clone(),
         paths,
     );
-    let prepared_remote = prepare_remote_shepr(&remote_ssh, require_surface_interest)?;
-    ensure_remote_server_ready(
-        &remote_ssh,
-        &prepared_remote.remote_shepr,
-        require_surface_interest,
-    )?;
+    let prepared_remote = prepare_remote_shepr(&remote_ssh)?;
+    ensure_remote_server_ready(&remote_ssh, &prepared_remote.remote_shepr)?;
 
     let _bridge = SshStdioBridge::start(
         remote.target,
@@ -87,26 +79,13 @@ pub(crate) fn check_saved_ssh(
         RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths);
     ssh.session_name = session.to_owned();
     let remote = find_installed_remote_shepr(&ssh)?;
-    match remote_server_status(&ssh, &remote, false)? {
+    match remote_server_status(&ssh, &remote)? {
         RemoteServerStatus::Running {
-            protocol,
-            surface_interest,
-            health_check,
-            detached_server_daemon,
+            detached_server_daemon: true,
             ..
-        } if remote_server_restart_reason(
-            protocol,
-            detached_server_daemon,
-            true,
-            surface_interest,
-            health_check,
-        )
-        .is_none() =>
-        {
-            Ok(())
-        }
+        } => Ok(()),
         _ => Err(io::Error::other(format!(
-            "remote Shepr server is stopped or incompatible; run `{}`",
+            "remote Shepr server is stopped or was not started as a detached daemon; run `{}`",
             super::saved_ssh_bootstrap_command(target.as_str(), session),
         ))),
     }
@@ -117,7 +96,7 @@ pub(crate) fn prepare_saved_ssh(
     target: &SshTarget,
     session_name: &str,
     settings: super::SavedSshSettings,
-) -> io::Result<Option<crate::client::endpoint::SshMachineMetadata>> {
+) -> io::Result<RemoteExecutable> {
     crate::session::validate_name(session_name)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let ssh = RemoteSsh::new(
@@ -126,8 +105,8 @@ pub(crate) fn prepare_saved_ssh(
         session_name.to_owned(),
         paths,
     );
-    let prepared = prepare_remote_shepr(&ssh, true)?;
-    ensure_remote_server_ready(&ssh, &prepared.remote_shepr, true)?;
+    let prepared = prepare_remote_shepr(&ssh)?;
+    ensure_remote_server_ready(&ssh, &prepared.remote_shepr)?;
 
     // The bridge already owns daemon startup. EOF closes only this temporary attachment,
     // leaving the named server running even when no local TUI is open yet.
@@ -136,66 +115,20 @@ pub(crate) fn prepare_saved_ssh(
     if !output.status.success() {
         return Err(command_failed("remote server startup failed", &output));
     }
-    match remote_server_status(&ssh, &prepared.remote_shepr, true)? {
+    match remote_server_status(&ssh, &prepared.remote_shepr)? {
         RemoteServerStatus::Running {
-            protocol,
-            surface_interest,
-            health_check,
-            detached_server_daemon,
+            detached_server_daemon: true,
             ..
-        } if remote_server_restart_reason(
-            protocol,
-            detached_server_daemon,
-            true,
-            surface_interest,
-            health_check,
-        )
-        .is_none() =>
-        {
-            Ok(prepared.remote_shepr.machine_metadata().or_else(|| {
-                discover_remote_api_metadata(&ssh, session_name)
-                    .inspect_err(
-                        |error| tracing::debug!(%error, "could not capture SSH setup metadata"),
-                    )
-                    .ok()
-            }))
-        }
+        } => Ok(prepared.remote_shepr.clone()),
         _ => Err(io::Error::other(
             "remote server is not ready for saved machines",
         )),
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct RemoteShepr {
-    path: String,
-}
-
-impl RemoteShepr {
-    fn new(path: &str) -> Self {
-        Self {
-            path: path.to_owned(),
-        }
-    }
-
-    /// The executable recorded by an earlier successful discovery. It is only a hint:
-    /// the endpoint handshake still checks the protocol version it speaks.
-    pub(super) fn from_metadata(
-        metadata: &crate::client::endpoint::SshMachineMetadata,
-    ) -> Option<Self> {
-        metadata.is_valid().then(|| Self::new(&metadata.executable))
-    }
-
-    pub(super) fn machine_metadata(&self) -> Option<crate::client::endpoint::SshMachineMetadata> {
-        let metadata = crate::client::endpoint::SshMachineMetadata {
-            os: "linux".to_owned(),
-            executable: self.path.clone(),
-        };
-        metadata.is_valid().then_some(metadata)
-    }
-
+impl RemoteExecutable {
     fn quoted(&self) -> String {
-        shell_quote(&self.path)
+        shell_quote(self.as_str())
     }
 
     fn command(&self, args: &[&str]) -> String {
@@ -225,6 +158,14 @@ impl RemoteShepr {
             "test -x {} && {}",
             self.quoted(),
             self.command(&["status", "client", "--json"])
+        )
+    }
+
+    fn api_bridge_check_command(&self, session_name: &str) -> String {
+        format!(
+            "test -x {} && {} </dev/null",
+            self.quoted(),
+            self.command(&["--session", session_name, "remote-api-bridge", "--check"])
         )
     }
 
@@ -268,7 +209,7 @@ fn posix_shell_command(script: &str) -> String {
 }
 
 pub(super) struct PreparedRemoteShepr {
-    pub(super) remote_shepr: RemoteShepr,
+    pub(super) remote_shepr: RemoteExecutable,
 }
 
 #[derive(Clone)]
@@ -704,11 +645,22 @@ fn apply_managed_ssh_options(command: &mut Command, options: Option<&ManagedSshO
     }
 }
 
-fn locate_remote_shepr(ssh: &RemoteSsh, require_surface_interest: bool) -> io::Result<RemoteShepr> {
+fn locate_remote_shepr(ssh: &RemoteSsh) -> io::Result<RemoteExecutable> {
     DiscoveryProgress::default().advance(&mut SshDiscovery {
         ssh,
-        require_surface_interest,
+        verification: CandidateVerification::StatusProbe,
     })
+}
+
+/// How a discovered candidate is confirmed. Both callers share candidate
+/// enumeration (`DiscoverySteps` up to `known_locations`); only this differs.
+#[derive(Clone, Copy)]
+enum CandidateVerification<'a> {
+    /// The saved-SSH connector: the candidate runs and answers `status client`.
+    StatusProbe,
+    /// The API bridge: the candidate supports machine API forwarding for this
+    /// session (`remote-api-bridge --check`), even with the server down.
+    ApiForwarding { session: &'a str },
 }
 
 /// The SSH commands full discovery is made of, one method per remote round trip. Only
@@ -716,48 +668,53 @@ fn locate_remote_shepr(ssh: &RemoteSsh, require_surface_interest: bool) -> io::R
 /// it, can be tested without a remote host.
 pub(super) trait DiscoverySteps {
     /// `command -v shepr` through the remote login shell, which sets up the user's PATH.
-    fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteShepr>>;
+    fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>>;
     /// `command -v shepr` through `/bin/sh`, for login shells (xonsh) that reject it.
-    fn path_via_sh(&mut self) -> io::Result<Option<RemoteShepr>>;
+    fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>>;
     /// Executables found at the known install locations.
-    fn known_locations(&mut self) -> io::Result<Vec<RemoteShepr>>;
-    /// Whether `candidate` runs and speaks this build's protocol (its status probe).
-    fn matches(&mut self, candidate: &RemoteShepr) -> io::Result<bool>;
+    fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>>;
+    /// Whether `candidate` passes the caller's verification.
+    fn matches(&mut self, candidate: &RemoteExecutable) -> io::Result<bool>;
     fn target(&self) -> &str;
 }
 
 struct SshDiscovery<'a> {
     ssh: &'a RemoteSsh,
-    require_surface_interest: bool,
+    verification: CandidateVerification<'a>,
 }
 
 impl DiscoverySteps for SshDiscovery<'_> {
-    fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteShepr>> {
+    fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
         let output = self.ssh.posix_user_shell_output("command -v shepr")?;
         path_lookup_result(&output)
     }
 
-    fn path_via_sh(&mut self) -> io::Result<Option<RemoteShepr>> {
+    fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
         let output = self.ssh.sh_output("command -v shepr\n")?;
         path_lookup_result(&output)
     }
 
-    fn known_locations(&mut self) -> io::Result<Vec<RemoteShepr>> {
+    fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>> {
         let output = self
             .ssh
             .sh_output(&known_remote_binary_candidate_script())?;
         if !output.status.success() {
             return Err(command_failed("remote binary discovery failed", &output));
         }
-        Ok(remote_sheprs_from_path_discovery(&String::from_utf8_lossy(
-            &output.stdout,
-        )))
+        Ok(remote_executables_from_path_discovery(
+            &String::from_utf8_lossy(&output.stdout),
+        ))
     }
 
-    fn matches(&mut self, candidate: &RemoteShepr) -> io::Result<bool> {
-        let require_surface_interest = self.require_surface_interest;
-        Ok(remote_client_status(self.ssh, candidate)?
-            .is_some_and(|status| status.supports_endpoint_requirement(require_surface_interest)))
+    fn matches(&mut self, candidate: &RemoteExecutable) -> io::Result<bool> {
+        match self.verification {
+            CandidateVerification::StatusProbe => {
+                Ok(remote_client_status(self.ssh, candidate)?.is_some())
+            }
+            CandidateVerification::ApiForwarding { session } => {
+                remote_api_forwarding_supported(self.ssh, candidate, session)
+            }
+        }
     }
 
     fn target(&self) -> &str {
@@ -768,7 +725,7 @@ impl DiscoverySteps for SshDiscovery<'_> {
 /// Reads a `command -v shepr` result. A failed lookup means no `shepr` on that PATH,
 /// except when the typed failure says ssh itself exited 255: then nothing was learned
 /// about the remote, and recording "not found" would be wrong.
-fn path_lookup_result(output: &Output) -> io::Result<Option<RemoteShepr>> {
+fn path_lookup_result(output: &Output) -> io::Result<Option<RemoteExecutable>> {
     if !output.status.success() {
         let error = command_failed("remote SSH connection failed", output);
         if super::SshFailureDiagnostic::from_error(&error).is_link_failure() {
@@ -776,9 +733,9 @@ fn path_lookup_result(output: &Output) -> io::Result<Option<RemoteShepr>> {
         }
         return Ok(None);
     }
-    Ok(remote_shepr_from_path_discovery(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
+    Ok(remote_executable_from_path_discovery(
+        &String::from_utf8_lossy(&output.stdout),
+    ))
 }
 
 /// What full discovery of the remote executable has learned so far: the result of every
@@ -802,10 +759,10 @@ fn path_lookup_result(output: &Output) -> io::Result<Option<RemoteShepr>> {
 /// may have made stale.
 #[derive(Default)]
 pub(super) struct DiscoveryProgress {
-    login_shell_path: Option<Option<RemoteShepr>>,
-    sh_path: Option<Option<RemoteShepr>>,
+    login_shell_path: Option<Option<RemoteExecutable>>,
+    sh_path: Option<Option<RemoteExecutable>>,
     /// Every candidate in probe order, once the known-locations script has run.
-    candidates: Option<Vec<RemoteShepr>>,
+    candidates: Option<Vec<RemoteExecutable>>,
     /// How many of `candidates` were probed and did not match.
     probed: usize,
 }
@@ -815,7 +772,10 @@ impl DiscoveryProgress {
     /// Returns the first candidate that matches, or the not-ready error when none does.
     /// Progress survives only an error that is a link failure (`is_ssh_link_failure`,
     /// which includes running out of time); any other error clears it.
-    pub(super) fn advance(&mut self, steps: &mut impl DiscoverySteps) -> io::Result<RemoteShepr> {
+    pub(super) fn advance(
+        &mut self,
+        steps: &mut impl DiscoverySteps,
+    ) -> io::Result<RemoteExecutable> {
         let result = self.run_remaining(steps);
         if let Err(error) = &result
             && !is_ssh_link_failure(error)
@@ -825,7 +785,7 @@ impl DiscoveryProgress {
         result
     }
 
-    fn run_remaining(&mut self, steps: &mut impl DiscoverySteps) -> io::Result<RemoteShepr> {
+    fn run_remaining(&mut self, steps: &mut impl DiscoverySteps) -> io::Result<RemoteExecutable> {
         if self.login_shell_path.is_none() {
             self.login_shell_path = Some(steps.path_via_login_shell()?);
         }
@@ -874,55 +834,65 @@ impl DiscoveryProgress {
 #[path = "attach_discovery_tests.rs"]
 mod discovery_tests;
 
-pub(super) fn prepare_remote_shepr(
-    ssh: &RemoteSsh,
-    require_surface_interest: bool,
-) -> io::Result<PreparedRemoteShepr> {
+pub(super) fn prepare_remote_shepr(ssh: &RemoteSsh) -> io::Result<PreparedRemoteShepr> {
     Ok(PreparedRemoteShepr {
-        remote_shepr: locate_remote_shepr(ssh, require_surface_interest)?,
+        remote_shepr: locate_remote_shepr(ssh)?,
     })
 }
 
-pub(super) fn find_installed_remote_shepr(ssh: &RemoteSsh) -> io::Result<RemoteShepr> {
-    locate_remote_shepr(ssh, true)
+pub(super) fn find_installed_remote_shepr(ssh: &RemoteSsh) -> io::Result<RemoteExecutable> {
+    locate_remote_shepr(ssh)
 }
 
 /// `find_installed_remote_shepr`, resuming from and recording into `progress`.
 pub(super) fn resume_installed_remote_shepr_discovery(
     ssh: &RemoteSsh,
     progress: &mut DiscoveryProgress,
-) -> io::Result<RemoteShepr> {
+) -> io::Result<RemoteExecutable> {
     progress.advance(&mut SshDiscovery {
         ssh,
-        require_surface_interest: true,
+        verification: CandidateVerification::StatusProbe,
     })
 }
 
-pub(super) fn discover_remote_api_metadata(
+/// The executable the API bridge runs: the same candidates as the connector,
+/// confirmed by the forwarding check instead of the status probe. The two
+/// proofs stay separate because the metadata cache records only this one.
+pub(super) fn discover_remote_api_executable(
     ssh: &RemoteSsh,
     session: &str,
-) -> io::Result<crate::client::endpoint::SshMachineMetadata> {
-    let output = ssh.sh_output(&posix_remote_api_discovery_script(session))?;
-    if !output.status.success() {
-        return Err(command_failed("remote binary discovery failed", &output));
-    }
-    let metadata = crate::client::endpoint::SshMachineMetadata {
-        os: "linux".to_owned(),
-        executable: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-    };
-    if !metadata.is_valid() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid remote Shepr executable path",
-        ));
-    }
-    Ok(metadata)
+) -> io::Result<RemoteExecutable> {
+    DiscoveryProgress::default().advance(&mut SshDiscovery {
+        ssh,
+        verification: CandidateVerification::ApiForwarding { session },
+    })
 }
 
-fn push_if_new_remote_binary_candidate(candidates: &mut Vec<RemoteShepr>, candidate: RemoteShepr) {
+fn remote_api_forwarding_supported(
+    ssh: &RemoteSsh,
+    candidate: &RemoteExecutable,
+    session: &str,
+) -> io::Result<bool> {
+    let output = ssh.sh_output(&candidate.api_bridge_check_command(session))?;
+    if !output.status.success() {
+        let error = command_failed("remote SSH connection failed", &output);
+        if super::SshFailureDiagnostic::from_error(&error).is_link_failure() {
+            return Err(error);
+        }
+        return Ok(false);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.trim() == super::API_BRIDGE_CHECK_REPLY))
+}
+
+fn push_if_new_remote_binary_candidate(
+    candidates: &mut Vec<RemoteExecutable>,
+    candidate: RemoteExecutable,
+) {
     if !candidates
         .iter()
-        .any(|existing| existing.path == candidate.path)
+        .any(|existing| existing.as_str() == candidate.as_str())
     {
         candidates.push(candidate);
     }
@@ -947,26 +917,25 @@ fi
     )
 }
 
-fn remote_sheprs_from_path_discovery(stdout: &str) -> Vec<RemoteShepr> {
-    stdout.lines().filter_map(remote_shepr_from_path).collect()
+fn remote_executables_from_path_discovery(stdout: &str) -> Vec<RemoteExecutable> {
+    stdout
+        .lines()
+        .filter_map(remote_executable_from_path)
+        .collect()
 }
 
-fn remote_shepr_from_path_discovery(stdout: &str) -> Option<RemoteShepr> {
-    stdout.lines().find_map(remote_shepr_from_path)
+fn remote_executable_from_path_discovery(stdout: &str) -> Option<RemoteExecutable> {
+    stdout.lines().find_map(remote_executable_from_path)
 }
 
-fn remote_shepr_from_path(path: &str) -> Option<RemoteShepr> {
+fn remote_executable_from_path(path: &str) -> Option<RemoteExecutable> {
     let path = path.trim();
-    if !path.starts_with('/') {
-        return None;
-    }
-    let candidate = RemoteShepr::new(path);
-    candidate.machine_metadata().map(|_| candidate)
+    RemoteExecutable::parse(path.to_owned()).ok()
 }
 
 fn remote_client_status(
     ssh: &RemoteSsh,
-    remote_shepr: &RemoteShepr,
+    remote_shepr: &RemoteExecutable,
 ) -> io::Result<Option<RemoteClientStatusJson>> {
     let output = ssh.sh_output(&remote_shepr.status_client_command())?;
     if !output.status.success() {
@@ -985,42 +954,23 @@ fn remote_client_status(
 enum RemoteServerStatus {
     Running {
         version: Option<String>,
-        protocol: Option<u32>,
-        surface_interest: bool,
-        health_check: bool,
+        /// Started as a detached daemon, so an SSH drop disconnects only the
+        /// client. A daemon lifecycle requirement, not a build check: the
+        /// build is settled by the preamble when the client attaches.
         detached_server_daemon: bool,
     },
     NotRunning,
 }
 
-fn ensure_remote_server_ready(
-    ssh: &RemoteSsh,
-    remote_shepr: &RemoteShepr,
-    require_surface_interest: bool,
-) -> io::Result<()> {
-    let status = remote_server_status(ssh, remote_shepr, require_surface_interest)?;
+fn ensure_remote_server_ready(ssh: &RemoteSsh, remote_shepr: &RemoteExecutable) -> io::Result<()> {
     let RemoteServerStatus::Running {
         version,
-        protocol,
-        surface_interest,
-        health_check,
-        detached_server_daemon,
-    } = status
+        detached_server_daemon: false,
+    } = remote_server_status(ssh, remote_shepr)?
     else {
         return Ok(());
     };
-
-    let Some(reason) = remote_server_restart_reason(
-        protocol,
-        detached_server_daemon,
-        require_surface_interest,
-        surface_interest,
-        health_check,
-    ) else {
-        return Ok(());
-    };
-
-    if confirm_remote_server_stop(&ssh.destination(), version.as_deref(), reason)? {
+    if confirm_remote_server_stop(&ssh.destination(), version.as_deref())? {
         stop_remote_server(ssh, remote_shepr)?;
     }
     Ok(())
@@ -1028,8 +978,7 @@ fn ensure_remote_server_ready(
 
 fn remote_server_status(
     ssh: &RemoteSsh,
-    remote_shepr: &RemoteShepr,
-    _require_surface_interest: bool,
+    remote_shepr: &RemoteExecutable,
 ) -> io::Result<RemoteServerStatus> {
     let command = remote_shepr.session_command(&ssh.session_name, &["status", "server", "--json"]);
     let output = ssh.sh_output(&command)?;
@@ -1045,29 +994,18 @@ fn remote_server_status(
 struct RemoteClientStatusJson {
     #[serde(default)]
     version: Option<String>,
-    #[serde(default)]
-    protocol: Option<u32>,
-}
-
-impl RemoteClientStatusJson {
-    fn supports_endpoint_requirement(&self, _require_surface_interest: bool) -> bool {
-        self.protocol == Some(crate::protocol::PROTOCOL_VERSION)
-    }
 }
 
 #[derive(Debug, Deserialize)]
 struct RemoteServerStatusJson {
     running: bool,
     version: Option<String>,
-    protocol: Option<u32>,
     capabilities: Option<RemoteServerCapabilitiesJson>,
 }
 
 #[derive(Debug, Deserialize)]
 struct RemoteServerCapabilitiesJson {
     detached_server_daemon: bool,
-    surface_interest: bool,
-    health_check: bool,
 }
 
 fn parse_client_status_json(status: &str) -> Option<RemoteClientStatusJson> {
@@ -1076,7 +1014,7 @@ fn parse_client_status_json(status: &str) -> Option<RemoteClientStatusJson> {
         .rev()
         .filter(|line| !line.trim().is_empty())
         .filter_map(|line| serde_json::from_str::<RemoteClientStatusJson>(line).ok())
-        .find(|status| status.version.is_some() || status.protocol.is_some())
+        .find(|status| status.version.is_some())
 }
 
 fn parse_remote_server_status_json(status: &str) -> io::Result<RemoteServerStatus> {
@@ -1088,42 +1026,18 @@ fn parse_remote_server_status_json(status: &str) -> io::Result<RemoteServerStatu
     if !parsed.running {
         return Ok(RemoteServerStatus::NotRunning);
     }
-
-    let capabilities = parsed.capabilities;
-
     Ok(RemoteServerStatus::Running {
         version: parsed.version,
-        protocol: parsed.protocol,
-        surface_interest: capabilities
-            .as_ref()
-            .is_some_and(|capabilities| capabilities.surface_interest),
-        health_check: capabilities
-            .as_ref()
-            .is_some_and(|capabilities| capabilities.health_check),
-        detached_server_daemon: capabilities
-            .as_ref()
+        detached_server_daemon: parsed
+            .capabilities
             .is_some_and(|capabilities| capabilities.detached_server_daemon),
     })
 }
 
-fn confirm_remote_server_stop(
-    target: &str,
-    version: Option<&str>,
-    reason: RemoteServerRestartReason,
-) -> io::Result<bool> {
-    let required_restart = matches!(
-        reason,
-        RemoteServerRestartReason::EndpointProtocol
-            | RemoteServerRestartReason::SurfaceInterest
-            | RemoteServerRestartReason::HealthCheck
-    );
+/// Offers to restart a remote server that was not started as a detached
+/// daemon. Declining, or having no terminal to ask on, keeps it running.
+fn confirm_remote_server_stop(target: &str, version: Option<&str>) -> io::Result<bool> {
     if !io::stdin().is_terminal() {
-        if required_restart {
-            return Err(io::Error::other(format!(
-                "remote shepr server on {target} needs one final restart before this client can attach; run from an interactive terminal to approve restarting it"
-            )));
-        }
-
         eprintln!(
             "remote shepr server on {target} is still running v{}.",
             version_label(version)
@@ -1134,53 +1048,19 @@ fn confirm_remote_server_stop(
     eprintln!("remote shepr server on {target} is currently running:");
     eprintln!("  server: v{}", version_label(version));
     eprintln!();
-
-    match reason {
-        RemoteServerRestartReason::EndpointProtocol => {
-            eprintln!(
-                "the remote server predates Shepr's stable endpoint protocol and must restart before this client can attach."
-            );
-        }
-        RemoteServerRestartReason::SurfaceInterest => {
-            eprintln!(
-                "the remote server must restart before it can join saved SSH endpoint federation."
-            );
-        }
-        RemoteServerRestartReason::HealthCheck => {
-            eprintln!("the remote server must restart to enable saved SSH endpoint health checks.");
-        }
-        RemoteServerRestartReason::DaemonDetach => {
-            eprintln!(
-                "the remote server was started by a shepr build that may not survive SSH connection loss. restart it so network drops disconnect only this client."
-            );
-        }
-    }
-
+    eprintln!(
+        "the remote server was not started as a detached daemon and may not survive SSH connection loss. restart it so network drops disconnect only this client."
+    );
     eprintln!(
         "This stops active remote pane processes, including shells, agents, dev servers, and tests."
     );
-    let prompt = if required_restart {
-        "stop the remote server and continue attaching? [y/N] "
-    } else {
-        "restart the remote server now? [y/N] "
-    };
-    eprint!("{prompt}");
+    eprint!("restart the remote server now? [y/N] ");
     io::stderr().flush()?;
 
-    if read_remote_confirmation(&mut io::stdin().lock(), false)? {
-        return Ok(true);
-    }
-    if required_restart {
-        return Err(io::Error::new(
-            io::ErrorKind::Interrupted,
-            "remote shepr server stop cancelled",
-        ));
-    }
-
-    Ok(false)
+    read_remote_confirmation(&mut io::stdin().lock(), false)
 }
 
-fn stop_remote_server(ssh: &RemoteSsh, remote_shepr: &RemoteShepr) -> io::Result<()> {
+fn stop_remote_server(ssh: &RemoteSsh, remote_shepr: &RemoteExecutable) -> io::Result<()> {
     let command = remote_shepr.session_command(&ssh.session_name, &["server", "stop"]);
     let output = ssh.sh_output(&command)?;
     if !output.status.success() {
@@ -1195,10 +1075,13 @@ fn stop_remote_server(ssh: &RemoteSsh, remote_shepr: &RemoteShepr) -> io::Result
     Ok(())
 }
 
-fn wait_for_remote_server_shutdown(ssh: &RemoteSsh, remote_shepr: &RemoteShepr) -> io::Result<()> {
+fn wait_for_remote_server_shutdown(
+    ssh: &RemoteSsh,
+    remote_shepr: &RemoteExecutable,
+) -> io::Result<()> {
     let deadline = Instant::now() + REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT;
     loop {
-        if remote_server_status(ssh, remote_shepr, false)? == RemoteServerStatus::NotRunning {
+        if remote_server_status(ssh, remote_shepr)? == RemoteServerStatus::NotRunning {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -1238,47 +1121,10 @@ fn read_remote_confirmation(reader: &mut impl io::BufRead, default: bool) -> io:
     }
 }
 
-/// The API-bridge discovery script. It is multi-line and quoted, so it is fed
-/// to `/bin/sh -s` on stdin (see `RemoteSsh::sh_output`) and never passes
-/// through the login shell's parser: sshd only hands the login shell the plain
-/// words `/bin/sh -s`, which xonsh, fish and nushell run like any POSIX shell.
-/// `/bin/sh` still inherits the login shell's environment, so `command -v`
-/// sees the PATH that shell set up.
-fn posix_remote_api_discovery_script(session: &str) -> String {
-    format!(
-        r#"set -f
-candidates=$(
-command -v shepr
-{discovery}
-)
-IFS='
-'
-for candidate in $candidates; do
-    case "$candidate" in
-        */mise/shims/shepr) continue ;;
-        /*) ;;
-        *) continue ;;
-    esac
-    [ -x "$candidate" ] || continue
-    if capability=$("$candidate" --session {session} remote-api-bridge --check </dev/null 2>/dev/null) && [ "$capability" = shepr-api-bridge-v1 ]; then
-        printf '%s\n' "$candidate"
-        exit 0
-    fi
-done
-printf '%s\n' 'remote Shepr does not support machine API forwarding; update Shepr on this machine' >&2
-exit 2"#,
-        discovery = known_remote_binary_candidate_script(),
-        session = shell_quote(session),
-    )
-}
-
 pub(super) const STALE_API_METADATA: &str = "shepr-machine-metadata-stale-v1";
 
-pub(super) fn cached_remote_api_command(
-    metadata: &crate::client::endpoint::SshMachineMetadata,
-    session: &str,
-) -> String {
-    let path = shell_quote(&metadata.executable);
+pub(super) fn cached_remote_api_command(executable: &RemoteExecutable, session: &str) -> String {
+    let path = shell_quote(executable.as_str());
     let session = shell_quote(session);
     // The API bridge's stdin is the data channel, so unlike discovery this
     // script cannot be fed to `/bin/sh -s`; it has to reach the login shell as
@@ -1291,10 +1137,11 @@ pub(super) fn cached_remote_api_command(
     // that needs quoting would bring `'\''` back; paths come from discovery
     // (plain install paths) and session names are validated.
     let script = format!(
-        "set -f; if capability=$({path} --session {session} remote-api-bridge --check </dev/null 2>/dev/null) && [ x$capability = xshepr-api-bridge-v1 ]; then {}; else echo {STALE_API_METADATA} >&2; exit 78; fi",
+        "set -f; if capability=$({path} --session {session} remote-api-bridge --check </dev/null 2>/dev/null) && [ x$capability = x{reply} ]; then {}; else echo {STALE_API_METADATA} >&2; exit 78; fi",
         posix_remote_output_command(&format!(
             "exec {path} --session {session} remote-api-bridge"
         )),
+        reply = super::API_BRIDGE_CHECK_REPLY,
     );
     posix_shell_command(&script)
 }
@@ -1347,7 +1194,7 @@ pub(super) struct SshStdioBridge {
 impl SshStdioBridge {
     pub(super) fn start(
         target: SshTarget,
-        remote_shepr: &RemoteShepr,
+        remote_shepr: &RemoteExecutable,
         local_socket: PathBuf,
         session_name: &str,
         ssh_options: Option<&ManagedSshOptions>,
@@ -2185,7 +2032,7 @@ mod tests {
 
         let scratch = crate::test_support::ScratchDir::new("bridge-mode");
         let socket = scratch.join("bridge.sock");
-        let remote_shepr = RemoteShepr::new("/usr/bin/shepr");
+        let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
         let bridge = SshStdioBridge::start(
             SshTarget::parse("example").expect("test precondition"),
             &remote_shepr,
@@ -2247,7 +2094,7 @@ mod tests {
         env.set("TMPDIR", env.path());
         let socket = local_forward_socket_path("drop-test", "default");
         assert!(socket.starts_with(env.path()), "{}", socket.display());
-        let remote_shepr = RemoteShepr::new("/usr/bin/shepr");
+        let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
         let bridge = SshStdioBridge::start(
             SshTarget::parse("example").expect("test precondition"),
             &remote_shepr,
@@ -2652,21 +2499,8 @@ mod tests {
     }
 
     #[test]
-    fn saved_machine_compatibility_requires_matching_protocol() {
-        let mut status = RemoteClientStatusJson {
-            version: Some(crate::build_info::version()),
-            protocol: Some(crate::protocol::PROTOCOL_VERSION),
-        };
-        assert!(status.supports_endpoint_requirement(true));
-        status.protocol = Some(crate::protocol::PROTOCOL_VERSION + 1);
-        assert!(!status.supports_endpoint_requirement(true));
-        status.protocol = None;
-        assert!(!status.supports_endpoint_requirement(true));
-    }
-
-    #[test]
     fn saved_machine_server_commands_are_scoped_to_the_explicit_session() {
-        let shepr = RemoteShepr::new("/usr/bin/shepr");
+        let shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
         for (args, command) in [
             (&["status", "server", "--json"][..], "status server --json"),
             (&["server", "stop"][..], "server stop"),
@@ -2674,11 +2508,11 @@ mod tests {
         ] {
             assert_eq!(
                 shepr.session_command("agents", args),
-                format!("{} --session agents {command}", shepr.path)
+                format!("{} --session agents {command}", shepr.as_str())
             );
             assert_eq!(
                 shepr.session_command(crate::session::DEFAULT_SESSION_NAME, args),
-                format!("{} {command}", shepr.path)
+                format!("{} {command}", shepr.as_str())
             );
         }
     }
@@ -2739,16 +2573,10 @@ mod tests {
     }
 
     #[test]
-    fn machine_metadata_keeps_raw_resolved_paths_not_shell_expressions() {
+    fn remote_executable_keeps_raw_resolved_paths_not_shell_expressions() {
         let path = "/home/user's files/$literal/shepr";
-        let resolved = RemoteShepr::new(path);
-        assert_eq!(
-            resolved
-                .machine_metadata()
-                .expect("test precondition")
-                .executable,
-            path
-        );
+        let resolved = RemoteExecutable::parse(path).expect("test precondition");
+        assert_eq!(resolved.as_str(), path);
         assert_eq!(resolved.quoted(), shell_quote(path));
     }
 
@@ -2808,7 +2636,7 @@ mod tests {
 
     #[test]
     fn noninteractive_remote_bridge_requests_idle_timeout() {
-        let remote = RemoteShepr::new("/usr/bin/shepr");
+        let remote = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
         assert!(
             remote
                 .bridge_command("agents", true)
@@ -2818,7 +2646,7 @@ mod tests {
 
     #[test]
     fn remote_bridge_command_uses_installed_binary() {
-        let remote_shepr = RemoteShepr::new("/usr/bin/shepr");
+        let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
         assert_eq!(
             remote_shepr.bridge_command(crate::session::DEFAULT_SESSION_NAME, false),
             "/bin/sh -c 'echo; echo shepr-remote-output-ready:1; exec /usr/bin/shepr remote-client-bridge'"
@@ -2832,7 +2660,7 @@ mod tests {
     #[test]
     fn remote_path_discovery_uses_path_binary() {
         let remote_shepr =
-            remote_shepr_from_path_discovery("/usr/bin/shepr\n").expect("path binary");
+            remote_executable_from_path_discovery("/usr/bin/shepr\n").expect("path binary");
 
         assert_eq!(
             remote_shepr.bridge_command(crate::session::DEFAULT_SESSION_NAME, false),
@@ -2843,7 +2671,7 @@ mod tests {
     #[test]
     fn remote_path_discovery_quotes_discovered_binary() {
         let remote_shepr =
-            remote_shepr_from_path_discovery("/opt/shepr bin/shepr\n").expect("path binary");
+            remote_executable_from_path_discovery("/opt/shepr bin/shepr\n").expect("path binary");
 
         assert_eq!(
             remote_shepr.bridge_command(crate::session::DEFAULT_SESSION_NAME, false),
@@ -2855,7 +2683,8 @@ mod tests {
     /// login shell only sees `/bin/sh -c` and one quoted word without newlines.
     #[test]
     fn saved_bridge_command_does_not_depend_on_a_posix_login_shell() {
-        let command = RemoteShepr::new("/usr/bin/shepr").bridge_command("agents", true);
+        let remote = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
+        let command = remote.bridge_command("agents", true);
         let script = command
             .strip_prefix("/bin/sh -c '")
             .and_then(|rest| rest.strip_suffix('\''))
@@ -2892,11 +2721,9 @@ mod tests {
             .expect("test precondition");
 
         let run = |executable: &str| {
-            let metadata = crate::client::endpoint::SshMachineMetadata {
-                os: "linux".to_owned(),
-                executable: executable.to_owned(),
-            };
-            let command = cached_remote_api_command(&metadata, "agents");
+            let executable =
+                RemoteExecutable::parse(executable.to_owned()).expect("test precondition");
+            let command = cached_remote_api_command(&executable, "agents");
             let script = command
                 .strip_prefix("/bin/sh -c '")
                 .and_then(|rest| rest.strip_suffix('\''))
@@ -2927,23 +2754,24 @@ mod tests {
 
     #[test]
     fn remote_path_discovery_reads_multiple_absolute_paths() {
-        let candidates =
-            remote_sheprs_from_path_discovery("/usr/bin/shepr\nbin/shepr\n /opt/shepr bin/shepr\n");
+        let candidates = remote_executables_from_path_discovery(
+            "/usr/bin/shepr\nbin/shepr\n /opt/shepr bin/shepr\n",
+        );
 
         assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0].path, "/usr/bin/shepr");
-        assert_eq!(candidates[1].path, "/opt/shepr bin/shepr");
+        assert_eq!(candidates[0].as_str(), "/usr/bin/shepr");
+        assert_eq!(candidates[1].as_str(), "/opt/shepr bin/shepr");
     }
 
     #[test]
     fn remote_path_discovery_ignores_mise_shims() {
-        let candidates = remote_sheprs_from_path_discovery(
+        let candidates = remote_executables_from_path_discovery(
             "/home/can/.local/share/mise/shims/shepr\n/home/can/.local/share/mise/installs/shepr/0.7.1/bin/shepr\n",
         );
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(
-            candidates[0].path,
+            candidates[0].as_str(),
             "/home/can/.local/share/mise/installs/shepr/0.7.1/bin/shepr"
         );
     }
@@ -2952,11 +2780,10 @@ mod tests {
     fn remote_path_discovery_only_accepts_cacheable_executables() {
         let too_long = format!("/{}/shepr", "a".repeat(4090));
         let output = format!("/opt/shepr\u{1}\n{too_long}\n/usr/bin/shepr\n");
-        let candidates = remote_sheprs_from_path_discovery(&output);
+        let candidates = remote_executables_from_path_discovery(&output);
 
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].path, "/usr/bin/shepr");
-        assert!(candidates[0].machine_metadata().is_some());
+        assert_eq!(candidates[0].as_str(), "/usr/bin/shepr");
     }
 
     #[test]
@@ -2968,9 +2795,20 @@ mod tests {
     }
 
     #[test]
+    fn api_forwarding_check_runs_the_candidate_for_the_session() {
+        let remote_shepr =
+            remote_executable_from_path_discovery("/home/u/.cargo/bin/shepr\n").expect("path");
+
+        assert_eq!(
+            remote_shepr.api_bridge_check_command("agents"),
+            "test -x /home/u/.cargo/bin/shepr && /home/u/.cargo/bin/shepr --session agents remote-api-bridge --check </dev/null"
+        );
+    }
+
+    #[test]
     fn remote_path_discovery_quotes_single_quotes_in_discovered_binary() {
         let remote_shepr =
-            remote_shepr_from_path_discovery("/opt/shepr's/bin/shepr\n").expect("path binary");
+            remote_executable_from_path_discovery("/opt/shepr's/bin/shepr\n").expect("path binary");
 
         assert_eq!(
             remote_shepr.bridge_command(crate::session::DEFAULT_SESSION_NAME, false),
@@ -2982,14 +2820,14 @@ mod tests {
 
     #[test]
     fn remote_path_discovery_ignores_relative_paths() {
-        let remote_shepr = remote_shepr_from_path_discovery("bin/shepr\n");
+        let remote_shepr = remote_executable_from_path_discovery("bin/shepr\n");
 
         assert!(remote_shepr.is_none());
     }
 
     #[test]
     fn remote_path_discovery_ignores_empty_output() {
-        let remote_shepr = remote_shepr_from_path_discovery("\n");
+        let remote_shepr = remote_executable_from_path_discovery("\n");
 
         assert!(remote_shepr.is_none());
     }
@@ -3001,7 +2839,6 @@ mod tests {
         )
         .expect("test precondition");
         assert_eq!(status.version.as_deref(), Some("0.8.0"));
-        assert_eq!(status.protocol, Some(20));
     }
 
     #[test]
@@ -3013,9 +2850,6 @@ mod tests {
             .expect("test precondition"),
             RemoteServerStatus::Running {
                 version: Some("0.6.0".into()),
-                protocol: Some(8),
-                surface_interest: true,
-                health_check: true,
                 detached_server_daemon: true
             }
         );

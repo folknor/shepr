@@ -135,22 +135,13 @@ impl<'de> Deserialize<'de> for NewTerminalCwdConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ShellModeConfig {
-    #[default]
-    Auto,
-    Login,
-    NonLogin,
-}
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct TerminalConfig {
     /// Executable used for new interactive panes. Empty means SHELL, then /bin/sh.
     pub default_shell: String,
-    /// Startup mode for new interactive pane shells.
-    pub shell_mode: ShellModeConfig,
+    /// Start new interactive pane shells as login shells. Default: false.
+    pub login_shell: bool,
     /// CWD policy for new interactive panes, tabs, and workspaces.
     pub new_cwd: NewTerminalCwdConfig,
 }
@@ -186,6 +177,13 @@ pub fn validated_sidebar_bounds(min: u16, max: u16) -> Option<(u16, u16)> {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    // Config is still the runtime shape passed directly through app startup
+    // and client setup. Moving explicit user overrides into Option fields and
+    // returning a separate validated wrapper also requires migrating the
+    // direct readers in app/mod.rs, client/attach.rs, client/shell/config.rs,
+    // client/shell/preferences.rs, and input/keybind_help.rs. Keep that model
+    // change together with those consumers instead of adding a second partial
+    // representation here.
     pub theme: ThemeConfig,
     pub terminal: TerminalConfig,
     pub session: SessionConfig,
@@ -198,6 +196,10 @@ pub struct Config {
     /// Parsed once after validation so runtime code never reparses theme text.
     #[serde(skip)]
     pub(crate) resolved_palette: Palette,
+    /// Parsed once at config load; directly deserialized test/profile values
+    /// compute this lazily through `Config::validated_keybinds`.
+    #[serde(skip)]
+    pub(super) validated_keybinds: std::sync::OnceLock<super::keybinds::KeybindValidation>,
 }
 
 #[derive(Debug)]
@@ -1003,16 +1005,16 @@ mod tests {
     fn terminal_default_shell_defaults_empty_and_parses() {
         let default_config = Config::default();
         assert!(default_config.terminal.default_shell.is_empty());
-        assert_eq!(default_config.terminal.shell_mode, ShellModeConfig::Auto);
+        assert!(!default_config.terminal.login_shell);
 
         let toml = r#"
 [terminal]
 default_shell = "nu"
-shell_mode = "non_login"
+login_shell = true
 "#;
         let config: Config = toml::from_str(toml).expect("test precondition");
         assert_eq!(config.terminal.default_shell, "nu");
-        assert_eq!(config.terminal.shell_mode, ShellModeConfig::NonLogin);
+        assert!(config.terminal.login_shell);
     }
 
     #[test]

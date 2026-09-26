@@ -291,6 +291,14 @@ pub struct Keybinds {
     pub toggle_sidebar: ActionKeybinds,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct KeybindValidation {
+    pub(super) prefix_diag: Option<String>,
+    pub(super) prefix: KeyCombo,
+    pub(super) keybind_diags: Vec<String>,
+    pub(super) keybinds: Keybinds,
+}
+
 impl Default for Keybinds {
     fn default() -> Self {
         Config::default().keybinds()
@@ -368,11 +376,17 @@ impl BindingRegistry {
 }
 
 impl Config {
-    /// Parse and validate `[keys]`. This is pure and does not log: it runs
-    /// every time `live_keybinds()`, `keybinds()` or `collect_diagnostics()`
-    /// is called, so logging here would repeat each issue per call. Config
-    /// loading gathers the result once before a launch continues.
-    pub(super) fn validated_keybinds(&self) -> (Option<String>, KeyCombo, Vec<String>, Keybinds) {
+    /// Return the result cached by config loading, or validate an in-memory
+    /// config value that was built directly by a test or profile parser.
+    pub(super) fn validated_keybinds(&self) -> &KeybindValidation {
+        self.validated_keybinds
+            .get_or_init(|| self.compute_keybind_validation())
+    }
+
+    /// Parse and validate `[keys]` once while loading a config. This is pure
+    /// and does not log; loading collects its diagnostics with the other
+    /// config checks.
+    pub(super) fn compute_keybind_validation(&self) -> KeybindValidation {
         let mut diagnostics = Vec::new();
         let (prefix, prefix_diag) = parse_key_combo_with_diagnostic(
             &self.keys.prefix,
@@ -563,7 +577,12 @@ impl Config {
             apply_action!(keybinds.toggle_sidebar, toggle_sidebar, source);
         }
 
-        (prefix_diag, prefix, diagnostics, keybinds)
+        KeybindValidation {
+            prefix_diag,
+            prefix,
+            keybind_diags: diagnostics,
+            keybinds,
+        }
     }
 }
 

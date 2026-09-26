@@ -2,7 +2,6 @@ use ratatui::layout::Rect;
 
 mod panes;
 mod scrollbar;
-mod sidebar;
 mod tab_surface;
 mod text;
 mod widgets;
@@ -13,11 +12,6 @@ pub(crate) use self::panes::{
 pub(crate) use self::scrollbar::{
     render_pane_scrollbar_buffer, render_scrollbar_buffer, scrollbar_offset_from_drag_row,
     scrollbar_offset_from_row, scrollbar_thumb, scrollbar_thumb_grab_offset,
-};
-pub(crate) use self::sidebar::{
-    AgentTokenContext, ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
-    expanded_sidebar_sections, resolved_token_spans, sidebar_agent_rows,
-    sidebar_section_divider_rect, sidebar_space_rows,
 };
 pub(crate) use self::tab_surface::{
     TabSurfaceLayout, TabSurfaceTarget, TabSurfaceView, compute_tab_surface,

@@ -3,9 +3,11 @@ use std::path::PathBuf;
 
 use crate::client::endpoint::ProfileId;
 
-use super::attach::{
-    DiscoveryProgress, RemoteShepr, RemoteSsh, SshStdioBridge,
-    resume_installed_remote_shepr_discovery,
+use super::{
+    RemoteExecutable,
+    attach::{
+        DiscoveryProgress, RemoteSsh, SshStdioBridge, resume_installed_remote_shepr_discovery,
+    },
 };
 
 pub(crate) struct SavedSshBridge {
@@ -67,7 +69,7 @@ pub(crate) struct SavedSshConnector {
 #[derive(Default)]
 struct ConnectorState {
     ssh: Option<RemoteSsh>,
-    remote_shepr: Option<RemoteShepr>,
+    remote_shepr: Option<RemoteExecutable>,
     /// Full discovery's completed round trips, while it has not finished. Only kept while
     /// there is no remembered executable.
     discovery: DiscoveryProgress,
@@ -123,10 +125,7 @@ impl SavedSshConnector {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.seeded_from_disk {
             state.seeded_from_disk = true;
-            state.remote_shepr = metadata_cache
-                .load()
-                .as_ref()
-                .and_then(RemoteShepr::from_metadata);
+            state.remote_shepr = metadata_cache.load();
         }
         if state
             .ssh
@@ -182,9 +181,7 @@ impl SavedSshConnector {
         *remote_shepr = Some(discovered.clone());
         match self.attempt(ssh, target, &discovered, deadline, &mut establish) {
             Ok(connected) => {
-                if let Some(metadata) = discovered.machine_metadata() {
-                    metadata_cache.store(&metadata);
-                }
+                metadata_cache.store(&discovered);
                 Ok(connected)
             }
             Err(error) => {
@@ -200,7 +197,7 @@ impl SavedSshConnector {
         &self,
         ssh: &RemoteSsh,
         target: &super::SshTarget,
-        remote_shepr: &RemoteShepr,
+        remote_shepr: &RemoteExecutable,
         deadline: std::time::Instant,
         establish: &mut impl FnMut(SavedSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
@@ -252,7 +249,7 @@ impl SavedSshApiBridge {
         let metadata = match cached {
             Some(metadata) => metadata,
             None => {
-                let metadata = super::attach::discover_remote_api_metadata(&ssh, session)?;
+                let metadata = super::attach::discover_remote_api_executable(&ssh, session)?;
                 metadata_cache.store(&metadata);
                 metadata
             }
@@ -380,8 +377,6 @@ mod tests {
             "Permission denied (publickey)",
             "Host key verification failed",
             "matching Shepr is not ready; install or update",
-            "remote Shepr server speaks a different protocol",
-            "the remote server predates Shepr's stable endpoint protocol",
             "handshake rejected",
         ] {
             assert!(

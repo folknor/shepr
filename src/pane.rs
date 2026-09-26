@@ -1145,14 +1145,14 @@ fn terminate_pane_session(
 #[derive(Clone, Copy)]
 pub(crate) struct PaneShellConfig<'a> {
     pub(crate) default_shell: &'a str,
-    pub(crate) mode: crate::config::ShellModeConfig,
+    pub(crate) login_shell: bool,
 }
 
 impl<'a> PaneShellConfig<'a> {
-    pub(crate) fn new(default_shell: &'a str, mode: crate::config::ShellModeConfig) -> Self {
+    pub(crate) fn new(default_shell: &'a str, login_shell: bool) -> Self {
         Self {
             default_shell,
-            mode,
+            login_shell,
         }
     }
 }
@@ -1160,10 +1160,7 @@ impl<'a> PaneShellConfig<'a> {
 /// `PtyCommand` selects and resolves the shell at spawn, and uses that resolved
 /// path for both exec and the child-visible `SHELL`.
 fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> PtyCommand {
-    PtyCommand::interactive_shell(
-        shell_config.default_shell,
-        shell_config.mode == crate::config::ShellModeConfig::Login,
-    )
+    PtyCommand::interactive_shell(shell_config.default_shell, shell_config.login_shell)
 }
 
 fn usable_reported_cwd(cwd: std::path::PathBuf) -> Option<std::path::PathBuf> {
@@ -1370,9 +1367,8 @@ impl PaneRuntime {
         let (rows, cols) = clamp_pane_size(rows, cols);
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
 
-        let terminal = crate::ghostty::Terminal::new(cols, rows, scrollback_limit_bytes)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
-        let pane_terminal = GhosttyPaneTerminal::new(terminal)?;
+        let terminal = crate::ghostty::Terminal::new(cols, rows, scrollback_limit_bytes);
+        let pane_terminal = GhosttyPaneTerminal::new(terminal);
         pane_terminal.apply_host_terminal_theme(host_terminal_theme);
         let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
         if let Some(ansi) = initial_history_ansi {
@@ -2391,10 +2387,8 @@ impl PaneRuntime {
             return false;
         }
 
-        let Ok(bytes) = crate::ghostty::encode_focus(event) else {
-            return false;
-        };
-        if let Err(err) = self.try_send_bytes(Bytes::from(bytes)) {
+        let bytes = crate::ghostty::encode_focus(event);
+        if let Err(err) = self.try_send_bytes(Bytes::from_static(bytes)) {
             warn!(err = %err, ?event, "failed to forward pane focus event");
         }
         true
@@ -2639,14 +2633,10 @@ impl PaneRuntime {
     ) -> (Self, mpsc::Receiver<Bytes>) {
         let (tx, rx) = mpsc::channel(channel_capacity);
         let (resize_tx, _resize_rx) = watch::channel((rows, cols, 0, 0));
-        let mut terminal = crate::ghostty::Terminal::new(cols, rows, scrollback_limit_bytes)
-            .expect("test terminal creation succeeds");
+        let mut terminal = crate::ghostty::Terminal::new(cols, rows, scrollback_limit_bytes);
         terminal.write(bytes);
         let pane_id = PaneId::from_raw(0);
-        let terminal = Arc::new(PaneTerminal::new(
-            GhosttyPaneTerminal::new(terminal)
-                .expect("test ghostty pane terminal creation succeeds"),
-        ));
+        let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));
 
         (
             Self {
@@ -3110,10 +3100,7 @@ mod tests {
 
     #[test]
     fn login_shell_builder_uses_one_resolved_path_for_exec_and_shell_env() {
-        let cmd = pane_shell_command_builder(PaneShellConfig::new(
-            "/bin/sh",
-            crate::config::ShellModeConfig::Login,
-        ));
+        let cmd = pane_shell_command_builder(PaneShellConfig::new("/bin/sh", true));
         assert!(cmd.is_login_shell());
         let std_cmd = cmd.to_std_command().expect("test precondition");
         assert_eq!(std_cmd.get_program(), std::ffi::OsStr::new("/bin/sh"));
@@ -3128,11 +3115,8 @@ mod tests {
     }
 
     #[test]
-    fn auto_shell_builder_execs_configured_shell_without_login_argv0() {
-        let cmd = pane_shell_command_builder(PaneShellConfig::new(
-            "/bin/sh",
-            crate::config::ShellModeConfig::Auto,
-        ));
+    fn non_login_shell_builder_execs_configured_shell_without_login_argv0() {
+        let cmd = pane_shell_command_builder(PaneShellConfig::new("/bin/sh", false));
         assert!(!cmd.is_login_shell());
         let std_cmd = cmd.to_std_command().expect("test precondition");
         assert_eq!(std_cmd.get_program(), std::ffi::OsStr::new("/bin/sh"));
@@ -3141,10 +3125,8 @@ mod tests {
 
     #[test]
     fn pane_shell_spawn_rejects_a_missing_configured_shell() {
-        let cmd = pane_shell_command_builder(PaneShellConfig::new(
-            "/__shepr_missing_shell__",
-            crate::config::ShellModeConfig::Login,
-        ));
+        let cmd =
+            pane_shell_command_builder(PaneShellConfig::new("/__shepr_missing_shell__", true));
         let err = cmd.to_std_command().expect_err("test precondition");
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
@@ -3160,10 +3142,7 @@ mod tests {
                 .expect("test precondition");
         }
 
-        let mut cmd = pane_shell_command_builder(PaneShellConfig::new(
-            "fake-shell",
-            crate::config::ShellModeConfig::NonLogin,
-        ));
+        let mut cmd = pane_shell_command_builder(PaneShellConfig::new("fake-shell", false));
         cmd.env("PATH", bin.as_os_str());
         let std_cmd = cmd.to_std_command().expect("test precondition");
         assert_eq!(std_cmd.get_program(), shell.as_os_str());
@@ -3241,14 +3220,12 @@ mod tests {
     async fn focus_events_are_forwarded_when_enabled() {
         let (tx, mut rx) = mpsc::channel(4);
         let (resize_tx, _resize_rx) = watch::channel((80, 24, 0, 0));
-        let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
+        let mut terminal = crate::ghostty::Terminal::new(80, 24, 0);
         terminal
             .mode_set(crate::ghostty::MODE_FOCUS_EVENT, true)
             .expect("test precondition");
         let pane_id = PaneId::from_raw(0);
-        let terminal = Arc::new(PaneTerminal::new(
-            GhosttyPaneTerminal::new(terminal).expect("test precondition"),
-        ));
+        let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));
         let runtime = PaneRuntime {
             persistence_cwd: Mutex::new(None),
             pane_id,
@@ -3283,11 +3260,9 @@ mod tests {
     async fn focus_events_are_suppressed_when_disabled() {
         let (tx, mut rx) = mpsc::channel(4);
         let (resize_tx, _resize_rx) = watch::channel((80, 24, 0, 0));
-        let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
+        let terminal = crate::ghostty::Terminal::new(80, 24, 0);
         let pane_id = PaneId::from_raw(0);
-        let terminal = Arc::new(PaneTerminal::new(
-            GhosttyPaneTerminal::new(terminal).expect("test precondition"),
-        ));
+        let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));
         let runtime = PaneRuntime {
             persistence_cwd: Mutex::new(None),
             pane_id,

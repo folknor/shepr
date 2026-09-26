@@ -18,8 +18,8 @@ pub use self::{
     },
     model::{
         AgentPanelSortConfig, Config, HostCursorModeConfig, NewTerminalCwdConfig,
-        PaneBordersConfig, ShellModeConfig, SidebarCollapsedModeConfig, StatusIndicatorStyle,
-        TabBarPositionConfig, validated_sidebar_bounds,
+        PaneBordersConfig, SidebarCollapsedModeConfig, StatusIndicatorStyle, TabBarPositionConfig,
+        validated_sidebar_bounds,
     },
     sidebar::{
         AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenStyle,
@@ -42,6 +42,7 @@ pub(crate) use self::{
 };
 
 pub const CONFIG_PATH_ENV_VAR: &str = "SHEPR_CONFIG_PATH";
+pub(crate) const DEFAULT_CONFIG: &str = include_str!("config/default.toml");
 
 pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
 pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
@@ -49,6 +50,12 @@ pub const DEFAULT_HEADLESS_COLS: u16 = 120;
 pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
 
 impl Config {
+    pub(crate) fn cache_keybind_validation(&self) {
+        let _ = self
+            .validated_keybinds
+            .get_or_init(|| self.compute_keybind_validation());
+    }
+
     pub(crate) fn resolve_palette(&mut self) -> Result<(), Vec<String>> {
         self.resolved_palette = theme::resolve_palette(self)?;
         Ok(())
@@ -56,16 +63,18 @@ impl Config {
 
     /// Parsed keybinds for Shepr actions.
     pub fn keybinds(&self) -> Keybinds {
-        self.validated_keybinds().3
+        self.validated_keybinds().keybinds.clone()
     }
 
     pub fn collect_diagnostics(&self) -> Vec<String> {
         // sidebar_section_split is persisted client chrome state, not a Config
         // field; its finite-range normalization belongs to preference loading.
-        let (prefix_diag, _, keybind_diags, _) = self.validated_keybinds();
-        prefix_diag
-            .into_iter()
-            .chain(keybind_diags)
+        let validation = self.validated_keybinds();
+        validation
+            .prefix_diag
+            .iter()
+            .cloned()
+            .chain(validation.keybind_diags.iter().cloned())
             .chain(self.theme.diagnostics())
             .chain(theme::color_diagnostic("ui.accent", &self.ui.accent))
             .chain(tab_bar_right_diagnostics(&self.ui.tab_bar_right))
@@ -104,16 +113,27 @@ impl Config {
     /// validated first, so nothing reaches here with an invalid binding;
     /// `validated_live_keybinds` rejects one instead.
     pub(crate) fn live_keybinds(&self) -> LiveKeybindConfig {
-        let (_, prefix, _, keybinds) = self.validated_keybinds();
-        LiveKeybindConfig { prefix, keybinds }
+        let validation = self.validated_keybinds();
+        LiveKeybindConfig {
+            prefix: validation.prefix,
+            keybinds: validation.keybinds.clone(),
+        }
     }
 
     pub(crate) fn validated_live_keybinds(&self) -> Result<LiveKeybindConfig, Vec<String>> {
-        let (prefix_diag, prefix, keybind_diags, keybinds) = self.validated_keybinds();
-        if prefix_diag.is_some() || !keybind_diags.is_empty() {
-            Err(prefix_diag.into_iter().chain(keybind_diags).collect())
+        let validation = self.validated_keybinds();
+        if validation.prefix_diag.is_some() || !validation.keybind_diags.is_empty() {
+            Err(validation
+                .prefix_diag
+                .iter()
+                .cloned()
+                .chain(validation.keybind_diags.iter().cloned())
+                .collect())
         } else {
-            Ok(LiveKeybindConfig { prefix, keybinds })
+            Ok(LiveKeybindConfig {
+                prefix: validation.prefix,
+                keybinds: validation.keybinds.clone(),
+            })
         }
     }
 

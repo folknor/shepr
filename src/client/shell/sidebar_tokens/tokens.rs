@@ -273,7 +273,12 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
         for width in [4, 40] {
             let spans = super::super::resolved_token_spans(
                 &rows[0],
-                ("*", theme),
+                super::super::super::status_glyph(
+                    crate::api::schema::AgentStatus::Working,
+                    crate::config::StatusIndicatorStyle::Dots,
+                    &crate::app::state::Palette::catppuccin(),
+                    false,
+                ),
                 theme,
                 theme,
                 theme,

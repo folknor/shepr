@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 use serde::Serialize;
 
-use crate::client::endpoint::{EndpointCatalog, ProfileId};
+use crate::client::endpoint::EndpointCatalog;
 
 use super::matches::{flag, required, string};
 
@@ -16,8 +16,9 @@ struct MachineListRow<'a> {
 
 pub(super) fn run_machine_command(
     matches: &ArgMatches,
-    paths: &crate::config::AppPaths,
+    context: &super::target::CliContext,
 ) -> std::io::Result<i32> {
+    let paths: &crate::config::AppPaths = context;
     match matches.subcommand() {
         Some(("list", matches)) => list(paths, flag(matches, "json")),
         Some(("status", matches)) => status(
@@ -32,18 +33,14 @@ pub(super) fn run_machine_command(
             saved_ssh_settings(paths)?,
         ),
         Some(("add", matches)) => add(paths, add_args(matches), saved_ssh_settings(paths)?),
-        Some(("rename", matches)) => rename(
-            paths,
-            &required(matches, "profile-id"),
-            &required(matches, "label"),
-        ),
-        Some(("remove", matches)) => remove(paths, &required(matches, "profile-id")),
+        Some(("remove", matches)) => remove(paths, &required(matches, "machine")),
         _ => Ok(super::missing_subcommand()),
     }
 }
 
 fn list(paths: &crate::config::AppPaths, json: bool) -> std::io::Result<i32> {
     let catalog = load_catalog(paths)?;
+    let selected_profile = catalog.load_selection();
     let rows = catalog
         .ssh
         .iter()
@@ -52,7 +49,7 @@ fn list(paths: &crate::config::AppPaths, json: bool) -> std::io::Result<i32> {
             label: &profile.label,
             target: profile.target.as_str(),
             session: &profile.session,
-            selected: catalog.selected_profile.as_ref() == Some(&profile.id),
+            selected: selected_profile.as_ref() == Some(&profile.id),
         })
         .collect::<Vec<_>>();
     if json {
@@ -222,8 +219,8 @@ fn add(
             return Ok(2);
         }
     }
-    let metadata = match crate::remote::prepare_saved_ssh(paths, &target, &session, settings) {
-        Ok(metadata) => metadata,
+    let executable = match crate::remote::prepare_saved_ssh(paths, &target, &session, settings) {
+        Ok(executable) => executable,
         Err(error) => {
             eprintln!("error: {error}; machine was not saved");
             crate::remote::print_saved_ssh_error_hint(&error, &target);
@@ -248,10 +245,8 @@ fn add(
             "remote prepared, but machine was not saved: {error}"
         ))
     })?;
-    if let Some(metadata) = metadata {
-        crate::client::endpoint::SshMetadataCache::new(paths, &id, &target, &session)
-            .store(&metadata);
-    }
+    crate::client::endpoint::SshMetadataCache::new(paths, &id, &target, &session)
+        .store(&executable);
     println!("Saved SSH machine {id}. Remote server is ready.");
     println!("Open Shepr clients connect automatically.");
     Ok(0)
@@ -266,72 +261,37 @@ fn saved_ssh_settings(
     })
 }
 
-fn rename(paths: &crate::config::AppPaths, raw_id: &str, label: &str) -> std::io::Result<i32> {
-    let id = match ProfileId::parse(raw_id.to_owned()) {
-        Ok(id) => id,
+fn remove(paths: &crate::config::AppPaths, selector: &str) -> std::io::Result<i32> {
+    let mut catalog = load_catalog(paths)?;
+    let profile = match super::target::resolve_machine(&catalog.ssh, selector) {
+        Ok(profile) => profile,
         Err(error) => {
-            eprintln!("error: {error}");
+            eprintln!("{error}");
             return Ok(2);
         }
     };
-    let mut catalog = load_catalog(paths)?;
-    match catalog.rename_ssh(&id, label) {
-        Ok(true) => {}
-        Ok(false) => {
-            eprintln!("machine profile {id} was not found");
-            return Ok(1);
-        }
-        Err(error) => {
-            eprintln!("error: {error}");
-            return Ok(2);
-        }
-    }
-    store_catalog(&catalog)?;
-    println!("Renamed SSH machine {id}.");
-    Ok(0)
-}
-
-fn remove(paths: &crate::config::AppPaths, raw_id: &str) -> std::io::Result<i32> {
-    let Some(id) = profile_id(raw_id) else {
-        return Ok(2);
-    };
-    let mut catalog = load_catalog(paths)?;
-    let previous_selection = catalog.selected_profile.clone();
-    let metadata_cache = catalog
-        .ssh
-        .iter()
-        .find(|profile| profile.id == id)
-        .map(|profile| {
-            crate::client::endpoint::SshMetadataCache::new(
-                paths,
-                &id,
-                &profile.target,
-                &profile.session,
-            )
-        });
+    let id = profile.id.clone();
+    let was_selected = catalog.load_selection().as_ref() == Some(&id);
+    let metadata_cache = crate::client::endpoint::SshMetadataCache::new(
+        paths,
+        &id,
+        profile.target.as_str(),
+        &profile.session,
+    );
     if !catalog.remove_ssh(&id) {
         eprintln!("machine profile {id} was not found");
         return Ok(1);
     }
     store_catalog(&catalog)?;
-    if let Some(cache) = metadata_cache {
-        cache.invalidate();
-    }
-    if catalog.selected_profile != previous_selection {
-        catalog.store_selection().map_err(std::io::Error::other)?;
+    metadata_cache.invalidate();
+    // The next launch falls back to Local instead of naming a removed machine.
+    if was_selected {
+        catalog
+            .store_selection(None)
+            .map_err(std::io::Error::other)?;
     }
     println!("Removed SSH machine {id}.");
     Ok(0)
-}
-
-fn profile_id(raw: &str) -> Option<ProfileId> {
-    match ProfileId::parse(raw.to_owned()) {
-        Ok(id) => Some(id),
-        Err(error) => {
-            eprintln!("error: {error}");
-            None
-        }
-    }
 }
 
 fn load_catalog(paths: &crate::config::AppPaths) -> std::io::Result<EndpointCatalog> {
@@ -364,8 +324,8 @@ mod tests {
     }
 
     #[test]
-    fn enable_and_disable_are_not_machine_subcommands() {
-        for command in ["enable", "disable"] {
+    fn machine_mutation_commands_only_expose_add_and_remove() {
+        for command in ["rename", "enable", "disable"] {
             let argv = [
                 "shepr",
                 "machine",
@@ -379,6 +339,23 @@ mod tests {
                 "{command} must not be exposed"
             );
         }
+    }
+
+    #[test]
+    fn machine_remove_takes_the_shared_label_or_id_selector() {
+        let matches = super::super::spec::command()
+            .try_get_matches_from(["shepr", "machine", "remove", "Build"])
+            .expect("test precondition");
+        let Some(("machine", machine)) = matches.subcommand() else {
+            panic!("machine command did not parse");
+        };
+        let Some(("remove", remove)) = machine.subcommand() else {
+            panic!("machine remove did not parse");
+        };
+        assert_eq!(
+            remove.get_one::<String>("machine").map(String::as_str),
+            Some("Build")
+        );
     }
 
     #[test]
@@ -454,11 +431,6 @@ mod tests {
             .to_vec();
         let error = parse_add_args(&args).expect_err("test precondition");
         assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
-    }
-
-    #[test]
-    fn profile_id_parser_rejects_target_text() {
-        assert!(profile_id("build.example").is_none());
     }
 
     #[test]

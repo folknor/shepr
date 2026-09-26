@@ -98,17 +98,15 @@ impl App {
     /// the same reason as in `parse_workspace_id`: tab numbers are stable and
     /// independent of tab order, positions are not.
     pub(crate) fn parse_tab_id(&self, id: &str) -> Option<(usize, usize)> {
-        let (ws_raw, tab_raw) = id.rsplit_once(':')?;
-        let ws_idx = self.parse_workspace_id(ws_raw)?;
-        let encoded = tab_raw.strip_prefix('t')?;
-        let tab_number = crate::workspace::decode_public_number(encoded)?;
+        let public_id = id.parse::<crate::workspace::PublicTabId>().ok()?;
+        let ws_idx = self.parse_workspace_id(public_id.workspace_id())?;
         let tab_idx = self
             .state
             .workspaces
             .get(ws_idx)?
             .tabs
             .iter()
-            .position(|tab| tab.number == tab_number)?;
+            .position(|tab| tab.number == public_id.number())?;
         Some((ws_idx, tab_idx))
     }
 
@@ -119,16 +117,19 @@ impl App {
     /// process, so after a server restart they name a different pane. The
     /// `<workspace>-N` form is gone too; nothing emits it.
     pub(crate) fn parse_pane_id(&self, id: &str) -> Option<(usize, crate::layout::PaneId)> {
-        let current_id = id.rsplit_once(":p").and_then(|(ws_raw, pane_number_raw)| {
-            let ws_idx = self.parse_workspace_id(ws_raw)?;
-            let pane_number = crate::workspace::decode_public_number(pane_number_raw)?;
-            let ws = self.state.workspaces.get(ws_idx)?;
-            let pane_id = ws
-                .public_pane_numbers
-                .iter()
-                .find_map(|(pane_id, number)| (*number == pane_number).then_some(*pane_id))?;
-            Some((ws_idx, pane_id))
-        });
+        let current_id = id
+            .parse::<crate::workspace::PublicPaneId>()
+            .ok()
+            .and_then(|public_id| {
+                let ws_idx = self.parse_workspace_id(public_id.workspace_id())?;
+                let pane_number = public_id.number();
+                let ws = self.state.workspaces.get(ws_idx)?;
+                let pane_id = ws
+                    .public_pane_numbers
+                    .iter()
+                    .find_map(|(pane_id, number)| (*number == pane_number).then_some(*pane_id))?;
+                Some((ws_idx, pane_id))
+            });
         current_id.or_else(|| {
             let alias = self.state.public_pane_id_aliases.get(id).copied()?;
             self.find_pane(alias).map(|(ws_idx, _)| (ws_idx, alias))

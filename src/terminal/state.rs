@@ -29,7 +29,8 @@ pub(crate) const HOOK_SEQUENCE_REANCHOR_AFTER: Duration = Duration::from_secs(5)
 /// Whether a report carrying `seq` is older than the source's last accepted
 /// `last_seq` (accepted at `last_accepted_at`). The one ordering rule for
 /// every per-source report sequence (hook state and session reports, pane
-/// metadata reports, workspace metadata reports in `crate::metadata_tokens`):
+/// metadata reports, workspace metadata reports in
+/// `crate::terminal::metadata_tokens`):
 /// a non-increasing `seq` is a straggler unless it arrives
 /// [`HOOK_SEQUENCE_REANCHOR_AFTER`] or more after the last acceptance, when
 /// it is taken as a clock step and re-anchors the source.
@@ -194,7 +195,7 @@ pub struct TerminalState {
     fallback_observed_at: Option<Instant>,
     pub hook_authority: Option<HookAuthority>,
     pub agent_metadata: HashMap<String, AgentMetadata>,
-    pub metadata_tokens: crate::metadata_tokens::MetadataTokens,
+    pub metadata_tokens: crate::terminal::metadata_tokens::MetadataTokens,
     pub persisted_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
     pub terminal_title: Option<String>,
     pub manual_label: Option<String>,
@@ -232,7 +233,7 @@ impl TerminalState {
             fallback_observed_at: None,
             hook_authority: None,
             agent_metadata: HashMap::new(),
-            metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
+            metadata_tokens: crate::terminal::metadata_tokens::MetadataTokens::default(),
             persisted_agent_session: None,
             terminal_title: None,
             manual_label: None,

@@ -1,4 +1,4 @@
-//! Tracks the client's desired endpoint selection across handoffs.
+//! The client's endpoint selection: its one owner, tracked across handoffs.
 //!
 //! Selecting an endpoint updates the in-memory choice immediately, because the
 //! automatic activation path reads it to know which endpoint should own the pane
@@ -7,6 +7,9 @@
 //! restores the previous choice and remembers the failed connection, so automatic
 //! activation does not retry it on every snapshot; a fresh connection generation or
 //! an explicit request clears that memory.
+//!
+//! The catalog only supplies the saved machines and the selection file; the selected
+//! machine itself lives here.
 
 use tracing::warn;
 
@@ -19,6 +22,8 @@ struct SelectionAttempt {
 }
 
 pub(super) struct EndpointSelectionTracker {
+    /// The selected saved machine; `None` is Local.
+    selected: Option<ProfileId>,
     persisted: Option<ProfileId>,
     attempt: Option<SelectionAttempt>,
     failed: Option<(ClientEndpointId, Option<u64>)>,
@@ -35,26 +40,45 @@ pub(super) enum SelectionOutcome {
 }
 
 impl EndpointSelectionTracker {
+    /// Starts from the selection the catalog's selection file saved.
     pub(super) fn new(catalog: &EndpointCatalog) -> Self {
+        Self::with_selection(catalog.load_selection())
+    }
+
+    fn with_selection(selected: Option<ProfileId>) -> Self {
         Self {
-            persisted: catalog.selected_profile.clone(),
+            persisted: selected.clone(),
+            selected,
             attempt: None,
             failed: None,
         }
+    }
+
+    /// The endpoint this client wants to own the pane surface.
+    pub(super) fn selected_endpoint(&self) -> ClientEndpointId {
+        self.selected
+            .as_ref()
+            .map_or(ClientEndpointId::Local, |profile_id| {
+                ClientEndpointId::Ssh(profile_id.clone())
+            })
     }
 
     /// Selects `endpoint_id` for an activation request. Returns false for an endpoint
     /// the catalog does not contain.
     pub(super) fn begin(
         &mut self,
-        catalog: &mut EndpointCatalog,
+        catalog: &EndpointCatalog,
         endpoint_id: &ClientEndpointId,
         generation: Option<u64>,
     ) -> bool {
-        let before = catalog.selected_profile.clone();
-        if !catalog.select_endpoint(endpoint_id) {
-            return false;
-        }
+        let next = match endpoint_id {
+            ClientEndpointId::Local => None,
+            ClientEndpointId::Ssh(profile_id) if catalog.is_selectable(profile_id) => {
+                Some(profile_id.clone())
+            }
+            ClientEndpointId::Ssh(_) => return false,
+        };
+        let before = std::mem::replace(&mut self.selected, next);
         // A superseded request never owned the surface, so the restore point stays the
         // selection from before the first outstanding request.
         let previous = self
@@ -76,12 +100,24 @@ impl EndpointSelectionTracker {
         true
     }
 
+    /// Drops a selection that no longer names a saved machine after the catalog
+    /// changed, falling back to Local.
+    pub(super) fn catalog_changed(&mut self, catalog: &EndpointCatalog) {
+        if self
+            .selected
+            .as_ref()
+            .is_some_and(|selected| !catalog.is_selectable(selected))
+        {
+            self.selected = None;
+        }
+    }
+
     /// Resolves the outstanding attempt once no handoff work remains in flight.
     /// `busy` covers a pending activation, a deferred Local activation and a queued
     /// activation event; `active_surface` is whether `active_id` owns the surface.
     pub(super) fn settle(
         &mut self,
-        catalog: &mut EndpointCatalog,
+        catalog: &EndpointCatalog,
         busy: bool,
         active_id: &ClientEndpointId,
         active_surface: bool,
@@ -93,12 +129,12 @@ impl EndpointSelectionTracker {
             return SelectionOutcome::Unsettled;
         };
         if active_surface && active_id == &attempt.endpoint_id {
-            let persist = catalog.selected_profile != self.persisted;
+            let persist = self.selected != self.persisted;
             return SelectionOutcome::Committed { persist };
         }
         // The catalog may have lost the previous machine while the handoff ran; a removed
         // selection falls back to Local.
-        catalog.selected_profile = attempt
+        self.selected = attempt
             .previous
             .filter(|previous| catalog.is_selectable(previous));
         self.failed = Some((attempt.endpoint_id, attempt.generation));
@@ -106,8 +142,8 @@ impl EndpointSelectionTracker {
     }
 
     /// Records that the current selection has been written to disk.
-    pub(super) fn mark_persisted(&mut self, catalog: &EndpointCatalog) {
-        self.persisted = catalog.selected_profile.clone();
+    fn mark_persisted(&mut self) {
+        self.persisted = self.selected.clone();
     }
 
     /// Whether automatic activation of `endpoint_id` on this connection generation
@@ -127,7 +163,7 @@ impl EndpointSelectionTracker {
     /// Settles the outstanding attempt and persists a committed selection change.
     pub(super) fn settle_and_persist(
         &mut self,
-        catalog: &mut EndpointCatalog,
+        catalog: &EndpointCatalog,
         busy: bool,
         active_id: &ClientEndpointId,
         active_surface: bool,
@@ -135,8 +171,8 @@ impl EndpointSelectionTracker {
         if let SelectionOutcome::Committed { persist: true } =
             self.settle(catalog, busy, active_id, active_surface)
         {
-            match catalog.store_selection() {
-                Ok(()) => self.mark_persisted(catalog),
+            match catalog.store_selection(self.selected.as_ref()) {
+                Ok(()) => self.mark_persisted(),
                 Err(error) => warn!(%error, "failed to persist endpoint selection"),
             }
         }
@@ -157,56 +193,67 @@ mod tests {
 
     #[test]
     fn failed_handoff_restores_previous_selection_and_suppresses_retry() {
-        let (mut catalog, id) = catalog_with_machine();
-        let mut tracker = EndpointSelectionTracker::new(&catalog);
+        let (catalog, id) = catalog_with_machine();
+        let mut tracker = EndpointSelectionTracker::with_selection(None);
         let target = ClientEndpointId::Ssh(id);
-        assert!(tracker.begin(&mut catalog, &target, Some(7)));
-        assert!(catalog.selected_profile.is_some());
+        assert!(tracker.begin(&catalog, &target, Some(7)));
+        assert_eq!(tracker.selected_endpoint(), target);
         assert_eq!(
-            tracker.settle(&mut catalog, true, &ClientEndpointId::Local, true),
+            tracker.settle(&catalog, true, &ClientEndpointId::Local, true),
             SelectionOutcome::Unsettled
         );
         assert_eq!(
-            tracker.settle(&mut catalog, false, &ClientEndpointId::Local, true),
+            tracker.settle(&catalog, false, &ClientEndpointId::Local, true),
             SelectionOutcome::Reverted
         );
-        assert_eq!(catalog.selected_profile, None);
+        assert_eq!(tracker.selected_endpoint(), ClientEndpointId::Local);
         assert!(tracker.suppresses(&target, Some(7)));
         assert!(!tracker.suppresses(&target, Some(8)));
     }
 
     #[test]
     fn automatic_retry_of_the_startup_selection_is_suppressed_after_failure() {
-        let (mut catalog, id) = catalog_with_machine();
-        assert!(catalog.select_ssh(&id));
-        let mut tracker = EndpointSelectionTracker::new(&catalog);
-        let target = ClientEndpointId::Ssh(id.clone());
-        assert!(tracker.begin(&mut catalog, &target, Some(3)));
+        let (catalog, id) = catalog_with_machine();
+        let mut tracker = EndpointSelectionTracker::with_selection(Some(id.clone()));
+        let target = ClientEndpointId::Ssh(id);
+        assert!(tracker.begin(&catalog, &target, Some(3)));
         assert_eq!(
-            tracker.settle(&mut catalog, false, &ClientEndpointId::Local, true),
+            tracker.settle(&catalog, false, &ClientEndpointId::Local, true),
             SelectionOutcome::Reverted
         );
         // The preference survives for the next connection, but not for this one.
-        assert_eq!(catalog.selected_profile, Some(id));
+        assert_eq!(tracker.selected_endpoint(), target);
         assert!(tracker.suppresses(&target, Some(3)));
     }
 
     #[test]
     fn committed_handoff_persists_only_changes() {
-        let (mut catalog, id) = catalog_with_machine();
-        let mut tracker = EndpointSelectionTracker::new(&catalog);
+        let (catalog, id) = catalog_with_machine();
+        let mut tracker = EndpointSelectionTracker::with_selection(None);
         let target = ClientEndpointId::Ssh(id);
-        assert!(tracker.begin(&mut catalog, &target, Some(2)));
+        assert!(tracker.begin(&catalog, &target, Some(2)));
         assert_eq!(
-            tracker.settle(&mut catalog, false, &target, true),
+            tracker.settle(&catalog, false, &target, true),
             SelectionOutcome::Committed { persist: true }
         );
-        tracker.mark_persisted(&catalog);
-        assert!(tracker.begin(&mut catalog, &target, Some(2)));
+        tracker.mark_persisted();
+        assert!(tracker.begin(&catalog, &target, Some(2)));
         assert_eq!(
-            tracker.settle(&mut catalog, false, &target, true),
+            tracker.settle(&catalog, false, &target, true),
             SelectionOutcome::Committed { persist: false }
         );
+    }
+
+    #[test]
+    fn unknown_machines_cannot_be_selected() {
+        let (catalog, _) = catalog_with_machine();
+        let mut other = EndpointCatalog::default();
+        let unknown = other
+            .add_ssh("Other", "other", "agents")
+            .expect("test precondition");
+        let mut tracker = EndpointSelectionTracker::with_selection(None);
+        assert!(!tracker.begin(&catalog, &ClientEndpointId::Ssh(unknown), Some(1)));
+        assert_eq!(tracker.selected_endpoint(), ClientEndpointId::Local);
     }
 
     #[test]
@@ -215,14 +262,14 @@ mod tests {
         let second = catalog
             .add_ssh("Other", "other", "agents")
             .expect("test precondition");
-        let mut tracker = EndpointSelectionTracker::new(&catalog);
-        assert!(tracker.begin(&mut catalog, &ClientEndpointId::Ssh(first), Some(2)));
-        assert!(tracker.begin(&mut catalog, &ClientEndpointId::Ssh(second), Some(3)));
+        let mut tracker = EndpointSelectionTracker::with_selection(None);
+        assert!(tracker.begin(&catalog, &ClientEndpointId::Ssh(first), Some(2)));
+        assert!(tracker.begin(&catalog, &ClientEndpointId::Ssh(second), Some(3)));
         assert_eq!(
-            tracker.settle(&mut catalog, false, &ClientEndpointId::Local, true),
+            tracker.settle(&catalog, false, &ClientEndpointId::Local, true),
             SelectionOutcome::Reverted
         );
-        assert_eq!(catalog.selected_profile, None);
+        assert_eq!(tracker.selected_endpoint(), ClientEndpointId::Local);
     }
 
     #[test]
@@ -231,27 +278,40 @@ mod tests {
         let second = catalog
             .add_ssh("Other", "other", "agents")
             .expect("test precondition");
-        assert!(catalog.select_ssh(&first));
-        let mut tracker = EndpointSelectionTracker::new(&catalog);
-        assert!(tracker.begin(&mut catalog, &ClientEndpointId::Ssh(second), Some(3)));
+        let mut tracker = EndpointSelectionTracker::with_selection(Some(first));
+        assert!(tracker.begin(&catalog, &ClientEndpointId::Ssh(second), Some(3)));
         // The first machine is removed while the handoff runs.
         catalog.replace_profiles(vec![catalog.ssh[1].clone()]);
         assert_eq!(
-            tracker.settle(&mut catalog, false, &ClientEndpointId::Local, true),
+            tracker.settle(&catalog, false, &ClientEndpointId::Local, true),
             SelectionOutcome::Reverted
         );
-        assert_eq!(catalog.selected_profile, None);
+        assert_eq!(tracker.selected_endpoint(), ClientEndpointId::Local);
+    }
+
+    #[test]
+    fn a_catalog_change_drops_a_selection_that_was_removed() {
+        let (mut catalog, id) = catalog_with_machine();
+        let mut tracker = EndpointSelectionTracker::with_selection(Some(id.clone()));
+
+        catalog.replace_profiles(catalog.ssh.clone());
+        tracker.catalog_changed(&catalog);
+        assert_eq!(tracker.selected_endpoint(), ClientEndpointId::Ssh(id));
+
+        catalog.replace_profiles(Vec::new());
+        tracker.catalog_changed(&catalog);
+        assert_eq!(tracker.selected_endpoint(), ClientEndpointId::Local);
     }
 
     #[test]
     fn explicit_request_clears_failure_memory() {
-        let (mut catalog, id) = catalog_with_machine();
-        let mut tracker = EndpointSelectionTracker::new(&catalog);
+        let (catalog, id) = catalog_with_machine();
+        let mut tracker = EndpointSelectionTracker::with_selection(None);
         let target = ClientEndpointId::Ssh(id);
-        assert!(tracker.begin(&mut catalog, &target, Some(4)));
-        tracker.settle(&mut catalog, false, &ClientEndpointId::Local, true);
+        assert!(tracker.begin(&catalog, &target, Some(4)));
+        tracker.settle(&catalog, false, &ClientEndpointId::Local, true);
         assert!(tracker.suppresses(&target, Some(4)));
-        assert!(tracker.begin(&mut catalog, &target, Some(4)));
+        assert!(tracker.begin(&catalog, &target, Some(4)));
         assert!(!tracker.suppresses(&target, Some(4)));
     }
 }

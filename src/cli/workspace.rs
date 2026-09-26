@@ -11,7 +11,7 @@ use super::matches::{flag, required, string, value, values, words};
 
 pub(super) fn run_workspace_command(
     matches: &ArgMatches,
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
 ) -> std::io::Result<i32> {
     match matches.subcommand() {
         Some(("list", _)) => super::runtime::workspace_list(paths),
@@ -48,7 +48,7 @@ pub(super) fn run_workspace_command(
 
 fn create_params(
     matches: &ArgMatches,
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
 ) -> Result<WorkspaceCreateParams, String> {
     Ok(WorkspaceCreateParams {
         source_workspace_id: None,
@@ -78,12 +78,12 @@ fn report_metadata_params(matches: &ArgMatches) -> Result<WorkspaceReportMetadat
 mod tests {
     use super::super::tests::command_matches;
 
-    fn test_paths() -> crate::config::AppPaths {
-        crate::config::AppPaths::test_with_context(
+    fn test_paths() -> super::super::target::CliContext {
+        super::super::target::CliContext::test_local(crate::config::AppPaths::test_with_context(
             std::path::Path::new("/tmp/shepr-cli-paths"),
             Some(std::path::Path::new("/home/me")),
             Some(std::path::Path::new("/home/me/proj")),
-        )
+        ))
     }
 
     #[test]

@@ -18,7 +18,7 @@ use super::target::CallerPane;
 
 pub(super) fn run_pane_command(
     matches: &ArgMatches,
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
 ) -> std::io::Result<i32> {
     let caller = super::target::caller_pane(paths);
     // Every command below that takes `--pane`/`--current` resolves it with
@@ -189,7 +189,7 @@ pub(super) fn run_pane_command(
 }
 
 fn print_request(
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
     id: &'static str,
     method: Method,
 ) -> std::io::Result<i32> {
@@ -279,7 +279,7 @@ fn input_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneInputSe
 fn split_params(
     matches: &ArgMatches,
     caller: &CallerPane,
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
 ) -> Result<PaneSplitParams, String> {
     Ok(PaneSplitParams {
         workspace_id: None,
@@ -475,12 +475,12 @@ mod tests {
         CallerPane::Known(pane_id.into())
     }
 
-    fn test_paths() -> crate::config::AppPaths {
-        crate::config::AppPaths::test_with_context(
+    fn test_paths() -> super::super::target::CliContext {
+        super::super::target::CliContext::test_local(crate::config::AppPaths::test_with_context(
             std::path::Path::new("/tmp/shepr-cli-paths"),
             Some(std::path::Path::new("/home/me")),
             Some(std::path::Path::new("/home/me/proj")),
-        )
+        ))
     }
 
     const OUTSIDE: CallerPane = CallerPane::Unset;

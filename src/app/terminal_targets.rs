@@ -1,11 +1,37 @@
 use super::{App, api_helpers::pane_agent_status};
+use crate::terminal::TerminalId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TerminalTarget {
     pub ws_idx: usize,
     pub tab_idx: usize,
     pub pane_id: crate::layout::PaneId,
+    /// String form retained for existing command and public API call sites.
     pub terminal_id: String,
+    /// Key used for terminal-state lookups; stringifying this in a scan used
+    /// to allocate once per terminal comparison.
+    pub(super) terminal_key: TerminalId,
+}
+
+#[derive(Clone, Copy)]
+struct TerminalTargetRef<'a> {
+    ws_idx: usize,
+    tab_idx: usize,
+    pane_id: crate::layout::PaneId,
+    terminal_id: &'a TerminalId,
+}
+
+impl TerminalTargetRef<'_> {
+    fn into_owned(self) -> TerminalTarget {
+        let terminal_key = self.terminal_id.clone();
+        TerminalTarget {
+            ws_idx: self.ws_idx,
+            tab_idx: self.tab_idx,
+            pane_id: self.pane_id,
+            terminal_id: terminal_key.to_string(),
+            terminal_key,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,11 +60,9 @@ impl App {
         &self,
         target: &str,
     ) -> Result<TerminalTarget, TerminalTargetError> {
-        let terminal_matches: Vec<_> = self
+        let terminal_matches = self
             .terminal_targets()
-            .into_iter()
-            .filter(|candidate| candidate.terminal_id == target)
-            .collect();
+            .filter(|candidate| candidate.terminal_id.as_str() == target);
         if let Some(resolved) = self.single_terminal_match(target, terminal_matches)? {
             return Ok(resolved);
         }
@@ -49,20 +73,15 @@ impl App {
             return Ok(resolved);
         }
 
-        let agent_matches: Vec<_> = self
-            .terminal_targets()
-            .into_iter()
-            .filter(|candidate| {
-                self.state
-                    .terminals
-                    .values()
-                    .find(|terminal| terminal.id.to_string() == candidate.terminal_id)
-                    .is_some_and(|terminal| {
-                        terminal.agent_name.as_deref() == Some(target)
-                            || terminal.effective_agent_label() == Some(target)
-                    })
-            })
-            .collect();
+        let agent_matches = self.terminal_targets().filter(|candidate| {
+            self.state
+                .terminals
+                .get(candidate.terminal_id)
+                .is_some_and(|terminal| {
+                    terminal.agent_name.as_deref() == Some(target)
+                        || terminal.effective_agent_label() == Some(target)
+                })
+        });
         if let Some(resolved) = self.single_terminal_match(target, agent_matches)? {
             return Ok(resolved);
         }
@@ -84,17 +103,12 @@ impl App {
             return Ok(resolved);
         }
 
-        let name_matches: Vec<_> = self
-            .terminal_targets()
-            .into_iter()
-            .filter(|candidate| {
-                self.state
-                    .terminals
-                    .values()
-                    .find(|terminal| terminal.id.to_string() == candidate.terminal_id)
-                    .is_some_and(|terminal| terminal.agent_name.as_deref() == Some(target))
-            })
-            .collect();
+        let name_matches = self.terminal_targets().filter(|candidate| {
+            self.state
+                .terminals
+                .get(candidate.terminal_id)
+                .is_some_and(|terminal| terminal.agent_name.as_deref() == Some(target))
+        });
         if let Some(resolved) = self.single_terminal_match(target, name_matches)? {
             return Ok(resolved);
         }
@@ -107,32 +121,36 @@ impl App {
     fn target_is_agent(&self, target: &TerminalTarget) -> bool {
         self.state
             .terminals
-            .values()
-            .find(|terminal| terminal.id.to_string() == target.terminal_id)
+            .get(&target.terminal_key)
             .is_some_and(crate::terminal::TerminalState::is_agent_terminal)
     }
 
-    fn single_terminal_match(
+    fn single_terminal_match<'a>(
         &self,
         target: &str,
-        matches: Vec<TerminalTarget>,
+        matches: impl IntoIterator<Item = TerminalTargetRef<'a>>,
     ) -> Result<Option<TerminalTarget>, TerminalTargetError> {
-        match matches.len() {
-            0 => Ok(None),
-            1 => Ok(matches.into_iter().next()),
-            _ => Err(TerminalTargetError::Ambiguous {
-                target: target.to_string(),
-                candidates: matches
-                    .into_iter()
-                    .filter_map(|candidate| {
-                        self.terminal_target_candidate(candidate.ws_idx, candidate.pane_id)
-                    })
-                    .collect(),
-            }),
-        }
+        let mut matches = matches.into_iter();
+        let Some(first) = matches.next() else {
+            return Ok(None);
+        };
+        let Some(second) = matches.next() else {
+            return Ok(Some(first.into_owned()));
+        };
+        let candidates = std::iter::once(first)
+            .chain(std::iter::once(second))
+            .chain(matches)
+            .filter_map(|candidate| {
+                self.terminal_target_candidate(candidate.ws_idx, candidate.pane_id)
+            })
+            .collect();
+        Err(TerminalTargetError::Ambiguous {
+            target: target.to_string(),
+            candidates,
+        })
     }
 
-    fn terminal_targets(&self) -> Vec<TerminalTarget> {
+    fn terminal_targets(&self) -> impl Iterator<Item = TerminalTargetRef<'_>> {
         self.state
             .workspaces
             .iter()
@@ -143,16 +161,16 @@ impl App {
                         .pane_ids()
                         .into_iter()
                         .filter_map(move |pane_id| {
-                            tab.terminal_id(pane_id).map(|terminal_id| TerminalTarget {
-                                ws_idx,
-                                tab_idx,
-                                pane_id,
-                                terminal_id: terminal_id.to_string(),
-                            })
+                            tab.terminal_id(pane_id)
+                                .map(|terminal_id| TerminalTargetRef {
+                                    ws_idx,
+                                    tab_idx,
+                                    pane_id,
+                                    terminal_id,
+                                })
                         })
                 })
             })
-            .collect()
     }
 
     fn terminal_target_for_pane(
@@ -162,12 +180,13 @@ impl App {
     ) -> Option<TerminalTarget> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
-        let terminal_id = ws.terminal_id(pane_id)?.to_string();
+        let terminal_key = ws.terminal_id(pane_id)?.clone();
         Some(TerminalTarget {
             ws_idx,
             tab_idx,
             pane_id,
-            terminal_id,
+            terminal_id: terminal_key.to_string(),
+            terminal_key,
         })
     }
 

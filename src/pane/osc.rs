@@ -447,8 +447,8 @@ mod tests {
             render_state,
             ..
         } = &mut *core;
-        render_state.update(terminal).expect("test precondition");
-        let colors = render_state.colors().expect("test precondition");
+        render_state.update(terminal);
+        let colors = render_state.colors();
         crate::terminal_theme::TerminalTheme {
             foreground: Some(crate::terminal_theme::RgbColor {
                 r: colors.foreground.r,
@@ -495,7 +495,7 @@ mod tests {
     impl TrackedTerminal {
         fn new() -> Self {
             Self {
-                terminal: crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition"),
+                terminal: crate::ghostty::Terminal::new(80, 24, 0),
                 tracker: AgentOscStateTracker::default(),
             }
         }
@@ -912,8 +912,8 @@ mod tests {
 
     #[test]
     fn restore_host_terminal_theme_reapplies_cached_colors() {
-        let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = super::super::GhosttyPaneTerminal::new(terminal).expect("test precondition");
+        let terminal = crate::ghostty::Terminal::new(80, 24, 0);
+        let pane = super::super::GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
         let shell_pid = 7;
         let host_theme = crate::terminal_theme::TerminalTheme {

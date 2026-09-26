@@ -10,7 +10,7 @@ pub enum ClientError {
     /// A host terminal write failed while updating terminal modes or output.
     HostTerminal(io::Error),
     /// Server rejected our handshake.
-    HandshakeRejected { version: u32, error: String },
+    HandshakeRejected { error: String },
     /// Server shut down.
     ServerShutdown { reason: Option<String> },
     /// Lost connection to the server.
@@ -54,8 +54,8 @@ impl std::fmt::Display for ClientError {
                 )
             }
             ClientError::HostTerminal(err) => write!(f, "host terminal error: {err}"),
-            ClientError::HandshakeRejected { version, error } => {
-                write!(f, "server rejected handshake (version {version}): {error}")
+            ClientError::HandshakeRejected { error } => {
+                write!(f, "server rejected handshake: {error}")
             }
             ClientError::ServerShutdown { reason } => {
                 match reason.as_deref() {

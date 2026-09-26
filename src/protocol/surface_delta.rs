@@ -200,7 +200,7 @@ mod tests {
     }
 
     fn reconstruct(last: &PaneSurfaceFrame, next: &PaneSurfaceFrame) -> ServerMessage {
-        let mut decoder = crate::protocol::surface_reuse::Decoder::new(true);
+        let mut decoder = crate::protocol::surface_reuse::Decoder::default();
         decoder
             .decode(ServerMessage::PaneSurface(last.clone()))
             .expect("test precondition");
@@ -337,7 +337,7 @@ mod tests {
                 8 => corrupt.surface.projection_revision = 0,
                 _ => unreachable!(),
             }
-            let mut decoder = crate::protocol::surface_reuse::Decoder::new(true);
+            let mut decoder = crate::protocol::surface_reuse::Decoder::default();
             decoder
                 .decode(ServerMessage::PaneSurface(last.clone()))
                 .expect("test precondition");
@@ -362,7 +362,7 @@ mod tests {
         let mut next = last.clone();
         next.surface_revision += 1;
         next.frame.cells[0].symbol = "a".into();
-        let mut decoder = crate::protocol::surface_reuse::Decoder::new(true);
+        let mut decoder = crate::protocol::surface_reuse::Decoder::default();
         decoder
             .decode(ServerMessage::PaneSurface(last))
             .expect("test precondition");
@@ -443,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn surface_delta_rejects_invalid_spans_atomically_and_requires_negotiation() {
+    fn surface_delta_rejects_invalid_spans_atomically() {
         let last = surface();
         let mut next = last.clone();
         next.surface_revision += 1;
@@ -451,12 +451,7 @@ mod tests {
         let update = message(&last, &mut ServerMessage::PaneSurface(next.clone()))
             .expect("test precondition")
             .expect("test precondition");
-        let mut legacy = crate::protocol::surface_reuse::Decoder::default();
-        legacy
-            .decode(ServerMessage::PaneSurface(last.clone()))
-            .expect("test precondition");
-        assert!(legacy.decode(update.clone()).is_err());
-        let mut decoder = crate::protocol::surface_reuse::Decoder::new(true);
+        let mut decoder = crate::protocol::surface_reuse::Decoder::default();
         decoder
             .decode(ServerMessage::PaneSurface(last))
             .expect("test precondition");

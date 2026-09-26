@@ -7,7 +7,7 @@
 //!
 //! What this adapter adds on top of alacritty:
 //! * render snapshots with row dirty flags derived from alacritty's damage
-//!   ([`RenderState`], [`RowIter`], [`RowCellIter`]);
+//!   (`RenderState` and borrowed row/cell views);
 //! * plain and VT formatters for reads and history persistence (`format.rs`);
 //! * a `Handler` wrapper the parser drives in place of `Term` (`handler.rs`):
 //!   it caps the kitty keyboard-mode stack before alacritty's broken overflow
@@ -33,10 +33,6 @@
 //!   trimmed ([`Terminal::history_origin`], `rows.rs`);
 //! * synchronized-output (mode 2026) timeout flushing.
 
-// The adapter keeps a complete surface (mode constants, colour/scheme types,
-// query helpers) even where the current tree uses only part of it.
-#![allow(dead_code)]
-
 mod format;
 mod handler;
 mod modes;
@@ -44,9 +40,7 @@ mod rows;
 mod scan;
 
 use std::fmt;
-use std::marker::PhantomData;
 use std::mem;
-use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
@@ -56,8 +50,7 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape, Handler, NamedColor, Processor, Rgb};
-use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthChar;
 
 use self::format::Format;
 use self::handler::{CoreHandler, KeyboardStackDepth};
@@ -80,18 +73,6 @@ pub enum Dirty {
     Clean,
     Partial,
     Full,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RowSelection {
-    pub start_x: u16,
-    pub end_x: u16,
-}
-
-impl RowSelection {
-    pub fn range(self) -> RangeInclusive<u16> {
-        self.start_x..=self.end_x
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +107,6 @@ pub const MODE_URGENCY_HINTS: u16 = 1042;
 pub const MODE_BRACKETED_PASTE: u16 = 2004;
 pub const MODE_SYNCHRONIZED_OUTPUT: u16 = 2026;
 pub const MODE_COLOR_SCHEME_REPORT: u16 = 2031;
-pub const MODE_IN_BAND_RESIZE: u16 = 2048;
 
 // Unicode private-use codepoint used by the kitty graphics unicode-placeholder
 // convention. Shepr does not render kitty graphics, but programs may still
@@ -435,6 +415,7 @@ pub enum PtyResponse {
     ColorQuery(ColorQuery),
 }
 
+#[cfg(test)]
 impl PtyResponse {
     /// The reply the terminal would send on its own (colour queries answered
     /// with `core_color`, dropped when that is unset).
@@ -462,7 +443,11 @@ pub fn unicode_codepoint_width(codepoint: u32) -> u8 {
 
 /// Width of the first grapheme cluster in `codepoints`, returned as
 /// `(codepoints consumed, cell width)`.
+#[cfg(test)]
 pub fn unicode_grapheme_width(codepoints: &[u32]) -> (usize, u8) {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
     let Some(&first) = codepoints.first() else {
         return (0, 0);
     };
@@ -483,11 +468,11 @@ pub fn unicode_grapheme_width(codepoints: &[u32]) -> (usize, u8) {
     (consumed, u8::try_from(cluster.width().min(2)).unwrap_or(2))
 }
 
-pub fn encode_focus(event: FocusEvent) -> Result<Vec<u8>, Error> {
-    Ok(match event {
-        FocusEvent::Gained => b"\x1b[I".to_vec(),
-        FocusEvent::Lost => b"\x1b[O".to_vec(),
-    })
+pub fn encode_focus(event: FocusEvent) -> &'static [u8] {
+    match event {
+        FocusEvent::Gained => b"\x1b[I",
+        FocusEvent::Lost => b"\x1b[O",
+    }
 }
 
 fn scrollback_lines(max_scrollback_bytes: usize, columns: usize) -> usize {
@@ -615,7 +600,7 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    pub fn new(cols: u16, rows: u16, max_scrollback: usize) -> Result<Self, Error> {
+    pub fn new(cols: u16, rows: u16, max_scrollback: usize) -> Self {
         let columns = usize::from(cols).max(MIN_COLUMNS);
         let screen_lines = usize::from(rows).max(1);
         let history_lines = scrollback_lines(max_scrollback, columns);
@@ -631,7 +616,7 @@ impl Terminal {
         // alacritty starts fully damaged; our own generation counters already
         // start "full", so begin alacritty's tracking from a clean slate.
         term.reset_damage();
-        Ok(Self {
+        Self {
             term,
             parser: Processor::new(),
             keyboard_depth: KeyboardStackDepth::default(),
@@ -656,7 +641,7 @@ impl Terminal {
             full_damage_generation: 1,
             row_damage_generations: vec![0; screen_lines],
             rows: RowOrigin::default(),
-        })
+        }
     }
 
     /// Feed child output into the terminal. Replies are queued in byte order
@@ -984,16 +969,15 @@ impl Terminal {
         self.full_damage_generation = self.damage_generation;
     }
 
-    pub fn set_default_palette(&mut self, palette: &[RgbColor; 256]) -> Result<(), Error> {
+    pub fn set_default_palette(&mut self, palette: &[RgbColor; 256]) {
         if self.default_palette != *palette {
             self.default_palette = *palette;
             self.bump_full_damage();
         }
-        Ok(())
     }
 
-    pub fn default_palette(&self) -> Result<[RgbColor; 256], Error> {
-        Ok(self.default_palette)
+    pub fn default_palette(&self) -> [RgbColor; 256] {
+        self.default_palette
     }
 
     /// Sets the host's default foreground/background (`None`: the built-in
@@ -1057,13 +1041,7 @@ impl Terminal {
         self.modes.cursor_shape_set
     }
 
-    pub fn resize(
-        &mut self,
-        cols: u16,
-        rows: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-    ) -> Result<(), Error> {
+    pub fn resize(&mut self, cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32) {
         let columns = usize::from(cols).max(MIN_COLUMNS);
         let screen_lines = usize::from(rows).max(1);
         let columns_changed = columns != self.term.columns();
@@ -1118,7 +1096,6 @@ impl Terminal {
         if geometry_changed && self.modes.in_band_resize {
             self.push_in_band_size_report();
         }
-        Ok(())
     }
 
     fn set_history_lines(&mut self, history_lines: usize) {
@@ -1154,17 +1131,17 @@ impl Terminal {
 
     /// The live value of a DEC private mode; `false` for modes the table in
     /// `modes.rs` does not list or reports as unsupported.
-    pub fn mode_get(&self, mode: u16) -> Result<bool, Error> {
+    pub fn mode_get(&self, mode: u16) -> bool {
         let Some(spec) = modes::lookup(mode) else {
-            return Ok(false);
+            return false;
         };
-        Ok(match spec.get {
+        match spec.get {
             modes::Getter::Term(flag) => self.term.mode().contains(flag),
             modes::Getter::CursorBlink => self.term.cursor_style().blinking,
             modes::Getter::Extra(extra) => extra.get(&self.modes),
             modes::Getter::SynchronizedOutput => self.synchronized_output_deadline().is_some(),
             modes::Getter::Unsupported => false,
-        })
+        }
     }
 
     /// Sets a DEC private mode with the same effect as the child's
@@ -1172,6 +1149,7 @@ impl Terminal {
     /// the parser, so a sequence the child has half-written is not disturbed
     /// and a synchronized update does not defer it. Mode 2026 is refused: it
     /// is parser state, not terminal state.
+    #[cfg(test)]
     pub fn mode_set(&mut self, mode: u16, value: bool) -> Result<(), Error> {
         if mode == MODE_SYNCHRONIZED_OUTPUT {
             return Err(Error("synchronized output is driven by the parser"));
@@ -1189,7 +1167,7 @@ impl Terminal {
     }
 
     /// Active kitty keyboard flags (bit 0 disambiguate … bit 4 associated text).
-    pub fn kitty_keyboard_flags(&self) -> Result<u8, Error> {
+    pub fn kitty_keyboard_flags(&self) -> u8 {
         let term_mode = *self.term.mode();
         let mut flags = 0u8;
         for (mode, bit) in [
@@ -1203,41 +1181,37 @@ impl Terminal {
                 flags |= bit;
             }
         }
-        Ok(flags)
+        flags
     }
 
-    pub fn mouse_tracking_enabled(&self) -> Result<bool, Error> {
-        Ok(self.term.mode().intersects(TermMode::MOUSE_MODE) || self.modes.x10_mouse)
+    pub fn mouse_tracking_enabled(&self) -> bool {
+        self.term.mode().intersects(TermMode::MOUSE_MODE) || self.modes.x10_mouse
     }
 
-    pub fn active_screen(&self) -> Result<ActiveScreen, Error> {
-        Ok(if self.term.mode().contains(TermMode::ALT_SCREEN) {
+    pub fn active_screen(&self) -> ActiveScreen {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
             ActiveScreen::Alternate
         } else {
             ActiveScreen::Primary
-        })
+        }
     }
 
-    pub fn total_rows(&self) -> Result<usize, Error> {
-        Ok(self.term.total_lines())
+    pub fn total_rows(&self) -> usize {
+        self.term.total_lines()
     }
 
-    pub fn scrollback_rows(&self) -> Result<usize, Error> {
-        Ok(self.term.history_size())
+    #[cfg(test)]
+    pub fn scrollback_rows(&self) -> usize {
+        self.term.history_size()
     }
 
-    /// The configured scrollback budget in bytes.
-    pub fn max_scrollback(&self) -> usize {
-        self.max_scrollback
-    }
-
-    pub fn scrollbar(&self) -> Result<TerminalScrollbar, Error> {
+    pub fn scrollbar(&self) -> TerminalScrollbar {
         let history = self.term.history_size();
-        Ok(TerminalScrollbar {
+        TerminalScrollbar {
             total: self.term.total_lines(),
             offset: history.saturating_sub(self.term.grid().display_offset()),
             len: self.term.screen_lines(),
-        })
+        }
     }
 
     /// The absolute row id of screen row 0, the oldest retained line.
@@ -1329,6 +1303,7 @@ impl Terminal {
         Some(Line(i32::try_from(line).ok()?))
     }
 
+    #[cfg(test)]
     pub fn screen_cell(&self, x: u16, y: u32) -> Result<(CellWide, Vec<u32>), Error> {
         let line = self
             .screen_line(u64::from(y))
@@ -1341,7 +1316,7 @@ impl Terminal {
         Ok((cell_wide(cell), cell_graphemes(cell)))
     }
 
-    pub(crate) fn screen_text_rows(&self) -> Result<Vec<ScreenTextRow>, Error> {
+    pub(crate) fn screen_text_rows(&self) -> Vec<ScreenTextRow> {
         self.screen_text_rows_range(0, usize::MAX)
     }
 
@@ -1349,7 +1324,7 @@ impl Terminal {
         &self,
         start_row: usize,
         end_row_exclusive: usize,
-    ) -> Result<Vec<ScreenTextRow>, Error> {
+    ) -> Vec<ScreenTextRow> {
         let total_rows = self.term.total_lines();
         let start_row = start_row.min(total_rows);
         let end_row_exclusive = end_row_exclusive.min(total_rows).max(start_row);
@@ -1377,7 +1352,7 @@ impl Terminal {
                 wrap_continuation: wrap.wrap_continuation,
             });
         }
-        Ok(rows)
+        rows
     }
 
     pub fn viewport_hyperlink_uri(&self, x: u16, y: u32) -> Result<Option<String>, Error> {
@@ -1393,6 +1368,7 @@ impl Terminal {
             .map(|link| link.uri().to_owned()))
     }
 
+    #[cfg(test)]
     pub fn read_text_viewport(
         &self,
         start: (u16, u32),
@@ -1582,42 +1558,35 @@ impl Terminal {
         }
     }
 
-    pub fn cols(&self) -> Result<u16, Error> {
-        Ok(saturating_u16(self.term.columns()))
+    pub fn cols(&self) -> u16 {
+        saturating_u16(self.term.columns())
     }
 
-    pub fn rows(&self) -> Result<u16, Error> {
-        Ok(saturating_u16(self.term.screen_lines()))
+    pub fn rows(&self) -> u16 {
+        saturating_u16(self.term.screen_lines())
     }
 
-    pub fn cursor_y(&self) -> Result<u16, Error> {
+    pub fn cursor_y(&self) -> u16 {
         let line = self.term.grid().cursor.point.line.0.max(0);
-        Ok(u16::try_from(line).unwrap_or(u16::MAX))
-    }
-
-    /// The foreground in effect: the child's OSC 10 override, else the host
-    /// default; `None` while neither is set.
-    pub fn effective_foreground_color(&self) -> Result<Option<RgbColor>, Error> {
-        Ok(self
-            .default_color_override(DefaultColor::Foreground)
-            .or(self.host_foreground))
+        u16::try_from(line).unwrap_or(u16::MAX)
     }
 
     /// The cursor colour set with OSC 12, if any.
-    pub fn effective_cursor_color(&self) -> Result<Option<RgbColor>, Error> {
-        Ok(self.term.colors()[NamedColor::Cursor].map(RgbColor::from))
+    #[cfg(test)]
+    pub fn effective_cursor_color(&self) -> Option<RgbColor> {
+        self.term.colors()[NamedColor::Cursor].map(RgbColor::from)
     }
 
-    pub(crate) fn width_px(&self) -> Result<u32, Error> {
-        Ok(u32::try_from(self.term.columns())
+    pub(crate) fn width_px(&self) -> u32 {
+        u32::try_from(self.term.columns())
             .unwrap_or(u32::MAX)
-            .saturating_mul(self.cell_width_px))
+            .saturating_mul(self.cell_width_px)
     }
 
-    pub(crate) fn height_px(&self) -> Result<u32, Error> {
-        Ok(u32::try_from(self.term.screen_lines())
+    pub(crate) fn height_px(&self) -> u32 {
+        u32::try_from(self.term.screen_lines())
             .unwrap_or(u32::MAX)
-            .saturating_mul(self.cell_height_px))
+            .saturating_mul(self.cell_height_px)
     }
 }
 
@@ -1749,8 +1718,7 @@ struct RowSnapshot {
 }
 
 /// A snapshot of the viewport for rendering. Row dirty flags accumulate across
-/// [`RenderState::update`] calls until the caller clears them, mirroring the
-/// libghostty-vt render-state contract the pane layer was written against.
+/// [`RenderState::update`] calls until the caller clears them.
 pub struct RenderState {
     cols: usize,
     rows: Vec<RowSnapshot>,
@@ -1761,8 +1729,8 @@ pub struct RenderState {
 }
 
 impl RenderState {
-    pub fn new() -> Result<Self, Error> {
-        Ok(Self {
+    pub fn new() -> Self {
+        Self {
             cols: 0,
             rows: Vec::new(),
             seen_generation: 0,
@@ -1778,10 +1746,10 @@ impl RenderState {
                 foreground: DEFAULT_FOREGROUND,
                 palette: default_palette(),
             },
-        })
+        }
     }
 
-    pub fn update(&mut self, terminal: &Terminal) -> Result<(), Error> {
+    pub fn update(&mut self, terminal: &Terminal) {
         let grid = terminal.term.grid();
         let cols = grid.columns();
         let rows = grid.screen_lines();
@@ -1824,150 +1792,114 @@ impl RenderState {
         self.seen_generation = terminal.damage_generation;
         self.cursor = terminal.render_cursor();
         self.colors = terminal.render_colors();
-        Ok(())
     }
 
-    pub fn cols(&self) -> Result<u16, Error> {
-        Ok(saturating_u16(self.cols))
+    #[cfg(test)]
+    pub fn cols(&self) -> u16 {
+        saturating_u16(self.cols)
     }
 
-    pub fn rows(&self) -> Result<u16, Error> {
-        Ok(saturating_u16(self.rows.len()))
+    #[cfg(test)]
+    pub fn rows(&self) -> u16 {
+        saturating_u16(self.rows.len())
     }
 
-    pub fn dirty(&self) -> Result<Dirty, Error> {
-        Ok(self.dirty)
+    pub fn dirty(&self) -> Dirty {
+        self.dirty
     }
 
-    pub fn cursor(&self) -> Result<RenderCursor, Error> {
-        Ok(self.cursor)
+    pub fn cursor(&self) -> RenderCursor {
+        self.cursor
     }
 
-    pub fn colors(&self) -> Result<RenderColors, Error> {
-        Ok(self.colors)
+    pub fn colors(&self) -> RenderColors {
+        self.colors
     }
 
-    pub fn clean(&mut self) -> Result<(), Error> {
+    #[cfg(test)]
+    pub fn clean(&mut self) {
         self.dirty = Dirty::Clean;
         for row in &self.rows {
             row.dirty.set(false);
         }
-        Ok(())
     }
 
-    pub fn set_dirty(&mut self, dirty: Dirty) -> Result<(), Error> {
+    pub fn set_dirty(&mut self, dirty: Dirty) {
         self.dirty = dirty;
-        Ok(())
     }
 
-    pub fn populate_row_iterator<'a>(
-        &'a self,
-        iterator: &'a mut RowIterator,
-    ) -> Result<RowIter<'a>, Error> {
-        let _ = iterator;
-        Ok(RowIter {
+    /// Iterates over every row as borrowed cell views.
+    pub fn iter_rows(&self) -> Rows<'_> {
+        Rows {
             state: self,
-            index: None,
-            _iterator: PhantomData,
-        })
-    }
-}
-
-/// Reusable iterator handle (kept for API compatibility; holds no state).
-pub struct RowIterator {
-    _private: (),
-}
-
-impl RowIterator {
-    pub fn new() -> Result<Self, Error> {
-        Ok(Self { _private: () })
-    }
-}
-
-pub struct RowIter<'a> {
-    state: &'a RenderState,
-    index: Option<usize>,
-    _iterator: PhantomData<&'a mut RowIterator>,
-}
-
-impl<'a> RowIter<'a> {
-    pub fn next(&mut self) -> bool {
-        let next = self.index.map_or(0, |index| index + 1);
-        self.index = Some(next);
-        next < self.state.rows.len()
-    }
-
-    /// Advances to the next row that is dirty (every row counts while the
-    /// whole state is `Dirty::Full`) and returns its viewport row.
-    pub fn next_dirty(&mut self) -> Option<u16> {
-        let rows = &self.state.rows;
-        let mut next = self.index.map_or(0, |index| index + 1);
-        while next < rows.len() {
-            if self.state.dirty == Dirty::Full || rows[next].dirty.get() {
-                self.index = Some(next);
-                return Some(saturating_u16(next));
-            }
-            next += 1;
+            next: 0,
+            dirty_only: false,
         }
-        self.index = Some(rows.len());
+    }
+
+    /// Iterates over changed rows without allocating or taking a lock.
+    pub fn dirty_rows(&self) -> Rows<'_> {
+        Rows {
+            state: self,
+            next: 0,
+            dirty_only: true,
+        }
+    }
+}
+
+pub struct Rows<'a> {
+    state: &'a RenderState,
+    next: usize,
+    dirty_only: bool,
+}
+
+impl<'a> Iterator for Rows<'a> {
+    type Item = RowView<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.next < self.state.rows.len() {
+            let index = self.next;
+            self.next += 1;
+            let snapshot = &self.state.rows[index];
+            if self.dirty_only && self.state.dirty != Dirty::Full && !snapshot.dirty.get() {
+                continue;
+            }
+            return Some(RowView {
+                index,
+                snapshot,
+                colors: &self.state.colors,
+            });
+        }
         None
     }
-
-    fn current_row(&self) -> Result<&'a RowSnapshot, Error> {
-        let state = self.state;
-        self.index
-            .and_then(|index| state.rows.get(index))
-            .ok_or(Error("row iterator is not positioned on a row"))
-    }
-
-    pub fn dirty(&self) -> Result<bool, Error> {
-        Ok(self.current_row()?.dirty.get())
-    }
-
-    pub fn clear_dirty(&mut self) -> Result<(), Error> {
-        self.set_dirty(false)
-    }
-
-    pub fn set_dirty(&mut self, dirty: bool) -> Result<(), Error> {
-        self.current_row()?.dirty.set(dirty);
-        Ok(())
-    }
-
-    /// Core-side selection is never used; shepr draws its own.
-    pub fn selection(&self) -> Result<Option<RowSelection>, Error> {
-        Ok(None)
-    }
-
-    pub fn populate_cells<'b>(
-        &'b mut self,
-        cells: &'b mut RowCells,
-    ) -> Result<RowCellIter<'b>, Error> {
-        let _ = cells;
-        let state: &'a RenderState = self.state;
-        let row = self.current_row()?;
-        Ok(RowCellIter {
-            cells: &row.cells,
-            colors: &state.colors,
-            position: None,
-        })
-    }
 }
 
-/// Reusable cell handle (kept for API compatibility; holds no state).
-pub struct RowCells {
-    _private: (),
-}
-
-impl RowCells {
-    pub fn new() -> Result<Self, Error> {
-        Ok(Self { _private: () })
-    }
-}
-
-pub struct RowCellIter<'a> {
-    cells: &'a [Cell],
+pub struct RowView<'a> {
+    index: usize,
+    snapshot: &'a RowSnapshot,
     colors: &'a RenderColors,
-    position: Option<usize>,
+}
+
+impl<'a> RowView<'a> {
+    pub fn y(&self) -> u16 {
+        saturating_u16(self.index)
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.snapshot.dirty.get()
+    }
+
+    pub fn clear_dirty(&self) {
+        self.snapshot.dirty.set(false);
+    }
+
+    pub fn cells(&self) -> impl Iterator<Item = CellView<'a>> + 'a {
+        let colors = self.colors;
+        self.snapshot
+            .cells
+            .iter()
+            .map(move |cell| CellView { cell, colors })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1989,91 +1921,58 @@ impl Default for CellBasicData {
     }
 }
 
-impl<'a> RowCellIter<'a> {
-    pub fn next(&mut self) -> bool {
-        let next = self.position.map_or(0, |position| position + 1);
-        self.position = Some(next);
-        next < self.cells.len()
-    }
+#[derive(Clone, Copy)]
+pub struct CellView<'a> {
+    cell: &'a Cell,
+    colors: &'a RenderColors,
+}
 
-    pub fn select(&mut self, x: u16) -> Result<(), Error> {
-        let x = usize::from(x);
-        if x >= self.cells.len() {
-            return Err(Error("cell column out of range"));
-        }
-        self.position = Some(x);
-        Ok(())
-    }
-
-    fn cell(&self) -> Result<&'a Cell, Error> {
-        let cells = self.cells;
-        self.position
-            .and_then(|position| cells.get(position))
-            .ok_or(Error("cell iterator is not positioned on a cell"))
-    }
-
-    pub fn basic_data(&self) -> Result<CellBasicData, Error> {
-        let cell = self.cell()?;
+impl CellView<'_> {
+    pub fn basic_data(&self) -> CellBasicData {
+        let cell = self.cell;
         let style = cell_style(cell);
-        Ok(CellBasicData {
+        CellBasicData {
             wide: cell_wide(cell),
             has_hyperlink: cell.hyperlink().is_some(),
             has_styling: style != CellStyle::default(),
             style,
-        })
+        }
     }
 
-    pub fn wide(&self) -> Result<CellWide, Error> {
-        Ok(cell_wide(self.cell()?))
+    pub fn wide(&self) -> CellWide {
+        cell_wide(self.cell)
     }
 
-    pub fn has_hyperlink(&self) -> Result<bool, Error> {
-        Ok(self.cell()?.hyperlink().is_some())
-    }
-
-    pub fn style(&self) -> Result<CellStyle, Error> {
-        Ok(cell_style(self.cell()?))
-    }
-
-    /// Background-only content cells are a libghostty concept; alacritty keeps
-    /// fills in the cell style, so this is always `None`.
-    pub fn content_bg_color(&self) -> Result<Option<CellColor>, Error> {
-        Ok(None)
+    pub fn has_hyperlink(&self) -> bool {
+        self.cell.hyperlink().is_some()
     }
 
     /// The cell's explicit foreground resolved to RGB; `None` for default.
-    pub fn fg_color(&self) -> Result<Option<RgbColor>, Error> {
-        let cell = self.cell()?;
-        Ok(cell_color(cell.fg).map(|color| resolve_cell_color(color, self.colors)))
+    pub fn fg_color(&self) -> Option<RgbColor> {
+        cell_color(self.cell.fg).map(|color| resolve_cell_color(color, self.colors))
     }
 
     /// The cell's explicit background resolved to RGB; `None` for default.
-    pub fn bg_color(&self) -> Result<Option<RgbColor>, Error> {
-        let cell = self.cell()?;
-        Ok(cell_color(cell.bg).map(|color| resolve_cell_color(color, self.colors)))
+    pub fn bg_color(&self) -> Option<RgbColor> {
+        cell_color(self.cell.bg).map(|color| resolve_cell_color(color, self.colors))
     }
 
-    pub fn grapheme_text(&self) -> Result<String, Error> {
-        let mut bytes = Vec::new();
+    pub fn grapheme_text(&self) -> String {
         let mut text = String::new();
-        self.grapheme_text_into(&mut bytes, &mut text)?;
-        Ok(text)
+        self.grapheme_text_into(&mut text);
+        text
     }
 
-    /// Writes the cell's grapheme into `text` (empty for blank cells, spacers
-    /// and kitty placeholders). `bytes` is cleared on each call.
-    pub fn grapheme_text_into(&self, bytes: &mut Vec<u8>, text: &mut String) -> Result<(), Error> {
+    /// Writes the cell's grapheme into `text` (empty for blank cells and spacers).
+    pub fn grapheme_text_into(&self, text: &mut String) {
         text.clear();
-        bytes.clear();
-        let cell = self.cell()?;
-        match cell_text(cell) {
+        match cell_text(self.cell) {
             CellText::Empty => {}
             CellText::Grapheme { base, zerowidth } => {
                 text.push(base);
                 text.extend(zerowidth.iter().copied());
             }
         }
-        Ok(())
     }
 }
 

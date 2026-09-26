@@ -21,26 +21,19 @@ pub(super) fn render_collapsed(
             buffer.set_style(rect, Style::default().bg(config.palette.active_row_bg));
         }
         let initial = row.machine_label.chars().next().unwrap_or('?');
+        let glyph = status_glyph(
+            row.agent.status,
+            config.status_indicators,
+            &config.palette,
+            row.stale,
+        );
         put_text(
             buffer,
             rect.x,
             rect.y,
             rect.width,
-            &format!(
-                "{initial}{}",
-                status_icon(row.agent.status, config.status_indicators)
-            ),
-            Style::default()
-                .fg(if row.stale {
-                    config.palette.overlay0
-                } else {
-                    status_color(row.agent.status, &config.palette)
-                })
-                .add_modifier(if row.stale {
-                    Modifier::DIM
-                } else {
-                    Modifier::empty()
-                }),
+            &format!("{initial}{}", glyph.text),
+            glyph.style,
         );
         hits.endpoint_agents
             .push((rect, row.endpoint_id, row.agent.pane_id));

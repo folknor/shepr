@@ -2,27 +2,26 @@ use clap::ArgMatches;
 
 use crate::api::schema::{EmptyParams, Method, Request};
 
-/// `None` for bare `shepr server`, which runs the headless server.
 pub(super) fn run_server_command(
     matches: &ArgMatches,
-    paths: &crate::config::AppPaths,
-) -> std::io::Result<Option<i32>> {
+    paths: &super::target::CliContext,
+) -> std::io::Result<i32> {
     match matches.subcommand() {
-        None => Ok(None),
-        Some(("stop", _)) => server_stop(paths).map(Some),
+        None => Ok(super::missing_subcommand()),
+        Some(("stop", _)) => server_stop(paths),
         Some(("agent-manifests", matches)) => {
-            server_agent_manifests(paths, super::matches::flag(matches, "json")).map(Some)
+            server_agent_manifests(paths, super::matches::flag(matches, "json"))
         }
-        Some(("reload-agent-manifests", _)) => server_reload_agent_manifests(paths).map(Some),
-        Some(_) => Ok(Some(super::missing_subcommand())),
+        Some(("reload-agent-manifests", _)) => server_reload_agent_manifests(paths),
+        Some(_) => Ok(super::missing_subcommand()),
     }
 }
 
 /// The local path skips the protocol check on purpose, like `session stop`:
 /// the protocol-mismatch error tells the user to run this command, so it must
 /// be able to stop a server from another build.
-fn server_stop(paths: &crate::config::AppPaths) -> std::io::Result<i32> {
-    if super::target::is_remote() {
+fn server_stop(paths: &super::target::CliContext) -> std::io::Result<i32> {
+    if paths.is_remote() {
         return super::send_ok_request(paths, Method::ServerStop(EmptyParams::default()));
     }
 
@@ -35,7 +34,7 @@ fn server_stop(paths: &crate::config::AppPaths) -> std::io::Result<i32> {
     }
 }
 
-fn server_agent_manifests(paths: &crate::config::AppPaths, json: bool) -> std::io::Result<i32> {
+fn server_agent_manifests(paths: &super::target::CliContext, json: bool) -> std::io::Result<i32> {
     let response = super::send_request(
         paths,
         &Request {
@@ -51,7 +50,7 @@ fn server_agent_manifests(paths: &crate::config::AppPaths, json: bool) -> std::i
     Ok(0)
 }
 
-fn server_reload_agent_manifests(paths: &crate::config::AppPaths) -> std::io::Result<i32> {
+fn server_reload_agent_manifests(paths: &super::target::CliContext) -> std::io::Result<i32> {
     super::print_response(&super::send_request(
         paths,
         &Request {

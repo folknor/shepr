@@ -2,7 +2,6 @@ mod args;
 mod attach;
 mod host;
 mod process;
-mod restart_policy;
 mod saved;
 mod ssh_agent;
 
@@ -173,8 +172,6 @@ fn classify_ssh_diagnostic(message: &str) -> SshFailure {
         "unsupported remote platform",
         "not ready",
         "install or update",
-        "remote shepr server speaks a different protocol",
-        "predates shepr's stable endpoint protocol",
         // A generic handshake can end during a transient restart; only a rejection needs attention.
         "handshake rejected",
     ]
@@ -210,33 +207,28 @@ fn is_attention_error_kind(kind: std::io::ErrorKind) -> bool {
     )
 }
 
+/// What `remote-api-bridge --check` prints on a build that forwards the API.
+const API_BRIDGE_CHECK_REPLY: &str = "shepr-api-bridge-v1";
+
 pub(crate) fn run_remote_api_bridge(
-    args: &[String],
+    check: bool,
     paths: &crate::config::AppPaths,
 ) -> std::io::Result<()> {
-    match args {
-        [] => {
-            let path = crate::api::socket_path(paths);
-            let stream = crate::ipc::connect_local_stream(&path).map_err(|error| {
-                std::io::Error::new(
-                    error.kind(),
-                    format!(
-                        "failed to connect to remote Shepr API socket {}: {error}",
-                        path.display()
-                    ),
-                )
-            })?;
-            crate::platform::forward_remote_bridge_stdio(stream, false)
-        }
-        [flag] if flag == "--check" => {
-            println!("shepr-api-bridge-v1");
-            Ok(())
-        }
-        _ => Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "usage: shepr remote-api-bridge [--check]",
-        )),
+    if check {
+        println!("{API_BRIDGE_CHECK_REPLY}");
+        return Ok(());
     }
+    let path = crate::api::socket_path(paths);
+    let stream = crate::ipc::connect_local_stream(&path).map_err(|error| {
+        std::io::Error::new(
+            error.kind(),
+            format!(
+                "failed to connect to remote Shepr API socket {}: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    crate::platform::forward_remote_bridge_stdio(stream, false)
 }
 
 pub(crate) fn print_saved_ssh_error_hint(err: &std::io::Error, target: &str) {

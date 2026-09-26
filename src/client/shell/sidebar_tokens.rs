@@ -6,12 +6,41 @@ use ratatui::{
     text::Span,
 };
 
-pub(crate) use self::tokens::{
+pub(super) use self::tokens::{
     AgentTokenContext, ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
     agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows,
 };
-use super::text::{display_width, truncate_end};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
 use crate::app::state::Palette;
+
+pub(super) fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
+
+fn truncate_end(text: &str, max_width: usize) -> String {
+    if display_width(text) <= max_width {
+        return text.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+
+    let mut prefix = String::new();
+    let mut width = 0usize;
+    for character in text.chars() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if width + character_width > max_width.saturating_sub(1) {
+            break;
+        }
+        prefix.push(character);
+        width += character_width;
+    }
+    format!("{prefix}…")
+}
 
 fn sidebar_section_heights(total_height: u16, split_ratio: f32) -> (u16, u16) {
     if total_height == 0 {
@@ -36,7 +65,7 @@ fn sidebar_section_heights(total_height: u16, split_ratio: f32) -> (u16, u16) {
     )
 }
 
-pub(crate) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, Rect) {
+pub(super) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, Rect) {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.is_empty() {
         return (Rect::default(), Rect::default());
@@ -54,7 +83,7 @@ pub(crate) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, 
     )
 }
 
-pub(crate) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect {
+pub(super) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.width == 0 || content.height < 6 {
         return Rect::default();
@@ -64,9 +93,9 @@ pub(crate) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect
     Rect::new(content.x, content.y + workspace_height, content.width, 1)
 }
 
-pub(crate) fn resolved_token_spans(
+pub(super) fn resolved_token_spans(
     resolved: &[ResolvedToken],
-    state_icon: (&str, Style),
+    state_glyph: super::StatusGlyph,
     state_text_style: Style,
     workspace_style: Style,
     secondary_style: Style,
@@ -77,7 +106,7 @@ pub(crate) fn resolved_token_spans(
     let fixed_widths = resolved
         .iter()
         .map(|token| match &token.kind {
-            ResolvedTokenKind::StateIcon => display_width(state_icon.0),
+            ResolvedTokenKind::StateIcon => display_width(state_glyph.text),
             ResolvedTokenKind::GitStatus { ahead, behind } => {
                 usize::from(*ahead > 0) * display_width(&format!("↑{ahead}"))
                     + usize::from(*behind > 0) * display_width(&format!("↓{behind}"))
@@ -185,8 +214,8 @@ pub(crate) fn resolved_token_spans(
         }
         match &token.kind {
             ResolvedTokenKind::StateIcon => spans.push(Span::styled(
-                state_icon.0.to_string(),
-                apply_token_style(state_icon.1, token.style),
+                state_glyph.text.to_string(),
+                apply_token_style(state_glyph.style, token.style),
             )),
             ResolvedTokenKind::StateText(text) => spans.push(Span::styled(
                 truncate_end(text, budgets[index]),

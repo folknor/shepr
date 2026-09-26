@@ -317,10 +317,14 @@ impl Config {
     fn load_from_path(path: &Path) -> LoadedConfig {
         match read_optional_config(path) {
             Ok(Some(content)) => Self::load_from_str(&content),
-            Ok(None) => LoadedConfig {
-                config: Self::default(),
-                diagnostics: Vec::new(),
-            },
+            Ok(None) => {
+                let config = Self::default();
+                config.cache_keybind_validation();
+                LoadedConfig {
+                    config,
+                    diagnostics: Vec::new(),
+                }
+            }
             Err(err) => LoadedConfig {
                 config: Self::default(),
                 diagnostics: vec![format!("config read error: {err}")],
@@ -332,6 +336,7 @@ impl Config {
         match toml::Deserializer::parse(content).and_then(deserialize_with_ignored::<Config, _>) {
             Ok((mut config, ignored_keys)) => {
                 config.ui.user_fields = ui_user_fields(content);
+                config.cache_keybind_validation();
                 let (unknown_sections, mut diagnostics) =
                     unknown_top_level_sections_from_str(content);
                 diagnostics.extend(unknown_config_key_diagnostics(
@@ -564,6 +569,7 @@ mod tests {
 
         std::fs::remove_file(path).expect("remove config fixture");
         let defaults = Config::load_validated(&paths).expect("missing config uses defaults");
+        assert!(defaults.validated_keybinds.get().is_some());
         assert_eq!(
             defaults.resolved_palette,
             crate::app::state::Palette::catppuccin()
@@ -683,6 +689,7 @@ sidebar_width = 26
 agent_panel_sort = "priority"
 "#,
         );
+        assert!(loaded.config.validated_keybinds.get().is_some());
         assert!(loaded.config.ui.is_user_configured("sidebar_width"));
         assert!(loaded.config.ui.is_user_configured("agent_panel_sort"));
         assert!(

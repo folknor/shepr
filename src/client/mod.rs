@@ -1,7 +1,7 @@
 //! Thin client mode - connects to the server's client socket.
 //!
 //! The client:
-//! - Connects to `shepr-client.sock`, sends TerminalHello with terminal size and protocol version
+//! - Connects to `shepr-client.sock`, checks the build preamble, then sends terminal geometry
 //! - Sets up the real terminal (raw mode, mouse capture, keyboard enhancements)
 //! - Receives Frame messages and blits them to the terminal (diff against last frame)
 //! - Reads stdin events (keystrokes, mouse, paste) and sends them as ClientMessage::Input
@@ -465,7 +465,7 @@ async fn run_client_loop(
 
     let mut write_stream = if let Some((stream, _handshake)) = initial {
         let max_frame_size = crate::protocol::MAX_FRAME_SIZE;
-        let surface_decoder = Some(protocol::surface_reuse::Decoder::new(true));
+        let surface_decoder = protocol::surface_reuse::Decoder::default();
         let transport = start_endpoint_transport(
             stream,
             (),
@@ -519,7 +519,7 @@ async fn run_client_loop(
         // Handoffs finish or roll back in many places; judge the requested selection once
         // nothing is in flight, so a rolled-back target neither stays selected nor persists.
         selection.settle_and_persist(
-            &mut endpoint_catalog,
+            &endpoint_catalog,
             pending_activation.is_some()
                 || state.deferred_local_activation.is_some()
                 || scheduled_activation.is_some(),
@@ -532,7 +532,7 @@ async fn run_client_loop(
             scheduled_activation = stale_freeze_recovery(
                 &state,
                 &write_stream,
-                &endpoint_catalog.selected_endpoint(),
+                &selection.selected_endpoint(),
                 pending_activation.is_some() || state.deferred_local_activation.is_some(),
                 &mut freeze_recovery_attempted,
             );
@@ -879,7 +879,7 @@ async fn run_client_loop(
                         // surface yet), only the machine list.
                         state.present_chrome(frame, pending_activation.is_some());
                     }
-                    let surface_decoder = Some(protocol::surface_reuse::Decoder::new(true));
+                    let surface_decoder = protocol::surface_reuse::Decoder::default();
                     let reader_tx = event_tx.clone();
                     std::thread::spawn(move || {
                         server_reader_thread(
@@ -903,7 +903,7 @@ async fn run_client_loop(
                     .connection(&endpoint_id)
                     .map(|connection| connection.generation);
                 // Persisting waits for the handoff to commit; see `endpoint_selection`.
-                if !selection.begin(&mut endpoint_catalog, &endpoint_id, generation) {
+                if !selection.begin(&endpoint_catalog, &endpoint_id, generation) {
                     continue;
                 }
                 begin_endpoint_activation(
@@ -1338,7 +1338,7 @@ async fn run_client_loop(
                             scheduled_activation = Some(event);
                             continue;
                         }
-                        let selected_endpoint = endpoint_catalog.selected_endpoint();
+                        let selected_endpoint = selection.selected_endpoint();
                         let activation_ready = state.shell.as_ref().is_some_and(|shell| {
                             shell.endpoint_has_snapshot(&selected_endpoint)
                                 && (!write_stream
@@ -1443,7 +1443,7 @@ async fn run_client_loop(
                 }
                 match catalog_watch.as_mut().and_then(|watch| watch.poll(now)) {
                     Some(Ok(profiles)) => {
-                        if follow_endpoint_catalog(
+                        let active_retired = follow_endpoint_catalog(
                             &mut state,
                             &mut write_stream,
                             &mut endpoint_commands,
@@ -1453,7 +1453,9 @@ async fn run_client_loop(
                             &config.local_socket_path,
                             profiles,
                             now,
-                        ) {
+                        );
+                        selection.catalog_changed(&endpoint_catalog);
+                        if active_retired {
                             clear_endpoint_host_effects(
                                 &mut state,
                                 &host_mouse_capture_active,

@@ -18,7 +18,7 @@ const DEFAULT_AGENT_START_TIMEOUT_MS: u64 = 30_000;
 pub(super) fn run_agent_command(
     matches: &ArgMatches,
     config: Option<crate::config::Config>,
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
 ) -> std::io::Result<i32> {
     match matches.subcommand() {
         Some(("list", _)) => agent_list(paths),
@@ -60,7 +60,7 @@ pub(super) fn run_agent_command(
     }
 }
 
-fn agent_explain(paths: &crate::config::AppPaths, matches: &ArgMatches) -> std::io::Result<i32> {
+fn agent_explain(paths: &super::target::CliContext, matches: &ArgMatches) -> std::io::Result<i32> {
     // The spec enforces the two forms: `<TARGET>` alone, or `--file` together
     // with `--agent`.
     let json = flag(matches, "json") || string(matches, "format").as_deref() == Some("json");
@@ -215,7 +215,7 @@ fn matched_rule_region_preview<'a>(
         .filter(|preview| !preview.is_empty())
 }
 
-fn agent_start(paths: &crate::config::AppPaths, matches: &ArgMatches) -> std::io::Result<i32> {
+fn agent_start(paths: &super::target::CliContext, matches: &ArgMatches) -> std::io::Result<i32> {
     let name = &required(matches, "name");
     let kind = required(matches, "kind");
     let pane_id = required(matches, "pane");
@@ -316,7 +316,7 @@ fn agent_start(paths: &crate::config::AppPaths, matches: &ArgMatches) -> std::io
     }
 }
 
-fn agent_list(paths: &crate::config::AppPaths) -> std::io::Result<i32> {
+fn agent_list(paths: &super::target::CliContext) -> std::io::Result<i32> {
     super::print_response(&super::send_request(
         paths,
         &Request {
@@ -326,7 +326,7 @@ fn agent_list(paths: &crate::config::AppPaths) -> std::io::Result<i32> {
     )?)
 }
 
-fn agent_get(paths: &crate::config::AppPaths, target: String) -> std::io::Result<i32> {
+fn agent_get(paths: &super::target::CliContext, target: String) -> std::io::Result<i32> {
     super::print_response(&super::send_request(
         paths,
         &Request {
@@ -336,7 +336,7 @@ fn agent_get(paths: &crate::config::AppPaths, target: String) -> std::io::Result
     )?)
 }
 
-fn agent_focus(paths: &crate::config::AppPaths, target: String) -> std::io::Result<i32> {
+fn agent_focus(paths: &super::target::CliContext, target: String) -> std::io::Result<i32> {
     super::print_response(&super::send_request(
         paths,
         &Request {
@@ -350,7 +350,7 @@ fn agent_attach(
     target: &str,
     takeover: bool,
     config: Option<crate::config::Config>,
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
 ) -> std::io::Result<i32> {
     let config = match config {
         Some(config) => config,
@@ -372,7 +372,7 @@ fn agent_attach(
     Ok(0)
 }
 
-fn agent_wait(paths: &crate::config::AppPaths, params: AgentWaitParams) -> std::io::Result<i32> {
+fn agent_wait(paths: &super::target::CliContext, params: AgentWaitParams) -> std::io::Result<i32> {
     super::print_response(&super::send_request(
         paths,
         &Request {
@@ -383,7 +383,7 @@ fn agent_wait(paths: &crate::config::AppPaths, params: AgentWaitParams) -> std::
 }
 
 fn wait_for_named_agent(
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
     name: &str,
     fallback_pane_id: &str,
     timeout: Duration,
@@ -456,7 +456,7 @@ fn wait_for_named_agent(
 }
 
 fn pane_terminal_id(
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
     pane_id: &str,
 ) -> std::io::Result<Option<String>> {
     let response = super::send_request(
@@ -474,7 +474,7 @@ fn pane_terminal_id(
 }
 
 fn pane_shell_is_initializing(
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
     pane_id: &str,
 ) -> std::io::Result<bool> {
     let response = super::send_request(
@@ -557,7 +557,7 @@ fn cli_agent_error(id: &str, code: &str, message: impl Into<String>) -> serde_js
 }
 
 fn resolve_agent_target(
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
     target: &str,
     request_id: &str,
 ) -> std::io::Result<serde_json::Value> {
@@ -565,7 +565,7 @@ fn resolve_agent_target(
 }
 
 fn resolve_agent_target_unchecked(
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
     target: &str,
     request_id: &str,
 ) -> std::io::Result<serde_json::Value> {
@@ -582,7 +582,7 @@ fn agent_get_request(target: &str, request_id: &str) -> Request {
 }
 
 fn agent_rename(
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
     params: AgentRenameParams,
 ) -> std::io::Result<i32> {
     super::print_response(&super::send_request(
@@ -608,7 +608,7 @@ fn prompt_params(matches: &ArgMatches) -> AgentPromptParams {
 }
 
 fn agent_prompt(
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
     params: AgentPromptParams,
 ) -> std::io::Result<i32> {
     let response = super::send_request(
@@ -622,7 +622,7 @@ fn agent_prompt(
 }
 
 fn agent_send_keys(
-    paths: &crate::config::AppPaths,
+    paths: &super::target::CliContext,
     params: AgentSendKeysParams,
 ) -> std::io::Result<i32> {
     super::print_response(&super::send_request(
@@ -651,7 +651,7 @@ fn read_params(matches: &ArgMatches) -> AgentReadParams {
     }
 }
 
-fn agent_read(paths: &crate::config::AppPaths, params: AgentReadParams) -> std::io::Result<i32> {
+fn agent_read(paths: &super::target::CliContext, params: AgentReadParams) -> std::io::Result<i32> {
     let response = super::send_request(
         paths,
         &Request {

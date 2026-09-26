@@ -1626,7 +1626,7 @@ mod tests {
     fn batched_ascii_diff_replays_to_current_frame() {
         let prev = make_frame(4, 3, vec![make_cell("A", 0, 0, 0); 12]);
         let curr = make_frame(4, 3, vec![make_cell("B", 0, 0, 0); 12]);
-        let mut terminal = crate::ghostty::Terminal::new(4, 3, 0).expect("test precondition");
+        let mut terminal = crate::ghostty::Terminal::new(4, 3, 0);
 
         let mut initial = Vec::new();
         blit_frame_to(&mut initial, &prev, None);

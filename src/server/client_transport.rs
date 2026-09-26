@@ -22,7 +22,7 @@ use crate::protocol::endpoint::{
 };
 use crate::protocol::{
     self, AttachScrollDirection, AttachScrollSource, ClientMessage, ClientPaneInputEvent,
-    MAX_FRAME_SIZE, MAX_INPUT_PAYLOAD, PROTOCOL_VERSION, RenderEncoding, ServerMessage,
+    MAX_FRAME_SIZE, MAX_INPUT_PAYLOAD, ServerMessage,
 };
 
 /// Minimum accepted attached client size.
@@ -594,8 +594,8 @@ fn set_client_recv_timeout(
 
 /// Handles the client handshake on a blocking thread.
 ///
-/// Reads the `TerminalHello` or endpoint hello, validates the version,
-/// sends the welcome, and then enters a read loop forwarding messages to the server event channel.
+/// Reads the `TerminalHello` or endpoint hello, validates its terminal geometry,
+/// sends the welcome, and then forwards client messages to the server event channel.
 pub(crate) fn handle_client_handshake(
     mut stream: LocalStream,
     client_id: u64,
@@ -665,22 +665,12 @@ pub(crate) fn handle_client_handshake(
         shell_options,
     ) = match hello {
         ClientMessage::TerminalHello {
-            version,
             cols,
             rows,
             cell_width_px,
             cell_height_px,
             pixel_mouse,
         } => {
-            if let Err(reason) = protocol::check_client_version(version) {
-                let welcome = ServerMessage::Welcome {
-                    version: PROTOCOL_VERSION,
-                    encoding: RenderEncoding::TerminalAnsi,
-                    error: Some(reason),
-                };
-                let _ = protocol::write_message(&mut stream, &welcome);
-                return Ok(());
-            }
             let geometry =
                 bound_terminal_geometry(cols, rows, cell_width_px, cell_height_px, pixel_mouse);
             (
@@ -704,17 +694,12 @@ pub(crate) fn handle_client_handshake(
                     return Ok(());
                 }
             };
-            let incompatibility = if let Err(reason) = protocol::check_client_version(hello.version)
-            {
-                Some(("protocol_mismatch", reason))
-            } else {
-                client_shell_geometry_error(
-                    hello.surface_size,
-                    hello.cell_width_px,
-                    hello.cell_height_px,
-                )
-                .map(|reason| ("invalid_surface", reason.to_owned()))
-            };
+            let incompatibility = client_shell_geometry_error(
+                hello.surface_size,
+                hello.cell_width_px,
+                hello.cell_height_px,
+            )
+            .map(|reason| ("invalid_surface", reason.to_owned()));
             if let Some((code, reason)) = incompatibility {
                 write_endpoint_rejection(&mut stream, code, reason);
                 return Ok(());
@@ -731,8 +716,6 @@ pub(crate) fn handle_client_handshake(
         _ => {
             debug!(client_id, "first message was not a handshake, closing");
             let welcome = ServerMessage::Welcome {
-                version: PROTOCOL_VERSION,
-                encoding: RenderEncoding::SemanticFrame,
                 error: Some("expected a handshake as the first message".to_owned()),
             };
             let _ = protocol::write_message(&mut stream, &welcome);
@@ -744,11 +727,6 @@ pub(crate) fn handle_client_handshake(
         return Ok(());
     }
 
-    let render_encoding = if shell_options.is_some() {
-        RenderEncoding::SemanticFrame
-    } else {
-        RenderEncoding::TerminalAnsi
-    };
     let welcome = if shell_options.is_some() {
         let welcome = EndpointServerWelcome::compatible();
         ServerMessage::EndpointControl {
@@ -756,11 +734,7 @@ pub(crate) fn handle_client_handshake(
             data: serde_json::to_string(&welcome).map_err(io::Error::other)?,
         }
     } else {
-        ServerMessage::Welcome {
-            version: PROTOCOL_VERSION,
-            encoding: render_encoding,
-            error: None,
-        }
+        ServerMessage::Welcome { error: None }
     };
     protocol::write_message(&mut stream, &welcome).map_err(|e| io::Error::other(e.to_string()))?;
 
@@ -793,7 +767,7 @@ pub(crate) fn handle_client_handshake(
     // Notify the main loop about the new client.
     let endpoint_control_writer = shell_options.as_ref().map(|_| writer.control.clone());
     let connected = if let Some((pixel_mouse, mouse_capture, surface_active)) = shell_options {
-        // The build-identity preamble guarantees both surface encodings.
+        // The exact-build preamble guarantees support for semantic surfaces.
         ServerEvent::ClientShellConnected {
             client_id,
             surface_cols: client_cols,
@@ -1234,7 +1208,6 @@ mod tests {
 
     fn endpoint_hello(surface_cols: u16, surface_rows: u16) -> ClientMessage {
         let hello = EndpointClientHello {
-            version: PROTOCOL_VERSION,
             cell_width_px: 8,
             cell_height_px: 16,
             surface_size: crate::protocol::ClientSurfaceSize {
@@ -1558,7 +1531,6 @@ mod tests {
         open_as_client(
             &mut client_stream,
             &ClientMessage::TerminalHello {
-                version: PROTOCOL_VERSION,
                 cols: u16::MAX,
                 rows: u16::MAX,
                 cell_width_px: u32::MAX,
@@ -1741,7 +1713,7 @@ mod tests {
     }
 
     #[test]
-    fn handshake_negotiates_terminal_ansi_encoding() {
+    fn direct_terminal_hello_selects_terminal_ansi_stream() {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-handshake-ansi");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
@@ -1753,7 +1725,6 @@ mod tests {
         open_as_client(
             &mut client_stream,
             &ClientMessage::TerminalHello {
-                version: PROTOCOL_VERSION,
                 cols: 100,
                 rows: 30,
                 cell_width_px: 8,
@@ -1765,13 +1736,7 @@ mod tests {
         let welcome: ServerMessage =
             protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
         match welcome {
-            ServerMessage::Welcome {
-                version,
-                encoding,
-                error,
-            } => {
-                assert_eq!(version, PROTOCOL_VERSION);
-                assert_eq!(encoding, RenderEncoding::TerminalAnsi);
+            ServerMessage::Welcome { error } => {
                 assert_eq!(error, None);
             }
             other => panic!("expected Welcome, got {other:?}"),
@@ -1822,7 +1787,6 @@ mod tests {
         let welcome: ServerMessage =
             protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
         let welcome = endpoint_welcome(welcome);
-        assert_eq!(welcome.version, PROTOCOL_VERSION);
         assert!(welcome.error.is_none());
         match server_event_rx
             .blocking_recv()

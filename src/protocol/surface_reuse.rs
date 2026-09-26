@@ -116,29 +116,19 @@ impl CellBaseline {
 }
 
 /// Connection-local decoding happens before activation and presentation filtering, so
-/// switching endpoints cannot discard a baseline needed by the next wire message.
+/// switching endpoints cannot discard a baseline needed by the next wire message. The
+/// exact-build preamble guarantees that surface deltas are supported by both peers.
 #[derive(Default)]
 pub(crate) struct Decoder {
     baseline: Option<CellBaseline>,
-    surface_delta: bool,
 }
 
 impl Decoder {
-    pub(crate) fn new(surface_delta: bool) -> Self {
-        Self {
-            baseline: None,
-            surface_delta,
-        }
-    }
-
     pub(crate) fn decode(&mut self, message: ServerMessage) -> Result<ServerMessage, String> {
         let message = match message {
             ServerMessage::EndpointControl { kind, data }
                 if kind == super::surface_delta::MESSAGE_KIND =>
             {
-                if !self.surface_delta {
-                    return Err("surface delta was not negotiated".into());
-                }
                 return self.decode_delta(&data).map(ServerMessage::PaneSurface);
             }
             ServerMessage::EndpointControl { kind, data } if kind == MESSAGE_KIND => {
@@ -369,7 +359,7 @@ mod tests {
 
     #[test]
     fn full_surface_with_a_short_grid_is_rejected_and_not_stored() {
-        let mut decoder = Decoder::new(false);
+        let mut decoder = Decoder::default();
         let mut short = surface(2, 2);
         short.frame.cells.pop();
         let error = decoder
@@ -384,7 +374,7 @@ mod tests {
 
     #[test]
     fn patch_without_a_full_surface_baseline_is_rejected() {
-        let mut decoder = Decoder::new(false);
+        let mut decoder = Decoder::default();
         let error = decoder
             .decode(patch(1, 2, vec![row(0, 0, "x")]))
             .expect_err("a patch cannot establish its own baseline");
@@ -400,7 +390,7 @@ mod tests {
 
     #[test]
     fn mismatched_patch_fails_with_its_own_reason_and_keeps_the_baseline() {
-        let mut decoder = Decoder::new(false);
+        let mut decoder = Decoder::default();
         decoder
             .decode(ServerMessage::PaneSurface(surface(2, 2)))
             .expect("test precondition");
@@ -439,7 +429,7 @@ mod tests {
 
     #[test]
     fn matching_patch_advances_the_baseline() {
-        let mut decoder = Decoder::new(false);
+        let mut decoder = Decoder::default();
         decoder
             .decode(ServerMessage::PaneSurface(surface(2, 2)))
             .expect("test precondition");
@@ -452,7 +442,7 @@ mod tests {
 
     #[test]
     fn reuse_cannot_move_the_projection_revision_backwards() {
-        let mut decoder = Decoder::new(false);
+        let mut decoder = Decoder::default();
         decoder
             .decode(ServerMessage::PaneSurface(surface(2, 2)))
             .expect("test precondition");

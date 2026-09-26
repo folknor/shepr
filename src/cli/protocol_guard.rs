@@ -13,16 +13,14 @@ impl fmt::Display for ProtocolMismatchReported {
 
 impl std::error::Error for ProtocolMismatchReported {}
 
+/// The error reported for a server whose protocol is another build's, as
+/// classified by `protocol::Compatibility`.
 pub(super) fn mismatch_response(
     request_id: &str,
     server_protocol: u32,
     restart_guidance: &str,
-) -> Option<ErrorResponse> {
+) -> ErrorResponse {
     let client_protocol = crate::protocol::PROTOCOL_VERSION;
-    if client_protocol == server_protocol {
-        return None;
-    }
-
     // Protocol versions are folded from a source fingerprint (see `build.rs`),
     // so comparing them says nothing about which build is newer. Report a
     // different build and give the same restart guidance either way: the
@@ -32,13 +30,13 @@ pub(super) fn mismatch_response(
         crate::build_info::version()
     );
 
-    Some(ErrorResponse {
+    ErrorResponse {
         id: request_id.to_string(),
         error: ErrorBody {
             code: "protocol_mismatch".into(),
             message,
         },
-    })
+    }
 }
 
 pub(super) fn reported_error() -> std::io::Error {
@@ -56,18 +54,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matching_protocol_has_no_error() {
-        assert!(mismatch_response("req", crate::protocol::PROTOCOL_VERSION, "restart").is_none());
-    }
-
-    #[test]
     fn mismatch_error_preserves_request_id_and_guidance() {
         let response = mismatch_response(
             "cli:agent:wait",
             crate::protocol::PROTOCOL_VERSION - 1,
             "Run the session stop command, then restart.",
-        )
-        .expect("test precondition");
+        );
 
         assert_eq!(response.id, "cli:agent:wait");
         assert_eq!(response.error.code, "protocol_mismatch");
@@ -99,7 +91,6 @@ mod tests {
             crate::protocol::PROTOCOL_VERSION + 1,
         ] {
             let message = mismatch_response("req", server_protocol, "restart guidance")
-                .expect("test precondition")
                 .error
                 .message;
             assert!(message.contains("different build"), "{message}");

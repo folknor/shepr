@@ -701,7 +701,6 @@ mod tests {
         ));
         assert!(!crate::remote::SshFailureDiagnostic::from_error(&timeout).needs_attention());
         let rejected = handshake_error(crate::client::ClientError::HandshakeRejected {
-            version: crate::protocol::PROTOCOL_VERSION,
             error: "surface capability missing".into(),
         });
         assert_eq!(rejected.kind(), std::io::ErrorKind::Unsupported);

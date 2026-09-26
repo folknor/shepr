@@ -120,17 +120,6 @@ because the alternate screen is active"; `TerminalRuntime::clear_screen` returns
 
 Reported by: terminal-core.
 
-## STR-009 - Terminal-core and PTY errors
-
-`ghostty::Error(&'static str)` cannot be branched on; most `Result<_, Error>`
-returns (`cols`, `rows`, `scrollbar`, `default_palette`, `kitty_keyboard_flags`,
-`RenderState::new`, `RowIterator::new`, ...) cannot fail and are libghostty
-leftovers. PTY submission outcomes reach callers as `io::Error` with overloaded
-`ErrorKind` (`TimedOut` = withdrawn by caller, `BrokenPipe` = actor closed).
-Proposed: infallible signatures and a typed `SubmissionError`.
-
-Reported by: terminal-core.
-
 ## STR-010 - API errors are prose plus string codes
 
 `ReadRejection = (&'static str, String)`; `collect_panes_for_workspace ->
@@ -312,16 +301,13 @@ Reported by: remote.
 
 # Moves, splits and rewrites
 
-## STR-024 - Rename src/ghostty to vt, split it, delete the libghostty shims
+## STR-024 - Rename src/ghostty to vt and split it
 
-`mod.rs` (~2000 lines) holds the colour model, palette, cell/style types,
-`Terminal`, the `RenderState` snapshot, iterators and text readers; proposed
-`color.rs`, `cell.rs`, `render.rs`, `read.rs` around `Terminal`. Delete
-`RowIterator`/`RowCells` (no state), `populate_row_iterator`/`populate_cells`
-(ignore their argument), `selection()` (always `None`), `content_bg_color()`
-(always `None`), the unused `bytes` scratch in `grapheme_text_into` and the
-infallible `Result`s; replace with a `for row in state.dirty_rows()` iterator
-returning cell views. Payoff: the module-wide `#![allow(dead_code)]` can go.
+The libghostty shims and infallible `Result`s are gone. Remaining: `mod.rs`
+still holds the colour model, palette, cell/style types, `Terminal`, the
+`RenderState` snapshot, row/cell views and text readers; proposed `color.rs`,
+`cell.rs`, `render.rs`, `read.rs` around `Terminal`, and the planned rename of
+`src/ghostty` to `vt`. Several accessors are now `#[cfg(test)]`-only.
 
 Reported by: terminal-core.
 
@@ -465,19 +451,6 @@ module depending on the server layer). Proposed: identity and layout in a
 
 Reported by: config-cli, server.
 
-## STR-038 - Parse the command line once into a typed Launch; drop CLI thread-locals
-
-`Invocation::command_name()` is string-matched in `main`; `bridge_args()`
-round-trips flags into `Vec<String>` for re-parsing; `CommandOutcome::NotCli`
-and the two-pass `cli::run` → `main`. Proposed `enum Launch { Tui, Server,
-Client, ApiBridge, ClientBridge, Cli(Command) }` with command locality on the
-spec (CON-044). `cli/target.rs` keeps the `--machine` target and
-`PROTOCOL_CHECKED` in `thread_local!` swapped by a Drop guard; proposed an
-explicit `CliContext`/`ApiTarget` passed into `dispatch`, making `is_remote()`,
-`caller_pane()`, `restart_guidance()` pure functions.
-
-Reported by: config-cli, remote.
-
 ## STR-039 - Config: validate once, move DEFAULT_CONFIG, move profile TOML
 
 `ValidatedConfig` built once at load with typed diagnostics (CON-031, CON-045).
@@ -582,15 +555,9 @@ construction time.
 
 Reported by: client.
 
-## STR-047 - crate::ui does two unrelated jobs; metadata_tokens is not UI
+## STR-047 - compute_view resizes PTYs as a side effect
 
-`src/ui/` renders only the tab surface; `ui/sidebar.rs` and
-`ui/sidebar/tokens.rs` are a token-layout kit only the client shell calls
-(`sidebar_agent_rows`, `resolved_token_spans`, `expanded_sidebar_sections`).
-Proposed: move the sidebar kit into `client/shell/` (removing the `client::shell
--> crate::ui` edge). `metadata_tokens.rs` is server-side report sequencing and
-TTL state depending on `terminal::state`; proposed home next to
-`terminal/state` or in `workspace/`. `compute_view_*` and
+The sidebar kit and metadata tokens have moved. Remaining: `compute_view_*` and
 `compute_tab_surface(resize_panes: bool)` resize PTYs (including background
 tabs) as a side effect; proposed: return the layout and apply sizes in a separate
 `apply_pane_sizes(layout)`.
@@ -621,16 +588,6 @@ catalog is used by the CLI and `remote::run_remote` too. Proposed: `ProfileId`,
 `EndpointCatalogChanges`, `SshMetadataCache`, `SshMachineMetadata` into a neutral
 `src/machine/`; `remote/` becomes SSH transport, discovery and bridge;
 `client/endpoint/` becomes runtime supervision.
-
-Reported by: remote.
-
-## STR-050 - Split machine selection out of the catalog
-
-`EndpointCatalog.selected_profile` is `#[serde(skip_serializing)]` + `default`,
-ignored on load, set from a second file, and validated inside `validate()`, so
-storing profiles fails on a stale in-memory selection. Proposed:
-`MachineCatalog` (persisted, shared) and selection owned by
-`EndpointSelectionTracker` (resolves CON-053).
 
 Reported by: remote.
 
@@ -708,29 +665,3 @@ Reported by: server.
 per frame (O(n²), silent `?` drops); proposed a keyed snapshot by typed id.
 
 Reported by: ui.
-
-## STR-058 - Terminal target lookup scans and allocates
-
-`terminal_targets.rs` finds terminals with
-`self.state.terminals.values().find(|t| t.id.to_string() == candidate.terminal_id)`
-at lines 56-63, 91-95, 108-112 - O(n) with an allocation per comparison, per
-candidate. Keeping `TerminalId` allows `terminals.get(&id)` (STR-001).
-
-Reported by: app-state.
-
-## STR-059 - Replace the three-valued shell_mode with a login bool
-
-`terminal.shell_mode` (`ShellModeConfig { Auto, Login, NonLogin }` in
-`config/model.rs`) has three values but two behaviours: `pane.rs` only tests
-`mode == Login`, so `Auto` (the default) is an alias for `NonLogin`. A pane shell
-is always interactive; the only real axis is whether it is also a login shell
-(argv0 prefixed with `-`, reading `/etc/profile` and `~/.profile` /
-`~/.zprofile`).
-
-Decision (owner): replace it with `terminal.login_shell: bool`, default `false`
-(today's `Auto` behaviour). Delete `ShellModeConfig` and its tests, update the
-pane launch path, the default config text and the config docs. shepr has never
-been run, so no migration; the old `shell_mode` key becomes an unknown key and
-fails the launch like any other.
-
-Reported by: orchestrator, from the wave A review.

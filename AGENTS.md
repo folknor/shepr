@@ -19,7 +19,8 @@ fields and migration code freely.
 Kept:
 
 - Server/client split, local and SSH endpoints (one client shows servers on
-  several hosts; the owner installs the binary on each host manually)
+  several hosts; the owner installs the binary on each host manually, and a
+  host never has more than one `shepr` installed)
 - Terminal core: `alacritty_terminal` for emulation, a small libc PTY layer
   (`src/pty/`), PTY hosting
 - Workspaces, tabs, panes, layout, the tab bar, the agent sidebar

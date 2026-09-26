@@ -38,16 +38,6 @@ should live there, with `api::schema` reusing it rather than owning it.
 
 Reported by: pane-detection, terminal-core.
 
-## CON-002 - Agent status: two enums, several mappings, two priority ladders, two status texts
-
-Seen/Done is gone and the public `AgentStatus` is Idle, Working, Blocked, with
-the rank in `workspace/aggregate.rs` / `detect/mod.rs`. Residue, not re-verified
-after that change:
-- Two enums still carry the axis: internal `detect::AgentState` / `api::schema::PaneAgentState` (with Unknown) and the public `AgentStatus`, mapped at the API boundary.
-- Glyph and colour: `status_icon` / `status_color` are paired by hand at several call sites, with a stale-colour override in the endpoint sidebar. Proposed a `StatusGlyph { text, style }` built from (state, indicator style, palette, stale).
-
-Reported by: ui, app-state.
-
 ## CON-004 - Is pixel/cell geometry known, and how is cell size clamped for the protocol?
 
 Sites:
@@ -183,6 +173,11 @@ Reported by: app-state.
 
 ## CON-022 - Which panes exist in a tab?
 
+Decision (owner): each pane's public number moves into its record in
+`Tab.panes`; the snapshot map is derived from those records and
+`Workspace.public_pane_numbers` goes. The layout tree keeps geometry and order
+only. Touches persistence.
+
 Sites: the `layout` tree (`pane_ids()`, `pane_count()`), `Tab.panes: HashMap`,
 `Workspace.public_pane_numbers`. `tab_info.pane_count` uses `tab.panes.len()`,
 `terminal_targets` uses `layout.pane_ids()`, `parse_pane_id` scans
@@ -242,16 +237,6 @@ Proposed owner: exhaustive `Method::traits() -> MethodTraits { name, mutates_ui,
 runs_on_socket_thread, routine }` with no `_` arm, and one routing match.
 
 Reported by: server, config-cli.
-
-## CON-027 - Public workspace/tab/pane id format
-
-Sites: encoding in `workspace::public_{tab,pane}_id_for_number`; parsing in
-`app/ids.rs` (`rsplit_once(':')` + `strip_prefix('t')`, `rsplit_once(":p")`).
-
-Proposed owner: `PublicTabId` / `PublicPaneId` with `Display` and `FromStr` in one
-place; `ids.rs` becomes lookup only (see STR-001).
-
-Reported by: app-state.
 
 ## CON-028 - AppState copies config field by field
 
@@ -338,36 +323,6 @@ goes. A single-agent wave of its own.
 
 Reported by: protocol.
 
-## CON-036 - Which surface encoding is in use; was it negotiated?
-
-Sites: `Decoder::new(surface_delta: bool)` and its "surface delta was not
-negotiated" error; `endpoint.rs` says "There is no capability or encoding
-negotiation"; `RenderEncoding` in `Welcome`. The client passes
-`Some(Decoder::new(true))` at every call site (`client/mod.rs:473,880`), so the
-`Option` and flag encode nothing.
-
-Reported by: protocol, client.
-
-## CON-037 - Is the peer compatible / the same build?
-
-Sites: the preamble (magic, version, build id); `check_client_version` on
-`TerminalHello.version`; `EndpointClientHello.version` /
-`EndpointServerWelcome.version`; remote:
-`RemoteClientStatusJson::supports_endpoint_requirement` (protocol compare, unused
-parameter) and `remote_server_restart_reason` (protocol plus three capability
-flags); CLI: `cli/status.rs` computes `protocol == PROTOCOL_VERSION` three times
-(`compatibility_label`, `compatible`, `restart_needed_bool`),
-`cli/protocol_guard::mismatch_response`, `server_binary_stale_bool` compares
-version strings.
-
-Readings: the protocol hunter calls the in-message checks a defensible re-check
-of the preamble but recommends deleting the `version` fields; the remote hunter
-calls the remote checks upstream federation fossils and names the handshake the
-only authority; the config-cli hunter proposes a `protocol::Compatibility::of(status)`
-owner.
-
-Reported by: protocol, remote, config-cli.
-
 ## CON-038 - Wire colour and modifier layout
 
 Sites: `color_to_u32`, `u32_to_color`, the underline shift and mask,
@@ -425,21 +380,28 @@ Unreachable(io::Error) }`.
 
 Reported by: config-cli.
 
-## CON-044 - Which CLI commands exist and which are local vs API-backed?
-
-Sites: the clap spec in `cli/spec.rs`; the `dispatch` string match in `cli.rs`;
-`validate_machine_command` (string match on command/subcommand; `workspace`/
-`tab`/`pane` allowed wholesale, so a new local subcommand there passes);
-`COMMON_COMMANDS` in `main.rs` (held by a test); `print_help`'s hand-written
-lines (untested); `main` string-matches `command_name()` for
-`"remote-api-bridge"`, `"remote-client-bridge"`, `"server"`, `"client"`.
-
-Proposed owner: typed `Launch` / `CliCommand` parsed once from clap, with
-`locality()` on the spec and help generated from it (STR-038).
-
-Reported by: config-cli.
-
 ## CON-045 - Config keys, defaults and validation
+
+Progress (wave B): default config moved to `src/config/default.toml`;
+keybinding validation cached at load. The fixer stopped at the model fork noted
+in `config/model.rs`.
+
+Decision (owner): boot resolves the whole config surface once - config file,
+environment, CLI flags, paths - into an immutable, typed `ValidatedConfig`; at
+runtime nothing is parsed, looked up by name or re-validated. Provenance is part
+of the type, not a side structure: every resolved value records where it came
+from (default, config file key, environment variable, CLI flag), so "did the
+user set this" and "why is this the value" can be interrogated
+deterministically, e.g. by `config check`. `KeysConfigOverlay`, the `user_fields`
+string sets and the second TOML parse go. Runtime preferences (sidebar drag
+etc.) stay separate mutable state. A single-agent wave of its own.
+
+The same type goes on the wire: a server publishes its whole resolved and
+validated config, provenance included, as a positional-codec wire type, instead
+of the ad hoc keybinding profile TOML (`local_keybindings_profile_toml`,
+`keybindings_from_profile_toml` and the profile publishing path go). A client
+decides what of a remote config applies by interrogating that typed value; no
+side channel re-serialises a subset of config.
 
 Sites: `Config` structs (serde source); `KNOWN_TOP_LEVEL_CONFIG_KEYS` (hand
 list; `serde_ignored` already reports unknown keys); `KeysConfig` and the
@@ -475,47 +437,11 @@ Sites: `pathutil::home_dir()` (rejects empty `HOME`); `config/io.rs`
 
 Reported by: config-cli.
 
-## CON-050 - Which remote executable is right, and is it valid?
-
-Sites: two discovery pipelines - `SavedSshConnector` (`DiscoveryProgress` plus
-`status client --json`) and `SavedSshApiBridge`
-(`posix_remote_api_discovery_script` plus `remote-api-bridge --check`) - share
-one `SshMetadataCache` per profile. Three validity definitions:
-`remote_shepr_from_path`, `SshMachineMetadata::is_valid`, and the shell `case` in
-the discovery script. They disagree (BUG-036, BUG-037).
-
-Proposed owner: one discovery with one definition of "match", one
-`RemoteExecutable` parse, one cache.
-
-Reported by: remote.
-
-## CON-053 - Is this machine profile selectable, and is the selection valid?
-
-Sites: `EndpointCatalog::is_selectable`, inline copies in `select_ssh`,
-`validate`, `load_from_paths`; `replace_profiles`, `set_enabled`, `remove_ssh`
-each clear selection; `EndpointSelectionTracker::settle`; `cli/machine.rs`
-`remove` and `set_enabled` rewrite the selection file themselves.
-
-Proposed owner: selection out of the catalog, as `Option<ProfileId>` resolved
-through one `effective_selection(&profiles)` (STR-050).
-
-Reported by: remote.
-
 ## CON-055 - The reconnect retry promise
 
 Sites: `cli/machine.rs` `reconnect` output string ("within 30 seconds");
 `MAX_RETRY_DELAY`, `ATTENTION_RETRY_DELAY`, `ATTEMPT_BUDGET < MAX_RETRY_DELAY`
 (tested in the supervisor; the CLI text is a literal).
-
-Reported by: remote.
-
-## CON-056 - What counts as a machine selector?
-
-Sites: `machine status` / `reconnect` accept label or id through
-`resolve_machine` (which rejects disabled machines); `rename`, `remove`,
-`enable`, `disable` accept only a raw id via `ProfileId::parse`. See BUG-041.
-
-Proposed owner: one resolver with an "include disabled" flag.
 
 Reported by: remote.
 

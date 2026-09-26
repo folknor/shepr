@@ -60,11 +60,6 @@ impl SavedSshEndpoint {
 #[serde(deny_unknown_fields)]
 pub(crate) struct EndpointCatalog {
     version: u32,
-    /// The in-memory selection. It lives in `endpoint-selection.json`, never in the
-    /// profile file: it is not written here, and a value left in an older profile file
-    /// is accepted but discarded on load.
-    #[serde(default, skip_serializing)]
-    pub(crate) selected_profile: Option<ProfileId>,
     #[serde(default)]
     pub(crate) ssh: Vec<SavedSshEndpoint>,
     #[serde(skip)]
@@ -84,7 +79,6 @@ impl Default for EndpointCatalog {
     fn default() -> Self {
         Self {
             version: CATALOG_VERSION,
-            selected_profile: None,
             ssh: Vec::new(),
             catalog_path: PathBuf::new(),
             selection_path: PathBuf::new(),
@@ -110,45 +104,60 @@ impl EndpointCatalog {
         let mut catalog = Self::load_from_path(catalog_path)?;
         catalog.catalog_path = catalog_path.to_path_buf();
         catalog.selection_path = selection_path.to_path_buf();
-        match load_selection_from_path(selection_path) {
+        Ok(catalog)
+    }
+
+    /// The selection saved by the last client to commit a handoff, when it still names
+    /// a saved machine. `None` means Local. The client's selection tracker owns the
+    /// selection while it runs; this only seeds it.
+    pub(crate) fn load_selection(&self) -> Option<ProfileId> {
+        let path = &self.selection_path;
+        match load_selection_from_path(path) {
             Ok(Some(selection)) => {
-                let valid = selection.selected_profile.as_ref().is_none_or(|selected| {
-                    catalog.ssh.iter().any(|profile| &profile.id == selected)
-                });
-                if valid {
-                    catalog.selected_profile = selection.selected_profile;
+                let selected = selection.selected_profile?;
+                if self.is_selectable(&selected) {
+                    Some(selected)
                 } else {
                     tracing::warn!(
-                        path = %selection_path.display(),
+                        path = %path.display(),
                         "saved endpoint selection is absent; using Local"
                     );
+                    None
                 }
             }
-            Ok(None) => {}
+            Ok(None) => None,
             Err(error) => {
                 tracing::warn!(
                     %error,
-                    path = %selection_path.display(),
+                    path = %path.display(),
                     "saved endpoint selection is unavailable; using Local"
                 );
+                None
             }
         }
-        Ok(catalog)
     }
 
     pub(crate) fn store_profiles(&self) -> Result<(), String> {
         self.store_to_path(&self.catalog_path)
     }
 
-    pub(crate) fn store_selection(&self) -> Result<(), String> {
-        self.store_selection_to_path(&self.selection_path)
+    /// Saves `selected` (`None` is Local) as the next launch's selection.
+    pub(crate) fn store_selection(&self, selected: Option<&ProfileId>) -> Result<(), String> {
+        self.store_selection_to_path(&self.selection_path, selected)
     }
 
-    fn store_selection_to_path(&self, path: &Path) -> Result<(), String> {
+    fn store_selection_to_path(
+        &self,
+        path: &Path,
+        selected: Option<&ProfileId>,
+    ) -> Result<(), String> {
         self.validate()?;
+        if selected.is_some_and(|selected| !self.is_selectable(selected)) {
+            return Err("selected SSH endpoint is absent from the catalog".into());
+        }
         let content = serde_json::to_vec_pretty(&EndpointSelection {
             version: SELECTION_VERSION,
-            selected_profile: self.selected_profile.clone(),
+            selected_profile: selected.cloned(),
         })
         .map_err(|error| format!("failed to encode endpoint selection: {error}"))?;
         store_private_json(path, &content, "endpoint selection")
@@ -169,60 +178,14 @@ impl EndpointCatalog {
         Ok(id)
     }
 
-    pub(crate) fn rename_ssh(
-        &mut self,
-        id: &ProfileId,
-        label: impl Into<String>,
-    ) -> Result<bool, String> {
-        let Some(index) = self.ssh.iter().position(|profile| &profile.id == id) else {
-            return Ok(false);
-        };
-        let mut renamed = self.ssh[index].clone();
-        renamed.label = label.into();
-        renamed.validate()?;
-        self.ssh[index] = renamed;
-        Ok(true)
-    }
-
     pub(crate) fn remove_ssh(&mut self, id: &ProfileId) -> bool {
         let previous_len = self.ssh.len();
         self.ssh.retain(|profile| &profile.id != id);
-        if self.selected_profile.as_ref() == Some(id) {
-            self.selected_profile = None;
-        }
         self.ssh.len() != previous_len
-    }
-
-    pub(crate) fn select_local(&mut self) {
-        self.selected_profile = None;
-    }
-
-    pub(crate) fn select_endpoint(&mut self, endpoint_id: &super::ClientEndpointId) -> bool {
-        match endpoint_id {
-            super::ClientEndpointId::Local => {
-                self.select_local();
-                true
-            }
-            super::ClientEndpointId::Ssh(profile_id) => self.select_ssh(profile_id),
-        }
-    }
-
-    pub(crate) fn select_ssh(&mut self, id: &ProfileId) -> bool {
-        if !self.ssh.iter().any(|profile| &profile.id == id) {
-            return false;
-        }
-        self.selected_profile = Some(id.clone());
-        true
     }
 
     pub(crate) fn has_ssh(&self) -> bool {
         !self.ssh.is_empty()
-    }
-
-    pub(crate) fn contains_target_session(&self, target: &str, session: &str) -> bool {
-        self.ssh
-            .iter()
-            .any(|profile| profile.target.as_str() == target && profile.session == session)
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -243,13 +206,6 @@ impl EndpointCatalog {
             if !ids.insert(profile.id.clone()) {
                 return Err(format!("duplicate endpoint profile id {}", profile.id));
             }
-        }
-        if self
-            .selected_profile
-            .as_ref()
-            .is_some_and(|selected| !self.ssh.iter().any(|profile| &profile.id == selected))
-        {
-            return Err("selected SSH endpoint is absent from the catalog".into());
         }
         Ok(())
     }
@@ -278,9 +234,8 @@ impl EndpointCatalog {
         if content.len() as u64 > MAX_CATALOG_BYTES {
             return Err("endpoint catalog exceeds the storage limit".into());
         }
-        let mut catalog: Self = serde_json::from_str(&content)
+        let catalog: Self = serde_json::from_str(&content)
             .map_err(|error| format!("stored endpoint catalog is invalid: {error}"))?;
-        catalog.selected_profile = None;
         catalog.validate()?;
         Ok(catalog)
     }
@@ -394,24 +349,10 @@ impl EndpointCatalogChanges {
 }
 
 impl EndpointCatalog {
-    /// Replaces the saved profiles with a newer copy of the catalog file, keeping this
-    /// client's in-memory selection only while it still names a saved machine.
+    /// Replaces the saved profiles with a newer copy of the catalog file. The client's
+    /// selection tracker drops a selection this removed (`catalog_changed`).
     pub(crate) fn replace_profiles(&mut self, profiles: Vec<SavedSshEndpoint>) {
         self.ssh = profiles;
-        if let Some(selected) = self.selected_profile.as_ref()
-            && !self.is_selectable(selected)
-        {
-            self.selected_profile = None;
-        }
-    }
-
-    /// The endpoint this client wants to own the pane surface.
-    pub(crate) fn selected_endpoint(&self) -> super::ClientEndpointId {
-        self.selected_profile
-            .as_ref()
-            .map_or(super::ClientEndpointId::Local, |profile_id| {
-                super::ClientEndpointId::Ssh(profile_id.clone())
-            })
     }
 
     /// Whether `id` names a saved machine that may be selected.
@@ -511,7 +452,6 @@ mod tests {
         let id = catalog
             .add_ssh("Build", "ssh://dev@build.example:2222", "agents")
             .expect("test precondition");
-        assert!(catalog.select_ssh(&id));
         catalog.store_to_path(&path).expect("test precondition");
 
         let encoded = std::fs::read_to_string(&path).expect("test precondition");
@@ -522,7 +462,6 @@ mod tests {
         assert!(!encoded.contains("selected_profile"));
         let loaded = EndpointCatalog::load_from_path(&path).expect("test precondition");
         assert_eq!(loaded.ssh, catalog.ssh);
-        assert_eq!(loaded.selected_profile, None);
         assert_eq!(loaded.ssh[0].id, id);
         std::fs::remove_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -559,44 +498,6 @@ mod tests {
                 .add_ssh("Build", "ssh://dev@[::1]:2222", "default")
                 .is_ok()
         );
-    }
-
-    #[test]
-    fn interactive_bootstrap_matches_target_and_session() {
-        let mut catalog = EndpointCatalog::default();
-        catalog
-            .add_ssh("Build", "build", "agents")
-            .expect("test precondition");
-        assert!(catalog.contains_target_session("build", "agents"));
-        assert!(!catalog.contains_target_session("build", "default"));
-    }
-
-    #[test]
-    fn rename_changes_only_the_machine_label() {
-        let mut catalog = EndpointCatalog::default();
-        let id = catalog
-            .add_ssh("Old", "build", "agents")
-            .expect("test precondition");
-        let original = catalog.ssh[0].clone();
-
-        assert!(catalog.rename_ssh(&id, "New").expect("test precondition"));
-        assert_eq!(catalog.ssh[0].label, "New");
-        assert_eq!(catalog.ssh[0].id, original.id);
-        assert_eq!(catalog.ssh[0].target, original.target);
-        assert_eq!(catalog.ssh[0].session, original.session);
-        assert!(catalog.rename_ssh(&id, "\n").is_err());
-        assert_eq!(catalog.ssh[0].label, "New");
-    }
-
-    #[test]
-    fn removal_returns_selection_to_local() {
-        let mut catalog = EndpointCatalog::default();
-        let first = catalog
-            .add_ssh("One", "one", "default")
-            .expect("test precondition");
-        assert!(catalog.select_ssh(&first));
-        assert!(catalog.remove_ssh(&first));
-        assert_eq!(catalog.selected_profile, None);
     }
 
     #[test]
@@ -642,9 +543,8 @@ mod tests {
             .expect("test precondition");
         let profiles_before = std::fs::read(&catalog_path).expect("test precondition");
 
-        assert!(catalog.select_ssh(&id));
         catalog
-            .store_selection_to_path(&selection_path)
+            .store_selection_to_path(&selection_path, Some(&id))
             .expect("test precondition");
 
         assert_eq!(
@@ -680,7 +580,7 @@ mod tests {
             .expect("test precondition");
         assert_eq!(loaded.ssh.len(), 1);
         assert_eq!(loaded.ssh[0].id, id);
-        assert_eq!(loaded.selected_profile, None);
+        assert_eq!(loaded.load_selection(), None);
         std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"))
             .expect("test precondition");
     }
@@ -713,37 +613,7 @@ mod tests {
         let loaded = EndpointCatalog::load_from_paths(&catalog_path, &selection_path)
             .expect("test precondition");
         assert_eq!(loaded.ssh[0].id, saved);
-        assert_eq!(loaded.selected_profile, None);
-        std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"))
-            .expect("test precondition");
-    }
-
-    #[test]
-    fn selection_left_in_an_older_profile_file_is_not_a_fallback() {
-        let catalog_path = path("legacy-selection");
-        let selection_path = catalog_path.with_file_name("selection.json");
-        let _ = std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"));
-        std::fs::create_dir_all(catalog_path.parent().expect("test precondition"))
-            .expect("test precondition");
-        std::fs::write(
-            &catalog_path,
-            r#"{
-              "version": 1,
-              "selected_profile": "0123456789abcdef0123456789abcdef",
-              "ssh": [{
-                "id": "0123456789abcdef0123456789abcdef",
-                "label": "Build",
-                "target": "build",
-                "session": "default"
-              }]
-            }"#,
-        )
-        .expect("test precondition");
-
-        let loaded = EndpointCatalog::load_from_paths(&catalog_path, &selection_path)
-            .expect("test precondition");
-        assert_eq!(loaded.ssh.len(), 1);
-        assert_eq!(loaded.selected_profile, None);
+        assert_eq!(loaded.load_selection(), None);
         std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"))
             .expect("test precondition");
     }
@@ -798,30 +668,6 @@ mod tests {
     }
 
     #[test]
-    fn replacing_profiles_drops_a_selection_that_was_removed() {
-        let mut catalog = EndpointCatalog::default();
-        let id = catalog
-            .add_ssh("Build", "build", "agents")
-            .expect("test precondition");
-        assert!(catalog.select_ssh(&id));
-        assert_eq!(
-            catalog.selected_endpoint(),
-            crate::client::endpoint::ClientEndpointId::Ssh(id.clone())
-        );
-
-        let kept = catalog.ssh.clone();
-        catalog.replace_profiles(kept.clone());
-        assert_eq!(catalog.selected_profile, Some(id));
-
-        catalog.replace_profiles(Vec::new());
-        assert_eq!(catalog.selected_profile, None);
-        assert_eq!(
-            catalog.selected_endpoint(),
-            crate::client::endpoint::ClientEndpointId::Local
-        );
-    }
-
-    #[test]
     fn catalog_watch_reloads_only_after_the_file_changes() {
         let path = path("watch");
         let _ = std::fs::remove_dir_all(path.parent().expect("test precondition"));
@@ -863,13 +709,16 @@ mod tests {
     }
 
     #[test]
-    fn invalid_or_missing_selected_profile_is_rejected() {
-        let catalog = EndpointCatalog {
-            selected_profile: Some(
-                ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
-            ),
-            ..EndpointCatalog::default()
-        };
-        assert!(catalog.validate().is_err());
+    fn storing_a_selection_absent_from_the_catalog_is_rejected() {
+        let selection_path = path("missing-selection").with_file_name("selection.json");
+        let catalog = EndpointCatalog::default();
+        let missing =
+            ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition");
+        assert!(
+            catalog
+                .store_selection_to_path(&selection_path, Some(&missing))
+                .is_err()
+        );
+        assert!(!selection_path.exists());
     }
 }

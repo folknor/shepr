@@ -1,9 +1,7 @@
 //! JSON handshake and named controls for client-owned shells.
 //!
-//! Client and server are always the same build; the handshake carries
-//! `PROTOCOL_VERSION`, which is derived from the build's source fingerprint,
-//! so a different build fails with a clear error as long as it still decodes
-//! the `EndpointControl` envelope this JSON rides in.
+//! Client and server are always the same build; the connection preamble checks
+//! that identity before either side decodes this JSON control envelope.
 
 use serde::{Deserialize, Serialize};
 
@@ -19,13 +17,11 @@ pub const HEALTH_PONG_KIND: &str = "endpoint.health.pong.v1";
 
 /// Client-owned shell hello.
 ///
-/// There is no capability or encoding negotiation: client and server are the
-/// same build (the connection preamble guarantees it), so every surface
-/// encoding and endpoint method this build has is available on both sides.
+/// This hello selects the client-owned-shell mode, which receives semantic
+/// surfaces. There is no encoding negotiation: the exact-build preamble
+/// guarantees the peer supports every encoding this build sends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointClientHello {
-    /// Must equal the server's `PROTOCOL_VERSION`.
-    pub version: u32,
     pub cell_width_px: u32,
     pub cell_height_px: u32,
     pub surface_size: ClientSurfaceSize,
@@ -40,11 +36,9 @@ pub struct EndpointHandshakeError {
     pub message: String,
 }
 
-/// Client-owned shell welcome: the server's version, or why it refused.
+/// Client-owned shell welcome: why the server refused, if it did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointServerWelcome {
-    /// The server's `PROTOCOL_VERSION`.
-    pub version: u32,
     pub error: Option<EndpointHandshakeError>,
 }
 
@@ -57,15 +51,11 @@ pub fn snapshot_message(snapshot: &ClientShellSnapshot) -> serde_json::Result<Se
 
 impl EndpointServerWelcome {
     pub fn compatible() -> Self {
-        Self {
-            version: super::PROTOCOL_VERSION,
-            error: None,
-        }
+        Self { error: None }
     }
 
     pub fn incompatible(code: &str, message: impl Into<String>) -> Self {
         Self {
-            version: super::PROTOCOL_VERSION,
             error: Some(EndpointHandshakeError {
                 code: code.into(),
                 message: message.into(),
@@ -115,6 +105,5 @@ mod tests {
         let decoded: EndpointServerWelcome =
             serde_json::from_str(&json).expect("test precondition");
         assert_eq!(decoded, welcome);
-        assert_eq!(decoded.version, super::super::PROTOCOL_VERSION);
     }
 }

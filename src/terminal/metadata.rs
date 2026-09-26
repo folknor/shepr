@@ -196,7 +196,7 @@ impl TerminalState {
         if includes_tokens
             && !self.metadata_token_sequence_sources.contains(source)
             && self.metadata_token_sequence_sources.len()
-                >= crate::metadata_tokens::MAX_SEQUENCE_SOURCES
+                >= crate::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES
         {
             return Err(());
         }
@@ -770,13 +770,13 @@ mod tests {
     #[test]
     fn token_sequences_are_bounded() {
         let mut terminal = test_terminal();
-        for index in 0..=crate::metadata_tokens::MAX_SEQUENCE_SOURCES {
+        for index in 0..=crate::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES {
             assert_eq!(
                 terminal.accept_metadata_report(&format!("source-{index}"), Some(1), false, None,),
                 Ok(true)
             );
         }
-        for index in 0..crate::metadata_tokens::MAX_SEQUENCE_SOURCES {
+        for index in 0..crate::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES {
             assert_eq!(
                 terminal.accept_metadata_report(&format!("source-{index}"), Some(2), true, None,),
                 Ok(true)
@@ -784,7 +784,10 @@ mod tests {
         }
         assert_eq!(
             terminal.accept_metadata_report(
-                &format!("source-{}", crate::metadata_tokens::MAX_SEQUENCE_SOURCES),
+                &format!(
+                    "source-{}",
+                    crate::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES
+                ),
                 Some(2),
                 true,
                 None,

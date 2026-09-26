@@ -293,7 +293,6 @@ fn client_error_display_host_terminal_does_not_claim_server_connection_failed() 
 #[test]
 fn client_error_display_handshake_rejected() {
     let err = ClientError::HandshakeRejected {
-        version: crate::protocol::PROTOCOL_VERSION,
         error: "incompatible".into(),
     };
     let msg = err.to_string();

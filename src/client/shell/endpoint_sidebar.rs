@@ -139,6 +139,12 @@ pub(super) fn render_collapsed(
                 );
             }
             let stale = endpoint.status != ClientEndpointStatus::Online;
+            let glyph = status_glyph(
+                workspace.agent_status,
+                config.status_indicators,
+                palette,
+                stale,
+            );
             let number = format!(" {}", workspace.number);
             let number_width = super::render::display_width(&number).min(rect.width);
             let dim = if stale {
@@ -165,14 +171,8 @@ pub(super) fn render_collapsed(
                 rect.x.saturating_add(number_width),
                 rect.y,
                 rect.width.saturating_sub(number_width),
-                status_icon(workspace.agent_status, config.status_indicators),
-                Style::default()
-                    .fg(if stale {
-                        palette.overlay0
-                    } else {
-                        status_color(workspace.agent_status, palette)
-                    })
-                    .add_modifier(dim),
+                glyph.text,
+                glyph.style,
             );
             hits.workspaces.push(WorkspaceHit {
                 rect,
@@ -236,9 +236,8 @@ pub(super) fn render_expanded(
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
     let (workspace_area, detail_area) =
-        crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
-    hits.sidebar_section_divider =
-        crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
+        expanded_sidebar_sections(area, state.sidebar_section_split);
+    hits.sidebar_section_divider = sidebar_section_divider_rect(area, state.sidebar_section_split);
     put_text(
         buffer,
         workspace_area.x,

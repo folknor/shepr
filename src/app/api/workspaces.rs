@@ -260,7 +260,7 @@ impl App {
             return workspace_not_found(id, &params.workspace_id);
         };
         let now = std::time::Instant::now();
-        if !crate::metadata_tokens::sequence_is_fresh(
+        if !crate::terminal::metadata_tokens::sequence_is_fresh(
             &workspace.metadata_token_sequences,
             &source,
             params.seq,
@@ -280,7 +280,7 @@ impl App {
                 ),
             );
         }
-        match crate::metadata_tokens::accept_sequence(
+        match crate::terminal::metadata_tokens::accept_sequence(
             &mut workspace.metadata_token_sequences,
             &source,
             params.seq,
@@ -294,7 +294,7 @@ impl App {
                     "metadata_sequence_source_limit",
                     format!(
                         "workspace metadata may track at most {} sequenced sources",
-                        crate::metadata_tokens::MAX_SEQUENCE_SOURCES
+                        crate::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES
                     ),
                 );
             }
@@ -356,7 +356,6 @@ mod tests {
     #[tokio::test]
     async fn workspace_create_follows_focused_pane_cwd_not_first_tab_root() {
         use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
-        use crate::config::ShellModeConfig;
 
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
@@ -366,7 +365,7 @@ mod tests {
             crate::api::EventHub::default(),
         );
         app.state.default_shell = exiting_test_command().into();
-        app.state.shell_mode = ShellModeConfig::NonLogin;
+        app.state.login_shell = false;
         app.state.workspaces = vec![Workspace::test_new("spaces")];
         app.state.active = Some(0);
         app.state.selected = 0;
@@ -434,7 +433,6 @@ mod tests {
     #[tokio::test]
     async fn workspace_create_uses_explicit_source_workspace() {
         use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
-        use crate::config::ShellModeConfig;
 
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
@@ -444,7 +442,7 @@ mod tests {
             crate::api::EventHub::default(),
         );
         app.state.default_shell = exiting_test_command().into();
-        app.state.shell_mode = ShellModeConfig::NonLogin;
+        app.state.login_shell = false;
         app.state.workspaces = vec![Workspace::test_new("first"), Workspace::test_new("source")];
         app.state.active = Some(0);
         app.state.selected = 0;

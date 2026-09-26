@@ -14,7 +14,7 @@ pub(super) struct AgentRow {
     pub(super) pane_id: String,
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
-    pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    pub(super) rows: Vec<Vec<ResolvedToken>>,
 }
 
 pub(super) fn ordered_agent_pane_ids(
@@ -266,9 +266,9 @@ pub(super) fn agent_row(
         .agent
         .as_deref()
         .and_then(crate::detect::parse_agent_label);
-    let rows = crate::ui::sidebar_agent_rows(
+    let rows = sidebar_agent_rows(
         &config.agents,
-        &crate::ui::AgentTokenContext {
+        &AgentTokenContext {
             machine,
             workspace: &workspace.label,
             tab: tab_label,
@@ -313,15 +313,12 @@ pub(super) fn render_agent_row(
             .fg(palette.subtext0)
             .add_modifier(Modifier::BOLD)
     };
-    let status_style = Style::default().fg(status_color(row.status, palette));
+    let glyph = status_glyph(row.status, config.status_indicators, palette, false);
+    let status_style = glyph.style;
     let secondary = Style::default().fg(palette.overlay0);
-    let icon = (
-        status_icon(row.status, config.status_indicators),
-        Style::default().fg(status_color(row.status, palette)),
-    );
     let rows = if row.rows.is_empty() {
-        vec![vec![crate::ui::ResolvedToken {
-            kind: crate::ui::ResolvedTokenKind::StateIcon,
+        vec![vec![ResolvedToken {
+            kind: ResolvedTokenKind::StateIcon,
             style: Default::default(),
         }]]
     } else {
@@ -330,9 +327,9 @@ pub(super) fn render_agent_row(
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
         let indent = if index == 0 { 1 } else { 3 };
         let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
-        spans.extend(crate::ui::resolved_token_spans(
+        spans.extend(resolved_token_spans(
             tokens,
-            icon,
+            glyph,
             status_style,
             name_style,
             secondary,
