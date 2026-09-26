@@ -183,6 +183,7 @@ impl Tab {
         ratio: Option<f32>,
         geometry: &super::PaneGeometry,
         cwd: Option<PathBuf>,
+        default_cwd: PathBuf,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
@@ -197,6 +198,7 @@ impl Tab {
             ratio,
             geometry,
             cwd,
+            default_cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
             host_terminal_appearance,
@@ -218,6 +220,7 @@ impl Tab {
         ratio: Option<f32>,
         geometry: &super::PaneGeometry,
         cwd: Option<PathBuf>,
+        default_cwd: PathBuf,
         argv: &[String],
         launch_env: &PaneLaunchEnv,
         scrollback_limit_bytes: usize,
@@ -232,6 +235,7 @@ impl Tab {
             ratio,
             geometry,
             cwd,
+            default_cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
             host_terminal_appearance,
@@ -252,6 +256,7 @@ impl Tab {
         ratio: Option<f32>,
         geometry: &super::PaneGeometry,
         cwd: Option<PathBuf>,
+        default_cwd: PathBuf,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
@@ -273,8 +278,7 @@ impl Tab {
         let (rows, cols) = geometry
             .pane_size(&self.layout, false, new_id)
             .unwrap_or_else(|| geometry.sole_pane_size());
-        let actual_cwd =
-            cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+        let actual_cwd = cwd.unwrap_or(default_cwd);
         let launch_argv = argv.map(<[String]>::to_vec);
         let runtime = match argv {
             Some(argv) => TerminalRuntime::spawn_argv_command(

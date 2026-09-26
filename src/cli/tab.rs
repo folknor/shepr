@@ -6,30 +6,42 @@ use crate::api::schema::{TabCreateParams, TabListParams, TabRenameParams};
 
 use super::matches::{flag, required, string, values, words};
 
-pub(super) fn run_tab_command(matches: &ArgMatches) -> std::io::Result<i32> {
+pub(super) fn run_tab_command(
+    matches: &ArgMatches,
+    paths: &crate::config::AppPaths,
+) -> std::io::Result<i32> {
     match matches.subcommand() {
-        Some(("list", matches)) => super::runtime::tab_list(TabListParams {
-            workspace_id: string(matches, "workspace"),
-        }),
-        Some(("create", matches)) => match create_params(matches) {
-            Ok(params) => super::runtime::tab_create(params),
+        Some(("list", matches)) => super::runtime::tab_list(
+            paths,
+            TabListParams {
+                workspace_id: string(matches, "workspace"),
+            },
+        ),
+        Some(("create", matches)) => match create_params(matches, paths) {
+            Ok(params) => super::runtime::tab_create(paths, params),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("get", matches)) => super::runtime::tab_get(required(matches, "tab_id")),
-        Some(("focus", matches)) => super::runtime::tab_focus(required(matches, "tab_id")),
-        Some(("rename", matches)) => super::runtime::tab_rename(TabRenameParams {
-            tab_id: required(matches, "tab_id"),
-            label: words(matches, "label"),
-        }),
-        Some(("close", matches)) => super::runtime::tab_close(required(matches, "tab_id")),
+        Some(("get", matches)) => super::runtime::tab_get(paths, required(matches, "tab_id")),
+        Some(("focus", matches)) => super::runtime::tab_focus(paths, required(matches, "tab_id")),
+        Some(("rename", matches)) => super::runtime::tab_rename(
+            paths,
+            TabRenameParams {
+                tab_id: required(matches, "tab_id"),
+                label: words(matches, "label"),
+            },
+        ),
+        Some(("close", matches)) => super::runtime::tab_close(paths, required(matches, "tab_id")),
         _ => Ok(super::missing_subcommand()),
     }
 }
 
-fn create_params(matches: &ArgMatches) -> Result<TabCreateParams, String> {
+fn create_params(
+    matches: &ArgMatches,
+    paths: &crate::config::AppPaths,
+) -> Result<TabCreateParams, String> {
     Ok(TabCreateParams {
         workspace_id: string(matches, "workspace"),
-        cwd: super::matches::cwd(matches)?,
+        cwd: super::matches::cwd(matches, paths)?,
         focus: flag(matches, "focus"),
         label: string(matches, "label"),
         env: values::<(String, String)>(matches, "env")
@@ -42,21 +54,32 @@ fn create_params(matches: &ArgMatches) -> Result<TabCreateParams, String> {
 mod tests {
     use super::super::tests::command_matches;
 
+    fn test_paths() -> crate::config::AppPaths {
+        crate::config::AppPaths::test_with_context(
+            std::path::Path::new("/tmp/shepr-cli-paths"),
+            Some(std::path::Path::new("/home/me")),
+            Some(std::path::Path::new("/home/me/proj")),
+        )
+    }
+
     #[test]
     fn create_reads_every_option() {
-        let params = super::create_params(&command_matches(&[
-            "tab",
-            "create",
-            "--workspace=w2",
-            "--cwd",
-            "/srv",
-            "--label",
-            "logs",
-            "--env",
-            "A=1",
-            "--no-focus",
-            "--focus",
-        ]))
+        let params = super::create_params(
+            &command_matches(&[
+                "tab",
+                "create",
+                "--workspace=w2",
+                "--cwd",
+                "/srv",
+                "--label",
+                "logs",
+                "--env",
+                "A=1",
+                "--no-focus",
+                "--focus",
+            ]),
+            &test_paths(),
+        )
         .expect("test precondition");
         assert_eq!(params.workspace_id.as_deref(), Some("w2"));
         assert_eq!(params.cwd.as_deref(), Some("/srv"));
@@ -65,9 +88,11 @@ mod tests {
         assert_eq!(params.env.get("A").map(String::as_str), Some("1"));
 
         // A relative directory is the caller's, not the server's.
-        let params = super::create_params(&command_matches(&["tab", "create", "--cwd=."]))
-            .expect("test precondition");
-        let expected = std::env::current_dir().expect("test precondition");
-        assert_eq!(params.cwd.as_deref(), expected.to_str());
+        let params = super::create_params(
+            &command_matches(&["tab", "create", "--cwd=."]),
+            &test_paths(),
+        )
+        .expect("test precondition");
+        assert_eq!(params.cwd.as_deref(), Some("/home/me/proj"));
     }
 }

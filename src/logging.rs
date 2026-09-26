@@ -11,9 +11,9 @@ const DEFAULT_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 /// leading up to it are not lost the moment the limit is hit.
 const DEFAULT_RETAINED_LOG_FILES: usize = 1;
 
-pub(crate) fn init_file_logging(file_name: &str) {
+pub(crate) fn init_file_logging(paths: &crate::config::AppPaths, file_name: &str) {
     let Ok(make_writer) = RotatingFileMakeWriter::new(
-        &crate::session::data_dir(),
+        &crate::session::data_dir(paths),
         file_name,
         DEFAULT_MAX_LOG_BYTES,
         DEFAULT_RETAINED_LOG_FILES,
@@ -38,8 +38,8 @@ pub(crate) const SERVER_LOG_FILE: &str = "shepr-server.log";
 pub(crate) const CLIENT_LOG_FILE: &str = "shepr-client.log";
 
 /// The log files `--help` names: the only two any process writes.
-pub(crate) fn help_log_paths_summary() -> String {
-    log_paths_summary(&crate::session::data_dir())
+pub(crate) fn help_log_paths_summary(paths: &crate::config::AppPaths) -> String {
+    log_paths_summary(&crate::session::data_dir(paths))
 }
 
 fn log_paths_summary(dir: &Path) -> String {

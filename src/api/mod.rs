@@ -134,8 +134,8 @@ pub struct ApiRequestMessage {
 
 pub type ApiRequestSender = mpsc::UnboundedSender<ApiRequestMessage>;
 
-pub fn socket_path() -> PathBuf {
-    crate::session::active_api_socket_path()
+pub fn socket_path(paths: &crate::config::AppPaths) -> PathBuf {
+    crate::session::active_api_socket_path(paths)
 }
 
 #[cfg(test)]

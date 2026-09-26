@@ -88,8 +88,6 @@ pub enum AgentStatus {
     Idle,
     Working,
     Blocked,
-    Done,
-    Unknown,
 }
 
 pub(crate) fn default_true() -> bool {

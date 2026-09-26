@@ -599,11 +599,9 @@ pub(crate) fn fits_unix_socket_path(path: &Path) -> bool {
     path.as_os_str().as_bytes().len() <= UNIX_SOCKET_PATH_MAX
 }
 
-pub(crate) fn remote_ssh_config_paths() -> RemoteSshConfigPaths {
+pub(crate) fn remote_ssh_config_paths(home_dir: Option<&Path>) -> RemoteSshConfigPaths {
     RemoteSshConfigPaths {
-        user_config: std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home| home.join(".ssh").join("config")),
+        user_config: home_dir.map(|home| home.join(".ssh").join("config")),
         system_config: Some(PathBuf::from("/etc/ssh/ssh_config")),
     }
 }
@@ -746,11 +744,13 @@ pub(crate) fn shared_ssh_control_path(namespace: &Path, target: &str) -> std::io
         Err(error) => return Err(error),
     }
     validate_shared_ssh_dir(&dir)?;
-    let namespace = if namespace.is_absolute() {
-        namespace.to_owned()
-    } else {
-        std::env::current_dir()?.join(namespace)
-    };
+    if !namespace.is_absolute() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "SSH control namespace must be an absolute path",
+        ));
+    }
+    let namespace = namespace.to_owned();
     let mut hash = Sha256::new();
     hash.update(namespace.as_os_str().as_bytes());
     hash.update([0]);

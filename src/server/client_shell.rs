@@ -3,15 +3,12 @@ use ratatui::layout::Rect;
 use crate::app;
 use crate::protocol::{self, FrameData};
 
-pub(super) fn snapshot_with_completions(
+pub(super) fn snapshot(
     app: &app::App,
     boot_id: &str,
     revision: u64,
     location: Option<&crate::server::clients::ClientShellLocation>,
-) -> (
-    protocol::ClientShellSnapshot,
-    protocol::endpoint::EndpointAgentCompletions,
-) {
+) -> protocol::ClientShellSnapshot {
     snapshot_from_session(app, app.session_snapshot(), boot_id, revision, location)
 }
 
@@ -28,19 +25,7 @@ pub(super) fn snapshot_from_session(
     boot_id: &str,
     revision: u64,
     location: Option<&crate::server::clients::ClientShellLocation>,
-) -> (
-    protocol::ClientShellSnapshot,
-    protocol::endpoint::EndpointAgentCompletions,
-) {
-    let completions = protocol::endpoint::EndpointAgentCompletions {
-        boot_id: boot_id.to_owned(),
-        revision,
-        completions: snapshot
-            .agents
-            .iter()
-            .filter_map(|agent| agent.completion_seq.map(|seq| (agent.pane_id.clone(), seq)))
-            .collect(),
-    };
+) -> protocol::ClientShellSnapshot {
     let focused_workspace_id = location
         .and_then(|location| location.focused_workspace_id.clone())
         .or_else(|| snapshot.focused_workspace_id.clone());
@@ -229,7 +214,7 @@ pub(super) fn snapshot_from_session(
         })
         .collect();
 
-    let shell = protocol::ClientShellSnapshot {
+    protocol::ClientShellSnapshot {
         boot_id: boot_id.to_owned(),
         revision,
         server_keybindings_toml: app.client_shell_keybindings_profile().map(str::to_owned),
@@ -242,8 +227,7 @@ pub(super) fn snapshot_from_session(
         tabs,
         panes,
         agents,
-    };
-    (shell, completions)
+    }
 }
 
 pub(super) struct RenderedPaneSurface {
@@ -499,7 +483,7 @@ mod tests {
 
         let second_workspace_id = app.state.workspaces[1].id.clone();
         let zoomed_tab_id = app.public_tab_id(1, 0).expect("zoomed tab id");
-        let (snapshot, _) = snapshot_with_completions(&app, "boot", 1, None);
+        let snapshot = snapshot(&app, "boot", 1, None);
 
         for workspace in &snapshot.workspaces {
             assert_eq!(

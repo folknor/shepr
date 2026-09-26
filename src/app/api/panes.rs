@@ -58,6 +58,11 @@ impl App {
             let follow_cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, target_pane_id);
             Some(self.resolve_new_terminal_cwd(follow_cwd))
         });
+        let default_cwd = self
+            .paths
+            .current_dir()
+            .unwrap_or_else(|| std::path::Path::new("/"))
+            .to_path_buf();
         let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
@@ -79,6 +84,7 @@ impl App {
                 ratio,
                 &geometry,
                 split_cwd,
+                default_cwd,
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,
@@ -92,6 +98,7 @@ impl App {
                 direction,
                 &geometry,
                 split_cwd,
+                default_cwd,
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,
@@ -465,10 +472,6 @@ impl App {
         };
 
         self.state.focus_pane_in_workspace(ws_idx, pane_id);
-        // Naming a pane to bring up is an explicit acknowledgement, marked
-        // whoever is looking; `workspace focus`, `tab focus` and the other
-        // navigation paths mark only an observed tab.
-        self.state.mark_active_tab_seen();
         self.state.mode = crate::app::Mode::Terminal;
 
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
@@ -1238,7 +1241,12 @@ impl App {
                     .terminals
                     .get(&source_terminal_id)
                     .map(|terminal| terminal.cwd.clone())
-                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+                    .unwrap_or_else(|| {
+                        self.paths
+                            .current_dir()
+                            .unwrap_or_else(|| std::path::Path::new("/"))
+                            .to_path_buf()
+                    });
                 let moved_pane_id = moved.pane_id;
                 let workspace = crate::workspace::Workspace::from_existing_pane(
                     label,
@@ -1974,10 +1982,7 @@ fn normalize_state_labels(
         .into_iter()
         .map(|(status, label)| {
             let status = status.trim().to_ascii_lowercase();
-            if !matches!(
-                status.as_str(),
-                "idle" | "working" | "blocked" | "done" | "unknown"
-            ) {
+            if !matches!(status.as_str(), "idle" | "working" | "blocked") {
                 return Err(status);
             }
             Ok(normalize_presentation_text(Some(label)).map(|label| (status, label)))
@@ -4367,11 +4372,10 @@ mod tests {
     }
 
     #[test]
-    fn api_pane_focus_marks_already_focused_done_pane_seen() {
+    fn api_pane_focus_returns_idle_agent_status() {
         let mut app = app_with_workspace();
         app.state.active = Some(0);
         app.state.selected = 0;
-        app.state.outer_terminal_focus = Some(false);
 
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
@@ -4382,11 +4386,6 @@ mod tests {
             .get_mut(&terminal_id)
             .expect("test precondition")
             .state = crate::detect::AgentState::Idle;
-        app.state.workspaces[0].tabs[0]
-            .panes
-            .get_mut(&pane_id)
-            .expect("test precondition")
-            .seen = false;
         app.state.workspaces[0].tabs[0].layout.focus_pane(pane_id);
 
         let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");

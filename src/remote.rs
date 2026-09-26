@@ -11,10 +11,13 @@ pub(crate) use attach::*;
 pub(crate) use host::run_remote_client_bridge;
 pub(crate) use saved::*;
 
-pub(crate) fn run_remote_api_bridge(args: &[String]) -> std::io::Result<()> {
+pub(crate) fn run_remote_api_bridge(
+    args: &[String],
+    paths: &crate::config::AppPaths,
+) -> std::io::Result<()> {
     match args {
         [] => {
-            let path = crate::api::socket_path();
+            let path = crate::api::socket_path(paths);
             let stream = crate::ipc::connect_local_stream(&path).map_err(|error| {
                 std::io::Error::new(
                     error.kind(),

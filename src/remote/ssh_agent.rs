@@ -14,11 +14,11 @@ pub(super) struct Registration {
 }
 
 impl Registration {
-    pub(super) fn start() -> Option<Self> {
+    pub(super) fn start(paths: &crate::config::AppPaths) -> Option<Self> {
         let path = std::env::var("SSH_AUTH_SOCK")
             .ok()
             .filter(|path| !path.is_empty())?;
-        Self::start_at(path, crate::api::socket_path())
+        Self::start_at(path, crate::api::socket_path(paths))
     }
 
     fn start_at(path: String, socket_path: PathBuf) -> Option<Self> {

@@ -519,34 +519,17 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     continue;
                 };
-                let (mut candidate, mut completions) =
-                    crate::server::client_shell::snapshot_from_session(
-                        &self.app,
-                        session,
-                        &self.client_shell_boot_id,
-                        client.shell_projection_revision,
-                        client.shell_location.as_ref(),
-                    );
-                if client.shell_snapshot.as_ref() != Some(&candidate)
-                    || client.shell_agent_completions.as_ref() != Some(&completions)
-                {
+                let mut candidate = crate::server::client_shell::snapshot_from_session(
+                    &self.app,
+                    session,
+                    &self.client_shell_boot_id,
+                    client.shell_projection_revision,
+                    client.shell_location.as_ref(),
+                );
+                if client.shell_snapshot.as_ref() != Some(&candidate) {
                     client.shell_projection_revision =
                         client.shell_projection_revision.saturating_add(1);
                     candidate.revision = client.shell_projection_revision;
-                    completions.revision = candidate.revision;
-                    let completion_framed =
-                        match crate::protocol::endpoint::agent_completions_message(&completions)
-                            .map_err(std::io::Error::other)
-                            .and_then(|message| {
-                                Self::frame_server_message(&message).map_err(std::io::Error::other)
-                            }) {
-                            Ok(message) => message,
-                            Err(err) => {
-                                warn!(client_id, err = %err, "failed to frame agent completions");
-                                broken_clients.push(client_id);
-                                continue;
-                            }
-                        };
                     let snapshot_message =
                         match crate::protocol::endpoint::snapshot_message(&candidate) {
                             Ok(message) => message,
@@ -568,14 +551,11 @@ impl HeadlessServer {
                         broken_clients.push(client_id);
                         continue;
                     };
-                    if writer.control.send(completion_framed).is_err()
-                        || writer.control.send(snapshot_framed).is_err()
-                    {
+                    if writer.control.send(snapshot_framed).is_err() {
                         broken_clients.push(client_id);
                         continue;
                     }
                     client.shell_snapshot = Some(candidate);
-                    client.shell_agent_completions = Some(completions);
                 }
                 shell_projection_revision = client.shell_projection_revision;
                 if !client.shell_surface_active {

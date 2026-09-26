@@ -261,7 +261,7 @@ pub(super) fn agent_row(
     let state_text = labels
         .get(status_text(agent.agent_status))
         .map(String::as_str)
-        .unwrap_or_else(|| sidebar_status_text(agent.agent_status));
+        .unwrap_or_else(|| status_text(agent.agent_status));
     let canonical_agent = agent
         .agent
         .as_deref()
@@ -356,10 +356,39 @@ pub(super) fn render_agent_row(
 }
 
 fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Style) {
-    for (offset, character) in text.chars().take(width as usize).enumerate() {
-        if let Some(cell) = buffer.cell_mut((x + u16::try_from(offset).unwrap_or(u16::MAX), y)) {
-            cell.set_char(character).set_style(style);
+    let mut offset = 0usize;
+    // The cell holding the last drawn character, so zero-width characters
+    // (combining marks, variation selectors) join its grapheme.
+    let mut last_column = None;
+    for character in text.chars() {
+        // Control characters have no width and draw nothing.
+        let Some(char_width) = unicode_width::UnicodeWidthChar::width(character) else {
+            continue;
+        };
+        if char_width == 0 {
+            if let Some(cell) = last_column.and_then(|column| buffer.cell_mut((column, y))) {
+                let mut symbol = cell.symbol().to_owned();
+                symbol.push(character);
+                cell.set_symbol(&symbol);
+            }
+            continue;
         }
+        if offset.saturating_add(char_width) > usize::from(width) {
+            break;
+        }
+        let Ok(column_offset) = u16::try_from(offset) else {
+            break;
+        };
+        let Some(column) = x.checked_add(column_offset) else {
+            break;
+        };
+        if let Some(cell) = buffer.cell_mut((column, y)) {
+            cell.set_char(character).set_style(style);
+            last_column = Some(column);
+        } else {
+            last_column = None;
+        }
+        offset = offset.saturating_add(char_width);
     }
 }
 
@@ -367,12 +396,45 @@ fn display_width(text: &str) -> usize {
     unicode_width::UnicodeWidthStr::width(text)
 }
 
-fn sidebar_status_text(status: crate::api::schema::AgentStatus) -> &'static str {
-    use crate::api::schema::AgentStatus;
-    match status {
-        AgentStatus::Blocked => "blocked",
-        AgentStatus::Done => "done",
-        AgentStatus::Working => "working",
-        AgentStatus::Idle | AgentStatus::Unknown => "idle",
+#[cfg(test)]
+mod tests {
+    use super::put_text;
+    use ratatui::{buffer::Buffer, layout::Rect, style::Style};
+
+    #[test]
+    fn put_text_advances_by_display_width_and_clips_wide_characters() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 5, 1));
+
+        put_text(&mut buffer, 0, 0, 4, "界ab", Style::default());
+
+        assert_eq!(buffer[(0, 0)].symbol(), "界");
+        assert_eq!(buffer[(2, 0)].symbol(), "a");
+        assert_eq!(buffer[(3, 0)].symbol(), "b");
+        assert_eq!(buffer[(4, 0)].symbol(), " ");
+
+        let mut narrow = Buffer::empty(Rect::new(0, 0, 3, 1));
+        put_text(&mut narrow, 0, 0, 2, "界x", Style::default());
+        assert_eq!(narrow[(0, 0)].symbol(), "界");
+        assert_eq!(narrow[(2, 0)].symbol(), " ");
+    }
+
+    #[test]
+    fn put_text_attaches_combining_marks_to_the_previous_cell() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 1));
+
+        // "e" + COMBINING ACUTE ACCENT, then "x"; a leading mark has no cell
+        // to join and is dropped, as is a control character.
+        put_text(
+            &mut buffer,
+            0,
+            0,
+            4,
+            "\u{301}e\u{301}\u{7}x",
+            Style::default(),
+        );
+
+        assert_eq!(buffer[(0, 0)].symbol(), "e\u{301}");
+        assert_eq!(buffer[(1, 0)].symbol(), "x");
+        assert_eq!(buffer[(2, 0)].symbol(), " ");
     }
 }

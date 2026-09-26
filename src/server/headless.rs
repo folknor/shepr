@@ -41,8 +41,7 @@ use crate::ipc::{
 use crate::protocol::{self, AttachScrollDirection, AttachScrollSource, FrameData, ServerMessage};
 use crate::server::client_accept::accept_pending_client_connections;
 use crate::server::client_shell::{
-    render_pane_surface as render_client_shell_pane_surface,
-    snapshot_with_completions as client_shell_snapshot,
+    render_pane_surface as render_client_shell_pane_surface, snapshot as client_shell_snapshot,
 };
 use crate::server::client_transport::ServerEvent;
 use crate::server::clients::{
@@ -253,7 +252,7 @@ impl HeadlessServer {
         api_server: Option<api::ServerHandle>,
         should_quit: Arc<AtomicBool>,
     ) -> io::Result<Self> {
-        let client_path = client_socket_path();
+        let client_path = client_socket_path(&app.paths);
         prepare_socket_path(&client_path)?;
 
         let listener = bind_owner_only_listener(&client_path)?;
@@ -627,7 +626,6 @@ impl HeadlessServer {
         let Some(client_id) = self.foreground_client_id else {
             self.effective_size = self.headless_size;
             self.app.state.outer_terminal_focus = None;
-            self.app.state.tab_viewer = crate::app::state::TabViewer::Nobody;
             self.app.state.host_cell_size = crate::terminal_cell_size::HostCellSize::default();
             self.sync_runtime_view_geometry();
             return;
@@ -636,7 +634,6 @@ impl HeadlessServer {
             self.foreground_client_id = None;
             self.effective_size = self.headless_size;
             self.app.state.outer_terminal_focus = None;
-            self.app.state.tab_viewer = crate::app::state::TabViewer::Nobody;
             self.app.state.host_cell_size = crate::terminal_cell_size::HostCellSize::default();
             self.sync_runtime_view_geometry();
             return;
@@ -663,69 +660,21 @@ impl HeadlessServer {
         self.app.set_host_terminal_theme(host_terminal_theme);
     }
 
-    /// Mirrors the foreground client's outer-terminal focus into `AppState`
-    /// and, while that terminal is focused, marks the tab the client is
-    /// looking at as seen.
-    ///
-    /// The tab is the foreground client's own `shell_location` tab, not the
-    /// global `app.state.active` one. With several clients, endpoint requests
-    /// from one client move `app.state.active` (see
-    /// `set_default_shell_target_from_client`) while another is the focused
-    /// foreground; marking the global active tab let the focused client clear
-    /// "done" markers on a tab only the other client had open.
+    /// Mirrors the foreground client's outer-terminal focus into `AppState`.
     ///
     /// This is all agent state and hook reports need before they are applied:
     /// they change neither client geometry nor layout, so they do not rerun
     /// `compute_view_without_resizing_panes` through the full
     /// `sync_foreground_client_state`.
     fn sync_foreground_focus_state(&mut self) {
-        let foreground = self
+        let Some(client) = self
             .foreground_client_id
-            .and_then(|client_id| Some((client_id, self.clients.get(&client_id)?)));
-        let Some((client_id, client)) = foreground else {
+            .and_then(|client_id| self.clients.get(&client_id))
+        else {
             self.app.state.outer_terminal_focus = None;
-            self.app.state.tab_viewer = crate::app::state::TabViewer::Nobody;
             return;
         };
-        let outer_terminal_focus = client.outer_terminal_focus;
-        self.app.state.outer_terminal_focus = outer_terminal_focus;
-        self.app.state.tab_viewer = self
-            .shell_target_for_client(client_id)
-            .and_then(|target| {
-                let workspace = self.app.state.workspaces.get(target.workspace_index)?;
-                let tab = workspace.tabs.get(target.tab_index)?;
-                Some(crate::app::state::TabViewer::Tab {
-                    workspace_id: workspace.id.clone(),
-                    tab_number: tab.number,
-                })
-            })
-            .unwrap_or(crate::app::state::TabViewer::Nobody);
-        if outer_terminal_focus == Some(true) {
-            self.mark_client_shell_tab_seen(client_id);
-        }
-    }
-
-    fn mark_client_shell_tab_seen(&mut self, client_id: u64) -> bool {
-        let Some(target) = self.shell_target_for_client(client_id) else {
-            return false;
-        };
-        let Some(tab) = self
-            .app
-            .state
-            .workspaces
-            .get_mut(target.workspace_index)
-            .and_then(|workspace| workspace.tabs.get_mut(target.tab_index))
-        else {
-            return false;
-        };
-        let mut changed = false;
-        for pane in tab.panes.values_mut() {
-            if !pane.seen {
-                pane.seen = true;
-                changed = true;
-            }
-        }
-        changed
+        self.app.state.outer_terminal_focus = client.outer_terminal_focus;
     }
 
     fn promote_client_to_foreground(&mut self, client_id: u64) -> bool {
@@ -1478,7 +1427,7 @@ impl HeadlessServer {
                 connection.shell_mouse_capture = mouse_capture;
                 connection.shell_surface_active = surface_active;
                 connection.shell_projection_revision = 1;
-                let (seed_snapshot, completion_projection) = client_shell_snapshot(
+                let seed_snapshot = client_shell_snapshot(
                     &self.app,
                     &self.client_shell_boot_id,
                     connection.shell_projection_revision,
@@ -1494,20 +1443,9 @@ impl HeadlessServer {
                             return false;
                         }
                     };
-                let completion_message = match crate::protocol::endpoint::agent_completions_message(
-                    &completion_projection,
-                ) {
-                    Ok(message) => message,
-                    Err(err) => {
-                        warn!(client_id, err = %err, "failed to encode agent completions");
-                        return false;
-                    }
-                };
                 connection.shell_location = Some(location);
                 connection.shell_snapshot = Some(seed_snapshot);
-                connection.shell_agent_completions = Some(completion_projection);
                 self.clients.insert(client_id, connection);
-                self.send_to_client(client_id, &completion_message);
                 self.send_to_client(client_id, &snapshot_message);
                 if surface_active {
                     self.foreground_client_id = Some(client_id);

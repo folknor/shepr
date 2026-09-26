@@ -78,17 +78,27 @@ pub(super) fn metadata_tokens(
 /// (after expanding a leading `~`). With `--machine` the path names a
 /// directory on that machine, which the local directory says nothing about,
 /// so it must already be absolute.
-pub(super) fn cwd(matches: &ArgMatches) -> Result<Option<String>, String> {
+pub(super) fn cwd(
+    matches: &ArgMatches,
+    paths: &crate::config::AppPaths,
+) -> Result<Option<String>, String> {
     let Some(raw) = string(matches, "cwd") else {
         return Ok(None);
     };
-    resolve_cwd(&raw, super::target::is_remote(), std::env::current_dir).map(Some)
+    resolve_cwd(
+        &raw,
+        super::target::is_remote(),
+        paths.home_dir(),
+        paths.current_dir(),
+    )
+    .map(Some)
 }
 
 fn resolve_cwd(
     raw: &str,
     remote: bool,
-    caller_dir: impl FnOnce() -> std::io::Result<std::path::PathBuf>,
+    home_dir: Option<&std::path::Path>,
+    caller_dir: Option<&std::path::Path>,
 ) -> Result<String, String> {
     let path = std::path::Path::new(raw);
     if path.is_absolute() {
@@ -99,13 +109,14 @@ fn resolve_cwd(
             "--cwd {raw}: with --machine the directory must be an absolute path on that machine"
         ));
     }
-    let expanded =
-        crate::pathutil::expand_tilde_path(raw).map_err(|err| format!("--cwd {raw}: {err}"))?;
+    let expanded = crate::pathutil::expand_tilde_path_with_home(raw, home_dir)
+        .map_err(|err| format!("--cwd {raw}: {err}"))?;
     let absolute = if expanded.is_absolute() {
         expanded
     } else {
-        let base = caller_dir()
-            .map_err(|err| format!("--cwd {raw}: cannot read the current directory: {err}"))?;
+        let base = caller_dir.ok_or_else(|| {
+            format!("--cwd {raw}: cannot read the current directory: unavailable")
+        })?;
         base.join(expanded)
     };
     // `components()` drops `.` segments and repeated separators; `..` stays,
@@ -127,42 +138,50 @@ pub(super) fn report_source(matches: &ArgMatches) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::resolve_cwd;
+    use std::path::Path;
 
-    fn caller() -> std::io::Result<std::path::PathBuf> {
-        Ok("/home/me/proj".into())
+    fn caller() -> &'static Path {
+        Path::new("/home/me/proj")
+    }
+
+    fn home() -> &'static Path {
+        Path::new("/home/me")
     }
 
     #[test]
     fn cwd_absolute_paths_pass_through_unchanged() {
-        assert_eq!(resolve_cwd("/srv", false, caller).as_deref(), Ok("/srv"));
-        assert_eq!(resolve_cwd("/srv", true, caller).as_deref(), Ok("/srv"));
+        assert_eq!(
+            resolve_cwd("/srv", false, None, None).as_deref(),
+            Ok("/srv")
+        );
+        assert_eq!(resolve_cwd("/srv", true, None, None).as_deref(), Ok("/srv"));
     }
 
     #[test]
     fn cwd_relative_paths_resolve_against_the_caller() {
         assert_eq!(
-            resolve_cwd(".", false, caller).as_deref(),
+            resolve_cwd(".", false, Some(home()), Some(caller())).as_deref(),
             Ok("/home/me/proj")
         );
         assert_eq!(
-            resolve_cwd("./sub//dir/", false, caller).as_deref(),
+            resolve_cwd("./sub//dir/", false, Some(home()), Some(caller())).as_deref(),
             Ok("/home/me/proj/sub/dir")
         );
         assert_eq!(
-            resolve_cwd("../other", false, caller).as_deref(),
+            resolve_cwd("../other", false, Some(home()), Some(caller())).as_deref(),
             Ok("/home/me/proj/../other")
         );
-        assert!(
-            resolve_cwd("sub", false, || Err(std::io::Error::from(
-                std::io::ErrorKind::NotFound
-            )))
-            .is_err()
+        assert!(resolve_cwd("sub", false, Some(home()), None).is_err());
+
+        assert_eq!(
+            resolve_cwd("~/sub", false, Some(home()), Some(caller())).as_deref(),
+            Ok("/home/me/sub")
         );
     }
 
     #[test]
     fn cwd_relative_paths_are_rejected_for_a_remote_machine() {
-        assert!(resolve_cwd(".", true, caller).is_err());
-        assert!(resolve_cwd("~/proj", true, caller).is_err());
+        assert!(resolve_cwd(".", true, Some(home()), Some(caller())).is_err());
+        assert!(resolve_cwd("~/proj", true, Some(home()), Some(caller())).is_err());
     }
 }

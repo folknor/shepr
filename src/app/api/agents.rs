@@ -868,9 +868,8 @@ mod tests {
     }
 
     #[test]
-    fn agent_focus_marks_already_focused_done_agent_seen() {
+    fn agent_focus_returns_idle_agent_status() {
         let mut app = app_with_agent();
-        app.state.outer_terminal_focus = Some(false);
 
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
@@ -881,11 +880,6 @@ mod tests {
             .get_mut(&terminal_id)
             .expect("test precondition")
             .set_detected_state(Some(Agent::Pi), AgentState::Idle);
-        app.state.workspaces[0].tabs[0]
-            .panes
-            .get_mut(&pane_id)
-            .expect("test precondition")
-            .seen = false;
         app.state.workspaces[0].tabs[0].layout.focus_pane(pane_id);
 
         let response = app.handle_agent_focus(

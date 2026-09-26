@@ -520,7 +520,9 @@ fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
         .join("\n");
     assert!(text.contains("Local"));
     assert!(text.contains("Build"));
-    assert!(text.contains("remote-workspace"));
+    // The server's workspace number takes the leading column, so the name is
+    // clipped at this sidebar width.
+    assert!(text.contains("1  ○ remote-workspa"), "{text}");
     let local = state
         .hits
         .machines
@@ -562,6 +564,41 @@ fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
     let buffer = frame.to_ratatui_buffer().expect("frame should reconstruct");
     assert_ne!(buffer[(local.right() - 1, local.y)].symbol(), "●");
     assert_eq!(buffer[(remote.right() - 1, remote.y)].symbol(), "●");
+}
+
+#[test]
+fn local_and_ssh_sidebars_show_server_workspace_numbers() {
+    let (mut state, endpoint_id) = state_with_remote();
+    let mut local = state.snapshot.as_deref().expect("local snapshot").clone();
+    local.workspaces[0].number = 17;
+    state.set_snapshot(Box::new(local));
+
+    let mut remote = state
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.endpoint_id == endpoint_id)
+        .and_then(|endpoint| endpoint.snapshot.as_deref())
+        .expect("remote snapshot")
+        .clone();
+    remote.workspaces[0].number = 42;
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+
+    for collapsed in [false, true] {
+        state.sidebar_collapsed = collapsed;
+        let frame = state.compose(100, 28).expect("workspace sidebar");
+        let text = frame
+            .cells
+            .chunks(frame.width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("17"), "local server workspace number: {text}");
+        assert!(text.contains("42"), "SSH server workspace number: {text}");
+    }
 }
 
 #[test]
@@ -925,7 +962,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
 }
 
 #[test]
-fn unselected_endpoint_completion_projects_done_client_side() {
+fn unselected_endpoint_snapshot_keeps_server_idle_status() {
     use crate::api::schema::AgentStatus;
 
     let (mut state, endpoint_id) = state_with_remote();
@@ -945,7 +982,7 @@ fn unselected_endpoint_completion_projects_done_client_side() {
         .and_then(|endpoint| endpoint.snapshot.as_deref())
         .and_then(|snapshot| snapshot.agents.first())
         .map(|agent| agent.agent_status);
-    assert_eq!(status, Some(AgentStatus::Done));
+    assert_eq!(status, Some(AgentStatus::Idle));
     assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
 }
 
@@ -1231,13 +1268,13 @@ fn new_connection_generation_accepts_a_lower_same_boot_projection_revision() {
     previous.boot_id = "shared-server-boot".into();
     previous.revision = 9;
     previous.workspaces[0].label = "old connection".into();
-    state.cache_endpoint_snapshot_inactive_for_generation(&endpoint_id, 4, Box::new(previous));
+    state.cache_endpoint_snapshot_for_generation(&endpoint_id, 4, Box::new(previous));
     let mut reconnected = snapshot();
     reconnected.boot_id = "shared-server-boot".into();
     reconnected.revision = 1;
     reconnected.workspaces[0].label = "new connection".into();
 
-    state.cache_endpoint_snapshot_inactive_for_generation(&endpoint_id, 5, Box::new(reconnected));
+    state.cache_endpoint_snapshot_for_generation(&endpoint_id, 5, Box::new(reconnected));
 
     let endpoint = state
         .endpoints
@@ -1271,7 +1308,7 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         let mut previous = snapshot();
         previous.boot_id = "shared-server-boot".into();
         previous.revision = previous_revision;
-        state.cache_endpoint_snapshot_inactive_for_generation(&endpoint_id, 4, Box::new(previous));
+        state.cache_endpoint_snapshot_for_generation(&endpoint_id, 4, Box::new(previous));
         assert!(state.activate_endpoint_projection(&endpoint_id));
         let mut previous_surface = surface();
         previous_surface.boot_id = "shared-server-boot".into();
@@ -1287,11 +1324,7 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         let mut reconnected = snapshot();
         reconnected.boot_id = "shared-server-boot".into();
         reconnected.revision = 1;
-        state.cache_endpoint_snapshot_inactive_for_generation(
-            &endpoint_id,
-            5,
-            Box::new(reconnected),
-        );
+        state.cache_endpoint_snapshot_for_generation(&endpoint_id, 5, Box::new(reconnected));
         assert_eq!(
             state.snapshot.as_ref().expect("test precondition").revision,
             previous_revision

@@ -438,6 +438,7 @@ pub(super) fn render_expanded(
                 super::sidebar::render_workspace_rows(
                     buffer,
                     nested,
+                    workspace.number,
                     status,
                     config.status_indicators,
                     &tokens,

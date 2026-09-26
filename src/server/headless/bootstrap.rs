@@ -1,7 +1,7 @@
 use super::*;
 
 /// Run the headless server. This is the entry point called from main.rs.
-pub fn run_server(config: &config::Config) -> io::Result<()> {
+pub fn run_server(config: &config::Config, paths: &config::AppPaths) -> io::Result<()> {
     // Consume the startup-cwd hint before anything below starts a thread: the
     // API server thread, the tokio workers and session restore all run
     // concurrently afterwards, and unsetting a variable while another thread
@@ -9,12 +9,13 @@ pub fn run_server(config: &config::Config) -> io::Result<()> {
     // function without having spawned any thread; keep it that way.
     let startup_cwd = take_startup_cwd();
 
-    if let Err(err) = crate::persist::lock::claim(&crate::session::data_dir()) {
+    let session_data_dir = crate::session::data_dir(paths);
+    if let Err(err) = crate::persist::lock::claim(&session_data_dir) {
         eprintln!("error: cannot claim shepr session directory: {err}");
         std::process::exit(1);
     }
 
-    crate::logging::init_file_logging(crate::logging::SERVER_LOG_FILE);
+    crate::logging::init_file_logging(paths, crate::logging::SERVER_LOG_FILE);
 
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let event_hub = api::EventHub::default();
@@ -25,11 +26,12 @@ pub fn run_server(config: &config::Config) -> io::Result<()> {
         api_tx.clone(),
         event_hub.clone(),
         Arc::clone(&should_quit),
+        paths,
     ) {
         Ok(server) => server,
         Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
             eprintln!("error: shepr server is already running");
-            eprintln!("api socket: {}", api::socket_path().display());
+            eprintln!("api socket: {}", api::socket_path(paths).display());
             std::process::exit(1);
         }
         Err(err) => return Err(err),
@@ -42,7 +44,8 @@ pub fn run_server(config: &config::Config) -> io::Result<()> {
 
     let result = rt.block_on(async {
         // Create the App (with AppState, event channels, etc.).
-        let mut app = app::App::new(config, app::AppPolicy::PRODUCTION, api_rx, event_hub);
+        let mut app =
+            app::App::with_paths(config, paths, app::AppPolicy::PRODUCTION, api_rx, event_hub);
         seed_startup_workspace_if_empty(&mut app, startup_cwd);
 
         // Create the headless server.
@@ -50,18 +53,22 @@ pub fn run_server(config: &config::Config) -> io::Result<()> {
             Ok(server) => server,
             Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
                 eprintln!("error: shepr server is already running");
-                eprintln!("client socket: {}", client_socket_path().display());
+                eprintln!("client socket: {}", client_socket_path(paths).display());
                 std::process::exit(1);
             }
             Err(err) => return Err(err),
         };
 
         info!(
-            api_socket = %api::socket_path().display(),
-            client_socket = %client_socket_path().display(),
+            api_socket = %api::socket_path(paths).display(),
+            client_socket = %client_socket_path(paths).display(),
             "shepr server started"
         );
-        print_ready_message(&api::socket_path(), &client_socket_path());
+        print_ready_message(
+            &api::socket_path(paths),
+            &client_socket_path(paths),
+            &session_data_dir,
+        );
 
         server.run().await
     });
@@ -113,13 +120,13 @@ fn startup_cwd_from_env_value(value: std::ffi::OsString) -> Option<PathBuf> {
     (!value.is_empty()).then(|| PathBuf::from(value))
 }
 
-fn print_ready_message(api_socket: &Path, client_socket: &Path) {
+fn print_ready_message(api_socket: &Path, client_socket: &Path, session_data_dir: &Path) {
     eprintln!("shepr server running; you can use any shepr CLI command in another terminal.");
     eprintln!("api socket: {}", api_socket.display());
     eprintln!("client socket: {}", client_socket.display());
     eprintln!(
         "logs: {}",
-        crate::session::data_dir()
+        session_data_dir
             .join(crate::logging::SERVER_LOG_FILE)
             .display()
     );

@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use tracing::warn;
 
 pub const THEME_NAMES: &[&str] = &[
     "catppuccin",
@@ -85,7 +84,7 @@ impl ThemeConfig {
     }
 }
 
-/// Diagnostic for a configured colour value that `parse_color` cannot read,
+/// Diagnostic for a configured colour value that `try_parse_color` cannot read,
 /// or `None` when the value is valid.
 pub(crate) fn color_diagnostic(field: &str, value: &str) -> Option<String> {
     try_parse_color(value).is_none().then(|| {
@@ -145,15 +144,105 @@ impl CustomThemeColors {
             ("theme.custom.peach", self.peach.as_deref()),
         ]
     }
+
+    pub(crate) fn parse(&self) -> Result<ParsedThemeColors, Vec<String>> {
+        macro_rules! color {
+            ($field:ident) => {
+                parse_configured_color(
+                    concat!("theme.custom.", stringify!($field)),
+                    self.$field.as_deref(),
+                )?
+            };
+        }
+
+        Ok(ParsedThemeColors {
+            accent: color!(accent),
+            panel_bg: color!(panel_bg),
+            sidebar_bg: color!(sidebar_bg),
+            active_row_bg: color!(active_row_bg),
+            selection_bg: color!(selection_bg),
+            surface0: color!(surface0),
+            surface1: color!(surface1),
+            surface_dim: color!(surface_dim),
+            overlay0: color!(overlay0),
+            overlay1: color!(overlay1),
+            text: color!(text),
+            subtext0: color!(subtext0),
+            mauve: color!(mauve),
+            green: color!(green),
+            yellow: color!(yellow),
+            red: color!(red),
+            blue: color!(blue),
+            teal: color!(teal),
+            peach: color!(peach),
+        })
+    }
 }
 
-/// Parse a color string into a ratatui Color. Config loading validates color
-/// strings before they can reach a launched app.
-pub fn parse_color(s: &str) -> ratatui::style::Color {
-    try_parse_color(s).unwrap_or_else(|| {
-        warn!(color = s, "unknown color, defaulting to cyan");
-        ratatui::style::Color::Cyan
+#[derive(Debug, Default)]
+pub(crate) struct ParsedThemeColors {
+    pub(crate) accent: Option<ratatui::style::Color>,
+    pub(crate) panel_bg: Option<ratatui::style::Color>,
+    pub(crate) sidebar_bg: Option<ratatui::style::Color>,
+    pub(crate) active_row_bg: Option<ratatui::style::Color>,
+    pub(crate) selection_bg: Option<ratatui::style::Color>,
+    pub(crate) surface0: Option<ratatui::style::Color>,
+    pub(crate) surface1: Option<ratatui::style::Color>,
+    pub(crate) surface_dim: Option<ratatui::style::Color>,
+    pub(crate) overlay0: Option<ratatui::style::Color>,
+    pub(crate) overlay1: Option<ratatui::style::Color>,
+    pub(crate) text: Option<ratatui::style::Color>,
+    pub(crate) subtext0: Option<ratatui::style::Color>,
+    pub(crate) mauve: Option<ratatui::style::Color>,
+    pub(crate) green: Option<ratatui::style::Color>,
+    pub(crate) yellow: Option<ratatui::style::Color>,
+    pub(crate) red: Option<ratatui::style::Color>,
+    pub(crate) blue: Option<ratatui::style::Color>,
+    pub(crate) teal: Option<ratatui::style::Color>,
+    pub(crate) peach: Option<ratatui::style::Color>,
+}
+
+fn parse_configured_color(
+    field: &str,
+    value: Option<&str>,
+) -> Result<Option<ratatui::style::Color>, Vec<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    try_parse_color(value).map(Some).ok_or_else(|| {
+        vec![format!(
+            "invalid color {field} = {value:?}; expected #rrggbb, #rgb, rgb(r, g, b), a color name, or reset"
+        )]
     })
+}
+
+pub(crate) fn resolve_palette(
+    config: &super::Config,
+) -> Result<crate::app::state::Palette, Vec<String>> {
+    let name = config.theme.name.as_deref().unwrap_or("catppuccin");
+    let canonical = canonical_theme_name(name).ok_or_else(|| {
+        vec![format!(
+            "unknown theme name theme.name = {name:?}; valid themes: {}",
+            THEME_NAMES.join(", ")
+        )]
+    })?;
+    let mut palette = crate::app::state::Palette::from_name(canonical)
+        .ok_or_else(|| vec![format!("theme {canonical:?} has no built-in palette")])?;
+    if let Some(custom) = &config.theme.custom {
+        let overrides = custom.parse()?;
+        palette = palette.with_overrides(&overrides);
+    }
+    let custom_accent = config
+        .theme
+        .custom
+        .as_ref()
+        .is_some_and(|custom| custom.accent.is_some());
+    if !custom_accent && config.ui.is_user_configured("accent") {
+        let accent = parse_configured_color("ui.accent", Some(config.ui.accent.as_str()))?
+            .ok_or_else(|| vec!["ui.accent was marked configured without a value".to_owned()])?;
+        palette.accent = accent;
+    }
+    Ok(palette)
 }
 
 /// Parse a color string into a ratatui Color, or `None` if it is not one.
@@ -268,7 +357,7 @@ name = "catppucin"
         use ratatui::style::Color;
 
         for value in ["reset", "default", "none", "transparent"] {
-            assert_eq!(parse_color(value), Color::Reset, "value: {value}");
+            assert_eq!(try_parse_color(value), Some(Color::Reset), "value: {value}");
         }
     }
 
@@ -307,13 +396,10 @@ red = "rgb(255, 85, 85)"
 
     #[test]
     fn parse_color_rejects_non_ascii_hex_without_panicking() {
-        use ratatui::style::Color;
-
         // Six and three bytes long, but not six or three hex digits: slicing
         // by byte offset would split a multi-byte character.
         for value in ["#aééb", "#é\u{1}", "#ab€", "#+f+f+f", "#+ff"] {
             assert_eq!(try_parse_color(value), None, "value: {value:?}");
-            assert_eq!(parse_color(value), Color::Cyan, "value: {value:?}");
         }
     }
 

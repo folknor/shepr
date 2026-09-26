@@ -264,7 +264,7 @@ const DEFAULT_CONFIG: &str = r##"# shepr configuration
 # Once set, this value wins at every launch.
 
 # Agent status indicators: "dots" preserves the compact color marks; "symbols" uses
-# distinct static glyphs for blocked, working, done, idle, and unknown states.
+# distinct static glyphs for Working, Blocked and Idle states.
 # status_indicators = "dots"
 
 # Accent color for highlights, borders, and navigation UI. Unset uses the theme accent.
@@ -473,25 +473,37 @@ fn main() -> io::Result<()> {
     // the headless server, or (below) the TUI.
     match invocation.command_name() {
         Some("remote-api-bridge") => {
-            return remote::run_remote_api_bridge(&invocation.bridge_args());
+            let paths = config::AppPaths::resolve().map_err(|errors| {
+                io::Error::other(format!(
+                    "application paths could not be resolved: {}",
+                    errors.join("; ")
+                ))
+            })?;
+            return remote::run_remote_api_bridge(&invocation.bridge_args(), &paths);
         }
         Some("remote-client-bridge") => {
-            return remote::run_remote_client_bridge(&invocation.bridge_args());
+            let paths = config::AppPaths::resolve().map_err(|errors| {
+                io::Error::other(format!(
+                    "application paths could not be resolved: {}",
+                    errors.join("; ")
+                ))
+            })?;
+            return remote::run_remote_client_bridge(&invocation.bridge_args(), &paths);
         }
         _ => {}
     }
 
-    let loaded_config = load_validated_config_or_exit();
+    let (loaded_config, paths) = load_validated_config_or_exit();
 
     // `server` with a subcommand was handled by `cli::run`.
     if invocation.command_name() == Some("server") {
-        return server::headless::run_server(&loaded_config);
+        return server::headless::run_server(&loaded_config, &paths);
     }
 
     // Hidden client mode: connect to an existing server's client socket.
     if invocation.command_name() == Some("client") {
         exit_if_nested_disabled(&loaded_config);
-        return client::run_client(&loaded_config);
+        return client::run_client(&loaded_config, &paths);
     }
 
     if let Some(remote_launch) = remote_launch {
@@ -499,7 +511,7 @@ fn main() -> io::Result<()> {
         let ssh_settings = remote::SavedSshSettings {
             manage_ssh_config: loaded_config.remote.manage_ssh_config,
         };
-        if let Err(err) = remote::run_remote(remote_launch, ssh_settings) {
+        if let Err(err) = remote::run_remote(remote_launch, ssh_settings, &paths) {
             eprintln!("error: {err}");
             remote::print_remote_error_hint(&err, &remote_target);
             std::process::exit(1);
@@ -510,17 +522,29 @@ fn main() -> io::Result<()> {
     exit_if_nested_disabled(&loaded_config);
 
     let saved_federation =
-        client::endpoint::EndpointCatalog::load().is_ok_and(|catalog| catalog.has_ssh());
-    if let Err(err) = server::autodetect::auto_detect_launch(saved_federation, &loaded_config) {
+        client::endpoint::EndpointCatalog::load(&paths).is_ok_and(|catalog| catalog.has_ssh());
+    if let Err(err) =
+        server::autodetect::auto_detect_launch(saved_federation, &loaded_config, &paths)
+    {
         eprintln!("shepr: {err}");
         std::process::exit(1);
     }
     Ok(())
 }
 
-fn load_validated_config_or_exit() -> config::Config {
-    match config::Config::load_validated() {
-        Ok(config) => config,
+fn load_validated_config_or_exit() -> (config::Config, config::AppPaths) {
+    let paths = match config::AppPaths::resolve() {
+        Ok(paths) => paths,
+        Err(diagnostics) => {
+            eprintln!("shepr: configuration error:");
+            for diagnostic in diagnostics {
+                eprintln!("  {diagnostic}");
+            }
+            std::process::exit(1);
+        }
+    };
+    match config::Config::load_validated(&paths) {
+        Ok(config) => (config, paths),
         Err(diagnostics) => {
             eprintln!("shepr: configuration error:");
             for diagnostic in diagnostics {
@@ -609,11 +633,16 @@ fn print_help() {
     println!("  --version, -V       Print version and exit");
     println!("  --help, -h          Show this help");
     println!();
-    match config::try_config_path() {
-        Ok(path) => println!("Config: {}", path.display()),
-        Err(err) => println!("Config: unavailable ({err})"),
+    match config::AppPaths::resolve() {
+        Ok(paths) => {
+            println!("Config: {}", paths.config_file().display());
+            println!("Logs:   {}", logging::help_log_paths_summary(&paths));
+        }
+        Err(errors) => {
+            println!("Config: unavailable ({})", errors.join("; "));
+            println!("Logs:   unavailable ({})", errors.join("; "));
+        }
     }
-    println!("Logs:   {}", logging::help_log_paths_summary());
     println!("Env:    SHEPR_CONFIG_PATH overrides config file path");
 }
 

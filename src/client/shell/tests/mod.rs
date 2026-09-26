@@ -154,7 +154,7 @@ fn pane_scroll_result(
             terminal_title: None,
             terminal_title_stripped: None,
             display_agent: None,
-            agent_status: crate::api::schema::AgentStatus::Unknown,
+            agent_status: crate::api::schema::AgentStatus::Idle,
             state_labels: HashMap::new(),
             tokens: HashMap::new(),
             agent_session: None,

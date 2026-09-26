@@ -12,6 +12,10 @@ fn workspace_selection_background(palette: &Palette) -> ratatui::style::Color {
     }
 }
 
+fn workspace_number_text(workspace: &ClientShellWorkspace) -> String {
+    format!("{:<2}", workspace.number)
+}
+
 pub(in crate::client::shell) fn workspace_active_background(
     palette: &Palette,
     navigating: bool,
@@ -144,7 +148,7 @@ pub(crate) fn render_collapsed_sidebar(
             rect.x,
             rect.y,
             rect.width.min(2),
-            &format!("{:<2}", index + 1),
+            &workspace_number_text(workspace),
             number_style,
         );
         let status = workspace.agent_status;
@@ -373,6 +377,7 @@ pub(crate) fn render_sidebar(
         render_workspace_rows(
             buffer,
             rect,
+            workspace.number,
             status,
             config.status_indicators,
             &rows,
@@ -501,6 +506,7 @@ pub(in crate::client::shell) fn workspace_rows(
 pub(in crate::client::shell) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
+    workspace_number: usize,
     status: crate::api::schema::AgentStatus,
     indicators: crate::config::StatusIndicatorStyle,
     rows: &[Vec<crate::ui::ResolvedToken>],
@@ -513,12 +519,26 @@ pub(in crate::client::shell) fn render_workspace_rows(
     // Callers' rects come from the sidebar layout; clip to the buffer anyway so nothing below
     // writes past it.
     let area = area.intersection(buffer.area);
-    for (row_index, row) in rows.iter().enumerate() {
+    let number = format!("{workspace_number:<2} ");
+    let number_width = display_width(&number);
+    for row_index in 0..rows.len().max(1) {
         let y = area.y + u16::try_from(row_index).unwrap_or(u16::MAX);
         if y >= area.bottom() {
             break;
         }
-        let x = area.x.saturating_add(if row_index == 0 { 1 } else { 3 });
+        let indent = if row_index == 0 { 1 } else { 3 };
+        let x = area.x.saturating_add(indent).saturating_add(number_width);
+        if row_index == 0 {
+            let number_x = area.x.saturating_add(indent);
+            put_text(
+                buffer,
+                number_x,
+                y,
+                area.right().saturating_sub(number_x),
+                &number,
+                Style::default().fg(palette.overlay0),
+            );
+        }
         let highlighted = focused || dragged;
         let workspace_style = Style::default()
             .fg(if highlighted {
@@ -537,7 +557,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
             palette.overlay0
         });
         let spans = crate::ui::resolved_token_spans(
-            row,
+            rows.get(row_index).map_or(&[], Vec::as_slice),
             (
                 status_icon(status, indicators),
                 Style::default().fg(status_color(status, palette)),
@@ -577,7 +597,15 @@ pub(in crate::client::shell) fn render_workspace_rows(
 
 #[cfg(test)]
 mod tests {
-    use super::collapsed_workspace_scroll;
+    use super::{collapsed_workspace_scroll, workspace_number_text};
+
+    #[test]
+    fn collapsed_workspace_number_uses_server_number() {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.workspaces[0].number = 12;
+
+        assert_eq!(workspace_number_text(&snapshot.workspaces[0]), "12");
+    }
 
     #[test]
     fn collapsed_workspace_scroll_reveals_rows_past_the_section() {

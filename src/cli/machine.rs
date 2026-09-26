@@ -14,29 +14,36 @@ struct MachineListRow<'a> {
     selected: bool,
 }
 
-pub(super) fn run_machine_command(matches: &ArgMatches) -> std::io::Result<i32> {
+pub(super) fn run_machine_command(
+    matches: &ArgMatches,
+    paths: &crate::config::AppPaths,
+) -> std::io::Result<i32> {
     match matches.subcommand() {
-        Some(("list", matches)) => list(flag(matches, "json")),
+        Some(("list", matches)) => list(paths, flag(matches, "json")),
         Some(("status", matches)) => status(
             string(matches, "machine").as_deref(),
             flag(matches, "json"),
-            saved_ssh_settings()?,
+            paths,
+            saved_ssh_settings(paths)?,
         ),
-        Some(("reconnect", matches)) => {
-            reconnect(&required(matches, "machine"), saved_ssh_settings()?)
-        }
-        Some(("add", matches)) => add(add_args(matches), saved_ssh_settings()?),
+        Some(("reconnect", matches)) => reconnect(
+            paths,
+            &required(matches, "machine"),
+            saved_ssh_settings(paths)?,
+        ),
+        Some(("add", matches)) => add(paths, add_args(matches), saved_ssh_settings(paths)?),
         Some(("rename", matches)) => rename(
+            paths,
             &required(matches, "profile-id"),
             &required(matches, "label"),
         ),
-        Some(("remove", matches)) => remove(&required(matches, "profile-id")),
+        Some(("remove", matches)) => remove(paths, &required(matches, "profile-id")),
         _ => Ok(super::missing_subcommand()),
     }
 }
 
-fn list(json: bool) -> std::io::Result<i32> {
-    let catalog = load_catalog()?;
+fn list(paths: &crate::config::AppPaths, json: bool) -> std::io::Result<i32> {
+    let catalog = load_catalog(paths)?;
     let rows = catalog
         .ssh
         .iter()
@@ -76,9 +83,10 @@ struct MachineStatusRow<'a> {
 fn status(
     selector: Option<&str>,
     json: bool,
+    paths: &crate::config::AppPaths,
     settings: crate::remote::SavedSshSettings,
 ) -> std::io::Result<i32> {
-    let catalog = load_catalog()?;
+    let catalog = load_catalog(paths)?;
     let profiles = match selector {
         Some(selector) => match super::target::resolve_machine(&catalog.ssh, selector) {
             Ok(profile) => vec![profile],
@@ -92,19 +100,23 @@ fn status(
     let rows = profiles
         .into_iter()
         .map(|profile| {
-            let (status, error) =
-                match crate::remote::check_saved_ssh(&profile.target, &profile.session, settings) {
-                    Ok(()) => ("reachable", None),
-                    Err(error) => {
-                        let message = error.to_string();
-                        let status = if crate::remote::ssh_error_requires_authentication(&message) {
-                            "auth required"
-                        } else {
-                            "error"
-                        };
-                        (status, Some(message))
-                    }
-                };
+            let (status, error) = match crate::remote::check_saved_ssh(
+                paths,
+                &profile.target,
+                &profile.session,
+                settings,
+            ) {
+                Ok(()) => ("reachable", None),
+                Err(error) => {
+                    let message = error.to_string();
+                    let status = if crate::remote::ssh_error_requires_authentication(&message) {
+                        "auth required"
+                    } else {
+                        "error"
+                    };
+                    (status, Some(message))
+                }
+            };
             MachineStatusRow {
                 id: profile.id.as_str(),
                 label: &profile.label,
@@ -132,9 +144,13 @@ fn status(
     Ok(i32::from(rows.iter().any(|row| row.error.is_some())))
 }
 
-fn reconnect(selector: &str, settings: crate::remote::SavedSshSettings) -> std::io::Result<i32> {
+fn reconnect(
+    paths: &crate::config::AppPaths,
+    selector: &str,
+    settings: crate::remote::SavedSshSettings,
+) -> std::io::Result<i32> {
     use std::io::IsTerminal;
-    let catalog = load_catalog()?;
+    let catalog = load_catalog(paths)?;
     let profile = match super::target::resolve_machine(&catalog.ssh, selector) {
         Ok(profile) => profile,
         Err(error) => {
@@ -148,12 +164,13 @@ fn reconnect(selector: &str, settings: crate::remote::SavedSshSettings) -> std::
         );
         return Ok(2);
     }
-    let mut authentication = crate::remote::ssh_authentication_command(&profile.target, settings)?;
+    let mut authentication =
+        crate::remote::ssh_authentication_command(paths, &profile.target, settings)?;
     if !authentication.command.status()?.success() {
         eprintln!("SSH authentication failed; the saved machine was not changed.");
         return Ok(1);
     }
-    crate::remote::check_saved_ssh(&profile.target, &profile.session, settings)?;
+    crate::remote::check_saved_ssh(paths, &profile.target, &profile.session, settings)?;
     println!(
         "Machine {} is reachable. Open Shepr clients retry within 30 seconds.",
         profile.id
@@ -177,13 +194,17 @@ fn add_args(matches: &ArgMatches) -> AddArgs {
     }
 }
 
-fn add(args: AddArgs, settings: crate::remote::SavedSshSettings) -> std::io::Result<i32> {
+fn add(
+    paths: &crate::config::AppPaths,
+    args: AddArgs,
+    settings: crate::remote::SavedSshSettings,
+) -> std::io::Result<i32> {
     let AddArgs {
         target,
         label,
         session,
     } = args;
-    let mut catalog = load_catalog()?;
+    let mut catalog = load_catalog(paths)?;
     // This preflight validates fields and capacity before remote setup can wait. Its ID is
     // intentionally discarded; IDs identify saved rows. Duplicate labels are permitted,
     // and selectors report ambiguity so callers can use the profile ID.
@@ -194,7 +215,7 @@ fn add(args: AddArgs, settings: crate::remote::SavedSshSettings) -> std::io::Res
             return Ok(2);
         }
     }
-    let metadata = match crate::remote::prepare_saved_ssh(&target, &session, settings) {
+    let metadata = match crate::remote::prepare_saved_ssh(paths, &target, &session, settings) {
         Ok(metadata) => metadata,
         Err(error) => {
             eprintln!("error: {error}; machine was not saved");
@@ -203,7 +224,7 @@ fn add(args: AddArgs, settings: crate::remote::SavedSshSettings) -> std::io::Res
         }
     };
     // Setup can wait for human approval. Do not overwrite catalog edits made meanwhile.
-    let mut catalog = load_catalog().map_err(|error| {
+    let mut catalog = load_catalog(paths).map_err(|error| {
         std::io::Error::other(format!(
             "remote prepared, but machine was not saved: {error}"
         ))
@@ -221,7 +242,7 @@ fn add(args: AddArgs, settings: crate::remote::SavedSshSettings) -> std::io::Res
         ))
     })?;
     if let Some(metadata) = metadata {
-        crate::client::endpoint::SshMetadataCache::new(id.as_str(), &target, &session)?
+        crate::client::endpoint::SshMetadataCache::new(paths, id.as_str(), &target, &session)?
             .store(&metadata);
     }
     println!("Saved SSH machine {id}. Remote server is ready.");
@@ -229,14 +250,16 @@ fn add(args: AddArgs, settings: crate::remote::SavedSshSettings) -> std::io::Res
     Ok(0)
 }
 
-fn saved_ssh_settings() -> std::io::Result<crate::remote::SavedSshSettings> {
-    let config = super::load_validated_config()?;
+fn saved_ssh_settings(
+    paths: &crate::config::AppPaths,
+) -> std::io::Result<crate::remote::SavedSshSettings> {
+    let config = super::load_validated_config(paths)?;
     Ok(crate::remote::SavedSshSettings {
         manage_ssh_config: config.remote.manage_ssh_config,
     })
 }
 
-fn rename(raw_id: &str, label: &str) -> std::io::Result<i32> {
+fn rename(paths: &crate::config::AppPaths, raw_id: &str, label: &str) -> std::io::Result<i32> {
     let id = match ProfileId::parse(raw_id.to_owned()) {
         Ok(id) => id,
         Err(error) => {
@@ -244,7 +267,7 @@ fn rename(raw_id: &str, label: &str) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
-    let mut catalog = load_catalog()?;
+    let mut catalog = load_catalog(paths)?;
     match catalog.rename_ssh(&id, label) {
         Ok(true) => {}
         Ok(false) => {
@@ -261,11 +284,11 @@ fn rename(raw_id: &str, label: &str) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn remove(raw_id: &str) -> std::io::Result<i32> {
+fn remove(paths: &crate::config::AppPaths, raw_id: &str) -> std::io::Result<i32> {
     let Some(id) = profile_id(raw_id) else {
         return Ok(2);
     };
-    let mut catalog = load_catalog()?;
+    let mut catalog = load_catalog(paths)?;
     let previous_selection = catalog.selected_profile.clone();
     let metadata_cache = catalog
         .ssh
@@ -273,6 +296,7 @@ fn remove(raw_id: &str) -> std::io::Result<i32> {
         .find(|profile| profile.id == id)
         .map(|profile| {
             crate::client::endpoint::SshMetadataCache::new(
+                paths,
                 id.as_str(),
                 &profile.target,
                 &profile.session,
@@ -304,8 +328,8 @@ fn profile_id(raw: &str) -> Option<ProfileId> {
     }
 }
 
-fn load_catalog() -> std::io::Result<EndpointCatalog> {
-    EndpointCatalog::load().map_err(std::io::Error::other)
+fn load_catalog(paths: &crate::config::AppPaths) -> std::io::Result<EndpointCatalog> {
+    EndpointCatalog::load(paths).map_err(std::io::Error::other)
 }
 
 fn store_catalog(catalog: &EndpointCatalog) -> std::io::Result<()> {

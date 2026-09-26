@@ -47,6 +47,9 @@ impl App {
                 &self.state.workspaces,
                 &self.state.terminals,
                 &self.terminal_runtimes,
+                self.paths
+                    .current_dir()
+                    .unwrap_or_else(|| std::path::Path::new("/")),
                 self.state.active,
                 self.state.selected,
                 self.state.host_terminal_theme,

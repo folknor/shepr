@@ -350,7 +350,6 @@ fn render_navigator_overlay(
                 ClientNavigatorFilter::Blocked => "blocked",
                 ClientNavigatorFilter::Working => "working",
                 ClientNavigatorFilter::Idle => "idle",
-                ClientNavigatorFilter::Done => "done",
             }
         )
     } else if n.query.is_empty() {

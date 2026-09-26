@@ -66,13 +66,13 @@ impl ClientChromePreferences {
     }
 }
 
-pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {
+pub(super) fn path_for_local_endpoint(state_dir: &Path, socket_path: &Path) -> PathBuf {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in socket_path.to_string_lossy().as_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    crate::config::state_dir()
+    state_dir
         .join("client-shell")
         .join(format!("local-{hash:016x}.json"))
 }
@@ -111,9 +111,10 @@ mod tests {
 
     #[test]
     fn endpoint_paths_are_stable_and_distinct() {
-        let first = path_for_local_endpoint(Path::new("/run/shepr/one.sock"));
-        let again = path_for_local_endpoint(Path::new("/run/shepr/one.sock"));
-        let second = path_for_local_endpoint(Path::new("/run/shepr/two.sock"));
+        let scratch = crate::test_support::ScratchDir::new("preferences");
+        let first = path_for_local_endpoint(scratch.path(), Path::new("/run/shepr/one.sock"));
+        let again = path_for_local_endpoint(scratch.path(), Path::new("/run/shepr/one.sock"));
+        let second = path_for_local_endpoint(scratch.path(), Path::new("/run/shepr/two.sock"));
         assert_eq!(first, again);
         assert_ne!(first, second);
     }

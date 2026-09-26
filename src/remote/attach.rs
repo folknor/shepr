@@ -38,6 +38,7 @@ const SSH_CONTROL_SOCKET_NAME: &str = "ctl";
 pub(crate) fn run_remote(
     remote: RemoteLaunch,
     settings: super::SavedSshSettings,
+    paths: &crate::config::AppPaths,
 ) -> io::Result<()> {
     let session_name = crate::session::active_name()
         .unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_string());
@@ -47,13 +48,14 @@ pub(crate) fn run_remote(
         .unwrap_or_else(|| "shepr".to_string());
     let reattach_command =
         reattach_command(&program, &remote.target, &session_name, remote.keybindings);
-    let require_surface_interest = crate::client::endpoint::EndpointCatalog::load()
+    let require_surface_interest = crate::client::endpoint::EndpointCatalog::load(paths)
         .map(|catalog| catalog.contains_target_session(&remote.target, &session_name))
         .unwrap_or(false);
     let remote_ssh = RemoteSsh::new(
         remote.target.clone(),
         settings.manage_ssh_config,
         session_name.clone(),
+        paths,
     );
     let prepared_remote = prepare_remote_shepr(&remote_ssh, require_surface_interest)?;
     ensure_remote_server_ready(
@@ -75,6 +77,7 @@ pub(crate) fn run_remote(
 }
 
 pub(crate) fn check_saved_ssh(
+    paths: &crate::config::AppPaths,
     target: &str,
     session: &str,
     settings: super::SavedSshSettings,
@@ -83,7 +86,8 @@ pub(crate) fn check_saved_ssh(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     crate::session::validate_name(session)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let mut ssh = RemoteSsh::new_noninteractive_with(target.to_owned(), settings.manage_ssh_config);
+    let mut ssh =
+        RemoteSsh::new_noninteractive_with(target.to_owned(), settings.manage_ssh_config, paths);
     ssh.session_name = session.to_owned();
     let remote = find_installed_remote_shepr(&ssh)?;
     match remote_server_status(&ssh, &remote, false)? {
@@ -112,6 +116,7 @@ pub(crate) fn check_saved_ssh(
 }
 
 pub(crate) fn prepare_saved_ssh(
+    paths: &crate::config::AppPaths,
     target: &str,
     session_name: &str,
     settings: super::SavedSshSettings,
@@ -124,6 +129,7 @@ pub(crate) fn prepare_saved_ssh(
         target.to_owned(),
         settings.manage_ssh_config,
         session_name.to_owned(),
+        paths,
     );
     let prepared = prepare_remote_shepr(&ssh, true)?;
     ensure_remote_server_ready(&ssh, &prepared.remote_shepr, true)?;
@@ -436,6 +442,7 @@ pub(crate) struct SshAuthenticationCommand {
 }
 
 pub(crate) fn ssh_authentication_command(
+    paths: &crate::config::AppPaths,
     target: &str,
     settings: super::SavedSshSettings,
 ) -> io::Result<SshAuthenticationCommand> {
@@ -451,7 +458,7 @@ pub(crate) fn ssh_authentication_command(
             "interactive SSH recovery requires remote.manage_ssh_config=true",
         ));
     }
-    let config = write_managed_ssh_config(target)?;
+    let config = write_managed_ssh_config(target, paths)?;
     Ok(authentication_command_with_config(target, config))
 }
 
@@ -491,9 +498,14 @@ pub(super) struct RemoteSsh {
 }
 
 impl RemoteSsh {
-    fn new(target: String, manage_ssh_config: bool, session_name: String) -> Self {
+    fn new(
+        target: String,
+        manage_ssh_config: bool,
+        session_name: String,
+        paths: &crate::config::AppPaths,
+    ) -> Self {
         let managed_config = if manage_ssh_config {
-            write_managed_ssh_config(&target)
+            write_managed_ssh_config(&target, paths)
                 .inspect_err(|err| {
                     tracing::debug!(%err, "could not write managed ssh config; using plain ssh");
                 })
@@ -512,11 +524,16 @@ impl RemoteSsh {
     }
 
     /// For long-lived callers that already hold the launch-time config.
-    pub(super) fn new_noninteractive_with(target: String, manage_ssh_config: bool) -> Self {
+    pub(super) fn new_noninteractive_with(
+        target: String,
+        manage_ssh_config: bool,
+        paths: &crate::config::AppPaths,
+    ) -> Self {
         let mut ssh = Self::new(
             target,
             manage_ssh_config,
             crate::session::DEFAULT_SESSION_NAME.into(),
+            paths,
         );
         ssh.noninteractive = true;
         ssh
@@ -1510,10 +1527,14 @@ fn ssh_config_include(path: Option<&Path>) -> Option<String> {
 
 /// Builds a temporary ssh config that includes the user's settings first, so
 /// OpenSSH's first-value-wins behavior preserves explicit user keepalives.
-fn write_managed_ssh_config(target: &str) -> io::Result<ManagedSshConfig> {
-    let paths = crate::platform::remote_ssh_config_paths();
+fn write_managed_ssh_config(
+    target: &str,
+    app_paths: &crate::config::AppPaths,
+) -> io::Result<ManagedSshConfig> {
+    let config_file = app_paths.config_file();
+    let paths = crate::platform::remote_ssh_config_paths(app_paths.home_dir());
     let control_path = Some(crate::platform::shared_ssh_control_path(
-        &crate::config::config_path(),
+        config_file,
         target,
     )?);
 
@@ -2068,6 +2089,11 @@ fn sanitize_path_component(input: &str) -> String {
 mod tests {
     use super::*;
 
+    fn test_app_paths() -> crate::config::AppPaths {
+        let root = crate::test_support::ScratchDir::new("remote-ssh-config").keep_until_exit();
+        crate::config::AppPaths::test_with_context(&root, Some(&root), None)
+    }
+
     thread_local! {
         pub(super) static UPLOAD_READ_ATTEMPTS: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicUsize>>> = const { std::cell::RefCell::new(None) };
     }
@@ -2306,7 +2332,9 @@ mod tests {
     fn managed_ssh_config_includes_user_config_then_fallback() {
         use std::os::unix::fs::PermissionsExt;
 
-        let managed_config = write_managed_ssh_config("example").expect("write managed config");
+        let paths = test_app_paths();
+        let managed_config =
+            write_managed_ssh_config("example", &paths).expect("write managed config");
         let path = managed_config.options.config_path.clone();
         let control_path = managed_config
             .options
@@ -2333,8 +2361,8 @@ mod tests {
         assert!(!contents.contains("ControlPath"));
         // ...and any user config is Included (quoted) BEFORE it so
         // first-value-wins keeps the user's own settings.
-        if let Some(home) = std::env::var_os("HOME") {
-            let user_config = PathBuf::from(home).join(".ssh").join("config");
+        if let Some(home) = paths.home_dir() {
+            let user_config = home.join(".ssh").join("config");
             if user_config.is_file() {
                 let include = format!(
                     "Include {}",
@@ -2376,8 +2404,9 @@ mod tests {
 
     #[test]
     fn shared_ssh_transport_survives_helper_config_drop() {
-        let first = write_managed_ssh_config("example").expect("test precondition");
-        let second = write_managed_ssh_config("example").expect("test precondition");
+        let paths = test_app_paths();
+        let first = write_managed_ssh_config("example", &paths).expect("test precondition");
+        let second = write_managed_ssh_config("example", &paths).expect("test precondition");
         let socket = first
             .options
             .control_path
@@ -2415,7 +2444,8 @@ mod tests {
 
     #[test]
     fn bridge_options_keep_temporary_config_alive_after_helper_drop() {
-        let config = write_managed_ssh_config("example").expect("test precondition");
+        let paths = test_app_paths();
+        let config = write_managed_ssh_config("example", &paths).expect("test precondition");
         let path = config.options.config_path.clone();
         let worker_options = config.options.clone();
         drop(config);
@@ -2426,8 +2456,9 @@ mod tests {
 
     #[test]
     fn authentication_command_uses_shared_transport_without_askpass_or_host_key_relaxation() {
-        let config = write_managed_ssh_config("example").expect("test precondition");
-        let setup = RemoteSsh::new("example".into(), true, "other-session".into());
+        let paths = test_app_paths();
+        let config = write_managed_ssh_config("example", &paths).expect("test precondition");
+        let setup = RemoteSsh::new("example".into(), true, "other-session".into(), &paths);
         assert_eq!(
             config.options.control_path,
             setup.options().expect("test precondition").control_path
@@ -2463,6 +2494,7 @@ mod tests {
     fn authentication_command_rejects_option_injection() {
         assert_eq!(
             ssh_authentication_command(
+                &crate::config::AppPaths::default(),
                 "-oProxyCommand=bad",
                 crate::remote::SavedSshSettings {
                     manage_ssh_config: true,
@@ -2477,7 +2509,8 @@ mod tests {
 
     #[test]
     fn unmanaged_ssh_setup_preserves_plain_transport() {
-        let ssh = RemoteSsh::new("example".into(), false, "main".into());
+        let paths = test_app_paths();
+        let ssh = RemoteSsh::new("example".into(), false, "main".into(), &paths);
         assert!(ssh.options().is_none());
         assert!(!ssh.command().get_args().any(|arg| arg == "-F"));
     }
@@ -2492,7 +2525,9 @@ mod tests {
 
     #[test]
     fn remote_ssh_command_uses_managed_config_when_present() {
-        let managed_config = write_managed_ssh_config("example").expect("write managed config");
+        let paths = test_app_paths();
+        let managed_config =
+            write_managed_ssh_config("example", &paths).expect("write managed config");
         let config_path = managed_config.options.config_path.clone();
         let control_path = managed_config
             .options
@@ -2625,7 +2660,8 @@ mod tests {
 
     #[test]
     fn noninteractive_ssh_command_cannot_prompt_or_accept_unknown_hosts() {
-        let ssh = RemoteSsh::new_noninteractive_with("example".into(), false);
+        let paths = test_app_paths();
+        let ssh = RemoteSsh::new_noninteractive_with("example".into(), false, &paths);
         let args = ssh
             .command()
             .get_args()

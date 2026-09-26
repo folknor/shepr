@@ -54,6 +54,7 @@ pub(crate) struct SavedSshSettings {
 /// resumes it, so every attempt still ends within its budget and discovery still
 /// finishes.
 pub(crate) struct SavedSshConnector {
+    paths: crate::config::AppPaths,
     profile_id: String,
     target: String,
     session: String,
@@ -73,12 +74,14 @@ struct ConnectorState {
 
 impl SavedSshConnector {
     pub(crate) fn new(
+        paths: &crate::config::AppPaths,
         profile_id: &str,
         target: &str,
         session: &str,
         settings: SavedSshSettings,
     ) -> Self {
         Self {
+            paths: paths.clone(),
             profile_id: profile_id.to_owned(),
             target: target.to_owned(),
             session: session.to_owned(),
@@ -104,6 +107,7 @@ impl SavedSshConnector {
         crate::session::validate_name(&self.session)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let metadata_cache = crate::client::endpoint::SshMetadataCache::new(
+            &self.paths,
             &self.profile_id,
             &self.target,
             &self.session,
@@ -130,6 +134,7 @@ impl SavedSshConnector {
             state.ssh = Some(RemoteSsh::new_noninteractive_with(
                 self.target.clone(),
                 self.settings.manage_ssh_config,
+                &self.paths,
             ));
         }
         let ConnectorState {
@@ -225,15 +230,16 @@ pub(crate) struct SavedSshApiBridge {
 
 impl SavedSshApiBridge {
     pub(crate) fn start(
+        paths: &crate::config::AppPaths,
         profile_id: &str,
         target: &str,
         session: &str,
         use_cached_metadata: bool,
         settings: SavedSshSettings,
     ) -> io::Result<Self> {
-        let ssh = validated_saved_ssh(profile_id, target, session, settings)?;
+        let ssh = validated_saved_ssh(paths, profile_id, target, session, settings)?;
         let metadata_cache =
-            crate::client::endpoint::SshMetadataCache::new(profile_id, target, session)?;
+            crate::client::endpoint::SshMetadataCache::new(paths, profile_id, target, session)?;
         let cached = use_cached_metadata.then(|| metadata_cache.load()).flatten();
         let used_cached_metadata = cached.is_some();
         let metadata = match cached {
@@ -333,6 +339,7 @@ fn saved_bridge_path(profile_id: &str) -> PathBuf {
 }
 
 fn validated_saved_ssh(
+    paths: &crate::config::AppPaths,
     profile_id: &str,
     target: &str,
     session: &str,
@@ -344,6 +351,7 @@ fn validated_saved_ssh(
     Ok(RemoteSsh::new_noninteractive_with(
         target.to_owned(),
         settings.manage_ssh_config,
+        paths,
     ))
 }
 
@@ -384,7 +392,13 @@ mod tests {
             ("not-a-profile-id", "agents"),
             ("0123456789abcdef0123456789abcdef", "bad session/name"),
         ] {
-            let connector = SavedSshConnector::new(profile_id, "build", session, settings);
+            let connector = SavedSshConnector::new(
+                &crate::config::AppPaths::default(),
+                profile_id,
+                "build",
+                session,
+                settings,
+            );
             let error = connector
                 .connect(
                     std::time::Instant::now() + std::time::Duration::from_secs(30),

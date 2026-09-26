@@ -69,8 +69,12 @@ impl ClientShellConfig {
         self.keybinding_source == ClientShellKeybindingSource::Endpoint
     }
 
-    pub(crate) fn with_local_endpoint(self, socket_path: &std::path::Path) -> Self {
-        self.with_preferences_path(preferences::path_for_local_endpoint(socket_path))
+    pub(crate) fn with_local_endpoint(
+        self,
+        state_dir: &std::path::Path,
+        socket_path: &std::path::Path,
+    ) -> Self {
+        self.with_preferences_path(preferences::path_for_local_endpoint(state_dir, socket_path))
     }
 
     pub(super) fn with_preferences_path(mut self, path: std::path::PathBuf) -> Self {
@@ -110,12 +114,7 @@ impl ClientShellConfig {
                 SidebarCollapsedModeConfig::Hidden => 0,
             }
         } else {
-            let (min, max) = crate::config::validated_sidebar_bounds(
-                self.sidebar_min_width,
-                self.sidebar_max_width,
-            )
-            .unwrap_or((18, 36));
-            sidebar_width.clamp(min, max)
+            sidebar_width.clamp(self.sidebar_min_width, self.sidebar_max_width)
         }
         .min(cols.saturating_sub(1));
         let main = Rect::new(sidebar_width, 0, cols.saturating_sub(sidebar_width), rows);
@@ -154,14 +153,11 @@ impl ClientShellConfig {
             .preferences
             .sidebar_collapsed
             .unwrap_or(self.sidebar_start_collapsed);
-        let (min_width, max_width) =
-            crate::config::validated_sidebar_bounds(self.sidebar_min_width, self.sidebar_max_width)
-                .unwrap_or((18, 36));
         let sidebar_width = self
             .preferences
             .sidebar_width
             .unwrap_or(self.sidebar_width)
-            .clamp(min_width, max_width);
+            .clamp(self.sidebar_min_width, self.sidebar_max_width);
         let surface = self
             .layout(cols, rows, sidebar_collapsed, 0, sidebar_width)
             .pane_surface;

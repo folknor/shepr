@@ -672,6 +672,7 @@ pub(super) fn follow_endpoint_catalog(
     supervisors: &mut endpoint::EndpointSupervisors,
     pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
     catalog: &mut endpoint::EndpointCatalog,
+    local_socket_path: &std::path::Path,
     profiles: Vec<endpoint::SavedSshEndpoint>,
     now: std::time::Instant,
 ) -> bool {
@@ -722,7 +723,7 @@ pub(super) fn follow_endpoint_catalog(
     // recovered instead of ending the client and taking the machine with it.
     if catalog.has_ssh() && !supervisors.supervises(&endpoint::ClientEndpointId::Local) {
         supervisors.add_local(
-            client_socket_path(),
+            local_socket_path.to_path_buf(),
             endpoints
                 .connection(&endpoint::ClientEndpointId::Local)
                 .map(|connection| connection.generation),
@@ -770,11 +771,7 @@ pub(super) fn install_client_shell_snapshot(
         if project_snapshot {
             shell.set_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
         } else {
-            shell.cache_endpoint_snapshot_inactive_for_generation(
-                endpoint_id,
-                generation,
-                snapshot,
-            );
+            shell.cache_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
         }
         let next_size = shell.surface_size(state.reported_size.0, state.reported_size.1);
         (
@@ -1103,6 +1100,8 @@ mod tests {
     #[test]
     fn an_open_client_follows_saved_machine_changes() {
         let now = std::time::Instant::now();
+        let scratch = crate::test_support::ScratchDir::new("endpoint-catalog-follow");
+        let local_socket_path = scratch.join("shepr-client.sock");
         let mut catalog = endpoint::EndpointCatalog::default();
         let build = catalog
             .add_ssh("Build", "build", "agents")
@@ -1120,6 +1119,7 @@ mod tests {
         let mut commands = endpoint_commands::EndpointCommands::default();
         let mut pending = None;
         let mut supervisors = endpoint::EndpointSupervisors::with_ssh_settings(
+            &crate::config::AppPaths::default(),
             &catalog.ssh,
             crate::remote::SavedSshSettings {
                 manage_ssh_config: false,
@@ -1145,6 +1145,7 @@ mod tests {
                 &mut supervisors,
                 &mut pending,
                 &mut catalog,
+                &local_socket_path,
                 profiles.clone(),
                 now,
             ),
@@ -1184,6 +1185,7 @@ mod tests {
             &mut supervisors,
             &mut pending,
             &mut catalog,
+            &local_socket_path,
             profiles,
             now,
         ));
@@ -1198,6 +1200,7 @@ mod tests {
             &mut supervisors,
             &mut pending,
             &mut catalog,
+            &local_socket_path,
             Vec::new(),
             now,
         ));

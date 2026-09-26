@@ -110,8 +110,15 @@ pub(crate) fn start_server_with_stop_control(
     api_tx: ApiRequestSender,
     event_hub: EventHub,
     server_stop: Arc<AtomicBool>,
+    paths: &crate::config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
-    start_server_inner(api_tx, event_hub, default_capabilities(), Some(server_stop))
+    start_server_inner(
+        api_tx,
+        event_hub,
+        default_capabilities(),
+        Some(server_stop),
+        paths,
+    )
 }
 
 fn default_capabilities() -> Option<ServerCapabilities> {
@@ -128,8 +135,9 @@ fn start_server_inner(
     event_hub: EventHub,
     mut capabilities: Option<ServerCapabilities>,
     server_stop: Option<Arc<AtomicBool>>,
+    paths: &crate::config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
-    let path = socket_path();
+    let path = socket_path(paths);
     prepare_socket_path(&path)?;
 
     // Owner-only from the moment the path is reachable (see
@@ -139,7 +147,7 @@ fn start_server_inner(
     info!(path = %path.display(), "api server listening");
 
     let ssh_agents = match crate::platform::ssh_agent::SshAgentRegistry::new(
-        crate::platform::ssh_agent::socket_path(),
+        crate::platform::ssh_agent::socket_path(paths),
         std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from),
     ) {
         Ok(registry) => Some(registry),
@@ -1201,37 +1209,33 @@ mod tests {
     #[test]
     fn socket_path_prefers_explicit_env_override() {
         let env = IsolatedEnv::new();
+        let paths = crate::config::AppPaths::test_at(env.path());
         let unique = env.path().join("override.sock");
         env.set(crate::api::SOCKET_PATH_ENV_VAR, &unique);
-        assert_eq!(socket_path(), unique);
+        assert_eq!(socket_path(&paths), unique);
     }
 
     #[test]
     fn socket_path_defaults_to_config_dir_even_when_xdg_runtime_dir_is_set() {
         let env = IsolatedEnv::new();
-        let config_home = env.path().join("config");
-        env.set("XDG_CONFIG_HOME", &config_home);
+        let paths = crate::config::AppPaths::test_at(env.path());
         env.set("XDG_RUNTIME_DIR", env.path().join("runtime"));
 
-        let expected = config_home
-            .join(crate::config::app_dir_name())
-            .join("shepr.sock");
-        assert_eq!(socket_path(), expected);
+        assert_eq!(socket_path(&paths), paths.config_dir().join("shepr.sock"));
     }
 
     #[test]
     fn socket_path_uses_named_session_dir() {
         let env = IsolatedEnv::new();
-        let config_home = env.path().join("config");
+        let paths = crate::config::AppPaths::test_at(env.path());
         env.set(crate::session::SESSION_ENV_VAR, "work");
-        env.set("XDG_CONFIG_HOME", &config_home);
 
-        let expected = config_home
-            .join(crate::config::app_dir_name())
+        let expected = paths
+            .config_dir()
             .join("sessions")
             .join("work")
             .join("shepr.sock");
-        assert_eq!(socket_path(), expected);
+        assert_eq!(socket_path(&paths), expected);
     }
 
     #[test]
@@ -1431,8 +1435,7 @@ mod tests {
 
     #[test]
     fn events_wait_agent_status_times_out_server_side() {
-        let (api_tx, responder) =
-            spawn_pane_get_responder(crate::api::schema::AgentStatus::Unknown);
+        let (api_tx, responder) = spawn_pane_get_responder(crate::api::schema::AgentStatus::Idle);
 
         let (mut client, server, _path) = local_stream_pair("api-events-wait-timeout");
         client
@@ -1473,7 +1476,7 @@ mod tests {
                     serde_json::to_string(&SuccessResponse {
                         id: msg.request.id,
                         result: ResponseResult::PaneInfo {
-                            pane: pane_info("pane_1", crate::api::schema::AgentStatus::Unknown),
+                            pane: pane_info("pane_1", crate::api::schema::AgentStatus::Idle),
                         },
                     })
                     .expect("test precondition")
@@ -1499,7 +1502,7 @@ mod tests {
 
         let (mut client, server, _path) = local_stream_pair("wait-close");
         client
-            .write_all(br#"{"id":"wait_close","method":"events.wait","params":{"match_event":{"event":"pane_agent_status_changed","pane_id":"pane_1","agent_status":"done"},"timeout_ms":500}}"#)
+            .write_all(br#"{"id":"wait_close","method":"events.wait","params":{"match_event":{"event":"pane_agent_status_changed","pane_id":"pane_1","agent_status":"blocked"},"timeout_ms":500}}"#)
             .expect("test precondition");
         client.write_all(b"\n").expect("test precondition");
         client.flush().expect("test precondition");

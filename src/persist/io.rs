@@ -6,12 +6,12 @@ use super::snapshot::{
     SessionHistorySnapshot, SessionSnapshot, parse_history_snapshot, parse_snapshot,
 };
 
-pub(super) fn session_path() -> PathBuf {
-    crate::session::data_dir().join("session.json")
+pub(super) fn session_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("session.json")
 }
 
-fn session_history_path() -> PathBuf {
-    crate::session::data_dir().join("session-history.json")
+fn session_history_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("session-history.json")
 }
 
 // Follow symlinks manually so a write through a (possibly dangling) symlink
@@ -203,8 +203,8 @@ pub(super) fn clear_path(path: &Path) -> std::io::Result<()> {
 /// sessions, so a server that does not own the data directory must not do it:
 /// the directory's lock is claimed first, and while another server holds it
 /// nothing is restored.
-pub fn load() -> Option<SessionSnapshot> {
-    let path = session_path();
+pub fn load(data_dir: &Path) -> Option<SessionSnapshot> {
+    let path = session_path(data_dir);
     if let Err(err) = super::lock::claim(containing_directory(&path)) {
         if super::lock::is_owned_elsewhere(&err) {
             tracing::error!(
@@ -250,8 +250,8 @@ pub fn load() -> Option<SessionSnapshot> {
     }
 }
 
-pub fn load_history() -> Option<SessionHistorySnapshot> {
-    let path = session_history_path();
+pub fn load_history(data_dir: &Path) -> Option<SessionHistorySnapshot> {
+    let path = session_history_path(data_dir);
     if let Err(err) = super::lock::claim(containing_directory(&path)) {
         if super::lock::is_owned_elsewhere(&err) {
             tracing::error!(
@@ -364,9 +364,9 @@ mod tests {
 
     #[test]
     fn load_refuses_a_session_another_server_owns() {
-        let env = crate::test_support::IsolatedEnv::new();
-        env.set("XDG_CONFIG_HOME", env.path());
-        let path = session_path();
+        let scratch = crate::test_support::ScratchDir::new("load-owned");
+        let data_dir = scratch.path().join("config");
+        let path = session_path(&data_dir);
         save_to_path(&path, &empty_snapshot()).expect("test precondition");
         let directory = containing_directory(&path).to_path_buf();
         let other_server = std::fs::File::options()
@@ -378,18 +378,21 @@ mod tests {
             .expect("test precondition");
         other_server.try_lock().expect("test precondition");
 
-        assert!(load().is_none(), "another server's session is not restored");
+        assert!(
+            load(&data_dir).is_none(),
+            "another server's session is not restored"
+        );
 
         drop(other_server);
-        assert!(load().is_some());
+        assert!(load(&data_dir).is_some());
         super::super::lock::release(&directory);
     }
 
     #[test]
     fn load_history_refuses_a_session_another_server_owns() {
-        let env = crate::test_support::IsolatedEnv::new();
-        env.set("XDG_CONFIG_HOME", env.path());
-        let path = session_history_path();
+        let scratch = crate::test_support::ScratchDir::new("load-history-owned");
+        let data_dir = scratch.path().join("config");
+        let path = session_history_path(&data_dir);
         save_history_to_path(&path, Some(&history_snapshot("history-secret")))
             .expect("test precondition");
         let directory = containing_directory(&path).to_path_buf();
@@ -403,12 +406,12 @@ mod tests {
         other_server.try_lock().expect("test precondition");
 
         assert!(
-            load_history().is_none(),
+            load_history(&data_dir).is_none(),
             "another server's history is not restored"
         );
 
         drop(other_server);
-        assert!(load_history().is_some());
+        assert!(load_history(&data_dir).is_some());
         super::super::lock::release(&directory);
     }
 

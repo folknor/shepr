@@ -3,7 +3,7 @@
 A personal, Linux-only fork of [herdr](https://github.com/herdrdev/herdr): a
 terminal multiplexer for AI coding agents. Workspaces, tabs and panes run in a
 headless server; the TUI is a client. An agent sidebar shows every agent's
-state (idle, working, blocked, done) across all panes, including panes on
+state (idle, working, blocked) across all panes, including panes on
 other hosts reached over SSH.
 
 There is no compatibility with upstream herdr installs. The fork is stripped

@@ -33,8 +33,8 @@ pub(crate) struct SessionWriter {
 }
 
 impl SessionWriter {
-    pub(crate) fn new(protect_unloaded: bool) -> Self {
-        Self::at(super::io::session_path(), protect_unloaded)
+    pub(crate) fn new(data_dir: &Path, protect_unloaded: bool) -> Self {
+        Self::at(super::io::session_path(data_dir), protect_unloaded)
     }
 
     fn at(path: PathBuf, protect_unloaded: bool) -> Self {

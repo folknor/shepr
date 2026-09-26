@@ -393,9 +393,7 @@ impl Workspace {
         )
     }
 
-    /// Makes `idx` the active tab. Whether its panes count as seen depends on
-    /// who is looking, which the workspace cannot know: `AppState` decides
-    /// that (`tab_is_observed`) after switching.
+    /// Makes `idx` the active tab.
     pub fn switch_tab(&mut self, idx: usize) {
         if idx < self.tabs.len() {
             self.active_tab = idx;
@@ -561,6 +559,7 @@ impl Workspace {
         direction: Direction,
         geometry: &PaneGeometry,
         cwd: Option<PathBuf>,
+        default_cwd: PathBuf,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
@@ -575,6 +574,7 @@ impl Workspace {
             None,
             geometry,
             cwd,
+            default_cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
             host_terminal_appearance,
@@ -594,6 +594,7 @@ impl Workspace {
         ratio: f32,
         geometry: &PaneGeometry,
         cwd: Option<PathBuf>,
+        default_cwd: PathBuf,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
@@ -608,6 +609,7 @@ impl Workspace {
             Some(ratio),
             geometry,
             cwd,
+            default_cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
             host_terminal_appearance,
@@ -627,6 +629,7 @@ impl Workspace {
         ratio: f32,
         geometry: &PaneGeometry,
         cwd: Option<PathBuf>,
+        default_cwd: PathBuf,
         argv: &[String],
         extra_env: Vec<(String, String)>,
         scrollback_limit_bytes: usize,
@@ -641,6 +644,7 @@ impl Workspace {
             Some(ratio),
             geometry,
             cwd,
+            default_cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
             host_terminal_appearance,
@@ -660,6 +664,7 @@ impl Workspace {
         ratio: Option<f32>,
         geometry: &PaneGeometry,
         cwd: Option<PathBuf>,
+        default_cwd: PathBuf,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
@@ -682,6 +687,7 @@ impl Workspace {
                 ratio,
                 geometry,
                 cwd,
+                default_cwd,
                 argv,
                 &launch_env,
                 scrollback_limit_bytes,
@@ -697,6 +703,7 @@ impl Workspace {
                 ratio,
                 geometry,
                 cwd,
+                default_cwd,
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,

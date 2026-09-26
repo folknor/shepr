@@ -126,7 +126,7 @@ fn workspace_focus_success(id: &str, workspace_id: &str) -> Vec<u8> {
                 pane_count: 1,
                 tab_count: 1,
                 active_tab_id: "tab".into(),
-                agent_status: crate::api::schema::AgentStatus::Unknown,
+                agent_status: crate::api::schema::AgentStatus::Idle,
                 tokens: Default::default(),
             },
         },
@@ -1279,7 +1279,7 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
             .shell
             .as_mut()
             .expect("test precondition")
-            .cache_endpoint_snapshot_inactive_for_generation(
+            .cache_endpoint_snapshot_for_generation(
                 &ClientEndpointId::Local,
                 2,
                 Box::new(test_snapshot("local-boot", 1)),

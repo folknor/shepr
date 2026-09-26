@@ -293,7 +293,6 @@ pub(super) enum ClientNavigatorFilter {
     Blocked,
     Working,
     Idle,
-    Done,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -689,15 +688,10 @@ impl ClientShellState {
         let sidebar_collapsed = preferences
             .sidebar_collapsed
             .unwrap_or(config.sidebar_start_collapsed);
-        let (min_width, max_width) = crate::config::validated_sidebar_bounds(
-            config.sidebar_min_width,
-            config.sidebar_max_width,
-        )
-        .unwrap_or((18, 36));
         let sidebar_width = preferences
             .sidebar_width
             .unwrap_or(config.sidebar_width)
-            .clamp(min_width, max_width);
+            .clamp(config.sidebar_min_width, config.sidebar_max_width);
         let sidebar_section_split = preferences
             .sidebar_section_split
             .filter(|split| split.is_finite())
@@ -1153,7 +1147,6 @@ impl ClientShellState {
             self.hits.panes.clear();
             self.hits.pane_splits.clear();
         }
-        self.acknowledge_active_surface_agents(&surface);
         let selection_pane = match &self.word_selection_gesture {
             Some(gesture) => Some(&gesture.pane_id),
             None => self.selection.as_ref().map(|selection| &selection.pane_id),

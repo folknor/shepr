@@ -10,5 +10,7 @@ pub(super) struct ClientLoopConfig {
     pub(super) host_escape_disambiguation_active: bool,
     pub(super) initial_host_input: Vec<u8>,
     pub(super) manage_ssh_config: bool,
+    pub(super) paths: crate::config::AppPaths,
+    pub(super) local_socket_path: std::path::PathBuf,
     pub(super) shell_config: Option<shell::ClientShellConfig>,
 }

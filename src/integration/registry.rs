@@ -3,7 +3,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::command::hook_command;
-use super::env::*;
 
 pub(crate) fn integration_target_label(
     target: crate::api::schema::IntegrationTarget,
@@ -30,8 +29,10 @@ pub(crate) fn integration_target_label(
     }
 }
 
-pub(crate) fn installed_integration_statuses() -> Vec<super::IntegrationStatus> {
-    integration_specs()
+pub(crate) fn installed_integration_statuses(
+    paths: &super::env::AgentIntegrationPaths,
+) -> Vec<super::IntegrationStatus> {
+    integration_specs(paths)
         .into_iter()
         .filter_map(|(target, path, expected_version)| {
             Some(integration_status_at(target, path.ok()?, expected_version))
@@ -39,14 +40,18 @@ pub(crate) fn installed_integration_statuses() -> Vec<super::IntegrationStatus> 
         .collect()
 }
 
-pub(crate) fn outdated_installed_integrations() -> Vec<super::IntegrationStatus> {
-    installed_integration_statuses()
+pub(crate) fn outdated_installed_integrations(
+    paths: &super::env::AgentIntegrationPaths,
+) -> Vec<super::IntegrationStatus> {
+    installed_integration_statuses(paths)
         .into_iter()
         .filter(|status| status.state == super::IntegrationStatusKind::Outdated)
         .collect()
 }
 
-fn integration_specs() -> [(
+fn integration_specs(
+    paths: &super::env::AgentIntegrationPaths,
+) -> [(
     crate::api::schema::IntegrationTarget,
     io::Result<PathBuf>,
     u32,
@@ -54,47 +59,63 @@ fn integration_specs() -> [(
     [
         (
             crate::api::schema::IntegrationTarget::Pi,
-            pi_extension_dir().map(|dir| dir.join(super::PI_EXTENSION_INSTALL_NAME)),
+            paths
+                .directory("pi_extension")
+                .map(|dir| dir.join(super::PI_EXTENSION_INSTALL_NAME)),
             super::PI_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::Omp,
-            omp_extension_dir().map(|dir| dir.join(super::OMP_EXTENSION_INSTALL_NAME)),
+            paths
+                .directory("omp_extension")
+                .map(|dir| dir.join(super::OMP_EXTENSION_INSTALL_NAME)),
             super::OMP_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::Claude,
-            claude_dir().map(|dir| dir.join("hooks").join(super::CLAUDE_HOOK_INSTALL_NAME)),
+            paths
+                .directory("claude")
+                .map(|dir| dir.join("hooks").join(super::CLAUDE_HOOK_INSTALL_NAME)),
             super::CLAUDE_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::Codex,
-            codex_dir().map(|dir| dir.join(super::CODEX_HOOK_INSTALL_NAME)),
+            paths
+                .directory("codex")
+                .map(|dir| dir.join(super::CODEX_HOOK_INSTALL_NAME)),
             super::CODEX_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::Copilot,
-            copilot_dir().map(|dir| dir.join("hooks").join(super::COPILOT_HOOK_INSTALL_NAME)),
+            paths
+                .directory("copilot")
+                .map(|dir| dir.join("hooks").join(super::COPILOT_HOOK_INSTALL_NAME)),
             super::COPILOT_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::Devin,
-            devin_dir().map(|dir| dir.join(super::DEVIN_HOOK_INSTALL_NAME)),
+            paths
+                .directory("devin")
+                .map(|dir| dir.join(super::DEVIN_HOOK_INSTALL_NAME)),
             super::DEVIN_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::Droid,
-            droid_dir().map(|dir| dir.join("hooks").join(super::DROID_HOOK_INSTALL_NAME)),
+            paths
+                .directory("droid")
+                .map(|dir| dir.join("hooks").join(super::DROID_HOOK_INSTALL_NAME)),
             super::DROID_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::Kimi,
-            kimi_dir().map(|dir| dir.join("hooks").join(super::KIMI_HOOK_INSTALL_NAME)),
+            paths
+                .directory("kimi")
+                .map(|dir| dir.join("hooks").join(super::KIMI_HOOK_INSTALL_NAME)),
             super::KIMI_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::Opencode,
-            opencode_dir().map(|dir| {
+            paths.directory("opencode").map(|dir| {
                 dir.join("plugins")
                     .join(super::OPENCODE_PLUGIN_INSTALL_NAME)
             }),
@@ -102,37 +123,49 @@ fn integration_specs() -> [(
         ),
         (
             crate::api::schema::IntegrationTarget::Kilo,
-            kilo_dir().map(|dir| dir.join("plugin").join(super::KILO_PLUGIN_INSTALL_NAME)),
+            paths
+                .directory("kilo")
+                .map(|dir| dir.join("plugin").join(super::KILO_PLUGIN_INSTALL_NAME)),
             super::KILO_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::Hermes,
-            hermes_plugin_dir().map(|dir| dir.join(super::HERMES_PLUGIN_INIT_INSTALL_NAME)),
+            paths
+                .directory("hermes_plugin")
+                .map(|dir| dir.join(super::HERMES_PLUGIN_INIT_INSTALL_NAME)),
             super::HERMES_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::Qodercli,
-            qodercli_dir().map(|dir| dir.join("hooks").join(super::QODERCLI_HOOK_INSTALL_NAME)),
+            paths
+                .directory("qodercli")
+                .map(|dir| dir.join("hooks").join(super::QODERCLI_HOOK_INSTALL_NAME)),
             super::QODERCLI_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::Qwen,
-            qwen_dir().map(|dir| dir.join("hooks").join(super::QWEN_HOOK_INSTALL_NAME)),
+            paths
+                .directory("qwen")
+                .map(|dir| dir.join("hooks").join(super::QWEN_HOOK_INSTALL_NAME)),
             super::QWEN_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::Cursor,
-            cursor_dir().map(|dir| dir.join(super::CURSOR_HOOK_INSTALL_NAME)),
+            paths
+                .directory("cursor")
+                .map(|dir| dir.join(super::CURSOR_HOOK_INSTALL_NAME)),
             super::CURSOR_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::Mastracode,
-            mastracode_dir().map(|dir| dir.join("hooks").join(super::MASTRACODE_HOOK_INSTALL_NAME)),
+            paths
+                .directory("mastracode")
+                .map(|dir| dir.join("hooks").join(super::MASTRACODE_HOOK_INSTALL_NAME)),
             super::MASTRACODE_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::AntigravityCli,
-            antigravity_cli_dir().map(|dir| {
+            paths.directory("antigravity_cli").map(|dir| {
                 dir.join("hooks")
                     .join(super::ANTIGRAVITY_CLI_HOOK_INSTALL_NAME)
             }),
@@ -140,12 +173,16 @@ fn integration_specs() -> [(
         ),
         (
             crate::api::schema::IntegrationTarget::Grok,
-            grok_dir().map(|dir| dir.join("hooks").join(super::GROK_HOOK_INSTALL_NAME)),
+            paths
+                .directory("grok")
+                .map(|dir| dir.join("hooks").join(super::GROK_HOOK_INSTALL_NAME)),
             super::GROK_INTEGRATION_VERSION,
         ),
         (
             crate::api::schema::IntegrationTarget::Letta,
-            letta_dir().map(|dir| dir.join("hooks").join(super::LETTA_HOOK_INSTALL_NAME)),
+            paths
+                .directory("letta")
+                .map(|dir| dir.join("hooks").join(super::LETTA_HOOK_INSTALL_NAME)),
             super::LETTA_INTEGRATION_VERSION,
         ),
     ]
@@ -171,8 +208,8 @@ pub(crate) fn integration_update_instructions(
     }
 }
 
-pub(crate) fn print_outdated_update_notice() -> bool {
-    let outdated = outdated_installed_integrations();
+pub(crate) fn print_outdated_update_notice(paths: &super::env::AgentIntegrationPaths) -> bool {
+    let outdated = outdated_installed_integrations(paths);
     if outdated.is_empty() {
         return false;
     }
@@ -666,7 +703,9 @@ mod registration_tests {
         let claude = base("claude-malformed");
         fs::write(claude.join("settings.json"), "{ not json").expect("test precondition");
         env.set("CLAUDE_CONFIG_DIR", &claude);
-        let result = super::super::targets::install_claude();
+        let result = super::super::targets::install_claude(
+            &super::super::env::AgentIntegrationPaths::resolve(),
+        );
         assert!(result.is_err());
         assert!(
             !claude
@@ -679,7 +718,9 @@ mod registration_tests {
         let codex = base("codex-malformed");
         fs::write(codex.join("hooks.json"), "[1,").expect("test precondition");
         env.set("CODEX_HOME", &codex);
-        let result = super::super::targets::install_codex();
+        let result = super::super::targets::install_codex(
+            &super::super::env::AgentIntegrationPaths::resolve(),
+        );
         assert!(result.is_err());
         assert!(!codex.join(super::super::CODEX_HOOK_INSTALL_NAME).exists());
         let _ = fs::remove_dir_all(codex);
@@ -687,7 +728,9 @@ mod registration_tests {
         let copilot = base("copilot-malformed");
         fs::write(copilot.join("settings.json"), "{\"hooks\": []}").expect("test precondition");
         env.set("COPILOT_HOME", &copilot);
-        let result = super::super::targets::install_copilot();
+        let result = super::super::targets::install_copilot(
+            &super::super::env::AgentIntegrationPaths::resolve(),
+        );
         assert!(result.is_err());
         assert!(!copilot.join("hooks").exists());
         let _ = fs::remove_dir_all(copilot);
@@ -725,7 +768,8 @@ mod registration_tests {
 
     #[test]
     fn every_target_has_exactly_one_status_spec() {
-        let specs = integration_specs();
+        let paths = super::super::env::AgentIntegrationPaths::resolve();
+        let specs = integration_specs(&paths);
         for target in IntegrationTarget::ALL {
             assert_eq!(
                 specs.iter().filter(|(spec, _, _)| *spec == target).count(),

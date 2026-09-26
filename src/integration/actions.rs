@@ -1,6 +1,7 @@
 use std::io;
 
 use super::KIMI_MIN_VERSION;
+use super::env::AgentIntegrationPaths;
 use super::registry::integration_target_label;
 use super::targets::{
     install_antigravity_cli, install_claude, install_codex, install_copilot, install_cursor,
@@ -14,15 +15,19 @@ use super::targets::{
 use super::version::{agent_version_requirement, enforce_agent_version};
 
 pub(crate) fn install_target(
+    paths: &AgentIntegrationPaths,
     target: crate::api::schema::IntegrationTarget,
 ) -> io::Result<Vec<String>> {
-    let result = install_target_inner(target);
+    let result = install_target_inner(paths, target);
     let outcome = if result.is_ok() { "ok" } else { "error" };
     crate::logging::integration_action("install", integration_target_label(target), outcome);
     result
 }
 
-fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Result<Vec<String>> {
+fn install_target_inner(
+    paths: &AgentIntegrationPaths,
+    target: crate::api::schema::IntegrationTarget,
+) -> io::Result<Vec<String>> {
     let version_warning = match agent_version_requirement(target) {
         Some(requirement) => enforce_agent_version(&requirement)?,
         None => None,
@@ -30,18 +35,18 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
 
     let mut messages = match target {
         crate::api::schema::IntegrationTarget::Pi => {
-            let path = install_pi()?;
+            let path = install_pi(paths)?;
             vec![format!("installed pi integration to {}", path.display())]
         }
         crate::api::schema::IntegrationTarget::Omp => {
-            let installed = install_omp()?;
+            let installed = install_omp(paths)?;
             vec![format!(
                 "installed omp integration to {}",
                 installed.extension_path.display()
             )]
         }
         crate::api::schema::IntegrationTarget::Claude => {
-            let installed = install_claude()?;
+            let installed = install_claude(paths)?;
             vec![
                 format!(
                     "installed claude integration hook to {}",
@@ -54,7 +59,7 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             ]
         }
         crate::api::schema::IntegrationTarget::Codex => {
-            let installed = install_codex()?;
+            let installed = install_codex(paths)?;
             vec![
                 format!(
                     "installed codex integration hook to {}",
@@ -68,7 +73,7 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             ]
         }
         crate::api::schema::IntegrationTarget::Copilot => {
-            let installed = install_copilot()?;
+            let installed = install_copilot(paths)?;
             vec![
                 format!(
                     "installed copilot integration hook to {}",
@@ -81,7 +86,7 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             ]
         }
         crate::api::schema::IntegrationTarget::Devin => {
-            let installed = install_devin()?;
+            let installed = install_devin(paths)?;
             vec![
                 format!(
                     "installed devin integration hook to {}",
@@ -94,7 +99,7 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             ]
         }
         crate::api::schema::IntegrationTarget::Kimi => {
-            let installed = install_kimi()?;
+            let installed = install_kimi(paths)?;
             vec![
                 format!(
                     "installed kimi integration hook to {}",
@@ -105,7 +110,7 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             ]
         }
         crate::api::schema::IntegrationTarget::Droid => {
-            let installed = install_droid()?;
+            let installed = install_droid(paths)?;
             vec![
                 format!(
                     "installed droid integration hook to {}",
@@ -118,7 +123,7 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             ]
         }
         crate::api::schema::IntegrationTarget::Opencode => {
-            let installed = install_opencode()?;
+            let installed = install_opencode(paths)?;
             let mut messages = vec![
                 format!(
                     "installed opencode integration plugin to {}",
@@ -142,14 +147,14 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             messages
         }
         crate::api::schema::IntegrationTarget::Kilo => {
-            let installed = install_kilo()?;
+            let installed = install_kilo(paths)?;
             vec![format!(
                 "installed kilo integration plugin to {}",
                 installed.plugin_path.display()
             )]
         }
         crate::api::schema::IntegrationTarget::Hermes => {
-            let installed = install_hermes()?;
+            let installed = install_hermes(paths)?;
             vec![
                 format!(
                     "installed hermes integration plugin to {}",
@@ -162,7 +167,7 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             ]
         }
         crate::api::schema::IntegrationTarget::Qodercli => {
-            let installed = install_qodercli()?;
+            let installed = install_qodercli(paths)?;
             vec![
                 format!(
                     "installed qodercli integration hook to {}",
@@ -175,7 +180,7 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             ]
         }
         crate::api::schema::IntegrationTarget::Qwen => {
-            let installed = install_qwen()?;
+            let installed = install_qwen(paths)?;
             vec![
                 format!(
                     "installed qwen integration hook to {}",
@@ -188,7 +193,7 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             ]
         }
         crate::api::schema::IntegrationTarget::Cursor => {
-            let installed = install_cursor()?;
+            let installed = install_cursor(paths)?;
             vec![
                 format!(
                     "installed cursor integration hook to {}",
@@ -198,7 +203,7 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             ]
         }
         crate::api::schema::IntegrationTarget::Mastracode => {
-            let installed = install_mastracode()?;
+            let installed = install_mastracode(paths)?;
             vec![
                 format!(
                     "installed mastracode integration hook to {}",
@@ -211,7 +216,7 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             ]
         }
         crate::api::schema::IntegrationTarget::AntigravityCli => {
-            let installed = install_antigravity_cli()?;
+            let installed = install_antigravity_cli(paths)?;
             vec![
                 format!(
                     "installed antigravity-cli integration hook to {}",
@@ -224,7 +229,7 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             ]
         }
         crate::api::schema::IntegrationTarget::Grok => {
-            let installed = install_grok()?;
+            let installed = install_grok(paths)?;
             vec![
                 format!(
                     "installed grok integration hook to {}",
@@ -237,7 +242,7 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
             ]
         }
         crate::api::schema::IntegrationTarget::Letta => {
-            let installed = install_letta()?;
+            let installed = install_letta(paths)?;
             vec![
                 format!(
                     "installed letta integration hook to {}",
@@ -259,20 +264,22 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
 }
 
 pub(crate) fn uninstall_target(
+    paths: &AgentIntegrationPaths,
     target: crate::api::schema::IntegrationTarget,
 ) -> io::Result<Vec<String>> {
-    let result = uninstall_target_inner(target);
+    let result = uninstall_target_inner(paths, target);
     let outcome = if result.is_ok() { "ok" } else { "error" };
     crate::logging::integration_action("uninstall", integration_target_label(target), outcome);
     result
 }
 
 fn uninstall_target_inner(
+    paths: &AgentIntegrationPaths,
     target: crate::api::schema::IntegrationTarget,
 ) -> io::Result<Vec<String>> {
     let messages = match target {
         crate::api::schema::IntegrationTarget::Pi => {
-            let result = uninstall_pi()?;
+            let result = uninstall_pi(paths)?;
             if result.removed_extension {
                 vec![format!(
                     "removed pi integration extension at {}",
@@ -286,7 +293,7 @@ fn uninstall_target_inner(
             }
         }
         crate::api::schema::IntegrationTarget::Omp => {
-            let result = uninstall_omp()?;
+            let result = uninstall_omp(paths)?;
             if result.removed_extension {
                 vec![format!(
                     "removed omp integration extension at {}",
@@ -300,7 +307,7 @@ fn uninstall_target_inner(
             }
         }
         crate::api::schema::IntegrationTarget::Claude => {
-            let result = uninstall_claude()?;
+            let result = uninstall_claude(paths)?;
             let mut messages = Vec::new();
             if result.removed_hook_file {
                 messages.push(format!(
@@ -327,7 +334,7 @@ fn uninstall_target_inner(
             messages
         }
         crate::api::schema::IntegrationTarget::Codex => {
-            let result = uninstall_codex()?;
+            let result = uninstall_codex(paths)?;
             let mut messages = Vec::new();
             if result.removed_hook_file {
                 messages.push(format!(
@@ -358,7 +365,7 @@ fn uninstall_target_inner(
             messages
         }
         crate::api::schema::IntegrationTarget::Copilot => {
-            let result = uninstall_copilot()?;
+            let result = uninstall_copilot(paths)?;
             let mut messages = Vec::new();
             if result.removed_hook_file {
                 messages.push(format!(
@@ -385,7 +392,7 @@ fn uninstall_target_inner(
             messages
         }
         crate::api::schema::IntegrationTarget::Devin => {
-            let result = uninstall_devin()?;
+            let result = uninstall_devin(paths)?;
             let mut messages = Vec::new();
             if result.removed_hook_file {
                 messages.push(format!(
@@ -412,7 +419,7 @@ fn uninstall_target_inner(
             messages
         }
         crate::api::schema::IntegrationTarget::Kimi => {
-            let result = uninstall_kimi()?;
+            let result = uninstall_kimi(paths)?;
             let mut messages = Vec::new();
             if result.removed_hook_file {
                 messages.push(format!(
@@ -439,7 +446,7 @@ fn uninstall_target_inner(
             messages
         }
         crate::api::schema::IntegrationTarget::Droid => {
-            let result = uninstall_droid()?;
+            let result = uninstall_droid(paths)?;
             let mut messages = Vec::new();
             if result.removed_hook_file {
                 messages.push(format!(
@@ -466,7 +473,7 @@ fn uninstall_target_inner(
             messages
         }
         crate::api::schema::IntegrationTarget::Opencode => {
-            let result = uninstall_opencode()?;
+            let result = uninstall_opencode(paths)?;
             let mut messages = vec![if result.removed_plugin {
                 format!(
                     "removed opencode integration plugin at {}",
@@ -498,7 +505,7 @@ fn uninstall_target_inner(
             messages
         }
         crate::api::schema::IntegrationTarget::Kilo => {
-            let result = uninstall_kilo()?;
+            let result = uninstall_kilo(paths)?;
             if result.removed_plugin {
                 vec![format!(
                     "removed kilo integration plugin at {}",
@@ -512,7 +519,7 @@ fn uninstall_target_inner(
             }
         }
         crate::api::schema::IntegrationTarget::Hermes => {
-            let result = uninstall_hermes()?;
+            let result = uninstall_hermes(paths)?;
             let mut messages = Vec::new();
             if result.removed_plugin_dir {
                 messages.push(format!(
@@ -539,7 +546,7 @@ fn uninstall_target_inner(
             messages
         }
         crate::api::schema::IntegrationTarget::Qodercli => {
-            let result = uninstall_qodercli()?;
+            let result = uninstall_qodercli(paths)?;
             let mut messages = Vec::new();
             if result.removed_hook_file {
                 messages.push(format!(
@@ -566,7 +573,7 @@ fn uninstall_target_inner(
             messages
         }
         crate::api::schema::IntegrationTarget::Qwen => {
-            let result = uninstall_qwen()?;
+            let result = uninstall_qwen(paths)?;
             let mut messages = Vec::new();
             if result.removed_hook_file {
                 messages.push(format!(
@@ -593,7 +600,7 @@ fn uninstall_target_inner(
             messages
         }
         crate::api::schema::IntegrationTarget::Cursor => {
-            let result = uninstall_cursor()?;
+            let result = uninstall_cursor(paths)?;
             let mut messages = Vec::new();
             if result.removed_hook_file {
                 messages.push(format!(
@@ -620,7 +627,7 @@ fn uninstall_target_inner(
             messages
         }
         crate::api::schema::IntegrationTarget::Mastracode => {
-            let result = uninstall_mastracode()?;
+            let result = uninstall_mastracode(paths)?;
             let mut messages = Vec::new();
             if result.removed_hook_file {
                 messages.push(format!(
@@ -647,7 +654,7 @@ fn uninstall_target_inner(
             messages
         }
         crate::api::schema::IntegrationTarget::AntigravityCli => {
-            let result = uninstall_antigravity_cli()?;
+            let result = uninstall_antigravity_cli(paths)?;
             let mut messages = Vec::new();
             if result.removed_hook_file {
                 messages.push(format!(
@@ -674,7 +681,7 @@ fn uninstall_target_inner(
             messages
         }
         crate::api::schema::IntegrationTarget::Grok => {
-            let result = uninstall_grok()?;
+            let result = uninstall_grok(paths)?;
             let mut messages = Vec::new();
             if result.removed_hook_file {
                 messages.push(format!(
@@ -701,7 +708,7 @@ fn uninstall_target_inner(
             messages
         }
         crate::api::schema::IntegrationTarget::Letta => {
-            let result = uninstall_letta()?;
+            let result = uninstall_letta(paths)?;
             let mut messages = Vec::new();
             if result.removed_hook_file {
                 messages.push(format!(

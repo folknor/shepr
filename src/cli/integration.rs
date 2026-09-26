@@ -8,24 +8,32 @@ use super::matches;
 /// (`integration_command` in `spec.rs`) has already required a subcommand and
 /// restricted `TARGET` to the known labels, so usage errors and help never
 /// reach this function.
-pub(super) fn run_integration_command(matches: &ArgMatches) -> std::io::Result<i32> {
+pub(super) fn run_integration_command(
+    matches: &ArgMatches,
+    _paths: &crate::config::AppPaths,
+) -> std::io::Result<i32> {
+    let integration_paths = crate::integration::AgentIntegrationPaths::resolve();
     match matches.subcommand() {
-        Some(("install", matches)) => Ok(integration_install(matches)),
-        Some(("uninstall", matches)) => Ok(integration_uninstall(matches)),
-        Some(("status", matches)) => {
-            Ok(integration_status(matches::flag(matches, "outdated-only")))
-        }
+        Some(("install", matches)) => Ok(integration_install(matches, &integration_paths)),
+        Some(("uninstall", matches)) => Ok(integration_uninstall(matches, &integration_paths)),
+        Some(("status", matches)) => Ok(integration_status(
+            &integration_paths,
+            matches::flag(matches, "outdated-only"),
+        )),
         _ => Ok(super::missing_subcommand()),
     }
 }
 
-fn integration_status(outdated_only: bool) -> i32 {
+fn integration_status(
+    paths: &crate::integration::AgentIntegrationPaths,
+    outdated_only: bool,
+) -> i32 {
     if outdated_only {
-        crate::integration::print_outdated_update_notice();
+        crate::integration::print_outdated_update_notice(paths);
         return 0;
     }
 
-    for status in crate::integration::installed_integration_statuses() {
+    for status in crate::integration::installed_integration_statuses(paths) {
         let target = crate::integration::integration_target_label(status.target);
         let state = describe_integration_state(
             status.state,
@@ -61,20 +69,26 @@ fn describe_integration_state(
     }
 }
 
-fn integration_install(matches: &ArgMatches) -> i32 {
+fn integration_install(
+    matches: &ArgMatches,
+    paths: &crate::integration::AgentIntegrationPaths,
+) -> i32 {
     let Some(target) = command_target(matches) else {
         return unknown_target(matches);
     };
 
-    report_outcome(crate::integration::install_target(target))
+    report_outcome(crate::integration::install_target(paths, target))
 }
 
-fn integration_uninstall(matches: &ArgMatches) -> i32 {
+fn integration_uninstall(
+    matches: &ArgMatches,
+    paths: &crate::integration::AgentIntegrationPaths,
+) -> i32 {
     let Some(target) = command_target(matches) else {
         return unknown_target(matches);
     };
 
-    report_outcome(crate::integration::uninstall_target(target))
+    report_outcome(crate::integration::uninstall_target(paths, target))
 }
 
 fn report_outcome(outcome: std::io::Result<Vec<String>>) -> i32 {

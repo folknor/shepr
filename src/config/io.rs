@@ -31,23 +31,71 @@ pub fn app_dir_name() -> &'static str {
     }
 }
 
-pub fn config_dir() -> PathBuf {
-    resolve_or_exit("config directory", try_config_dir())
+/// Paths resolved once at the process boundary and passed to consumers.
+/// Production code can only obtain one from `resolve()`: empty paths would
+/// put every file relative to the working directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(test, derive(Default))]
+pub struct AppPaths {
+    config_dir: PathBuf,
+    state_dir: PathBuf,
+    config_file: PathBuf,
+    home_dir: Option<PathBuf>,
+    current_dir: Option<PathBuf>,
 }
 
-pub fn state_dir() -> PathBuf {
-    resolve_or_exit("state directory", try_state_dir())
+impl AppPaths {
+    pub fn config_dir(&self) -> &Path {
+        &self.config_dir
+    }
+
+    pub fn state_dir(&self) -> &Path {
+        &self.state_dir
+    }
+
+    pub fn config_file(&self) -> &Path {
+        &self.config_file
+    }
+
+    pub fn home_dir(&self) -> Option<&Path> {
+        self.home_dir.as_deref()
+    }
+
+    pub fn current_dir(&self) -> Option<&Path> {
+        self.current_dir.as_deref()
+    }
+
+    /// Resolve the application's XDG directories and config file once.
+    pub fn resolve() -> Result<Self, Vec<String>> {
+        resolve_paths_from_env()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_at(root: &Path) -> Self {
+        Self::test_with_context(root, None, None)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_with_context(
+        root: &Path,
+        home_dir: Option<&Path>,
+        current_dir: Option<&Path>,
+    ) -> Self {
+        Self {
+            config_dir: root.join("config"),
+            state_dir: root.join("state"),
+            config_file: root.join("config/config.toml"),
+            home_dir: home_dir.map(Path::to_path_buf),
+            current_dir: current_dir.map(Path::to_path_buf),
+        }
+    }
 }
 
-pub fn try_config_dir() -> io::Result<PathBuf> {
-    platform_xdg_dir("XDG_CONFIG_HOME", ".config")
-}
-
-pub fn try_state_dir() -> io::Result<PathBuf> {
-    platform_xdg_dir("XDG_STATE_HOME", ".local/state")
-}
-
-fn platform_xdg_dir(variable: &str, home_suffix: &str) -> io::Result<PathBuf> {
+fn platform_xdg_dir(
+    variable: &str,
+    home_suffix: &str,
+    home_dir: Option<&Path>,
+) -> io::Result<PathBuf> {
     if let Some(value) = std::env::var_os(variable) {
         let directory = PathBuf::from(value);
         // The XDG base directory specification says to ignore empty and
@@ -58,18 +106,80 @@ fn platform_xdg_dir(variable: &str, home_suffix: &str) -> io::Result<PathBuf> {
         }
     }
 
-    Ok(crate::pathutil::home_dir()?
-        .join(home_suffix)
-        .join(app_dir_name()))
+    let home_dir = home_dir.ok_or_else(|| {
+        io::Error::other("HOME must be set to a non-empty absolute path to locate home directory")
+    })?;
+    Ok(home_dir.join(home_suffix).join(app_dir_name()))
 }
 
-fn resolve_or_exit(description: &str, result: io::Result<PathBuf>) -> PathBuf {
-    match result {
-        Ok(path) => path,
-        Err(err) => {
-            eprintln!("shepr: cannot resolve {description}: {err}");
-            std::process::exit(1);
+fn resolve_paths_from_env() -> Result<AppPaths, Vec<String>> {
+    let home_dir = crate::pathutil::home_dir().ok();
+    let current_dir = std::env::current_dir().ok();
+    let config_dir = platform_xdg_dir("XDG_CONFIG_HOME", ".config", home_dir.as_deref());
+    let state_dir = platform_xdg_dir("XDG_STATE_HOME", ".local/state", home_dir.as_deref());
+
+    let config_file = match std::env::var_os(CONFIG_PATH_ENV_VAR) {
+        Some(path) if path.is_empty() => Err(io::Error::other(format!(
+            "{CONFIG_PATH_ENV_VAR} must not be empty"
+        ))),
+        Some(path) => {
+            let path = PathBuf::from(path);
+            if path.is_absolute() {
+                Ok(path)
+            } else if let Some(current_dir) = current_dir.as_ref() {
+                Ok(current_dir.join(path))
+            } else {
+                Err(io::Error::other(format!(
+                    "cannot resolve relative {CONFIG_PATH_ENV_VAR} without a current directory"
+                )))
+            }
         }
+        None => config_dir
+            .as_ref()
+            .map(|directory| directory.join("config.toml"))
+            .map_err(|error| io::Error::other(error.to_string())),
+    };
+
+    let mut diagnostics = Vec::new();
+    let config_file = match config_file {
+        Ok(path) => Some(path),
+        Err(error) => {
+            diagnostics.push(format!("config path error: {error}"));
+            None
+        }
+    };
+
+    let config_dir = match config_dir {
+        Ok(path) => Some(path),
+        Err(error) if config_file.is_some() => {
+            diagnostics.push(format!("config directory error: {error}"));
+            None
+        }
+        Err(_) => None,
+    };
+
+    let state_dir = match state_dir {
+        Ok(path) => Some(path),
+        Err(error) => {
+            diagnostics.push(format!("state directory error: {error}"));
+            None
+        }
+    };
+
+    match (config_dir, state_dir, config_file) {
+        (Some(config_dir), Some(state_dir), Some(config_file)) if diagnostics.is_empty() => {
+            Ok(AppPaths {
+                config_dir,
+                state_dir,
+                config_file,
+                home_dir,
+                current_dir,
+            })
+        }
+        _ if diagnostics.is_empty() => {
+            Err(vec!["application paths could not be resolved".to_string()])
+        }
+        _ => Err(diagnostics),
     }
 }
 
@@ -122,41 +232,19 @@ fn read_optional_config(path: &Path) -> std::io::Result<Option<String>> {
 }
 
 impl Config {
-    /// Load config data for the diagnostic-only `config check` command.
-    /// Application entry points must use `load_validated` and reject every issue.
-    /// Both report the same problems, so `config check` passes exactly when a
-    /// launch would accept the config.
-    pub fn load_for_check() -> LoadedConfig {
-        let mut loaded = match try_config_path() {
-            Ok(path) => Self::load_from_path(&path),
-            Err(err) => LoadedConfig {
-                config: Self::default(),
-                diagnostics: vec![format!("config path error: {err}")],
-            },
-        };
+    /// Load config data and every diagnostic without rejecting any. The
+    /// `config check` command reports these; `load_validated` rejects them,
+    /// so `config check` passes exactly when a launch would accept the config.
+    pub fn load_for_check(paths: &AppPaths) -> LoadedConfig {
+        let mut loaded = Self::load_from_path(paths.config_file());
         let config_unavailable = loaded.diagnostics.iter().any(|diagnostic| {
-            diagnostic.starts_with("config path error:")
-                || diagnostic.starts_with("config read error:")
+            diagnostic.starts_with("config read error:")
                 || diagnostic.starts_with("config parse error:")
         });
-        if !config_unavailable && let Some(error) = configured_home_path_error(&loaded.config) {
+        if !config_unavailable
+            && let Some(error) = configured_home_path_error(&loaded.config, paths.home_dir())
+        {
             loaded.diagnostics.push(error);
-        }
-        // SHEPR_CONFIG_PATH can name the file while the directories shepr keeps
-        // sessions and state in still cannot be resolved.
-        let path_error_reported = loaded
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.starts_with("config path error:"));
-        if !path_error_reported && let Err(err) = try_config_dir() {
-            loaded
-                .diagnostics
-                .push(format!("config directory error: {err}"));
-        }
-        if let Err(err) = try_state_dir() {
-            loaded
-                .diagnostics
-                .push(format!("state directory error: {err}"));
         }
         loaded
     }
@@ -164,8 +252,10 @@ impl Config {
     /// Load a config for an application launch. Every path or validation
     /// problem is fatal, so a default config from an unsuccessful parse is
     /// never returned to runtime callers.
-    pub fn load_validated() -> Result<Self, Vec<String>> {
-        Self::load_for_check().into_validated()
+    pub fn load_validated(paths: &AppPaths) -> Result<Self, Vec<String>> {
+        let mut config = Self::load_for_check(paths).into_validated()?;
+        config.resolve_palette()?;
+        Ok(config)
     }
 
     fn load_from_path(path: &Path) -> LoadedConfig {
@@ -210,11 +300,13 @@ impl Config {
     }
 }
 
-fn configured_home_path_error(config: &Config) -> Option<String> {
+fn configured_home_path_error(config: &Config, home_dir: Option<&Path>) -> Option<String> {
     let result = match &config.terminal.new_cwd {
-        NewTerminalCwdConfig::Home => crate::pathutil::home_dir(),
+        NewTerminalCwdConfig::Home => home_dir
+            .map(Path::to_path_buf)
+            .ok_or_else(crate::pathutil::missing_home_error),
         NewTerminalCwdConfig::Path(path) if path == "~" || path.starts_with("~/") => {
-            crate::pathutil::expand_tilde_path(path)
+            crate::pathutil::expand_tilde_path_with_home(path, home_dir)
         }
         NewTerminalCwdConfig::Follow
         | NewTerminalCwdConfig::Current
@@ -223,22 +315,6 @@ fn configured_home_path_error(config: &Config) -> Option<String> {
     result
         .err()
         .map(|err| format!("terminal.new_cwd cannot be resolved: {err}"))
-}
-
-pub fn config_path() -> PathBuf {
-    resolve_or_exit("config path", try_config_path())
-}
-
-pub fn try_config_path() -> io::Result<PathBuf> {
-    if let Some(path) = std::env::var_os(CONFIG_PATH_ENV_VAR) {
-        if path.is_empty() {
-            return Err(io::Error::other(format!(
-                "{CONFIG_PATH_ENV_VAR} must not be empty"
-            )));
-        }
-        return Ok(PathBuf::from(path));
-    }
-    Ok(try_config_dir()?.join("config.toml"))
 }
 
 /// The keys written under `[ui]`, whatever their value. Serde fills unset keys
@@ -421,30 +497,47 @@ mod tests {
 
     #[test]
     fn load_validated_rejects_bad_config_file_and_accepts_missing_file() {
-        let env = crate::test_support::IsolatedEnv::new();
+        let _env = crate::test_support::IsolatedEnv::new();
         let scratch = crate::test_support::ScratchDir::new("config-load");
-        let path = scratch.join("config.toml");
-        env.set(CONFIG_PATH_ENV_VAR, &path);
+        let paths = AppPaths::test_at(scratch.path());
+        let path = paths.config_file();
+        std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
 
-        std::fs::write(&path, "[server]\nheadless_rows = 0\n").expect("write bad config fixture");
-        assert!(Config::load_validated().is_err());
+        std::fs::write(path, "[server]\nheadless_rows = 0\n").expect("write bad config fixture");
+        assert!(Config::load_validated(&paths).is_err());
 
-        std::fs::remove_file(&path).expect("remove config fixture");
-        assert!(Config::load_validated().is_ok());
+        std::fs::remove_file(path).expect("remove config fixture");
+        let defaults = Config::load_validated(&paths).expect("missing config uses defaults");
+        assert_eq!(
+            defaults.resolved_palette,
+            crate::app::state::Palette::catppuccin()
+        );
+
+        std::fs::write(
+            path,
+            "[theme]\nname = \"nord\"\n[theme.custom]\naccent = \"#010203\"\n",
+        )
+        .expect("write valid themed config");
+        let themed = Config::load_validated(&paths).expect("valid theme loads");
+        assert_eq!(
+            themed.resolved_palette.accent,
+            ratatui::style::Color::Rgb(1, 2, 3)
+        );
     }
 
     #[test]
     fn load_validated_rejects_home_cwd_without_absolute_home() {
-        let env = crate::test_support::IsolatedEnv::new();
+        let _env = crate::test_support::IsolatedEnv::new();
         let scratch = crate::test_support::ScratchDir::new("config-cwd");
-        let path = scratch.join("config.toml");
-        env.set(CONFIG_PATH_ENV_VAR, &path);
-        env.set("XDG_CONFIG_HOME", scratch.path());
-        env.set("XDG_STATE_HOME", scratch.path());
-        env.set("HOME", "relative/home");
-        std::fs::write(&path, "[terminal]\nnew_cwd = \"home\"\n").expect("write config fixture");
+        // Launch paths without a home directory: what resolution captures
+        // when HOME is missing or relative.
+        let paths = AppPaths::test_at(scratch.path());
+        assert!(paths.home_dir().is_none());
+        let path = paths.config_file();
+        std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
+        std::fs::write(path, "[terminal]\nnew_cwd = \"home\"\n").expect("write config fixture");
 
-        let report = Config::load_for_check();
+        let report = Config::load_for_check(&paths);
         assert!(
             report
                 .diagnostics
@@ -453,7 +546,7 @@ mod tests {
             "{:?}",
             report.diagnostics
         );
-        let errors = Config::load_validated().expect_err("home cwd needs absolute HOME");
+        let errors = Config::load_validated(&paths).expect_err("home cwd needs absolute HOME");
         assert!(
             errors
                 .iter()
@@ -466,19 +559,26 @@ mod tests {
     fn config_path_honours_the_override_variable() {
         let env = crate::test_support::IsolatedEnv::new();
         assert_eq!(
-            config_path(),
+            AppPaths::resolve()
+                .expect("default paths resolve")
+                .config_file(),
             env.home()
                 .join(".config")
                 .join(app_dir_name())
                 .join("config.toml")
+                .as_path()
         );
         let custom = env.path().join("custom.toml");
         env.set(CONFIG_PATH_ENV_VAR, &custom);
-        assert_eq!(config_path(), custom);
+        assert_eq!(
+            AppPaths::resolve()
+                .expect("override resolves")
+                .config_file(),
+            custom
+        );
 
         env.set(CONFIG_PATH_ENV_VAR, "");
-        assert!(try_config_path().is_err());
-        assert!(Config::load_validated().is_err());
+        assert!(AppPaths::resolve().is_err());
     }
 
     #[test]
@@ -564,8 +664,9 @@ id = "example"
         for invalid in [OsString::new(), OsString::from("relative/config")] {
             env.set("XDG_CONFIG_HOME", &invalid);
             env.set("XDG_STATE_HOME", &invalid);
-            assert_eq!(try_config_dir().expect("home fallback"), expected_config);
-            assert_eq!(try_state_dir().expect("home fallback"), expected_state);
+            let paths = AppPaths::resolve().expect("home fallback");
+            assert_eq!(paths.config_dir(), expected_config);
+            assert_eq!(paths.state_dir(), expected_state);
         }
 
         let xdg_config = env.path().join("xdg-config");
@@ -573,25 +674,17 @@ id = "example"
         env.set("XDG_CONFIG_HOME", &xdg_config);
         env.set("XDG_STATE_HOME", &xdg_state);
         env.set("HOME", "relative/home");
-        assert_eq!(
-            try_config_dir().expect("absolute XDG config"),
-            xdg_config.join(app_dir_name())
-        );
-        assert_eq!(
-            try_state_dir().expect("absolute XDG state"),
-            xdg_state.join(app_dir_name())
-        );
+        let paths = AppPaths::resolve().expect("absolute XDG paths");
+        assert_eq!(paths.config_dir(), xdg_config.join(app_dir_name()));
+        assert_eq!(paths.state_dir(), xdg_state.join(app_dir_name()));
 
         env.remove("XDG_CONFIG_HOME");
         env.remove("XDG_STATE_HOME");
-        assert!(try_config_dir().is_err());
-        assert!(try_state_dir().is_err());
+        assert!(AppPaths::resolve().is_err());
         env.set("HOME", "");
-        assert!(try_config_dir().is_err());
-        assert!(try_state_dir().is_err());
+        assert!(AppPaths::resolve().is_err());
         env.remove("HOME");
-        assert!(try_config_dir().is_err());
-        assert!(try_state_dir().is_err());
+        assert!(AppPaths::resolve().is_err());
     }
 
     #[test]

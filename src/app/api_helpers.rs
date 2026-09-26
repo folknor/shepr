@@ -85,14 +85,24 @@ pub(super) fn detect_state_from_api(
 
 pub(super) fn pane_agent_status(
     state: crate::detect::AgentState,
-    seen: bool,
 ) -> crate::api::schema::AgentStatus {
-    match (state, seen) {
-        (crate::detect::AgentState::Idle, false) => crate::api::schema::AgentStatus::Done,
-        (crate::detect::AgentState::Idle, true) => crate::api::schema::AgentStatus::Idle,
-        (crate::detect::AgentState::Working, _) => crate::api::schema::AgentStatus::Working,
-        (crate::detect::AgentState::Blocked, _) => crate::api::schema::AgentStatus::Blocked,
-        (crate::detect::AgentState::Unknown, _) => crate::api::schema::AgentStatus::Unknown,
+    match state {
+        crate::detect::AgentState::Idle | crate::detect::AgentState::Unknown => {
+            crate::api::schema::AgentStatus::Idle
+        }
+        crate::detect::AgentState::Working => crate::api::schema::AgentStatus::Working,
+        crate::detect::AgentState::Blocked => crate::api::schema::AgentStatus::Blocked,
+    }
+}
+
+#[cfg(test)]
+mod agent_status_tests {
+    use super::pane_agent_status;
+    use crate::{api::schema::AgentStatus, detect::AgentState};
+
+    #[test]
+    fn unknown_agent_state_presents_as_idle() {
+        assert_eq!(pane_agent_status(AgentState::Unknown), AgentStatus::Idle);
     }
 }
 

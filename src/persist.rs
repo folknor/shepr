@@ -1,6 +1,6 @@
 //! Session persistence - save/restore workspaces, layouts, and working directories.
 //!
-//! Files live in the session's data directory (`crate::session::data_dir`):
+//! Files live in the session data directory passed by the runtime:
 //! the config directory itself for the default session, `sessions/<name>/`
 //! under it for a named one. The layout is `session.json`; optional pane
 //! screen history is stored separately in `session-history.json`. One server

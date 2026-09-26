@@ -16,13 +16,17 @@ use crate::api::schema::{
 use super::matches::{flag, report_source, required, string, value, values, words};
 use super::target::CallerPane;
 
-pub(super) fn run_pane_command(matches: &ArgMatches) -> std::io::Result<i32> {
-    let caller = super::target::caller_pane();
+pub(super) fn run_pane_command(
+    matches: &ArgMatches,
+    paths: &crate::config::AppPaths,
+) -> std::io::Result<i32> {
+    let caller = super::target::caller_pane(paths);
     // Every command below that takes `--pane`/`--current` resolves it with
     // `selected_pane`; a `--current` the caller cannot satisfy is a usage error.
     let pane = |matches: &ArgMatches| selected_pane(matches, &caller);
     match matches.subcommand() {
         Some(("list", matches)) => print_request(
+            paths,
             "cli:pane:list",
             Method::PaneList(PaneListParams {
                 workspace_id: string(matches, "workspace"),
@@ -30,12 +34,14 @@ pub(super) fn run_pane_command(matches: &ArgMatches) -> std::io::Result<i32> {
         ),
         Some(("current", matches)) => match pane(matches) {
             Ok(caller_pane_id) => print_request(
+                paths,
                 "cli:pane:current",
                 Method::PaneCurrent(PaneCurrentParams { caller_pane_id }),
             ),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Some(("get", matches)) => print_request(
+            paths,
             "cli:pane:get",
             Method::PaneGet(PaneTarget {
                 pane_id: required(matches, "pane_id"),
@@ -43,6 +49,7 @@ pub(super) fn run_pane_command(matches: &ArgMatches) -> std::io::Result<i32> {
         ),
         Some(("layout", matches)) => match pane(matches) {
             Ok(pane_id) => print_request(
+                paths,
                 "cli:pane:layout",
                 Method::PaneLayout(PaneLayoutParams { pane_id }),
             ),
@@ -50,6 +57,7 @@ pub(super) fn run_pane_command(matches: &ArgMatches) -> std::io::Result<i32> {
         },
         Some(("process-info", matches)) => match pane(matches) {
             Ok(pane_id) => print_request(
+                paths,
                 "cli:pane:process_info",
                 Method::PaneProcessInfo(PaneProcessInfoParams { pane_id }),
             ),
@@ -57,6 +65,7 @@ pub(super) fn run_pane_command(matches: &ArgMatches) -> std::io::Result<i32> {
         },
         Some(("neighbor", matches)) => match pane(matches) {
             Ok(pane_id) => print_request(
+                paths,
                 "cli:pane:neighbor",
                 Method::PaneNeighbor(PaneNeighborParams {
                     pane_id,
@@ -67,106 +76,130 @@ pub(super) fn run_pane_command(matches: &ArgMatches) -> std::io::Result<i32> {
         },
         Some(("edges", matches)) => match pane(matches) {
             Ok(pane_id) => print_request(
+                paths,
                 "cli:pane:edges",
                 Method::PaneEdges(PaneEdgesParams { pane_id }),
             ),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Some(("focus", matches)) => match pane(matches) {
-            Ok(pane_id) => super::runtime::pane_focus(PaneFocusDirectionParams {
-                pane_id,
-                direction: direction(matches),
-            }),
+            Ok(pane_id) => super::runtime::pane_focus(
+                paths,
+                PaneFocusDirectionParams {
+                    pane_id,
+                    direction: direction(matches),
+                },
+            ),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Some(("resize", matches)) => match pane(matches) {
-            Ok(pane_id) => super::runtime::pane_resize(PaneResizeParams {
-                pane_id,
-                direction: direction(matches),
-                amount: value::<f32>(matches, "amount"),
-            }),
+            Ok(pane_id) => super::runtime::pane_resize(
+                paths,
+                PaneResizeParams {
+                    pane_id,
+                    direction: direction(matches),
+                    amount: value::<f32>(matches, "amount"),
+                },
+            ),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Some(("zoom", matches)) => match zoom_params(matches, &caller) {
-            Ok(params) => super::runtime::pane_zoom(params),
+            Ok(params) => super::runtime::pane_zoom(paths, params),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Some(("read", matches)) => {
-            let response = super::send_request(&Request {
-                id: "cli:pane:read".into(),
-                method: Method::PaneRead(read_params(matches)),
-            })?;
+            let response = super::send_request(
+                paths,
+                &Request {
+                    id: "cli:pane:read".into(),
+                    method: Method::PaneRead(read_params(matches)),
+                },
+            )?;
             super::print_read_response(&response)
         }
-        Some(("rename", matches)) => super::runtime::pane_rename(PaneRenameParams {
-            pane_id: required(matches, "pane_id"),
-            label: (!flag(matches, "clear")).then(|| words(matches, "label")),
-        }),
+        Some(("rename", matches)) => super::runtime::pane_rename(
+            paths,
+            PaneRenameParams {
+                pane_id: required(matches, "pane_id"),
+                label: (!flag(matches, "clear")).then(|| words(matches, "label")),
+            },
+        ),
         Some(("input", matches)) => match input_params(matches, &caller) {
-            Ok(params) => super::runtime::pane_input_set(params),
+            Ok(params) => super::runtime::pane_input_set(paths, params),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("split", matches)) => match split_params(matches, &caller) {
-            Ok(params) => super::runtime::pane_split(params),
+        Some(("split", matches)) => match split_params(matches, &caller, paths) {
+            Ok(params) => super::runtime::pane_split(paths, params),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Some(("swap", matches)) => match swap_params(matches, &caller) {
-            Ok(params) => super::runtime::pane_swap(params),
+            Ok(params) => super::runtime::pane_swap(paths, params),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Some(("move", matches)) => match move_params(matches) {
-            Ok(params) => super::runtime::pane_move(params),
+            Ok(params) => super::runtime::pane_move(paths, params),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("close", matches)) => super::runtime::pane_close(required(matches, "pane_id")),
-        Some(("send-text", matches)) => {
-            super::send_ok_request(Method::PaneSendText(PaneSendTextParams {
+        Some(("close", matches)) => super::runtime::pane_close(paths, required(matches, "pane_id")),
+        Some(("send-text", matches)) => super::send_ok_request(
+            paths,
+            Method::PaneSendText(PaneSendTextParams {
                 pane_id: required(matches, "pane_id"),
                 text: words(matches, "text"),
-            }))
-        }
-        Some(("send-keys", matches)) => {
-            super::send_ok_request(Method::PaneSendKeys(PaneSendKeysParams {
+            }),
+        ),
+        Some(("send-keys", matches)) => super::send_ok_request(
+            paths,
+            Method::PaneSendKeys(PaneSendKeysParams {
                 pane_id: required(matches, "pane_id"),
                 keys: values::<String>(matches, "key"),
-            }))
-        }
+            }),
+        ),
         Some(("wait-output", matches)) => print_request(
+            paths,
             "cli:pane:wait-output",
             Method::PaneWaitForOutput(wait_output_params(matches)),
         ),
         Some(("report-agent", matches)) => match report_agent_params(matches) {
-            Ok(params) => super::send_ok_request(Method::PaneReportAgent(params)),
+            Ok(params) => super::send_ok_request(paths, Method::PaneReportAgent(params)),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Some(("report-agent-session", matches)) => match report_agent_session_params(matches) {
-            Ok(params) => super::send_ok_request(Method::PaneReportAgentSession(params)),
+            Ok(params) => super::send_ok_request(paths, Method::PaneReportAgentSession(params)),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Some(("release-agent", matches)) => match release_agent_params(matches) {
-            Ok(params) => super::send_ok_request(Method::PaneReleaseAgent(params)),
+            Ok(params) => super::send_ok_request(paths, Method::PaneReleaseAgent(params)),
             Err(message) => Ok(super::usage_error(&message)),
         },
         Some(("report-metadata", matches)) => match report_metadata_params(matches) {
-            Ok(params) => super::send_ok_request(Method::PaneReportMetadata(params)),
+            Ok(params) => super::send_ok_request(paths, Method::PaneReportMetadata(params)),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("run", matches)) => {
-            super::send_ok_request(Method::PaneSendInput(PaneSendInputParams {
+        Some(("run", matches)) => super::send_ok_request(
+            paths,
+            Method::PaneSendInput(PaneSendInputParams {
                 pane_id: required(matches, "pane_id"),
                 text: words(matches, "command"),
                 keys: vec!["Enter".into()],
-            }))
-        }
+            }),
+        ),
         _ => Ok(super::missing_subcommand()),
     }
 }
 
-fn print_request(id: &'static str, method: Method) -> std::io::Result<i32> {
-    super::print_response(&super::send_request(&Request {
-        id: id.into(),
-        method,
-    })?)
+fn print_request(
+    paths: &crate::config::AppPaths,
+    id: &'static str,
+    method: Method,
+) -> std::io::Result<i32> {
+    super::print_response(&super::send_request(
+        paths,
+        &Request {
+            id: id.into(),
+            method,
+        },
+    )?)
 }
 
 /// The pane a pane command acts on. One rule for every command that takes
@@ -243,13 +276,17 @@ fn input_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneInputSe
     })
 }
 
-fn split_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneSplitParams, String> {
+fn split_params(
+    matches: &ArgMatches,
+    caller: &CallerPane,
+    paths: &crate::config::AppPaths,
+) -> Result<PaneSplitParams, String> {
     Ok(PaneSplitParams {
         workspace_id: None,
         target_pane_id: selected_pane(matches, caller)?,
         direction: value::<SplitDirection>(matches, "direction").unwrap_or(SplitDirection::Right),
         ratio: value::<f32>(matches, "ratio"),
-        cwd: super::matches::cwd(matches)?,
+        cwd: super::matches::cwd(matches, paths)?,
         focus: flag(matches, "focus"),
         right_click: value::<PaneRightClickTarget>(matches, "right-click")
             .unwrap_or(PaneRightClickTarget::Shepr),
@@ -438,6 +475,14 @@ mod tests {
         CallerPane::Known(pane_id.into())
     }
 
+    fn test_paths() -> crate::config::AppPaths {
+        crate::config::AppPaths::test_with_context(
+            std::path::Path::new("/tmp/shepr-cli-paths"),
+            Some(std::path::Path::new("/home/me")),
+            Some(std::path::Path::new("/home/me/proj")),
+        )
+    }
+
     const OUTSIDE: CallerPane = CallerPane::Unset;
 
     #[test]
@@ -452,6 +497,7 @@ mod tests {
                 "0.333",
             ]),
             &OUTSIDE,
+            &test_paths(),
         )
         .expect("test precondition");
 
@@ -466,7 +512,8 @@ mod tests {
         for form in [&["--right-click", "pane"][..], &["--right-click=pane"]] {
             let mut args = vec!["split", "--direction", "right"];
             args.extend_from_slice(form);
-            let params = split_params(&pane(&args), &OUTSIDE).expect("test precondition");
+            let params =
+                split_params(&pane(&args), &OUTSIDE, &test_paths()).expect("test precondition");
             assert_eq!(params.right_click, PaneRightClickTarget::Pane);
         }
     }
@@ -482,6 +529,7 @@ mod tests {
                 "--env=A=b",
             ]),
             &OUTSIDE,
+            &test_paths(),
         )
         .expect("test precondition");
         assert_eq!(params.direction, SplitDirection::Down);
@@ -495,10 +543,10 @@ mod tests {
         let params = split_params(
             &pane(&["split", "--direction", "down", "--cwd", "."]),
             &OUTSIDE,
+            &test_paths(),
         )
         .expect("test precondition");
-        let expected = std::env::current_dir().expect("test precondition");
-        assert_eq!(params.cwd.as_deref(), expected.to_str());
+        assert_eq!(params.cwd.as_deref(), Some("/home/me/proj"));
     }
 
     #[test]
@@ -506,6 +554,7 @@ mod tests {
         let params = split_params(
             &pane(&["split", "--direction", "down", "--current"]),
             &known("issue-1"),
+            &test_paths(),
         )
         .expect("test precondition");
         assert_eq!(params.target_pane_id, Some("issue-1".into()));
@@ -514,7 +563,8 @@ mod tests {
         assert!(
             split_params(
                 &pane(&["split", "--direction", "down", "--current"]),
-                &OUTSIDE
+                &OUTSIDE,
+                &test_paths(),
             )
             .is_err()
         );
@@ -532,6 +582,7 @@ mod tests {
                 "/var/tmp",
             ]),
             &known("w1:p2"),
+            &test_paths(),
         )
         .expect("test precondition");
 
@@ -546,8 +597,12 @@ mod tests {
             CallerPane::OtherServer,
             CallerPane::Remote,
         ] {
-            let params = split_params(&pane(&["split", "--direction", "down"]), &caller)
-                .expect("test precondition");
+            let params = split_params(
+                &pane(&["split", "--direction", "down"]),
+                &caller,
+                &test_paths(),
+            )
+            .expect("test precondition");
             assert_eq!(params.target_pane_id, None);
         }
     }
@@ -558,7 +613,8 @@ mod tests {
             let mut args = vec!["split"];
             args.extend_from_slice(target);
             args.extend_from_slice(&["--direction", "right"]);
-            let params = split_params(&pane(&args), &known("w1:p2")).expect("test precondition");
+            let params = split_params(&pane(&args), &known("w1:p2"), &test_paths())
+                .expect("test precondition");
 
             assert_eq!(params.target_pane_id, Some("w2:p3".into()));
         }

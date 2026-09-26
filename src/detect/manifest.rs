@@ -476,7 +476,7 @@ struct ManifestRegistry {
 }
 
 impl ManifestRegistry {
-    fn new(override_dir: &Path) -> Self {
+    fn new(override_dir: Option<&Path>) -> Self {
         Self {
             cache: RwLock::new(build_manifest_cache(override_dir)),
             reload_lock: Mutex::new(()),
@@ -488,7 +488,7 @@ impl ManifestRegistry {
             .reload_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let cache = build_manifest_cache(override_dir);
+        let cache = build_manifest_cache(Some(override_dir));
         let summaries = manifest_summaries_from_cache(&cache);
         match self.cache.write() {
             Ok(mut guard) => *guard = cache,
@@ -518,15 +518,15 @@ impl ManifestRegistry {
     }
 }
 
-pub(crate) fn reload_manifests() -> Vec<AgentManifestSummary> {
-    registry().reload(&override_dir())
+pub(crate) fn reload_manifests(override_dir: &Path) -> Vec<AgentManifestSummary> {
+    registry().reload(override_dir)
 }
 
 fn registry() -> &'static ManifestRegistry {
-    MANIFESTS.get_or_init(|| ManifestRegistry::new(&override_dir()))
+    MANIFESTS.get_or_init(|| ManifestRegistry::new(None))
 }
 
-fn build_manifest_cache(override_dir: &Path) -> ManifestCache {
+fn build_manifest_cache(override_dir: Option<&Path>) -> ManifestCache {
     ManifestCache {
         manifests: Agent::SCREEN_MANIFEST_AGENTS
             .into_iter()
@@ -810,9 +810,11 @@ fn fallback_explain(
     }
 }
 
-fn load_manifest_uncached(agent: Agent, override_dir: &Path) -> Option<LoadedManifest> {
+fn load_manifest_uncached(agent: Agent, override_dir: Option<&Path>) -> Option<LoadedManifest> {
     let bundled = bundled_manifest(agent);
-    let path = override_path(override_dir, agent);
+    let Some(path) = override_dir.map(|directory| override_path(directory, agent)) else {
+        return bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest));
+    };
     if !path.exists() {
         return bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest));
     }
@@ -1152,12 +1154,6 @@ fn validate_region_name(spec: &str) -> Result<(), String> {
     RegionSpec::parse(spec)
         .map(|_| ())
         .ok_or_else(|| spec.trim().to_string())
-}
-
-/// Directory holding local manifest overrides, resolved from the config
-/// directory each time the process-wide registry is (re)built.
-fn override_dir() -> PathBuf {
-    crate::config::config_dir().join("agent-detection")
 }
 
 fn override_path(override_dir: &Path, agent: Agent) -> PathBuf {

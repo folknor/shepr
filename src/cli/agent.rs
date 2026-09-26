@@ -18,38 +18,49 @@ const DEFAULT_AGENT_START_TIMEOUT_MS: u64 = 30_000;
 pub(super) fn run_agent_command(
     matches: &ArgMatches,
     config: Option<crate::config::Config>,
+    paths: &crate::config::AppPaths,
 ) -> std::io::Result<i32> {
     match matches.subcommand() {
-        Some(("list", _)) => agent_list(),
-        Some(("get", matches)) => agent_get(required(matches, "target")),
-        Some(("read", matches)) => agent_read(read_params(matches)),
-        Some(("send-keys", matches)) => agent_send_keys(AgentSendKeysParams {
-            target: required(matches, "target"),
-            keys: values::<String>(matches, "key"),
-        }),
-        Some(("prompt", matches)) => agent_prompt(prompt_params(matches)),
-        Some(("rename", matches)) => agent_rename(AgentRenameParams {
-            target: required(matches, "target"),
-            name: string(matches, "name"),
-        }),
-        Some(("focus", matches)) => agent_focus(required(matches, "target")),
-        Some(("wait", matches)) => agent_wait(AgentWaitParams {
-            target: required(matches, "target"),
-            until: values::<AgentStatus>(matches, "until"),
-            timeout_ms: value::<u64>(matches, "timeout"),
-        }),
+        Some(("list", _)) => agent_list(paths),
+        Some(("get", matches)) => agent_get(paths, required(matches, "target")),
+        Some(("read", matches)) => agent_read(paths, read_params(matches)),
+        Some(("send-keys", matches)) => agent_send_keys(
+            paths,
+            AgentSendKeysParams {
+                target: required(matches, "target"),
+                keys: values::<String>(matches, "key"),
+            },
+        ),
+        Some(("prompt", matches)) => agent_prompt(paths, prompt_params(matches)),
+        Some(("rename", matches)) => agent_rename(
+            paths,
+            AgentRenameParams {
+                target: required(matches, "target"),
+                name: string(matches, "name"),
+            },
+        ),
+        Some(("focus", matches)) => agent_focus(paths, required(matches, "target")),
+        Some(("wait", matches)) => agent_wait(
+            paths,
+            AgentWaitParams {
+                target: required(matches, "target"),
+                until: values::<AgentStatus>(matches, "until"),
+                timeout_ms: value::<u64>(matches, "timeout"),
+            },
+        ),
         Some(("attach", matches)) => agent_attach(
             &required(matches, "target"),
             flag(matches, "takeover"),
             config,
+            paths,
         ),
-        Some(("start", matches)) => agent_start(matches),
-        Some(("explain", matches)) => agent_explain(matches),
+        Some(("start", matches)) => agent_start(paths, matches),
+        Some(("explain", matches)) => agent_explain(paths, matches),
         _ => Ok(super::missing_subcommand()),
     }
 }
 
-fn agent_explain(matches: &ArgMatches) -> std::io::Result<i32> {
+fn agent_explain(paths: &crate::config::AppPaths, matches: &ArgMatches) -> std::io::Result<i32> {
     // The spec enforces the two forms: `<TARGET>` alone, or `--file` together
     // with `--agent`.
     let json = flag(matches, "json") || string(matches, "format").as_deref() == Some("json");
@@ -77,12 +88,15 @@ fn agent_explain(matches: &ArgMatches) -> std::io::Result<i32> {
             &content,
         ))
     } else {
-        let response = super::send_request(&Request {
-            id: "cli:agent:explain".into(),
-            method: Method::AgentExplain(AgentTarget {
-                target: required(matches, "target"),
-            }),
-        })?;
+        let response = super::send_request(
+            paths,
+            &Request {
+                id: "cli:agent:explain".into(),
+                method: Method::AgentExplain(AgentTarget {
+                    target: required(matches, "target"),
+                }),
+            },
+        )?;
         if response.get("error").is_some() {
             eprintln!(
                 "{}",
@@ -201,7 +215,7 @@ fn matched_rule_region_preview<'a>(
         .filter(|preview| !preview.is_empty())
 }
 
-fn agent_start(matches: &ArgMatches) -> std::io::Result<i32> {
+fn agent_start(paths: &crate::config::AppPaths, matches: &ArgMatches) -> std::io::Result<i32> {
     let name = &required(matches, "name");
     let kind = required(matches, "kind");
     let pane_id = required(matches, "pane");
@@ -218,38 +232,41 @@ fn agent_start(matches: &ArgMatches) -> std::io::Result<i32> {
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_AGENT_START_TIMEOUT_MS));
     let retryable_timeout = timeout > crate::app::AGENT_START_SETTLE_DELAY
         && timeout <= crate::app::MAX_AGENT_START_TIMEOUT;
-    let pinned_terminal_id = pane_terminal_id(&pane_id)?;
+    let pinned_terminal_id = pane_terminal_id(paths, &pane_id)?;
     let mut retry_deadline = None;
     let mut previous_busy_response = None;
     let mut response = loop {
         if let Some(previous_busy_response) = previous_busy_response.as_ref() {
             let retry_expired = retry_deadline.is_some_and(|deadline| Instant::now() >= deadline);
             if retry_expired
-                || pane_terminal_id(&pane_id)? != pinned_terminal_id
-                || !pane_shell_is_initializing(&pane_id)?
+                || pane_terminal_id(paths, &pane_id)? != pinned_terminal_id
+                || !pane_shell_is_initializing(paths, &pane_id)?
             {
                 return super::print_response(previous_busy_response);
             }
         }
 
-        let response = super::send_request(&Request {
-            id: "cli:agent:start".into(),
-            method: Method::AgentStart(AgentStartParams {
-                name: name.clone(),
-                kind: kind.clone(),
-                pane_id: pane_id.clone(),
-                args: agent_args.clone(),
-                timeout_ms,
-            }),
-        })?;
+        let response = super::send_request(
+            paths,
+            &Request {
+                id: "cli:agent:start".into(),
+                method: Method::AgentStart(AgentStartParams {
+                    name: name.clone(),
+                    kind: kind.clone(),
+                    pane_id: pane_id.clone(),
+                    args: agent_args.clone(),
+                    timeout_ms,
+                }),
+            },
+        )?;
         if response.get("error").is_none() {
             break response;
         }
         if response["error"]["code"].as_str() != Some("agent_pane_busy")
             || !retryable_timeout
             || pinned_terminal_id.is_none()
-            || pane_terminal_id(&pane_id)? != pinned_terminal_id
-            || !pane_shell_is_initializing(&pane_id)?
+            || pane_terminal_id(paths, &pane_id)? != pinned_terminal_id
+            || !pane_shell_is_initializing(paths, &pane_id)?
         {
             return super::print_response(&response);
         }
@@ -280,6 +297,7 @@ fn agent_start(matches: &ArgMatches) -> std::io::Result<i32> {
         return super::print_response(&agent_name_lost_error("cli:agent:start", name));
     }
     let waited = wait_for_named_agent(
+        paths,
         name,
         &pane_id,
         timeout,
@@ -298,37 +316,47 @@ fn agent_start(matches: &ArgMatches) -> std::io::Result<i32> {
     }
 }
 
-fn agent_list() -> std::io::Result<i32> {
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:list".into(),
-        method: Method::AgentList(EmptyParams::default()),
-    })?)
+fn agent_list(paths: &crate::config::AppPaths) -> std::io::Result<i32> {
+    super::print_response(&super::send_request(
+        paths,
+        &Request {
+            id: "cli:agent:list".into(),
+            method: Method::AgentList(EmptyParams::default()),
+        },
+    )?)
 }
 
-fn agent_get(target: String) -> std::io::Result<i32> {
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:get".into(),
-        method: Method::AgentGet(AgentTarget { target }),
-    })?)
+fn agent_get(paths: &crate::config::AppPaths, target: String) -> std::io::Result<i32> {
+    super::print_response(&super::send_request(
+        paths,
+        &Request {
+            id: "cli:agent:get".into(),
+            method: Method::AgentGet(AgentTarget { target }),
+        },
+    )?)
 }
 
-fn agent_focus(target: String) -> std::io::Result<i32> {
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:focus".into(),
-        method: Method::AgentFocus(AgentTarget { target }),
-    })?)
+fn agent_focus(paths: &crate::config::AppPaths, target: String) -> std::io::Result<i32> {
+    super::print_response(&super::send_request(
+        paths,
+        &Request {
+            id: "cli:agent:focus".into(),
+            method: Method::AgentFocus(AgentTarget { target }),
+        },
+    )?)
 }
 
 fn agent_attach(
     target: &str,
     takeover: bool,
     config: Option<crate::config::Config>,
+    paths: &crate::config::AppPaths,
 ) -> std::io::Result<i32> {
     let config = match config {
         Some(config) => config,
-        None => super::load_validated_config()?,
+        None => super::load_validated_config(paths)?,
     };
-    let response = resolve_agent_target(target, "cli:agent:attach:resolve")?;
+    let response = resolve_agent_target(paths, target, "cli:agent:attach:resolve")?;
     if response.get("error").is_some() {
         eprintln!(
             "{}",
@@ -340,18 +368,22 @@ fn agent_attach(
         eprintln!("agent attach failed: response did not include terminal_id");
         return Ok(1);
     };
-    crate::client::run_terminal_attach(&config, terminal_id.to_owned(), takeover)?;
+    crate::client::run_terminal_attach(&config, paths, terminal_id.to_owned(), takeover)?;
     Ok(0)
 }
 
-fn agent_wait(params: AgentWaitParams) -> std::io::Result<i32> {
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:wait".into(),
-        method: Method::AgentWait(params),
-    })?)
+fn agent_wait(paths: &crate::config::AppPaths, params: AgentWaitParams) -> std::io::Result<i32> {
+    super::print_response(&super::send_request(
+        paths,
+        &Request {
+            id: "cli:agent:wait".into(),
+            method: Method::AgentWait(params),
+        },
+    )?)
 }
 
 fn wait_for_named_agent(
+    paths: &crate::config::AppPaths,
     name: &str,
     fallback_pane_id: &str,
     timeout: Duration,
@@ -364,18 +396,18 @@ fn wait_for_named_agent(
         if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             // Let the server reconcile its matching startup deadline before
             // returning so the pending name is immediately reusable.
-            let _ = resolve_agent_target_unchecked(name, "cli:agent:start:timeout");
+            let _ = resolve_agent_target_unchecked(paths, name, "cli:agent:start:timeout");
             return Ok(Err(agent_wait_timeout()));
         }
         let poll_id = "cli:agent:start";
         let mut response = if first_poll {
             first_poll = false;
-            resolve_agent_target(name, poll_id)?
+            resolve_agent_target(paths, name, poll_id)?
         } else {
-            resolve_agent_target_unchecked(name, poll_id)?
+            resolve_agent_target_unchecked(paths, name, poll_id)?
         };
         if response.get("error").is_some() {
-            response = resolve_agent_target_unchecked(fallback_pane_id, poll_id)?;
+            response = resolve_agent_target_unchecked(paths, fallback_pane_id, poll_id)?;
             if response.get("error").is_some() {
                 std::thread::sleep(AGENT_START_POLL_INTERVAL);
                 continue;
@@ -402,17 +434,11 @@ fn wait_for_named_agent(
                     "agent_not_ready",
                     format!("agent {name} is blocked during startup and is not ready for prompts"),
                 ))),
-                Some("unknown")
-                    if expected_kind == "codex"
-                        && agent["interactive_ready"].as_bool() == Some(true) =>
-                {
+                Some("working") => None,
+                Some("idle") if agent["interactive_ready"].as_bool() == Some(true) => {
                     Some(Ok(agent.clone()))
                 }
-                Some("working" | "unknown") => None,
-                Some("idle" | "done") if agent["interactive_ready"].as_bool() == Some(true) => {
-                    Some(Ok(agent.clone()))
-                }
-                Some("idle" | "done") if !agent["launch_pending"].as_bool().unwrap_or(false) => {
+                Some("idle") if !agent["launch_pending"].as_bool().unwrap_or(false) => {
                     Some(Err(cli_agent_error(
                         "cli:agent:start",
                         "agent_start_failed",
@@ -429,25 +455,37 @@ fn wait_for_named_agent(
     }
 }
 
-fn pane_terminal_id(pane_id: &str) -> std::io::Result<Option<String>> {
-    let response = super::send_request(&Request {
-        id: "cli:agent:start:pane".into(),
-        method: Method::PaneGet(PaneTarget {
-            pane_id: pane_id.to_owned(),
-        }),
-    })?;
+fn pane_terminal_id(
+    paths: &crate::config::AppPaths,
+    pane_id: &str,
+) -> std::io::Result<Option<String>> {
+    let response = super::send_request(
+        paths,
+        &Request {
+            id: "cli:agent:start:pane".into(),
+            method: Method::PaneGet(PaneTarget {
+                pane_id: pane_id.to_owned(),
+            }),
+        },
+    )?;
     Ok(response["result"]["pane"]["terminal_id"]
         .as_str()
         .map(str::to_owned))
 }
 
-fn pane_shell_is_initializing(pane_id: &str) -> std::io::Result<bool> {
-    let response = super::send_request(&Request {
-        id: "cli:agent:start:process_info".into(),
-        method: Method::PaneProcessInfo(PaneProcessInfoParams {
-            pane_id: Some(pane_id.to_owned()),
-        }),
-    })?;
+fn pane_shell_is_initializing(
+    paths: &crate::config::AppPaths,
+    pane_id: &str,
+) -> std::io::Result<bool> {
+    let response = super::send_request(
+        paths,
+        &Request {
+            id: "cli:agent:start:process_info".into(),
+            method: Method::PaneProcessInfo(PaneProcessInfoParams {
+                pane_id: Some(pane_id.to_owned()),
+            }),
+        },
+    )?;
     Ok(process_info_shows_shell_initialization(
         &response["result"]["process_info"],
     ))
@@ -518,15 +556,20 @@ fn cli_agent_error(id: &str, code: &str, message: impl Into<String>) -> serde_js
     })
 }
 
-fn resolve_agent_target(target: &str, request_id: &str) -> std::io::Result<serde_json::Value> {
-    super::send_request(&agent_get_request(target, request_id))
-}
-
-fn resolve_agent_target_unchecked(
+fn resolve_agent_target(
+    paths: &crate::config::AppPaths,
     target: &str,
     request_id: &str,
 ) -> std::io::Result<serde_json::Value> {
-    super::send_request_unchecked(&agent_get_request(target, request_id))
+    super::send_request(paths, &agent_get_request(target, request_id))
+}
+
+fn resolve_agent_target_unchecked(
+    paths: &crate::config::AppPaths,
+    target: &str,
+    request_id: &str,
+) -> std::io::Result<serde_json::Value> {
+    super::send_request_unchecked(paths, &agent_get_request(target, request_id))
 }
 
 fn agent_get_request(target: &str, request_id: &str) -> Request {
@@ -538,11 +581,17 @@ fn agent_get_request(target: &str, request_id: &str) -> Request {
     }
 }
 
-fn agent_rename(params: AgentRenameParams) -> std::io::Result<i32> {
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:rename".into(),
-        method: Method::AgentRename(params),
-    })?)
+fn agent_rename(
+    paths: &crate::config::AppPaths,
+    params: AgentRenameParams,
+) -> std::io::Result<i32> {
+    super::print_response(&super::send_request(
+        paths,
+        &Request {
+            id: "cli:agent:rename".into(),
+            method: Method::AgentRename(params),
+        },
+    )?)
 }
 
 fn prompt_params(matches: &ArgMatches) -> AgentPromptParams {
@@ -558,19 +607,31 @@ fn prompt_params(matches: &ArgMatches) -> AgentPromptParams {
     }
 }
 
-fn agent_prompt(params: AgentPromptParams) -> std::io::Result<i32> {
-    let response = super::send_request(&Request {
-        id: "cli:agent:prompt".into(),
-        method: Method::AgentPrompt(params),
-    })?;
+fn agent_prompt(
+    paths: &crate::config::AppPaths,
+    params: AgentPromptParams,
+) -> std::io::Result<i32> {
+    let response = super::send_request(
+        paths,
+        &Request {
+            id: "cli:agent:prompt".into(),
+            method: Method::AgentPrompt(params),
+        },
+    )?;
     super::print_response(&response)
 }
 
-fn agent_send_keys(params: AgentSendKeysParams) -> std::io::Result<i32> {
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:send-keys".into(),
-        method: Method::AgentSendKeys(params),
-    })?)
+fn agent_send_keys(
+    paths: &crate::config::AppPaths,
+    params: AgentSendKeysParams,
+) -> std::io::Result<i32> {
+    super::print_response(&super::send_request(
+        paths,
+        &Request {
+            id: "cli:agent:send-keys".into(),
+            method: Method::AgentSendKeys(params),
+        },
+    )?)
 }
 
 fn read_params(matches: &ArgMatches) -> AgentReadParams {
@@ -590,11 +651,14 @@ fn read_params(matches: &ArgMatches) -> AgentReadParams {
     }
 }
 
-fn agent_read(params: AgentReadParams) -> std::io::Result<i32> {
-    let response = super::send_request(&Request {
-        id: "cli:agent:read".into(),
-        method: Method::AgentRead(params),
-    })?;
+fn agent_read(paths: &crate::config::AppPaths, params: AgentReadParams) -> std::io::Result<i32> {
+    let response = super::send_request(
+        paths,
+        &Request {
+            id: "cli:agent:read".into(),
+            method: Method::AgentRead(params),
+        },
+    )?;
     super::print_read_response(&response)
 }
 
@@ -639,13 +703,13 @@ mod parse_tests {
             "--wait",
             "--until",
             "idle",
-            "--until=done",
+            "--until=blocked",
             "--timeout",
             "500",
         ]));
         assert_eq!(params.text, "--help me");
         let wait = params.wait.expect("test precondition");
-        assert_eq!(wait.until, vec![AgentStatus::Idle, AgentStatus::Done]);
+        assert_eq!(wait.until, vec![AgentStatus::Idle, AgentStatus::Blocked]);
         assert_eq!(wait.timeout_ms, Some(500));
 
         let params = super::prompt_params(&command_matches(&["agent", "prompt", "w", "hi"]));

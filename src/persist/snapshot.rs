@@ -164,6 +164,7 @@ pub fn capture(
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    fallback_cwd: &std::path::Path,
     active: Option<usize>,
     selected: usize,
     host_theme: crate::terminal_theme::TerminalTheme,
@@ -173,7 +174,9 @@ pub fn capture(
         host_theme: host_theme.into(),
         workspaces: workspaces
             .iter()
-            .map(|workspace| capture_workspace(workspace, terminals, terminal_runtimes))
+            .map(|workspace| {
+                capture_workspace(workspace, terminals, terminal_runtimes, fallback_cwd)
+            })
             .collect(),
         active,
         selected,
@@ -187,11 +190,12 @@ fn capture_workspace(
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    fallback_cwd: &std::path::Path,
 ) -> WorkspaceSnapshot {
     let tabs: Vec<_> = ws
         .tabs
         .iter()
-        .map(|tab| capture_tab(tab, terminals, terminal_runtimes))
+        .map(|tab| capture_tab(tab, terminals, terminal_runtimes, fallback_cwd))
         .collect();
     let identity_cwd = tabs
         .first()
@@ -222,6 +226,7 @@ fn capture_tab(
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    fallback_cwd: &std::path::Path,
 ) -> TabSnapshot {
     let mut panes = HashMap::new();
     for id in tab.panes.keys() {
@@ -231,7 +236,7 @@ fn capture_tab(
             .and_then(|id| terminal_runtimes.get(id))
             .and_then(crate::terminal::TerminalRuntime::cwd_for_persistence)
             .or_else(|| terminal.map(|terminal| terminal.cwd.clone()))
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+            .unwrap_or_else(|| fallback_cwd.to_path_buf());
         let label = terminal.and_then(|terminal| terminal.manual_label.clone());
         let (agent_name, managed_agent_kind) = terminal
             .filter(|terminal| !terminal.managed_agent_launch_pending())
@@ -641,6 +646,7 @@ mod tests {
             &state.workspaces,
             &state.terminals,
             terminal_runtimes,
+            std::path::Path::new("/"),
             state.active,
             state.selected,
             state.host_terminal_theme,

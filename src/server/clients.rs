@@ -163,7 +163,6 @@ pub(crate) struct ClientConnection {
     pub(crate) shell_location: Option<ClientShellLocation>,
     /// Last coherent shell replacement sent to this client.
     pub(crate) shell_snapshot: Option<crate::protocol::ClientShellSnapshot>,
-    pub(crate) shell_agent_completions: Option<crate::protocol::endpoint::EndpointAgentCompletions>,
     /// Monotonic shell replacement revision for this connection.
     pub(crate) shell_projection_revision: u64,
     /// Whether this shell is waiting for one ordered endpoint command response.
@@ -235,7 +234,6 @@ impl ClientConnection {
             shell_held_inputs: HashMap::new(),
             shell_location: None,
             shell_snapshot: None,
-            shell_agent_completions: None,
             shell_projection_revision: 0,
             shell_endpoint_command_in_flight: false,
             writer,

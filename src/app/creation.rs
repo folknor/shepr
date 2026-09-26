@@ -6,22 +6,29 @@ use crate::{config::NewTerminalCwdConfig, workspace::Workspace};
 
 pub(crate) fn resolve_new_terminal_cwd(
     policy: &NewTerminalCwdConfig,
+    home_dir: Option<&std::path::Path>,
+    current_dir: Option<&std::path::Path>,
     follow_cwd: Option<PathBuf>,
 ) -> PathBuf {
     match policy {
         NewTerminalCwdConfig::Follow => follow_cwd
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-            .or_else(|| std::env::current_dir().ok())
+            .or_else(|| home_dir.map(std::path::Path::to_path_buf))
+            .or_else(|| current_dir.map(std::path::Path::to_path_buf))
             .unwrap_or_else(|| PathBuf::from("/")),
-        NewTerminalCwdConfig::Home => std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok())
+        NewTerminalCwdConfig::Home => home_dir
+            .map(std::path::Path::to_path_buf)
+            .or_else(|| current_dir.map(std::path::Path::to_path_buf))
             .unwrap_or_else(|| PathBuf::from("/")),
-        NewTerminalCwdConfig::Current => {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
+        NewTerminalCwdConfig::Current => current_dir
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("/")),
+        NewTerminalCwdConfig::Path(path) => {
+            crate::pathutil::expand_tilde_path_with_home(path, home_dir).unwrap_or_else(|_| {
+                current_dir
+                    .map(std::path::Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("/"))
+            })
         }
-        NewTerminalCwdConfig::Path(path) => crate::pathutil::expand_tilde_path(path)
-            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))),
     }
 }
 
@@ -73,7 +80,12 @@ impl App {
     }
 
     pub(super) fn resolve_new_terminal_cwd(&self, follow_cwd: Option<PathBuf>) -> PathBuf {
-        resolve_new_terminal_cwd(&self.state.new_terminal_cwd, follow_cwd)
+        resolve_new_terminal_cwd(
+            &self.state.new_terminal_cwd,
+            self.paths.home_dir(),
+            self.paths.current_dir(),
+            follow_cwd,
+        )
     }
 
     pub(crate) fn resolved_new_workspace_cwd_from(&self, ws_idx: usize) -> PathBuf {
@@ -200,7 +212,7 @@ impl App {
     ) -> Option<crate::api::schema::TabInfo> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab = ws.tabs.get(tab_idx)?;
-        let (agg_state, seen) = tab.aggregate_state(&self.state.terminals);
+        let agg_state = tab.aggregate_state(&self.state.terminals);
         Some(crate::api::schema::TabInfo {
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             workspace_id: self.public_workspace_id(ws_idx),
@@ -208,7 +220,7 @@ impl App {
             label: ws.tab_display_name(tab_idx)?,
             focused: self.state.active == Some(ws_idx) && ws.active_tab == tab_idx,
             pane_count: tab.panes.len(),
-            agent_status: pane_agent_status(agg_state, seen),
+            agent_status: pane_agent_status(agg_state),
         })
     }
 
@@ -338,7 +350,7 @@ impl App {
             terminal_title: terminal.terminal_title.clone(),
             terminal_title_stripped: terminal.terminal_title_stripped(),
             display_agent: presentation.display_agent,
-            agent_status: pane_agent_status(terminal.state, pane.seen),
+            agent_status: pane_agent_status(terminal.state),
             state_labels: presentation.state_labels,
             tokens: terminal.metadata_tokens.values(),
             agent_session: terminal_agent_session_info(terminal),
@@ -372,7 +384,7 @@ impl App {
     /// carries it across an event, and a stale index must not panic the server.
     pub(super) fn workspace_info(&self, index: usize) -> Option<crate::api::schema::WorkspaceInfo> {
         let ws = self.state.workspaces.get(index)?;
-        let (agg_state, seen) = ws.aggregate_state(&self.state.terminals);
+        let agg_state = ws.aggregate_state(&self.state.terminals);
         Some(crate::api::schema::WorkspaceInfo {
             workspace_id: self.public_workspace_id(index),
             number: index + 1,
@@ -383,7 +395,7 @@ impl App {
             active_tab_id: self.public_tab_id(index, ws.active_tab).unwrap_or_else(|| {
                 crate::workspace::public_tab_id_for_number(&ws.id, ws.active_tab + 1)
             }),
-            agent_status: pane_agent_status(agg_state, seen),
+            agent_status: pane_agent_status(agg_state),
             tokens: ws.metadata_tokens.values(),
         })
     }

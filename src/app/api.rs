@@ -86,9 +86,7 @@ impl App {
         }
 
         if let AppEvent::PaneDied { pane_id, .. } = &ev
-            && let Some(update) = self
-                .state
-                .publish_pane_process_exit_if_agent(*pane_id, false)
+            && let Some(update) = self.state.publish_pane_process_exit_if_agent(*pane_id)
         {
             self.sync_full_lifecycle_authority_detection_pauses();
             self.emit_pane_state_update(&update);
@@ -257,19 +255,15 @@ impl App {
                     workspace_id: workspace_id.clone(),
                     agent: update.agent_label.clone(),
                     released: update.agent_released,
-                    final_status: update.agent_release_status,
+                    final_status: update
+                        .agent_released
+                        .then(|| pane_agent_status(update.state)),
                 },
             });
         }
 
-        let previous_agent_status = pane_agent_status(update.previous_state, update.previous_seen);
-        let agent_status = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.pane_state(update.pane_id))
-            .map(|pane| pane_agent_status(update.state, pane.seen))
-            .unwrap_or_else(|| pane_agent_status(update.state, update.seen));
+        let previous_agent_status = pane_agent_status(update.previous_state);
+        let agent_status = pane_agent_status(update.state);
 
         if previous_agent_status != agent_status
             || update.previous_presentation != update.presentation
@@ -568,7 +562,7 @@ impl App {
                 }
             }
             Method::ServerReloadAgentManifests(_) => {
-                let summaries = crate::detect::manifest::reload_manifests();
+                let summaries = crate::detect::manifest::reload_manifests(self.paths.config_dir());
                 self.state.agent_manifest_summaries = summaries.clone();
                 self.reset_all_agent_detection_runtimes();
                 SuccessResponse {
@@ -1023,17 +1017,13 @@ mod tests {
             previous_agent_label: None,
             previous_known_agent: None,
             previous_state: AgentState::Unknown,
-            previous_seen: false,
             previous_presentation: presentation.clone(),
             agent_label: Some("codex".into()),
             known_agent: Some(Agent::Codex),
             state: AgentState::Working,
-            seen: true,
             presentation,
             agent_name_changed: false,
             agent_released: false,
-            agent_release_status: None,
-            suppress_completion: false,
         };
 
         app.state.close_workspace_at(0);

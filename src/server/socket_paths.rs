@@ -17,11 +17,15 @@ pub const CLIENT_SOCKET_PATH_ENV_VAR: &str = "SHEPR_CLIENT_SOCKET_PATH";
 ///    This keeps JSON API and client socket overrides consistent.
 /// 3. Otherwise, honor `SHEPR_CLIENT_SOCKET_PATH` (legacy/testing fallback).
 /// 4. Otherwise, use the active session data directory.
-pub fn client_socket_path() -> PathBuf {
+pub fn client_socket_path(paths: &crate::config::AppPaths) -> PathBuf {
     if crate::session::explicit_session_requested() {
-        return crate::session::client_socket_path_for(crate::session::active_name().as_deref());
+        return crate::session::client_socket_path_for(
+            paths,
+            crate::session::active_name().as_deref(),
+        );
     }
     client_socket_path_from_overrides(
+        paths,
         std::env::var(crate::api::SOCKET_PATH_ENV_VAR)
             .ok()
             .as_deref(),
@@ -30,6 +34,7 @@ pub fn client_socket_path() -> PathBuf {
 }
 
 pub(crate) fn client_socket_path_from_overrides(
+    paths: &crate::config::AppPaths,
     api_socket_override: Option<&str>,
     client_socket_override: Option<&str>,
 ) -> PathBuf {
@@ -41,7 +46,7 @@ pub(crate) fn client_socket_path_from_overrides(
         return PathBuf::from(client_socket_override);
     }
 
-    crate::session::client_socket_path_for(crate::session::active_name().as_deref())
+    crate::session::client_socket_path_for(paths, crate::session::active_name().as_deref())
 }
 
 pub(crate) fn derive_client_socket_from_api_socket(api_socket_path: &Path) -> PathBuf {
@@ -79,13 +84,16 @@ mod tests {
 
     #[test]
     fn client_socket_path_derived_from_api_socket_override() {
-        let path = client_socket_path_from_overrides(Some("/tmp/test-shepr.sock"), None);
+        let paths = crate::config::AppPaths::default();
+        let path = client_socket_path_from_overrides(&paths, Some("/tmp/test-shepr.sock"), None);
         assert_eq!(path, PathBuf::from("/tmp/test-shepr-client.sock"));
     }
 
     #[test]
     fn client_socket_path_api_override_takes_precedence_over_legacy_client_override() {
+        let paths = crate::config::AppPaths::default();
         let path = client_socket_path_from_overrides(
+            &paths,
             Some("/tmp/test-shepr.sock"),
             Some("/tmp/legacy-client.sock"),
         );
@@ -94,15 +102,18 @@ mod tests {
 
     #[test]
     fn client_socket_path_respects_legacy_client_override_without_api_override() {
-        let path = client_socket_path_from_overrides(None, Some("/tmp/test-shepr-client.sock"));
+        let paths = crate::config::AppPaths::default();
+        let path =
+            client_socket_path_from_overrides(&paths, None, Some("/tmp/test-shepr-client.sock"));
         assert_eq!(path, PathBuf::from("/tmp/test-shepr-client.sock"));
     }
 
     #[test]
     fn client_socket_path_defaults_to_config_dir() {
-        let _env = crate::test_support::IsolatedEnv::new();
-        let path = client_socket_path_from_overrides(None, None);
-        assert_eq!(path, crate::config::config_dir().join("shepr-client.sock"));
+        let scratch = crate::test_support::ScratchDir::new("socket-path");
+        let paths = crate::config::AppPaths::test_at(scratch.path());
+        let path = client_socket_path_from_overrides(&paths, None, None);
+        assert_eq!(path, paths.config_dir().join("shepr-client.sock"));
     }
 
     #[test]

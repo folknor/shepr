@@ -43,6 +43,7 @@ impl Drop for TargetScope {
 pub(super) fn run_on_machine(
     selector: &str,
     command: Option<(&str, &clap::ArgMatches)>,
+    paths: &crate::config::AppPaths,
 ) -> io::Result<super::CommandOutcome> {
     let Some((name, matches)) = command else {
         return usage_error("usage: shepr --machine <label-or-id> <command>");
@@ -50,11 +51,11 @@ pub(super) fn run_on_machine(
     if let Err(error) = validate_machine_command(name, matches) {
         return usage_error(&error);
     }
-    let config = super::load_validated_config()?;
+    let config = super::load_validated_config(paths)?;
     let ssh_settings = crate::remote::SavedSshSettings {
         manage_ssh_config: config.remote.manage_ssh_config,
     };
-    let profiles = EndpointCatalog::load_profiles().map_err(io::Error::other)?;
+    let profiles = EndpointCatalog::load_profiles(paths).map_err(io::Error::other)?;
     let profile = match resolve_machine(&profiles, selector) {
         Ok(profile) => profile.clone(),
         Err(error) => return usage_error(&error),
@@ -67,7 +68,7 @@ pub(super) fn run_on_machine(
         })))
     });
     PROTOCOL_CHECKED.with(|checked| checked.set(false));
-    super::dispatch_with_config(name, matches, Some(config))
+    super::dispatch_with_config(name, matches, Some(config), paths)
 }
 
 fn usage_error(error: &str) -> io::Result<super::CommandOutcome> {
@@ -79,15 +80,16 @@ pub(super) fn is_remote() -> bool {
     TARGET.with(|target| target.borrow().is_some())
 }
 
-pub(super) fn api_client() -> io::Result<ApiClient> {
+pub(super) fn api_client(paths: &crate::config::AppPaths) -> io::Result<ApiClient> {
     TARGET.with(|target| {
         let mut target = target.borrow_mut();
         let Some(target) = target.as_mut() else {
-            return Ok(ApiClient::local());
+            return Ok(ApiClient::local(paths));
         };
         if target.bridge.is_none() {
             target.bridge = Some(
                 crate::remote::SavedSshApiBridge::start(
+                    paths,
                     target.profile.id.as_str(),
                     &target.profile.target,
                     &target.profile.session,
@@ -113,6 +115,7 @@ pub(super) fn api_client() -> io::Result<ApiClient> {
 }
 
 pub(super) fn server_status(
+    paths: &crate::config::AppPaths,
     client: &ApiClient,
 ) -> Result<crate::api::RuntimeStatus, crate::api::client::ApiClientError> {
     let probe = || {
@@ -147,6 +150,7 @@ pub(super) fn server_status(
         bridge.invalidate_metadata();
         target.bridge.take();
         target.bridge = Some(crate::remote::SavedSshApiBridge::start(
+            paths,
             target.profile.id.as_str(),
             &target.profile.target,
             &target.profile.session,
@@ -197,10 +201,10 @@ pub(super) fn remote_identity() -> Option<(String, String)> {
     })
 }
 
-pub(super) fn socket_label() -> String {
+pub(super) fn socket_label(paths: &crate::config::AppPaths) -> String {
     match remote_identity() {
         Some((id, session)) => format!("machine:{id}/{session}"),
-        None => crate::api::socket_path().display().to_string(),
+        None => crate::api::socket_path(paths).display().to_string(),
     }
 }
 
@@ -256,14 +260,14 @@ impl CallerPane {
     }
 }
 
-pub(super) fn caller_pane() -> CallerPane {
+pub(super) fn caller_pane(paths: &crate::config::AppPaths) -> CallerPane {
     if is_remote() {
         return CallerPane::Remote;
     }
     caller_pane_from(
         std::env::var(crate::integration::SHEPR_PANE_ID_ENV_VAR).ok(),
         std::env::var_os(crate::api::SOCKET_PATH_ENV_VAR),
-        &crate::api::socket_path(),
+        &crate::api::socket_path(paths),
     )
 }
 
@@ -424,7 +428,8 @@ mod tests {
 
         // A machine with no command to run is a usage error before any
         // catalog or network access.
-        let outcome = run_on_machine("mac", None).expect("test precondition");
+        let outcome = run_on_machine("mac", None, &crate::config::AppPaths::default())
+            .expect("test precondition");
         assert!(matches!(outcome, super::super::CommandOutcome::Handled(2)));
     }
 

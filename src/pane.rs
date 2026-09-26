@@ -96,6 +96,7 @@ pub(crate) struct PaneLaunchEnv {
     extra: Vec<(String, String)>,
     identity: PaneLaunchIdentity,
     agent_absence_startup_hold: bool,
+    api_socket_path: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -115,7 +116,13 @@ impl PaneLaunchEnv {
             extra,
             identity: PaneLaunchIdentity::Inherit,
             agent_absence_startup_hold: false,
+            api_socket_path: std::path::PathBuf::new(),
         }
+    }
+
+    pub(crate) fn with_api_socket_path(mut self, path: std::path::PathBuf) -> Self {
+        self.api_socket_path = path;
+        self
     }
 
     pub(crate) fn for_agent_resume(mut self) -> Self {
@@ -139,7 +146,7 @@ impl PaneLaunchEnv {
 }
 
 fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunchEnv) {
-    crate::platform::ssh_agent::apply_pane_env(cmd);
+    crate::platform::ssh_agent::apply_pane_env(cmd, &launch_env.api_socket_path);
     // A new pane is not a child agent of the process that started the server.
     // Explicit launch env below can opt back into an intentional child session.
     // `SHEPR_AGENT` is the detector's per-process agent hint, checked before
@@ -160,7 +167,7 @@ fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunchEnv) {
         cmd.env(key, value);
     }
     cmd.env(crate::SHEPR_ENV_VAR, crate::SHEPR_ENV_VALUE);
-    crate::integration::apply_pane_base_env(cmd);
+    crate::integration::apply_pane_base_env(cmd, &launch_env.api_socket_path);
     match &launch_env.identity {
         PaneLaunchIdentity::Inherit => {}
         PaneLaunchIdentity::Managed {

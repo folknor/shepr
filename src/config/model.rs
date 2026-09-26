@@ -3,6 +3,8 @@ use std::{collections::BTreeSet, num::NonZeroUsize};
 use crossterm::event::KeyModifiers;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
+use crate::app::state::Palette;
+
 use super::{
     ActionKeybinds, BindingConfig, DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
     IndexedKeybind, Keybinds, SidebarConfig, TabBarRightEntryConfig, ThemeConfig,
@@ -193,6 +195,9 @@ pub struct Config {
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
     pub remote: RemoteConfig,
+    /// Parsed once after validation so runtime code never reparses theme text.
+    #[serde(skip)]
+    pub(crate) resolved_palette: Palette,
 }
 
 #[derive(Debug)]

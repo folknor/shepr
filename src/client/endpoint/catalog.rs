@@ -81,6 +81,10 @@ pub(crate) struct EndpointCatalog {
     pub(crate) selected_profile: Option<ProfileId>,
     #[serde(default)]
     pub(crate) ssh: Vec<SavedSshEndpoint>,
+    #[serde(skip)]
+    catalog_path: PathBuf,
+    #[serde(skip)]
+    selection_path: PathBuf,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -96,24 +100,30 @@ impl Default for EndpointCatalog {
             version: CATALOG_VERSION,
             selected_profile: None,
             ssh: Vec::new(),
+            catalog_path: PathBuf::new(),
+            selection_path: PathBuf::new(),
         }
     }
 }
 
 impl EndpointCatalog {
-    pub(crate) fn load() -> Result<Self, String> {
-        Self::load_from_paths(&catalog_path(), &selection_path())
+    pub(crate) fn load(paths: &crate::config::AppPaths) -> Result<Self, String> {
+        Self::load_from_paths(&catalog_path(paths), &selection_path(paths))
     }
 
-    pub(crate) fn load_profiles() -> Result<Vec<SavedSshEndpoint>, String> {
+    pub(crate) fn load_profiles(
+        paths: &crate::config::AppPaths,
+    ) -> Result<Vec<SavedSshEndpoint>, String> {
         // Profiles only: each running client holds its selection in memory, and the
         // selection file only seeds the next launch (the last client to commit a
         // handoff wins).
-        Self::load_from_path(&catalog_path()).map(|catalog| catalog.ssh)
+        Self::load_from_path(&catalog_path(paths)).map(|catalog| catalog.ssh)
     }
 
     fn load_from_paths(catalog_path: &Path, selection_path: &Path) -> Result<Self, String> {
         let mut catalog = Self::load_from_path(catalog_path)?;
+        catalog.catalog_path = catalog_path.to_path_buf();
+        catalog.selection_path = selection_path.to_path_buf();
         match load_selection_from_path(selection_path) {
             Ok(Some(selection)) => {
                 let valid = selection.selected_profile.as_ref().is_none_or(|selected| {
@@ -141,11 +151,11 @@ impl EndpointCatalog {
     }
 
     pub(crate) fn store_profiles(&self) -> Result<(), String> {
-        self.store_to_path(&catalog_path())
+        self.store_to_path(&self.catalog_path)
     }
 
     pub(crate) fn store_selection(&self) -> Result<(), String> {
-        self.store_selection_to_path(&selection_path())
+        self.store_selection_to_path(&self.selection_path)
     }
 
     fn store_selection_to_path(&self, path: &Path) -> Result<(), String> {
@@ -339,8 +349,8 @@ pub(crate) struct EndpointCatalogWatch {
 }
 
 impl EndpointCatalogWatch {
-    pub(crate) fn new(now: Instant) -> Self {
-        Self::for_path(catalog_path(), now)
+    pub(crate) fn new(paths: &crate::config::AppPaths, now: Instant) -> Self {
+        Self::for_path(catalog_path(paths), now)
     }
 
     fn for_path(path: PathBuf, now: Instant) -> Self {
@@ -483,14 +493,13 @@ pub(super) fn store_private_json(
         .map_err(|error| format!("failed to persist {description} directory: {error}"))
 }
 
-pub(crate) fn catalog_path() -> PathBuf {
-    crate::config::state_dir()
-        .join("client")
-        .join("endpoints.json")
+pub(crate) fn catalog_path(paths: &crate::config::AppPaths) -> PathBuf {
+    paths.state_dir().join("client").join("endpoints.json")
 }
 
-fn selection_path() -> PathBuf {
-    crate::config::state_dir()
+fn selection_path(paths: &crate::config::AppPaths) -> PathBuf {
+    paths
+        .state_dir()
         .join("client")
         .join("endpoint-selection.json")
 }

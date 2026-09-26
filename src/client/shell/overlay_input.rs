@@ -466,7 +466,6 @@ impl ClientShellState {
                 KeyCode::Char('b') if modifiers.is_empty() => Some(ClientNavigatorFilter::Blocked),
                 KeyCode::Char('w') if modifiers.is_empty() => Some(ClientNavigatorFilter::Working),
                 KeyCode::Char('i') if modifiers.is_empty() => Some(ClientNavigatorFilter::Idle),
-                KeyCode::Char('d') if modifiers.is_empty() => Some(ClientNavigatorFilter::Done),
                 _ => None,
             } {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {

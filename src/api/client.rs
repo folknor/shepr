@@ -14,15 +14,12 @@ use crate::ipc::LocalStream;
 /// API connection target resolved by clients at the process edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionTarget {
-    LocalSession(Option<String>),
     SocketPath(PathBuf),
 }
 
 impl ConnectionTarget {
     fn socket_path(&self) -> PathBuf {
         match self {
-            Self::LocalSession(None) => crate::api::socket_path(),
-            Self::LocalSession(Some(name)) => crate::session::api_socket_path_for(Some(name)),
             Self::SocketPath(path) => path.clone(),
         }
     }
@@ -35,8 +32,8 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
-    pub fn local() -> Self {
-        Self::for_target(ConnectionTarget::LocalSession(None))
+    pub fn local(paths: &crate::config::AppPaths) -> Self {
+        Self::for_target(ConnectionTarget::SocketPath(crate::api::socket_path(paths)))
     }
 
     pub fn for_target(target: ConnectionTarget) -> Self {
@@ -270,8 +267,14 @@ mod tests {
 
     #[test]
     fn local_session_target_resolves_named_session_socket() {
-        let client = ApiClient::for_target(ConnectionTarget::LocalSession(Some("work".into())));
-        assert!(client.socket_path().ends_with("sessions/work/shepr.sock"));
+        let env = crate::test_support::IsolatedEnv::new();
+        env.set(crate::session::SESSION_ENV_VAR, "work");
+        let scratch = crate::test_support::ScratchDir::new("local-session-target");
+        let paths = crate::config::AppPaths::test_at(scratch.path());
+        let client = ApiClient::local(&paths);
+        let socket = client.socket_path();
+        assert!(socket.ends_with("sessions/work/shepr.sock"), "{socket:?}");
+        assert!(socket.starts_with(scratch.path()), "{socket:?}");
     }
 
     #[test]

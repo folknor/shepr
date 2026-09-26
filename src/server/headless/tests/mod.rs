@@ -8,38 +8,18 @@ mod surface_delta_tests;
 #[path = "surface_interest.rs"]
 mod surface_interest_tests;
 
-fn client_shell_projection(
-    receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
-) -> (
-    Box<protocol::ClientShellSnapshot>,
-    protocol::endpoint::EndpointAgentCompletions,
-) {
-    let read_control = |expected| {
-        let ServerMessage::EndpointControl { kind, data } = read_server_message(
-            receiver
-                .recv_timeout(Duration::from_secs(1))
-                .expect("endpoint projection"),
-        ) else {
-            panic!("expected endpoint control {expected}");
-        };
-        assert_eq!(kind, expected);
-        data
-    };
-    let completions: protocol::endpoint::EndpointAgentCompletions =
-        serde_json::from_str(&read_control(protocol::endpoint::AGENT_COMPLETIONS_KIND))
-            .expect("test precondition");
-    let snapshot: Box<protocol::ClientShellSnapshot> =
-        serde_json::from_str(&read_control(protocol::endpoint::ENDPOINT_SNAPSHOT_KIND))
-            .expect("test precondition");
-    assert_eq!(completions.boot_id, snapshot.boot_id);
-    assert_eq!(completions.revision, snapshot.revision);
-    (snapshot, completions)
-}
-
 fn client_shell_snapshot(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
 ) -> Box<protocol::ClientShellSnapshot> {
-    client_shell_projection(receiver).0
+    let ServerMessage::EndpointControl { kind, data } = read_server_message(
+        receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("endpoint snapshot"),
+    ) else {
+        panic!("expected endpoint snapshot control");
+    };
+    assert_eq!(kind, protocol::endpoint::ENDPOINT_SNAPSHOT_KIND);
+    serde_json::from_str(&data).expect("test precondition")
 }
 
 fn test_headless_server() -> HeadlessServer {
@@ -770,13 +750,29 @@ async fn client_shell_attach_seeds_workspace() {
 }
 
 #[tokio::test]
-async fn completion_guard_endpoint_pairs_runtime_completions_with_snapshots() {
+async fn client_shell_snapshot_presents_unknown_agent_as_idle() {
     let mut server = test_headless_server();
     let workspace = crate::workspace::Workspace::test_new("endpoint");
     let pane_id = workspace.tabs[0].root_pane;
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
     server.app.state.active = Some(0);
+    let terminal_id = server
+        .app
+        .state
+        .terminal_id_for_pane(0, pane_id)
+        .expect("terminal");
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .expect("terminal")
+        .set_detected_state(
+            Some(crate::detect::Agent::Pi),
+            crate::detect::AgentState::Unknown,
+        );
+
     let (writer, control_rx, _render_rx) = test_client_writer();
     server.handle_server_event(ServerEvent::ClientShellConnected {
         client_id: 78,
@@ -789,37 +785,21 @@ async fn completion_guard_endpoint_pairs_runtime_completions_with_snapshots() {
         surface_active: false,
         writer,
     });
-    let (_, initial) = client_shell_projection(&control_rx);
-    assert!(initial.completions.is_empty());
-    for first_state in [
-        crate::detect::AgentState::Working,
-        crate::detect::AgentState::Unknown,
-    ] {
-        for state in [first_state, crate::detect::AgentState::Idle] {
-            server.app.state.handle_app_event(AppEvent::StateChanged {
-                pane_id,
-                agent: Some(crate::detect::Agent::Pi),
-                state,
-                visible_blocker: false,
-                process_exited: false,
-                observed_at: Instant::now(),
-            });
-        }
-        server.render_and_stream();
-        let (snapshot, completions) = client_shell_projection(&control_rx);
-        assert_eq!(snapshot.agents.len(), 1);
-        let agent = &snapshot.agents[0];
-        let expected =
-            (first_state == crate::detect::AgentState::Working).then_some(agent.state_change_seq);
-        assert_eq!(
-            completions.completions.get(&agent.pane_id).copied(),
-            expected
-        );
-        assert_eq!(
-            server.app.session_snapshot().agents[0].completion_seq,
-            expected
-        );
-    }
+
+    let snapshot = client_shell_snapshot(&control_rx);
+    assert_eq!(
+        snapshot.agents[0].agent_status,
+        api::schema::AgentStatus::Idle
+    );
+    assert_eq!(
+        snapshot.tabs[0].agent_status,
+        api::schema::AgentStatus::Idle
+    );
+    assert_eq!(
+        snapshot.workspaces[0].agent_status,
+        api::schema::AgentStatus::Idle
+    );
+    assert!(control_rx.try_recv().is_err());
 }
 
 #[tokio::test]
@@ -3752,61 +3732,6 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
     assert!(!server.should_quit.load(Ordering::Acquire));
     server.app.policy.persist_session = false;
     shutdown_test_runtimes(&mut server);
-}
-
-#[tokio::test]
-async fn focused_foreground_marks_its_own_tab_seen_not_the_global_active_tab() {
-    let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("seen");
-    let first_pane = workspace.tabs[0].root_pane;
-    let second_tab = workspace.test_add_tab(Some("second"));
-    let second_pane = workspace.tabs[second_tab].root_pane;
-    server.app.state.workspaces = vec![workspace];
-    server.app.state.ensure_test_terminals();
-    server.app.state.active = Some(0);
-    server.app.state.selected = 0;
-    server.app.state.mode = crate::app::Mode::Terminal;
-    let first_tab_id = server.app.public_tab_id(0, 0).expect("first tab id");
-
-    let (control, _) = connect_test_shell(&mut server, 81, 100, 30);
-    let _ = control.recv().expect("snapshot");
-    assert!(server.focus_shell_client_on_tab(81, &first_tab_id));
-    // Another client's endpoint request would leave the global active tab
-    // on the second tab while client 81 keeps looking at the first.
-    assert!(server.app.state.switch_workspace_tab(0, second_tab));
-    for tab in &mut server.app.state.workspaces[0].tabs {
-        for pane in tab.panes.values_mut() {
-            pane.seen = false;
-        }
-    }
-    server.foreground_client_id = Some(81);
-    server
-        .clients
-        .get_mut(&81)
-        .expect("test precondition")
-        .outer_terminal_focus = Some(true);
-
-    server.sync_foreground_client_state();
-
-    let tabs = &server.app.state.workspaces[0].tabs;
-    assert!(tabs[0].panes[&first_pane].seen, "the viewed tab is seen");
-    assert!(
-        !tabs[second_tab].panes[&second_pane].seen,
-        "a tab nobody focused keeps its done marker"
-    );
-
-    // An unfocused foreground terminal marks nothing.
-    for pane in server.app.state.workspaces[0].tabs[0].panes.values_mut() {
-        pane.seen = false;
-    }
-    server
-        .clients
-        .get_mut(&81)
-        .expect("test precondition")
-        .outer_terminal_focus = Some(false);
-    server.sync_foreground_client_state();
-    assert!(!server.app.state.workspaces[0].tabs[0].panes[&first_pane].seen);
-    assert_eq!(server.app.state.outer_terminal_focus, Some(false));
 }
 
 #[tokio::test]

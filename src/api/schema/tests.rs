@@ -60,7 +60,7 @@ fn agent_start_and_prompt_requests_round_trip() {
             target: "reviewer".into(),
             text: "review this".into(),
             wait: Some(AgentPromptWaitOptions {
-                until: vec![AgentStatus::Idle, AgentStatus::Done],
+                until: vec![AgentStatus::Idle],
                 timeout_ms: Some(120_000),
                 submission_deadline: None,
             }),
@@ -69,7 +69,7 @@ fn agent_start_and_prompt_requests_round_trip() {
     let prompt_and_wait_json = serde_json::to_value(&prompt_and_wait).expect("test precondition");
     assert_eq!(
         prompt_and_wait_json["params"]["wait"]["until"],
-        serde_json::json!(["idle", "done"])
+        serde_json::json!(["idle"])
     );
     assert_eq!(
         prompt_and_wait_json["params"]["wait"]["timeout_ms"],
@@ -364,7 +364,7 @@ fn subscribe_request_parses_parameterized_subscriptions() {
                 {
                     "type": "pane.agent_status_changed",
                     "pane_id": "p_1_1",
-                    "agent_status": "done"
+                    "agent_status": "idle"
                 },
                 {
                     "type": "pane.scroll_changed",
@@ -394,7 +394,7 @@ fn subscribe_request_parses_parameterized_subscriptions() {
         &params.subscriptions[1],
         Subscription::PaneAgentStatusChanged {
             pane_id,
-            agent_status: Some(AgentStatus::Done),
+            agent_status: Some(AgentStatus::Idle),
         } if pane_id == "p_1_1"
     ));
     assert!(matches!(
@@ -453,9 +453,13 @@ fn scroll_changed_subscription_event_round_trips() {
 }
 
 #[test]
-fn agent_status_request_values_remain_strict() {
-    assert!(serde_json::from_str::<AgentStatus>(r#""working""#).is_ok());
-    assert!(serde_json::from_str::<AgentStatus>(r#""future_status""#).is_err());
+fn agent_status_accepts_only_presentable_states() {
+    for status in ["idle", "working", "blocked"] {
+        assert!(serde_json::from_str::<AgentStatus>(&format!("\"{status}\"")).is_ok());
+    }
+    for status in ["done", "unknown", "future_status"] {
+        assert!(serde_json::from_str::<AgentStatus>(&format!("\"{status}\"")).is_err());
+    }
 }
 
 #[test]
@@ -696,7 +700,7 @@ fn create_response_round_trips_with_root_pane() {
                 label: "review".into(),
                 focused: false,
                 pane_count: 1,
-                agent_status: AgentStatus::Unknown,
+                agent_status: AgentStatus::Idle,
             },
             root_pane: PaneInfo {
                 pane_id: "w_1-3".into(),
@@ -713,7 +717,7 @@ fn create_response_round_trips_with_root_pane() {
                 terminal_title: None,
                 terminal_title_stripped: None,
                 display_agent: None,
-                agent_status: AgentStatus::Unknown,
+                agent_status: AgentStatus::Idle,
                 state_labels: HashMap::new(),
                 tokens: HashMap::new(),
                 agent_session: None,
@@ -755,7 +759,7 @@ fn event_wait_parses_typed_match() {
             "match_event": {
                 "event": "pane_agent_status_changed",
                 "pane_id": "p_1",
-                "agent_status": "done"
+                "agent_status": "idle"
             },
             "timeout_ms": 30000
         }
@@ -770,7 +774,7 @@ fn event_wait_parses_typed_match() {
         params.match_event,
         EventMatch::PaneAgentStatusChanged {
             pane_id: "p_1".into(),
-            agent_status: AgentStatus::Done,
+            agent_status: AgentStatus::Idle,
         }
     );
 }

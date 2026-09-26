@@ -37,7 +37,7 @@ struct TestManifests {
 impl TestManifests {
     fn new(name: &str) -> Self {
         let dir = crate::test_support::ScratchDir::new(name).keep_until_exit();
-        let registry = ManifestRegistry::new(&dir);
+        let registry = ManifestRegistry::new(Some(&dir));
         Self { dir, registry }
     }
 

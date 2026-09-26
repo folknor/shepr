@@ -23,6 +23,31 @@ pub(crate) fn expand_tilde_path(path: impl AsRef<Path>) -> io::Result<PathBuf> {
     expand_tilde_path_from_env(path.as_ref(), &|key| std::env::var_os(key))
 }
 
+/// Expands a leading bare `~` or `~/` using a home directory already resolved
+/// by the caller. Paths that do not need HOME pass through unchanged.
+pub(crate) fn expand_tilde_path_with_home(
+    path: impl AsRef<Path>,
+    home: Option<&Path>,
+) -> io::Result<PathBuf> {
+    let path = path.as_ref();
+    let Some(raw) = path.to_str() else {
+        return Ok(path.to_path_buf());
+    };
+    if raw == "~" {
+        return home.map(Path::to_path_buf).ok_or_else(missing_home_error);
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return home
+            .map(|home| home.join(rest))
+            .ok_or_else(missing_home_error);
+    }
+    Ok(path.to_path_buf())
+}
+
+pub(crate) fn missing_home_error() -> io::Error {
+    io::Error::other("HOME must be set to a non-empty absolute path to locate home directory")
+}
+
 fn home_dir_from_env(env: &dyn Fn(&str) -> Option<OsString>) -> io::Result<PathBuf> {
     home_dir_from_value(env("HOME"))
 }
@@ -31,11 +56,7 @@ fn home_dir_from_value(value: Option<OsString>) -> io::Result<PathBuf> {
     value
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
-        .ok_or_else(|| {
-            io::Error::other(
-                "HOME must be set to a non-empty absolute path to locate home directory",
-            )
-        })
+        .ok_or_else(missing_home_error)
 }
 
 fn expand_tilde_path_from_env(

@@ -16,14 +16,6 @@ pub const PRESENTATION_EFFECTS_SYNC_KIND: &str = "endpoint.presentation.sync.v1"
 pub const PRESENTATION_EFFECTS_READY_KIND: &str = "endpoint.presentation.ready.v1";
 pub const HEALTH_PING_KIND: &str = "endpoint.health.ping.v1";
 pub const HEALTH_PONG_KIND: &str = "endpoint.health.pong.v1";
-pub const AGENT_COMPLETIONS_KIND: &str = "endpoint.agent-completions.v1";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EndpointAgentCompletions {
-    pub boot_id: String,
-    pub revision: u64,
-    pub completions: std::collections::BTreeMap<String, u64>,
-}
 
 /// Client-owned shell hello.
 ///
@@ -60,15 +52,6 @@ pub fn snapshot_message(snapshot: &ClientShellSnapshot) -> serde_json::Result<Se
     Ok(ServerMessage::EndpointControl {
         kind: ENDPOINT_SNAPSHOT_KIND.into(),
         data: serde_json::to_string(snapshot)?,
-    })
-}
-
-pub fn agent_completions_message(
-    projection: &EndpointAgentCompletions,
-) -> serde_json::Result<ServerMessage> {
-    Ok(ServerMessage::EndpointControl {
-        kind: AGENT_COMPLETIONS_KIND.into(),
-        data: serde_json::to_string(projection)?,
     })
 }
 

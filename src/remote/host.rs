@@ -3,7 +3,10 @@
 use std::io;
 use std::time::Duration;
 
-pub(crate) fn run_remote_client_bridge(args: &[String]) -> io::Result<()> {
+pub(crate) fn run_remote_client_bridge(
+    args: &[String],
+    paths: &crate::config::AppPaths,
+) -> io::Result<()> {
     let idle_timeout = match args {
         [] => false,
         [option] if option == "--idle-timeout-v1" => true,
@@ -14,10 +17,10 @@ pub(crate) fn run_remote_client_bridge(args: &[String]) -> io::Result<()> {
             ));
         }
     };
-    ensure_remote_server_running()?;
-    let _ssh_agent = super::ssh_agent::Registration::start();
+    ensure_remote_server_running(paths)?;
+    let _ssh_agent = super::ssh_agent::Registration::start(paths);
 
-    let socket_path = crate::server::socket_paths::client_socket_path();
+    let socket_path = crate::server::socket_paths::client_socket_path(paths);
     let stream = crate::ipc::connect_local_stream(&socket_path).map_err(|err| {
         io::Error::new(
             err.kind(),
@@ -31,11 +34,11 @@ pub(crate) fn run_remote_client_bridge(args: &[String]) -> io::Result<()> {
     crate::platform::forward_remote_bridge_stdio(stream, idle_timeout)
 }
 
-fn ensure_remote_server_running() -> io::Result<()> {
-    let socket_path = crate::server::socket_paths::client_socket_path();
-    if crate::server::autodetect::is_server_listening() {
+fn ensure_remote_server_running(paths: &crate::config::AppPaths) -> io::Result<()> {
+    let socket_path = crate::server::socket_paths::client_socket_path(paths);
+    if crate::server::autodetect::is_server_listening(paths) {
         let status = crate::api::read_runtime_status_at(
-            &crate::api::socket_path(),
+            &crate::api::socket_path(paths),
             Duration::from_millis(500),
         )?
         .ok_or_else(|| io::Error::other("remote server status API is unavailable"))?;
@@ -47,6 +50,6 @@ fn ensure_remote_server_running() -> io::Result<()> {
         ));
     }
 
-    crate::server::autodetect::spawn_server_daemon()?;
-    crate::server::autodetect::wait_for_server_socket(&socket_path, Duration::from_secs(5))
+    crate::server::autodetect::spawn_server_daemon(paths)?;
+    crate::server::autodetect::wait_for_server_socket(&socket_path, Duration::from_secs(5), paths)
 }

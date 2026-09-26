@@ -165,7 +165,7 @@ fn install_pi_writes_embedded_asset_to_pi_extensions_dir() {
     fs::create_dir_all(&ext_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    let path = install_pi().expect("test precondition");
+    let path = install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let content = fs::read_to_string(&path).expect("test precondition");
 
     assert_eq!(path, ext_dir.join(PI_EXTENSION_INSTALL_NAME));
@@ -183,7 +183,7 @@ fn install_pi_creates_extensions_dir_when_agent_dir_exists() {
     fs::create_dir_all(&agent_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    let path = install_pi().expect("test precondition");
+    let path = install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
         path,
@@ -203,7 +203,7 @@ fn install_pi_uses_pi_coding_agent_dir_env() {
     fs::create_dir_all(&ext_dir).expect("test precondition");
     env.set(PI_CODING_AGENT_DIR_ENV_VAR, &agent_dir);
 
-    let path = install_pi().expect("test precondition");
+    let path = install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(path, ext_dir.join(PI_EXTENSION_INSTALL_NAME));
 
@@ -221,7 +221,7 @@ fn install_pi_expands_tilde_in_pi_coding_agent_dir_env() {
     env.set("HOME", &home);
     env.set(PI_CODING_AGENT_DIR_ENV_VAR, "~/custom-pi-agent");
 
-    let path = install_pi().expect("test precondition");
+    let path = install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(path, ext_dir.join(PI_EXTENSION_INSTALL_NAME));
 
@@ -238,7 +238,7 @@ fn install_omp_writes_embedded_asset_to_omp_extensions_dir() {
     fs::create_dir_all(&ext_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_omp().expect("test precondition");
+    let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let content = fs::read_to_string(&installed.extension_path).expect("test precondition");
 
     assert_eq!(
@@ -260,7 +260,7 @@ fn install_omp_uses_pi_config_dir_env() {
     env.set("HOME", &home);
     env.set(OMP_CONFIG_DIR_ENV_VAR, "custom-omp");
 
-    let installed = install_omp().expect("test precondition");
+    let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
         installed.extension_path,
@@ -283,7 +283,9 @@ fn install_omp_refuses_shared_pi_extension_directory() {
     env.set(PI_CODING_AGENT_DIR_ENV_VAR, &agent_dir);
     env.set(OMP_CONFIG_DIR_ENV_VAR, "ignored-omp-config");
 
-    let err = install_omp().expect_err("test precondition").to_string();
+    let err = install_omp(&AgentIntegrationPaths::resolve())
+        .expect_err("test precondition")
+        .to_string();
 
     assert!(err.contains("Pi and OMP resolve to the same extension directory"));
     assert!(err.contains(&ext_dir.display().to_string()));
@@ -304,7 +306,7 @@ fn install_omp_creates_extensions_dir_when_agent_dir_exists() {
     fs::create_dir_all(&agent_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_omp().expect("test precondition");
+    let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
         installed.extension_path,
@@ -329,7 +331,7 @@ fn uninstall_omp_removes_embedded_extension_when_present() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let result = uninstall_omp().expect("test precondition");
+    let result = uninstall_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
         result.extension_path,
@@ -349,7 +351,9 @@ fn install_omp_errors_when_extension_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_omp().expect_err("test precondition").to_string();
+    let err = install_omp(&AgentIntegrationPaths::resolve())
+        .expect_err("test precondition")
+        .to_string();
 
     assert!(err.contains("omp extension directory not found"));
 
@@ -367,7 +371,7 @@ fn uninstall_pi_removes_embedded_extension_when_present() {
         .expect("test precondition");
     env.set("HOME", &home);
 
-    let result = uninstall_pi().expect("test precondition");
+    let result = uninstall_pi(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
         result.extension_path,
@@ -390,7 +394,7 @@ fn outdated_integrations_treat_missing_version_marker_as_outdated() {
     fs::write(&extension_path, "// installed by shepr\n").expect("test precondition");
     env.set("HOME", &home);
 
-    let outdated = outdated_installed_integrations();
+    let outdated = outdated_installed_integrations(&AgentIntegrationPaths::resolve());
 
     assert_eq!(outdated.len(), 1);
     assert_eq!(
@@ -415,7 +419,7 @@ fn outdated_integrations_accept_current_version_marker() {
         .expect("test precondition");
     env.set("HOME", &home);
 
-    assert!(outdated_installed_integrations().is_empty());
+    assert!(outdated_installed_integrations(&AgentIntegrationPaths::resolve()).is_empty());
 
     let _ = fs::remove_dir_all(base);
 }
@@ -428,7 +432,9 @@ fn install_pi_errors_when_extension_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_pi().expect_err("test precondition").to_string();
+    let err = install_pi(&AgentIntegrationPaths::resolve())
+        .expect_err("test precondition")
+        .to_string();
 
     assert!(err.contains("pi extension directory not found"));
 
@@ -449,7 +455,7 @@ fn install_claude_writes_hook_and_updates_settings() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_claude().expect("test precondition");
+    let installed = install_claude(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(&installed.settings_path).expect("test precondition"),
@@ -492,7 +498,7 @@ fn install_claude_uses_claude_config_dir_env() {
     fs::create_dir_all(&claude_dir).expect("test precondition");
     env.set(CLAUDE_CONFIG_DIR_ENV_VAR, &claude_dir);
 
-    let installed = install_claude().expect("test precondition");
+    let installed = install_claude(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(installed.settings_path, claude_dir.join("settings.json"));
     assert_eq!(
@@ -513,8 +519,8 @@ fn install_claude_is_idempotent_for_hook_entries() {
     fs::create_dir_all(&claude_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    install_claude().expect("test precondition");
-    install_claude().expect("test precondition");
+    install_claude(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_claude(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(claude_dir.join("settings.json")).expect("test precondition"),
@@ -567,7 +573,7 @@ fn uninstall_claude_removes_shepr_hooks_and_preserves_others() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let result = uninstall_claude().expect("test precondition");
+    let result = uninstall_claude(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(claude_dir.join("settings.json")).expect("test precondition"),
     )
@@ -599,7 +605,9 @@ fn install_claude_errors_when_claude_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_claude().expect_err("test precondition").to_string();
+    let err = install_claude(&AgentIntegrationPaths::resolve())
+        .expect_err("test precondition")
+        .to_string();
 
     assert!(err.contains("claude directory not found"));
 
@@ -616,7 +624,7 @@ fn install_codex_writes_hook_and_updates_hooks_and_config() {
     fs::write(codex_dir.join("config.toml"), "model = \"gpt-5.4\"\n").expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_codex().expect("test precondition");
+    let installed = install_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
     let hooks: Value = serde_json::from_str(
         &fs::read_to_string(&installed.hooks_path).expect("test precondition"),
@@ -655,7 +663,7 @@ fn install_codex_uses_codex_home_env() {
     fs::write(codex_dir.join("config.toml"), "model = \"gpt-5.4\"\n").expect("test precondition");
     env.set(CODEX_HOME_ENV_VAR, &codex_dir);
 
-    let installed = install_codex().expect("test precondition");
+    let installed = install_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(installed.hook_path, codex_dir.join(CODEX_HOOK_INSTALL_NAME));
     assert_eq!(installed.hooks_path, codex_dir.join("hooks.json"));
@@ -679,8 +687,8 @@ fn install_codex_is_idempotent_for_hook_entries_and_feature_flag() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    install_codex().expect("test precondition");
-    install_codex().expect("test precondition");
+    install_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let hooks: Value = serde_json::from_str(
         &fs::read_to_string(codex_dir.join("hooks.json")).expect("test precondition"),
@@ -720,7 +728,7 @@ fn install_codex_only_migrates_top_level_feature_flags() {
         .expect("test precondition");
     env.set("HOME", &home);
 
-    install_codex().expect("test precondition");
+    install_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let config = fs::read_to_string(codex_dir.join("config.toml")).expect("test precondition");
 
@@ -759,7 +767,7 @@ fn uninstall_codex_removes_shepr_hooks_and_leaves_config_alone() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let result = uninstall_codex().expect("test precondition");
+    let result = uninstall_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let hooks: Value = serde_json::from_str(
         &fs::read_to_string(codex_dir.join("hooks.json")).expect("test precondition"),
     )
@@ -794,7 +802,9 @@ fn install_codex_errors_when_config_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_codex().expect_err("test precondition").to_string();
+    let err = install_codex(&AgentIntegrationPaths::resolve())
+        .expect_err("test precondition")
+        .to_string();
 
     assert!(err.contains("codex config directory not found"));
 
@@ -815,7 +825,7 @@ fn install_kimi_writes_hook_and_updates_config() {
         .expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_kimi().expect("test precondition");
+    let installed = install_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
     let config = fs::read_to_string(&installed.config_path).expect("test precondition");
     let hooks = kimi_config_hooks(&config);
@@ -866,7 +876,7 @@ fn install_kimi_uses_kimi_code_home_env() {
     fs::create_dir_all(&kimi_dir).expect("test precondition");
     env.set(KIMI_CODE_HOME_ENV_VAR, &kimi_dir);
 
-    let installed = install_kimi().expect("test precondition");
+    let installed = install_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
         installed.hook_path,
@@ -887,8 +897,8 @@ fn install_kimi_is_idempotent_for_config_block() {
     fs::create_dir_all(&kimi_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    install_kimi().expect("test precondition");
-    install_kimi().expect("test precondition");
+    install_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let config = fs::read_to_string(kimi_dir.join("config.toml")).expect("test precondition");
     let hooks = kimi_config_hooks(&config);
@@ -909,7 +919,7 @@ fn uninstall_kimi_removes_hook_and_config_block_preserves_other_hooks() {
     fs::create_dir_all(&kimi_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_kimi().expect("test precondition");
+    let installed = install_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
     fs::write(
             &installed.config_path,
             format!(
@@ -919,7 +929,7 @@ fn uninstall_kimi_removes_hook_and_config_block_preserves_other_hooks() {
         )
         .expect("test precondition");
 
-    let result = uninstall_kimi().expect("test precondition");
+    let result = uninstall_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let config = fs::read_to_string(kimi_dir.join("config.toml")).expect("test precondition");
     let hooks = kimi_config_hooks(&config);
 
@@ -947,7 +957,9 @@ fn install_kimi_errors_when_config_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_kimi().expect_err("test precondition").to_string();
+    let err = install_kimi(&AgentIntegrationPaths::resolve())
+        .expect_err("test precondition")
+        .to_string();
 
     assert!(err.contains("kimi code config directory not found"));
 
@@ -968,7 +980,7 @@ fn install_copilot_writes_hook_and_updates_settings() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_copilot().expect("test precondition");
+    let installed = install_copilot(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(&installed.settings_path).expect("test precondition"),
@@ -1008,8 +1020,8 @@ fn install_copilot_uses_copilot_home_env_and_is_idempotent() {
     fs::create_dir_all(&copilot_dir).expect("test precondition");
     env.set(COPILOT_HOME_ENV_VAR, &copilot_dir);
 
-    let installed = install_copilot().expect("test precondition");
-    install_copilot().expect("test precondition");
+    let installed = install_copilot(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_copilot(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(copilot_dir.join("settings.json")).expect("test precondition"),
@@ -1061,7 +1073,7 @@ fn uninstall_copilot_removes_shepr_hooks_and_preserves_others() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let result = uninstall_copilot().expect("test precondition");
+    let result = uninstall_copilot(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(copilot_dir.join("settings.json")).expect("test precondition"),
     )
@@ -1090,7 +1102,7 @@ fn install_copilot_errors_when_config_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_copilot()
+    let err = install_copilot(&AgentIntegrationPaths::resolve())
         .expect_err("test precondition")
         .to_string();
 
@@ -1114,7 +1126,7 @@ fn install_devin_writes_hook_and_updates_settings() {
     env.set("XDG_CONFIG_HOME", &xdg_config);
     env.set("HOME", base.join("home"));
 
-    let installed = install_devin().expect("test precondition");
+    let installed = install_devin(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(&installed.settings_path).expect("test precondition"),
@@ -1149,8 +1161,8 @@ fn install_devin_is_idempotent_for_hook_entries() {
     env.set("XDG_CONFIG_HOME", &xdg_config);
     env.set("HOME", base.join("home"));
 
-    install_devin().expect("test precondition");
-    install_devin().expect("test precondition");
+    install_devin(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_devin(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(devin_dir.join("config.json")).expect("test precondition"),
@@ -1181,7 +1193,7 @@ fn uninstall_devin_removes_shepr_hooks_and_preserves_others() {
     env.set("XDG_CONFIG_HOME", &xdg_config);
     env.set("HOME", base.join("home"));
 
-    install_devin().expect("test precondition");
+    install_devin(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let hook_path = devin_dir.join(DEVIN_HOOK_INSTALL_NAME);
     let mut settings: Value = serde_json::from_str(
@@ -1205,7 +1217,7 @@ fn uninstall_devin_removes_shepr_hooks_and_preserves_others() {
     )
     .expect("test precondition");
 
-    let result = uninstall_devin().expect("test precondition");
+    let result = uninstall_devin(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(devin_dir.join("config.json")).expect("test precondition"),
     )
@@ -1244,7 +1256,9 @@ fn install_devin_errors_when_config_dir_missing() {
     env.set("XDG_CONFIG_HOME", &xdg_config);
     env.set("HOME", base.join("home"));
 
-    let err = install_devin().expect_err("test precondition").to_string();
+    let err = install_devin(&AgentIntegrationPaths::resolve())
+        .expect_err("test precondition")
+        .to_string();
     assert!(err.contains("devin config directory not found"));
 
     clear_integration_path_env(&env);
@@ -1265,7 +1279,7 @@ fn install_droid_writes_hook_to_settings() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_droid().expect("test precondition");
+    let installed = install_droid(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(&installed.settings_path).expect("test precondition"),
@@ -1312,8 +1326,8 @@ fn install_droid_is_idempotent_for_hook_entries() {
     fs::create_dir_all(&droid_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    install_droid().expect("test precondition");
-    install_droid().expect("test precondition");
+    install_droid(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_droid(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(droid_dir.join("settings.json")).expect("test precondition"),
@@ -1354,7 +1368,7 @@ fn uninstall_droid_removes_shepr_hooks_and_preserves_others() {
         .expect("test precondition");
     env.set("HOME", &home);
 
-    let result = uninstall_droid().expect("test precondition");
+    let result = uninstall_droid(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(droid_dir.join("settings.json")).expect("test precondition"),
     )
@@ -1377,7 +1391,9 @@ fn install_droid_errors_when_config_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_droid().expect_err("test precondition").to_string();
+    let err = install_droid(&AgentIntegrationPaths::resolve())
+        .expect_err("test precondition")
+        .to_string();
 
     assert!(err.contains("droid config directory not found"));
 
@@ -1393,7 +1409,7 @@ fn install_opencode_writes_server_and_tui_plugins() {
     fs::create_dir_all(&opencode_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_opencode().expect("test precondition");
+    let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
         installed.plugin_path,
@@ -1447,7 +1463,8 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
     fs::write(&json_path, original).expect("test precondition");
 
     for _ in 0..2 {
-        let installed = install_opencode().expect("test precondition");
+        let installed =
+            install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
         assert_eq!(installed.tui_config_path, json_path);
         assert!(installed.cli_config_path.is_none());
         assert!(!dir.join("tui.jsonc").exists());
@@ -1474,12 +1491,12 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
     )
     .expect("test precondition");
     assert_eq!(
-        install_opencode()
+        install_opencode(&AgentIntegrationPaths::resolve())
             .expect("test precondition")
             .tui_config_path,
         jsonc_path
     );
-    let result = uninstall_opencode().expect("test precondition");
+    let result = uninstall_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(
         result.updated_tui_configs,
         vec![jsonc_path.clone(), json_path.clone()]
@@ -1495,7 +1512,7 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
         json!({"plugin":["another"]})
     );
     assert!(
-        uninstall_opencode()
+        uninstall_opencode(&AgentIntegrationPaths::resolve())
             .expect("test precondition")
             .updated_tui_configs
             .is_empty()
@@ -1516,7 +1533,7 @@ fn opencode_install_defers_v2_registration_while_migration_pending() {
     fs::write(opencode_dir.join("tui.json"), "{}").expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_opencode().expect("test precondition");
+    let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert!(installed.cli_config_path.is_none());
     assert!(!opencode_dir.join("cli.json").exists());
@@ -1544,7 +1561,7 @@ fn opencode_v2_install_status_and_uninstall_preserve_cli_preferences() {
         r#"{"theme":{"name":"catppuccin"},"plugins":["other"]}"#,
     )
     .expect("test precondition");
-    let installed = install_opencode().expect("test precondition");
+    let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(installed.cli_config_path, Some(cli.clone()));
     let status = || {
         integration_status_at(
@@ -1562,12 +1579,12 @@ fn opencode_v2_install_status_and_uninstall_preserve_cli_preferences() {
     );
     fs::remove_file(&entry).expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Outdated);
-    install_opencode().expect("test precondition");
+    install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
     super::opencode_config::remove_cli_plugin(&dir, OPENCODE_V2_TUI_PLUGIN_SPEC)
         .expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Outdated);
-    install_opencode().expect("test precondition");
-    uninstall_opencode().expect("test precondition");
+    install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    uninstall_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(!entry.exists());
     assert_eq!(
         serde_json::from_str::<Value>(&fs::read_to_string(cli).expect("test precondition"))
@@ -1594,8 +1611,8 @@ fn opencode_hard_link_rejection_precedes_install_and_uninstall_asset_changes() {
     fs::hard_link(&config, &alias).expect("test precondition");
     let target = crate::api::schema::IntegrationTarget::Opencode;
     for error in [
-        install_target(target).expect_err("test precondition"),
-        uninstall_target(target).expect_err("test precondition"),
+        install_target(&AgentIntegrationPaths::resolve(), target).expect_err("test precondition"),
+        uninstall_target(&AgentIntegrationPaths::resolve(), target).expect_err("test precondition"),
     ] {
         assert!(error.to_string().contains("multiple hard links"));
         assert!(error.to_string().contains("cli.json"));
@@ -1630,7 +1647,7 @@ fn opencode_json_config_validation_precedes_asset_changes() {
     let config = dir.join("tui.json");
     fs::write(&config, r#"{"plugin":{}}"#).expect("test precondition");
     assert!(
-        install_opencode()
+        install_opencode(&AgentIntegrationPaths::resolve())
             .expect_err("test precondition")
             .to_string()
             .contains("plugin list")
@@ -1644,8 +1661,8 @@ fn opencode_json_config_validation_precedes_asset_changes() {
     let alias = base.join("linked-config");
     fs::hard_link(&config, &alias).expect("test precondition");
     for error in [
-        install_opencode().expect_err("test precondition"),
-        uninstall_opencode().expect_err("test precondition"),
+        install_opencode(&AgentIntegrationPaths::resolve()).expect_err("test precondition"),
+        uninstall_opencode(&AgentIntegrationPaths::resolve()).expect_err("test precondition"),
     ] {
         assert!(error.to_string().contains("multiple hard links"));
         assert!(error.to_string().contains("tui.json"));
@@ -1674,7 +1691,7 @@ fn opencode_invalid_cli_config_does_not_overwrite_existing_plugins() {
     let plugin = dir.join("plugins").join(OPENCODE_PLUGIN_INSTALL_NAME);
     fs::write(&plugin, "previous integration").expect("test precondition");
     fs::write(dir.join("cli.json"), r#"{"plugins":{}}"#).expect("test precondition");
-    assert!(install_opencode().is_err());
+    assert!(install_opencode(&AgentIntegrationPaths::resolve()).is_err());
     assert_eq!(
         fs::read_to_string(plugin).expect("test precondition"),
         "previous integration"
@@ -1691,7 +1708,7 @@ fn opencode_status_requires_the_tui_plugin_and_config_entry() {
     let opencode_dir = home.join(".config/opencode");
     fs::create_dir_all(&opencode_dir).expect("test precondition");
     env.set("HOME", &home);
-    let installed = install_opencode().expect("test precondition");
+    let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let status = || {
         integration_status_at(
             crate::api::schema::IntegrationTarget::Opencode,
@@ -1720,9 +1737,9 @@ fn uninstall_opencode_removes_plugins_and_managed_tui_config_entry() {
     let opencode_dir = home.join(".config/opencode");
     fs::create_dir_all(&opencode_dir).expect("test precondition");
     env.set("HOME", &home);
-    let installed = install_opencode().expect("test precondition");
+    let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
-    let result = uninstall_opencode().expect("test precondition");
+    let result = uninstall_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert!(result.removed_plugin);
     assert!(result.removed_tui_plugin);
@@ -1753,7 +1770,7 @@ fn install_opencode_invalid_tui_config_does_not_write_plugins() {
     fs::write(opencode_dir.join("tui.jsonc"), r#"{"plugin":{}}"#).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_opencode()
+    let err = install_opencode(&AgentIntegrationPaths::resolve())
         .expect_err("test precondition")
         .to_string();
 
@@ -1790,7 +1807,7 @@ fn uninstall_opencode_removes_plugins_when_tui_config_is_invalid() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let err = uninstall_opencode()
+    let err = uninstall_opencode(&AgentIntegrationPaths::resolve())
         .expect_err("test precondition")
         .to_string();
 
@@ -1814,7 +1831,7 @@ fn install_opencode_errors_when_config_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_opencode()
+    let err = install_opencode(&AgentIntegrationPaths::resolve())
         .expect_err("test precondition")
         .to_string();
 
@@ -1832,7 +1849,7 @@ fn install_kilo_writes_plugin_to_plugin_dir() {
     fs::create_dir_all(&kilo_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_kilo().expect("test precondition");
+    let installed = install_kilo(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let plugin_content = fs::read_to_string(&installed.plugin_path).expect("test precondition");
 
     assert_eq!(
@@ -1858,7 +1875,7 @@ fn uninstall_kilo_removes_plugin_when_present() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let result = uninstall_kilo().expect("test precondition");
+    let result = uninstall_kilo(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert!(result.removed_plugin);
     assert!(!result.plugin_path.exists());
@@ -1874,7 +1891,9 @@ fn install_kilo_errors_when_config_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_kilo().expect_err("test precondition").to_string();
+    let err = install_kilo(&AgentIntegrationPaths::resolve())
+        .expect_err("test precondition")
+        .to_string();
 
     assert!(err.contains("kilo config directory not found"));
 
@@ -1892,7 +1911,7 @@ fn install_hermes_writes_plugin_and_enables_it() {
         .expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_hermes().expect("test precondition");
+    let installed = install_hermes(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let manifest = fs::read_to_string(
         installed
             .plugin_dir
@@ -1928,8 +1947,8 @@ fn install_hermes_is_idempotent_for_enabled_entry() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    install_hermes().expect("test precondition");
-    install_hermes().expect("test precondition");
+    install_hermes(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_hermes(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let config = fs::read_to_string(hermes_dir.join("config.yaml")).expect("test precondition");
     assert_eq!(config.matches("shepr-agent-state").count(), 1);
@@ -1951,7 +1970,7 @@ fn install_hermes_preserves_flat_plugin_list() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    install_hermes().expect("test precondition");
+    install_hermes(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let config = fs::read_to_string(hermes_dir.join("config.yaml")).expect("test precondition");
     assert_eq!(
@@ -1976,7 +1995,7 @@ fn install_hermes_converts_flow_plugin_list_to_block_list() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    install_hermes().expect("test precondition");
+    install_hermes(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let config = fs::read_to_string(hermes_dir.join("config.yaml")).expect("test precondition");
     assert_eq!(
@@ -2054,7 +2073,7 @@ fn install_hermes_is_idempotent_for_quoted_flat_plugin_entry() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    install_hermes().expect("test precondition");
+    install_hermes(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let config = fs::read_to_string(hermes_dir.join("config.yaml")).expect("test precondition");
     assert_eq!(
@@ -2085,7 +2104,7 @@ fn uninstall_hermes_removes_plugin_and_enabled_entry() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let result = uninstall_hermes().expect("test precondition");
+    let result = uninstall_hermes(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let config = fs::read_to_string(hermes_dir.join("config.yaml")).expect("test precondition");
 
     assert!(result.removed_plugin_dir);
@@ -2117,7 +2136,7 @@ fn uninstall_hermes_preserves_flat_plugin_list() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let result = uninstall_hermes().expect("test precondition");
+    let result = uninstall_hermes(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let config = fs::read_to_string(hermes_dir.join("config.yaml")).expect("test precondition");
 
     assert!(result.removed_plugin_dir);
@@ -2147,7 +2166,7 @@ fn uninstall_hermes_removes_flow_plugin_list_entry() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let result = uninstall_hermes().expect("test precondition");
+    let result = uninstall_hermes(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let config = fs::read_to_string(hermes_dir.join("config.yaml")).expect("test precondition");
 
     assert!(result.removed_plugin_dir);
@@ -2201,7 +2220,7 @@ fn uninstall_hermes_removes_commented_flat_plugin_entry() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let result = uninstall_hermes().expect("test precondition");
+    let result = uninstall_hermes(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let config = fs::read_to_string(hermes_dir.join("config.yaml")).expect("test precondition");
 
     assert!(result.removed_plugin_dir);
@@ -2219,7 +2238,9 @@ fn install_hermes_errors_when_config_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_hermes().expect_err("test precondition").to_string();
+    let err = install_hermes(&AgentIntegrationPaths::resolve())
+        .expect_err("test precondition")
+        .to_string();
 
     assert!(err.contains("hermes config directory not found"));
 
@@ -2499,7 +2520,7 @@ fn install_qodercli_writes_hook_and_updates_settings() {
     .expect("test precondition");
     env.set(QODERCLI_CONFIG_DIR_ENV_VAR, &qoder_dir);
 
-    let installed = install_qodercli().expect("test precondition");
+    let installed = install_qodercli(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
         installed.hook_path,
@@ -2544,8 +2565,8 @@ fn install_qodercli_is_idempotent_for_hook_entries() {
     fs::create_dir_all(&qoder_dir).expect("test precondition");
     env.set(QODERCLI_CONFIG_DIR_ENV_VAR, &qoder_dir);
 
-    install_qodercli().expect("test precondition");
-    install_qodercli().expect("test precondition");
+    install_qodercli(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_qodercli(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(qoder_dir.join("settings.json")).expect("test precondition"),
@@ -2579,7 +2600,7 @@ fn uninstall_qodercli_removes_shepr_hooks_and_preserves_others() {
     fs::create_dir_all(&qoder_dir).expect("test precondition");
     env.set(QODERCLI_CONFIG_DIR_ENV_VAR, &qoder_dir);
 
-    install_qodercli().expect("test precondition");
+    install_qodercli(&AgentIntegrationPaths::resolve()).expect("test precondition");
     // Inject a foreign hook entry the user might have configured by hand.
     let mut settings: Value = serde_json::from_str(
         &fs::read_to_string(qoder_dir.join("settings.json")).expect("test precondition"),
@@ -2598,7 +2619,7 @@ fn uninstall_qodercli_removes_shepr_hooks_and_preserves_others() {
     )
     .expect("test precondition");
 
-    let result = uninstall_qodercli().expect("test precondition");
+    let result = uninstall_qodercli(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(result.removed_hook_file);
     assert!(result.updated_settings);
 
@@ -2631,7 +2652,7 @@ fn install_qodercli_errors_when_config_dir_missing() {
     let missing = base.join(".qoder");
     env.set(QODERCLI_CONFIG_DIR_ENV_VAR, &missing);
 
-    let err = install_qodercli()
+    let err = install_qodercli(&AgentIntegrationPaths::resolve())
         .expect_err("test precondition")
         .to_string();
     assert!(
@@ -2656,7 +2677,7 @@ fn install_qwen_writes_session_hook_and_preserves_settings() {
     .expect("test precondition");
     env.set(QWEN_HOME_ENV_VAR, &qwen_dir);
 
-    let installed = install_qwen().expect("test precondition");
+    let installed = install_qwen(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
         installed.hook_path,
@@ -2686,7 +2707,7 @@ fn install_qwen_writes_session_hook_and_preserves_settings() {
     assert!(hook_asset.contains("SHEPR_INTEGRATION_VERSION=1"));
     assert!(hook_asset.contains("shepr:qwen"));
 
-    install_qwen().expect("test precondition");
+    install_qwen(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(&installed.settings_path).expect("test precondition"),
     )
@@ -2711,7 +2732,7 @@ fn uninstall_qwen_removes_only_shepr_hook() {
     fs::create_dir_all(&qwen_dir).expect("test precondition");
     env.set(QWEN_HOME_ENV_VAR, &qwen_dir);
 
-    install_qwen().expect("test precondition");
+    install_qwen(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let settings_path = qwen_dir.join("settings.json");
     let mut settings: Value =
         serde_json::from_str(&fs::read_to_string(&settings_path).expect("test precondition"))
@@ -2729,7 +2750,7 @@ fn uninstall_qwen_removes_only_shepr_hook() {
     )
     .expect("test precondition");
 
-    let result = uninstall_qwen().expect("test precondition");
+    let result = uninstall_qwen(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(result.removed_hook_file);
     assert!(result.updated_settings);
 
@@ -2753,7 +2774,9 @@ fn install_qwen_errors_when_config_dir_missing() {
     let missing = base.join(".qwen");
     env.set(QWEN_HOME_ENV_VAR, &missing);
 
-    let err = install_qwen().expect_err("test precondition").to_string();
+    let err = install_qwen(&AgentIntegrationPaths::resolve())
+        .expect_err("test precondition")
+        .to_string();
     assert!(err.contains("qwen code config directory not found"));
 
     env.remove(QWEN_HOME_ENV_VAR);
@@ -2775,7 +2798,7 @@ fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_letta().expect("test precondition");
+    let installed = install_letta(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(
         installed.hook_path,
         letta_dir.join("hooks").join(LETTA_HOOK_INSTALL_NAME)
@@ -2798,13 +2821,13 @@ fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
     );
     assert_eq!(settings["theme"], "dark");
 
-    install_letta().expect("test precondition");
+    install_letta(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(
         fs::read_to_string(&settings_path).expect("test precondition"),
         first_install
     );
 
-    let result = uninstall_letta().expect("test precondition");
+    let result = uninstall_letta(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(result.removed_hook_file);
     assert!(result.updated_settings);
     assert!(!installed.hook_path.exists());
@@ -2832,7 +2855,7 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     let home = base.join("home");
     fs::create_dir_all(home.join(".letta")).expect("test precondition");
     env.set("HOME", &home);
-    let installed = install_letta().expect("test precondition");
+    let installed = install_letta(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let capture = base.join("args.txt");
     let fake_shepr = base.join("shepr");
@@ -3146,7 +3169,9 @@ fn install_letta_errors_when_config_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_letta().expect_err("test precondition").to_string();
+    let err = install_letta(&AgentIntegrationPaths::resolve())
+        .expect_err("test precondition")
+        .to_string();
     assert!(err.contains("letta code config directory not found"));
 
     let _ = fs::remove_dir_all(base);
@@ -3162,7 +3187,7 @@ fn install_letta_does_not_publish_hook_when_settings_are_invalid() {
     fs::write(letta_dir.join("settings.json"), "not json").expect("test precondition");
     env.set("HOME", &home);
 
-    assert!(install_letta().is_err());
+    assert!(install_letta(&AgentIntegrationPaths::resolve()).is_err());
     assert!(
         !letta_dir
             .join("hooks")
@@ -3188,7 +3213,7 @@ fn letta_install_and_uninstall_keep_symlinked_settings_and_reject_hard_links() {
     std::os::unix::fs::symlink(&real_settings, &settings_path).expect("test precondition");
     env.set("HOME", &home);
 
-    install_letta().expect("test precondition");
+    install_letta(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(
         fs::symlink_metadata(&settings_path)
             .expect("test precondition")
@@ -3202,7 +3227,7 @@ fn letta_install_and_uninstall_keep_symlinked_settings_and_reject_hard_links() {
     assert_eq!(installed["theme"], "dark");
     assert!(installed["hooks"]["SessionStart"].is_array());
 
-    let result = uninstall_letta().expect("test precondition");
+    let result = uninstall_letta(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(result.updated_settings);
     assert!(
         fs::symlink_metadata(&settings_path)
@@ -3218,7 +3243,7 @@ fn letta_install_and_uninstall_keep_symlinked_settings_and_reject_hard_links() {
 
     fs::remove_file(&settings_path).expect("test precondition");
     fs::hard_link(&real_settings, &settings_path).expect("test precondition");
-    assert!(install_letta().is_err());
+    assert!(install_letta(&AgentIntegrationPaths::resolve()).is_err());
     assert!(
         !letta_dir
             .join("hooks")
@@ -3226,7 +3251,7 @@ fn letta_install_and_uninstall_keep_symlinked_settings_and_reject_hard_links() {
             .exists(),
         "a rejected settings target must not leave a hook behind"
     );
-    assert!(uninstall_letta().is_err());
+    assert!(uninstall_letta(&AgentIntegrationPaths::resolve()).is_err());
 
     let _ = fs::remove_dir_all(base);
 }
@@ -3244,7 +3269,7 @@ fn install_cursor_writes_hook_and_updates_hooks_json() {
     .expect("test precondition");
     env.set(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir);
 
-    let installed = install_cursor().expect("test precondition");
+    let installed = install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
         installed.hook_path,
@@ -3297,8 +3322,8 @@ fn install_cursor_is_idempotent_for_hook_entries() {
     fs::create_dir_all(&cursor_dir).expect("test precondition");
     env.set(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir);
 
-    install_cursor().expect("test precondition");
-    install_cursor().expect("test precondition");
+    install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let hooks_file: Value = serde_json::from_str(
         &fs::read_to_string(cursor_dir.join("hooks.json")).expect("test precondition"),
@@ -3326,7 +3351,7 @@ fn uninstall_cursor_removes_shepr_hooks_and_preserves_others() {
     fs::create_dir_all(&cursor_dir).expect("test precondition");
     env.set(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir);
 
-    install_cursor().expect("test precondition");
+    install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let mut hooks_file: Value = serde_json::from_str(
         &fs::read_to_string(cursor_dir.join("hooks.json")).expect("test precondition"),
     )
@@ -3338,7 +3363,7 @@ fn uninstall_cursor_removes_shepr_hooks_and_preserves_others() {
     )
     .expect("test precondition");
 
-    let result = uninstall_cursor().expect("test precondition");
+    let result = uninstall_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(result.removed_hook_file);
     assert!(result.updated_hooks);
     assert!(!cursor_dir.join(CURSOR_HOOK_INSTALL_NAME).is_file());
@@ -3366,7 +3391,7 @@ fn install_cursor_uses_cursor_config_dir_env() {
     fs::create_dir_all(&cursor_dir).expect("test precondition");
     env.set(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir);
 
-    let installed = install_cursor().expect("test precondition");
+    let installed = install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
         installed.hook_path,
@@ -3388,9 +3413,9 @@ fn cursor_integration_status_is_current_after_install() {
     // A hook script alone is not enough: the agent's hooks.json must also
     // register it, so install through the real path instead of hand-writing
     // just the script.
-    install_cursor().expect("test precondition");
+    install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
-    let statuses = installed_integration_statuses();
+    let statuses = installed_integration_statuses(&AgentIntegrationPaths::resolve());
     let cursor = statuses
         .iter()
         .find(|status| status.target == crate::api::schema::IntegrationTarget::Cursor)
@@ -3409,7 +3434,9 @@ fn install_cursor_errors_when_config_dir_missing() {
     let missing = base.join(".cursor");
     env.set(CURSOR_CONFIG_DIR_ENV_VAR, &missing);
 
-    let err = install_cursor().expect_err("test precondition").to_string();
+    let err = install_cursor(&AgentIntegrationPaths::resolve())
+        .expect_err("test precondition")
+        .to_string();
     assert!(
         err.contains("cursor config directory not found"),
         "unexpected error: {err}"
@@ -3432,7 +3459,8 @@ fn install_mastracode_writes_hook_and_updates_hooks_json() {
     .expect("test precondition");
     env.set("HOME", &base);
 
-    let installed = install_mastracode().expect("test precondition");
+    let installed =
+        install_mastracode(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
         installed.hook_path,
@@ -3499,7 +3527,7 @@ fn install_grok_writes_hook_and_config() {
     fs::create_dir_all(&grok_dir).expect("test precondition");
     env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
 
-    let installed = install_grok().expect("test precondition");
+    let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let hooks_dir = grok_dir.join("hooks");
     assert_eq!(installed.hook_path, hooks_dir.join(GROK_HOOK_INSTALL_NAME));
@@ -3536,8 +3564,8 @@ fn install_mastracode_is_idempotent_for_hook_entries() {
     let base = unique_base(&env);
     env.set("HOME", &base);
 
-    install_mastracode().expect("test precondition");
-    install_mastracode().expect("test precondition");
+    install_mastracode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_mastracode(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let hooks_file: Value = serde_json::from_str(
         &fs::read_to_string(base.join(".mastracode").join("hooks.json"))
@@ -3567,10 +3595,10 @@ fn install_grok_is_idempotent() {
     fs::create_dir_all(&grok_dir).expect("test precondition");
     env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
 
-    install_grok().expect("test precondition");
+    install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let first = fs::read_to_string(grok_dir.join("hooks").join(GROK_HOOK_CONFIG_INSTALL_NAME))
         .expect("test precondition");
-    install_grok().expect("test precondition");
+    install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let second = fs::read_to_string(grok_dir.join("hooks").join(GROK_HOOK_CONFIG_INSTALL_NAME))
         .expect("test precondition");
     assert_eq!(first, second);
@@ -3585,7 +3613,7 @@ fn uninstall_mastracode_removes_shepr_hooks_and_preserves_others() {
     let base = unique_base(&env);
     env.set("HOME", &base);
 
-    install_mastracode().expect("test precondition");
+    install_mastracode(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let hooks_path = base.join(".mastracode").join("hooks.json");
     let mut hooks_file: Value =
         serde_json::from_str(&fs::read_to_string(&hooks_path).expect("test precondition"))
@@ -3600,7 +3628,8 @@ fn uninstall_mastracode_removes_shepr_hooks_and_preserves_others() {
     )
     .expect("test precondition");
 
-    let result = uninstall_mastracode().expect("test precondition");
+    let result =
+        uninstall_mastracode(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(result.removed_hook_file);
     assert!(result.updated_hooks);
     assert!(
@@ -3644,7 +3673,9 @@ fn install_grok_errors_when_config_dir_missing() {
     let missing = base.join(".grok");
     env.set(GROK_CONFIG_DIR_ENV_VAR, &missing);
 
-    let err = install_grok().expect_err("test precondition").to_string();
+    let err = install_grok(&AgentIntegrationPaths::resolve())
+        .expect_err("test precondition")
+        .to_string();
     assert!(
         err.contains("grok config directory not found"),
         "unexpected error: {err}"
@@ -3662,15 +3693,15 @@ fn uninstall_grok_removes_files() {
     fs::create_dir_all(&grok_dir).expect("test precondition");
     env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
 
-    install_grok().expect("test precondition");
-    let result = uninstall_grok().expect("test precondition");
+    install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let result = uninstall_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(result.removed_hook_file);
     assert!(result.removed_config_file);
     assert!(!result.hook_path.is_file());
     assert!(!result.config_path.is_file());
 
     // Uninstalling again is a no-op.
-    let again = uninstall_grok().expect("test precondition");
+    let again = uninstall_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(!again.removed_hook_file);
     assert!(!again.removed_config_file);
 
@@ -3686,7 +3717,7 @@ fn install_grok_uses_grok_config_dir_env() {
     fs::create_dir_all(&grok_dir).expect("test precondition");
     env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
 
-    let installed = install_grok().expect("test precondition");
+    let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let hooks_dir = grok_dir.join("hooks");
     assert_eq!(installed.hook_path, hooks_dir.join(GROK_HOOK_INSTALL_NAME));
@@ -3709,7 +3740,7 @@ fn install_mastracode_errors_when_event_value_not_array() {
         .expect("test precondition");
     env.set("HOME", &base);
 
-    let err = install_mastracode()
+    let err = install_mastracode(&AgentIntegrationPaths::resolve())
         .expect_err("test precondition")
         .to_string();
     assert!(
@@ -3730,7 +3761,7 @@ fn uninstall_mastracode_errors_when_event_value_not_array() {
         .expect("test precondition");
     env.set("HOME", &base);
 
-    let err = uninstall_mastracode()
+    let err = uninstall_mastracode(&AgentIntegrationPaths::resolve())
         .expect_err("test precondition")
         .to_string();
     assert!(
@@ -3754,7 +3785,8 @@ fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
     .expect("test precondition");
     env.set(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir);
 
-    let installed = install_antigravity_cli().expect("test precondition");
+    let installed =
+        install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     assert_eq!(
         installed.hook_path,
@@ -3851,7 +3883,7 @@ fn install_antigravity_cli_rewrites_stale_shepr_block() {
     .expect("test precondition");
     env.set(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir);
 
-    install_antigravity_cli().expect("test precondition");
+    install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
     let hooks_file: Value = serde_json::from_str(
         &fs::read_to_string(agy_dir.join("hooks.json")).expect("test precondition"),
@@ -3892,7 +3924,8 @@ fn install_antigravity_cli_errors_when_config_dir_missing() {
     let agy_dir = base.join(".gemini").join("config");
     env.set(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir);
 
-    let err = install_antigravity_cli().expect_err("test precondition");
+    let err =
+        install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect_err("test precondition");
     assert!(err.to_string().contains("install antigravity cli first"));
     assert!(!agy_dir.exists(), "install must not create the config dir");
 
@@ -3908,9 +3941,9 @@ fn grok_integration_status_is_current_after_install() {
     fs::create_dir_all(&grok_dir).expect("test precondition");
     env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
     // A real install writes both the hook script and hooks/shepr.json.
-    install_grok().expect("test precondition");
+    install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
-    let statuses = installed_integration_statuses();
+    let statuses = installed_integration_statuses(&AgentIntegrationPaths::resolve());
     let grok = statuses
         .iter()
         .find(|status| status.target == crate::api::schema::IntegrationTarget::Grok)
@@ -3929,11 +3962,11 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
     env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
-    install_grok().expect("test precondition");
+    install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let config_path = grok_dir.join("hooks").join(GROK_HOOK_CONFIG_INSTALL_NAME);
 
     let grok_state = || {
-        installed_integration_statuses()
+        installed_integration_statuses(&AgentIntegrationPaths::resolve())
             .into_iter()
             .find(|status| status.target == crate::api::schema::IntegrationTarget::Grok)
             .expect("grok integration status")
@@ -4012,7 +4045,7 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     assert_eq!(grok_state(), IntegrationStatusKind::Outdated);
 
     // Reinstall repairs both files.
-    install_grok().expect("test precondition");
+    install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(grok_state(), IntegrationStatusKind::Current);
 
     clear_integration_path_env(&env);
@@ -4033,11 +4066,13 @@ fn uninstall_antigravity_cli_removes_hooks_json_entries_and_hook_file() {
     env.set(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir);
 
     // Install first
-    let installed = install_antigravity_cli().expect("test precondition");
+    let installed =
+        install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(installed.hook_path.is_file());
 
     // Uninstall
-    let result = uninstall_antigravity_cli().expect("test precondition");
+    let result =
+        uninstall_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert!(result.removed_hook_file);
     assert!(!installed.hook_path.is_file());
     assert!(result.updated_hooks);
@@ -4067,7 +4102,7 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
 
     // The grok CLI reads its config (and hooks/) from $GROK_HOME, so the
     // integration must install there too.
-    let installed = install_grok().expect("test precondition");
+    let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(
         installed.hook_path,
         home_dir.join("hooks").join(GROK_HOOK_INSTALL_NAME)
@@ -4077,7 +4112,7 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
     let seam_dir = base.join("seam");
     fs::create_dir_all(&seam_dir).expect("test precondition");
     env.set(GROK_CONFIG_DIR_ENV_VAR, &seam_dir);
-    let installed = install_grok().expect("test precondition");
+    let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
     assert_eq!(
         installed.hook_path,
         seam_dir.join("hooks").join(GROK_HOOK_INSTALL_NAME)
@@ -4120,7 +4155,7 @@ fn install_kimi_leaves_a_damaged_config_and_no_hook() {
     fs::write(kimi_dir.join("config.toml"), &damaged).expect("test precondition");
     env.set(KIMI_CODE_HOME_ENV_VAR, &kimi_dir);
 
-    assert!(install_kimi().is_err());
+    assert!(install_kimi(&AgentIntegrationPaths::resolve()).is_err());
     assert_eq!(
         fs::read_to_string(kimi_dir.join("config.toml")).expect("test precondition"),
         damaged

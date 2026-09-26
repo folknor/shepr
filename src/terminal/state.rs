@@ -214,11 +214,9 @@ pub struct TerminalState {
     metadata_token_sequence_sources: std::collections::HashSet<String>,
     pub state: AgentState,
     pub last_agent_state_change_seq: Option<u64>,
-    pub last_agent_completion_seq: Option<u64>,
     pub revision: u64,
     pub launch_argv: Option<Vec<String>>,
     recent_agent_process_exit: Option<RecentAgentProcessExit>,
-    agent_process_acquisition_pending: bool,
     pub pending_agent_resume_plan: Option<crate::agent_resume::AgentResumePlan>,
     pub restore_error: Option<String>,
 }
@@ -252,11 +250,9 @@ impl TerminalState {
             metadata_token_sequence_sources: std::collections::HashSet::new(),
             state: AgentState::Unknown,
             last_agent_state_change_seq: None,
-            last_agent_completion_seq: None,
             revision: 0,
             launch_argv: None,
             recent_agent_process_exit: None,
-            agent_process_acquisition_pending: false,
             pending_agent_resume_plan: None,
             restore_error: None,
         }
@@ -279,19 +275,9 @@ impl TerminalState {
         );
         if starts_acquisition {
             self.codex_prompt_ready = false;
-            self.agent_process_acquisition_pending = true;
         }
         self.confirm_managed_agent_resume(agent);
         mutation
-    }
-
-    pub(crate) fn finish_agent_process_acquisition(&mut self) -> bool {
-        let reached_idle = self.agent_process_acquisition_pending && self.state == AgentState::Idle;
-        let suppress_completion = reached_idle && self.recent_agent_process_exit.is_none();
-        if reached_idle {
-            self.agent_process_acquisition_pending = false;
-        }
-        suppress_completion
     }
 
     pub(crate) fn terminal_title_stripped(&self) -> Option<String> {
@@ -673,9 +659,6 @@ impl TerminalState {
             previous_presentation,
             now,
         );
-        if fallback_state == AgentState::Working && self.state == AgentState::Working {
-            self.agent_process_acquisition_pending = false;
-        }
         TerminalStateMutation {
             effective_state_change,
             session_ref_changed: previous_session
@@ -834,9 +817,6 @@ impl TerminalState {
             previous_presentation,
             now,
         );
-        if state == AgentState::Working && self.state == AgentState::Working {
-            self.agent_process_acquisition_pending = false;
-        }
         Some(TerminalStateMutation {
             effective_state_change,
             session_ref_changed: previous_session != current_session,
@@ -1696,10 +1676,6 @@ impl TerminalState {
         }
         self.persisted_agent_session = Some(persisted_session);
         let current_session = self.current_session_identity_for_persistence();
-        if previous_session.is_some() && previous_session != current_session {
-            // Rebinding can expose a cached Working screen; only a fresh report ends acquisition.
-            self.agent_process_acquisition_pending = true;
-        }
         Some(TerminalStateMutation {
             effective_state_change: self.recompute_effective_state(
                 previous_agent_label,
@@ -2032,7 +2008,6 @@ impl TerminalState {
     ) {
         self.codex_prompt_ready = false;
         self.set_agent_name(name);
-        self.agent_process_acquisition_pending = true;
         self.agent_name_owner = Some(AgentNameOwner {
             agent_label: crate::detect::agent_label(kind).to_string(),
             session_ref: None,

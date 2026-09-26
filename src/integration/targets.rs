@@ -17,11 +17,7 @@ use super::config_edit::{
     remove_hook_commands, remove_kimi_config_block, remove_simple_command_hook,
 };
 use super::config_file::{check_config_targets, write_config};
-use super::env::{
-    antigravity_cli_dir, claude_dir, codex_dir, copilot_dir, cursor_dir, devin_dir, droid_dir,
-    grok_dir, hermes_dir, hermes_plugin_dir, kilo_dir, kimi_dir, letta_dir, mastracode_dir,
-    omp_extension_dir, opencode_dir, opencode_state_dir, pi_extension_dir, qodercli_dir, qwen_dir,
-};
+use super::env::AgentIntegrationPaths;
 use super::file_ops::{remove_dir_all_if_exists, remove_file_if_exists, write_managed_asset};
 use super::opencode_config::{
     add_cli_plugin, add_tui_plugin, remove_cli_plugin, remove_tui_plugin,
@@ -89,8 +85,8 @@ fn ensure_extension_dir(dir: &Path, agent: &str) -> io::Result<()> {
     )))
 }
 
-pub(crate) fn install_pi() -> io::Result<PathBuf> {
-    let dir = pi_extension_dir()?;
+pub(crate) fn install_pi(paths: &AgentIntegrationPaths) -> io::Result<PathBuf> {
+    let dir = paths.directory("pi_extension")?;
     ensure_extension_dir(&dir, "pi")?;
 
     let path = dir.join(PI_EXTENSION_INSTALL_NAME);
@@ -98,9 +94,9 @@ pub(crate) fn install_pi() -> io::Result<PathBuf> {
     Ok(path)
 }
 
-pub(crate) fn install_omp() -> io::Result<OmpInstallPaths> {
-    let dir = omp_extension_dir()?;
-    let pi_dir = pi_extension_dir()?;
+pub(crate) fn install_omp(paths: &AgentIntegrationPaths) -> io::Result<OmpInstallPaths> {
+    let dir = paths.directory("omp_extension")?;
+    let pi_dir = paths.directory("pi_extension")?;
     if dir == pi_dir {
         return Err(io::Error::other(format!(
             "Pi and OMP resolve to the same extension directory at {}; configure separate agent directories before installing OMP",
@@ -114,8 +110,8 @@ pub(crate) fn install_omp() -> io::Result<OmpInstallPaths> {
     Ok(OmpInstallPaths { extension_path })
 }
 
-pub(crate) fn install_claude() -> io::Result<ClaudeInstallPaths> {
-    let dir = claude_dir()?;
+pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<ClaudeInstallPaths> {
+    let dir = paths.directory("claude")?;
     check_config_targets(&dir, &["settings.json"])?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
@@ -150,8 +146,8 @@ pub(crate) fn install_claude() -> io::Result<ClaudeInstallPaths> {
     })
 }
 
-pub(crate) fn install_codex() -> io::Result<CodexInstallPaths> {
-    let dir = codex_dir()?;
+pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<CodexInstallPaths> {
+    let dir = paths.directory("codex")?;
     check_config_targets(&dir, &["hooks.json", "config.toml"])?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
@@ -202,8 +198,8 @@ pub(crate) fn install_codex() -> io::Result<CodexInstallPaths> {
     })
 }
 
-pub(crate) fn install_kimi() -> io::Result<KimiInstallPaths> {
-    let dir = kimi_dir()?;
+pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiInstallPaths> {
+    let dir = paths.directory("kimi")?;
     check_config_targets(&dir, &["config.toml"])?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
@@ -238,8 +234,8 @@ pub(crate) fn install_kimi() -> io::Result<KimiInstallPaths> {
     })
 }
 
-pub(crate) fn install_copilot() -> io::Result<CopilotInstallPaths> {
-    let dir = copilot_dir()?;
+pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<CopilotInstallPaths> {
+    let dir = paths.directory("copilot")?;
     check_config_targets(&dir, &["settings.json"])?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
@@ -279,8 +275,8 @@ pub(crate) fn install_copilot() -> io::Result<CopilotInstallPaths> {
     })
 }
 
-pub(crate) fn install_devin() -> io::Result<DevinInstallPaths> {
-    let dir = devin_dir()?;
+pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<DevinInstallPaths> {
+    let dir = paths.directory("devin")?;
     check_config_targets(&dir, &["config.json"])?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
@@ -323,8 +319,8 @@ pub(crate) fn install_devin() -> io::Result<DevinInstallPaths> {
     })
 }
 
-pub(crate) fn install_droid() -> io::Result<DroidInstallPaths> {
-    let dir = droid_dir()?;
+pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<DroidInstallPaths> {
+    let dir = paths.directory("droid")?;
     check_config_targets(&dir, &["settings.json"])?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
@@ -369,8 +365,8 @@ pub(crate) fn install_droid() -> io::Result<DroidInstallPaths> {
     })
 }
 
-pub(crate) fn install_opencode() -> io::Result<OpenCodeInstallPaths> {
-    let dir = opencode_dir()?;
+pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<OpenCodeInstallPaths> {
+    let dir = paths.directory("opencode")?;
     check_config_targets(&dir, &["tui.jsonc", "tui.json", "cli.json"])?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
@@ -401,7 +397,7 @@ pub(crate) fn install_opencode() -> io::Result<OpenCodeInstallPaths> {
     )?;
     let cli_config_path = add_cli_plugin(
         &dir,
-        &opencode_state_dir()?,
+        &paths.directory("opencode_state")?,
         super::OPENCODE_V2_TUI_PLUGIN_SPEC,
     )?;
 
@@ -413,8 +409,8 @@ pub(crate) fn install_opencode() -> io::Result<OpenCodeInstallPaths> {
     })
 }
 
-pub(crate) fn install_kilo() -> io::Result<KiloInstallPaths> {
-    let dir = kilo_dir()?;
+pub(crate) fn install_kilo(paths: &AgentIntegrationPaths) -> io::Result<KiloInstallPaths> {
+    let dir = paths.directory("kilo")?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
             "kilo config directory not found at {}. install kilo first",
@@ -431,8 +427,8 @@ pub(crate) fn install_kilo() -> io::Result<KiloInstallPaths> {
     Ok(KiloInstallPaths { plugin_path })
 }
 
-pub(crate) fn install_hermes() -> io::Result<HermesInstallPaths> {
-    let dir = hermes_dir()?;
+pub(crate) fn install_hermes(paths: &AgentIntegrationPaths) -> io::Result<HermesInstallPaths> {
+    let dir = paths.directory("hermes")?;
     check_config_targets(&dir, &["config.yaml"])?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
@@ -449,7 +445,7 @@ pub(crate) fn install_hermes() -> io::Result<HermesInstallPaths> {
     };
     let new_config = ensure_hermes_plugin_enabled(&existing_config);
 
-    let plugin_dir = hermes_plugin_dir()?;
+    let plugin_dir = paths.directory("hermes_plugin")?;
     fs::create_dir_all(&plugin_dir)?;
     write_managed_asset(
         &plugin_dir.join(HERMES_PLUGIN_MANIFEST_INSTALL_NAME),
@@ -472,8 +468,10 @@ pub(crate) fn install_hermes() -> io::Result<HermesInstallPaths> {
     })
 }
 
-pub(crate) fn uninstall_pi() -> io::Result<PiUninstallResult> {
-    let extension_path = pi_extension_dir()?.join(PI_EXTENSION_INSTALL_NAME);
+pub(crate) fn uninstall_pi(paths: &AgentIntegrationPaths) -> io::Result<PiUninstallResult> {
+    let extension_path = paths
+        .directory("pi_extension")?
+        .join(PI_EXTENSION_INSTALL_NAME);
     let removed_extension = remove_file_if_exists(&extension_path)?;
 
     Ok(PiUninstallResult {
@@ -482,8 +480,10 @@ pub(crate) fn uninstall_pi() -> io::Result<PiUninstallResult> {
     })
 }
 
-pub(crate) fn uninstall_omp() -> io::Result<OmpUninstallResult> {
-    let extension_path = omp_extension_dir()?.join(OMP_EXTENSION_INSTALL_NAME);
+pub(crate) fn uninstall_omp(paths: &AgentIntegrationPaths) -> io::Result<OmpUninstallResult> {
+    let extension_path = paths
+        .directory("omp_extension")?
+        .join(OMP_EXTENSION_INSTALL_NAME);
     let removed_extension = remove_file_if_exists(&extension_path)?;
 
     Ok(OmpUninstallResult {
@@ -492,8 +492,8 @@ pub(crate) fn uninstall_omp() -> io::Result<OmpUninstallResult> {
     })
 }
 
-pub(crate) fn uninstall_claude() -> io::Result<ClaudeUninstallResult> {
-    let dir = claude_dir()?;
+pub(crate) fn uninstall_claude(paths: &AgentIntegrationPaths) -> io::Result<ClaudeUninstallResult> {
+    let dir = paths.directory("claude")?;
     check_config_targets(&dir, &["settings.json"])?;
     let hook_path = dir.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME);
     let settings_path = dir.join("settings.json");
@@ -519,8 +519,8 @@ pub(crate) fn uninstall_claude() -> io::Result<ClaudeUninstallResult> {
     })
 }
 
-pub(crate) fn uninstall_codex() -> io::Result<CodexUninstallResult> {
-    let codex_dir = codex_dir()?;
+pub(crate) fn uninstall_codex(paths: &AgentIntegrationPaths) -> io::Result<CodexUninstallResult> {
+    let codex_dir = paths.directory("codex")?;
     check_config_targets(&codex_dir, &["hooks.json"])?;
     let hook_path = codex_dir.join(CODEX_HOOK_INSTALL_NAME);
     let hooks_path = codex_dir.join("hooks.json");
@@ -559,8 +559,8 @@ pub(crate) fn uninstall_codex() -> io::Result<CodexUninstallResult> {
     })
 }
 
-pub(crate) fn uninstall_kimi() -> io::Result<KimiUninstallResult> {
-    let kimi_dir = kimi_dir()?;
+pub(crate) fn uninstall_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiUninstallResult> {
+    let kimi_dir = paths.directory("kimi")?;
     check_config_targets(&kimi_dir, &["config.toml"])?;
     let hook_path = kimi_dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME);
     let config_path = kimi_dir.join("config.toml");
@@ -585,8 +585,10 @@ pub(crate) fn uninstall_kimi() -> io::Result<KimiUninstallResult> {
     })
 }
 
-pub(crate) fn uninstall_copilot() -> io::Result<CopilotUninstallResult> {
-    let copilot_dir = copilot_dir()?;
+pub(crate) fn uninstall_copilot(
+    paths: &AgentIntegrationPaths,
+) -> io::Result<CopilotUninstallResult> {
+    let copilot_dir = paths.directory("copilot")?;
     check_config_targets(&copilot_dir, &["settings.json"])?;
     let hook_path = copilot_dir.join("hooks").join(COPILOT_HOOK_INSTALL_NAME);
     let settings_path = copilot_dir.join("settings.json");
@@ -627,8 +629,8 @@ pub(crate) fn uninstall_copilot() -> io::Result<CopilotUninstallResult> {
     })
 }
 
-pub(crate) fn uninstall_devin() -> io::Result<DevinUninstallResult> {
-    let devin_dir = devin_dir()?;
+pub(crate) fn uninstall_devin(paths: &AgentIntegrationPaths) -> io::Result<DevinUninstallResult> {
+    let devin_dir = paths.directory("devin")?;
     check_config_targets(&devin_dir, &["config.json"])?;
     let hook_path = devin_dir.join(DEVIN_HOOK_INSTALL_NAME);
     let settings_path = devin_dir.join("config.json");
@@ -669,8 +671,8 @@ pub(crate) fn uninstall_devin() -> io::Result<DevinUninstallResult> {
     })
 }
 
-pub(crate) fn uninstall_droid() -> io::Result<DroidUninstallResult> {
-    let droid_dir = droid_dir()?;
+pub(crate) fn uninstall_droid(paths: &AgentIntegrationPaths) -> io::Result<DroidUninstallResult> {
+    let droid_dir = paths.directory("droid")?;
     check_config_targets(&droid_dir, &["settings.json"])?;
     let hook_path = droid_dir.join("hooks").join(DROID_HOOK_INSTALL_NAME);
     let settings_path = droid_dir.join("settings.json");
@@ -710,8 +712,10 @@ pub(crate) fn uninstall_droid() -> io::Result<DroidUninstallResult> {
     })
 }
 
-pub(crate) fn uninstall_opencode() -> io::Result<OpenCodeUninstallResult> {
-    let dir = opencode_dir()?;
+pub(crate) fn uninstall_opencode(
+    paths: &AgentIntegrationPaths,
+) -> io::Result<OpenCodeUninstallResult> {
+    let dir = paths.directory("opencode")?;
     check_config_targets(&dir, &["tui.jsonc", "tui.json", "cli.json"])?;
     let plugin_path = dir.join("plugins").join(OPENCODE_PLUGIN_INSTALL_NAME);
     let tui_plugin_path = dir.join(OPENCODE_TUI_PLUGIN_INSTALL_NAME);
@@ -754,8 +758,11 @@ pub(crate) fn uninstall_opencode() -> io::Result<OpenCodeUninstallResult> {
     })
 }
 
-pub(crate) fn uninstall_kilo() -> io::Result<KiloUninstallResult> {
-    let plugin_path = kilo_dir()?.join("plugin").join(KILO_PLUGIN_INSTALL_NAME);
+pub(crate) fn uninstall_kilo(paths: &AgentIntegrationPaths) -> io::Result<KiloUninstallResult> {
+    let plugin_path = paths
+        .directory("kilo")?
+        .join("plugin")
+        .join(KILO_PLUGIN_INSTALL_NAME);
     let removed_plugin = remove_file_if_exists(&plugin_path)?;
 
     Ok(KiloUninstallResult {
@@ -764,10 +771,10 @@ pub(crate) fn uninstall_kilo() -> io::Result<KiloUninstallResult> {
     })
 }
 
-pub(crate) fn uninstall_hermes() -> io::Result<HermesUninstallResult> {
-    let dir = hermes_dir()?;
+pub(crate) fn uninstall_hermes(paths: &AgentIntegrationPaths) -> io::Result<HermesUninstallResult> {
+    let dir = paths.directory("hermes")?;
     check_config_targets(&dir, &["config.yaml"])?;
-    let plugin_dir = hermes_plugin_dir()?;
+    let plugin_dir = paths.directory("hermes_plugin")?;
     let config_path = dir.join("config.yaml");
 
     let removed_plugin_dir = remove_dir_all_if_exists(&plugin_dir)?;
@@ -789,8 +796,8 @@ pub(crate) fn uninstall_hermes() -> io::Result<HermesUninstallResult> {
     })
 }
 
-pub(crate) fn install_qodercli() -> io::Result<QodercliInstallPaths> {
-    let dir = qodercli_dir()?;
+pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<QodercliInstallPaths> {
+    let dir = paths.directory("qodercli")?;
     check_config_targets(&dir, &["settings.json"])?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
@@ -840,8 +847,8 @@ pub(crate) fn install_qodercli() -> io::Result<QodercliInstallPaths> {
     })
 }
 
-pub(crate) fn install_qwen() -> io::Result<QwenInstallPaths> {
-    let dir = qwen_dir()?;
+pub(crate) fn install_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenInstallPaths> {
+    let dir = paths.directory("qwen")?;
     check_config_targets(&dir, &["settings.json"])?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
@@ -911,8 +918,8 @@ fn ensure_letta_session_hook(hooks: &mut Map<String, Value>, command: &str) -> i
     Ok(())
 }
 
-pub(crate) fn install_letta() -> io::Result<LettaInstallPaths> {
-    let dir = letta_dir()?;
+pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<LettaInstallPaths> {
+    let dir = paths.directory("letta")?;
     check_config_targets(&dir, &["settings.json"])?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
@@ -981,8 +988,8 @@ pub(crate) fn install_letta() -> io::Result<LettaInstallPaths> {
     })
 }
 
-pub(crate) fn install_cursor() -> io::Result<CursorInstallPaths> {
-    let dir = cursor_dir()?;
+pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<CursorInstallPaths> {
+    let dir = paths.directory("cursor")?;
     check_config_targets(&dir, &["hooks.json"])?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
@@ -1027,8 +1034,10 @@ pub(crate) fn install_cursor() -> io::Result<CursorInstallPaths> {
     })
 }
 
-pub(crate) fn uninstall_qodercli() -> io::Result<QodercliUninstallResult> {
-    let dir = qodercli_dir()?;
+pub(crate) fn uninstall_qodercli(
+    paths: &AgentIntegrationPaths,
+) -> io::Result<QodercliUninstallResult> {
+    let dir = paths.directory("qodercli")?;
     check_config_targets(&dir, &["settings.json"])?;
     let hook_path = dir.join("hooks").join(QODERCLI_HOOK_INSTALL_NAME);
     let settings_path = dir.join("settings.json");
@@ -1069,8 +1078,8 @@ pub(crate) fn uninstall_qodercli() -> io::Result<QodercliUninstallResult> {
     })
 }
 
-pub(crate) fn uninstall_qwen() -> io::Result<QwenUninstallResult> {
-    let dir = qwen_dir()?;
+pub(crate) fn uninstall_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenUninstallResult> {
+    let dir = paths.directory("qwen")?;
     check_config_targets(&dir, &["settings.json"])?;
     let hook_path = dir.join("hooks").join(QWEN_HOOK_INSTALL_NAME);
     let settings_path = dir.join("settings.json");
@@ -1111,8 +1120,8 @@ pub(crate) fn uninstall_qwen() -> io::Result<QwenUninstallResult> {
     })
 }
 
-pub(crate) fn uninstall_letta() -> io::Result<LettaUninstallResult> {
-    let dir = letta_dir()?;
+pub(crate) fn uninstall_letta(paths: &AgentIntegrationPaths) -> io::Result<LettaUninstallResult> {
+    let dir = paths.directory("letta")?;
     check_config_targets(&dir, &["settings.json"])?;
     let hook_path = dir.join("hooks").join(LETTA_HOOK_INSTALL_NAME);
     let settings_path = dir.join("settings.json");
@@ -1152,8 +1161,8 @@ pub(crate) fn uninstall_letta() -> io::Result<LettaUninstallResult> {
     })
 }
 
-pub(crate) fn uninstall_cursor() -> io::Result<CursorUninstallResult> {
-    let cursor_home = cursor_dir()?;
+pub(crate) fn uninstall_cursor(paths: &AgentIntegrationPaths) -> io::Result<CursorUninstallResult> {
+    let cursor_home = paths.directory("cursor")?;
     check_config_targets(&cursor_home, &["hooks.json"])?;
     let hook_path = cursor_home.join(CURSOR_HOOK_INSTALL_NAME);
     let hooks_path = cursor_home.join("hooks.json");
@@ -1194,8 +1203,10 @@ pub(crate) fn mastracode_hook_command(hook_path: &Path, action: &str) -> String 
     hook_command(hook_path, Some(action))
 }
 
-pub(crate) fn install_mastracode() -> io::Result<MastracodeInstallPaths> {
-    let mastracode_home = mastracode_dir()?;
+pub(crate) fn install_mastracode(
+    paths: &AgentIntegrationPaths,
+) -> io::Result<MastracodeInstallPaths> {
+    let mastracode_home = paths.directory("mastracode")?;
     check_config_targets(&mastracode_home, &["hooks.json"])?;
     let hook_dir = mastracode_home.join("hooks");
     let hook_path = hook_dir.join(MASTRACODE_HOOK_INSTALL_NAME);
@@ -1231,8 +1242,10 @@ pub(crate) fn install_mastracode() -> io::Result<MastracodeInstallPaths> {
     })
 }
 
-pub(crate) fn uninstall_mastracode() -> io::Result<MastracodeUninstallResult> {
-    let mastracode_home = mastracode_dir()?;
+pub(crate) fn uninstall_mastracode(
+    paths: &AgentIntegrationPaths,
+) -> io::Result<MastracodeUninstallResult> {
+    let mastracode_home = paths.directory("mastracode")?;
     check_config_targets(&mastracode_home, &["hooks.json"])?;
     let hook_path = mastracode_home
         .join("hooks")
@@ -1272,8 +1285,10 @@ pub(crate) fn uninstall_mastracode() -> io::Result<MastracodeUninstallResult> {
     })
 }
 
-pub(crate) fn install_antigravity_cli() -> io::Result<AntigravityCliInstallPaths> {
-    let dir = antigravity_cli_dir()?;
+pub(crate) fn install_antigravity_cli(
+    paths: &AgentIntegrationPaths,
+) -> io::Result<AntigravityCliInstallPaths> {
+    let dir = paths.directory("antigravity_cli")?;
     check_config_targets(&dir, &["hooks.json"])?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
@@ -1334,8 +1349,10 @@ pub(crate) fn antigravity_cli_hook_block(hook_path: &Path) -> Value {
     Value::Object(block)
 }
 
-pub(crate) fn uninstall_antigravity_cli() -> io::Result<AntigravityCliUninstallResult> {
-    let dir = antigravity_cli_dir()?;
+pub(crate) fn uninstall_antigravity_cli(
+    paths: &AgentIntegrationPaths,
+) -> io::Result<AntigravityCliUninstallResult> {
+    let dir = paths.directory("antigravity_cli")?;
     check_config_targets(&dir, &["hooks.json"])?;
     let hook_path = dir.join("hooks").join(ANTIGRAVITY_CLI_HOOK_INSTALL_NAME);
     let hooks_path = dir.join("hooks.json");
@@ -1399,8 +1416,8 @@ pub(crate) fn grok_hook_config(hook_path: &Path) -> Value {
     })
 }
 
-pub(crate) fn install_grok() -> io::Result<GrokInstallPaths> {
-    let dir = grok_dir()?;
+pub(crate) fn install_grok(paths: &AgentIntegrationPaths) -> io::Result<GrokInstallPaths> {
+    let dir = paths.directory("grok")?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
             "grok config directory not found at {}. install grok cli first",
@@ -1430,8 +1447,8 @@ pub(crate) fn install_grok() -> io::Result<GrokInstallPaths> {
     })
 }
 
-pub(crate) fn uninstall_grok() -> io::Result<GrokUninstallResult> {
-    let hooks_dir = grok_dir()?.join("hooks");
+pub(crate) fn uninstall_grok(paths: &AgentIntegrationPaths) -> io::Result<GrokUninstallResult> {
+    let hooks_dir = paths.directory("grok")?.join("hooks");
     let hook_path = hooks_dir.join(GROK_HOOK_INSTALL_NAME);
     let config_path = hooks_dir.join(GROK_HOOK_CONFIG_INSTALL_NAME);
 

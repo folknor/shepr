@@ -3,14 +3,17 @@ use serde::Serialize;
 use crate::api;
 use crate::api::client::ApiClientError;
 
-pub(super) fn run_status_command(matches: &clap::ArgMatches) -> std::io::Result<i32> {
+pub(super) fn run_status_command(
+    matches: &clap::ArgMatches,
+    paths: &crate::config::AppPaths,
+) -> std::io::Result<i32> {
     // `--json` may be given on `status` itself or on its scope subcommand.
     let json = |scope: &clap::ArgMatches| {
         super::matches::flag(matches, "json") || super::matches::flag(scope, "json")
     };
     match matches.subcommand() {
-        None => print_full_status(json(matches)),
-        Some(("server", scope)) => print_server_status(json(scope)),
+        None => print_full_status(paths, json(matches)),
+        Some(("server", scope)) => print_server_status(paths, json(scope)),
         Some(("client", scope)) => {
             print_client_status(json(scope))?;
             Ok(0)
@@ -29,13 +32,13 @@ enum ServerRuntimeStatus {
     NotRunning,
 }
 
-fn print_full_status(json: bool) -> std::io::Result<i32> {
-    let server = read_server_runtime_status()?;
+fn print_full_status(paths: &crate::config::AppPaths, json: bool) -> std::io::Result<i32> {
+    let server = read_server_runtime_status(paths)?;
 
     if json {
         print_json(&FullStatusJson {
             client: client_status_json(),
-            server: server_status_json(&server),
+            server: server_status_json(paths, &server),
             update: update_status_json(&server),
         })?;
         return Ok(0);
@@ -46,7 +49,7 @@ fn print_full_status(json: bool) -> std::io::Result<i32> {
     println!("  protocol: {}", crate::protocol::PROTOCOL_VERSION);
     println!();
     println!("server:");
-    print_server_status_body(&server, "  ");
+    print_server_status_body(paths, &server, "  ");
     println!();
     println!("update:");
     println!("  restart_needed: {}", restart_needed_label(&server));
@@ -58,13 +61,13 @@ fn print_full_status(json: bool) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn print_server_status(json: bool) -> std::io::Result<i32> {
-    let server = read_server_runtime_status()?;
+fn print_server_status(paths: &crate::config::AppPaths, json: bool) -> std::io::Result<i32> {
+    let server = read_server_runtime_status(paths)?;
     if json {
-        print_json(&server_status_json(&server))?;
+        print_json(&server_status_json(paths, &server))?;
         return Ok(0);
     }
-    print_server_status_body(&server, "");
+    print_server_status_body(paths, &server, "");
     Ok(0)
 }
 
@@ -80,7 +83,11 @@ fn print_client_status(json: bool) -> std::io::Result<()> {
     Ok(())
 }
 
-fn print_server_status_body(server: &ServerRuntimeStatus, indent: &str) {
+fn print_server_status_body(
+    paths: &crate::config::AppPaths,
+    server: &ServerRuntimeStatus,
+    indent: &str,
+) {
     match server {
         ServerRuntimeStatus::Running {
             version, protocol, ..
@@ -92,17 +99,19 @@ fn print_server_status_body(server: &ServerRuntimeStatus, indent: &str) {
                 "{indent}protocol_compatible: {}",
                 compatibility_label(*protocol)
             );
-            println!("{indent}socket: {}", super::target::socket_label());
+            println!("{indent}socket: {}", super::target::socket_label(paths));
         }
         ServerRuntimeStatus::NotRunning => {
             println!("{indent}status: not running");
-            println!("{indent}socket: {}", super::target::socket_label());
+            println!("{indent}socket: {}", super::target::socket_label(paths));
         }
     }
 }
 
-fn read_server_runtime_status() -> std::io::Result<ServerRuntimeStatus> {
-    match super::target::server_status(&super::target::api_client()?) {
+fn read_server_runtime_status(
+    paths: &crate::config::AppPaths,
+) -> std::io::Result<ServerRuntimeStatus> {
+    match super::target::server_status(paths, &super::target::api_client(paths)?) {
         Ok(status) => Ok(ServerRuntimeStatus::Running {
             version: status.version,
             protocol: status.protocol,
@@ -204,7 +213,10 @@ fn client_status_json() -> ClientStatusJson {
     }
 }
 
-fn server_status_json(server: &ServerRuntimeStatus) -> ServerStatusJson {
+fn server_status_json(
+    paths: &crate::config::AppPaths,
+    server: &ServerRuntimeStatus,
+) -> ServerStatusJson {
     let mut status = match server {
         ServerRuntimeStatus::Running {
             version,
@@ -224,7 +236,7 @@ fn server_status_json(server: &ServerRuntimeStatus) -> ServerStatusJson {
                     ssh_agent_registration: capabilities.ssh_agent_registration,
                 }),
             compatible: protocol.map(|value| value == crate::protocol::PROTOCOL_VERSION),
-            socket: api::socket_path().display().to_string(),
+            socket: api::socket_path(paths).display().to_string(),
             session: crate::session::active_name(),
             restart_needed: restart_needed_bool(server),
             server_binary_stale: server_binary_stale_bool(server),
@@ -236,14 +248,14 @@ fn server_status_json(server: &ServerRuntimeStatus) -> ServerStatusJson {
             protocol: None,
             capabilities: None,
             compatible: None,
-            socket: api::socket_path().display().to_string(),
+            socket: api::socket_path(paths).display().to_string(),
             session: crate::session::active_name(),
             restart_needed: Some(false),
             server_binary_stale: Some(false),
         },
     };
     if let Some((_, session)) = super::target::remote_identity() {
-        status.socket = super::target::socket_label();
+        status.socket = super::target::socket_label(paths);
         status.session = Some(session);
         status.server_binary_stale = None;
     }
@@ -308,7 +320,9 @@ mod tests {
     #[test]
     fn status_exposes_ssh_agent_registration() {
         let server = running_server(Some("test"), Some(crate::protocol::PROTOCOL_VERSION));
-        let value = serde_json::to_value(server_status_json(&server)).expect("test precondition");
+        let paths = crate::config::AppPaths::default();
+        let value =
+            serde_json::to_value(server_status_json(&paths, &server)).expect("test precondition");
         assert_eq!(value["capabilities"]["ssh_agent_registration"], false);
     }
 

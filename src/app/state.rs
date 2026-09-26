@@ -43,18 +43,24 @@ pub struct Palette {
     pub subtext0: Color,
     /// Branch name / special label color.
     pub mauve: Color,
-    /// Done / idle states.
+    /// Idle state.
     pub green: Color,
     /// Working / running states.
     pub yellow: Color,
     /// Needs attention / blocked states.
     pub red: Color,
-    /// Unseen / done notification accent.
+    /// Accent color.
     pub blue: Color,
-    /// Notification accent / unseen markers.
+    /// Accent color.
     pub teal: Color,
     /// Interrupted / warning states.
     pub peach: Color,
+}
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self::catppuccin()
+    }
 }
 
 impl Palette {
@@ -534,64 +540,63 @@ impl Palette {
     }
 
     /// Apply custom color overrides on top of this palette.
-    pub fn with_overrides(mut self, custom: &crate::config::CustomThemeColors) -> Self {
-        use crate::config::parse_color;
-        if let Some(c) = &custom.accent {
-            self.accent = parse_color(c);
+    pub(crate) fn with_overrides(mut self, custom: &crate::config::ParsedThemeColors) -> Self {
+        if let Some(color) = custom.accent {
+            self.accent = color;
         }
-        if let Some(c) = &custom.panel_bg {
-            self.panel_bg = parse_color(c);
+        if let Some(color) = custom.panel_bg {
+            self.panel_bg = color;
         }
-        if let Some(c) = &custom.sidebar_bg {
-            self.sidebar_bg = parse_color(c);
+        if let Some(color) = custom.sidebar_bg {
+            self.sidebar_bg = color;
         }
-        if let Some(c) = &custom.active_row_bg {
-            self.active_row_bg = parse_color(c);
+        if let Some(color) = custom.active_row_bg {
+            self.active_row_bg = color;
         }
-        if let Some(c) = &custom.selection_bg {
-            self.selection_bg = parse_color(c);
+        if let Some(color) = custom.selection_bg {
+            self.selection_bg = color;
         }
-        if let Some(c) = &custom.surface0 {
-            self.surface0 = parse_color(c);
+        if let Some(color) = custom.surface0 {
+            self.surface0 = color;
         }
-        if let Some(c) = &custom.surface1 {
-            self.surface1 = parse_color(c);
+        if let Some(color) = custom.surface1 {
+            self.surface1 = color;
         }
-        if let Some(c) = &custom.surface_dim {
-            self.surface_dim = parse_color(c);
+        if let Some(color) = custom.surface_dim {
+            self.surface_dim = color;
         }
-        if let Some(c) = &custom.overlay0 {
-            self.overlay0 = parse_color(c);
+        if let Some(color) = custom.overlay0 {
+            self.overlay0 = color;
         }
-        if let Some(c) = &custom.overlay1 {
-            self.overlay1 = parse_color(c);
+        if let Some(color) = custom.overlay1 {
+            self.overlay1 = color;
         }
-        if let Some(c) = &custom.text {
-            self.text = parse_color(c);
+        if let Some(color) = custom.text {
+            self.text = color;
         }
-        if let Some(c) = &custom.subtext0 {
-            self.subtext0 = parse_color(c);
+        if let Some(color) = custom.subtext0 {
+            self.subtext0 = color;
         }
-        if let Some(c) = &custom.mauve {
-            self.mauve = parse_color(c);
+        if let Some(color) = custom.mauve {
+            self.mauve = color;
         }
-        if let Some(c) = &custom.green {
-            self.green = parse_color(c);
+        if let Some(color) = custom.green {
+            self.green = color;
         }
-        if let Some(c) = &custom.yellow {
-            self.yellow = parse_color(c);
+        if let Some(color) = custom.yellow {
+            self.yellow = color;
         }
-        if let Some(c) = &custom.red {
-            self.red = parse_color(c);
+        if let Some(color) = custom.red {
+            self.red = color;
         }
-        if let Some(c) = &custom.blue {
-            self.blue = parse_color(c);
+        if let Some(color) = custom.blue {
+            self.blue = color;
         }
-        if let Some(c) = &custom.teal {
-            self.teal = parse_color(c);
+        if let Some(color) = custom.teal {
+            self.teal = color;
         }
-        if let Some(c) = &custom.peach {
-            self.peach = parse_color(c);
+        if let Some(color) = custom.peach {
+            self.peach = color;
         }
         self
     }
@@ -613,27 +618,6 @@ pub enum Mode {
 pub(crate) struct PaneFocusTarget {
     pub workspace_id: String,
     pub pane_id: PaneId,
-}
-
-/// Who is looking at which tab, for "seen" bookkeeping: a pane whose agent
-/// finishes counts as seen only while a person is looking at its tab, and a
-/// tab gets marked seen on navigation only when that navigation puts it in
-/// front of a person. See `AppState::tab_is_observed`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) enum TabViewer {
-    /// Nothing has said who is looking; the global active tab stands in.
-    /// This is the state of an app no server drives (tests), and of a server
-    /// that has not published its foreground client's tab.
-    #[default]
-    ActiveTab,
-    /// No client is attached, so nothing is observed.
-    Nobody,
-    /// The foreground client is showing this tab (workspace id and stable
-    /// tab number, so the reference survives reordering).
-    Tab {
-        workspace_id: String,
-        tab_number: usize,
-    },
 }
 
 /// One right-hand tab bar segment as last rendered.
@@ -664,12 +648,10 @@ pub struct AppState {
     pub should_quit: bool,
     // Geometry of the most recently computed server pane surface.
     pub view: ViewState,
-    // Notifications
+    // Client focus
     /// Last reported focus state for the outer terminal hosting shepr.
-    /// None means unsupported or not yet reported, which preserves active-pane suppression.
+    /// When focus has not been reported, pane focus events default to Gained.
     pub outer_terminal_focus: Option<bool>,
-    /// The tab `outer_terminal_focus` applies to.
-    pub(crate) tab_viewer: TabViewer,
     // Config
     /// Virtual terminal size (columns, rows) used when no client is attached.
     pub(crate) headless_size: (u16, u16),
@@ -797,7 +779,6 @@ impl AppState {
                 pane_infos: Vec::new(),
             },
             outer_terminal_focus: None,
-            tab_viewer: TabViewer::default(),
             headless_size: (
                 crate::config::DEFAULT_HEADLESS_COLS,
                 crate::config::DEFAULT_HEADLESS_ROWS,
@@ -1142,7 +1123,8 @@ mod tests {
             selection_bg: Some("#45475a".to_string()),
             ..Default::default()
         };
-        let palette = Palette::catppuccin().with_overrides(&custom);
+        let parsed = custom.parse().expect("valid test colors");
+        let palette = Palette::catppuccin().with_overrides(&parsed);
 
         assert_eq!(palette.sidebar_bg, Color::Rgb(24, 24, 37));
         assert_eq!(palette.active_row_bg, Color::Rgb(49, 50, 68));

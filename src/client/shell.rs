@@ -10,7 +10,6 @@ mod composition;
 mod config;
 mod context_menu;
 mod copy_mode;
-mod endpoint_agent_state;
 mod endpoint_agents;
 mod endpoint_navigation;
 mod endpoint_notices;
@@ -150,17 +149,11 @@ fn status_icon(
     use crate::api::schema::AgentStatus;
     use crate::config::StatusIndicatorStyle;
     match (style, status) {
-        (
-            StatusIndicatorStyle::Dots,
-            AgentStatus::Working | AgentStatus::Blocked | AgentStatus::Done,
-        ) => "●",
+        (StatusIndicatorStyle::Dots, AgentStatus::Working | AgentStatus::Blocked) => "●",
         (StatusIndicatorStyle::Dots, AgentStatus::Idle) => "○",
-        (StatusIndicatorStyle::Dots, AgentStatus::Unknown) => "·",
         (StatusIndicatorStyle::Symbols, AgentStatus::Blocked) => "×",
         (StatusIndicatorStyle::Symbols, AgentStatus::Working) => "◐",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Done) => "\u{2713}",
         (StatusIndicatorStyle::Symbols, AgentStatus::Idle) => "○",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Unknown) => "·",
     }
 }
 
@@ -170,13 +163,12 @@ fn status_dot(status: crate::api::schema::AgentStatus) -> &'static str {
 
 fn status_priority(status: crate::api::schema::AgentStatus) -> u8 {
     use crate::api::schema::AgentStatus;
-    match status {
-        AgentStatus::Blocked => 4,
-        AgentStatus::Done => 3,
-        AgentStatus::Working => 2,
-        AgentStatus::Idle => 1,
-        AgentStatus::Unknown => 0,
-    }
+    let state = match status {
+        AgentStatus::Blocked => crate::detect::AgentState::Blocked,
+        AgentStatus::Working => crate::detect::AgentState::Working,
+        AgentStatus::Idle => crate::detect::AgentState::Idle,
+    };
+    state.attention_rank()
 }
 
 fn status_text(status: crate::api::schema::AgentStatus) -> &'static str {
@@ -184,9 +176,7 @@ fn status_text(status: crate::api::schema::AgentStatus) -> &'static str {
     match status {
         AgentStatus::Working => "working",
         AgentStatus::Blocked => "blocked",
-        AgentStatus::Done => "done",
         AgentStatus::Idle => "idle",
-        AgentStatus::Unknown => "unknown",
     }
 }
 
@@ -198,9 +188,7 @@ fn status_color(
     match status {
         AgentStatus::Working => palette.yellow,
         AgentStatus::Blocked => palette.red,
-        AgentStatus::Done => palette.teal,
         AgentStatus::Idle => palette.green,
-        AgentStatus::Unknown => palette.overlay0,
     }
 }
 

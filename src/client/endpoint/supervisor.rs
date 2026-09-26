@@ -117,6 +117,7 @@ pub(crate) struct EndpointSupervisors {
     /// Launch-time ssh settings (config is read once), applied to every saved machine,
     /// including ones added to the catalog while the client runs.
     ssh_settings: crate::remote::SavedSshSettings,
+    paths: crate::config::AppPaths,
     /// Attempts still running for endpoints that were retired mid-attempt, by generation.
     /// A saved machine's bridge socket path is derived from its profile id, so a restarted
     /// supervisor for the same id must not start its own attempt until this one reports.
@@ -127,6 +128,7 @@ pub(crate) struct EndpointSupervisors {
 
 impl EndpointSupervisors {
     pub(crate) fn with_ssh_settings(
+        paths: &crate::config::AppPaths,
         profiles: &[super::SavedSshEndpoint],
         settings: crate::remote::SavedSshSettings,
         now: Instant,
@@ -134,6 +136,7 @@ impl EndpointSupervisors {
         let mut supervisors = Self {
             endpoints: HashMap::new(),
             ssh_settings: settings,
+            paths: paths.clone(),
             retired_attempts: HashMap::new(),
             next_generation: 2,
             shutdown: Arc::new(AtomicBool::new(false)),
@@ -151,6 +154,7 @@ impl EndpointSupervisors {
         let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
         self.retire(&endpoint_id);
         let connector = crate::remote::SavedSshConnector::new(
+            &self.paths,
             profile.id.as_str(),
             &profile.target,
             &profile.session,
@@ -481,6 +485,7 @@ mod tests {
         now: Instant,
     ) -> EndpointSupervisors {
         EndpointSupervisors::with_ssh_settings(
+            &crate::config::AppPaths::default(),
             profiles,
             crate::remote::SavedSshSettings {
                 manage_ssh_config: false,

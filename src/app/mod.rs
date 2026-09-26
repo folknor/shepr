@@ -109,45 +109,33 @@ pub struct App {
     pub(crate) render_dirty: Arc<crate::render_signal::RenderSignal>,
     pub(crate) full_redraw_pending: bool,
     client_shell_keybindings_profile: Option<String>,
+    pub(crate) paths: crate::config::AppPaths,
 }
 
 pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
 pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
 
 pub(crate) fn palette_from_config(config: &Config) -> state::Palette {
-    let name = config.theme.name.as_deref().unwrap_or("catppuccin");
-    let mut palette = state::Palette::from_name(name).unwrap_or_else(|| {
-        tracing::warn!(theme = name, "unknown theme, falling back to catppuccin");
-        state::Palette::catppuccin()
-    });
-    if let Some(custom) = &config.theme.custom {
-        palette = palette.with_overrides(custom);
-    }
-    if let Some(accent) = ui_accent_override(config) {
-        palette.accent = crate::config::parse_color(accent);
-    }
-    palette
-}
-
-/// The `ui.accent` value that replaces the theme's accent, if any. The
-/// precedence is `theme.custom.accent` (already applied through the theme
-/// overrides), then `ui.accent` when the config file sets it (to any value,
-/// cyan included), then the theme's own accent. The serde default of
-/// `ui.accent` is only a placeholder: an unset key keeps the theme's accent,
-/// which is why this asks whether the file wrote the key instead of comparing
-/// the value against the default.
-fn ui_accent_override(config: &Config) -> Option<&str> {
-    let custom_accent = config
-        .theme
-        .custom
-        .as_ref()
-        .is_some_and(|custom| custom.accent.is_some());
-    (!custom_accent && config.ui.is_user_configured("accent")).then_some(config.ui.accent.as_str())
+    config.resolved_palette.clone()
 }
 
 impl App {
+    /// Test constructor: the app's files live in a fresh scratch directory.
+    #[cfg(test)]
     pub fn new(
         config: &Config,
+        policy: AppPolicy,
+        api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
+        event_hub: crate::api::EventHub,
+    ) -> Self {
+        let scratch = crate::test_support::ScratchDir::new("app").keep_until_exit();
+        let paths = crate::config::AppPaths::test_at(&scratch);
+        Self::with_paths(config, &paths, policy, api_rx, event_hub)
+    }
+
+    pub fn with_paths(
+        config: &Config,
+        paths: &crate::config::AppPaths,
         policy: AppPolicy,
         api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
         event_hub: crate::api::EventHub,
@@ -160,19 +148,25 @@ impl App {
         let mut restored_terminals = std::collections::HashMap::new();
         let mut restored_terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         let mut pane_history_carry = crate::persist::HistoryCarry::default();
-        let snapshot = policy.restore_session.then(crate::persist::load).flatten();
+        let paths = paths.clone();
+        let session_data_dir = crate::session::data_dir(&paths);
+        let snapshot = policy
+            .restore_session
+            .then(|| crate::persist::load(&session_data_dir))
+            .flatten();
         let restored_host_theme = snapshot
             .as_ref()
             .map(|snapshot| snapshot.host_theme.to_theme())
             .unwrap_or_default();
         let session_writer = Arc::new(std::sync::Mutex::new(crate::persist::SessionWriter::new(
+            &session_data_dir,
             policy.restore_session && snapshot.is_none(),
         )));
         let (workspaces, active, selected) = if let Some(snap) = snapshot {
             let history = config
                 .experimental
                 .pane_history
-                .then(crate::persist::load_history)
+                .then(|| crate::persist::load_history(&session_data_dir))
                 .flatten();
             // No view exists yet, so restored panes start at the headless size
             // (what the server lays out against until a client attaches); the
@@ -226,7 +220,8 @@ impl App {
         };
 
         #[cfg(not(test))]
-        let agent_manifest_summaries = crate::detect::manifest::reload_manifests();
+        let agent_manifest_summaries =
+            crate::detect::manifest::reload_manifests(paths.config_dir());
         // Nextest runs each unit test in a fresh process. Manifest-sensitive tests reload
         // explicitly; unrelated App tests should not recompile every bundled regex.
         #[cfg(test)]
@@ -247,7 +242,6 @@ impl App {
                 pane_infos: Vec::new(),
             },
             outer_terminal_focus: None,
-            tab_viewer: state::TabViewer::default(),
             headless_size: config.headless_size(),
             sidebar_agents: config.ui.sidebar.agents.clone(),
             sidebar_spaces: config.ui.sidebar.spaces.clone(),
@@ -330,6 +324,7 @@ impl App {
             render_dirty,
             full_redraw_pending: false,
             client_shell_keybindings_profile,
+            paths,
         };
         app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
         app.configure_window_title(&config.ui.window_title);
@@ -431,14 +426,6 @@ mod tests {
         );
         app.state.default_shell = exiting_test_command().into();
         app
-    }
-
-    /// An environment whose config directory is private to the test, for
-    /// tests that save or load the session.
-    fn isolated_config_env() -> IsolatedEnv {
-        let env = IsolatedEnv::new();
-        env.set("XDG_CONFIG_HOME", env.path().join("config"));
-        env
     }
 
     #[test]
@@ -591,6 +578,7 @@ mod tests {
     fn theme_uses_configured_name() {
         let mut config = Config::default();
         config.theme.name = Some("tokyo-night".to_string());
+        config.resolve_palette().expect("valid test theme");
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let app = App::new(
@@ -611,27 +599,28 @@ mod tests {
         assert_ne!(theme_accent, Color::Cyan, "test precondition");
 
         // Unset: the theme's accent, not the placeholder default.
-        let config = Config::default();
-        assert_eq!(ui_accent_override(&config), None);
-        assert_eq!(palette_from_config(&config).accent, theme_accent);
+        let mut config = Config::default();
+        config.resolve_palette().expect("valid default theme");
+        assert_eq!(config.resolved_palette.accent, theme_accent);
 
         // Set explicitly to the placeholder value: it still applies.
         let mut config = Config::default();
         config.ui.accent = "cyan".into();
         config.ui.user_fields.insert("accent".into());
-        assert_eq!(ui_accent_override(&config), Some("cyan"));
-        assert_eq!(palette_from_config(&config).accent, Color::Cyan);
+        config.resolve_palette().expect("valid cyan accent");
+        assert_eq!(config.resolved_palette.accent, Color::Cyan);
 
         config.ui.accent = "magenta".into();
-        assert_eq!(palette_from_config(&config).accent, Color::Magenta);
+        config.resolve_palette().expect("valid magenta accent");
+        assert_eq!(config.resolved_palette.accent, Color::Magenta);
 
         // `theme.custom.accent` wins over `ui.accent`.
         config.theme.custom = Some(crate::config::CustomThemeColors {
             accent: Some("#010203".into()),
             ..Default::default()
         });
-        assert_eq!(ui_accent_override(&config), None);
-        assert_eq!(palette_from_config(&config).accent, Color::Rgb(1, 2, 3));
+        config.resolve_palette().expect("valid custom accent");
+        assert_eq!(config.resolved_palette.accent, Color::Rgb(1, 2, 3));
     }
 
     #[test]
@@ -846,6 +835,8 @@ mod tests {
     fn new_terminal_cwd_follow_uses_source_cwd() {
         let cwd = creation::resolve_new_terminal_cwd(
             &crate::config::NewTerminalCwdConfig::Follow,
+            None,
+            None,
             Some(std::path::PathBuf::from("/tmp/shepr-source")),
         );
 
@@ -855,9 +846,14 @@ mod tests {
     #[test]
     fn new_terminal_cwd_follow_without_source_uses_home() {
         let env = IsolatedEnv::new();
+        let home = env.home();
 
-        let cwd =
-            creation::resolve_new_terminal_cwd(&crate::config::NewTerminalCwdConfig::Follow, None);
+        let cwd = creation::resolve_new_terminal_cwd(
+            &crate::config::NewTerminalCwdConfig::Follow,
+            Some(home.as_path()),
+            None,
+            None,
+        );
 
         assert_eq!(cwd, env.home());
     }
@@ -866,6 +862,8 @@ mod tests {
     fn new_terminal_cwd_path_uses_configured_path() {
         let cwd = creation::resolve_new_terminal_cwd(
             &crate::config::NewTerminalCwdConfig::Path("/tmp/shepr-fixed".into()),
+            None,
+            None,
             Some(std::path::PathBuf::from("/tmp/shepr-source")),
         );
 
@@ -1536,8 +1534,6 @@ mod tests {
 
     #[test]
     fn due_session_save_starts_background_writer() {
-        let _env = isolated_config_env();
-
         let mut app = test_app();
         app.policy.persist_session = true;
         app.state.workspaces = vec![Workspace::test_new("autosave")];
@@ -1549,7 +1545,11 @@ mod tests {
         assert!(app.session_save_thread.is_some());
         assert!(app.session_save_deadline.is_none());
         app.save_session_now();
-        assert!(crate::session::data_dir().join("session.json").exists());
+        assert!(
+            crate::session::data_dir(&app.paths)
+                .join("session.json")
+                .exists()
+        );
     }
 
     #[test]
@@ -1595,8 +1595,6 @@ mod tests {
 
     #[tokio::test]
     async fn pane_exit_checkpoint_survives_automatic_workspace_creation_on_shutdown() {
-        let _env = isolated_config_env();
-
         let mut app = test_app();
         app.policy.persist_session = true;
         let mut workspace = Workspace::test_new("preserved");
@@ -1620,15 +1618,14 @@ mod tests {
         app.save_session_before_teardown();
         app.retire_session_writer();
 
-        let snapshot = crate::persist::load().expect("checkpointed session should survive");
+        let snapshot = crate::persist::load(&crate::session::data_dir(&app.paths))
+            .expect("checkpointed session should survive");
         assert_eq!(snapshot.workspaces.len(), 1);
         assert_eq!(snapshot.workspaces[0].tabs[0].panes.len(), 2);
     }
 
     #[test]
     fn normal_autosave_replaces_a_signaled_exit_checkpoint() {
-        let _env = isolated_config_env();
-
         let mut app = test_app();
         app.policy.persist_session = true;
         let workspace = Workspace::test_new("closed");
@@ -1641,7 +1638,7 @@ mod tests {
             pane_id,
             exit_reason: crate::platform::ChildExitReason::Interrupted,
         });
-        assert!(crate::persist::load().is_some());
+        assert!(crate::persist::load(&crate::session::data_dir(&app.paths)).is_some());
 
         app.start_background_session_save();
         if let Some(thread) = app.session_save_thread.take() {
@@ -1650,13 +1647,11 @@ mod tests {
         app.save_session_before_teardown();
         app.retire_session_writer();
 
-        assert!(crate::persist::load().is_none());
+        assert!(crate::persist::load(&crate::session::data_dir(&app.paths)).is_none());
     }
 
     #[test]
     fn durable_mutation_after_pane_exit_checkpoint_wins_on_shutdown() {
-        let _env = isolated_config_env();
-
         for another_interrupted_exit in [false, true] {
             let mut app = test_app();
             app.policy.persist_session = true;
@@ -1683,7 +1678,8 @@ mod tests {
             app.save_session_before_teardown();
             app.retire_session_writer();
 
-            let snapshot = crate::persist::load().expect("newer session should be saved");
+            let snapshot = crate::persist::load(&crate::session::data_dir(&app.paths))
+                .expect("newer session should be saved");
             assert_eq!(snapshot.workspaces.len(), 1);
             assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("newer"));
         }

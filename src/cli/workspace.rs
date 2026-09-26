@@ -9,36 +9,50 @@ use crate::api::schema::{
 
 use super::matches::{flag, required, string, value, values, words};
 
-pub(super) fn run_workspace_command(matches: &ArgMatches) -> std::io::Result<i32> {
+pub(super) fn run_workspace_command(
+    matches: &ArgMatches,
+    paths: &crate::config::AppPaths,
+) -> std::io::Result<i32> {
     match matches.subcommand() {
-        Some(("list", _)) => super::runtime::workspace_list(),
-        Some(("create", matches)) => match create_params(matches) {
-            Ok(params) => super::runtime::workspace_create(params),
+        Some(("list", _)) => super::runtime::workspace_list(paths),
+        Some(("create", matches)) => match create_params(matches, paths) {
+            Ok(params) => super::runtime::workspace_create(paths, params),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("get", matches)) => super::runtime::workspace_get(required(matches, "workspace_id")),
-        Some(("focus", matches)) => {
-            super::runtime::workspace_focus(required(matches, "workspace_id"))
+        Some(("get", matches)) => {
+            super::runtime::workspace_get(paths, required(matches, "workspace_id"))
         }
-        Some(("rename", matches)) => super::runtime::workspace_rename(WorkspaceRenameParams {
-            workspace_id: required(matches, "workspace_id"),
-            label: words(matches, "label"),
-        }),
+        Some(("focus", matches)) => {
+            super::runtime::workspace_focus(paths, required(matches, "workspace_id"))
+        }
+        Some(("rename", matches)) => super::runtime::workspace_rename(
+            paths,
+            WorkspaceRenameParams {
+                workspace_id: required(matches, "workspace_id"),
+                label: words(matches, "label"),
+            },
+        ),
         Some(("report-metadata", matches)) => match report_metadata_params(matches) {
-            Ok(params) => super::send_ok_request(Method::WorkspaceReportMetadata(params)),
+            Ok(params) => super::send_ok_request(paths, Method::WorkspaceReportMetadata(params)),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("close", matches)) => super::runtime::workspace_close(WorkspaceCloseParams {
-            workspace_id: required(matches, "workspace_id"),
-        }),
+        Some(("close", matches)) => super::runtime::workspace_close(
+            paths,
+            WorkspaceCloseParams {
+                workspace_id: required(matches, "workspace_id"),
+            },
+        ),
         _ => Ok(super::missing_subcommand()),
     }
 }
 
-fn create_params(matches: &ArgMatches) -> Result<WorkspaceCreateParams, String> {
+fn create_params(
+    matches: &ArgMatches,
+    paths: &crate::config::AppPaths,
+) -> Result<WorkspaceCreateParams, String> {
     Ok(WorkspaceCreateParams {
         source_workspace_id: None,
-        cwd: super::matches::cwd(matches)?,
+        cwd: super::matches::cwd(matches, paths)?,
         focus: flag(matches, "focus"),
         label: string(matches, "label"),
         env: values::<(String, String)>(matches, "env")
@@ -64,19 +78,30 @@ fn report_metadata_params(matches: &ArgMatches) -> Result<WorkspaceReportMetadat
 mod tests {
     use super::super::tests::command_matches;
 
+    fn test_paths() -> crate::config::AppPaths {
+        crate::config::AppPaths::test_with_context(
+            std::path::Path::new("/tmp/shepr-cli-paths"),
+            Some(std::path::Path::new("/home/me")),
+            Some(std::path::Path::new("/home/me/proj")),
+        )
+    }
+
     #[test]
     fn create_reads_every_option() {
-        let params = super::create_params(&command_matches(&[
-            "workspace",
-            "create",
-            "--cwd",
-            "/srv",
-            "--label=api",
-            "--env",
-            "A=1",
-            "--env=B=",
-            "--focus",
-        ]))
+        let params = super::create_params(
+            &command_matches(&[
+                "workspace",
+                "create",
+                "--cwd",
+                "/srv",
+                "--label=api",
+                "--env",
+                "A=1",
+                "--env=B=",
+                "--focus",
+            ]),
+            &test_paths(),
+        )
         .expect("test precondition");
         assert_eq!(params.cwd.as_deref(), Some("/srv"));
         assert_eq!(params.label.as_deref(), Some("api"));
@@ -84,21 +109,21 @@ mod tests {
         assert_eq!(params.env.get("A").map(String::as_str), Some("1"));
         assert_eq!(params.env.get("B").map(String::as_str), Some(""));
 
-        let params = super::create_params(&command_matches(&[
-            "workspace",
-            "create",
-            "--focus",
-            "--no-focus",
-        ]))
+        let params = super::create_params(
+            &command_matches(&["workspace", "create", "--focus", "--no-focus"]),
+            &test_paths(),
+        )
         .expect("test precondition");
         assert!(!params.focus);
         assert_eq!(params.cwd, None);
 
         // A relative directory is the caller's, not the server's.
-        let params = super::create_params(&command_matches(&["workspace", "create", "--cwd", "."]))
-            .expect("test precondition");
-        let expected = std::env::current_dir().expect("test precondition");
-        assert_eq!(params.cwd.as_deref(), expected.to_str());
+        let params = super::create_params(
+            &command_matches(&["workspace", "create", "--cwd", "."]),
+            &test_paths(),
+        )
+        .expect("test precondition");
+        assert_eq!(params.cwd.as_deref(), Some("/home/me/proj"));
     }
 
     #[test]

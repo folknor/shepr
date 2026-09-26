@@ -25,8 +25,12 @@ impl std::error::Error for ServerNotRunningReported {}
 
 /// Builds the friendly `server_not_running` ErrorResponse shown when no
 /// server is listening on the resolved API socket.
-pub(super) fn response(request_id: &str, socket_path: &Path) -> ErrorResponse {
-    let attach_command = startup_command(socket_path);
+pub(super) fn response(
+    request_id: &str,
+    socket_path: &Path,
+    paths: &crate::config::AppPaths,
+) -> ErrorResponse {
+    let attach_command = startup_command(socket_path, paths);
     ErrorResponse {
         id: request_id.to_string(),
         error: ErrorBody {
@@ -39,9 +43,9 @@ pub(super) fn response(request_id: &str, socket_path: &Path) -> ErrorResponse {
     }
 }
 
-fn startup_command(socket_path: &Path) -> String {
+fn startup_command(socket_path: &Path, paths: &crate::config::AppPaths) -> String {
     let session_socket =
-        crate::session::api_socket_path_for(crate::session::active_name().as_deref());
+        crate::session::api_socket_path_for(paths, crate::session::active_name().as_deref());
     if socket_path == session_socket {
         crate::session::local_attach_command()
     } else {

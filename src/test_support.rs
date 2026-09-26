@@ -251,8 +251,9 @@ mod tests {
         let env = IsolatedEnv::new();
         assert_eq!(std::env::var_os("HOME"), Some(env.home().into_os_string()));
         assert!(std::env::var_os("XDG_CONFIG_HOME").is_none());
-        assert!(crate::config::config_dir().starts_with(env.path()));
-        assert!(crate::config::state_dir().starts_with(env.path()));
+        let paths = crate::config::AppPaths::resolve().expect("isolated directories resolve");
+        assert!(paths.config_dir().starts_with(env.path()));
+        assert!(paths.state_dir().starts_with(env.path()));
         env.set(PROBE, "set");
         let scratch = env.path().to_path_buf();
         drop(env);

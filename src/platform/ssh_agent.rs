@@ -37,8 +37,8 @@ pub(crate) struct SshAgentLease {
     id: u64,
 }
 
-pub(crate) fn socket_path() -> PathBuf {
-    agent_path_for(&crate::api::socket_path())
+pub(crate) fn socket_path(paths: &crate::config::AppPaths) -> PathBuf {
+    agent_path_for(&crate::api::socket_path(paths))
 }
 
 fn agent_path_for(api_path: &Path) -> PathBuf {
@@ -207,8 +207,8 @@ impl Drop for SshAgentLease {
     }
 }
 
-pub(crate) fn apply_pane_env(command: &mut crate::pty::PtyCommand) {
-    let path = socket_path();
+pub(crate) fn apply_pane_env(command: &mut crate::pty::PtyCommand, api_socket_path: &Path) {
+    let path = agent_path_for(api_socket_path);
     if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
         command.env("SSH_AUTH_SOCK", path);
     }

@@ -18,6 +18,18 @@ pub enum AgentState {
     Unknown,
 }
 
+impl AgentState {
+    /// Rank agent states for attention, from least to most urgent.
+    /// Unknown shares Idle's rank because the UI presents it as Idle.
+    pub const fn attention_rank(self) -> u8 {
+        match self {
+            Self::Idle | Self::Unknown => 0,
+            Self::Working => 1,
+            Self::Blocked => 2,
+        }
+    }
+}
+
 /// Screen-derived agent state plus confidence metadata used for source arbitration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentDetection {
@@ -774,6 +786,16 @@ fn is_python_runtime(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attention_rank_orders_blocked_working_idle_and_unknown_as_idle() {
+        assert!(AgentState::Blocked.attention_rank() > AgentState::Working.attention_rank());
+        assert!(AgentState::Working.attention_rank() > AgentState::Idle.attention_rank());
+        assert_eq!(
+            AgentState::Unknown.attention_rank(),
+            AgentState::Idle.attention_rank()
+        );
+    }
 
     fn foreground_process(
         pid: u32,

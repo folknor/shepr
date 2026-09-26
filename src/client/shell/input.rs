@@ -214,9 +214,6 @@ impl ClientShellState {
                         outcome.repaint = true;
                         outcome.full_redraw = true;
                     }
-                    if let Some(surface) = self.pane_surface.clone() {
-                        outcome.repaint |= self.acknowledge_active_surface_agents(&surface);
-                    }
                     outcome
                         .requests
                         .push(ClientMessage::ClientShellFocus { focused: true });

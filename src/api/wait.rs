@@ -556,7 +556,6 @@ fn agent_wait_statuses(
     if until.is_empty() {
         vec![
             crate::api::schema::AgentStatus::Idle,
-            crate::api::schema::AgentStatus::Done,
             crate::api::schema::AgentStatus::Blocked,
         ]
     } else {

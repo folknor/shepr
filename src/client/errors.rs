@@ -1,7 +1,6 @@
 use std::io;
 
 use crate::protocol;
-use crate::server::socket_paths::client_socket_path;
 
 /// Errors that can occur during client operation.
 #[derive(Debug)]
@@ -25,12 +24,10 @@ impl std::fmt::Display for ClientError {
         match self {
             ClientError::ConnectionFailed(err) => {
                 write!(f, "failed to connect to server: {err}")?;
-                let path = client_socket_path();
                 write!(
                     f,
                     "\nIs shepr server running? Start it with `shepr server`."
-                )?;
-                write!(f, "\nSocket path: {}", path.display())
+                )
             }
             ClientError::HostTerminal(err) => write!(f, "host terminal error: {err}"),
             ClientError::HandshakeRejected { version, error } => {

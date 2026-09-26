@@ -35,8 +35,8 @@ impl HeadlessServer {
                 self.send_to_foreground_client(&ServerMessage::Clipboard { data });
                 false
             }
-            // Agent state and hook reports read only the foreground focus (whether
-            // a completion counts as seen); neither changes geometry, so the
+            // Agent state and hook reports need the latest outer-terminal focus
+            // before application code runs; neither changes geometry, so the
             // view is not recomputed for them.
             AppEvent::StateChanged { .. } | AppEvent::HookStateReported { .. } => {
                 self.sync_foreground_focus_state();
@@ -57,7 +57,7 @@ impl HeadlessServer {
                 if let Some(update) = self
                     .app
                     .state
-                    .publish_pane_process_exit_if_agent(pane_id_val, false)
+                    .publish_pane_process_exit_if_agent(pane_id_val)
                 {
                     self.app.emit_pane_state_update(&update);
                 }

@@ -1,5 +1,6 @@
 use std::io;
 use std::path::PathBuf;
+use std::{collections::HashMap, io::ErrorKind};
 
 pub(crate) use crate::pathutil::{expand_tilde_path, home_dir};
 use crate::pty::PtyCommand;
@@ -24,13 +25,77 @@ pub(crate) const GROK_CONFIG_DIR_ENV_VAR: &str = "GROK_CONFIG_DIR";
 pub(crate) const GROK_HOME_ENV_VAR: &str = "GROK_HOME";
 pub(crate) const HERMES_HOME_ENV_VAR: &str = "HERMES_HOME";
 
+#[derive(Clone, Debug)]
+struct DirectoryError {
+    kind: ErrorKind,
+    message: String,
+}
+
+type CapturedDirectory = Result<PathBuf, DirectoryError>;
+
+/// Agent-owned config locations resolved at the integration command boundary.
+/// Install and status code receives this value and never consults the process
+/// environment while it is choosing files to read or write.
+#[derive(Clone, Debug)]
+pub(crate) struct AgentIntegrationPaths {
+    directories: HashMap<&'static str, CapturedDirectory>,
+}
+
+impl AgentIntegrationPaths {
+    pub(crate) fn resolve() -> Self {
+        let directories = [
+            ("pi_extension", pi_extension_dir()),
+            ("omp_extension", omp_extension_dir()),
+            ("claude", claude_dir()),
+            ("codex", codex_dir()),
+            ("copilot", copilot_dir()),
+            ("devin", devin_dir()),
+            ("droid", droid_dir()),
+            ("kimi", kimi_dir()),
+            ("opencode", opencode_dir()),
+            ("opencode_state", opencode_state_dir()),
+            ("kilo", kilo_dir()),
+            ("hermes", hermes_dir()),
+            ("hermes_plugin", hermes_plugin_dir()),
+            ("qodercli", qodercli_dir()),
+            ("qwen", qwen_dir()),
+            ("letta", letta_dir()),
+            ("cursor", cursor_dir()),
+            ("mastracode", mastracode_dir()),
+            ("antigravity_cli", antigravity_cli_dir()),
+            ("grok", grok_dir()),
+        ]
+        .into_iter()
+        .map(|(name, result)| {
+            let result = result.map_err(|error| DirectoryError {
+                kind: error.kind(),
+                message: error.to_string(),
+            });
+            (name, result)
+        })
+        .collect();
+        Self { directories }
+    }
+
+    pub(crate) fn directory(&self, name: &'static str) -> io::Result<PathBuf> {
+        match self.directories.get(name) {
+            Some(Ok(path)) => Ok(path.clone()),
+            Some(Err(error)) => Err(io::Error::new(error.kind, error.message.clone())),
+            None => Err(io::Error::new(
+                ErrorKind::NotFound,
+                format!("integration directory {name} was not resolved"),
+            )),
+        }
+    }
+}
+
 fn absolute_xdg_home(variable: &str) -> Option<PathBuf> {
     let path = std::env::var_os(variable).map(PathBuf::from)?;
     path.is_absolute().then_some(path)
 }
 
-pub(crate) fn apply_pane_base_env(cmd: &mut PtyCommand) {
-    cmd.env(crate::api::SOCKET_PATH_ENV_VAR, crate::api::socket_path());
+pub(crate) fn apply_pane_base_env(cmd: &mut PtyCommand, api_socket_path: &std::path::Path) {
+    cmd.env(crate::api::SOCKET_PATH_ENV_VAR, api_socket_path);
     if let Ok(executable) = crate::platform::launch_executable() {
         cmd.env("SHEPR_BIN_PATH", executable);
     }

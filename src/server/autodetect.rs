@@ -39,8 +39,8 @@ pub(crate) const STARTUP_CWD_ENV_VAR: &str = "SHEPR_STARTUP_CWD";
 /// connection is refused, no server is running. Stale sockets (from a crashed
 /// server) are detected because connect returns `ConnectionRefused`
 /// when nobody is listening.
-pub fn is_server_listening() -> bool {
-    is_server_listening_at(&client_socket_path())
+pub fn is_server_listening(paths: &crate::config::AppPaths) -> bool {
+    is_server_listening_at(&client_socket_path(paths))
 }
 
 /// Checks whether a shepr server is listening at a specific socket path.
@@ -77,12 +77,14 @@ fn is_server_listening_at(socket_path: &Path) -> bool {
     }
 }
 
-fn read_server_status() -> io::Result<Option<crate::api::RuntimeStatus>> {
-    crate::api::read_runtime_status_at(&crate::api::socket_path(), STATUS_REQUEST_TIMEOUT)
+fn read_server_status(
+    paths: &crate::config::AppPaths,
+) -> io::Result<Option<crate::api::RuntimeStatus>> {
+    crate::api::read_runtime_status_at(&crate::api::socket_path(paths), STATUS_REQUEST_TIMEOUT)
 }
 
-fn validate_running_server_compatibility() -> io::Result<()> {
-    let Some(status) = read_server_status()? else {
+fn validate_running_server_compatibility(paths: &crate::config::AppPaths) -> io::Result<()> {
+    let Some(status) = read_server_status(paths)? else {
         return Err(io::Error::other(format!(
             "a shepr server is listening, but its status API is unavailable.\n\n{}\nIf that fails, stop the old server process manually.",
             crate::session::active_restart_after_update_guidance()
@@ -120,7 +122,7 @@ fn validate_running_server_compatibility() -> io::Result<()> {
 ///   this CLI invocation explicitly selected a session.
 ///
 /// Returns the PID of the spawned server process.
-pub fn spawn_server_daemon() -> io::Result<u32> {
+pub fn spawn_server_daemon(paths: &crate::config::AppPaths) -> io::Result<u32> {
     // After an install replaces the binary, raw `current_exe()` names the
     // running one "/…/shepr (deleted)"; this resolves to the new install.
     let exe = crate::platform::launch_executable().map_err(|err| {
@@ -132,7 +134,7 @@ pub fn spawn_server_daemon() -> io::Result<u32> {
 
     info!(exe = %exe.display(), "spawning server daemon");
 
-    let mut command = build_server_daemon_command(&exe);
+    let mut command = build_server_daemon_command(&exe, paths.current_dir());
 
     let pid = command.spawn().map(|child| child.id()).map_err(|err| {
         io::Error::new(err.kind(), format!("failed to spawn shepr server: {err}"))
@@ -142,7 +144,7 @@ pub fn spawn_server_daemon() -> io::Result<u32> {
     Ok(pid)
 }
 
-fn build_server_daemon_command(exe: &Path) -> Command {
+fn build_server_daemon_command(exe: &Path, startup_cwd: Option<&Path>) -> Command {
     let mut command = Command::new(exe);
     command
         .arg("server")
@@ -152,13 +154,10 @@ fn build_server_daemon_command(exe: &Path) -> Command {
         .stderr(std::process::Stdio::null());
     crate::platform::detach_server_daemon_command(&mut command);
 
-    match std::env::current_dir() {
-        Ok(cwd) => {
-            command.env(STARTUP_CWD_ENV_VAR, cwd);
-        }
-        Err(_) => {
-            command.env_remove(STARTUP_CWD_ENV_VAR);
-        }
+    if let Some(startup_cwd) = startup_cwd {
+        command.env(STARTUP_CWD_ENV_VAR, startup_cwd);
+    } else {
+        command.env_remove(STARTUP_CWD_ENV_VAR);
     }
 
     if crate::session::explicit_session_requested() {
@@ -179,7 +178,11 @@ fn build_server_daemon_command(exe: &Path) -> Command {
 /// Polls the socket path at regular intervals until a connection succeeds
 /// or the timeout elapses. Returns an error if the server doesn't become
 /// ready within the timeout.
-pub fn wait_for_server_socket(socket_path: &Path, timeout: Duration) -> io::Result<()> {
+pub fn wait_for_server_socket(
+    socket_path: &Path,
+    timeout: Duration,
+    paths: &crate::config::AppPaths,
+) -> io::Result<()> {
     let deadline = std::time::Instant::now() + timeout;
 
     while std::time::Instant::now() < deadline {
@@ -196,7 +199,7 @@ pub fn wait_for_server_socket(socket_path: &Path, timeout: Duration) -> io::Resu
             "server did not become ready within {}s (socket: {}). The background server may still be starting; try `shepr` again, or check {}",
             timeout.as_secs(),
             socket_path.display(),
-            crate::session::data_dir()
+            crate::session::data_dir(paths)
                 .join("shepr-server.log")
                 .display()
         ),
@@ -220,6 +223,7 @@ pub fn wait_for_server_socket(socket_path: &Path, timeout: Duration) -> io::Resu
 pub fn auto_detect_launch(
     saved_federation: bool,
     config: &crate::config::Config,
+    paths: &crate::config::AppPaths,
 ) -> io::Result<()> {
     // The client requires terminal geometry before it can attach. Reject an
     // unusable terminal before socket lookup creates directories or starts a daemon.
@@ -229,7 +233,7 @@ pub fn auto_detect_launch(
             format!("cannot attach without a usable terminal: {err}; run inside a terminal"),
         )
     })?;
-    let socket_path = client_socket_path();
+    let socket_path = client_socket_path(paths);
     info!(path = %socket_path.display(), "auto-detect launch starting");
 
     // The running server is checked whether or not saved machines are
@@ -238,11 +242,11 @@ pub fn auto_detect_launch(
     // rejects the different build with the build-identity preamble error.
     let startup = if is_server_listening_at(&socket_path) {
         info!("server already running, attaching as client");
-        validate_running_server_compatibility()
+        validate_running_server_compatibility(paths)
     } else {
         info!("no server running, spawning server daemon");
-        spawn_server_daemon()
-            .and_then(|_| wait_for_server_socket(&socket_path, SERVER_READY_TIMEOUT))
+        spawn_server_daemon(paths)
+            .and_then(|_| wait_for_server_socket(&socket_path, SERVER_READY_TIMEOUT, paths))
     };
     if let Err(error) = startup {
         if !saved_federation {
@@ -252,7 +256,7 @@ pub fn auto_detect_launch(
     }
 
     // Now attach as a thin client.
-    crate::client::run_client(config)
+    crate::client::run_client(config, paths)
 }
 
 // ---------------------------------------------------------------------------
@@ -282,7 +286,10 @@ mod tests {
         env.set("SHEPR_CLIENT_SOCKET_PATH", "/tmp/inherited-client.sock");
         crate::session::configure(Some("work")).expect("test precondition");
 
-        let command = build_server_daemon_command(&PathBuf::from("/tmp/shepr-test"));
+        let command = build_server_daemon_command(
+            &PathBuf::from("/tmp/shepr-test"),
+            Some(Path::new("/home/test")),
+        );
         let envs: Vec<_> = command.get_envs().collect();
 
         assert!(envs.iter().any(|(key, value)| {
@@ -295,8 +302,9 @@ mod tests {
 
     #[test]
     fn server_daemon_command_passes_current_dir_as_startup_cwd() {
-        let expected = std::env::current_dir().expect("test precondition");
-        let command = build_server_daemon_command(&PathBuf::from("/tmp/shepr-test"));
+        let expected = Path::new("/home/test");
+        let command =
+            build_server_daemon_command(&PathBuf::from("/tmp/shepr-test"), Some(expected));
         let envs: Vec<_> = command.get_envs().collect();
 
         assert!(envs.iter().any(|(key, value)| {
@@ -365,7 +373,11 @@ test "$sid" = "$$"
         let _listener = UnixListener::bind(&path).expect("test precondition");
 
         // Should succeed immediately (socket is already ready).
-        let result = wait_for_server_socket(&path, Duration::from_millis(100));
+        let result = wait_for_server_socket(
+            &path,
+            Duration::from_millis(100),
+            &crate::config::AppPaths::test_at(dir.path()),
+        );
         assert!(result.is_ok());
     }
 
@@ -375,7 +387,11 @@ test "$sid" = "$$"
         let path = dir.join("s.sock");
 
         // No listener - should time out.
-        let result = wait_for_server_socket(&path, Duration::from_millis(50));
+        let result = wait_for_server_socket(
+            &path,
+            Duration::from_millis(50),
+            &crate::config::AppPaths::test_at(dir.path()),
+        );
         assert!(result.is_err());
         assert_eq!(
             result.expect_err("test precondition").kind(),
@@ -398,7 +414,11 @@ test "$sid" = "$$"
         });
 
         // Wait with a generous timeout - should succeed.
-        let result = wait_for_server_socket(&path, Duration::from_secs(2));
+        let result = wait_for_server_socket(
+            &path,
+            Duration::from_secs(2),
+            &crate::config::AppPaths::test_at(dir.path()),
+        );
         assert!(result.is_ok());
     }
 
@@ -433,10 +453,11 @@ test "$sid" = "$$"
     #[test]
     fn validate_running_server_compatibility_fails_when_status_api_missing() {
         let env = IsolatedEnv::new();
+        let paths = crate::config::AppPaths::test_at(env.path());
         let path = env.path().join("api.sock");
         env.set(crate::api::SOCKET_PATH_ENV_VAR, &path);
 
-        let err = validate_running_server_compatibility().expect_err("test precondition");
+        let err = validate_running_server_compatibility(&paths).expect_err("test precondition");
 
         assert!(
             err.to_string().contains("status API is unavailable"),
@@ -447,9 +468,9 @@ test "$sid" = "$$"
     #[test]
     fn validate_running_server_compatibility_names_session_commands_for_protocol_mismatch() {
         let env = IsolatedEnv::new();
-        env.set("XDG_CONFIG_HOME", env.path());
+        let paths = crate::config::AppPaths::test_at(env.path());
         env.set(crate::session::SESSION_ENV_VAR, "work");
-        let path = crate::session::api_socket_path_for(Some("work"));
+        let path = crate::session::api_socket_path_for(&paths, Some("work"));
         std::fs::create_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
         let listener = UnixListener::bind(&path).expect("test precondition");
@@ -470,7 +491,7 @@ test "$sid" = "$$"
             stream.flush().expect("test precondition");
         });
 
-        let err = validate_running_server_compatibility().expect_err("test precondition");
+        let err = validate_running_server_compatibility(&paths).expect_err("test precondition");
         let message = err.to_string();
 
         let _ = handle.join();

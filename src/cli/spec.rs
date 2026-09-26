@@ -273,7 +273,7 @@ fn agent_command() -> Command {
                         .help("Fail after this many milliseconds"),
                 )
                 .after_help(
-                    "If the agent is already blocked, submission is rejected with agent_blocked before any input is sent. When an accepted submission starts from another non-working state, --wait requires an observed working or blocked state within 5000ms; otherwise it returns agent_prompt_stalled. A caller timeout that expires first returns timeout. It then matches idle, done, or blocked by default, or any exact --until state. It does not track turns: if the agent is already working, that active turn's completion may match.",
+                    "If the agent is already blocked, submission is rejected with agent_blocked before any input is sent. When an accepted submission starts from another non-working state, --wait requires an observed working or blocked state within 5000ms; otherwise it returns agent_prompt_stalled. A caller timeout that expires first returns timeout. It then matches idle or blocked by default, or any exact --until state. It does not track turns: if the agent is already working, that active turn's completion may match.",
                 ),
         )
         .subcommand(
@@ -301,7 +301,7 @@ fn agent_command() -> Command {
                 )
                 .arg(u64_option("timeout", "MS").help("Fail after this many milliseconds"))
                 .after_help(
-                    "Without --until, matches idle, done, or blocked. Use --until unknown explicitly when needed. Without --timeout, waits indefinitely.",
+                    "Without --until, matches idle or blocked. Unknown agent state is presented as idle. Without --timeout, waits indefinitely.",
                 ),
         )
         .subcommand(
@@ -909,12 +909,9 @@ fn state_label_assignment(value: &str) -> Result<(String, String), String> {
         return Err("expected STATUS=TEXT".to_string());
     };
     let status = status.trim().to_ascii_lowercase();
-    if !matches!(
-        status.as_str(),
-        "idle" | "working" | "blocked" | "done" | "unknown"
-    ) {
+    if !matches!(status.as_str(), "idle" | "working" | "blocked") {
         return Err(format!(
-            "unknown state {status} (expected idle, working, blocked, done, or unknown)"
+            "unknown state {status} (expected idle, working, or blocked)"
         ));
     }
     Ok((status, label.to_string()))
@@ -959,8 +956,6 @@ const AGENT_STATUSES: &[(&str, AgentStatus)] = &[
     ("idle", AgentStatus::Idle),
     ("working", AgentStatus::Working),
     ("blocked", AgentStatus::Blocked),
-    ("done", AgentStatus::Done),
-    ("unknown", AgentStatus::Unknown),
 ];
 
 const PANE_AGENT_STATES: &[(&str, PaneAgentState)] = &[
@@ -1212,10 +1207,7 @@ mod tests {
         let cmd = super::command();
         let wait = command_path(&cmd, &["agent", "wait"]);
         assert!(!has_option(wait, "status"));
-        assert_eq!(
-            option_values(wait, "until"),
-            ["idle", "working", "blocked", "done", "unknown"]
-        );
+        assert_eq!(option_values(wait, "until"), ["idle", "working", "blocked"]);
         assert!(has_option(wait, "timeout"));
     }
 
@@ -1388,6 +1380,26 @@ mod tests {
                 "s",
                 "--state-label",
                 "sleepy=zz",
+            ],
+            &[
+                "shepr",
+                "pane",
+                "report-metadata",
+                "p1",
+                "--source",
+                "s",
+                "--state-label",
+                "done=complete",
+            ],
+            &[
+                "shepr",
+                "pane",
+                "report-metadata",
+                "p1",
+                "--source",
+                "s",
+                "--state-label",
+                "unknown=unavailable",
             ],
         ] {
             let error = super::command()

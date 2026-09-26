@@ -644,7 +644,7 @@ fn reconnect_word_selection_tracks_content_changes() {
         let endpoint_id = state.active_endpoint_id.clone();
         let snapshot = state.snapshot.as_ref().expect("test precondition").clone();
         state.mark_endpoint_disconnected(&endpoint_id);
-        state.cache_endpoint_snapshot_inactive_for_generation(&endpoint_id, 1, snapshot);
+        state.cache_endpoint_snapshot_for_generation(&endpoint_id, 1, snapshot);
         state.set_endpoint_status(
             &endpoint_id,
             crate::client::endpoint::ClientEndpointStatus::Online,

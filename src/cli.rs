@@ -185,7 +185,8 @@ pub(crate) fn run_on_machine(
     invocation: &Invocation,
     selector: &str,
 ) -> std::io::Result<CommandOutcome> {
-    target::run_on_machine(selector, invocation.matches.subcommand())
+    let paths = resolve_app_paths()?;
+    target::run_on_machine(selector, invocation.matches.subcommand(), &paths)
 }
 
 /// Runs the invocation's subcommand. `NotCli` means the invocation launches
@@ -193,38 +194,67 @@ pub(crate) fn run_on_machine(
 /// headless server (bare `server`), or one of the hidden client/bridge modes.
 pub(crate) fn run(invocation: &Invocation) -> std::io::Result<CommandOutcome> {
     match invocation.matches.subcommand() {
-        Some((name, matches)) => dispatch(name, matches),
+        Some(("server", matches)) if matches.subcommand().is_none() => Ok(CommandOutcome::NotCli),
+        Some(("session", matches))
+            if matches
+                .subcommand()
+                .is_some_and(|(name, _)| name == "attach") =>
+        {
+            Ok(CommandOutcome::NotCli)
+        }
+        Some(("remote-api-bridge" | "remote-client-bridge" | "client", _)) => {
+            Ok(CommandOutcome::NotCli)
+        }
+        Some(("config", matches))
+            if matches
+                .subcommand()
+                .is_some_and(|(name, _)| name == "check") =>
+        {
+            let Some((name, matches)) = invocation.matches.subcommand() else {
+                return Ok(CommandOutcome::NotCli);
+            };
+            dispatch_config_check(name, matches)
+        }
+        Some((name, matches)) => {
+            let paths = resolve_app_paths()?;
+            dispatch(name, matches, &paths)
+        }
         None => Ok(CommandOutcome::NotCli),
     }
 }
 
-fn dispatch(name: &str, matches: &ArgMatches) -> std::io::Result<CommandOutcome> {
-    dispatch_with_config(name, matches, None)
+fn dispatch(
+    name: &str,
+    matches: &ArgMatches,
+    paths: &crate::config::AppPaths,
+) -> std::io::Result<CommandOutcome> {
+    dispatch_with_config(name, matches, None, paths)
 }
 
 pub(super) fn dispatch_with_config(
     name: &str,
     matches: &ArgMatches,
     config: Option<crate::config::Config>,
+    paths: &crate::config::AppPaths,
 ) -> std::io::Result<CommandOutcome> {
     let exit_code = match name {
         "server" => {
-            let Some(exit_code) = server::run_server_command(matches)? else {
+            let Some(exit_code) = server::run_server_command(matches, paths)? else {
                 return Ok(CommandOutcome::NotCli);
             };
             exit_code
         }
-        "status" => status::run_status_command(matches)?,
+        "status" => status::run_status_command(matches, paths)?,
         "config" => run_config_command(matches),
-        "machine" => machine::run_machine_command(matches)?,
-        "workspace" => workspace::run_workspace_command(matches)?,
-        "tab" => tab::run_tab_command(matches)?,
-        "agent" => agent::run_agent_command(matches, config)?,
-        "terminal" => run_terminal_command(matches, config)?,
-        "pane" => pane::run_pane_command(matches)?,
-        "integration" => integration::run_integration_command(matches)?,
+        "machine" => machine::run_machine_command(matches, paths)?,
+        "workspace" => workspace::run_workspace_command(matches, paths)?,
+        "tab" => tab::run_tab_command(matches, paths)?,
+        "agent" => agent::run_agent_command(matches, config, paths)?,
+        "terminal" => run_terminal_command(matches, config, paths)?,
+        "pane" => pane::run_pane_command(matches, paths)?,
+        "integration" => integration::run_integration_command(matches, paths)?,
         "session" => {
-            let Some(exit_code) = run_session_command(matches)? else {
+            let Some(exit_code) = run_session_command(matches, paths)? else {
                 return Ok(CommandOutcome::NotCli);
             };
             exit_code
@@ -233,6 +263,24 @@ pub(super) fn dispatch_with_config(
     };
 
     Ok(CommandOutcome::Handled(exit_code))
+}
+
+fn dispatch_config_check(name: &str, matches: &ArgMatches) -> std::io::Result<CommandOutcome> {
+    let exit_code = if name == "config" {
+        run_config_command(matches)
+    } else {
+        return Ok(CommandOutcome::NotCli);
+    };
+    Ok(CommandOutcome::Handled(exit_code))
+}
+
+fn resolve_app_paths() -> std::io::Result<crate::config::AppPaths> {
+    crate::config::AppPaths::resolve().map_err(|diagnostics| {
+        std::io::Error::other(format!(
+            "application paths could not be resolved:\n  {}",
+            diagnostics.join("\n  ")
+        ))
+    })
 }
 
 /// The spec makes every command group require a subcommand, so this only
@@ -257,7 +305,12 @@ fn run_config_command(matches: &ArgMatches) -> i32 {
 }
 
 fn config_check() -> i32 {
-    let diagnostics = crate::config::Config::load_for_check().diagnostics;
+    // Path problems are reported like any other config issue instead of
+    // aborting the check.
+    let diagnostics = match crate::config::AppPaths::resolve() {
+        Ok(paths) => crate::config::Config::load_for_check(&paths).diagnostics,
+        Err(diagnostics) => diagnostics,
+    };
     if diagnostics.is_empty() {
         println!("config: ok");
     } else {
@@ -270,8 +323,10 @@ fn config_check() -> i32 {
     i32::from(!diagnostics.is_empty())
 }
 
-fn load_validated_config() -> std::io::Result<crate::config::Config> {
-    crate::config::Config::load_validated().map_err(|diagnostics| {
+fn load_validated_config(
+    paths: &crate::config::AppPaths,
+) -> std::io::Result<crate::config::Config> {
+    crate::config::Config::load_validated(paths).map_err(|diagnostics| {
         std::io::Error::other(format!(
             "configuration error:\n  {}",
             diagnostics.join("\n  ")
@@ -282,31 +337,39 @@ fn load_validated_config() -> std::io::Result<crate::config::Config> {
 fn run_terminal_command(
     matches: &ArgMatches,
     config: Option<crate::config::Config>,
+    paths: &crate::config::AppPaths,
 ) -> std::io::Result<i32> {
     match matches.subcommand() {
         Some(("attach", matches)) => {
             let config = match config {
                 Some(config) => config,
-                None => load_validated_config()?,
+                None => load_validated_config(paths)?,
             };
             crate::client::run_terminal_attach(
                 &config,
+                paths,
                 matches::required(matches, "terminal_id"),
                 matches::flag(matches, "takeover"),
             )?;
             Ok(0)
         }
         Some(("title", matches)) => match matches.subcommand() {
-            Some(("set", matches)) => print_response(&send_request(&Request {
-                id: "cli:terminal:title:set".into(),
-                method: Method::ClientWindowTitleSet(ClientWindowTitleSetParams {
-                    title: matches::required(matches, "title"),
-                }),
-            })?),
-            Some(("clear", _)) => print_response(&send_request(&Request {
-                id: "cli:terminal:title:clear".into(),
-                method: Method::ClientWindowTitleClear(EmptyParams::default()),
-            })?),
+            Some(("set", matches)) => print_response(&send_request(
+                paths,
+                &Request {
+                    id: "cli:terminal:title:set".into(),
+                    method: Method::ClientWindowTitleSet(ClientWindowTitleSetParams {
+                        title: matches::required(matches, "title"),
+                    }),
+                },
+            )?),
+            Some(("clear", _)) => print_response(&send_request(
+                paths,
+                &Request {
+                    id: "cli:terminal:title:clear".into(),
+                    method: Method::ClientWindowTitleClear(EmptyParams::default()),
+                },
+            )?),
             _ => Ok(missing_subcommand()),
         },
         _ => Ok(missing_subcommand()),
@@ -314,24 +377,29 @@ fn run_terminal_command(
 }
 
 /// `None` for `session attach`, which is a TUI launch rather than a command.
-fn run_session_command(matches: &ArgMatches) -> std::io::Result<Option<i32>> {
+fn run_session_command(
+    matches: &ArgMatches,
+    paths: &crate::config::AppPaths,
+) -> std::io::Result<Option<i32>> {
     match matches.subcommand() {
-        Some(("list", matches)) => session_list(matches::flag(matches, "json")).map(Some),
+        Some(("list", matches)) => session_list(paths, matches::flag(matches, "json")).map(Some),
         Some(("attach", _)) => Ok(None),
         Some(("stop", matches)) => Ok(Some(session_stop(
             &matches::required(matches, "name"),
             matches::flag(matches, "json"),
+            paths,
         ))),
         Some(("delete", matches)) => Ok(Some(session_delete(
             &matches::required(matches, "name"),
             matches::flag(matches, "json"),
+            paths,
         ))),
         _ => Ok(Some(missing_subcommand())),
     }
 }
 
-fn session_list(json: bool) -> std::io::Result<i32> {
-    let sessions = crate::session::list_sessions()?;
+fn session_list(paths: &crate::config::AppPaths, json: bool) -> std::io::Result<i32> {
+    let sessions = crate::session::list_sessions(paths)?;
     if json {
         print_json(&serde_json::json!({
             "sessions": sessions,
@@ -346,7 +414,7 @@ fn session_list(json: bool) -> std::io::Result<i32> {
 /// protocol-mismatch error tells the user to run `session stop` / `server
 /// stop`, so stopping must keep working against a server from another build.
 /// `crate::session` sends a bare `server.stop` JSON line for that reason.
-fn session_stop(name: &str, json: bool) -> i32 {
+fn session_stop(name: &str, json: bool, paths: &crate::config::AppPaths) -> i32 {
     let target = match crate::session::parse_target_name(name) {
         Ok(target) => target,
         Err(message) => {
@@ -354,7 +422,7 @@ fn session_stop(name: &str, json: bool) -> i32 {
             return 1;
         }
     };
-    match crate::session::stop_session(target.as_deref()) {
+    match crate::session::stop_session(paths, target.as_deref()) {
         Ok(session) => {
             if json {
                 print_json(&serde_json::json!({
@@ -373,8 +441,8 @@ fn session_stop(name: &str, json: bool) -> i32 {
     }
 }
 
-fn session_delete(name: &str, json: bool) -> i32 {
-    match crate::session::delete_session(name) {
+fn session_delete(name: &str, json: bool, paths: &crate::config::AppPaths) -> i32 {
+    match crate::session::delete_session(paths, name) {
         Ok(session) => {
             if json {
                 print_json(&serde_json::json!({
@@ -409,11 +477,17 @@ pub(super) fn print_response(response: &serde_json::Value) -> std::io::Result<i3
     Ok(0)
 }
 
-pub(super) fn send_ok_request(method: Method) -> std::io::Result<i32> {
-    let response = send_request(&Request {
-        id: "cli:request".into(),
-        method,
-    })?;
+pub(super) fn send_ok_request(
+    paths: &crate::config::AppPaths,
+    method: Method,
+) -> std::io::Result<i32> {
+    let response = send_request(
+        paths,
+        &Request {
+            id: "cli:request".into(),
+            method,
+        },
+    )?;
 
     if response.get("error").is_some() {
         eprintln!(
@@ -426,29 +500,39 @@ pub(super) fn send_ok_request(method: Method) -> std::io::Result<i32> {
     Ok(0)
 }
 
-pub(super) fn send_request(request: &Request) -> std::io::Result<serde_json::Value> {
-    let client = target::api_client()?;
-    ensure_server_protocol_compatible(&client, &request.id)?;
+pub(super) fn send_request(
+    paths: &crate::config::AppPaths,
+    request: &Request,
+) -> std::io::Result<serde_json::Value> {
+    let client = target::api_client(paths)?;
+    ensure_server_protocol_compatible(paths, &client, &request.id)?;
     client
         .request_value(request)
-        .map_err(|err| map_server_not_running_or_io(err, &request.id, &client))
+        .map_err(|err| map_server_not_running_or_io(paths, err, &request.id, &client))
 }
 
-pub(super) fn send_request_unchecked(request: &Request) -> std::io::Result<serde_json::Value> {
-    let client = target::api_client()?;
+pub(super) fn send_request_unchecked(
+    paths: &crate::config::AppPaths,
+    request: &Request,
+) -> std::io::Result<serde_json::Value> {
+    let client = target::api_client(paths)?;
     client
         .request_value(request)
-        .map_err(|err| map_server_not_running_or_io(err, &request.id, &client))
+        .map_err(|err| map_server_not_running_or_io(paths, err, &request.id, &client))
 }
 
-fn ensure_server_protocol_compatible(client: &ApiClient, request_id: &str) -> std::io::Result<()> {
+fn ensure_server_protocol_compatible(
+    paths: &crate::config::AppPaths,
+    client: &ApiClient,
+    request_id: &str,
+) -> std::io::Result<()> {
     // Checked once per target: a polling command must not pay a status round
     // trip (up to 15 s under `--machine`) before every request.
     if target::protocol_checked() {
         return Ok(());
     }
-    let status = target::server_status(client)
-        .map_err(|err| map_server_not_running_or_io(err, request_id, client))?;
+    let status = target::server_status(paths, client)
+        .map_err(|err| map_server_not_running_or_io(paths, err, request_id, client))?;
     let server_protocol = status
         .protocol
         .ok_or_else(|| std::io::Error::other("server ping did not include a protocol version"))?;
@@ -495,6 +579,7 @@ pub(super) fn server_not_running_error(err: &std::io::Error) -> bool {
 /// friendly `server_not_running` JSON error plus a recognizable marker; all
 /// other errors fall through unchanged so existing handling is preserved.
 fn map_server_not_running_or_io(
+    paths: &crate::config::AppPaths,
     err: ApiClientError,
     request_id: &str,
     client: &ApiClient,
@@ -507,6 +592,7 @@ fn map_server_not_running_or_io(
             server_not_running::reported_error(server_not_running::response(
                 request_id,
                 &client.socket_path(),
+                paths,
             ))
         }
         err => api_client_error_to_io(err),
@@ -777,12 +863,15 @@ mod tests {
     fn maps_dead_server_connect_failure_to_friendly_error() {
         use crate::api::client::{ApiClient, ApiClientError};
 
-        let client = ApiClient::local();
+        let scratch = crate::test_support::ScratchDir::new("cli-socket-error");
+        let paths = crate::config::AppPaths::test_at(scratch.path());
+        let client = ApiClient::local(&paths);
         let socket = client.socket_path().display().to_string();
 
         // The helper does NOT print; it returns a recognizable marker carrying
         // the ErrorResponse so the surfacing edge can print it exactly once.
         let mapped = super::map_server_not_running_or_io(
+            &paths,
             ApiClientError::Io(std::io::Error::from(std::io::ErrorKind::NotFound)),
             "cli:workspace:create",
             &client,
@@ -802,8 +891,11 @@ mod tests {
     fn classifier_ignores_unrelated_io_kinds() {
         use crate::api::client::{ApiClient, ApiClientError};
 
-        let client = ApiClient::local();
+        let scratch = crate::test_support::ScratchDir::new("cli-socket-classifier");
+        let paths = crate::config::AppPaths::test_at(scratch.path());
+        let client = ApiClient::local(&paths);
         let mapped = super::map_server_not_running_or_io(
+            &paths,
             ApiClientError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut)),
             "cli:workspace:create",
             &client,

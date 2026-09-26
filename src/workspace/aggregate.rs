@@ -5,56 +5,34 @@ use crate::terminal::{TerminalId, TerminalState};
 
 use super::{Tab, Workspace};
 
-fn pane_attention_priority(state: AgentState, seen: bool) -> u8 {
-    match (state, seen) {
-        (AgentState::Blocked, _) => 4,
-        (AgentState::Idle, false) => 3,
-        (AgentState::Working, _) => 2,
-        (AgentState::Idle, true) => 1,
-        (AgentState::Unknown, _) => 0,
-    }
-}
-
-/// The `(state, seen)` of the pane most in need of attention among `panes`,
-/// or `(Unknown, true)` when there are none.
-fn aggregate_attention(panes: impl Iterator<Item = (AgentState, bool)>) -> (AgentState, bool) {
+fn aggregate_attention(panes: impl Iterator<Item = AgentState>) -> AgentState {
     panes
-        // Panes iterate in `HashMap` order, so every tie must be broken
-        // inside the key: among equal priorities prefer the unseen pane.
-        // With that, two panes only tie when (state, seen) are identical
-        // and the result no longer depends on iteration order.
-        .max_by_key(|(state, seen)| (pane_attention_priority(*state, *seen), !*seen))
-        .unwrap_or((AgentState::Unknown, true))
+        .max_by_key(|state| state.attention_rank())
+        .unwrap_or(AgentState::Unknown)
 }
 
 fn pane_states<'a>(
     tab: &'a Tab,
     terminals: &'a HashMap<TerminalId, TerminalState>,
-) -> impl Iterator<Item = (AgentState, bool)> + 'a {
+) -> impl Iterator<Item = AgentState> + 'a {
     tab.panes.values().filter_map(|pane| {
         terminals
             .get(&pane.attached_terminal_id)
-            .map(|terminal| (terminal.state, pane.seen))
+            .map(|terminal| terminal.state)
     })
 }
 
 impl Tab {
     /// Aggregate agent state of this tab's panes; see `Workspace::aggregate_state`.
-    pub fn aggregate_state(
-        &self,
-        terminals: &HashMap<TerminalId, TerminalState>,
-    ) -> (AgentState, bool) {
+    pub fn aggregate_state(&self, terminals: &HashMap<TerminalId, TerminalState>) -> AgentState {
         aggregate_attention(pane_states(self, terminals))
     }
 }
 
 impl Workspace {
-    /// Aggregate agent state over every pane in every tab: the most urgent
-    /// state, and whether the pane carrying it has been seen.
-    pub fn aggregate_state(
-        &self,
-        terminals: &HashMap<TerminalId, TerminalState>,
-    ) -> (AgentState, bool) {
+    /// Aggregate agent state over every pane in every tab, preferring Blocked,
+    /// then Working, then Idle. Unknown panes present as Idle at the API edge.
+    pub fn aggregate_state(&self, terminals: &HashMap<TerminalId, TerminalState>) -> AgentState {
         aggregate_attention(self.tabs.iter().flat_map(|tab| pane_states(tab, terminals)))
     }
 }
@@ -81,92 +59,17 @@ mod tests {
         let root = ws.tabs[0].root_pane;
         let terminal = terminal_for_pane(&ws, root);
         terminals.insert(terminal.id.clone(), terminal);
-        let (state, seen) = ws.aggregate_state(&terminals);
-        assert_eq!(state, AgentState::Unknown);
-        assert!(seen);
+
+        assert_eq!(ws.aggregate_state(&terminals), AgentState::Unknown);
     }
 
     #[test]
-    fn aggregate_state_priority() {
-        let mut ws = Workspace::test_new("test");
-        let id2 = ws.test_split(Direction::Horizontal);
-        let root_id = ws.tabs[0]
-            .panes
-            .keys()
-            .find(|id| **id != id2)
-            .copied()
-            .expect("test precondition");
-        let mut terminals = HashMap::new();
-        let mut root_terminal = terminal_for_pane(&ws, root_id);
-        root_terminal.state = AgentState::Idle;
-        terminals.insert(root_terminal.id.clone(), root_terminal);
-        let mut second_terminal = terminal_for_pane(&ws, id2);
-        second_terminal.state = AgentState::Working;
-        terminals.insert(second_terminal.id.clone(), second_terminal);
-
-        let (state, seen) = ws.aggregate_state(&terminals);
-
-        assert_eq!(state, AgentState::Working);
-        assert!(seen);
-    }
-
-    #[test]
-    fn aggregate_state_done_unseen_beats_working() {
-        let mut ws = Workspace::test_new("test");
-        let id2 = ws.test_split(Direction::Horizontal);
-        let root_id = ws.tabs[0]
-            .panes
-            .keys()
-            .find(|id| **id != id2)
-            .copied()
-            .expect("test precondition");
-        let mut terminals = HashMap::new();
-        let mut root_terminal = terminal_for_pane(&ws, root_id);
-        root_terminal.state = AgentState::Idle;
-        terminals.insert(root_terminal.id.clone(), root_terminal);
-        let mut second_terminal = terminal_for_pane(&ws, id2);
-        second_terminal.state = AgentState::Working;
-        terminals.insert(second_terminal.id.clone(), second_terminal);
-        let root = ws.tabs[0]
-            .panes
-            .get_mut(&root_id)
-            .expect("test precondition");
-        root.seen = false;
-
-        let (state, seen) = ws.aggregate_state(&terminals);
-
-        assert_eq!(state, AgentState::Idle);
-        assert!(!seen);
-    }
-
-    #[test]
-    fn aggregate_state_prefers_unseen_among_equal_priority_regardless_of_order() {
-        for state in [AgentState::Blocked, AgentState::Working] {
-            for unseen_first in [false, true] {
-                let mut ws = Workspace::test_new("test");
-                let id2 = ws.test_split(Direction::Horizontal);
-                let root_id = ws.tabs[0]
-                    .panes
-                    .keys()
-                    .find(|id| **id != id2)
-                    .copied()
-                    .expect("test precondition");
-                let mut terminals = HashMap::new();
-                for pane_id in [root_id, id2] {
-                    let mut terminal = terminal_for_pane(&ws, pane_id);
-                    terminal.state = state;
-                    terminals.insert(terminal.id.clone(), terminal);
-                }
-                let unseen = if unseen_first { root_id } else { id2 };
-                ws.tabs[0]
-                    .panes
-                    .get_mut(&unseen)
-                    .expect("test precondition")
-                    .seen = false;
-
-                assert_eq!(ws.aggregate_state(&terminals), (state, false));
-                assert_eq!(ws.tabs[0].aggregate_state(&terminals), (state, false));
-            }
+    fn aggregate_state_priority_is_blocked_then_working_then_idle() {
+        for states in [
+            [AgentState::Idle, AgentState::Working, AgentState::Blocked],
+            [AgentState::Blocked, AgentState::Idle, AgentState::Working],
+        ] {
+            assert_eq!(aggregate_attention(states.into_iter()), AgentState::Blocked);
         }
     }
 
@@ -186,8 +89,29 @@ mod tests {
 
         assert_eq!(
             ws.tabs[second_tab].aggregate_state(&terminals),
-            (AgentState::Working, true)
+            AgentState::Working
         );
-        assert_eq!(ws.aggregate_state(&terminals), (AgentState::Blocked, true));
+        assert_eq!(ws.aggregate_state(&terminals), AgentState::Blocked);
+    }
+
+    #[test]
+    fn blocked_state_beats_other_panes_in_a_split() {
+        let mut ws = Workspace::test_new("test");
+        let second = ws.test_split(Direction::Horizontal);
+        let first = ws.tabs[0]
+            .panes
+            .keys()
+            .find(|id| **id != second)
+            .copied()
+            .expect("test precondition");
+        let mut terminals = HashMap::new();
+        let mut idle = terminal_for_pane(&ws, first);
+        idle.state = AgentState::Idle;
+        terminals.insert(idle.id.clone(), idle);
+        let mut blocked = terminal_for_pane(&ws, second);
+        blocked.state = AgentState::Blocked;
+        terminals.insert(blocked.id.clone(), blocked);
+
+        assert_eq!(ws.tabs[0].aggregate_state(&terminals), AgentState::Blocked);
     }
 }

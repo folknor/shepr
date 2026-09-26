@@ -7,9 +7,11 @@ mod theme;
 mod window_title;
 
 #[cfg(test)]
+pub use self::theme::CustomThemeColors;
+#[cfg(test)]
 pub(crate) use self::theme::THEME_NAMES;
 pub use self::{
-    io::{config_dir, config_path, state_dir, try_config_path},
+    io::AppPaths,
     keybinds::{
         ActionKeybinds, BindingConfig, IndexedKeybind, Keybinds, LiveKeybindConfig,
         format_key_combo, normalize_key_combo, terminal_key_matches_combo,
@@ -24,11 +26,12 @@ pub use self::{
         SpaceSidebarToken, SpacesSidebarConfig,
     },
     tab_bar::TabBarRightEntryConfig,
-    theme::{CustomThemeColors, ThemeConfig, parse_color},
+    theme::ThemeConfig,
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
 
 pub(crate) use self::keybinds::parse_key_combo;
+pub(crate) use self::theme::ParsedThemeColors;
 pub(crate) use self::{
     tab_bar::{
         MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS, MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS,
@@ -45,12 +48,12 @@ pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
 pub const DEFAULT_HEADLESS_COLS: u16 = 120;
 pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
 
-#[cfg(test)]
-pub(crate) fn app_dir_name() -> &'static str {
-    io::app_dir_name()
-}
-
 impl Config {
+    pub(crate) fn resolve_palette(&mut self) -> Result<(), Vec<String>> {
+        self.resolved_palette = theme::resolve_palette(self)?;
+        Ok(())
+    }
+
     /// Parsed keybinds for Shepr actions.
     pub fn keybinds(&self) -> Keybinds {
         self.validated_keybinds().3
@@ -159,25 +162,6 @@ new_tab = "prefix+t"
         assert!(profile.contains("prefix = \"ctrl+a\""));
         assert!(profile.contains("new_tab = \"prefix+t\""));
         assert!(profile.contains("next_tab = \"prefix+n\""));
-    }
-
-    #[test]
-    fn local_keybindings_profile_publishes_the_effective_prefix_fallback() {
-        let config: Config = toml::from_str(
-            r#"
-[keys]
-prefix = "ctrl+"
-"#,
-        )
-        .expect("test precondition");
-
-        let profile = config
-            .local_keybindings_profile_toml()
-            .expect("test precondition");
-        let keybinds = keybindings_from_profile_toml(&profile).expect("test precondition");
-
-        assert!(profile.contains("prefix = \"ctrl+b\""));
-        assert_eq!(keybinds.prefix, config.live_keybinds().prefix);
     }
 
     #[test]

@@ -96,10 +96,6 @@ use crate::protocol::render_ansi;
 use crate::protocol::{self, ClientMessage, MAX_FRAME_SIZE, ServerMessage};
 use crate::server::socket_paths::client_socket_path;
 
-fn init_logging() {
-    crate::logging::init_file_logging(crate::logging::CLIENT_LOG_FILE);
-}
-
 fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
     const MAX_NOTICES: usize = 64;
     if notices.len() == MAX_NOTICES {
@@ -110,21 +106,22 @@ fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
 
 fn run_client_with_mode(
     config: &crate::config::Config,
+    paths: &crate::config::AppPaths,
     attach_request: Option<(String, bool)>,
     attach_escape: Option<AttachEscapeState>,
     log_message: &'static str,
 ) -> io::Result<()> {
-    init_logging();
+    crate::logging::init_file_logging(paths, crate::logging::CLIENT_LOG_FILE);
 
     let attach_escape = attach_escape.map(|_| AttachEscapeState::from_config(config));
     crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let client_rendered_shell = attach_request.is_none();
-    let socket_path = client_socket_path();
+    let socket_path = client_socket_path(paths);
     let keybinding_source = client_shell_keybinding_source().map_err(io::Error::other)?;
     let shell_config = client_rendered_shell.then(|| {
         shell::ClientShellConfig::from_config(config)
             .with_keybinding_source(keybinding_source)
-            .with_local_endpoint(&socket_path)
+            .with_local_endpoint(paths.state_dir(), &socket_path)
     });
     let mouse_capture = config.ui.mouse_capture;
     let mouse_scroll_lines = config.ui.mouse_scroll_lines();
@@ -142,6 +139,8 @@ fn run_client_with_mode(
         host_escape_disambiguation_active: false,
         initial_host_input: Vec::new(),
         manage_ssh_config: config.remote.manage_ssh_config,
+        paths: paths.clone(),
+        local_socket_path: socket_path.clone(),
         shell_config,
     };
 
@@ -149,7 +148,7 @@ fn run_client_with_mode(
     info!(path = %socket_path.display(), "{log_message}");
 
     let endpoint_catalog = if client_rendered_shell && !is_remote_client_process() {
-        endpoint::EndpointCatalog::load().unwrap_or_else(|error| {
+        endpoint::EndpointCatalog::load(paths).unwrap_or_else(|error| {
             warn!(%error, "saved SSH endpoint catalog is unavailable");
             endpoint::EndpointCatalog::default()
         })
@@ -381,7 +380,7 @@ async fn run_client_loop(
     // Only a client that loaded the saved machines follows them; attach and remote-client
     // processes run with an empty catalog.
     let mut catalog_watch = (state.shell.is_some() && !is_remote_client_process())
-        .then(|| endpoint::EndpointCatalogWatch::new(std::time::Instant::now()));
+        .then(|| endpoint::EndpointCatalogWatch::new(&config.paths, std::time::Instant::now()));
     let mut freeze_recovery_attempted = None;
     if let Some(shell) = state.shell.as_mut() {
         shell.set_endpoint_catalog(&endpoint_catalog.ssh);
@@ -484,6 +483,7 @@ async fn run_client_loop(
         endpoint::EndpointRegistry::empty()
     };
     let mut supervisors = endpoint::EndpointSupervisors::with_ssh_settings(
+        &config.paths,
         &endpoint_catalog.ssh,
         crate::remote::SavedSshSettings {
             manage_ssh_config: config.manage_ssh_config,
@@ -492,7 +492,7 @@ async fn run_client_loop(
     );
     if federated {
         supervisors.add_local(
-            client_socket_path(),
+            client_socket_path(&config.paths),
             write_stream
                 .connection(&endpoint::ClientEndpointId::Local)
                 .map(|connection| connection.generation),
@@ -1269,16 +1269,6 @@ async fn run_client_loop(
                         }
                         let snapshot = match endpoint::decode_endpoint_control(&kind, &data) {
                             Ok(endpoint::EndpointControlMessage::HealthPong) => continue,
-                            Ok(endpoint::EndpointControlMessage::AgentCompletions(projection)) => {
-                                if let Some(shell) = state.shell.as_mut() {
-                                    shell.set_endpoint_agent_completions(
-                                        &endpoint_id,
-                                        generation,
-                                        projection,
-                                    );
-                                }
-                                continue;
-                            }
                             Ok(endpoint::EndpointControlMessage::Ignored) => {
                                 debug!(%kind, "ignoring unknown endpoint control message");
                                 continue;
@@ -1459,6 +1449,7 @@ async fn run_client_loop(
                             &mut supervisors,
                             &mut pending_activation,
                             &mut endpoint_catalog,
+                            &config.local_socket_path,
                             profiles,
                             now,
                         ) {

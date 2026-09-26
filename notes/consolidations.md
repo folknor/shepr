@@ -40,42 +40,13 @@ Reported by: pane-detection, terminal-core.
 
 ## CON-002 - Agent status: two enums, several mappings, two priority ladders, two status texts
 
-Question: what an agent's presentable status is, how it ranks for attention, and
-what it is called.
-
-Sites:
-- Two enums for one axis: `detect::AgentState` (4 states) and `api::schema::AgentStatus` (5; Done = Idle+unseen), hand-mapped in `app/api_helpers.rs:75,86` (`pane_agent_status`) and in the client projection. Possibly a third copy, `api::schema::PaneAgentState` (unverified).
-- Attention ranking: `workspace/aggregate.rs:8` `pane_attention_priority(AgentState, seen)` and `client/shell.rs:171` `status_priority(AgentStatus)`; the client ladder is used at `agent_sidebar.rs:28`, `aggregate_navigation.rs:88`, `endpoint_agent_state.rs:185,196`. Tie-breaks differ (server prefers unseen among equals), no visible difference yet.
-- Status text: `shell.rs:182 status_text` (Unknown → "unknown", also the `state_labels` key) vs `agent_sidebar.rs:370 sidebar_status_text` (Unknown → "idle"). Already disagree: an Unknown agent shows "idle" in the agent panel and "unknown" in space rows (see BUG-024).
-- Glyph and colour: `status_icon` / `status_color` are one owner but paired by hand at 5+ call sites, with a stale-colour override in endpoint_sidebar.
-- The completion rule `is_background_completion_transition` sits in `app/actions.rs`.
-
-Decision (owner): the presented states are Working, Blocked and Idle. "Seen" and
-Done are removed (CON-003), and Unknown presents as Idle (BUG-024). The 5-state
-`AgentStatus`, the Done = Idle+unseen mapping and the Idle+unseen step in both
-ladders all go.
-
-Proposed owner: one `AgentState` with `attention_rank()` / `Ord` (Blocked >
-Working > Idle), one display-text function, and a `StatusGlyph { text, style }`
-built from (state, indicator style, palette, stale). Completion rule next to
-`AgentState`.
+Seen/Done is gone and the public `AgentStatus` is Idle, Working, Blocked, with
+the rank in `workspace/aggregate.rs` / `detect/mod.rs`. Residue, not re-verified
+after that change:
+- Two enums still carry the axis: internal `detect::AgentState` / `api::schema::PaneAgentState` (with Unknown) and the public `AgentStatus`, mapped at the API boundary.
+- Glyph and colour: `status_icon` / `status_color` are paired by hand at several call sites, with a stale-colour override in the endpoint sidebar. Proposed a `StatusGlyph { text, style }` built from (state, indicator style, palette, stale).
 
 Reported by: ui, app-state.
-
-## CON-003 - Who decides "seen" (Done vs Idle): server and client both do
-
-Sites:
-- Server: `pane.seen` mapped through `app/api_helpers.rs:86 pane_agent_status`, plus the server's tab/workspace aggregate, all still sent.
-- Client: `client/shell/endpoint_agent_state.rs` (`EndpointAgentPresentation`: its own acknowledged/completed/working maps, then `projected_status`).
-- `project_aggregate_status` overwrites the server's tab and workspace `agent_status` only when that tab/workspace has at least one agent; otherwise the server value survives (mixed authority).
-
-Decision (owner): remove "seen" entirely rather than choose an owner. Delete
-`pane.seen`, the Done mapping in `pane_agent_status`, the client's
-acknowledged/completed tracking in `EndpointAgentPresentation`, and the
-`project_aggregate_status` override; the server's aggregate of `AgentState` is
-the only answer. Resolved once that code is gone (see BUG-025).
-
-Reported by: ui.
 
 ## CON-004 - Is pixel/cell geometry known, and how is cell size clamped for the protocol?
 
