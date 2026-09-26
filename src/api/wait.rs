@@ -4,13 +4,14 @@ use std::sync::atomic::AtomicBool;
 use regex::Regex;
 
 use crate::api::schema::{
-    ErrorBody, ErrorResponse, EventData, EventEnvelope, EventMatch, EventsWaitParams, Method,
-    Request, ResponseResult, Subscription, SubscriptionEventData, SubscriptionEventEnvelope,
+    ErrorResponse, EventData, EventEnvelope, EventMatch, EventsWaitParams, Method, Request,
+    ResponseResult, Subscription, SubscriptionEventData, SubscriptionEventEnvelope,
     SuccessResponse,
 };
 use crate::api::server::{
-    APP_RESPONSE_TIMEOUT, CONNECTION_POLL_INTERVAL, dispatch_to_app_with_caller_timeout,
-    dispatch_to_app_with_timeout, error_response_json, should_stop_connection,
+    APP_RESPONSE_TIMEOUT, CONNECTION_POLL_INTERVAL, dispatch_to_app_with_caller_timeout_result,
+    dispatch_to_app_with_timeout, dispatch_to_app_with_timeout_result, error_response_json,
+    should_stop_connection,
 };
 use crate::api::subscriptions::ActiveSubscription;
 use crate::api::subscriptions::{
@@ -41,10 +42,11 @@ pub(super) fn wait_for_output(
                 return Ok(Some(
                     serde_json::to_string(&ErrorResponse {
                         id: request_id,
-                        error: ErrorBody {
-                            code: "invalid_regex".into(),
-                            message: err.to_string(),
-                        },
+                        error: crate::api::error::ApiError::new(
+                            crate::api::error::ApiErrorCode::InvalidRegex,
+                            err.to_string(),
+                        )
+                        .into_body(),
                     })
                     .map_err(std::io::Error::other)?,
                 ));
@@ -72,31 +74,24 @@ pub(super) fn wait_for_output(
             }),
         };
         let response =
-            dispatch_to_app_with_timeout(read_request, api_tx, Some(APP_RESPONSE_TIMEOUT));
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&response) else {
-            return Ok(Some(response));
-        };
-        if value.get("error").is_some() {
-            let mut value = value;
-            value["id"] = serde_json::Value::String(request_id.clone());
-            return Ok(Some(
-                serde_json::to_string(&value).map_err(std::io::Error::other)?,
-            ));
-        }
-
-        let read_value = value["result"]["read"].clone();
-        let Ok(read) = serde_json::from_value::<crate::api::schema::PaneReadResult>(read_value)
-        else {
-            return Ok(Some(
-                serde_json::to_string(&ErrorResponse {
-                    id: request_id,
-                    error: ErrorBody {
-                        code: "internal_error".into(),
-                        message: "failed to decode pane read result".into(),
-                    },
-                })
-                .map_err(std::io::Error::other)?,
-            ));
+            dispatch_to_app_with_timeout_result(read_request, api_tx, Some(APP_RESPONSE_TIMEOUT));
+        let read = match response {
+            Ok(ResponseResult::PaneRead { read }) => read,
+            Err(error) => {
+                return Ok(Some(crate::api::error::encode_result(
+                    request_id,
+                    Err(error),
+                )));
+            }
+            Ok(_) => {
+                return Ok(Some(crate::api::error::encode_result(
+                    request_id,
+                    Err(crate::api::error::ApiError::new(
+                        crate::api::error::ApiErrorCode::InternalError,
+                        "app returned an unexpected pane read result",
+                    )),
+                )));
+            }
         };
 
         let matched_line = match_output(&read.text, &params.r#match, regex.as_ref());
@@ -122,10 +117,11 @@ pub(super) fn wait_for_output(
             return Ok(Some(
                 serde_json::to_string(&ErrorResponse {
                     id: request_id,
-                    error: ErrorBody {
-                        code: "timeout".into(),
-                        message: "timed out waiting for output match".into(),
-                    },
+                    error: crate::api::error::ApiError::new(
+                        crate::api::error::ApiErrorCode::Timeout,
+                        "timed out waiting for output match",
+                    )
+                    .into_body(),
                 })
                 .map_err(std::io::Error::other)?,
             ));
@@ -238,15 +234,18 @@ pub(super) fn prompt_agent(
     // never answers, so it trails the deadline by a grace period to let the
     // more specific app response win.
     let prompt_response = match remaining_timeout_ms(wait.timeout_ms, wait_started) {
-        Some(timeout_ms) => dispatch_to_app_with_caller_timeout(
+        Some(timeout_ms) => dispatch_to_app_with_caller_timeout_result(
             prompt_request,
             api_tx,
             Some(std::time::Duration::from_millis(timeout_ms) + AGENT_PROMPT_RESPONSE_GRACE),
         ),
-        None => dispatch_to_app_with_timeout(prompt_request, api_tx, None),
+        None => dispatch_to_app_with_timeout_result(prompt_request, api_tx, None),
     };
     let Ok(prompted) = agent_from_response(&request_id, &prompt_response) else {
-        return Ok(Some(prompt_response));
+        return Ok(Some(crate::api::error::encode_result(
+            request_id,
+            prompt_response,
+        )));
     };
     if !agent_wait_identity_matches(
         &prompted,
@@ -592,7 +591,7 @@ fn agent_get(
     target: &str,
     api_tx: &ApiRequestSender,
 ) -> Result<crate::api::schema::AgentInfo, ErrorResponse> {
-    let response = dispatch_to_app_with_timeout(
+    let response = dispatch_to_app_with_timeout_result(
         Request {
             id: format!("{request_id}:agent"),
             method: Method::AgentGet(crate::api::schema::AgentTarget {
@@ -624,48 +623,38 @@ fn agent_get_for_prompt(
             if timeout_ms
                 <= u64::try_from(APP_RESPONSE_TIMEOUT.as_millis()).unwrap_or(u64::MAX) =>
         {
-            dispatch_to_app_with_caller_timeout(
+            dispatch_to_app_with_caller_timeout_result(
                 request,
                 api_tx,
                 Some(std::time::Duration::from_millis(timeout_ms)),
             )
         }
-        _ => dispatch_to_app_with_timeout(request, api_tx, Some(APP_RESPONSE_TIMEOUT)),
+        _ => dispatch_to_app_with_timeout_result(request, api_tx, Some(APP_RESPONSE_TIMEOUT)),
     };
     agent_from_response(request_id, &response)
 }
 
 fn agent_from_response(
     request_id: &str,
-    response: &str,
+    response: &crate::api::error::ApiResult,
 ) -> Result<crate::api::schema::AgentInfo, ErrorResponse> {
-    let value: serde_json::Value = serde_json::from_str(response).map_err(|_| ErrorResponse {
-        id: request_id.into(),
-        error: ErrorBody {
-            code: "internal_error".into(),
-            message: "failed to decode agent response".into(),
-        },
-    })?;
-    if value.get("error").is_some() {
-        let error = serde_json::from_value(value["error"].clone()).map_err(|_| ErrorResponse {
+    match response {
+        Ok(ResponseResult::AgentInfo { agent }) | Ok(ResponseResult::AgentPrompted { agent }) => {
+            Ok(agent.clone())
+        }
+        Err(error) => Err(ErrorResponse {
             id: request_id.into(),
-            error: ErrorBody {
-                code: "internal_error".into(),
-                message: "failed to decode agent error".into(),
-            },
-        })?;
-        return Err(ErrorResponse {
+            error: error.clone().into_body(),
+        }),
+        Ok(_) => Err(ErrorResponse {
             id: request_id.into(),
-            error,
-        });
+            error: crate::api::error::ApiError::new(
+                crate::api::error::ApiErrorCode::InternalError,
+                "app returned an unexpected agent result",
+            )
+            .into_body(),
+        }),
     }
-    serde_json::from_value(value["result"]["agent"].clone()).map_err(|_| ErrorResponse {
-        id: request_id.into(),
-        error: ErrorBody {
-            code: "internal_error".into(),
-            message: "failed to decode agent result".into(),
-        },
-    })
 }
 
 fn agent_wait_success(
@@ -685,13 +674,14 @@ fn agent_wait_timeout(
     current: &crate::api::schema::AgentInfo,
 ) -> std::io::Result<String> {
     let (code, message) = match kind {
-        AgentWaitTimeoutKind::Status => {
-            ("timeout", "timed out waiting for agent status".to_string())
-        }
+        AgentWaitTimeoutKind::Status => (
+            crate::api::error::ApiErrorCode::Timeout,
+            "timed out waiting for agent status".to_string(),
+        ),
         AgentWaitTimeoutKind::PromptStalled { timeout_ms } => {
             let status = format!("{:?}", current.agent_status).to_ascii_lowercase();
             (
-                "agent_prompt_stalled",
+                crate::api::error::ApiErrorCode::AgentPromptStalled,
                 format!(
                     "agent prompt produced no observed working or blocked state within {timeout_ms} ms; current status is {status}"
                 ),
@@ -700,10 +690,7 @@ fn agent_wait_timeout(
     };
     serde_json::to_string(&ErrorResponse {
         id: request_id,
-        error: ErrorBody {
-            code: code.into(),
-            message,
-        },
+        error: crate::api::error::ApiError::new(code, message).into_body(),
     })
     .map_err(std::io::Error::other)
 }
@@ -711,16 +698,19 @@ fn agent_wait_timeout(
 fn agent_wait_not_running(request_id: String) -> std::io::Result<String> {
     serde_json::to_string(&ErrorResponse {
         id: request_id,
-        error: ErrorBody {
-            code: "agent_not_running".into(),
-            message: "agent is no longer running in the target pane".into(),
-        },
+        error: crate::api::error::ApiError::new(
+            crate::api::error::ApiErrorCode::AgentNotRunning,
+            "agent is no longer running in the target pane",
+        )
+        .into_body(),
     })
     .map_err(std::io::Error::other)
 }
 
 fn agent_wait_probe_error(response: ErrorResponse) -> std::io::Result<String> {
-    if response.error.code == "agent_not_found" {
+    if crate::api::error::ApiErrorCode::from(response.error.code.as_str())
+        == crate::api::error::ApiErrorCode::AgentNotFound
+    {
         return agent_wait_not_running(response.id);
     }
     serde_json::to_string(&response).map_err(std::io::Error::other)
@@ -779,10 +769,11 @@ pub(super) fn wait_for_event(
             return Ok(Some(
                 serde_json::to_string(&ErrorResponse {
                     id: request_id,
-                    error: ErrorBody {
-                        code: "timeout".into(),
-                        message: "timed out waiting for event match".into(),
-                    },
+                    error: crate::api::error::ApiError::new(
+                        crate::api::error::ApiErrorCode::Timeout,
+                        "timed out waiting for event match",
+                    )
+                    .into_body(),
                 })
                 .map_err(std::io::Error::other)?,
             ));
@@ -810,7 +801,7 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
     let Ok(event) = serde_json::from_value::<SubscriptionEventEnvelope>(event) else {
         return error_response_json(
             request_id,
-            "internal_error",
+            crate::api::error::ApiErrorCode::InternalError,
             "failed to decode matched event".into(),
         );
     };
@@ -818,7 +809,7 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
     let SubscriptionEventData::PaneAgentStatusChanged(data) = event.data else {
         return error_response_json(
             request_id,
-            "unsupported_event_wait_match",
+            crate::api::error::ApiErrorCode::UnsupportedEventWaitMatch,
             "events.wait currently supports pane agent status matches".into(),
         );
     };
@@ -842,7 +833,7 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
     .unwrap_or_else(|err| {
         error_response_json(
             request_id,
-            "internal_error",
+            crate::api::error::ApiErrorCode::InternalError,
             format!("failed to encode matched event: {err}"),
         )
     })
@@ -851,6 +842,7 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::schema::ErrorBody;
 
     #[test]
     fn agent_wait_probe_only_translates_agent_disappearance() {

@@ -13,7 +13,7 @@ pub(super) use self::tokens::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::state::Palette;
+use crate::theme::Palette;
 
 pub(super) fn display_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)

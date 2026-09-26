@@ -134,7 +134,7 @@ pub(super) fn run_agent_command(
     command: Command,
     config: Option<crate::config::ValidatedConfig>,
     paths: &super::target::CliContext,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     match command {
         Command::List => agent_list(paths),
         Command::Get { target } => agent_get(paths, target),
@@ -151,7 +151,7 @@ pub(super) fn run_agent_command(
     }
 }
 
-fn agent_explain(paths: &super::target::CliContext, args: ExplainArgs) -> std::io::Result<i32> {
+fn agent_explain(paths: &super::target::CliContext, args: ExplainArgs) -> super::CliResult<i32> {
     let explain = if let Some(path) = args.file {
         let agent_label = args.agent.unwrap_or_default();
         let content = match std::fs::read_to_string(&path) {
@@ -301,7 +301,7 @@ fn matched_rule_region_preview<'a>(
         .filter(|preview| !preview.is_empty())
 }
 
-fn agent_start(paths: &super::target::CliContext, args: AgentStartArgs) -> std::io::Result<i32> {
+fn agent_start(paths: &super::target::CliContext, args: AgentStartArgs) -> super::CliResult<i32> {
     let AgentStartArgs {
         name,
         kind,
@@ -404,7 +404,7 @@ fn agent_start(paths: &super::target::CliContext, args: AgentStartArgs) -> std::
     }
 }
 
-fn agent_list(paths: &super::target::CliContext) -> std::io::Result<i32> {
+fn agent_list(paths: &super::target::CliContext) -> super::CliResult<i32> {
     super::print_response(&super::send_request(
         paths,
         &Request {
@@ -414,7 +414,7 @@ fn agent_list(paths: &super::target::CliContext) -> std::io::Result<i32> {
     )?)
 }
 
-fn agent_get(paths: &super::target::CliContext, target: String) -> std::io::Result<i32> {
+fn agent_get(paths: &super::target::CliContext, target: String) -> super::CliResult<i32> {
     super::print_response(&super::send_request(
         paths,
         &Request {
@@ -424,7 +424,7 @@ fn agent_get(paths: &super::target::CliContext, target: String) -> std::io::Resu
     )?)
 }
 
-fn agent_focus(paths: &super::target::CliContext, target: String) -> std::io::Result<i32> {
+fn agent_focus(paths: &super::target::CliContext, target: String) -> super::CliResult<i32> {
     super::print_response(&super::send_request(
         paths,
         &Request {
@@ -439,7 +439,7 @@ fn agent_attach(
     takeover: bool,
     config: Option<crate::config::ValidatedConfig>,
     paths: &super::target::CliContext,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     let config = match config {
         Some(config) => config,
         None => super::load_validated_config(paths)?,
@@ -460,7 +460,7 @@ fn agent_attach(
     Ok(0)
 }
 
-fn agent_wait(paths: &super::target::CliContext, params: AgentWaitParams) -> std::io::Result<i32> {
+fn agent_wait(paths: &super::target::CliContext, params: AgentWaitParams) -> super::CliResult<i32> {
     super::print_response(&super::send_request(
         paths,
         &Request {
@@ -477,7 +477,7 @@ fn wait_for_named_agent(
     timeout: Duration,
     expected_kind: &str,
     expected_terminal_id: &str,
-) -> std::io::Result<Result<serde_json::Value, serde_json::Value>> {
+) -> super::CliResult<Result<serde_json::Value, serde_json::Value>> {
     let deadline = Instant::now().checked_add(timeout);
     let mut first_poll = true;
     loop {
@@ -546,7 +546,7 @@ fn wait_for_named_agent(
 fn pane_terminal_id(
     paths: &super::target::CliContext,
     pane_id: &str,
-) -> std::io::Result<Option<String>> {
+) -> super::CliResult<Option<String>> {
     let response = super::send_request(
         paths,
         &Request {
@@ -564,7 +564,7 @@ fn pane_terminal_id(
 fn pane_shell_is_initializing(
     paths: &super::target::CliContext,
     pane_id: &str,
-) -> std::io::Result<bool> {
+) -> super::CliResult<bool> {
     let response = super::send_request(
         paths,
         &Request {
@@ -612,19 +612,13 @@ fn agent_name_lost_error(request_id: &str, expected_name: &str) -> serde_json::V
 }
 
 fn print_agent_transport_error(
-    err: &std::io::Error,
+    err: &super::CliError,
     request_id: &str,
     code: &str,
-) -> std::io::Result<i32> {
-    if super::protocol_mismatch_was_reported(err) {
+) -> super::CliResult<i32> {
+    if matches!(err, super::CliError::Response(_)) {
+        err.print();
         return Ok(1);
-    }
-    // A dead-server marker reaches here from `send_request` in the agent
-    // startup path; surface its deferred response exactly once instead of
-    // printing a second, generic transport-error line.
-    if let Some(response) = super::server_not_running_reported_response(err) {
-        let value = serde_json::to_value(response).map_err(std::io::Error::other)?;
-        return super::print_response(&value);
     }
     super::print_response(&cli_agent_error(request_id, code, err.to_string()))
 }
@@ -648,7 +642,7 @@ fn resolve_agent_target(
     paths: &super::target::CliContext,
     target: &str,
     request_id: &str,
-) -> std::io::Result<serde_json::Value> {
+) -> super::CliResult<serde_json::Value> {
     super::send_request(paths, &agent_get_request(target, request_id))
 }
 
@@ -656,7 +650,7 @@ fn resolve_agent_target_unchecked(
     paths: &super::target::CliContext,
     target: &str,
     request_id: &str,
-) -> std::io::Result<serde_json::Value> {
+) -> super::CliResult<serde_json::Value> {
     super::send_request_unchecked(paths, &agent_get_request(target, request_id))
 }
 
@@ -672,7 +666,7 @@ fn agent_get_request(target: &str, request_id: &str) -> Request {
 fn agent_rename(
     paths: &super::target::CliContext,
     params: AgentRenameParams,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     super::print_response(&super::send_request(
         paths,
         &Request {
@@ -698,7 +692,7 @@ fn prompt_params(matches: &ArgMatches) -> AgentPromptParams {
 fn agent_prompt(
     paths: &super::target::CliContext,
     params: AgentPromptParams,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     let response = super::send_request(
         paths,
         &Request {
@@ -712,7 +706,7 @@ fn agent_prompt(
 fn agent_send_keys(
     paths: &super::target::CliContext,
     params: AgentSendKeysParams,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     super::print_response(&super::send_request(
         paths,
         &Request {
@@ -739,7 +733,7 @@ fn read_params(matches: &ArgMatches) -> AgentReadParams {
     }
 }
 
-fn agent_read(paths: &super::target::CliContext, params: AgentReadParams) -> std::io::Result<i32> {
+fn agent_read(paths: &super::target::CliContext, params: AgentReadParams) -> super::CliResult<i32> {
     let response = super::send_request(
         paths,
         &Request {

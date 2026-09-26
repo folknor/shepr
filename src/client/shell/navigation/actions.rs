@@ -320,7 +320,7 @@ impl ClientShellState {
             &boot_id,
             request_id,
             Err(ClientShellEndpointError {
-                code: Some("endpoint_cancelled".into()),
+                code: Some(crate::client::endpoint::commands::EndpointFailureCode::Cancelled),
                 message: "This server action was interrupted. Check its state before retrying."
                     .into(),
             }),
@@ -390,7 +390,10 @@ impl ClientShellState {
             {
                 self.pending_workspace_highlight = None;
             }
-            let code = error.code.as_deref().unwrap_or("invalid_response");
+            let code = error
+                .code
+                .as_ref()
+                .map_or("invalid_response", |code| code.as_str());
             if !matches!(code, "stale_content" | "stale_target") {
                 let (kind, notice_code, title, body) = match code {
                     "endpoint_timeout" => (
@@ -631,7 +634,7 @@ impl ClientShellState {
                 let entries = self.navigation_workspace_entries(snapshot);
                 let workspace_id = snapshot
                     .workspaces
-                    .get(entries.get(index)?.index)?
+                    .get(*entries.get(index)?)?
                     .workspace_id
                     .clone();
                 self.reveal_workspace(&workspace_id);
@@ -644,9 +647,7 @@ impl ClientShellState {
                 }
                 let current = entries
                     .iter()
-                    .position(|entry| {
-                        snapshot.workspaces[entry.index].workspace_id == focused_workspace
-                    })
+                    .position(|entry| snapshot.workspaces[*entry].workspace_id == focused_workspace)
                     .unwrap_or(0);
                 let delta = if action == KeybindAction::PreviousWorkspace {
                     -1
@@ -656,9 +657,7 @@ impl ClientShellState {
                 let current_isize = isize::try_from(current).unwrap_or(isize::MAX);
                 let len_isize = isize::try_from(entries.len()).unwrap_or(isize::MAX);
                 let next = (current_isize + delta).rem_euclid(len_isize) as usize;
-                let workspace_id = snapshot.workspaces[entries[next].index]
-                    .workspace_id
-                    .clone();
+                let workspace_id = snapshot.workspaces[entries[next]].workspace_id.clone();
                 self.reveal_workspace(&workspace_id);
                 Some(Method::WorkspaceFocus(WorkspaceTarget { workspace_id }))
             }

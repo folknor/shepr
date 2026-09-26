@@ -8,7 +8,8 @@
 
 use ratatui::{layout::Rect, widgets::Borders};
 
-use crate::layout::{PaneId, PaneInfo, TileLayout};
+use crate::layout::{PaneId, TileLayout};
+use crate::ui::PaneChromeInfo as PaneInfo;
 
 /// Everything besides the layout tree that decides a pane's content size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

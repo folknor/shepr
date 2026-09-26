@@ -44,16 +44,8 @@ pub(in crate::client::shell) fn collapsed_sidebar_sections(
     )
 }
 
-pub(crate) fn workspace_entries(snapshot: &ClientShellSnapshot) -> Vec<WorkspaceEntry> {
-    (0..snapshot.workspaces.len())
-        .map(|index| WorkspaceEntry { index })
-        .collect()
-}
-
-pub(in crate::client::shell) fn displayed_workspace_status(
-    workspace: &ClientShellWorkspace,
-) -> crate::api::schema::AgentStatus {
-    workspace.agent_status
+pub(crate) fn workspace_entries(snapshot: &ClientShellSnapshot) -> Vec<usize> {
+    (0..snapshot.workspaces.len()).collect()
 }
 
 pub(in crate::client::shell) fn workspace_rows(

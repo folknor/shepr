@@ -196,20 +196,14 @@ fn output_subscription() -> Value {
     })
 }
 
-fn reply(request: ApiRequestMessage, result: ResponseResult) {
+fn reply(request: &ApiRequestMessage, result: ResponseResult) {
     request
         .respond_to
-        .send(
-            serde_json::to_string(&SuccessResponse {
-                id: request.request.id,
-                result,
-            })
-            .expect("test precondition"),
-        )
+        .send(Ok(result))
         .expect("test precondition");
 }
 
-fn reply_to_probe(request: ApiRequestMessage) {
+fn reply_to_probe(request: &ApiRequestMessage) {
     let result = match request.request.method {
         Method::PaneGet(_) => ResponseResult::PaneInfo {
             pane: PaneInfo {
@@ -321,7 +315,7 @@ fn assert_subscription_history_loss(agent_status: bool) {
     for index in 0..600 {
         test.hub.push(renamed_event(index));
     }
-    reply_to_probe(probe);
+    reply_to_probe(&probe);
     client.assert_started("history-gap");
     client.assert_history_lost("history-gap");
 }
@@ -340,7 +334,7 @@ fn lagging_subscription_closes_without_interrupting_other_clients() {
     );
     let probe = test.app_request();
     assert_eq!(probe.request.id, "slow:sub:1:probe");
-    reply_to_probe(probe);
+    reply_to_probe(&probe);
     slow.assert_started("slow");
     // Pause only this connection in an existing app request, rather than depending
     // on OS socket buffer sizes or sleeping to make its event cursor fall behind.
@@ -357,7 +351,7 @@ fn lagging_subscription_closes_without_interrupting_other_clients() {
         healthy.assert_renames(indices, deadline);
     }
 
-    reply_to_probe(paused_read);
+    reply_to_probe(&paused_read);
     slow.assert_history_lost("slow");
     test.hub.push(renamed_event(640));
     healthy.assert_renames(640..641, Instant::now() + RESPONSE_TIMEOUT);
@@ -368,7 +362,7 @@ fn lagging_subscription_closes_without_interrupting_other_clients() {
     assert_eq!(request.request.id, "ordinary");
     assert!(matches!(request.request.method, Method::WorkspaceList(_)));
     reply(
-        request,
+        &request,
         ResponseResult::WorkspaceList {
             workspaces: Vec::new(),
         },

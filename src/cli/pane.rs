@@ -226,7 +226,7 @@ pub(super) fn parse(matches: &ArgMatches) -> Command {
 pub(super) fn run_pane_command(
     command: Command,
     paths: &super::target::CliContext,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     let caller = super::target::caller_pane(paths);
     match command {
         Command::List { workspace } => print_request(
@@ -382,7 +382,7 @@ fn print_request(
     paths: &super::target::CliContext,
     id: &'static str,
     method: Method,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     super::print_response(&super::send_request(
         paths,
         &Request {

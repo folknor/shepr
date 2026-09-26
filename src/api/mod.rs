@@ -1,4 +1,5 @@
 pub mod client;
+pub(crate) mod error;
 mod event_hub;
 pub mod schema;
 mod server;
@@ -34,7 +35,7 @@ impl RenderDemand {
 }
 
 pub(crate) struct Outcome {
-    pub(crate) response: String,
+    pub(crate) response: error::ApiResult,
     pub(crate) render: RenderDemand,
 }
 
@@ -56,21 +57,23 @@ pub(crate) fn serialize_response_or_error<T: serde::Serialize>(
         Ok(response) => response,
         Err(error) => {
             tracing::error!(request_id, %error, "failed to serialize API response");
-            // A string ID is itself infallibly serializable by serde_json;
-            // retaining it keeps this fallback correlated and valid JSON.
-            let encoded_id = serde_json::to_string(request_id).unwrap_or_else(|_| "\"\"".into());
-            format!(
-                r#"{{"id":{encoded_id},"error":{{"code":"serialization_error","message":"failed to serialize API response"}}}}"#
-            )
+            serde_json::json!({
+                "id": request_id,
+                "error": {
+                    "code": error::ApiErrorCode::SerializationError.as_str(),
+                    "message": "failed to serialize API response",
+                },
+            })
+            .to_string()
         }
     }
 }
 
 pub(crate) fn send_api_response(
-    respond_to: &std::sync::mpsc::Sender<String>,
+    respond_to: &std::sync::mpsc::Sender<error::ApiResult>,
     request_id: &str,
     method: &'static str,
-    response: String,
+    response: error::ApiResult,
 ) {
     if respond_to.send(response).is_err() {
         tracing::debug!(request_id, method, "API response receiver was dropped");
@@ -79,7 +82,7 @@ pub(crate) fn send_api_response(
 
 pub struct ApiRequestMessage {
     pub request: Request,
-    pub respond_to: std::sync::mpsc::Sender<String>,
+    pub respond_to: std::sync::mpsc::Sender<error::ApiResult>,
 }
 
 pub type ApiRequestSender = mpsc::UnboundedSender<ApiRequestMessage>;
@@ -196,7 +199,15 @@ mod tests {
     fn api_response_is_sent_to_its_receiver() {
         let (respond_to, response_rx) = std::sync::mpsc::channel();
 
-        send_api_response(&respond_to, "request-1", "pane.read", "response".into());
-        assert_eq!(response_rx.recv().expect("response was sent"), "response");
+        send_api_response(
+            &respond_to,
+            "request-1",
+            "pane.read",
+            Ok(schema::ResponseResult::Ok {}),
+        );
+        assert_eq!(
+            response_rx.recv().expect("response was sent"),
+            Ok(schema::ResponseResult::Ok {})
+        );
     }
 }

@@ -116,7 +116,7 @@ impl ClientShellState {
                             render::workspace_entries(snapshot)
                                 .into_iter()
                                 .filter_map(|entry| {
-                                    snapshot.workspaces.get(entry.index).map(|workspace| {
+                                    snapshot.workspaces.get(entry).map(|workspace| {
                                         (
                                             endpoint.endpoint_id.clone(),
                                             workspace.workspace_id.clone(),

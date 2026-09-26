@@ -1,9 +1,17 @@
 use super::*;
 
 impl App {
-    pub(crate) fn handle_pane_layout(&mut self, id: String, params: &PaneLayoutParams) -> String {
+    pub(crate) fn handle_pane_layout(
+        &mut self,
+        id: String,
+        params: &PaneLayoutParams,
+    ) -> crate::api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane not found",
+            );
         };
         let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
             return pane_not_found(
@@ -12,25 +20,41 @@ impl App {
             );
         };
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
-            return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                "pane layout unavailable",
+            );
         };
 
-        encode_success(id, ResponseResult::PaneLayout { layout })
+        success(id, ResponseResult::PaneLayout { layout })
     }
 
     pub(crate) fn handle_pane_process_info(
         &mut self,
         id: String,
         params: &PaneProcessInfoParams,
-    ) -> String {
+    ) -> crate::api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane not found",
+            );
         };
         let Some((runtime, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane not found",
+            );
         };
         let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane not found",
+            );
         };
         let shell_pid = runtime.child_pid();
         let foreground_job = shell_pid.and_then(crate::detect::foreground_job);
@@ -52,7 +76,7 @@ impl App {
             })
             .unwrap_or_default();
 
-        encode_success(
+        success(
             id,
             ResponseResult::PaneProcessInfo {
                 process_info: PaneProcessInfo {
@@ -69,11 +93,15 @@ impl App {
         &mut self,
         id: String,
         params: &PaneNeighborParams,
-    ) -> String {
+    ) -> crate::api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
         // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane not found",
+            );
         };
         let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
             return pane_not_found(
@@ -82,16 +110,24 @@ impl App {
             );
         };
         let Some(source_public_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane not found",
+            );
         };
         let neighbor_pane_id = self
             .directional_pane_target(ws_idx, tab_idx, pane_id, params.direction)
             .and_then(|pane_id| self.public_pane_id(ws_idx, pane_id));
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
-            return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                "pane layout unavailable",
+            );
         };
 
-        encode_success(
+        success(
             id,
             ResponseResult::PaneNeighbor {
                 neighbor: PaneNeighborResult {
@@ -104,11 +140,19 @@ impl App {
         )
     }
 
-    pub(crate) fn handle_pane_edges(&mut self, id: String, params: &PaneEdgesParams) -> String {
+    pub(crate) fn handle_pane_edges(
+        &mut self,
+        id: String,
+        params: &PaneEdgesParams,
+    ) -> crate::api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
         // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane not found",
+            );
         };
         let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
             return pane_not_found(
@@ -122,7 +166,11 @@ impl App {
             .get(ws_idx)
             .and_then(|ws| ws.tabs.get(tab_idx))
         else {
-            return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                "pane layout unavailable",
+            );
         };
         let area = self.state.view.terminal_area;
         let Some(info) = tab
@@ -137,13 +185,21 @@ impl App {
             );
         };
         let Some(pane_public_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane not found",
+            );
         };
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
-            return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                "pane layout unavailable",
+            );
         };
 
-        encode_success(
+        success(
             id,
             ResponseResult::PaneEdges {
                 edges: PaneEdgesResult {
@@ -162,12 +218,16 @@ impl App {
         &mut self,
         id: String,
         params: &PaneFocusDirectionParams,
-    ) -> String {
+    ) -> crate::api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
         // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, source_pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref())
         else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane not found",
+            );
         };
         let Some(tab_idx) = self.tab_index_for_pane(ws_idx, source_pane_id) else {
             return pane_not_found(
@@ -178,7 +238,11 @@ impl App {
             );
         };
         let Some(source_public_id) = self.public_pane_id(ws_idx, source_pane_id) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane not found",
+            );
         };
         let target =
             self.directional_pane_target(ws_idx, tab_idx, source_pane_id, params.direction);
@@ -199,10 +263,14 @@ impl App {
             .map(|tab| tab.layout.focused())
             .and_then(|pane_id| self.public_pane_id(ws_idx, pane_id));
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
-            return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                "pane layout unavailable",
+            );
         };
 
-        encode_success(
+        success(
             id,
             ResponseResult::PaneFocusDirection {
                 focus: PaneFocusDirectionResult {
@@ -216,11 +284,19 @@ impl App {
         )
     }
 
-    pub(crate) fn handle_pane_resize(&mut self, id: String, params: &PaneResizeParams) -> String {
+    pub(crate) fn handle_pane_resize(
+        &mut self,
+        id: String,
+        params: &PaneResizeParams,
+    ) -> crate::api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
         // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane not found",
+            );
         };
         let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
             return pane_not_found(
@@ -229,7 +305,11 @@ impl App {
             );
         };
         let Some(pane_public_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane not found",
+            );
         };
 
         let amount = params
@@ -251,14 +331,18 @@ impl App {
         }
 
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
-            return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                "pane layout unavailable",
+            );
         };
         let focused_pane_id = layout.focused_pane_id.clone();
         if changed {
             self.emit_layout_updated_snapshot(layout.clone());
         }
 
-        encode_success(
+        success(
             id,
             ResponseResult::PaneResize {
                 resize: PaneResizeResult {
@@ -272,15 +356,19 @@ impl App {
         )
     }
 
-    pub(crate) fn handle_pane_swap(&mut self, id: String, params: PaneSwapParams) -> String {
+    pub(crate) fn handle_pane_swap(
+        &mut self,
+        id: String,
+        params: PaneSwapParams,
+    ) -> crate::api::error::ApiResult {
         // Direction and edges use the tiled layout even when this tab is zoomed,
         // matching TUI navigation. The layout snapshot signals zoom separately.
         let directional = params.direction.is_some();
         let explicit = params.source_pane_id.is_some() || params.target_pane_id.is_some();
         if directional == explicit {
-            return encode_error(
+            return failure(
                 id,
-                "invalid_pane_swap",
+                crate::api::error::ApiErrorCode::InvalidPaneSwap,
                 "provide either direction with optional pane_id, or source_pane_id and target_pane_id",
             );
         }
@@ -291,7 +379,11 @@ impl App {
             let Some((ws_idx, source_pane_id)) =
                 self.resolve_swap_source(params.pane_id.as_deref())
             else {
-                return encode_error(id, "pane_not_found", "source pane not found");
+                return failure(
+                    id,
+                    crate::api::error::ApiErrorCode::PaneNotFound,
+                    "source pane not found",
+                );
             };
             let Some(tab_idx) = self.tab_index_for_pane(ws_idx, source_pane_id) else {
                 return pane_not_found(
@@ -316,10 +408,18 @@ impl App {
             }
         } else {
             let Some(source_raw) = params.source_pane_id.as_deref() else {
-                return encode_error(id, "invalid_pane_swap", "missing source_pane_id");
+                return failure(
+                    id,
+                    crate::api::error::ApiErrorCode::InvalidPaneSwap,
+                    "missing source_pane_id",
+                );
             };
             let Some(target_raw) = params.target_pane_id.as_deref() else {
-                return encode_error(id, "invalid_pane_swap", "missing target_pane_id");
+                return failure(
+                    id,
+                    crate::api::error::ApiErrorCode::InvalidPaneSwap,
+                    "missing target_pane_id",
+                );
             };
             let source = self
                 .parse_pane_id(source_raw)
@@ -342,7 +442,11 @@ impl App {
                     Some((ws_idx, tab_idx))
                 });
             let Some((ws_idx, tab_idx)) = response_context else {
-                return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
+                return failure(
+                    id,
+                    crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                    "pane layout unavailable",
+                );
             };
             let source_pane_id = source
                 .map(|(_, _, pane_id)| pane_id)
@@ -423,14 +527,18 @@ impl App {
             None => target_pane_id.and_then(|pane_id| self.public_pane_id(ws_idx, pane_id)),
         };
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
-            return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                "pane layout unavailable",
+            );
         };
         let focused_pane_id = layout.focused_pane_id.clone();
         if changed {
             self.emit_layout_updated_snapshot(layout.clone());
         }
 
-        encode_success(
+        success(
             id,
             ResponseResult::PaneSwap {
                 swap: PaneSwapResult {
@@ -445,17 +553,29 @@ impl App {
         )
     }
 
-    pub(crate) fn handle_pane_move(&mut self, id: String, params: PaneMoveParams) -> String {
+    pub(crate) fn handle_pane_move(
+        &mut self,
+        id: String,
+        params: PaneMoveParams,
+    ) -> crate::api::error::ApiResult {
         let PaneMoveParams {
             pane_id,
             destination,
             focus,
         } = params;
         let Some((source_ws_idx, source_pane_id)) = self.parse_pane_id(&pane_id) else {
-            return encode_error(id, "pane_not_found", "source pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "source pane not found",
+            );
         };
         let Some(source_tab_idx) = self.tab_index_for_pane(source_ws_idx, source_pane_id) else {
-            return encode_error(id, "pane_not_found", "source pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "source pane not found",
+            );
         };
         let Some((source_ws, source_tab)) = self
             .state
@@ -463,10 +583,18 @@ impl App {
             .get(source_ws_idx)
             .and_then(|ws| Some((ws, ws.tabs.get(source_tab_idx)?)))
         else {
-            return encode_error(id, "pane_not_found", "source pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "source pane not found",
+            );
         };
         let Some(source_terminal_id) = source_tab.terminal_id(source_pane_id).cloned() else {
-            return encode_error(id, "pane_not_found", "source pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "source pane not found",
+            );
         };
         let source_tab_zoomed = source_tab.zoomed;
         let previous_workspace_label = source_ws.custom_name.clone();
@@ -477,7 +605,11 @@ impl App {
             .unwrap_or_else(|| pane_id.clone());
         let previous_workspace_id = self.public_workspace_id(source_ws_idx);
         let Some(previous_tab_id) = self.public_tab_id(source_ws_idx, source_tab_idx) else {
-            return encode_error(id, "tab_not_found", "source tab not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::TabNotFound,
+                "source tab not found",
+            );
         };
         let recovery_context = PaneMoveRecoveryContext {
             source_ws_idx,
@@ -489,10 +621,18 @@ impl App {
 
         if source_tab_zoomed {
             let Some(layout) = self.pane_layout_snapshot(source_ws_idx, source_tab_idx) else {
-                return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
+                return failure(
+                    id,
+                    crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                    "pane layout unavailable",
+                );
             };
             let Some(pane) = self.pane_info(source_ws_idx, source_pane_id) else {
-                return encode_error(id, "pane_not_found", "source pane not found");
+                return failure(
+                    id,
+                    crate::api::error::ApiErrorCode::PaneNotFound,
+                    "source pane not found",
+                );
             };
             return encode_unchanged_pane_move(
                 id,
@@ -514,7 +654,11 @@ impl App {
                 ratio,
             } => {
                 let Some((target_ws_idx, target_tab_idx)) = self.parse_tab_id(&tab_id) else {
-                    return encode_error(id, "tab_not_found", format!("tab {tab_id} not found"));
+                    return failure(
+                        id,
+                        crate::api::error::ApiErrorCode::TabNotFound,
+                        format!("tab {tab_id} not found"),
+                    );
                 };
                 let Some((target_tab_zoomed, target_tab_focused)) = self
                     .state
@@ -523,19 +667,27 @@ impl App {
                     .and_then(|ws| ws.tabs.get(target_tab_idx))
                     .map(|tab| (tab.zoomed, tab.layout.focused()))
                 else {
-                    return encode_error(id, "tab_not_found", format!("tab {tab_id} not found"));
+                    return failure(
+                        id,
+                        crate::api::error::ApiErrorCode::TabNotFound,
+                        format!("tab {tab_id} not found"),
+                    );
                 };
                 if source_ws_idx == target_ws_idx && source_tab_idx == target_tab_idx {
                     let Some(layout) = self.pane_layout_snapshot(source_ws_idx, source_tab_idx)
                     else {
-                        return encode_error(
+                        return failure(
                             id,
-                            "pane_layout_unavailable",
+                            crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
                             "pane layout unavailable",
                         );
                     };
                     let Some(pane) = self.pane_info(source_ws_idx, source_pane_id) else {
-                        return encode_error(id, "pane_not_found", "source pane not found");
+                        return failure(
+                            id,
+                            crate::api::error::ApiErrorCode::PaneNotFound,
+                            "source pane not found",
+                        );
                     };
                     return encode_unchanged_pane_move(
                         id,
@@ -552,23 +704,27 @@ impl App {
                     let Some(source_layout) =
                         self.pane_layout_snapshot(source_ws_idx, source_tab_idx)
                     else {
-                        return encode_error(
+                        return failure(
                             id,
-                            "pane_layout_unavailable",
+                            crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
                             "pane layout unavailable",
                         );
                     };
                     let Some(target_layout) =
                         self.pane_layout_snapshot(target_ws_idx, target_tab_idx)
                     else {
-                        return encode_error(
+                        return failure(
                             id,
-                            "pane_layout_unavailable",
+                            crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
                             "pane layout unavailable",
                         );
                     };
                     let Some(pane) = self.pane_info(source_ws_idx, source_pane_id) else {
-                        return encode_error(id, "pane_not_found", "source pane not found");
+                        return failure(
+                            id,
+                            crate::api::error::ApiErrorCode::PaneNotFound,
+                            "source pane not found",
+                        );
                     };
                     return encode_unchanged_pane_move(
                         id,
@@ -584,17 +740,17 @@ impl App {
                 let target_pane_id = match target_pane_id {
                     Some(raw) => {
                         let Some((pane_ws_idx, pane_id)) = self.parse_pane_id(&raw) else {
-                            return encode_error(
+                            return failure(
                                 id,
-                                "target_pane_not_found",
+                                crate::api::error::ApiErrorCode::TargetPaneNotFound,
                                 format!("target pane {raw} not found"),
                             );
                         };
                         let pane_tab_idx = self.tab_index_for_pane(pane_ws_idx, pane_id);
                         if pane_ws_idx != target_ws_idx || pane_tab_idx != Some(target_tab_idx) {
-                            return encode_error(
+                            return failure(
                                 id,
-                                "target_pane_not_found",
+                                crate::api::error::ApiErrorCode::TargetPaneNotFound,
                                 format!("target pane {raw} is not in tab {tab_id}"),
                             );
                         }
@@ -603,7 +759,11 @@ impl App {
                     None => target_tab_focused,
                 };
                 let Some(target_tab_id) = self.public_tab_id(target_ws_idx, target_tab_idx) else {
-                    return encode_error(id, "tab_not_found", format!("tab {tab_id} not found"));
+                    return failure(
+                        id,
+                        crate::api::error::ApiErrorCode::TabNotFound,
+                        format!("tab {tab_id} not found"),
+                    );
                 };
                 ResolvedPaneMoveDestination::ExistingTab {
                     tab_id: target_tab_id,
@@ -619,9 +779,9 @@ impl App {
             } => {
                 let target_workspace_id = if let Some(workspace_id) = workspace_id {
                     let Some(ws_idx) = self.parse_workspace_id(&workspace_id) else {
-                        return encode_error(
+                        return failure(
                             id,
-                            "workspace_not_found",
+                            crate::api::error::ApiErrorCode::WorkspaceNotFound,
                             format!("workspace {workspace_id} not found"),
                         );
                     };
@@ -647,7 +807,13 @@ impl App {
             .and_then(|ws| ws.take_pane_for_move(source_pane_id))
         {
             Some(taken) => taken,
-            None => return encode_error(id, "pane_move_failed", "source pane could not be moved"),
+            None => {
+                return failure(
+                    id,
+                    crate::api::error::ApiErrorCode::PaneMoveFailed,
+                    "source pane could not be moved",
+                );
+            }
         };
         let source_removed_tab_id = taken.removed_tab_idx.map(|_| previous_tab_id.clone());
         let source_workspace_empty = taken.workspace_empty;
@@ -706,7 +872,11 @@ impl App {
             } => {
                 let Some((target_ws_idx, target_tab_idx)) = self.parse_tab_id(&tab_id) else {
                     self.recover_failed_pane_move(recovery_context, moved);
-                    return encode_error(id, "pane_move_failed", "target tab disappeared");
+                    return failure(
+                        id,
+                        crate::api::error::ApiErrorCode::PaneMoveFailed,
+                        "target tab disappeared",
+                    );
                 };
                 let direction = split_direction_to_layout(&split);
                 let inserted = match self.state.workspaces.get_mut(target_ws_idx) {
@@ -724,9 +894,9 @@ impl App {
                     Ok(pane_id) => pane_id,
                     Err(moved) => {
                         self.recover_failed_pane_move(recovery_context, moved);
-                        return encode_error(
+                        return failure(
                             id,
-                            "pane_move_failed",
+                            crate::api::error::ApiErrorCode::PaneMoveFailed,
                             "target pane could not be split",
                         );
                     }
@@ -739,16 +909,20 @@ impl App {
             } => {
                 let Some(target_ws_idx) = self.parse_workspace_id(&workspace_id) else {
                     self.recover_failed_pane_move(recovery_context, moved);
-                    return encode_error(id, "pane_move_failed", "target workspace disappeared");
+                    return failure(
+                        id,
+                        crate::api::error::ApiErrorCode::PaneMoveFailed,
+                        "target workspace disappeared",
+                    );
                 };
                 let moved_pane_id = moved.pane_id;
                 let target_tab_idx = match self.state.workspaces.get_mut(target_ws_idx) {
                     Some(ws) => ws.create_tab_from_existing_pane(moved, label),
                     None => {
                         self.recover_failed_pane_move(recovery_context, moved);
-                        return encode_error(
+                        return failure(
                             id,
-                            "pane_move_failed",
+                            crate::api::error::ApiErrorCode::PaneMoveFailed,
                             "target workspace disappeared",
                         );
                     }
@@ -804,7 +978,11 @@ impl App {
         self.state.mark_session_dirty();
         self.schedule_session_save();
         let Some(pane) = self.pane_info(target_ws_idx, moved_pane_id) else {
-            return encode_error(id, "pane_move_failed", "moved pane is unavailable");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneMoveFailed,
+                "moved pane is unavailable",
+            );
         };
         let source_layout = if closed_workspace_id.is_none() {
             self.parse_tab_id(&previous_tab_id)
@@ -813,7 +991,11 @@ impl App {
             None
         };
         let Some(target_layout) = self.pane_layout_snapshot(target_ws_idx, target_tab_idx) else {
-            return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                "pane layout unavailable",
+            );
         };
         let focused_pane_id = target_layout.focused_pane_id.clone();
         let move_result = PaneMoveResult {
@@ -876,7 +1058,7 @@ impl App {
         }
         self.emit_layout_updated_snapshot((*move_result.target_layout).clone());
 
-        encode_success(id, ResponseResult::PaneMove { move_result })
+        success(id, ResponseResult::PaneMove { move_result })
     }
 
     pub(super) fn recover_failed_pane_move(
@@ -912,9 +1094,17 @@ impl App {
         self.schedule_session_save();
     }
 
-    pub(crate) fn handle_pane_zoom(&mut self, id: String, params: &PaneZoomParams) -> String {
+    pub(crate) fn handle_pane_zoom(
+        &mut self,
+        id: String,
+        params: &PaneZoomParams,
+    ) -> crate::api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane not found",
+            );
         };
         let Some(tab_idx) = self.tab_index_for_pane(ws_idx, pane_id) else {
             return pane_not_found(
@@ -923,7 +1113,11 @@ impl App {
             );
         };
         let Some(pane_public_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane not found",
+            );
         };
         let command = match params.mode {
             PaneZoomMode::Toggle => PaneZoomCommand::Toggle,
@@ -938,14 +1132,18 @@ impl App {
         }
         self.state.mode = crate::app::Mode::Terminal;
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
-            return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::PaneLayoutUnavailable,
+                "pane layout unavailable",
+            );
         };
         let focused_pane_id = layout.focused_pane_id.clone();
         if outcome.changed || outcome.focus_changed {
             self.emit_layout_updated_snapshot(layout.clone());
         }
 
-        encode_success(
+        success(
             id,
             ResponseResult::PaneZoom {
                 zoom: PaneZoomResult {

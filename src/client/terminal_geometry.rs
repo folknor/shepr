@@ -222,10 +222,6 @@ pub(super) fn query_host_terminal_theme() {
     let _ = write_host_terminal_theme_query(io::stdout());
 }
 
-pub(super) fn should_query_host_terminal_theme() -> bool {
-    true
-}
-
 pub(super) fn write_host_terminal_theme_query(mut writer: impl io::Write) -> io::Result<()> {
     let query = crate::host_term::theme::host_terminal_theme_query_sequence(
         crate::platform::should_query_host_terminal_palette(),
@@ -240,12 +236,8 @@ pub(super) fn query_host_cell_size() {
     let _ = write_host_cell_size_query(io::stdout());
 }
 
-pub(super) fn should_query_host_cell_size() -> bool {
-    true
-}
-
 pub(super) fn host_cell_size_query_required(pixel_geometry_enabled: bool) -> bool {
-    pixel_geometry_enabled && should_query_host_cell_size() && ioctl_terminal_geometry().is_none()
+    pixel_geometry_enabled && ioctl_terminal_geometry().is_none()
 }
 
 pub(super) fn write_host_cell_size_query(mut writer: impl io::Write) -> io::Result<()> {

@@ -968,7 +968,12 @@ impl AppState {
         let panes = if tab.zoomed {
             tab.layout.panes(self.view.terminal_area)
         } else {
-            self.view.pane_infos.clone()
+            self.view
+                .pane_infos
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect()
         };
 
         if let Some(focused) = panes.iter().find(|p| p.is_focused)
@@ -989,7 +994,12 @@ impl AppState {
         let panes = if tab.zoomed {
             tab.layout.panes(self.view.terminal_area)
         } else {
-            self.view.pane_infos.clone()
+            self.view
+                .pane_infos
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect()
         };
 
         let Some(focused) = panes.iter().find(|p| p.is_focused) else {

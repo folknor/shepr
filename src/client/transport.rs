@@ -13,7 +13,29 @@ pub(super) fn start_endpoint_transport(
     let transport = endpoint::NativeEndpointTransport::with_lifetime(stream, lifetime)
         .map_err(ClientError::ConnectionFailed)?;
     let stopped = transport.stop_handle();
+    spawn_endpoint_reader(
+        reader,
+        event_tx,
+        &stopped,
+        max_frame_size,
+        endpoint_id,
+        generation,
+        surface_decoder,
+    )?;
+    Ok(transport)
+}
+
+pub(super) fn spawn_endpoint_reader(
+    reader: LocalStream,
+    event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
+    stopped: &Arc<AtomicBool>,
+    max_frame_size: usize,
+    endpoint_id: endpoint::ClientEndpointId,
+    generation: u64,
+    surface_decoder: protocol::surface_reuse::Decoder,
+) -> Result<(), ClientError> {
     let event_tx = event_tx.clone();
+    let stopped = Arc::clone(stopped);
     std::thread::Builder::new()
         .name("endpoint-reader".into())
         .spawn(move || {
@@ -28,7 +50,7 @@ pub(super) fn start_endpoint_transport(
             );
         })
         .map_err(ClientError::ConnectionFailed)?;
-    Ok(transport)
+    Ok(())
 }
 
 /// Reads complete frames while retaining partial-read progress across nonblocking polls.
@@ -60,9 +82,9 @@ pub(super) fn server_reader_thread(
         }
 
         let message = protocol::read_message(&mut stream, max_frame_size).and_then(|message| {
-            surface_decoder.decode(message).map_err(|error| {
-                protocol::FramingError::Io(io::Error::new(io::ErrorKind::InvalidData, error))
-            })
+            surface_decoder
+                .decode(message)
+                .map_err(|error| protocol::FramingError::SurfaceDecode(error.to_string()))
         });
         match message {
             Ok(msg) => {
@@ -105,7 +127,7 @@ fn framing_error_to_io(error: protocol::FramingError) -> io::Error {
             io::Error::new(io::ErrorKind::UnexpectedEof, "server closed connection")
         }
         protocol::FramingError::Io(error) => error,
-        error => io::Error::new(io::ErrorKind::InvalidData, error.to_string()),
+        error => io::Error::new(io::ErrorKind::InvalidData, error),
     }
 }
 
@@ -195,6 +217,15 @@ mod tests {
                 .to_string()
                 .contains("frame size 32 exceeds maximum 16")
         );
+
+        let surface_error = framing_error_to_io(protocol::FramingError::SurfaceDecode(
+            "baseline mismatch".into(),
+        ));
+        assert_eq!(surface_error.kind(), io::ErrorKind::InvalidData);
+        assert!(matches!(
+            surface_error.get_ref().and_then(|error| error.downcast_ref::<protocol::FramingError>()),
+            Some(protocol::FramingError::SurfaceDecode(message)) if message == "baseline mismatch"
+        ));
     }
 
     #[test]

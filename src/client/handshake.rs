@@ -1,4 +1,3 @@
-use std::io;
 use std::time::Duration;
 
 use interprocess::local_socket::traits::Stream as _;
@@ -21,31 +20,47 @@ use super::{ClientError, shell};
 pub(super) const LOCAL_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const REMOTE_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
-pub(super) fn is_remote_client_process() -> bool {
-    std::env::var(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR).is_ok()
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClientProcessRole {
+    Local,
+    Remote {
+        keybindings: shell::ClientShellKeybindingSource,
+    },
 }
 
 /// Where this client's keybindings come from. "server" imports the endpoint's; "local" or
 /// no value keeps this client's own. Any other value refuses startup rather than guessing.
-pub(super) fn client_shell_keybinding_source() -> Result<shell::ClientShellKeybindingSource, String>
-{
-    let var = crate::remote::REMOTE_KEYBINDINGS_ENV_VAR;
-    match std::env::var(var) {
-        Ok(value) if value == "server" => Ok(shell::ClientShellKeybindingSource::Endpoint),
-        Ok(value) if value == "local" => Ok(shell::ClientShellKeybindingSource::RemoteLocal),
-        Err(std::env::VarError::NotPresent) => Ok(shell::ClientShellKeybindingSource::RemoteLocal),
-        Ok(value) => Err(format!("{var} must be 'local' or 'server', got {value:?}")),
-        Err(std::env::VarError::NotUnicode(value)) => {
-            Err(format!("{var} must be 'local' or 'server', got {value:?}"))
+impl ClientProcessRole {
+    pub(super) fn from_env() -> Result<Self, String> {
+        let var = crate::remote::REMOTE_KEYBINDINGS_ENV_VAR;
+        match std::env::var(var) {
+            Ok(value) if value == "server" => Ok(Self::Remote {
+                keybindings: shell::ClientShellKeybindingSource::Endpoint,
+            }),
+            Ok(value) if value == "local" => Ok(Self::Remote {
+                keybindings: shell::ClientShellKeybindingSource::RemoteLocal,
+            }),
+            Err(std::env::VarError::NotPresent) => Ok(Self::Local),
+            Ok(value) => Err(format!("{var} must be 'local' or 'server', got {value:?}")),
+            Err(std::env::VarError::NotUnicode(value)) => {
+                Err(format!("{var} must be 'local' or 'server', got {value:?}"))
+            }
         }
     }
-}
 
-pub(super) fn handshake_read_timeout() -> Duration {
-    if is_remote_client_process() {
-        return REMOTE_HANDSHAKE_READ_TIMEOUT;
+    pub(super) fn keybinding_source(self) -> shell::ClientShellKeybindingSource {
+        match self {
+            Self::Local => shell::ClientShellKeybindingSource::RemoteLocal,
+            Self::Remote { keybindings } => keybindings,
+        }
     }
-    LOCAL_HANDSHAKE_READ_TIMEOUT
+
+    pub(super) fn handshake_read_timeout(self) -> Duration {
+        match self {
+            Self::Local => LOCAL_HANDSHAKE_READ_TIMEOUT,
+            Self::Remote { .. } => REMOTE_HANDSHAKE_READ_TIMEOUT,
+        }
+    }
 }
 
 fn set_handshake_recv_timeout(
@@ -71,12 +86,8 @@ fn preamble_error(error: protocol::preamble::PreambleError) -> ClientError {
     match error {
         PreambleError::UnexpectedEof => ClientError::from(protocol::FramingError::UnexpectedEof),
         PreambleError::Io(error) => ClientError::from(protocol::FramingError::Io(error)),
-        error @ PreambleError::NotShepr => ClientError::Protocol(protocol::FramingError::Io(
-            io::Error::new(io::ErrorKind::InvalidData, error.to_string()),
-        )),
-        error @ PreambleError::DifferentBuild(_) => ClientError::HandshakeRejected {
-            error: error.to_string(),
-        },
+        error @ PreambleError::NotShepr => ClientError::Preamble(error),
+        error @ PreambleError::DifferentBuild(_) => ClientError::Preamble(error),
     }
 }
 
@@ -95,6 +106,7 @@ fn preamble_error(error: protocol::preamble::PreambleError) -> ClientError {
 /// The usual 60 s remote read budget applies to `shepr --remote`.
 pub(super) fn do_handshake(
     stream: &mut LocalStream,
+    role: ClientProcessRole,
     cols: u16,
     rows: u16,
     cell_width_px: u32,
@@ -151,7 +163,7 @@ pub(super) fn do_handshake(
     let read_timeout = if endpoint_shell && !surface_active {
         REMOTE_HANDSHAKE_READ_TIMEOUT
     } else {
-        handshake_read_timeout()
+        role.handshake_read_timeout()
     };
     // One deadline for the preamble and the whole Welcome frame together, not a
     // per-read idle timeout.
@@ -177,14 +189,10 @@ pub(super) fn do_handshake(
 
     if endpoint_shell {
         let ServerMessage::EndpointWelcome(welcome) = welcome else {
-            return Err(ClientError::Protocol(protocol::FramingError::Io(
-                io::Error::new(io::ErrorKind::InvalidData, "expected endpoint welcome"),
-            )));
+            return Err(ClientError::UnexpectedWelcome { endpoint: true });
         };
         if let Some(error) = welcome.error {
-            return Err(ClientError::HandshakeRejected {
-                error: error.message,
-            });
+            return Err(ClientError::HandshakeRejected { error });
         }
         info!("endpoint handshake succeeded");
         return Ok(HandshakeResult);
@@ -198,9 +206,7 @@ pub(super) fn do_handshake(
             info!("terminal handshake succeeded");
             Ok(HandshakeResult)
         }
-        _ => Err(ClientError::Protocol(protocol::FramingError::Io(
-            io::Error::new(io::ErrorKind::InvalidData, "expected Welcome message"),
-        ))),
+        _ => Err(ClientError::UnexpectedWelcome { endpoint: false }),
     }
 }
 
@@ -220,6 +226,7 @@ mod tests {
     use super::*;
     use crate::protocol::PROTOCOL_VERSION;
     use interprocess::local_socket::traits::Listener as _;
+    use std::io;
 
     fn socket_pair(name: &str) -> (LocalStream, LocalStream, std::path::PathBuf) {
         // Kept until the test process exits; callers remove the socket.
@@ -246,7 +253,9 @@ mod tests {
             protocol::write_message(
                 &mut server,
                 &ServerMessage::ServerShutdown {
-                    reason: Some("restarting".into()),
+                    reason: Some(crate::protocol::ShutdownReason::Message(
+                        "restarting".into(),
+                    )),
                 },
             )
             .expect("test precondition");
@@ -255,6 +264,7 @@ mod tests {
             endpoint_shell.then_some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 });
         let error = do_handshake(
             &mut client,
+            ClientProcessRole::Local,
             80,
             24,
             8,
@@ -276,7 +286,12 @@ mod tests {
         for endpoint_shell in [true, false] {
             match handshake_against_shutdown(endpoint_shell) {
                 ClientError::ServerShutdown { reason } => {
-                    assert_eq!(reason.as_deref(), Some("restarting"));
+                    assert_eq!(
+                        reason,
+                        Some(crate::protocol::ShutdownReason::Message(
+                            "restarting".into()
+                        ))
+                    );
                 }
                 other => panic!("endpoint_shell={endpoint_shell}: {other}"),
             }
@@ -297,6 +312,7 @@ mod tests {
         });
         let error = do_handshake(
             &mut client,
+            ClientProcessRole::Local,
             80,
             24,
             8,
@@ -321,6 +337,7 @@ mod tests {
         let started = std::time::Instant::now();
         let error = do_handshake(
             &mut client,
+            ClientProcessRole::Local,
             80,
             24,
             8,
@@ -364,7 +381,8 @@ mod tests {
         opening[id_start] = other_id;
         opening.extend_from_slice(&[0xff; 16]);
         match handshake_against_opening("preamble-other-build", opening) {
-            ClientError::HandshakeRejected { error } => {
+            ClientError::Preamble(error) => {
+                let error = error.to_string();
                 assert!(
                     error.contains(&format!("protocol {}", PROTOCOL_VERSION + 1)),
                     "{error}"
@@ -382,8 +400,7 @@ mod tests {
             .expect("test precondition");
         opening.resize(opening.len().max(protocol::preamble::PREAMBLE_LEN), 0);
         match handshake_against_opening("preamble-missing", opening) {
-            ClientError::Protocol(protocol::FramingError::Io(error)) => {
-                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            ClientError::Preamble(error) => {
                 assert!(error.to_string().contains("preamble"), "{error}");
             }
             other => panic!("expected a missing-preamble error, got {other}"),

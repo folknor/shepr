@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 use std::fs;
 
 use crate::api::schema::{
-    ErrorBody, ErrorResponse, Method, MethodTraits, Request, ResponseResult, ServerCapabilities,
+    ErrorResponse, Method, MethodTraits, Request, ResponseResult, ServerCapabilities,
     SuccessResponse,
 };
 use crate::api::subscriptions::{ActiveSubscription, SubscriptionStream};
@@ -352,10 +352,11 @@ fn handle_connection_with_stop(
             };
             let response = ErrorResponse {
                 id,
-                error: ErrorBody {
-                    code: "invalid_request".into(),
-                    message: format!("invalid request: {request_error}"),
-                },
+                error: crate::api::error::ApiError::new(
+                    crate::api::error::ApiErrorCode::InvalidRequest,
+                    format!("invalid request: {request_error}"),
+                )
+                .into_body(),
             };
             write_json_line_allow_disconnect(&mut stream, &response)?;
             return Ok(());
@@ -547,7 +548,7 @@ fn handle_request(
     if matches!(&request.method, Method::ClientShellSurfaceSet(_)) {
         return error_response_json(
             &request.id,
-            "connection_local_only",
+            crate::api::error::ApiErrorCode::ConnectionLocalOnly,
             "client_shell.surface.set is only available through a client shell endpoint".into(),
         );
     }
@@ -564,7 +565,7 @@ fn handle_request(
     } else if server_stop.is_some_and(|stop| stop.load(Ordering::Acquire)) {
         return error_response_json(
             &request.id,
-            "server_unavailable",
+            crate::api::error::ApiErrorCode::ServerUnavailable,
             "server is shutting down".into(),
         );
     }
@@ -794,6 +795,15 @@ pub(super) fn dispatch_to_app_with_timeout(
     dispatch_to_app(request, api_tx, timeout, None)
 }
 
+pub(super) fn dispatch_to_app_with_timeout_result(
+    request: Request,
+    api_tx: &ApiRequestSender,
+    timeout: Option<Duration>,
+) -> crate::api::error::ApiResult {
+    dispatch_to_app_result(request, api_tx, timeout, None)
+}
+
+#[cfg(test)]
 pub(super) fn dispatch_to_app_with_caller_timeout(
     request: Request,
     api_tx: &ApiRequestSender,
@@ -803,7 +813,26 @@ pub(super) fn dispatch_to_app_with_caller_timeout(
         request,
         api_tx,
         timeout,
-        Some(("timeout", "timed out waiting for agent status")),
+        Some((
+            crate::api::error::ApiErrorCode::Timeout,
+            "timed out waiting for agent status",
+        )),
+    )
+}
+
+pub(super) fn dispatch_to_app_with_caller_timeout_result(
+    request: Request,
+    api_tx: &ApiRequestSender,
+    timeout: Option<Duration>,
+) -> crate::api::error::ApiResult {
+    dispatch_to_app_result(
+        request,
+        api_tx,
+        timeout,
+        Some((
+            crate::api::error::ApiErrorCode::Timeout,
+            "timed out waiting for agent status",
+        )),
     )
 }
 
@@ -811,19 +840,30 @@ fn dispatch_to_app(
     request: Request,
     api_tx: &ApiRequestSender,
     timeout: Option<Duration>,
-    timeout_response: Option<(&str, &str)>,
+    timeout_response: Option<(crate::api::error::ApiErrorCode, &str)>,
 ) -> String {
     let request_id = request.id.clone();
+    crate::api::error::encode_result(
+        request_id,
+        dispatch_to_app_result(request, api_tx, timeout, timeout_response),
+    )
+}
+
+fn dispatch_to_app_result(
+    request: Request,
+    api_tx: &ApiRequestSender,
+    timeout: Option<Duration>,
+    timeout_response: Option<(crate::api::error::ApiErrorCode, &str)>,
+) -> crate::api::error::ApiResult {
     let (respond_to, response_rx) = std::sync::mpsc::channel();
     if let Err(err) = api_tx.send(ApiRequestMessage {
         request,
         respond_to,
     }) {
-        return error_response_json(
-            &request_id,
-            "server_unavailable",
+        return Err(crate::api::error::ApiError::new(
+            crate::api::error::ApiErrorCode::ServerUnavailable,
             format!("failed to dispatch request: {err}"),
-        );
+        ));
     }
 
     let response = match timeout {
@@ -851,13 +891,12 @@ fn dispatch_to_app(
             if err.kind() == std::io::ErrorKind::TimedOut
                 && let Some((code, message)) = timeout_response
             {
-                return error_response_json(&request_id, code, message.into());
+                return Err(crate::api::error::ApiError::new(code, message));
             }
-            error_response_json(
-                &request_id,
-                "server_unavailable",
+            Err(crate::api::error::ApiError::new(
+                crate::api::error::ApiErrorCode::ServerUnavailable,
                 format!("request handling failed: {err}"),
-            )
+            ))
         }
     }
 }
@@ -882,15 +921,15 @@ fn caller_timeout_dispatch_uses_timeout_error() {
     assert_eq!(error.error.code, "timeout");
 }
 
-pub(super) fn error_response_json(id: &str, code: &str, message: String) -> String {
-    let response = ErrorResponse {
-        id: id.to_string(),
-        error: ErrorBody {
-            code: code.into(),
-            message,
-        },
-    };
-    crate::api::serialize_response_or_error(id, &response)
+pub(super) fn error_response_json(
+    id: &str,
+    code: impl Into<crate::api::error::ApiErrorCode>,
+    message: String,
+) -> String {
+    crate::api::error::encode_result(
+        id.to_owned(),
+        Err(crate::api::error::ApiError::new(code.into(), message)),
+    )
 }
 
 #[cfg(test)]
@@ -1107,23 +1146,16 @@ mod tests {
                 match msg.request.method {
                     Method::PaneGet(_) => msg
                         .respond_to
-                        .send(
-                            serde_json::to_string(&SuccessResponse {
-                                id: msg.request.id,
-                                result: ResponseResult::PaneInfo {
-                                    pane: pane_info("pane_1", agent_status),
-                                },
-                            })
-                            .expect("test precondition"),
-                        )
+                        .send(Ok(ResponseResult::PaneInfo {
+                            pane: pane_info("pane_1", agent_status),
+                        }))
                         .expect("test precondition"),
                     Method::EventsWait(_) => msg
                         .respond_to
-                        .send(error_response_json(
-                            &msg.request.id,
-                            "unexpected_dispatch",
-                            "events.wait should be handled by the api server".into(),
-                        ))
+                        .send(Err(crate::api::error::ApiError::new(
+                            crate::api::error::ApiErrorCode::External("unexpected_dispatch".into()),
+                            "events.wait should be handled by the api server",
+                        )))
                         .expect("test precondition"),
                     other => panic!("unexpected request: {other:?}"),
                 }
@@ -1315,13 +1347,7 @@ mod tests {
         let msg = rx.blocking_recv().expect("test precondition");
         assert_eq!(msg.request.id, "req_2");
         msg.respond_to
-            .send(
-                serde_json::to_string(&SuccessResponse {
-                    id: "req_2".into(),
-                    result: ResponseResult::Ok {},
-                })
-                .expect("test precondition"),
-            )
+            .send(Ok(ResponseResult::Ok {}))
             .expect("test precondition");
 
         let response = thread.join().expect("test precondition");
@@ -1397,13 +1423,9 @@ mod tests {
                 };
                 pane_get_count += 1;
                 let response = if pane_get_count == 1 {
-                    serde_json::to_string(&SuccessResponse {
-                        id: msg.request.id,
-                        result: ResponseResult::PaneInfo {
-                            pane: pane_info("pane_1", crate::api::schema::AgentStatus::Idle),
-                        },
+                    Ok(ResponseResult::PaneInfo {
+                        pane: pane_info("pane_1", crate::api::schema::AgentStatus::Idle),
                     })
-                    .expect("test precondition")
                 } else {
                     if pane_get_count == 2 {
                         responder_event_hub.push(crate::api::schema::EventEnvelope {
@@ -1413,11 +1435,10 @@ mod tests {
                             },
                         });
                     }
-                    error_response_json(
-                        &msg.request.id,
-                        "pane_not_found",
-                        "pane pane_1 not found".into(),
-                    )
+                    Err(crate::api::error::ApiError::new(
+                        crate::api::error::ApiErrorCode::PaneNotFound,
+                        "pane pane_1 not found",
+                    ))
                 };
                 msg.respond_to.send(response).expect("test precondition");
             }
@@ -1455,24 +1476,18 @@ mod tests {
                     notified = true;
                 }
                 msg.respond_to
-                    .send(
-                        serde_json::to_string(&SuccessResponse {
-                            id: msg.request.id,
-                            result: ResponseResult::PaneRead {
-                                read: crate::api::schema::PaneReadResult {
-                                    pane_id: "pane_1".into(),
-                                    workspace_id: "ws_1".into(),
-                                    tab_id: "tab_1".into(),
-                                    source: crate::api::schema::ReadSource::RecentUnwrapped,
-                                    format: crate::api::schema::ReadFormat::Text,
-                                    text: String::new(),
-                                    revision: 0,
-                                    truncated: false,
-                                },
-                            },
-                        })
-                        .expect("test precondition"),
-                    )
+                    .send(Ok(ResponseResult::PaneRead {
+                        read: crate::api::schema::PaneReadResult {
+                            pane_id: "pane_1".into(),
+                            workspace_id: "ws_1".into(),
+                            tab_id: "tab_1".into(),
+                            source: crate::api::schema::ReadSource::RecentUnwrapped,
+                            format: crate::api::schema::ReadFormat::Text,
+                            text: String::new(),
+                            revision: 0,
+                            truncated: false,
+                        },
+                    }))
                     .expect("test precondition");
             }
         });
@@ -1568,11 +1583,10 @@ mod tests {
                 },
             });
             msg.respond_to
-                .send(error_response_json(
-                    &msg.request.id,
-                    "pane_not_found",
-                    "pane w999:p9 not found".into(),
-                ))
+                .send(Err(crate::api::error::ApiError::new(
+                    crate::api::error::ApiErrorCode::PaneNotFound,
+                    "pane w999:p9 not found",
+                )))
                 .expect("test precondition");
             assert!(
                 api_rx.blocking_recv().is_none(),

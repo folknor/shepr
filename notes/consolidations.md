@@ -24,14 +24,3 @@ Proposed owner: a `CellPx` that can only be built non-zero, a
 `TerminalGeometry { size, cell_px: Option<CellPx>, pixel_mouse }`.
 
 Reported by: terminal-core, client, protocol.
-
-## CON-040 - Which role is this client process?
-
-Sites: `is_remote_client_process()` called in `run_client_with_mode`,
-`run_client_loop`, `handshake_read_timeout`; the same env var read in
-`errors.rs` for the reattach message and in `handshake.rs:30-39` for
-`ClientShellKeybindingSource` (BUG-021).
-
-Proposed owner: a typed `ClientProcessRole` resolved once at startup.
-
-Reported by: client.

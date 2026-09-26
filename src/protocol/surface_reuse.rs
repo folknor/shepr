@@ -2,6 +2,54 @@
 
 use super::{CellData, PaneSurfaceFrame, ServerMessage};
 
+#[derive(Debug)]
+pub(crate) enum SurfaceDecodeError {
+    MissingBaseline,
+    BaselineMismatch,
+    MissingPatchBaseline,
+    PatchBaselineMismatch,
+    MissingMetadata,
+    MetadataMismatch,
+    InvalidHyperlink,
+    InvalidDimensions,
+    InvalidCellCount,
+    InvalidRows(&'static str),
+    Delta(super::surface_delta::SurfaceDeltaError),
+    RejectedPatch(super::surface_delta::SurfaceDeltaError),
+}
+
+impl std::fmt::Display for SurfaceDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingBaseline => f.write_str("surface update without a baseline"),
+            Self::BaselineMismatch => f.write_str("surface update does not match its baseline"),
+            Self::MissingPatchBaseline => f.write_str("surface patch without a baseline"),
+            Self::PatchBaselineMismatch => f.write_str("surface patch does not match its baseline"),
+            Self::MissingMetadata => f.write_str("surface update is missing projection metadata"),
+            Self::MetadataMismatch => f.write_str("surface metadata does not match its baseline"),
+            Self::InvalidHyperlink => f.write_str("surface has an invalid hyperlink index"),
+            Self::InvalidDimensions => f.write_str("pane surface dimensions exceed the limit"),
+            Self::InvalidCellCount => {
+                f.write_str("pane surface cell count does not match its size")
+            }
+            Self::InvalidRows(reason) => f.write_str(reason),
+            Self::Delta(error) => write!(f, "{error}"),
+            Self::RejectedPatch(error) => write!(
+                f,
+                "surface patch rejected against the cell baseline: {error}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SurfaceDecodeError {}
+
+impl From<super::surface_delta::SurfaceDeltaError> for SurfaceDecodeError {
+    fn from(error: super::surface_delta::SurfaceDeltaError) -> Self {
+        Self::Delta(error)
+    }
+}
+
 pub(crate) fn message(
     last: &PaneSurfaceFrame,
     surface: &mut PaneSurfaceFrame,
@@ -114,11 +162,14 @@ impl Decoder {
         ))
     }
 
-    pub(crate) fn decode(&mut self, message: ServerMessage) -> Result<ServerMessage, String> {
+    pub(crate) fn decode(
+        &mut self,
+        message: ServerMessage,
+    ) -> Result<ServerMessage, SurfaceDecodeError> {
         let message = match message {
             ServerMessage::SurfaceUpdate(update) => {
                 let Some(base) = &mut self.baseline else {
-                    return Err("surface update without a baseline".into());
+                    return Err(SurfaceDecodeError::MissingBaseline);
                 };
                 if !base.revisions().accepts(
                     &update.boot_id,
@@ -128,13 +179,13 @@ impl Decoder {
                     update.projection_revision,
                 ) || super::surface_grid_size(base.width, base.height) != Some(base.cells.len())
                 {
-                    return Err("surface update does not match its baseline".into());
+                    return Err(SurfaceDecodeError::BaselineMismatch);
                 }
                 let Some(meta) = update.meta.or_else(|| base.meta.clone()) else {
-                    return Err("surface update is missing projection metadata".into());
+                    return Err(SurfaceDecodeError::MissingMetadata);
                 };
                 if meta.frame.width != base.width || meta.frame.height != base.height {
-                    return Err("surface metadata does not match its baseline".into());
+                    return Err(SurfaceDecodeError::MetadataMismatch);
                 }
                 // When topology and hyperlink indices are stable, forward an
                 // internal patch so the client shell can update only touched
@@ -150,12 +201,13 @@ impl Decoder {
                         .zip(&previous.panes)
                         .all(|(next, old)| next.pane_id == old.pane_id)
                 {
-                    super::validate_patch_rows(base.width, base.height, &update.spans)?;
+                    super::validate_patch_rows(base.width, base.height, &update.spans)
+                        .map_err(SurfaceDecodeError::InvalidRows)?;
                     if update.spans.iter().flat_map(|row| &row.cells).any(|cell| {
                         cell.hyperlink
                             .is_some_and(|index| index as usize >= meta.frame.hyperlinks.len())
                     }) {
-                        return Err("surface update has an invalid hyperlink index".into());
+                        return Err(SurfaceDecodeError::InvalidHyperlink);
                     }
                     let changed_panes = meta
                         .panes
@@ -199,7 +251,7 @@ impl Decoder {
                     cell.hyperlink
                         .is_some_and(|index| index as usize >= surface.frame.hyperlinks.len())
                 }) {
-                    return Err("surface update has an invalid hyperlink index".into());
+                    return Err(SurfaceDecodeError::InvalidHyperlink);
                 }
                 base.cells.clone_from(&surface.frame.cells);
                 base.meta = Some(meta);
@@ -222,16 +274,16 @@ impl Decoder {
                 let Some(expected) =
                     super::surface_grid_size(surface.frame.width, surface.frame.height)
                 else {
-                    return Err("pane surface dimensions exceed the limit".into());
+                    return Err(SurfaceDecodeError::InvalidDimensions);
                 };
                 if surface.frame.cells.len() != expected {
-                    return Err("pane surface cell count does not match its size".into());
+                    return Err(SurfaceDecodeError::InvalidCellCount);
                 }
                 if surface.frame.cells.iter().any(|cell| {
                     cell.hyperlink
                         .is_some_and(|index| index as usize >= surface.frame.hyperlinks.len())
                 }) {
-                    return Err("pane surface has an invalid hyperlink index".into());
+                    return Err(SurfaceDecodeError::InvalidHyperlink);
                 }
                 let base = self.baseline.get_or_insert_with(CellBaseline::default);
                 base.boot_id.clone_from(&surface.boot_id);
@@ -244,7 +296,7 @@ impl Decoder {
             }
             ServerMessage::PaneSurfacePatch(patch) => {
                 let Some(base) = &mut self.baseline else {
-                    return Err("surface patch without a baseline".into());
+                    return Err(SurfaceDecodeError::MissingPatchBaseline);
                 };
                 if !base.revisions().accepts(
                     &patch.boot_id,
@@ -253,7 +305,7 @@ impl Decoder {
                     base.projection_revision,
                     patch.projection_revision,
                 ) {
-                    return Err("surface patch does not match its baseline".into());
+                    return Err(SurfaceDecodeError::PatchBaselineMismatch);
                 }
                 // `apply_rows` checks every span before touching the grid, so a
                 // bad patch does not leave the baseline half-applied.
@@ -263,9 +315,7 @@ impl Decoder {
                     base.height,
                     &patch.rows,
                 )
-                .map_err(|error| {
-                    format!("surface patch rejected against the cell baseline: {error}")
-                })?;
+                .map_err(SurfaceDecodeError::RejectedPatch)?;
                 base.surface_revision = patch.surface_revision;
             }
             _ => {}
@@ -356,11 +406,10 @@ mod tests {
             meta: None,
             spans: Vec::new(),
         };
-        assert!(
-            decoder
-                .decode(ServerMessage::SurfaceUpdate(update))
-                .is_err()
-        );
+        assert!(matches!(
+            decoder.decode(ServerMessage::SurfaceUpdate(update)),
+            Err(SurfaceDecodeError::BaselineMismatch)
+        ));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use crate::api::error::{ApiErrorCode, ApiResult};
 use std::path::PathBuf;
 
 use crate::api::schema::{
@@ -8,11 +9,11 @@ use crate::api::schema::{
 use crate::app::{App, actions::PaneContextFallback};
 
 use super::super::api_helpers::{normalize_metadata_source, normalize_metadata_ttl};
-use super::responses::{encode_error, encode_success};
+use super::responses::{failure, success};
 
 impl App {
-    pub(super) fn handle_workspace_list(&mut self, id: String) -> String {
-        encode_success(
+    pub(super) fn handle_workspace_list(&mut self, id: String) -> ApiResult {
+        success(
             id,
             ResponseResult::WorkspaceList {
                 workspaces: self.workspace_list_info(),
@@ -20,7 +21,11 @@ impl App {
         )
     }
 
-    pub(super) fn handle_workspace_get(&mut self, id: String, target: &WorkspaceTarget) -> String {
+    pub(super) fn handle_workspace_get(
+        &mut self,
+        id: String,
+        target: &WorkspaceTarget,
+    ) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
             return workspace_not_found(id, &target.workspace_id);
         };
@@ -28,14 +33,14 @@ impl App {
             return workspace_not_found(id, &target.workspace_id);
         };
 
-        encode_success(id, ResponseResult::WorkspaceInfo { workspace })
+        success(id, ResponseResult::WorkspaceInfo { workspace })
     }
 
     pub(super) fn handle_workspace_create(
         &mut self,
         id: String,
         params: WorkspaceCreateParams,
-    ) -> String {
+    ) -> ApiResult {
         let source_context = if params.cwd.is_some() {
             None
         } else {
@@ -69,10 +74,7 @@ impl App {
                 },
             )
         });
-        let extra_env = match super::env::normalize_launch_env(params.env) {
-            Ok(env) => env,
-            Err((code, message)) => return encode_error(id, &code, message),
-        };
+        let extra_env = super::env::normalize_launch_env(params.env)?;
         match self.create_workspace_with_launch_env(&cwd, params.focus, extra_env) {
             Ok(index) => {
                 if let Some(label) = params.label
@@ -83,15 +85,15 @@ impl App {
                 }
                 self.emit_workspace_open_events(index);
                 match self.workspace_created_result(index) {
-                    Some(result) => encode_success(id, result),
-                    None => encode_error(
+                    Some(result) => success(id, result),
+                    None => failure(
                         id,
-                        "workspace_create_failed",
+                        ApiErrorCode::WorkspaceCreateFailed,
                         "new workspace is unavailable",
                     ),
                 }
             }
-            Err(err) => encode_error(id, "workspace_create_failed", err.to_string()),
+            Err(err) => failure(id, ApiErrorCode::WorkspaceCreateFailed, err.to_string()),
         }
     }
 
@@ -99,7 +101,7 @@ impl App {
         &mut self,
         id: String,
         target: &WorkspaceTarget,
-    ) -> String {
+    ) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
             return workspace_not_found(id, &target.workspace_id);
         };
@@ -111,14 +113,14 @@ impl App {
             return workspace_not_found(id, &target.workspace_id);
         };
 
-        encode_success(id, ResponseResult::WorkspaceInfo { workspace })
+        success(id, ResponseResult::WorkspaceInfo { workspace })
     }
 
     pub(super) fn handle_workspace_rename(
         &mut self,
         id: String,
         params: WorkspaceRenameParams,
-    ) -> String {
+    ) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return workspace_not_found(id, &params.workspace_id);
         };
@@ -138,14 +140,14 @@ impl App {
             return workspace_not_found(id, &params.workspace_id);
         };
 
-        encode_success(id, ResponseResult::WorkspaceInfo { workspace })
+        success(id, ResponseResult::WorkspaceInfo { workspace })
     }
 
     pub(super) fn handle_workspace_move(
         &mut self,
         id: String,
         params: &WorkspaceMoveParams,
-    ) -> String {
+    ) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return workspace_not_found(id, &params.workspace_id);
         };
@@ -153,9 +155,9 @@ impl App {
             return workspace_not_found(id, &params.workspace_id);
         }
         if params.insert_index > self.state.workspaces.len() {
-            return encode_error(
+            return failure(
                 id,
-                "workspace_move_failed",
+                ApiErrorCode::WorkspaceMoveFailed,
                 format!("insert_index {} is out of bounds", params.insert_index),
             );
         }
@@ -174,18 +176,18 @@ impl App {
             });
         }
 
-        encode_success(id, ResponseResult::WorkspaceList { workspaces })
+        success(id, ResponseResult::WorkspaceList { workspaces })
     }
 
     pub(super) fn handle_workspace_move_block(
         &mut self,
         id: String,
         params: WorkspaceMoveBlockParams,
-    ) -> String {
+    ) -> ApiResult {
         if params.workspace_ids.is_empty() {
-            return encode_error(
+            return failure(
                 id,
-                "workspace_move_block_failed",
+                ApiErrorCode::WorkspaceMoveBlockFailed,
                 "workspace_ids must not be empty",
             );
         }
@@ -200,9 +202,9 @@ impl App {
                 return workspace_not_found(id, requested_id);
             };
             if !seen_ids.insert(workspace.id.clone()) {
-                return encode_error(
+                return failure(
                     id,
-                    "workspace_move_block_failed",
+                    ApiErrorCode::WorkspaceMoveBlockFailed,
                     format!("workspace {requested_id} appears more than once"),
                 );
             }
@@ -218,9 +220,9 @@ impl App {
                     return workspace_not_found(id, &requested_id);
                 };
                 if seen_ids.contains(&workspace.id) {
-                    return encode_error(
+                    return failure(
                         id,
-                        "workspace_move_block_failed",
+                        ApiErrorCode::WorkspaceMoveBlockFailed,
                         "before_workspace_id must not be part of workspace_ids",
                     );
                 }
@@ -243,28 +245,28 @@ impl App {
             });
         }
 
-        encode_success(id, ResponseResult::WorkspaceList { workspaces })
+        success(id, ResponseResult::WorkspaceList { workspaces })
     }
 
     pub(super) fn handle_workspace_report_metadata(
         &mut self,
         id: String,
         params: WorkspaceReportMetadataParams,
-    ) -> String {
+    ) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return workspace_not_found(id, &params.workspace_id);
         };
         let source = match normalize_metadata_source(&params.source) {
             Ok(source) => source,
-            Err(message) => return encode_error(id, "invalid_metadata_source", message),
+            Err(message) => return failure(id, ApiErrorCode::InvalidMetadataSource, message),
         };
         let ttl = match normalize_metadata_ttl(params.ttl_ms) {
             Ok(ttl) => ttl,
-            Err(message) => return encode_error(id, "invalid_metadata_ttl", message),
+            Err(message) => return failure(id, ApiErrorCode::InvalidMetadataTtl, message),
         };
         let tokens = match super::super::api_helpers::normalize_metadata_tokens(params.tokens) {
             Ok(tokens) => tokens,
-            Err(message) => return encode_error(id, "invalid_metadata_token", message),
+            Err(message) => return failure(id, ApiErrorCode::InvalidMetadataToken, message),
         };
         let Some(workspace) = self.state.workspaces.get_mut(index) else {
             return workspace_not_found(id, &params.workspace_id);
@@ -276,14 +278,14 @@ impl App {
             params.seq,
             now,
         ) {
-            return encode_success(id, ResponseResult::Ok {});
+            return success(id, ResponseResult::Ok {});
         }
         if workspace.metadata_tokens.key_count_after_patch(&tokens)
             > super::super::api_helpers::MAX_METADATA_TOKEN_KEYS_PER_RESOURCE
         {
-            return encode_error(
+            return failure(
                 id,
-                "metadata_token_limit",
+                ApiErrorCode::MetadataTokenLimit,
                 format!(
                     "workspace metadata may contain at most {} tokens",
                     super::super::api_helpers::MAX_METADATA_TOKEN_KEYS_PER_RESOURCE
@@ -297,11 +299,11 @@ impl App {
             now,
         ) {
             Ok(true) => {}
-            Ok(false) => return encode_success(id, ResponseResult::Ok {}),
+            Ok(false) => return success(id, ResponseResult::Ok {}),
             Err(()) => {
-                return encode_error(
+                return failure(
                     id,
-                    "metadata_sequence_source_limit",
+                    ApiErrorCode::MetadataSequenceSourceLimit,
                     format!(
                         "workspace metadata may track at most {} sequenced sources",
                         crate::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES
@@ -314,14 +316,14 @@ impl App {
             self.sync_agent_metadata_deadline();
             self.emit_workspace_token_updated(index);
         }
-        encode_success(id, ResponseResult::Ok {})
+        success(id, ResponseResult::Ok {})
     }
 
     pub(super) fn handle_workspace_close(
         &mut self,
         id: String,
         params: &WorkspaceCloseParams,
-    ) -> String {
+    ) -> ApiResult {
         let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
             return workspace_not_found(id, &params.workspace_id);
         };
@@ -333,7 +335,7 @@ impl App {
         self.shutdown_detached_terminal_runtimes();
         self.emit_events(close_events);
 
-        encode_success(id, ResponseResult::Ok {})
+        success(id, ResponseResult::Ok {})
     }
 
     fn workspace_list_info(&self) -> Vec<crate::api::schema::WorkspaceInfo> {
@@ -343,10 +345,10 @@ impl App {
     }
 }
 
-fn workspace_not_found(id: String, workspace_id: &str) -> String {
-    encode_error(
+fn workspace_not_found(id: String, workspace_id: &str) -> ApiResult {
+    failure(
         id,
-        "workspace_not_found",
+        ApiErrorCode::WorkspaceNotFound,
         format!("workspace {workspace_id} not found"),
     )
 }
@@ -392,7 +394,7 @@ mod tests {
                 env: Default::default(),
             },
         );
-        let _: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let _: SuccessResponse = crate::api::error::test_success(&response);
         // Drop runtimes so cwd resolution deterministically uses cached state.
         shutdown_test_runtimes(&mut app);
 
@@ -423,7 +425,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert!(matches!(
             success.result,
             ResponseResult::WorkspaceCreated { .. }
@@ -485,7 +487,7 @@ mod tests {
                 env: Default::default(),
             },
         );
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert!(matches!(
             success.result,
             ResponseResult::WorkspaceCreated { .. }
@@ -509,7 +511,7 @@ mod tests {
                 env: Default::default(),
             },
         );
-        let error: ErrorResponse = serde_json::from_str(&invalid).expect("test precondition");
+        let error: ErrorResponse = crate::api::error::test_error(&invalid);
         assert_eq!(error.error.code, "workspace_not_found");
 
         let captured = app.handle_workspace_create(
@@ -522,7 +524,7 @@ mod tests {
                 env: Default::default(),
             },
         );
-        let success: SuccessResponse = serde_json::from_str(&captured).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&captured);
         assert!(matches!(
             success.result,
             ResponseResult::WorkspaceCreated { .. }
@@ -583,8 +585,7 @@ mod tests {
                     },
                 ),
             });
-            let success: SuccessResponse =
-                serde_json::from_str(&response).expect("test precondition");
+            let success: SuccessResponse = crate::api::error::test_success(&response);
             assert_eq!(success.result, ResponseResult::Ok {});
             assert_eq!(
                 app.workspace_info(0).expect("test precondition").tokens,
@@ -625,7 +626,7 @@ mod tests {
                 ttl_ms: Some(1),
             },
         );
-        let _: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let _: SuccessResponse = crate::api::error::test_success(&response);
         let deadline = app.agent_metadata_deadline.expect("token deadline");
 
         app.expire_metadata_at(deadline, deadline);
@@ -687,7 +688,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::WorkspaceList { workspaces } = success.result else {
             panic!("expected workspace list");
         };
@@ -735,7 +736,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::WorkspaceList { workspaces } = success.result else {
             panic!("expected workspace list");
         };
@@ -802,7 +803,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         let events = event_hub
             .events_after(0)
@@ -847,7 +848,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::WorkspaceList { workspaces } = success.result else {
             panic!("expected workspace list");
         };

@@ -295,7 +295,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
                 super::super::super::status_glyph(
                     crate::api::schema::AgentStatus::Working,
                     crate::config::StatusIndicatorStyle::Dots,
-                    &crate::app::state::Palette::catppuccin(),
+                    &crate::theme::Palette::catppuccin(),
                     false,
                 ),
                 super::super::TokenStyles {

@@ -1,11 +1,12 @@
+use crate::api::error::ApiResult;
 use crate::api::schema::{ResponseResult, SessionSnapshot};
 use crate::app::App;
 
-use super::responses::encode_success;
+use super::responses::success;
 
 impl App {
-    pub(super) fn handle_session_snapshot(&mut self, id: String) -> String {
-        encode_success(
+    pub(super) fn handle_session_snapshot(&mut self, id: String) -> ApiResult {
+        success(
             id,
             ResponseResult::SessionSnapshot {
                 snapshot: Box::new(self.session_snapshot()),
@@ -86,11 +87,10 @@ mod tests {
             method: Method::SessionSnapshot(EmptyParams::default()),
         });
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::SessionSnapshot { snapshot } = success.result else {
             panic!("expected session snapshot response");
         };
-        assert_eq!(success.id, "req_snapshot");
         assert_eq!(snapshot.workspaces.len(), 1);
         assert_eq!(snapshot.tabs.len(), 2);
         assert_eq!(snapshot.panes.len(), 2);

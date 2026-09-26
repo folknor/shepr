@@ -18,6 +18,7 @@ macro_rules! println {
 }
 
 mod agent;
+mod error;
 mod integration;
 mod machine;
 mod matches;
@@ -31,6 +32,10 @@ mod status;
 mod tab;
 mod target;
 mod workspace;
+
+pub(crate) use error::CliError;
+use error::SessionCliError;
+pub(crate) type CliResult<T> = Result<T, CliError>;
 
 pub(crate) fn parse_token_assignment(raw: &str) -> Result<(String, Option<String>), String> {
     let Some((key, value)) = raw.split_once('=') else {
@@ -399,7 +404,7 @@ pub(crate) fn print_help(requested_session: Option<crate::session::SessionId>) {
     println!("Env:    SHEPR_CONFIG_PATH overrides config file path");
 }
 
-pub(super) fn print_read_response(response: &serde_json::Value) -> std::io::Result<i32> {
+pub(super) fn print_read_response(response: &serde_json::Value) -> CliResult<i32> {
     if response.get("error").is_some() {
         eprintln!("{response}");
         return Ok(1);
@@ -412,7 +417,7 @@ pub(super) fn print_read_response(response: &serde_json::Value) -> std::io::Resu
 
 /// Runs the invocation's subcommand against the saved machine named by
 /// `--machine`.
-pub(crate) fn run_on_machine(command: Option<&CliCommand>, selector: &str) -> std::io::Result<i32> {
+pub(crate) fn run_on_machine(command: Option<&CliCommand>, selector: &str) -> CliResult<i32> {
     let paths = resolve_machine_app_paths()?;
     target::run_on_machine(selector, command, &paths)
 }
@@ -421,7 +426,7 @@ pub(crate) fn run_on_machine(command: Option<&CliCommand>, selector: &str) -> st
 pub(crate) fn run(
     command: &CliCommand,
     requested_session: Option<crate::session::SessionId>,
-) -> std::io::Result<i32> {
+) -> CliResult<i32> {
     if matches!(command, CliCommand::Config(ConfigCommand::Check)) {
         return Ok(config_check());
     }
@@ -434,7 +439,7 @@ fn dispatch_with_config(
     command: &CliCommand,
     config: Option<crate::config::ValidatedConfig>,
     context: &target::CliContext,
-) -> std::io::Result<i32> {
+) -> CliResult<i32> {
     match command {
         CliCommand::Status(command) => status::run_status_command(*command, context),
         CliCommand::Config(ConfigCommand::Check) => Ok(config_check()),
@@ -457,36 +462,38 @@ fn dispatch_with_config(
 
 fn resolve_app_paths(
     requested_session: Option<crate::session::SessionId>,
-) -> std::io::Result<crate::config::AppPaths> {
+) -> CliResult<crate::config::AppPaths> {
     crate::config::AppPaths::resolve_with_session(requested_session).map_err(|diagnostics| {
-        std::io::Error::other(format!(
+        CliError::Io(std::io::Error::other(format!(
             "application paths could not be resolved:\n  {}",
             diagnostics.join("\n  ")
-        ))
+        )))
     })
 }
 
-fn resolve_machine_app_paths() -> std::io::Result<crate::config::AppPaths> {
+fn resolve_machine_app_paths() -> CliResult<crate::config::AppPaths> {
     crate::config::AppPaths::resolve_for_machine().map_err(|diagnostics| {
-        std::io::Error::other(format!(
+        CliError::Io(std::io::Error::other(format!(
             "application paths could not be resolved:\n  {}",
             diagnostics.join("\n  ")
-        ))
+        )))
     })
 }
 
 /// The spec makes every command group require a subcommand, so this only
 /// runs if a handler and the spec disagree about the subcommand names.
 pub(super) fn missing_subcommand() -> i32 {
-    eprintln!("error: missing or unknown subcommand; run with --help for usage");
-    2
+    let error = CliError::Usage("missing or unknown subcommand".into());
+    error.print();
+    error.exit_code()
 }
 
 /// A usage error found after clap accepted the arguments (a combination the
 /// spec cannot express). Same exit code as clap's own usage errors.
 pub(super) fn usage_error(message: &str) -> i32 {
-    eprintln!("{message}");
-    2
+    let error = CliError::Usage(message.into());
+    error.print();
+    error.exit_code()
 }
 
 fn config_check() -> i32 {
@@ -549,7 +556,13 @@ fn config_check() -> i32 {
             ]);
             (loaded.diagnostics, sources)
         }
-        Err(diagnostics) => (diagnostics, Vec::new()),
+        Err(diagnostics) => (
+            diagnostics
+                .into_iter()
+                .map(crate::config::ConfigDiagnostic::Path)
+                .collect(),
+            Vec::new(),
+        ),
     };
     if diagnostics.is_empty() {
         println!("config: ok");
@@ -569,12 +582,16 @@ fn config_check() -> i32 {
 
 fn load_validated_config(
     paths: &crate::config::AppPaths,
-) -> std::io::Result<crate::config::ValidatedConfig> {
+) -> CliResult<crate::config::ValidatedConfig> {
     crate::config::Config::load_validated(paths).map_err(|diagnostics| {
-        std::io::Error::other(format!(
+        CliError::Io(std::io::Error::other(format!(
             "configuration error:\n  {}",
-            diagnostics.join("\n  ")
-        ))
+            diagnostics
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        )))
     })
 }
 
@@ -582,7 +599,7 @@ fn run_terminal_command(
     command: TerminalCommand,
     config: Option<crate::config::ValidatedConfig>,
     context: &target::CliContext,
-) -> std::io::Result<i32> {
+) -> CliResult<i32> {
     match command {
         TerminalCommand::Attach {
             terminal_id,
@@ -613,21 +630,22 @@ fn run_terminal_command(
     }
 }
 
-fn run_session_command(
-    command: SessionCommand,
-    paths: &target::CliContext,
-) -> std::io::Result<i32> {
+fn run_session_command(command: SessionCommand, paths: &target::CliContext) -> CliResult<i32> {
     match command {
         SessionCommand::List { json } => session_list(paths, json),
-        SessionCommand::Stop { name, json } => Ok(session_stop(&name, json, paths)),
-        SessionCommand::Delete { name, json } => Ok(session_delete(&name, json, paths)),
+        SessionCommand::Stop { name, json } => session_stop(&name, json, paths),
+        SessionCommand::Delete { name, json } => session_delete(&name, json, paths),
         SessionCommand::Invalid => Ok(missing_subcommand()),
     }
 }
 
-fn session_list(paths: &crate::config::AppPaths, json: bool) -> std::io::Result<i32> {
+fn session_list(paths: &crate::config::AppPaths, json: bool) -> CliResult<i32> {
     let sessions = crate::session::list_sessions(paths)?;
     if json {
+        let sessions = sessions
+            .iter()
+            .map(SessionInfoJson::from)
+            .collect::<Vec<_>>();
         print_json(&serde_json::json!({
             "sessions": sessions,
         }));
@@ -641,61 +659,45 @@ fn session_list(paths: &crate::config::AppPaths, json: bool) -> std::io::Result<
 /// protocol-mismatch error tells the user to run `session stop` / `server
 /// stop`, so stopping must keep working against a server from another build.
 /// `crate::session` sends a bare `server.stop` JSON line for that reason.
-fn session_stop(name: &str, json: bool, paths: &crate::config::AppPaths) -> i32 {
-    let target = match crate::session::parse_target_name(name) {
-        Ok(target) => target,
-        Err(message) => {
-            print_session_error("invalid_session_name", &message);
-            return 1;
-        }
-    };
+fn session_stop(name: &str, json: bool, paths: &crate::config::AppPaths) -> CliResult<i32> {
+    let target = crate::session::parse_target_name(name)
+        .map_err(|message| CliError::Session(SessionCliError::InvalidName(message)))?;
     match crate::session::stop_session(paths, &target) {
         Ok(session) => {
             if json {
                 print_json(&serde_json::json!({
                     "stopped": true,
-                    "session": session,
+                    "session": SessionInfoJson::from(&session),
                 }));
             } else {
                 println!("stopped session {}", session.name);
             }
-            0
+            Ok(0)
         }
-        Err(message) => {
-            print_session_error("session_stop_failed", &message);
-            1
-        }
+        Err(error) => Err(CliError::Session(SessionCliError::Stop(error))),
     }
 }
 
-fn session_delete(name: &str, json: bool, paths: &crate::config::AppPaths) -> i32 {
-    let target = match crate::session::parse_target_name(name) {
-        Ok(target) => target,
-        Err(message) => {
-            print_session_error("invalid_session_name", &message);
-            return 1;
-        }
-    };
+fn session_delete(name: &str, json: bool, paths: &crate::config::AppPaths) -> CliResult<i32> {
+    let target = crate::session::parse_target_name(name)
+        .map_err(|message| CliError::Session(SessionCliError::InvalidName(message)))?;
     match crate::session::delete_session(paths, &target) {
         Ok(session) => {
             if json {
                 print_json(&serde_json::json!({
                     "deleted": true,
-                    "session": session,
+                    "session": SessionInfoJson::from(&session),
                 }));
             } else {
                 println!("deleted session {}", session.name);
             }
-            0
+            Ok(0)
         }
-        Err(message) => {
-            print_session_error("session_delete_failed", &message);
-            1
-        }
+        Err(error) => Err(CliError::Session(SessionCliError::Delete(error))),
     }
 }
 
-pub(super) fn print_response(response: &serde_json::Value) -> std::io::Result<i32> {
+pub(super) fn print_response(response: &serde_json::Value) -> CliResult<i32> {
     if response.get("error").is_some() {
         eprintln!(
             "{}",
@@ -711,7 +713,7 @@ pub(super) fn print_response(response: &serde_json::Value) -> std::io::Result<i3
     Ok(0)
 }
 
-fn send_ok_request(context: &target::CliContext, method: Method) -> std::io::Result<i32> {
+fn send_ok_request(context: &target::CliContext, method: Method) -> CliResult<i32> {
     let response = send_request(
         context,
         &Request {
@@ -731,10 +733,7 @@ fn send_ok_request(context: &target::CliContext, method: Method) -> std::io::Res
     Ok(0)
 }
 
-fn send_request(
-    context: &target::CliContext,
-    request: &Request,
-) -> std::io::Result<serde_json::Value> {
+fn send_request(context: &target::CliContext, request: &Request) -> CliResult<serde_json::Value> {
     let client = target::api_client(context)?;
     ensure_server_protocol_compatible(context, &client, &request.id)?;
     client
@@ -745,7 +744,7 @@ fn send_request(
 fn send_request_unchecked(
     context: &target::CliContext,
     request: &Request,
-) -> std::io::Result<serde_json::Value> {
+) -> CliResult<serde_json::Value> {
     let client = target::api_client(context)?;
     client
         .request_value(request)
@@ -756,7 +755,7 @@ fn ensure_server_protocol_compatible(
     context: &target::CliContext,
     client: &ApiClient,
     request_id: &str,
-) -> std::io::Result<()> {
+) -> CliResult<()> {
     // Checked once per target: a polling command must not pay a status round
     // trip (up to 15 s under `--machine`) before every request.
     if context.protocol_checked() {
@@ -771,9 +770,9 @@ fn ensure_server_protocol_compatible(
         }
         crate::protocol::Compatibility::DifferentBuild(protocol) => protocol,
         crate::protocol::Compatibility::Unknown => {
-            return Err(std::io::Error::other(
-                "server ping did not include a protocol version",
-            ));
+            return Err(
+                std::io::Error::other("server ping did not include a protocol version").into(),
+            );
         }
     };
     let response = protocol_guard::mismatch_response(
@@ -782,63 +781,40 @@ fn ensure_server_protocol_compatible(
         &target::restart_guidance(context),
     );
 
-    eprintln!(
-        "{}",
-        serde_json::to_string(&response).map_err(std::io::Error::other)?
-    );
-    Err(protocol_guard::reported_error())
-}
-
-pub(crate) fn protocol_mismatch_was_reported(err: &std::io::Error) -> bool {
-    protocol_guard::was_reported(err)
-}
-
-pub(crate) fn server_not_running_was_reported(err: &std::io::Error) -> bool {
-    server_not_running::was_reported(err)
-}
-
-/// Returns the `ErrorResponse` carried by a `server_not_running` marker, if any,
-/// so the edge that surfaces the error can print it exactly once.
-pub(crate) fn server_not_running_reported_response(
-    err: &std::io::Error,
-) -> Option<&crate::api::schema::ErrorResponse> {
-    server_not_running::reported_response(err)
+    Err(protocol_guard::cli_error(response))
 }
 
 /// Whether the local API socket is definitely absent or stale. Other probe
 /// failures remain transport errors because they do not establish liveness.
-pub(super) fn server_not_running_error(socket_path: &std::path::Path) -> std::io::Result<bool> {
+pub(super) fn server_not_running_error(socket_path: &std::path::Path) -> CliResult<bool> {
     match crate::ipc::probe(socket_path) {
         crate::ipc::Liveness::Absent | crate::ipc::Liveness::Stale => Ok(true),
         crate::ipc::Liveness::Live => Ok(false),
-        crate::ipc::Liveness::Unreachable(error) => Err(error),
+        crate::ipc::Liveness::Unreachable(error) => Err(error.into()),
     }
 }
 
-/// Maps an `ApiClientError` from a socket command into the io::Error that
-/// bubbles up to `main`. A dead-server connect failure is reported as a
-/// friendly `server_not_running` JSON error plus a recognizable marker; all
-/// other errors fall through unchanged so existing handling is preserved.
+/// Classify a socket failure before it reaches the CLI printer.
 fn map_server_not_running_or_io(
     context: &target::CliContext,
     err: ApiClientError,
     request_id: &str,
     client: &ApiClient,
-) -> std::io::Error {
+) -> CliError {
     if context.is_remote() {
-        return target::remote_error(context, api_client_error_to_io(err));
+        return target::remote_error(context, api_client_error_to_io(err)).into();
     }
     match err {
         ApiClientError::Io(_)
             if server_not_running_error(&client.socket_path()).unwrap_or(false) =>
         {
-            server_not_running::reported_error(server_not_running::response(
+            server_not_running::cli_error(server_not_running::response(
                 request_id,
                 &client.socket_path(),
                 context,
             ))
         }
-        err => api_client_error_to_io(err),
+        err => api_client_error_to_io(err).into(),
     }
 }
 
@@ -860,22 +836,31 @@ fn print_session_table(sessions: &[crate::session::SessionInfo]) {
             } else {
                 "stopped"
             },
-            session.session_dir,
-            session.socket_path
+            session.session_dir.display(),
+            session.socket_path.display()
         );
     }
 }
 
-fn print_session_error(code: &str, message: &str) {
-    eprintln!(
-        "{}",
-        serde_json::json!({
-            "error": {
-                "code": code,
-                "message": message,
-            }
-        })
-    );
+#[derive(serde::Serialize)]
+struct SessionInfoJson<'a> {
+    name: &'a str,
+    default: bool,
+    running: bool,
+    socket_path: String,
+    session_dir: String,
+}
+
+impl<'a> From<&'a crate::session::SessionInfo> for SessionInfoJson<'a> {
+    fn from(info: &'a crate::session::SessionInfo) -> Self {
+        Self {
+            name: &info.name,
+            default: info.default,
+            running: info.running,
+            socket_path: info.socket_path.display().to_string(),
+            session_dir: info.session_dir.display().to_string(),
+        }
+    }
 }
 
 fn print_json(value: &serde_json::Value) {
@@ -1149,8 +1134,7 @@ mod tests {
         let client = ApiClient::local(&paths);
         let socket = client.socket_path().display().to_string();
 
-        // The helper does NOT print; it returns a recognizable marker carrying
-        // the ErrorResponse so the surfacing edge can print it exactly once.
+        // Classification carries the response to the final CLI printer.
         let mapped = super::map_server_not_running_or_io(
             &paths,
             ApiClientError::Io(std::io::Error::from(std::io::ErrorKind::NotFound)),
@@ -1164,8 +1148,23 @@ mod tests {
         assert_eq!(response.error.code, "server_not_running");
         assert!(response.error.message.contains(&socket));
 
-        // The mapping is recognizable without string matching.
+        // The typed error preserves the response without string matching.
         assert!(super::server_not_running::was_reported(&mapped));
+    }
+
+    #[test]
+    fn session_json_formats_paths_at_the_cli_edge() {
+        let info = crate::session::SessionInfo {
+            name: "work".into(),
+            default: false,
+            running: true,
+            socket_path: "/tmp/work/shepr.sock".into(),
+            session_dir: "/tmp/work".into(),
+        };
+        let value = serde_json::to_value(super::SessionInfoJson::from(&info))
+            .expect("session CLI JSON serializes");
+        assert_eq!(value["socket_path"], "/tmp/work/shepr.sock");
+        assert_eq!(value["session_dir"], "/tmp/work");
     }
 
     #[test]

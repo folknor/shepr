@@ -486,7 +486,7 @@ pub(super) struct ClientVisibleEndpointNotice {
 }
 
 pub(crate) struct ClientShellEndpointError {
-    pub code: Option<String>,
+    pub code: Option<crate::client::endpoint::commands::EndpointFailureCode>,
     pub message: String,
 }
 
@@ -676,11 +676,6 @@ pub(crate) struct ClientShellState {
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct WorkspaceEntry {
-    pub(super) index: usize,
-}
-
 impl ClientShellState {
     pub(crate) fn new(mut config: ClientShellConfig) -> Self {
         let preferences = config.preferences.clone();
@@ -775,7 +770,7 @@ impl ClientShellState {
     pub(super) fn navigation_workspace_entries(
         &self,
         snapshot: &ClientShellSnapshot,
-    ) -> Vec<WorkspaceEntry> {
+    ) -> Vec<usize> {
         render::workspace_entries(snapshot)
     }
 
@@ -791,7 +786,7 @@ impl ClientShellState {
         let target = self.snapshot.as_deref().and_then(|snapshot| {
             self.navigation_workspace_entries(snapshot)
                 .iter()
-                .position(|entry| snapshot.workspaces[entry.index].workspace_id == workspace_id)
+                .position(|entry| snapshot.workspaces[*entry].workspace_id == workspace_id)
         });
         if let Some(target) = target {
             self.workspace_scroll = target.min(self.hits.workspace_max_scroll);

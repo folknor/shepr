@@ -1,7 +1,6 @@
 use super::*;
 use crate::api::schema::{
     ErrorResponse, PaneMoveDestination, PaneMoveParams, PaneMoveResult, ResponseResult,
-    SuccessResponse,
 };
 use bytes::Bytes;
 
@@ -33,16 +32,13 @@ fn public_move(
     let response = response_rx
         .recv()
         .unwrap_or_else(|_| panic!("pane move response"));
-    match serde_json::from_str::<SuccessResponse>(&response) {
-        Ok(SuccessResponse {
-            result: ResponseResult::PaneMove { move_result },
-            ..
-        }) => Ok(move_result),
+    match response {
+        Ok(ResponseResult::PaneMove { move_result }) => Ok(move_result),
         Ok(other) => panic!("expected pane move response, got {other:?}"),
-        Err(_) => {
-            Err(serde_json::from_str(&response)
-                .unwrap_or_else(|err| panic!("error response: {err}")))
-        }
+        Err(error) => Err(ErrorResponse {
+            id: "move-pane".into(),
+            error: error.into_body(),
+        }),
     }
 }
 

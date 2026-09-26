@@ -51,7 +51,6 @@ pub struct CursorState {
     /// Whether the cursor is visible.
     pub visible: bool,
     /// Cursor shape as a DECSCUSR parameter.
-    #[serde(default)]
     pub shape: CursorShapeParam,
 }
 

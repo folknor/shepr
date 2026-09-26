@@ -117,7 +117,7 @@ fn frame_text(frame: &FrameData) -> String {
 
 fn read_server_shutdown_reason(bytes: Vec<u8>) -> Option<String> {
     match read_server_message(bytes) {
-        ServerMessage::ServerShutdown { reason } => reason,
+        ServerMessage::ServerShutdown { reason } => reason.map(|reason| reason.to_string()),
         other => panic!("expected shutdown, got {other:?}"),
     }
 }
@@ -125,16 +125,22 @@ fn read_server_shutdown_reason(bytes: Vec<u8>) -> Option<String> {
 #[test]
 fn frame_server_message_refuses_payloads_over_the_frame_cap() {
     let small = HeadlessServer::frame_server_message(&ServerMessage::ClientShellError {
-        message: "ok".into(),
+        kind: protocol::NoticeKind::PaneInputDropped {
+            pane_id: "ok".into(),
+            events: 1,
+        },
     })
     .expect("small message frames");
     assert!(matches!(
         read_server_message(small),
-        ServerMessage::ClientShellError { message } if message == "ok"
+        ServerMessage::ClientShellError { kind: protocol::NoticeKind::PaneInputDropped { pane_id, events: 1 } } if pane_id == "ok"
     ));
 
     let oversized = HeadlessServer::frame_server_message(&ServerMessage::ClientShellError {
-        message: "x".repeat(MAX_FRAME_SIZE + 1),
+        kind: protocol::NoticeKind::PaneInputDropped {
+            pane_id: "x".repeat(MAX_FRAME_SIZE + 1),
+            events: 1,
+        },
     });
     assert!(matches!(
         oversized,
@@ -217,9 +223,10 @@ fn headless_pane_list(server: &mut HeadlessServer) -> Vec<api::schema::PaneInfo>
         },
         respond_to,
     });
-    let response: api::schema::SuccessResponse =
-        serde_json::from_str(&response_rx.recv().expect("test precondition"))
-            .expect("test precondition");
+    let response: api::schema::SuccessResponse = serde_json::from_str(&api::error::test_json(
+        &response_rx.recv().expect("test precondition"),
+    ))
+    .expect("test precondition");
     let api::schema::ResponseResult::PaneList { panes } = response.result else {
         panic!("expected pane list");
     };
@@ -254,7 +261,12 @@ fn server_stop_interrupts_server_event_backlog() {
     shutdown_test_runtimes(&mut server);
 }
 
-fn shutdown_test_request(id: &str) -> (api::ApiRequestMessage, std::sync::mpsc::Receiver<String>) {
+fn shutdown_test_request(
+    id: &str,
+) -> (
+    api::ApiRequestMessage,
+    std::sync::mpsc::Receiver<api::error::ApiResult>,
+) {
     let (respond_to, response_rx) = std::sync::mpsc::channel();
     (
         api::ApiRequestMessage {
@@ -268,13 +280,19 @@ fn shutdown_test_request(id: &str) -> (api::ApiRequestMessage, std::sync::mpsc::
     )
 }
 
-fn assert_server_unavailable(response_rx: &std::sync::mpsc::Receiver<String>, id: &str) {
+fn assert_server_unavailable(
+    response_rx: &std::sync::mpsc::Receiver<api::error::ApiResult>,
+    id: &str,
+) {
     let response = response_rx
         .try_recv()
         .expect("shutdown must answer the request, not drop it");
-    let response: serde_json::Value = serde_json::from_str(&response).expect("json response");
-    assert_eq!(response["id"], id);
-    assert_eq!(response["error"]["code"], "server_unavailable");
+    let error = response.expect_err("shutdown must reject the request");
+    assert_eq!(
+        error.code,
+        api::error::ApiErrorCode::ServerUnavailable,
+        "{id}"
+    );
 }
 
 #[tokio::test]
@@ -343,7 +361,8 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
     let response = response_rx
         .recv_timeout(Duration::from_millis(100))
         .expect("test precondition");
-    let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
+    let response: serde_json::Value =
+        serde_json::from_str(&api::error::test_json(&response)).expect("test precondition");
 
     assert_eq!(response["result"]["type"], "workspace_list");
     assert!(server.app.event_rx.try_recv().is_err());
@@ -581,7 +600,9 @@ fn api_window_title_wins_until_it_is_cleared() {
     let (mut server, control_rx) = window_title_test_server();
     server.app.configure_window_title("{workspace}");
 
-    server.handle_client_window_title_api("set", Some("shepr api".into()));
+    server
+        .handle_client_window_title_api(Some("shepr api".into()))
+        .expect("test precondition");
     assert_eq!(
         next_window_title(&control_rx),
         Some(Some("shepr api".to_string()))
@@ -592,7 +613,9 @@ fn api_window_title_wins_until_it_is_cleared() {
     assert!(no_window_title(&control_rx));
 
     // Clearing hands the title back to ui.window_title, not to "shepr".
-    server.handle_client_window_title_api("clear", None);
+    server
+        .handle_client_window_title_api(None)
+        .expect("test precondition");
     assert_eq!(
         next_window_title(&control_rx),
         Some(Some("ops".to_string()))
@@ -606,13 +629,17 @@ fn clearing_the_api_title_falls_back_to_shepr_when_window_titles_are_disabled() 
     let (mut server, control_rx) = window_title_test_server();
     server.app.configure_window_title("");
 
-    server.handle_client_window_title_api("set", Some("shepr api".into()));
+    server
+        .handle_client_window_title_api(Some("shepr api".into()))
+        .expect("test precondition");
     assert_eq!(
         next_window_title(&control_rx),
         Some(Some("shepr api".to_string()))
     );
 
-    server.handle_client_window_title_api("clear", None);
+    server
+        .handle_client_window_title_api(None)
+        .expect("test precondition");
     assert_eq!(next_window_title(&control_rx), Some(None));
 
     shutdown_test_runtimes(&mut server);
@@ -2026,8 +2053,9 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
         );
         let response = response_rx.recv().expect("navigation response");
         assert!(
-            serde_json::from_str::<api::schema::SuccessResponse>(&response).is_ok(),
-            "{response}"
+            serde_json::from_str::<api::schema::SuccessResponse>(&api::error::test_json(&response))
+                .is_ok(),
+            "{response:?}"
         );
         server.app.sync_focus_events();
 
@@ -2567,9 +2595,10 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
         },
         respond_to,
     });
-    let response: crate::api::schema::SuccessResponse =
-        serde_json::from_str(&response_rx.recv().expect("agent focus response"))
-            .expect("test precondition");
+    let response: crate::api::schema::SuccessResponse = serde_json::from_str(
+        &api::error::test_json(&response_rx.recv().expect("agent focus response")),
+    )
+    .expect("test precondition");
     let crate::api::schema::ResponseResult::AgentInfo { agent } = response.result else {
         panic!("expected agent info");
     };
@@ -3027,12 +3056,12 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
         );
     }
     let message = loop {
-        if let ServerMessage::ClientShellError { message } = read_server_message(
+        if let ServerMessage::ClientShellError { kind } = read_server_message(
             control_rx
                 .recv_timeout(Duration::from_millis(100))
                 .expect("dropped-input error"),
         ) {
-            break message;
+            break kind.to_string();
         }
     };
     assert!(message.contains(&pane_id), "message: {message}");
@@ -3492,7 +3521,7 @@ fn terminal_attach_is_rejected_during_alt_screen_read() {
                 terminal_id,
                 "read".into(),
                 respond_to,
-                "fallback".into(),
+                Ok(api::schema::ResponseResult::Ok {}),
                 api::schema::PaneReadResult {
                     pane_id: "w1:p1".into(),
                     workspace_id: "w1".into(),
@@ -3634,7 +3663,7 @@ fn terminal_attach_is_told_about_rejected_pastes_and_dropped_input_once() {
             })
             .map(read_server_message)
             .filter_map(|message| match message {
-                ServerMessage::DirectTerminalNotice { message } => Some(message),
+                ServerMessage::DirectTerminalNotice { kind } => Some(kind.to_string()),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -3852,7 +3881,14 @@ async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
     server.render_and_stream();
     assert!(!reported(&server), "a frame that fits clears the report");
     assert!(render_rx.try_recv().is_ok(), "the smaller frame was sent");
-    assert!(render::oversized_frame_notice(3_000_000, MAX_FRAME_SIZE).contains("too large"));
+    assert!(
+        protocol::NoticeKind::OversizedFrame {
+            claimed: 3_000_000,
+            max: MAX_FRAME_SIZE
+        }
+        .to_string()
+        .contains("too large")
+    );
     shutdown_test_runtimes(&mut server);
 }
 

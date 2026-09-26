@@ -464,7 +464,9 @@ impl HeadlessServer {
                     ) => {
                         if let Ok(message) =
                             Self::frame_server_message(&ServerMessage::ServerShutdown {
-                                reason: Some("server is shutting down".to_owned()),
+                                reason: Some(crate::protocol::ShutdownReason::Message(
+                                    "server is shutting down".to_owned(),
+                                )),
                             })
                         {
                             let _ = writer.control.send(message);
@@ -734,13 +736,13 @@ impl HeadlessServer {
         if dropped == 0 {
             return;
         }
-        let events = if dropped == 1 { "event" } else { "events" };
         self.send_to_client(
             client_id,
             &ServerMessage::ClientShellError {
-                message: format!(
-                    "Input to pane {pane_id} dropped ({dropped} {events}): the pane is not reading its input"
-                ),
+                kind: crate::protocol::NoticeKind::PaneInputDropped {
+                    pane_id: pane_id.to_owned(),
+                    events: dropped,
+                },
             },
         );
     }
@@ -788,7 +790,9 @@ impl HeadlessServer {
             if let ServerEvent::ClientConnected { writer, .. }
             | ServerEvent::ClientShellConnected { writer, .. } = event
                 && let Ok(message) = Self::frame_server_message(&ServerMessage::ServerShutdown {
-                    reason: Some("server is shutting down".to_owned()),
+                    reason: Some(crate::protocol::ShutdownReason::Message(
+                        "server is shutting down".to_owned(),
+                    )),
                 })
             {
                 let _ = writer.control.send(message);
@@ -934,9 +938,14 @@ impl HeadlessServer {
         if std::mem::replace(&mut state.input_drop_reported, true) {
             return;
         }
-        let message =
-            format!("Input to terminal {terminal_id} dropped: the pane is not reading its input");
-        self.send_to_client(client_id, &ServerMessage::DirectTerminalNotice { message });
+        self.send_to_client(
+            client_id,
+            &ServerMessage::DirectTerminalNotice {
+                kind: crate::protocol::NoticeKind::InputDropped {
+                    terminal_id: terminal_id.clone(),
+                },
+            },
+        );
     }
 
     /// Pulls only titles reported dirty by the PTY parser. A focused pane title
@@ -1036,21 +1045,17 @@ impl HeadlessServer {
         sent
     }
 
-    fn handle_client_window_title_api(&mut self, id: &str, title: Option<String>) -> String {
+    fn handle_client_window_title_api(&mut self, title: Option<String>) -> api::error::ApiResult {
         use api::schema::{ClientWindowTitleReason, ResponseResult};
 
         let title = match title {
             Some(title) => match crate::config::sanitize_window_title_text(&title) {
                 Some(title) => Some(title),
                 None => {
-                    let response = api::schema::ErrorResponse {
-                        id: id.to_string(),
-                        error: api::schema::ErrorBody {
-                            code: "invalid_params".into(),
-                            message: "window title is empty".into(),
-                        },
-                    };
-                    return api::serialize_response_or_error(id, &response);
+                    return Err(api::error::ApiError::new(
+                        api::error::ApiErrorCode::InvalidParams,
+                        "window title is empty",
+                    ));
                 }
             },
             None => None,
@@ -1066,13 +1071,7 @@ impl HeadlessServer {
             (true, false) => ClientWindowTitleReason::Cleared,
             (false, _) => ClientWindowTitleReason::NoForegroundClient,
         };
-        api::serialize_response_or_error(
-            id,
-            &api::schema::SuccessResponse {
-                id: id.to_string(),
-                result: ResponseResult::ClientWindowTitle { changed, reason },
-            },
-        )
+        Ok(ResponseResult::ClientWindowTitle { changed, reason })
     }
 
     /// Encodes a server message into a length-prefixed frame.
@@ -1165,7 +1164,7 @@ impl HeadlessServer {
             self.send_to_client(
                 client_id,
                 &ServerMessage::ServerShutdown {
-                    reason: Some(reason.to_owned()),
+                    reason: Some(crate::protocol::ShutdownReason::Message(reason.to_owned())),
                 },
             );
             self.remove_client_and_resize_if_needed(client_id);
@@ -1180,7 +1179,7 @@ impl HeadlessServer {
             self.send_to_client(
                 client_id,
                 &ServerMessage::ServerShutdown {
-                    reason: Some("detached".to_owned()),
+                    reason: Some(crate::protocol::ShutdownReason::Detached),
                 },
             );
         }
@@ -1196,10 +1195,10 @@ impl HeadlessServer {
             self.send_to_client(
                 client_id,
                 &ServerMessage::ServerShutdown {
-                    reason: Some(
+                    reason: Some(crate::protocol::ShutdownReason::Message(
                         "terminal attach failed: connection is not pending terminal attach"
                             .to_owned(),
-                    ),
+                    )),
                 },
             );
             self.remove_client_and_resize_if_needed(client_id);
@@ -1210,9 +1209,9 @@ impl HeadlessServer {
             self.send_to_client(
                 client_id,
                 &ServerMessage::ServerShutdown {
-                    reason: Some(format!(
+                    reason: Some(crate::protocol::ShutdownReason::Message(format!(
                         "terminal attach failed: terminal {terminal_id} not found"
-                    )),
+                    ))),
                 },
             );
             self.remove_client_and_resize_if_needed(client_id);
@@ -1226,9 +1225,9 @@ impl HeadlessServer {
             self.send_to_client(
                 client_id,
                 &ServerMessage::ServerShutdown {
-                    reason: Some(format!(
+                    reason: Some(crate::protocol::ShutdownReason::Message(format!(
                         "terminal attach failed: terminal {terminal_id} has a read in progress; retry"
-                    )),
+                    ))),
                 },
             );
             self.remove_client_and_resize_if_needed(client_id);
@@ -1240,9 +1239,9 @@ impl HeadlessServer {
                 self.send_to_client(
                     client_id,
                     &ServerMessage::ServerShutdown {
-                        reason: Some(format!(
+                        reason: Some(crate::protocol::ShutdownReason::Message(format!(
                             "terminal attach failed: terminal {terminal_id} already has an attached client; retry with --takeover"
-                        )),
+                        ))),
                     },
                 );
                 self.remove_client_and_resize_if_needed(client_id);
@@ -1252,7 +1251,9 @@ impl HeadlessServer {
                 self.send_to_client(
                     owner,
                     &ServerMessage::ServerShutdown {
-                        reason: Some("terminal attach taken over".to_owned()),
+                        reason: Some(crate::protocol::ShutdownReason::Message(
+                            "terminal attach taken over".to_owned(),
+                        )),
                     },
                 );
                 self.remove_client_and_resize_if_needed(owner);
@@ -1457,7 +1458,7 @@ impl HeadlessServer {
                     self.send_to_client(
                         client_id,
                         &ServerMessage::ClientShellError {
-                            message: format!("Paste rejected: {detail}"),
+                            kind: crate::protocol::NoticeKind::PasteRejected { size, max },
                         },
                     );
                 } else {
@@ -1468,7 +1469,7 @@ impl HeadlessServer {
                     self.send_to_client(
                         client_id,
                         &ServerMessage::DirectTerminalNotice {
-                            message: format!("Paste rejected: {detail}"),
+                            kind: crate::protocol::NoticeKind::PasteRejected { size, max },
                         },
                     );
                 }
@@ -1866,13 +1867,12 @@ impl HeadlessServer {
 
         match &msg.request.method {
             api::schema::Method::ClientWindowTitleSet(params) => {
-                let response = self
-                    .handle_client_window_title_api(&msg.request.id, Some(params.title.clone()));
+                let response = self.handle_client_window_title_api(Some(params.title.clone()));
                 api::send_api_response(&msg.respond_to, &request_id, method, response);
                 return true;
             }
             api::schema::Method::ClientWindowTitleClear(_) => {
-                let response = self.handle_client_window_title_api(&msg.request.id, None);
+                let response = self.handle_client_window_title_api(None);
                 api::send_api_response(&msg.respond_to, &request_id, method, response);
                 return true;
             }
@@ -1891,13 +1891,7 @@ impl HeadlessServer {
             .api_dispatcher
             .agent_read_not_idle_error(self, &msg.request)
         {
-            let response = api::serialize_response_or_error(
-                &request_id,
-                &api::schema::ErrorResponse {
-                    id: request_id.clone(),
-                    error,
-                },
-            );
+            let response = Err(api::error::ApiError::from_body(error));
             api::send_api_response(&msg.respond_to, &request_id, method, response);
             return changed;
         }
@@ -1924,25 +1918,20 @@ impl HeadlessServer {
         changed |= outcome.render != api::RenderDemand::None;
         let mut response = outcome.response;
         if let Some(snapshot) = frozen_alt_screen_read
-            && let Ok(mut success) = serde_json::from_str::<api::schema::SuccessResponse>(&response)
-            && let api::schema::ResponseResult::PaneRead { read } = &mut success.result
+            && let Ok(api::schema::ResponseResult::PaneRead { read }) = &mut response
         {
             read.text = snapshot.text;
             read.truncated = snapshot.truncated;
-            if let Ok(serialized) = serde_json::to_string(&success) {
-                response = serialized;
-            }
         }
         if let Some(spec) = alt_screen_read_spec
-            && let Ok(success) = serde_json::from_str::<api::schema::SuccessResponse>(&response)
-            && let api::schema::ResponseResult::PaneRead { read } = success.result
+            && let Ok(api::schema::ResponseResult::PaneRead { read }) = &response
         {
             let pending = crate::server::alt_screen_read::PendingAltScreenRead::start(
                 spec.terminal_id,
-                success.id,
+                request_id.clone(),
                 msg.respond_to,
-                response,
-                read,
+                response.clone(),
+                read.clone(),
                 spec.lines,
                 spec.unwrap,
                 spec.initial,

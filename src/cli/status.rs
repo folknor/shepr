@@ -43,7 +43,7 @@ pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
 pub(super) fn run_status_command(
     command: Command,
     paths: &super::target::CliContext,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     match command {
         Command::Overview { json } => print_full_status(paths, json),
         Command::Server { json } => print_server_status(paths, json),
@@ -65,7 +65,7 @@ enum ServerRuntimeStatus {
     NotRunning,
 }
 
-fn print_full_status(paths: &super::target::CliContext, json: bool) -> std::io::Result<i32> {
+fn print_full_status(paths: &super::target::CliContext, json: bool) -> super::CliResult<i32> {
     let server = read_server_runtime_status(paths)?;
 
     if json {
@@ -94,7 +94,7 @@ fn print_full_status(paths: &super::target::CliContext, json: bool) -> std::io::
     Ok(0)
 }
 
-fn print_server_status(paths: &super::target::CliContext, json: bool) -> std::io::Result<i32> {
+fn print_server_status(paths: &super::target::CliContext, json: bool) -> super::CliResult<i32> {
     let server = read_server_runtime_status(paths)?;
     if json {
         print_json(&server_status_json(paths, &server))?;
@@ -104,7 +104,7 @@ fn print_server_status(paths: &super::target::CliContext, json: bool) -> std::io
     Ok(0)
 }
 
-fn print_client_status(json: bool, paths: &crate::config::AppPaths) -> std::io::Result<()> {
+fn print_client_status(json: bool, paths: &crate::config::AppPaths) -> super::CliResult<()> {
     if json {
         print_json(&client_status_json(paths))?;
         return Ok(());
@@ -143,7 +143,7 @@ fn print_server_status_body(
 
 fn read_server_runtime_status(
     paths: &super::target::CliContext,
-) -> std::io::Result<ServerRuntimeStatus> {
+) -> super::CliResult<ServerRuntimeStatus> {
     let client = super::target::api_client(paths)?;
     match super::target::server_status(paths, &client) {
         Ok(status) => Ok(ServerRuntimeStatus::Running {
@@ -151,18 +151,17 @@ fn read_server_runtime_status(
             protocol: status.protocol,
             capabilities: status.capabilities,
         }),
-        Err(err) if paths.is_remote() => Err(super::target::remote_error(
-            paths,
-            super::api_client_error_to_io(err),
-        )),
+        Err(err) if paths.is_remote() => {
+            Err(super::target::remote_error(paths, super::api_client_error_to_io(err)).into())
+        }
         Err(ApiClientError::Io(error)) => {
             match super::server_not_running_error(&client.socket_path()) {
                 Ok(true) => Ok(ServerRuntimeStatus::NotRunning),
-                Ok(false) => Err(error),
+                Ok(false) => Err(error.into()),
                 Err(probe_error) => Err(probe_error),
             }
         }
-        Err(err) => Err(super::api_client_error_to_io(err)),
+        Err(err) => Err(super::api_client_error_to_io(err).into()),
     }
 }
 
@@ -314,8 +313,11 @@ fn server_binary_stale_bool(server: &ServerRuntimeStatus) -> Option<bool> {
     }
 }
 
-fn print_json(value: &impl Serialize) -> std::io::Result<()> {
-    println!("{}", serde_json::to_string(value)?);
+fn print_json(value: &impl Serialize) -> super::CliResult<()> {
+    println!(
+        "{}",
+        serde_json::to_string(value).map_err(std::io::Error::other)?
+    );
     Ok(())
 }
 

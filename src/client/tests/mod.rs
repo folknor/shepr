@@ -93,7 +93,25 @@ fn remote_client_uses_extended_handshake_timeout() {
     let env = IsolatedEnv::new();
     env.set(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR, "local");
 
-    assert_eq!(handshake_read_timeout(), REMOTE_HANDSHAKE_READ_TIMEOUT);
+    assert_eq!(
+        ClientProcessRole::from_env()
+            .expect("role")
+            .handshake_read_timeout(),
+        REMOTE_HANDSHAKE_READ_TIMEOUT
+    );
+}
+
+#[test]
+fn client_process_role_keeps_launch_mode_after_environment_changes() {
+    let env = IsolatedEnv::new();
+    env.set(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR, "server");
+    let role = ClientProcessRole::from_env().expect("valid launch role");
+    env.remove(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR);
+    assert_eq!(role.handshake_read_timeout(), REMOTE_HANDSHAKE_READ_TIMEOUT);
+    assert_eq!(
+        role.keybinding_source(),
+        shell::ClientShellKeybindingSource::Endpoint
+    );
 }
 
 #[test]
@@ -101,22 +119,22 @@ fn keybinding_source_refuses_unknown_values() {
     let env = IsolatedEnv::new();
     env.remove(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR);
     assert_eq!(
-        client_shell_keybinding_source(),
+        ClientProcessRole::from_env().map(ClientProcessRole::keybinding_source),
         Ok(shell::ClientShellKeybindingSource::RemoteLocal)
     );
     env.set(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR, "local");
     assert_eq!(
-        client_shell_keybinding_source(),
+        ClientProcessRole::from_env().map(ClientProcessRole::keybinding_source),
         Ok(shell::ClientShellKeybindingSource::RemoteLocal)
     );
     env.set(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR, "server");
     assert_eq!(
-        client_shell_keybinding_source(),
+        ClientProcessRole::from_env().map(ClientProcessRole::keybinding_source),
         Ok(shell::ClientShellKeybindingSource::Endpoint)
     );
     for unknown in ["Server", "", "remote"] {
         env.set(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR, unknown);
-        assert!(client_shell_keybinding_source().is_err(), "{unknown:?}");
+        assert!(ClientProcessRole::from_env().is_err(), "{unknown:?}");
     }
 }
 
@@ -195,21 +213,11 @@ fn color_scheme_change_event_requests_host_theme_query() {
 }
 
 #[test]
-fn host_terminal_theme_query_is_enabled() {
-    assert!(should_query_host_terminal_theme());
-}
-
-#[test]
 fn write_host_cell_size_query_emits_xtwinops_request() {
     let mut output = Vec::new();
     write_host_cell_size_query(&mut output).expect("test precondition");
 
     assert_eq!(output, b"\x1b[16t");
-}
-
-#[test]
-fn host_cell_size_query_is_enabled() {
-    assert!(should_query_host_cell_size());
 }
 
 #[test]
@@ -310,7 +318,7 @@ fn client_error_display_host_terminal_does_not_claim_server_connection_failed() 
 #[test]
 fn client_error_display_handshake_rejected() {
     let err = ClientError::HandshakeRejected {
-        error: "incompatible".into(),
+        error: crate::protocol::HandshakeRefusal::InvalidSurface("incompatible".into()),
     };
     let msg = err.to_string();
     assert!(
@@ -323,7 +331,9 @@ fn client_error_display_handshake_rejected() {
 #[test]
 fn client_error_display_server_shutdown() {
     let err = ClientError::ServerShutdown {
-        reason: Some("maintenance".into()),
+        reason: Some(crate::protocol::ShutdownReason::Message(
+            "maintenance".into(),
+        )),
     };
     let msg = err.to_string();
     assert!(
@@ -348,10 +358,14 @@ fn client_error_display_detached_default_session_reattach_hint() {
     let env = IsolatedEnv::new();
     env.remove(crate::remote::REATTACH_COMMAND_ENV_VAR);
     let err = ClientError::ServerShutdown {
-        reason: Some("detached".into()),
+        reason: Some(crate::protocol::ShutdownReason::Detached),
     };
     let paths = crate::config::AppPaths::default();
-    let msg = err.display_with_target(paths.session_id(), paths.server_address());
+    let context = ClientErrorContext::new(
+        paths.server_address().attach_command(paths.session_id()),
+        std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR).ok(),
+    );
+    let msg = err.display_with_context(&context);
     assert!(
         msg.contains("Run `shepr` to reattach"),
         "should suggest default reattach command: {msg}"
@@ -363,11 +377,15 @@ fn client_error_display_detached_named_session_reattach_hint() {
     let env = IsolatedEnv::new();
     env.remove(crate::remote::REATTACH_COMMAND_ENV_VAR);
     let err = ClientError::ServerShutdown {
-        reason: Some("detached".into()),
+        reason: Some(crate::protocol::ShutdownReason::Detached),
     };
     let session = crate::session::SessionId::parse("work").expect("test precondition");
     let paths = crate::config::AppPaths::default();
-    let msg = err.display_with_target(&session, paths.server_address());
+    let context = ClientErrorContext::new(
+        paths.server_address().attach_command(&session),
+        std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR).ok(),
+    );
+    let msg = err.display_with_context(&context);
     assert!(
         msg.contains("Run `shepr session attach work` to reattach"),
         "should suggest named session reattach command: {msg}"
@@ -383,9 +401,14 @@ fn client_error_display_detached_remote_reattach_hint_takes_precedence() {
     );
     env.set(crate::session::SESSION_ENV_VAR, "work");
     let err = ClientError::ServerShutdown {
-        reason: Some("detached".into()),
+        reason: Some(crate::protocol::ShutdownReason::Detached),
     };
-    let msg = err.to_string();
+    let paths = crate::config::AppPaths::default();
+    let context = ClientErrorContext::new(
+        paths.server_address().attach_command(paths.session_id()),
+        std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR).ok(),
+    );
+    let msg = err.display_with_context(&context);
     assert!(
         msg.contains("Run `shepr --remote host --session work` to reattach"),
         "should prefer remote reattach command: {msg}"
@@ -412,7 +435,12 @@ fn client_error_display_remote_connection_lost_has_reattach_hint() {
         "shepr --remote host --session work",
     );
     let err = ClientError::ConnectionLost(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"));
-    let msg = err.to_string();
+    let paths = crate::config::AppPaths::default();
+    let context = ClientErrorContext::new(
+        paths.server_address().attach_command(paths.session_id()),
+        std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR).ok(),
+    );
+    let msg = err.display_with_context(&context);
     assert!(
         msg.contains("lost connection to remote Shepr"),
         "should mention remote connection loss: {msg}"
@@ -425,6 +453,28 @@ fn client_error_display_remote_connection_lost_has_reattach_hint() {
         msg.contains("Run `shepr --remote host --session work` to reattach"),
         "should show remote reattach command: {msg}"
     );
+}
+
+#[test]
+fn client_error_context_keeps_launch_reattach_command() {
+    let env = IsolatedEnv::new();
+    env.set(
+        crate::remote::REATTACH_COMMAND_ENV_VAR,
+        "shepr --remote first",
+    );
+    let paths = crate::config::AppPaths::default();
+    let context = ClientErrorContext::new(
+        paths.server_address().attach_command(paths.session_id()),
+        std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR).ok(),
+    );
+    env.set(
+        crate::remote::REATTACH_COMMAND_ENV_VAR,
+        "shepr --remote second",
+    );
+    let error = ClientError::ConnectionLost(io::Error::new(io::ErrorKind::BrokenPipe, "closed"));
+    let message = error.display_with_context(&context);
+    assert!(message.contains("shepr --remote first"));
+    assert!(!message.contains("shepr --remote second"));
 }
 
 #[test]

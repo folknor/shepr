@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn server_welcome_with_error_roundtrip() -> TestResult {
         let msg = ServerMessage::Welcome {
-            error: Some("invalid handshake".to_owned()),
+            error: Some(crate::protocol::HandshakeRefusal::ExpectedHello),
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
@@ -470,9 +470,15 @@ mod tests {
     #[test]
     fn server_shutdown_roundtrip() -> TestResult {
         let msg = ServerMessage::ServerShutdown {
-            reason: Some("updating".to_owned()),
+            reason: Some(crate::protocol::ShutdownReason::Message(
+                "updating".to_owned(),
+            )),
         };
         assert_eq!(roundtrip(&msg)?, msg);
+        let detached = ServerMessage::ServerShutdown {
+            reason: Some(crate::protocol::ShutdownReason::Detached),
+        };
+        assert_eq!(roundtrip(&detached)?, detached);
         Ok(())
     }
 
@@ -568,7 +574,7 @@ mod tests {
     #[test]
     fn direct_terminal_notice_roundtrip() -> TestResult {
         let msg = ServerMessage::DirectTerminalNotice {
-            message: "Paste rejected: too large".to_owned(),
+            kind: crate::protocol::NoticeKind::PasteRejected { size: 20, max: 10 },
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())

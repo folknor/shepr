@@ -269,10 +269,7 @@ pub(super) fn render_expanded(
 
     enum Row {
         Endpoint(usize),
-        Workspace {
-            endpoint: usize,
-            entry: WorkspaceEntry,
-        },
+        Workspace { endpoint: usize, entry: usize },
     }
     let mut rows = Vec::new();
     for (endpoint_index, endpoint) in state.endpoints.iter().enumerate() {
@@ -312,10 +309,10 @@ pub(super) fn render_expanded(
                     .snapshot
                     .as_deref()
                     .and_then(|snapshot| {
-                        let workspace = snapshot.workspaces.get(entry.index)?;
+                        let workspace = snapshot.workspaces.get(*entry)?;
                         let len = super::sidebar::workspace_rows(
                             workspace,
-                            super::sidebar::displayed_workspace_status(workspace),
+                            workspace.agent_status,
                             &config.spaces,
                         )
                         .len()
@@ -349,7 +346,7 @@ pub(super) fn render_expanded(
                 endpoint
                     .snapshot
                     .as_deref()
-                    .and_then(|snapshot| snapshot.workspaces.get(entry.index))
+                    .and_then(|snapshot| snapshot.workspaces.get(*entry))
                     .is_some_and(|workspace| {
                         if reveal_navigation {
                             state.selected_workspace_id.is_some_and(|target| {
@@ -429,10 +426,10 @@ pub(super) fn render_expanded(
                 let Some(snapshot) = endpoint.snapshot.as_deref() else {
                     continue;
                 };
-                let Some(workspace) = snapshot.workspaces.get(entry.index) else {
+                let Some(workspace) = snapshot.workspaces.get(*entry) else {
                     continue;
                 };
-                let status = super::sidebar::displayed_workspace_status(workspace);
+                let status = workspace.agent_status;
                 let tokens = super::sidebar::workspace_rows(workspace, status, &config.spaces);
                 let height = u16::try_from(tokens.len().max(1))
                     .unwrap_or(u16::MAX)

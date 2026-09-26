@@ -67,6 +67,24 @@ const DATETIME_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_COMMAND_LINE_BYTES: usize = 4096;
 const MAX_STATUS_TEXT_CHARS: usize = 80;
 
+#[derive(Default)]
+pub(super) struct TabBarStatus {
+    datetimes: Vec<TabBarDatetimeRuntime>,
+    commands: Vec<TabBarCommandRuntime>,
+    next_datetime_refresh: Option<std::time::Instant>,
+}
+
+impl TabBarStatus {
+    fn deadline(&self) -> Option<std::time::Instant> {
+        self.commands
+            .iter()
+            .filter(|runtime| runtime.task.is_none())
+            .map(|runtime| runtime.next_run_at)
+            .chain(self.next_datetime_refresh)
+            .min()
+    }
+}
+
 pub(super) struct TabBarDatetimeRuntime {
     segment_index: usize,
     format: time::format_description::OwnedFormatItem,
@@ -104,8 +122,8 @@ impl App {
         entries: &[TabBarRightEntryConfig],
         separator: &str,
     ) {
-        self.tab_bar_datetimes.clear();
-        self.tab_bar_commands.clear();
+        self.tab_bar_status.datetimes.clear();
+        self.tab_bar_status.commands.clear();
         self.state.tab_bar_right.clear();
         self.state.tab_bar_right_separator = sanitize_separator(separator);
 
@@ -134,7 +152,7 @@ impl App {
                     self.state
                         .tab_bar_right
                         .push(TabBarStatusSegment::Text(value));
-                    self.tab_bar_datetimes.push(TabBarDatetimeRuntime {
+                    self.tab_bar_status.datetimes.push(TabBarDatetimeRuntime {
                         segment_index,
                         format,
                     });
@@ -161,7 +179,7 @@ impl App {
                     self.state
                         .tab_bar_right
                         .push(TabBarStatusSegment::Text(None));
-                    self.tab_bar_commands.push(TabBarCommandRuntime {
+                    self.tab_bar_status.commands.push(TabBarCommandRuntime {
                         segment_index,
                         command: command.clone(),
                         interval: Duration::from_secs(*interval_seconds),
@@ -173,18 +191,19 @@ impl App {
             }
         }
 
-        self.next_tab_bar_datetime_refresh =
-            (!self.tab_bar_datetimes.is_empty()).then_some(now + DATETIME_REFRESH_INTERVAL);
+        self.tab_bar_status.next_datetime_refresh =
+            (!self.tab_bar_status.datetimes.is_empty()).then_some(now + DATETIME_REFRESH_INTERVAL);
     }
 
     pub(crate) fn handle_tab_bar_status_tasks(&mut self, now: std::time::Instant) -> bool {
         let mut changed = false;
 
         if self
-            .next_tab_bar_datetime_refresh
+            .tab_bar_status
+            .next_datetime_refresh
             .is_some_and(|deadline| now >= deadline)
         {
-            for runtime in &self.tab_bar_datetimes {
+            for runtime in &self.tab_bar_status.datetimes {
                 let value = format_local_datetime(&runtime.format);
                 if let Some(TabBarStatusSegment::Text(current)) =
                     self.state.tab_bar_right.get_mut(runtime.segment_index)
@@ -193,11 +212,12 @@ impl App {
                     *current = value;
                 }
             }
-            self.next_tab_bar_datetime_refresh = Some(now + DATETIME_REFRESH_INTERVAL);
+            self.tab_bar_status.next_datetime_refresh = Some(now + DATETIME_REFRESH_INTERVAL);
         }
 
         let command_due = self
-            .tab_bar_commands
+            .tab_bar_status
+            .commands
             .iter()
             .any(|runtime| runtime.task.is_none() && now >= runtime.next_run_at);
         if !command_due {
@@ -205,7 +225,7 @@ impl App {
         }
 
         let (environment, cwd) = self.status_command_env();
-        for runtime in &mut self.tab_bar_commands {
+        for runtime in &mut self.tab_bar_status.commands {
             if runtime.task.is_some() || now < runtime.next_run_at {
                 continue;
             }
@@ -224,12 +244,7 @@ impl App {
     }
 
     pub(crate) fn next_tab_bar_status_deadline(&self) -> Option<std::time::Instant> {
-        self.tab_bar_commands
-            .iter()
-            .filter(|runtime| runtime.task.is_none())
-            .map(|runtime| runtime.next_run_at)
-            .chain(self.next_tab_bar_datetime_refresh)
-            .min()
+        self.tab_bar_status.deadline()
     }
 
     pub(super) fn handle_tab_bar_command_finished(
@@ -238,7 +253,8 @@ impl App {
         result: Result<Option<String>, String>,
     ) -> bool {
         let Some(runtime) = self
-            .tab_bar_commands
+            .tab_bar_status
+            .commands
             .iter_mut()
             .find(|runtime| runtime.segment_index == segment_index)
         else {
@@ -728,7 +744,7 @@ mod tests {
         assert!(app.next_tab_bar_status_deadline().is_some());
         app.handle_tab_bar_status_tasks(now);
 
-        assert!(app.tab_bar_commands[0].task.is_some());
+        assert!(app.tab_bar_status.commands[0].task.is_some());
         assert_eq!(app.next_tab_bar_status_deadline(), None);
     }
 
@@ -743,7 +759,8 @@ mod tests {
         );
         app.state.tab_bar_right[0] = TabBarStatusSegment::Text(None);
         let deadline = app
-            .next_tab_bar_datetime_refresh
+            .tab_bar_status
+            .next_datetime_refresh
             .expect("datetime refresh deadline");
 
         assert!(app.handle_tab_bar_status_tasks(deadline));

@@ -76,7 +76,7 @@ pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
 pub(super) fn run_tab_command(
     command: Command,
     paths: &super::target::CliContext,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     match command {
         Command::List { workspace } => super::runtime::tab_list(
             paths,

@@ -10,15 +10,6 @@ fn shell_session_snapshot(app: &app::App) -> crate::api::schema::SessionSnapshot
     snapshot
 }
 
-/// Error shown to a shell or direct terminal-attach client whose screen
-/// cannot be sent in one frame.
-pub(super) fn oversized_frame_notice(claimed: usize, max: usize) -> String {
-    format!(
-        "The screen is too large to send ({claimed} bytes; the limit is {max}). \
-         Make the window smaller; the display resumes once a frame fits."
-    )
-}
-
 impl HeadlessServer {
     fn shell_focused_runtime(
         &self,
@@ -608,9 +599,9 @@ impl HeadlessServer {
                         self.send_to_client(
                             client_id,
                             &ServerMessage::ServerShutdown {
-                                reason: Some(format!(
+                                reason: Some(crate::protocol::ShutdownReason::Message(format!(
                                     "terminal attach ended: terminal {terminal_id} not found"
-                                )),
+                                ))),
                             },
                         );
                         broken_clients.push(client_id);
@@ -715,11 +706,14 @@ impl HeadlessServer {
             if broken_clients.contains(&client_id) {
                 continue;
             }
-            let message = oversized_frame_notice(claimed, max);
             let notice = if shell {
-                ServerMessage::ClientShellError { message }
+                ServerMessage::ClientShellError {
+                    kind: crate::protocol::NoticeKind::OversizedFrame { claimed, max },
+                }
             } else {
-                ServerMessage::DirectTerminalNotice { message }
+                ServerMessage::DirectTerminalNotice {
+                    kind: crate::protocol::NoticeKind::OversizedFrame { claimed, max },
+                }
             };
             self.send_to_client(client_id, &notice);
         }

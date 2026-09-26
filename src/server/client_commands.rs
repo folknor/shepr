@@ -3,7 +3,7 @@ use std::sync::mpsc;
 
 use tokio::sync::mpsc as tokio_mpsc;
 
-use crate::api::schema::{ErrorBody, ErrorResponse, Method};
+use crate::api::schema::Method;
 
 use super::client_transport::ServerEvent;
 
@@ -50,15 +50,15 @@ pub(crate) fn supports_client_shell_method(method: &Method) -> bool {
     supports_client_shell_method_name(method.traits().name)
 }
 
-pub(crate) fn error_response(id: &str, code: &str, message: impl Into<String>) -> String {
-    let response = ErrorResponse {
-        id: id.to_string(),
-        error: ErrorBody {
-            code: code.into(),
-            message: message.into(),
-        },
-    };
-    crate::api::serialize_response_or_error(id, &response)
+pub(crate) fn error_response(
+    id: &str,
+    code: impl Into<crate::api::error::ApiErrorCode>,
+    message: impl Into<String>,
+) -> String {
+    crate::api::error::encode_result(
+        id.to_owned(),
+        Err(crate::api::error::ApiError::new(code.into(), message)),
+    )
 }
 
 pub(crate) fn success_message_with_result(
@@ -82,7 +82,7 @@ pub(crate) fn success_message_with_result(
 pub(crate) fn error_message(
     boot_id: String,
     request_id: String,
-    code: &str,
+    code: impl Into<crate::api::error::ApiErrorCode>,
     message: impl Into<String>,
 ) -> crate::protocol::ServerMessage {
     let response = error_response(&request_id, code, message);
@@ -94,38 +94,24 @@ pub(crate) fn error_message(
     }
 }
 
-fn correlate_response_id(response: String, request_id: &str) -> String {
-    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&response) else {
-        return response;
-    };
-    let Some(id) = value.get_mut("id") else {
-        return response;
-    };
-    if id.as_str() == Some(request_id) {
-        return response;
-    }
-    *id = serde_json::Value::String(request_id.to_owned());
-    serde_json::to_string(&value).unwrap_or(response)
-}
-
 pub(crate) fn spawn_response_waiter(
     client_id: u64,
     boot_id: String,
     request_id: String,
-    response_rx: mpsc::Receiver<String>,
+    response_rx: mpsc::Receiver<crate::api::error::ApiResult>,
     server_event_tx: tokio_mpsc::Sender<ServerEvent>,
 ) -> io::Result<()> {
     std::thread::Builder::new()
         .name("shepr-client-endpoint-response".into())
         .spawn(move || {
             let response = response_rx.recv().unwrap_or_else(|_| {
-                error_response(
-                    &request_id,
-                    "server_unavailable",
+                Err(crate::api::error::ApiError::new(
+                    crate::api::error::ApiErrorCode::ServerUnavailable,
                     "endpoint command ended without a response",
-                )
+                ))
             });
-            let response = correlate_response_id(response, &request_id).into_bytes();
+            let response =
+                crate::api::error::encode_result(request_id.clone(), response).into_bytes();
             if response.is_empty() {
                 let _ = server_event_tx.blocking_send(
                     ServerEvent::ClientShellEndpointResponseChunkReady {
@@ -209,13 +195,10 @@ mod tests {
 
     #[test]
     fn endpoint_response_uses_the_client_request_id() {
-        let response = serde_json::json!({
-            "id": "endpoint:boot-a:7:client-shell:1",
-            "result": { "type": "ok" }
-        })
-        .to_string();
-
-        let correlated = correlate_response_id(response, "client-shell:1");
+        let correlated = crate::api::error::encode_result(
+            "client-shell:1".into(),
+            Ok(crate::api::schema::ResponseResult::Ok {}),
+        );
         let decoded: serde_json::Value = serde_json::from_str(&correlated).expect("response json");
 
         assert_eq!(decoded["id"], "client-shell:1");
@@ -235,7 +218,10 @@ mod tests {
         .expect("test precondition");
         let response = "x".repeat(ENDPOINT_RESPONSE_CHUNK_BYTES + 17);
         response_tx
-            .send(response.clone())
+            .send(Err(crate::api::error::ApiError::new(
+                crate::api::error::ApiErrorCode::InternalError,
+                response.clone(),
+            )))
             .expect("test precondition");
 
         let mut received = Vec::new();
@@ -259,6 +245,8 @@ mod tests {
             }
         }
 
-        assert_eq!(received, response.as_bytes());
+        let decoded: crate::api::schema::ErrorResponse =
+            serde_json::from_slice(&received).expect("response json");
+        assert_eq!(decoded.error.message, response);
     }
 }

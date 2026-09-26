@@ -108,37 +108,6 @@ assert typed results instead of parsing JSON back. See BUG-010.
 
 Reported by: app-state, server.
 
-## STR-011 - Protocol and client failures are prose
-
-`check_client_version -> Result<(), String>`; `Welcome.error: Option<String>`;
-`ClientShellError { message }`; `ServerShutdown.reason: Option<String>` with the
-magic `"detached"` matched at `client/mod.rs:302-307` (exit code) and
-`errors.rs:38` (message); `DirectTerminalNotice { message }` covering three
-causes; `EndpointHandshakeError.code: String`; `surface_reuse::Decoder::decode ->
-Result<_, String>` and every surface_delta function; `ClientError::Protocol(
-FramingError::Io(io::Error::new(InvalidData, "expected endpoint welcome")))`
-built in five places, making malformed welcome, missing preamble, surface decode
-failure and endpoint-control failure indistinguishable; `ClientShellEndpointError.code:
-Option<String>` with `"endpoint_timeout"` / `"endpoint_response_too_large"`.
-`PreambleError` is named as the model. Proposed: `HandshakeRefusal`,
-`NoticeKind`, `SurfaceDecodeError`, `ShutdownReason` enums. See BUG-018.
-
-Reported by: protocol, client, remote.
-
-## STR-012 - CLI and session errors
-
-CLI failures to machine callers are ad hoc JSON with string codes
-(`print_session_error("session_stop_failed", ...)`); `server_not_running` /
-`protocol_mismatch` markers carried inside `io::Error` and recovered in
-`main::finish_cli` via `was_reported` downcasts. `session.rs` returns
-`Result<_, String>` for every failure ("not running", "timed out with sockets
-still reachable", name mismatch on a case-insensitive FS, "is running, stop
-first"). `SessionInfo` stores `socket_path`/`session_dir` as pre-formatted
-`String`s and is serialised straight to CLI JSON. Proposed: `CliError` with one
-exit-code mapping and printer, `SessionError`, `PathBuf` in the domain type.
-
-Reported by: config-cli.
-
 ## STR-017 - App-state flags and snapshots
 
 `cjk_ime_agent_filter_configured: bool` plus `cjk_ime_agents: Vec<Agent>`
@@ -186,23 +155,6 @@ still holds the colour model, palette, cell/style types, `Terminal`, the
 
 Reported by: terminal-core.
 
-## STR-033 - Palette and theme catalogue live in app/state.rs
-
-~600 lines of colour tables plus `palette_from_config` and `ui_accent_override`
-(`app/mod.rs`) belong in `ui/theme` or `config`. `client/shell.rs` imports
-`crate::app::state::Palette`, so the client depends on the server's app state
-module.
-
-Reported by: app-state, client.
-
-## STR-034 - layout.rs depends on ratatui render types
-
-`PaneInfo.borders: Borders` and `scrollbar_rect` are UI chrome in the BSP tree
-module. Proposed: pure tree (rects, ratios), chrome added in
-`workspace/geometry.rs` or `ui`.
-
-Reported by: app-state.
-
 ## STR-035 - App carries ~35 flat scheduler fields
 
 Git refresh flags, deadlines, the session save thread, tab bar runtimes.
@@ -210,18 +162,6 @@ Proposed `GitRefreshScheduler`, `SessionSaver`, `TabBarStatus`, each owning its
 deadline logic.
 
 Reported by: app-state.
-
-## STR-039 - Config: validate once, move DEFAULT_CONFIG, move profile TOML
-
-`ValidatedConfig` built once at load with typed diagnostics (CON-031, CON-045).
-`DEFAULT_CONFIG` (290-line literal in `main.rs`) to `config/default.toml` via
-`include_str!`; help generated from clap; `main` becomes parse → resolve target
-→ dispatch. `config.rs` mixes validation, TOML profile publishing
-(`local_keybindings_profile_toml`, `keybindings_from_profile_toml`, a remote
-keybinding wire concern) and diagnostic filtering; the profile code belongs with
-the remote keybindings feature or `keybinds.rs`.
-
-Reported by: config-cli.
 
 ## STR-045 - Client input plumbing
 
@@ -236,27 +176,6 @@ reader thread while `client/mod.rs:882` spawns the same `server_reader_thread`
 unnamed with duplicated arguments.
 
 Reported by: client.
-
-## STR-046 - Client error messages read env at format time
-
-`client/errors.rs` depends on `crate::server::socket_paths` and
-`crate::session`; `Display` reads env vars and the socket path when formatting,
-making messages nondeterministic in tests. Proposed: build the message at
-construction time.
-
-Reported by: client.
-
-## STR-054 - Vestiges of removed platforms and features
-
-`should_query_host_terminal_theme()` / `should_query_host_cell_size()` return a
-constant `true` and are consulted at `terminal_setup.rs:55,69`,
-`client/mod.rs:416`; `displayed_workspace_status` (`sidebar.rs:477`) is an
-identity function; `workspace_entries` builds `WorkspaceEntry { index }` for
-0..n; `CursorState` carries `#[serde(default)]`, meaningless in a positional
-codec; `set_mouse_capture`'s else-arm (`terminal_setup.rs:343-346`) is a no-op
-`match`.
-
-Reported by: client, ui, protocol.
 
 ## STR-055 - Test layouts that mirror accidents
 

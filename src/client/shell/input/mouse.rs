@@ -577,13 +577,13 @@ impl ClientShellState {
         let last_position = entries.iter().position(|entry| {
             snapshot
                 .workspaces
-                .get(entry.index)
+                .get(*entry)
                 .is_some_and(|workspace| workspace.workspace_id == last_hit.workspace_id)
         })?;
         let before = entries.get(last_position + 1).and_then(|entry| {
             snapshot
                 .workspaces
-                .get(entry.index)
+                .get(*entry)
                 .map(|workspace| workspace.workspace_id.clone())
         });
         let row = last_hit.rect.bottom();

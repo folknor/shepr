@@ -60,7 +60,7 @@ struct MachineListRow<'a> {
 pub(super) fn run_machine_command(
     command: Command,
     context: &super::target::CliContext,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     let paths: &crate::config::AppPaths = context;
     match command {
         Command::List { json } => list(paths, json),
@@ -74,7 +74,7 @@ pub(super) fn run_machine_command(
     }
 }
 
-fn list(paths: &crate::config::AppPaths, json: bool) -> std::io::Result<i32> {
+fn list(paths: &crate::config::AppPaths, json: bool) -> super::CliResult<i32> {
     let catalog = load_catalog(paths)?;
     let selected_profile = catalog.load_selection();
     let rows = catalog
@@ -118,7 +118,7 @@ fn status(
     json: bool,
     paths: &crate::config::AppPaths,
     settings: crate::remote::SavedSshSettings,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     let catalog = load_catalog(paths)?;
     let profiles = match selector {
         Some(selector) => match super::target::resolve_machine(&catalog.ssh, selector) {
@@ -181,7 +181,7 @@ fn reconnect(
     paths: &crate::config::AppPaths,
     selector: &str,
     settings: crate::remote::SavedSshSettings,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     use std::io::IsTerminal;
     let catalog = load_catalog(paths)?;
     let profile = match super::target::resolve_machine(&catalog.ssh, selector) {
@@ -232,7 +232,7 @@ fn add(
     paths: &crate::config::AppPaths,
     args: AddArgs,
     settings: crate::remote::SavedSshSettings,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     let AddArgs {
         target,
         label,
@@ -290,14 +290,14 @@ fn add(
 
 fn saved_ssh_settings(
     paths: &crate::config::AppPaths,
-) -> std::io::Result<crate::remote::SavedSshSettings> {
+) -> super::CliResult<crate::remote::SavedSshSettings> {
     let config = super::load_validated_config(paths)?;
     Ok(crate::remote::SavedSshSettings {
         manage_ssh_config: config.remote.manage_ssh_config,
     })
 }
 
-fn remove(paths: &crate::config::AppPaths, selector: &str) -> std::io::Result<i32> {
+fn remove(paths: &crate::config::AppPaths, selector: &str) -> super::CliResult<i32> {
     let mut catalog = load_catalog(paths)?;
     let profile = match super::target::resolve_machine(&catalog.ssh, selector) {
         Ok(profile) => profile,
@@ -326,12 +326,14 @@ fn remove(paths: &crate::config::AppPaths, selector: &str) -> std::io::Result<i3
     Ok(0)
 }
 
-fn load_catalog(paths: &crate::config::AppPaths) -> std::io::Result<EndpointCatalog> {
-    EndpointCatalog::load(paths).map_err(std::io::Error::other)
+fn load_catalog(paths: &crate::config::AppPaths) -> super::CliResult<EndpointCatalog> {
+    EndpointCatalog::load(paths).map_err(|error| std::io::Error::other(error).into())
 }
 
-fn store_catalog(catalog: &EndpointCatalog) -> std::io::Result<()> {
-    catalog.store_profiles().map_err(std::io::Error::other)
+fn store_catalog(catalog: &EndpointCatalog) -> super::CliResult<()> {
+    catalog
+        .store_profiles()
+        .map_err(|error| std::io::Error::other(error).into())
 }
 
 #[cfg(test)]

@@ -1,3 +1,4 @@
+use crate::api::error::{ApiError, ApiErrorCode, ApiResult};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -9,13 +10,13 @@ use crate::api::schema::{
 use crate::app::App;
 use crate::pty::actor::{QueuedSubmission, SubmissionCancelOutcome};
 
-use super::responses::{encode_error, encode_error_body, encode_success};
+use super::responses::{failure, failure_body, success};
 
 const AGENT_PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(300);
 
 impl App {
-    pub(super) fn handle_agent_list(&mut self, id: String) -> String {
-        encode_success(
+    pub(super) fn handle_agent_list(&mut self, id: String) -> ApiResult {
+        success(
             id,
             ResponseResult::AgentList {
                 agents: self.collect_agent_infos(),
@@ -23,47 +24,51 @@ impl App {
         )
     }
 
-    pub(super) fn handle_agent_get(&mut self, id: String, target: &AgentTarget) -> String {
+    pub(super) fn handle_agent_get(&mut self, id: String, target: &AgentTarget) -> ApiResult {
         self.reconcile_managed_agent_target(&target.target);
         let agent = match self.agent_info_for_target(&target.target) {
             Ok(agent) => agent,
-            Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
+            Err(err) => return failure_body(id, self.agent_target_error_body(err)),
         };
 
-        encode_success(id, ResponseResult::AgentInfo { agent })
+        success(id, ResponseResult::AgentInfo { agent })
     }
 
-    pub(super) fn handle_agent_focus(&mut self, id: String, target: &AgentTarget) -> String {
+    pub(super) fn handle_agent_focus(&mut self, id: String, target: &AgentTarget) -> ApiResult {
         let agent = match self.focus_agent_target(&target.target) {
             Ok(agent) => agent,
-            Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
+            Err(err) => return failure_body(id, self.agent_target_error_body(err)),
         };
 
-        encode_success(id, ResponseResult::AgentInfo { agent })
+        success(id, ResponseResult::AgentInfo { agent })
     }
 
-    pub(super) fn handle_agent_rename(&mut self, id: String, params: AgentRenameParams) -> String {
+    pub(super) fn handle_agent_rename(
+        &mut self,
+        id: String,
+        params: AgentRenameParams,
+    ) -> ApiResult {
         let agent = match self.rename_agent_target(&params.target, params.name) {
             Ok(agent) => agent,
-            Err(err) => return encode_error_body(id, self.agent_rename_error_body(err)),
+            Err(err) => return failure_body(id, self.agent_rename_error_body(err)),
         };
 
-        encode_success(id, ResponseResult::AgentInfo { agent })
+        success(id, ResponseResult::AgentInfo { agent })
     }
 
-    pub(super) fn handle_agent_start(&mut self, id: String, params: AgentStartParams) -> String {
+    pub(super) fn handle_agent_start(&mut self, id: String, params: AgentStartParams) -> ApiResult {
         let (agent, argv) = match self.start_agent(params) {
             Ok(started) => started,
-            Err(err) => return encode_error_body(id, self.agent_start_error_body(err)),
+            Err(err) => return failure_body(id, self.agent_start_error_body(err)),
         };
 
-        encode_success(id, ResponseResult::AgentStarted { agent, argv })
+        success(id, ResponseResult::AgentStarted { agent, argv })
     }
 
     pub(crate) fn handle_deferred_agent_api_request(
         &mut self,
         request: crate::api::schema::Request,
-        respond_to: std::sync::mpsc::Sender<String>,
+        respond_to: std::sync::mpsc::Sender<ApiResult>,
     ) -> bool {
         let crate::api::schema::Method::AgentPrompt(params) = request.method else {
             return false;
@@ -79,12 +84,12 @@ impl App {
             Ok((id, agent, queued)) => {
                 std::thread::spawn(move || {
                     let response = match await_prompt_submission(&queued, submission_deadline) {
-                        Ok(()) => encode_success(id, ResponseResult::AgentPrompted { agent }),
+                        Ok(()) => success(id, ResponseResult::AgentPrompted { agent }),
                         Err(PromptSubmissionError::TimedOut(outcome)) => {
-                            encode_error(id, "timeout", prompt_timeout_message(outcome))
+                            failure(id, ApiErrorCode::Timeout, prompt_timeout_message(outcome))
                         }
                         Err(PromptSubmissionError::Failed(message)) => {
-                            encode_error(id, "agent_prompt_failed", message)
+                            failure(id, ApiErrorCode::AgentPromptFailed, message)
                         }
                     };
                     crate::api::send_api_response(
@@ -96,7 +101,12 @@ impl App {
                 });
             }
             Err(response) => {
-                crate::api::send_api_response(&respond_to, &request_id, "agent.prompt", response);
+                crate::api::send_api_response(
+                    &respond_to,
+                    &request_id,
+                    "agent.prompt",
+                    Err(response),
+                );
             }
         }
         true
@@ -112,18 +122,17 @@ impl App {
             crate::api::schema::AgentInfo,
             crate::pty::actor::QueuedSubmission,
         ),
-        String,
+        ApiError,
     > {
         if params.text.is_empty() {
-            return Err(encode_error(
-                id,
-                "empty_agent_prompt",
+            return Err(ApiError::new(
+                ApiErrorCode::EmptyAgentPrompt,
                 "agent prompt must not be empty",
             ));
         }
         let resolved = match self.resolve_agent_target(&params.target) {
             Ok(resolved) => resolved,
-            Err(err) => return Err(encode_error_body(id, self.agent_target_error_body(err))),
+            Err(err) => return Err(ApiError::from_body(self.agent_target_error_body(err))),
         };
         let Some(terminal_id) = self
             .state
@@ -132,15 +141,14 @@ impl App {
             .and_then(|workspace| workspace.terminal_id(resolved.pane_id))
             .cloned()
         else {
-            return Err(agent_not_found(id, &params.target));
+            return Err(ApiError::agent_not_found(params.target.clone()));
         };
         let Some(terminal) = self.state.terminals.get(&terminal_id) else {
-            return Err(agent_not_found(id, &params.target));
+            return Err(ApiError::agent_not_found(params.target.clone()));
         };
         if terminal.state == crate::detect::AgentState::Blocked {
-            return Err(encode_error(
-                id,
-                "agent_blocked",
+            return Err(ApiError::new(
+                ApiErrorCode::AgentBlocked,
                 format!(
                     "agent {} is blocked and requires interactive input",
                     params.target
@@ -148,18 +156,17 @@ impl App {
             ));
         }
         let Some(expected_agent) = terminal.effective_known_agent() else {
-            return Err(agent_not_ready(id, &params.target));
+            return Err(agent_not_ready_error(&params.target));
         };
         if terminal.managed_agent_launch_pending() {
-            return Err(agent_not_ready(id, &params.target));
+            return Err(agent_not_ready_error(&params.target));
         }
         let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
-            return Err(agent_not_found(id, &params.target));
+            return Err(ApiError::agent_not_found(params.target.clone()));
         };
         if !super::super::agents::runtime_hosts_agent(runtime, expected_agent) {
-            return Err(encode_error(
-                id,
-                "agent_not_ready",
+            return Err(ApiError::new(
+                ApiErrorCode::AgentNotReady,
                 format!(
                     "agent {} is no longer the pane foreground process",
                     params.target
@@ -170,13 +177,16 @@ impl App {
             // Copilot ignores synthetic Enter after focus loss until it receives focus gained.
             let focus = crate::ghostty::encode_focus(crate::ghostty::FocusEvent::Gained);
             if let Err(err) = runtime.try_send_bytes(Bytes::from_static(focus)) {
-                return Err(encode_error(id, "agent_prompt_failed", err.to_string()));
+                return Err(ApiError::new(
+                    ApiErrorCode::AgentPromptFailed,
+                    err.to_string(),
+                ));
             }
         }
         let (text, enter) =
             crate::app::api_helpers::encode_api_submission_parts(runtime, &params.text);
         let Some(agent) = self.agent_info(resolved.ws_idx, resolved.pane_id) else {
-            return Err(agent_not_found(id, &params.target));
+            return Err(ApiError::agent_not_found(params.target.clone()));
         };
         let queued = runtime
             .queue_user_input_submission(
@@ -184,7 +194,7 @@ impl App {
                 Bytes::from(enter),
                 AGENT_PROMPT_SUBMIT_DELAY,
             )
-            .map_err(|err| encode_error(id.clone(), "agent_prompt_failed", err.to_string()))?;
+            .map_err(|err| ApiError::new(ApiErrorCode::AgentPromptFailed, err.to_string()))?;
         Ok((id, agent, queued))
     }
 
@@ -192,10 +202,10 @@ impl App {
         &mut self,
         id: String,
         params: &crate::api::schema::AgentReadParams,
-    ) -> String {
+    ) -> ApiResult {
         let resolved = match self.resolve_agent_target(&params.target) {
             Ok(resolved) => resolved,
-            Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
+            Err(err) => return failure_body(id, self.agent_target_error_body(err)),
         };
         let Some((pane, workspace_id)) = self.lookup_runtime(resolved.ws_idx, resolved.pane_id)
         else {
@@ -213,7 +223,7 @@ impl App {
             params.lines,
         ) {
             Ok(snapshot) => snapshot,
-            Err((code, message)) => return encode_error(id, code, message),
+            Err((code, message)) => return failure(id, code, message),
         };
         let tab_id = self
             .public_tab_id(resolved.ws_idx, resolved.tab_idx)
@@ -221,7 +231,7 @@ impl App {
                 crate::workspace::public_tab_id_for_number(&workspace_id, resolved.tab_idx + 1)
             });
 
-        encode_success(
+        success(
             id,
             ResponseResult::PaneRead {
                 read: PaneReadResult {
@@ -240,10 +250,10 @@ impl App {
         )
     }
 
-    pub(super) fn handle_agent_explain(&mut self, id: String, target: &AgentTarget) -> String {
+    pub(super) fn handle_agent_explain(&mut self, id: String, target: &AgentTarget) -> ApiResult {
         let resolved = match self.resolve_agent_target(&target.target) {
             Ok(resolved) => resolved,
-            Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
+            Err(err) => return failure_body(id, self.agent_target_error_body(err)),
         };
         let Some((pane, _workspace_id)) = self.lookup_runtime(resolved.ws_idx, resolved.pane_id)
         else {
@@ -277,12 +287,12 @@ impl App {
                 "warning": null,
                 "evaluated_rules": [],
             });
-            return encode_success(id, ResponseResult::AgentExplain { explain });
+            return success(id, ResponseResult::AgentExplain { explain });
         }
         let Some(agent) = terminal.effective_known_agent().or(terminal.detected_agent) else {
-            return encode_error(
+            return failure(
                 id,
-                "agent_explain_unavailable",
+                ApiErrorCode::AgentExplainUnavailable,
                 format!(
                     "agent target {} does not have a detected agent label",
                     target.target
@@ -303,17 +313,17 @@ impl App {
         );
         let value = crate::detect::manifest::explain_to_json_value(&explain);
 
-        encode_success(id, ResponseResult::AgentExplain { explain: value })
+        success(id, ResponseResult::AgentExplain { explain: value })
     }
 
     pub(super) fn handle_agent_send_keys(
         &mut self,
         id: String,
         params: &AgentSendKeysParams,
-    ) -> String {
+    ) -> ApiResult {
         let resolved = match self.resolve_agent_target(&params.target) {
             Ok(resolved) => resolved,
-            Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
+            Err(err) => return failure_body(id, self.agent_target_error_body(err)),
         };
         let Some(terminal_id) = self
             .state
@@ -340,15 +350,19 @@ impl App {
         let encoded = match super::super::api_helpers::encode_api_keys(runtime, &params.keys) {
             Ok(encoded) => encoded,
             Err(key) => {
-                return encode_error(id, "invalid_key", format!("unsupported key {key}"));
+                return failure(
+                    id,
+                    ApiErrorCode::InvalidKey,
+                    format!("unsupported key {key}"),
+                );
             }
         };
         let bytes: Vec<u8> = encoded.into_iter().flatten().collect();
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
-            return encode_error(id, "agent_send_keys_failed", err.to_string());
+            return failure(id, ApiErrorCode::AgentSendKeysFailed, err.to_string());
         }
 
-        encode_success(id, ResponseResult::Ok {})
+        success(id, ResponseResult::Ok {})
     }
 }
 
@@ -409,20 +423,19 @@ fn prompt_timeout_message(outcome: SubmissionCancelOutcome) -> &'static str {
     }
 }
 
-fn agent_not_ready(id: String, target: &str) -> String {
-    encode_error(
-        id,
-        "agent_not_ready",
+fn agent_not_ready_error(target: &str) -> ApiError {
+    ApiError::new(
+        ApiErrorCode::AgentNotReady,
         format!("agent {target} is not an active named agent"),
     )
 }
 
-fn agent_not_found(id: String, target: &str) -> String {
-    encode_error(
-        id,
-        "agent_not_found",
-        format!("agent target {target} not found"),
-    )
+fn agent_not_ready(_id: String, target: &str) -> ApiResult {
+    Err(agent_not_ready_error(target))
+}
+
+fn agent_not_found(_id: String, target: &str) -> ApiResult {
+    Err(ApiError::agent_not_found(target))
 }
 
 #[cfg(test)]
@@ -456,7 +469,7 @@ mod tests {
         app: &mut App,
         id: &str,
         params: AgentPromptParams,
-    ) -> std::sync::mpsc::Receiver<String> {
+    ) -> std::sync::mpsc::Receiver<ApiResult> {
         let (respond_to, response_rx) = std::sync::mpsc::channel();
         assert!(app.handle_deferred_agent_api_request(
             crate::api::schema::Request {
@@ -469,9 +482,10 @@ mod tests {
     }
 
     fn run_deferred_agent_prompt(app: &mut App, id: &str, params: AgentPromptParams) -> String {
-        start_deferred_agent_prompt(app, id, params)
+        let response = start_deferred_agent_prompt(app, id, params)
             .recv_timeout(Duration::from_secs(1))
-            .expect("agent prompt responds after submission")
+            .expect("agent prompt responds after submission");
+        crate::api::error::encode_result(id.into(), response)
     }
 
     #[tokio::test]
@@ -500,8 +514,8 @@ mod tests {
             },
         );
         assert!(
-            serde_json::from_str::<SuccessResponse>(&found).is_ok(),
-            "the assigned name must resolve while the agent is running: {found}"
+            serde_json::from_str::<SuccessResponse>(&crate::api::error::test_json(&found)).is_ok(),
+            "the assigned name must resolve while the agent is running: {found:?}"
         );
 
         // One process-exit observation, then the same agent is observed alive
@@ -534,8 +548,8 @@ mod tests {
             },
         );
         assert!(
-            serde_json::from_str::<SuccessResponse>(&after).is_ok(),
-            "a live agent must stay reachable by its assigned name: {after}"
+            serde_json::from_str::<SuccessResponse>(&crate::api::error::test_json(&after)).is_ok(),
+            "a live agent must stay reachable by its assigned name: {after:?}"
         );
     }
 
@@ -575,7 +589,7 @@ mod tests {
         let response = response_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("agent prompt responds after submission");
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::AgentPrompted { agent, .. } = success.result else {
             panic!("expected prompted response");
         };
@@ -603,7 +617,7 @@ mod tests {
                 wait: None,
             },
         );
-        let raw: SuccessResponse = serde_json::from_str(&raw).expect("test precondition");
+        let raw: SuccessResponse = crate::api::error::test_success(&raw);
         assert!(matches!(raw.result, ResponseResult::AgentPrompted { .. }));
         assert_eq!(
             rx.try_recv().expect("test precondition"),
@@ -625,7 +639,8 @@ mod tests {
             },
         );
         let error: crate::api::schema::ErrorResponse =
-            serde_json::from_str(&rejected).expect("test precondition");
+            serde_json::from_str(&crate::api::error::test_json(&rejected))
+                .expect("test precondition");
         assert_eq!(error.error.code, "agent_not_found");
         assert!(rx.try_recv().is_err());
     }
@@ -716,7 +731,8 @@ mod tests {
         );
 
         let error: crate::api::schema::ErrorResponse =
-            serde_json::from_str(&response).expect("test precondition");
+            serde_json::from_str(&crate::api::error::test_json(&response))
+                .expect("test precondition");
         assert_eq!(error.error.code, "agent_blocked");
         assert!(
             tokio::time::timeout(
@@ -759,7 +775,7 @@ mod tests {
                 wait: None,
             },
         );
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert!(matches!(
             success.result,
             ResponseResult::AgentPrompted { .. }
@@ -803,7 +819,8 @@ mod tests {
             },
         );
         let error: crate::api::schema::ErrorResponse =
-            serde_json::from_str(&rejected).expect("test precondition");
+            serde_json::from_str(&crate::api::error::test_json(&rejected))
+                .expect("test precondition");
         assert_eq!(error.error.code, "invalid_key");
         assert!(rx.try_recv().is_err());
 
@@ -814,7 +831,7 @@ mod tests {
                 keys: vec!["up".into(), "enter".into()],
             },
         );
-        let success: SuccessResponse = serde_json::from_str(&sent).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&sent);
         assert!(matches!(success.result, ResponseResult::Ok {}));
         assert_eq!(
             rx.try_recv().expect("test precondition"),
@@ -857,7 +874,8 @@ mod tests {
             },
         );
         let error: crate::api::schema::ErrorResponse =
-            serde_json::from_str(&response).expect("test precondition");
+            serde_json::from_str(&crate::api::error::test_json(&response))
+                .expect("test precondition");
         assert_eq!(error.error.code, "agent_not_ready");
         assert!(rx.try_recv().is_err());
     }
@@ -884,7 +902,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::AgentInfo { agent } = success.result else {
             panic!("expected agent info response");
         };
@@ -915,8 +933,7 @@ mod tests {
                     name,
                 },
             );
-            let success: SuccessResponse =
-                serde_json::from_str(&response).expect("test precondition");
+            let success: SuccessResponse = crate::api::error::test_success(&response);
             assert!(matches!(success.result, ResponseResult::AgentInfo { .. }));
             assert_eq!(
                 app.state.terminals[&terminal_id].manual_label.as_deref(),

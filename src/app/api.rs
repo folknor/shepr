@@ -8,22 +8,27 @@ mod tabs;
 mod workspaces;
 
 use super::App;
+use crate::api::error::{ApiErrorCode, ApiResult};
 #[cfg(test)]
 use crate::events::AppEvent;
 
 impl App {
     #[cfg(test)]
     pub(crate) fn handle_api_request(&mut self, request: crate::api::schema::Request) -> String {
+        let id = request.id.clone();
         self.drain_all_internal_events();
-        self.handle_api_request_after_internal_events_drained(request)
+        crate::api::error::encode_result(
+            id,
+            self.handle_api_request_after_internal_events_drained(request),
+        )
     }
 
     pub(crate) fn handle_api_request_after_internal_events_drained(
         &mut self,
         request: crate::api::schema::Request,
-    ) -> String {
+    ) -> ApiResult {
         self.sync_pending_terminal_titles();
-        use crate::api::schema::{Method, ResponseResult, SuccessResponse};
+        use crate::api::schema::{Method, ResponseResult};
 
         let method_name = crate::api::api_method_name(&request.method);
         let response = match request.method {
@@ -48,36 +53,30 @@ impl App {
                     method = method_name,
                     "api request routed to the app by mistake"
                 );
-                return responses::encode_error(
+                return responses::failure(
                     request.id,
-                    "internal_error",
+                    ApiErrorCode::InternalError,
                     format!("{method_name} is not handled by the app"),
                 );
             }
             Method::ServerAgentManifests(_) => {
                 self.state.refresh_agent_manifest_summaries();
-                SuccessResponse {
-                    id: request.id,
-                    result: ResponseResult::AgentManifestStatus {
-                        manifests: self
-                            .state
-                            .agent_manifest_summaries
-                            .clone()
-                            .into_iter()
-                            .map(agent_manifest_info)
-                            .collect(),
-                    },
+                ResponseResult::AgentManifestStatus {
+                    manifests: self
+                        .state
+                        .agent_manifest_summaries
+                        .clone()
+                        .into_iter()
+                        .map(agent_manifest_info)
+                        .collect(),
                 }
             }
             Method::ServerReloadAgentManifests(_) => {
                 let summaries = crate::detect::manifest::reload_manifests(self.paths.config_dir());
                 self.state.agent_manifest_summaries = summaries.clone();
                 self.reset_all_agent_detection_runtimes();
-                SuccessResponse {
-                    id: request.id,
-                    result: ResponseResult::AgentManifestReload {
-                        manifests: summaries.into_iter().map(agent_manifest_info).collect(),
-                    },
+                ResponseResult::AgentManifestReload {
+                    manifests: summaries.into_iter().map(agent_manifest_info).collect(),
                 }
             }
             Method::SessionSnapshot(_) => return self.handle_session_snapshot(request.id),
@@ -183,7 +182,7 @@ impl App {
             Method::PaneSendKeys(params) => return self.handle_pane_send_keys(request.id, &params),
         };
 
-        responses::encode_success(response.id, response.result)
+        Ok(response)
     }
 }
 
@@ -215,6 +214,7 @@ pub(super) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::schema::ResponseResult;
     use crate::detect::{Agent, AgentState};
 
     #[tokio::test]
@@ -236,21 +236,18 @@ mod tests {
         let reset_notify = runtime.agent_detection_reset_notify_for_test();
         app.terminal_runtimes.insert(terminal_id, runtime);
 
-        let response = app.handle_api_request(crate::api::schema::Request {
-            id: "reload_manifests".into(),
-            method: crate::api::schema::Method::ServerReloadAgentManifests(
-                crate::api::schema::EmptyParams::default(),
-            ),
-        });
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
-        assert_eq!(response["result"]["type"], "agent_manifest_reload");
-        assert!(
-            !response["result"]["manifests"]
-                .as_array()
-                .expect("test precondition")
-                .is_empty()
-        );
+        let response =
+            app.handle_api_request_after_internal_events_drained(crate::api::schema::Request {
+                id: "reload_manifests".into(),
+                method: crate::api::schema::Method::ServerReloadAgentManifests(
+                    crate::api::schema::EmptyParams::default(),
+                ),
+            });
+        let ResponseResult::AgentManifestReload { manifests } = response.expect("reload succeeds")
+        else {
+            panic!("expected manifest reload result");
+        };
+        assert!(!manifests.is_empty());
 
         tokio::time::timeout(
             std::time::Duration::from_millis(50),
@@ -279,21 +276,18 @@ mod tests {
         let reset_notify = runtime.agent_detection_reset_notify_for_test();
         app.terminal_runtimes.insert(terminal_id, runtime);
 
-        let response = app.handle_api_request(crate::api::schema::Request {
-            id: "manifest_status".into(),
-            method: crate::api::schema::Method::ServerAgentManifests(
-                crate::api::schema::EmptyParams::default(),
-            ),
-        });
-        let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
-        assert_eq!(response["result"]["type"], "agent_manifest_status");
-        assert!(
-            !response["result"]["manifests"]
-                .as_array()
-                .expect("test precondition")
-                .is_empty()
-        );
+        let response =
+            app.handle_api_request_after_internal_events_drained(crate::api::schema::Request {
+                id: "manifest_status".into(),
+                method: crate::api::schema::Method::ServerAgentManifests(
+                    crate::api::schema::EmptyParams::default(),
+                ),
+            });
+        let ResponseResult::AgentManifestStatus { manifests } = response.expect("status succeeds")
+        else {
+            panic!("expected manifest status result");
+        };
+        assert!(!manifests.is_empty());
         assert!(
             tokio::time::timeout(
                 std::time::Duration::from_millis(10),
@@ -340,7 +334,8 @@ mod tests {
             }),
         });
         let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
+            serde_json::from_str(&crate::api::error::test_json(&response))
+                .expect("test precondition");
 
         assert_eq!(response["result"]["type"], "agent_explain");
         assert_eq!(response["result"]["explain"]["state"], "blocked");
@@ -387,7 +382,8 @@ mod tests {
             }),
         });
         let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
+            serde_json::from_str(&crate::api::error::test_json(&response))
+                .expect("test precondition");
 
         assert_eq!(response["error"]["code"], "agent_not_found");
     }
@@ -420,7 +416,8 @@ mod tests {
             ),
         });
         let response: serde_json::Value =
-            serde_json::from_str(&response).expect("test precondition");
+            serde_json::from_str(&crate::api::error::test_json(&response))
+                .expect("test precondition");
 
         assert_eq!(response["result"]["type"], "pane_process_info");
         assert_eq!(response["result"]["process_info"]["pane_id"], target);
@@ -453,7 +450,8 @@ mod tests {
                 method,
             });
             let response: serde_json::Value =
-                serde_json::from_str(&response).expect("test precondition");
+                serde_json::from_str(&crate::api::error::test_json(&response))
+                    .expect("test precondition");
             assert_eq!(response["id"], "misrouted", "{name}");
             assert_eq!(response["error"]["code"], "internal_error", "{name}");
         }

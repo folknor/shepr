@@ -12,9 +12,10 @@ use super::text::display_width;
 use super::text::truncate_end;
 use super::widgets::panel_contrast_fg;
 use crate::app::AppState;
-use crate::app::state::Palette;
-use crate::layout::PaneInfo;
+use crate::layout::PaneInfo as LayoutPaneInfo;
 use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry};
+use crate::theme::Palette;
+use crate::ui::PaneChromeInfo as PaneInfo;
 
 pub(crate) fn pane_is_scrolled_back(rt: &TerminalRuntime) -> bool {
     rt.scroll_metrics()
@@ -54,7 +55,10 @@ fn ranges_overlap(a_start: u16, a_len: u16, b_start: u16, b_len: u16) -> bool {
     a_start < b_start.saturating_add(b_len) && b_start < a_start.saturating_add(a_len)
 }
 
-fn pane_to_right<'a>(info: &PaneInfo, panes: &'a [PaneInfo]) -> Option<&'a PaneInfo> {
+fn pane_to_right<'a>(
+    info: &LayoutPaneInfo,
+    panes: &'a [LayoutPaneInfo],
+) -> Option<&'a LayoutPaneInfo> {
     let right = info.rect.x.saturating_add(info.rect.width);
     panes.iter().find(|other| {
         other.id != info.id
@@ -68,7 +72,10 @@ fn pane_to_right<'a>(info: &PaneInfo, panes: &'a [PaneInfo]) -> Option<&'a PaneI
     })
 }
 
-fn pane_below<'a>(info: &PaneInfo, panes: &'a [PaneInfo]) -> Option<&'a PaneInfo> {
+fn pane_below<'a>(
+    info: &LayoutPaneInfo,
+    panes: &'a [LayoutPaneInfo],
+) -> Option<&'a LayoutPaneInfo> {
     let bottom = info.rect.y.saturating_add(info.rect.height);
     panes.iter().find(|other| {
         other.id != info.id
@@ -82,7 +89,7 @@ fn shrink_for_one_cell_gap(size: u16) -> u16 {
 }
 
 pub(crate) fn apply_pane_chrome(
-    panes: &[PaneInfo],
+    panes: &[LayoutPaneInfo],
     pane_borders: crate::config::PaneBordersConfig,
     pane_gaps: bool,
     pane_outer_borders: bool,
@@ -104,9 +111,14 @@ pub(crate) fn apply_pane_chrome(
     panes
         .iter()
         .cloned()
-        .map(|mut info| {
-            let right_neighbor = multi_pane.then(|| pane_to_right(&info, panes)).flatten();
-            let below_neighbor = multi_pane.then(|| pane_below(&info, panes)).flatten();
+        .map(|layout_info| {
+            let right_neighbor = multi_pane
+                .then(|| pane_to_right(&layout_info, panes))
+                .flatten();
+            let below_neighbor = multi_pane
+                .then(|| pane_below(&layout_info, panes))
+                .flatten();
+            let mut info = PaneInfo::from(layout_info);
 
             if multi_pane && pane_gaps && !pane_borders.draws_borders() {
                 if right_neighbor.is_some() {

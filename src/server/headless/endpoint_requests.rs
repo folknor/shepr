@@ -19,7 +19,7 @@ impl HeadlessServer {
             let message = crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
-                "unsupported_endpoint_command",
+                api::error::ApiErrorCode::UnsupportedEndpointCommand,
                 "this method is not available through the client shell command lane",
             );
             self.send_to_client(client_id, &message);
@@ -29,7 +29,7 @@ impl HeadlessServer {
             let message = crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
-                "stale_boot",
+                api::error::ApiErrorCode::StaleBoot,
                 "endpoint command targeted an earlier server boot",
             );
             self.send_to_client(client_id, &message);
@@ -59,7 +59,7 @@ impl HeadlessServer {
             let message = crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
-                "endpoint_busy",
+                api::error::ApiErrorCode::EndpointBusy,
                 "this endpoint is still processing another command",
             );
             self.send_to_client(client_id, &message);
@@ -69,7 +69,7 @@ impl HeadlessServer {
             let message = crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
-                "surface_inactive",
+                api::error::ApiErrorCode::SurfaceInactive,
                 "this method requires an active client shell surface",
             );
             self.send_to_client(client_id, &message);
@@ -92,7 +92,7 @@ impl HeadlessServer {
             let message = crate::server::client_commands::error_message(
                 boot_id,
                 request_id,
-                "server_unavailable",
+                api::error::ApiErrorCode::ServerUnavailable,
                 format!("failed to start endpoint response bridge: {err}"),
             );
             self.send_to_client(client_id, &message);

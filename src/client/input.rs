@@ -36,28 +36,6 @@ pub fn stdin_reader_loop(
     host_escape_disambiguation_active: bool,
     initial_host_input: &[u8],
 ) {
-    unix_stdin_reader_loop(
-        event_tx,
-        should_quit,
-        host_color_query_sent,
-        host_cell_size_query_sent,
-        host_mouse_capture_active,
-        host_sgr_pixels_active,
-        host_escape_disambiguation_active,
-        initial_host_input,
-    );
-}
-
-fn unix_stdin_reader_loop(
-    event_tx: &mpsc::Sender<ClientLoopEvent>,
-    should_quit: &Arc<AtomicBool>,
-    host_color_query_sent: bool,
-    host_cell_size_query_sent: bool,
-    host_mouse_capture_active: &Arc<AtomicBool>,
-    host_sgr_pixels_active: &Arc<AtomicBool>,
-    host_escape_disambiguation_active: bool,
-    initial_host_input: &[u8],
-) {
     let stdin = io::stdin();
     let mut reader = stdin.lock();
     let mut scratch = [0u8; 4096];
@@ -90,40 +68,19 @@ fn unix_stdin_reader_loop(
         ) {
             return;
         }
-        if (framer.has_pending_input() || !pending_palette.is_empty())
-            && stdin_read_ready(
-                &reader,
-                idle_flush_timeout_ms(&framer, host_mouse_capture_active.load(Ordering::Acquire)),
-            ) == Some(false)
-        {
-            let had_pending = framer.has_pending_input();
-            let chunks = framer.flush_timeout_framed();
-            let held_escape = had_pending && chunks.is_empty();
-            if !send_unix_input_chunks(
-                chunks,
-                event_tx,
-                &mut pending_palette,
-                sgr_pixels,
-                last_geometry,
-            ) || !flush_unix_palette_input(event_tx, &mut pending_palette)
-            {
-                return;
-            }
-            if held_escape
-                && stdin_read_ready(&reader, crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS)
-                    == Some(false)
-                && !send_unix_input_chunks(
-                    framer.flush_timeout_framed(),
-                    event_tx,
-                    &mut pending_palette,
-                    sgr_pixels,
-                    last_geometry,
-                )
-            {
-                return;
-            }
-        }
         pending_mode = framer.has_pending_input().then_some(sgr_pixels);
+        if !flush_idle_input(
+            &reader,
+            &mut framer,
+            event_tx,
+            &mut pending_palette,
+            &mut pending_mode,
+            host_mouse_capture_active,
+            host_sgr_pixels_active,
+            last_geometry,
+        ) {
+            return;
+        }
     }
 
     while !should_quit.load(Ordering::Acquire) {
@@ -152,49 +109,17 @@ fn unix_stdin_reader_loop(
                     return;
                 }
 
-                let timeout_ms = idle_flush_timeout_ms(
-                    &framer,
-                    host_mouse_capture_active.load(Ordering::Acquire),
-                );
-                if stdin_read_ready(&reader, timeout_ms) == Some(false) {
-                    let had_pending = framer.has_pending_input();
-                    let chunks = framer.flush_timeout_framed();
-                    let held_escape = had_pending && chunks.is_empty();
-                    let sgr_pixels = pending_mode
-                        .unwrap_or_else(|| host_sgr_pixels_active.load(Ordering::Acquire));
-                    if !framer.has_pending_input() {
-                        pending_mode = None;
-                    }
-                    if !send_unix_input_chunks(
-                        chunks,
-                        event_tx,
-                        &mut pending_palette,
-                        sgr_pixels,
-                        last_geometry,
-                    ) || !flush_unix_palette_input(event_tx, &mut pending_palette)
-                    {
-                        return;
-                    }
-                    if held_escape
-                        && stdin_read_ready(
-                            &reader,
-                            crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
-                        ) == Some(false)
-                    {
-                        let chunks = framer.flush_timeout_framed();
-                        if !framer.has_pending_input() {
-                            pending_mode = None;
-                        }
-                        if !send_unix_input_chunks(
-                            chunks,
-                            event_tx,
-                            &mut pending_palette,
-                            sgr_pixels,
-                            last_geometry,
-                        ) {
-                            return;
-                        }
-                    }
+                if !flush_idle_input(
+                    &reader,
+                    &mut framer,
+                    event_tx,
+                    &mut pending_palette,
+                    &mut pending_mode,
+                    host_mouse_capture_active,
+                    host_sgr_pixels_active,
+                    last_geometry,
+                ) {
+                    return;
                 }
             }
             Err(err) => {
@@ -205,6 +130,50 @@ fn unix_stdin_reader_loop(
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)] // The reader owns these independent input states.
+fn flush_idle_input<R: AsRawFd>(
+    reader: &R,
+    framer: &mut crate::raw_input::RawInputFramer,
+    event_tx: &mpsc::Sender<ClientLoopEvent>,
+    pending_palette: &mut Vec<ParsedHostInput>,
+    pending_mode: &mut Option<bool>,
+    host_mouse_capture_active: &AtomicBool,
+    host_sgr_pixels_active: &AtomicBool,
+    geometry: Option<crate::input::mouse::HostGeometry>,
+) -> bool {
+    if !framer.has_pending_input() && pending_palette.is_empty() {
+        return true;
+    }
+    let timeout_ms =
+        idle_flush_timeout_ms(framer, host_mouse_capture_active.load(Ordering::Acquire));
+    if stdin_read_ready(reader, timeout_ms) != Some(false) {
+        return true;
+    }
+    let had_pending = framer.has_pending_input();
+    let chunks = framer.flush_timeout_framed();
+    let held_escape = had_pending && chunks.is_empty();
+    let sgr_pixels = pending_mode.unwrap_or_else(|| host_sgr_pixels_active.load(Ordering::Acquire));
+    if !framer.has_pending_input() {
+        *pending_mode = None;
+    }
+    if !send_unix_input_chunks(chunks, event_tx, pending_palette, sgr_pixels, geometry)
+        || !flush_unix_palette_input(event_tx, pending_palette)
+    {
+        return false;
+    }
+    if held_escape
+        && stdin_read_ready(reader, crate::raw_input::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS)
+            == Some(false)
+    {
+        let chunks = framer.flush_timeout_framed();
+        if !framer.has_pending_input() {
+            *pending_mode = None;
+        }
+        return send_unix_input_chunks(chunks, event_tx, pending_palette, sgr_pixels, geometry);
+    }
+    true
 }
 
 fn send_unix_input_chunks(

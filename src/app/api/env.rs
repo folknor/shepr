@@ -1,28 +1,33 @@
 use std::collections::HashMap;
 
+use crate::api::error::{ApiError, ApiErrorCode};
+
 pub(super) fn normalize_launch_env(
     env: HashMap<String, String>,
-) -> Result<Vec<(String, String)>, (String, String)> {
+) -> Result<Vec<(String, String)>, ApiError> {
     let mut normalized = Vec::with_capacity(env.len());
     for (key, value) in env {
         if key.is_empty() {
-            return Err(("invalid_env".into(), "env key must not be empty".into()));
+            return Err(ApiError::new(
+                ApiErrorCode::InvalidEnv,
+                "env key must not be empty",
+            ));
         }
         if key.contains('=') {
-            return Err((
-                "invalid_env".into(),
+            return Err(ApiError::new(
+                ApiErrorCode::InvalidEnv,
                 format!("env key {key} must not contain '='"),
             ));
         }
         if key.contains('\0') {
-            return Err((
-                "invalid_env".into(),
-                "env key must not contain NUL bytes".into(),
+            return Err(ApiError::new(
+                ApiErrorCode::InvalidEnv,
+                "env key must not contain NUL bytes",
             ));
         }
         if value.contains('\0') {
-            return Err((
-                "invalid_env".into(),
+            return Err(ApiError::new(
+                ApiErrorCode::InvalidEnv,
                 format!("env value for {key} must not contain NUL bytes"),
             ));
         }
@@ -57,8 +62,10 @@ mod tests {
         let env = HashMap::from([("BAD=KEY".to_string(), "value".to_string())]);
 
         assert_eq!(
-            normalize_launch_env(env).expect_err("test precondition").0,
-            "invalid_env"
+            normalize_launch_env(env)
+                .expect_err("test precondition")
+                .code,
+            ApiErrorCode::InvalidEnv
         );
     }
 }

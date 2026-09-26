@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -26,9 +26,11 @@ const MIN_SOCKET_TIMEOUT: Duration = Duration::from_millis(1);
 pub struct SessionName(String);
 
 impl SessionName {
-    pub fn parse(name: &str) -> Result<Self, String> {
+    pub fn parse(name: &str) -> Result<Self, SessionError> {
         if name == DEFAULT_SESSION_NAME {
-            return Err("default is reserved for the default session".to_string());
+            return Err(SessionError::InvalidName(
+                "default is reserved for the default session".into(),
+            ));
         }
         validate_name(name)?;
         Ok(Self(name.to_owned()))
@@ -51,7 +53,7 @@ pub enum SessionId {
 impl SessionId {
     /// Parse a session name supplied by the user. `default` is the spelling
     /// for the default session and is not a valid `SessionName`.
-    pub fn parse(name: &str) -> Result<Self, String> {
+    pub fn parse(name: &str) -> Result<Self, SessionError> {
         if name == DEFAULT_SESSION_NAME {
             Ok(Self::Default)
         } else {
@@ -66,7 +68,7 @@ impl SessionId {
         requested: Option<Self>,
         inherited: Option<&str>,
         api_socket_override_present: bool,
-    ) -> Result<(Self, bool), String> {
+    ) -> Result<(Self, bool), SessionError> {
         if let Some(requested) = requested {
             return Ok((requested, true));
         }
@@ -150,13 +152,121 @@ impl SessionId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionInfo {
     pub name: String,
     pub default: bool,
     pub running: bool,
-    pub socket_path: String,
-    pub session_dir: String,
+    pub socket_path: PathBuf,
+    pub session_dir: PathBuf,
+}
+
+#[derive(Debug)]
+pub enum SessionError {
+    InvalidName(String),
+    NotRunning {
+        label: String,
+        path: PathBuf,
+        source: io::Error,
+    },
+    Unreachable {
+        label: String,
+        path: PathBuf,
+        source: io::Error,
+    },
+    TimedOut {
+        label: String,
+        timeout: Duration,
+        reachable: Vec<PathBuf>,
+    },
+    Running {
+        name: String,
+    },
+    DefaultDelete,
+    NameMismatch {
+        name: String,
+    },
+    Io {
+        context: String,
+        source: io::Error,
+    },
+    Protocol(String),
+}
+
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidName(message) => f.write_str(message),
+            Self::NotRunning {
+                label,
+                path,
+                source,
+            } => {
+                write!(f, "{label} is not running at {}: {source}", path.display())
+            }
+            Self::Unreachable {
+                label,
+                path,
+                source,
+            } => {
+                write!(
+                    f,
+                    "{label} cannot be reached at {}: {source}",
+                    path.display()
+                )
+            }
+            Self::TimedOut {
+                label,
+                timeout,
+                reachable,
+            } => write!(
+                f,
+                "{label} did not stop within {}ms; sockets are still reachable at {}",
+                timeout.as_millis(),
+                reachable
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Self::Running { name } => {
+                write!(f, "session {name} is running; stop it before deleting")
+            }
+            Self::DefaultDelete => f.write_str("deleting the default session is not supported"),
+            Self::NameMismatch { name } => write!(
+                f,
+                "session {name} does not match an exact session name; use the spelling shown by `shepr session list`"
+            ),
+            Self::Io { context, source } => write!(f, "{context}: {source}"),
+            Self::Protocol(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for SessionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::NotRunning { source, .. }
+            | Self::Unreachable { source, .. }
+            | Self::Io { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl From<io::Error> for SessionError {
+    fn from(source: io::Error) -> Self {
+        Self::Io {
+            context: "session operation failed".into(),
+            source,
+        }
+    }
+}
+
+impl From<SessionError> for String {
+    fn from(error: SessionError) -> Self {
+        error.to_string()
+    }
 }
 
 pub fn restart_after_update_guidance(stop_command: &str, attach_command: Option<&str>) -> String {
@@ -248,23 +358,23 @@ pub fn session_info(
         name: display_name,
         default,
         running: is_running_at(&socket_path)?,
-        socket_path: socket_path.display().to_string(),
-        session_dir: session_dir.display().to_string(),
+        socket_path,
+        session_dir,
     })
 }
 
-pub fn parse_target_name(name: &str) -> Result<SessionId, String> {
+pub fn parse_target_name(name: &str) -> Result<SessionId, SessionError> {
     SessionId::parse(name)
 }
 
 pub fn stop_session(
     paths: &crate::config::AppPaths,
     session: &SessionId,
-) -> Result<SessionInfo, String> {
+) -> Result<SessionInfo, SessionError> {
     stop_session_with_timeout(paths, session, STOP_WAIT_TIMEOUT)
 }
 
-pub(crate) fn stop_active_server(paths: &crate::config::AppPaths) -> Result<(), String> {
+pub(crate) fn stop_active_server(paths: &crate::config::AppPaths) -> Result<(), SessionError> {
     let address = paths.server_address();
     let socket_path = address.api_socket().to_path_buf();
     let client_socket_path = address.client_socket().to_path_buf();
@@ -280,7 +390,7 @@ fn stop_session_with_timeout(
     paths: &crate::config::AppPaths,
     session: &SessionId,
     timeout: Duration,
-) -> Result<SessionInfo, String> {
+) -> Result<SessionInfo, SessionError> {
     let socket_path = api_socket_path_for(paths, session);
     let client_socket_path = client_socket_path_for(paths, session);
     let label = format!("session {}", session.display_name());
@@ -290,7 +400,7 @@ fn stop_session_with_timeout(
         timeout,
         &label,
     )?;
-    session_info(paths, session).map_err(|err| err.to_string())
+    session_info(paths, session).map_err(SessionError::from)
 }
 
 fn stop_socket_with_timeout(
@@ -298,44 +408,53 @@ fn stop_socket_with_timeout(
     stopped_socket_paths: &[PathBuf],
     timeout: Duration,
     label: &str,
-) -> Result<(), String> {
+) -> Result<(), SessionError> {
     let deadline = Instant::now() + timeout;
     let request = server_stop_request("cli:session:stop");
     let stream = match crate::ipc::connect_local_stream(socket_path) {
         Ok(stream) => stream,
         Err(error) => {
-            let state = match crate::ipc::probe(socket_path) {
-                crate::ipc::Liveness::Absent | crate::ipc::Liveness::Stale => "is not running",
-                crate::ipc::Liveness::Live | crate::ipc::Liveness::Unreachable(_) => {
-                    "cannot be reached"
+            return Err(match crate::ipc::probe(socket_path) {
+                crate::ipc::Liveness::Absent | crate::ipc::Liveness::Stale => {
+                    SessionError::NotRunning {
+                        label: label.into(),
+                        path: socket_path.into(),
+                        source: error,
+                    }
                 }
-            };
-            return Err(format!(
-                "{label} {state} at {}: {error}",
-                socket_path.display()
-            ));
+                crate::ipc::Liveness::Live | crate::ipc::Liveness::Unreachable(_) => {
+                    SessionError::Unreachable {
+                        label: label.into(),
+                        path: socket_path.into(),
+                        source: error,
+                    }
+                }
+            });
         }
     };
     let stop_response = send_stop_request(stream, &request, deadline)?;
     if let Some(response) = stop_response
         && let Some(error) = response.get("error")
     {
-        return Err(error.to_string());
+        return Err(SessionError::Protocol(error.to_string()));
     }
-    let stopped = wait_until_stopped_until(stopped_socket_paths, deadline)
-        .map_err(|err| format!("could not check whether {label} stopped: {err}"))?;
+    let stopped = wait_until_stopped_until(stopped_socket_paths, deadline).map_err(|source| {
+        SessionError::Io {
+            context: format!("could not check whether {label} stopped"),
+            source,
+        }
+    })?;
     if !stopped {
-        let reachable = reachable_socket_paths(stopped_socket_paths)
-            .map_err(|err| format!("could not check whether {label} stopped: {err}"))?;
-        return Err(format!(
-            "{label} did not stop within {}ms; sockets are still reachable at {}",
-            timeout.as_millis(),
-            reachable
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+        let reachable =
+            reachable_socket_paths(stopped_socket_paths).map_err(|source| SessionError::Io {
+                context: format!("could not check whether {label} stopped"),
+                source,
+            })?;
+        return Err(SessionError::TimedOut {
+            label: label.into(),
+            timeout,
+            reachable,
+        });
     }
     Ok(())
 }
@@ -343,50 +462,53 @@ fn stop_socket_with_timeout(
 pub fn delete_session(
     paths: &crate::config::AppPaths,
     session: &SessionId,
-) -> Result<SessionInfo, String> {
+) -> Result<SessionInfo, SessionError> {
     let SessionId::Named(name) = session else {
-        return Err("deleting the default session is not supported".to_string());
+        return Err(SessionError::DefaultDelete);
     };
     let name = name.as_str();
     let Some(dir) = exact_session_dir_for_delete(paths, name)? else {
-        return session_info(paths, session).map_err(|err| err.to_string());
+        return session_info(paths, session).map_err(SessionError::from);
     };
     let socket_path = api_socket_path_for(paths, session);
-    if is_running_at(&socket_path).map_err(|err| {
-        format!(
-            "failed to inspect session {name} socket {}: {err}",
+    if is_running_at(&socket_path).map_err(|source| SessionError::Io {
+        context: format!(
+            "failed to inspect session {name} socket {}",
             socket_path.display()
-        )
+        ),
+        source,
     })? {
-        return Err(format!(
-            "session {name} is running; stop it before deleting"
-        ));
+        return Err(SessionError::Running { name: name.into() });
     }
-    let info = session_info(paths, session).map_err(|err| {
-        format!(
-            "failed to inspect session {name} socket {}: {err}",
+    let info = session_info(paths, session).map_err(|source| SessionError::Io {
+        context: format!(
+            "failed to inspect session {name} socket {}",
             socket_path.display()
-        )
+        ),
+        source,
     })?;
     match std::fs::remove_dir_all(&dir) {
         Ok(()) => Ok(info),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(info),
-        Err(err) => Err(err.to_string()),
+        Err(source) => Err(SessionError::Io {
+            context: format!("could not delete session {name}"),
+            source,
+        }),
     }
 }
 
 fn exact_session_dir_for_delete(
     paths: &crate::config::AppPaths,
     name: &str,
-) -> Result<Option<PathBuf>, String> {
+) -> Result<Option<PathBuf>, SessionError> {
     let sessions_dir = sessions_dir(paths);
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err.to_string()),
+        Err(err) => return Err(err.into()),
     };
     for entry in entries {
-        let entry = entry.map_err(|err| err.to_string())?;
+        let entry = entry?;
         if entry.file_name() == std::ffi::OsStr::new(name) {
             return Ok(Some(entry.path()));
         }
@@ -395,11 +517,9 @@ fn exact_session_dir_for_delete(
     // A path lookup alone can resolve a different spelling on case-insensitive
     // filesystems. Never probe its socket or delete it without an exact entry.
     match std::fs::symlink_metadata(sessions_dir.join(name)) {
-        Ok(_) => Err(format!(
-            "session {name} does not match an exact session name; use the spelling shown by `shepr session list`"
-        )),
+        Ok(_) => Err(SessionError::NameMismatch { name: name.into() }),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err.to_string()),
+        Err(err) => Err(err.into()),
     }
 }
 
@@ -407,25 +527,26 @@ fn send_stop_request(
     mut stream: LocalStream,
     request: &crate::api::schema::Request,
     deadline: Instant,
-) -> Result<Option<serde_json::Value>, String> {
+) -> Result<Option<serde_json::Value>, SessionError> {
     let Some(write_timeout) = socket_timeout_until(deadline) else {
         return Ok(None);
     };
     if let Err(err) = stream.set_send_timeout(Some(write_timeout))
         && !stop_timeout_error_allows_wait(&err)
     {
-        return Err(err.to_string());
+        return Err(err.into());
     }
 
-    let request = serde_json::to_vec(request).map_err(|err| err.to_string())?;
+    let request =
+        serde_json::to_vec(request).map_err(|err| SessionError::Protocol(err.to_string()))?;
     let response = send_stop_request_inner(&mut stream, &request, deadline);
     match response {
         Ok(Some(line)) => serde_json::from_str(&line)
             .map(Some)
-            .map_err(|err| err.to_string()),
+            .map_err(|err| SessionError::Protocol(err.to_string())),
         Ok(None) => Ok(None),
         Err(err) if stop_request_error_allows_wait(&err) => Ok(None),
-        Err(err) => Err(err.to_string()),
+        Err(err) => Err(err.into()),
     }
 }
 
@@ -535,25 +656,29 @@ fn socket_timeout_from_remaining(remaining: Duration) -> Option<Duration> {
     Some(remaining.max(MIN_SOCKET_TIMEOUT))
 }
 
-pub fn validate_name(name: &str) -> Result<(), String> {
+pub fn validate_name(name: &str) -> Result<(), SessionError> {
     if name.is_empty() {
-        return Err("session name cannot be empty".to_string());
-    }
-    if name.len() > MAX_SESSION_NAME_LEN {
-        return Err(format!(
-            "session name cannot be longer than {MAX_SESSION_NAME_LEN} bytes"
+        return Err(SessionError::InvalidName(
+            "session name cannot be empty".into(),
         ));
     }
+    if name.len() > MAX_SESSION_NAME_LEN {
+        return Err(SessionError::InvalidName(format!(
+            "session name cannot be longer than {MAX_SESSION_NAME_LEN} bytes"
+        )));
+    }
     if name == "." || name == ".." {
-        return Err("session name cannot be . or ..".to_string());
+        return Err(SessionError::InvalidName(
+            "session name cannot be . or ..".into(),
+        ));
     }
     if !name
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     {
-        return Err(
-            "session name may only contain ASCII letters, numbers, '.', '_' and '-'".to_string(),
-        );
+        return Err(SessionError::InvalidName(
+            "session name may only contain ASCII letters, numbers, '.', '_' and '-'".into(),
+        ));
     }
     Ok(())
 }
@@ -694,7 +819,7 @@ mod tests {
         let err = stop_session_with_timeout(&paths, &session, Duration::from_millis(75))
             .expect_err("silent session should fail after timeout");
 
-        assert!(err.contains("did not stop"), "{err}");
+        assert!(matches!(err, SessionError::TimedOut { .. }), "{err}");
         keep_running.store(false, Ordering::Relaxed);
         handle.join().expect("test precondition");
     }
@@ -953,9 +1078,8 @@ mod tests {
         let err = stop_session_with_timeout(&paths, &session, Duration::from_millis(75))
             .expect_err("still-running session should fail");
 
-        assert!(err.contains("did not stop"), "{err}");
         assert!(
-            err.contains(socket_path.to_string_lossy().as_ref()),
+            matches!(&err, SessionError::TimedOut { reachable, .. } if reachable.contains(&socket_path)),
             "{err}"
         );
         keep_running.store(false, Ordering::Relaxed);

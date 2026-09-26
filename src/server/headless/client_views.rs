@@ -38,15 +38,13 @@ pub(super) fn forward_proxied_api_response(
     proxy: Option<(
         String,
         &'static str,
-        std::sync::mpsc::Sender<String>,
-        std::sync::mpsc::Receiver<String>,
+        std::sync::mpsc::Sender<api::error::ApiResult>,
+        std::sync::mpsc::Receiver<api::error::ApiResult>,
     )>,
 ) -> Option<api::schema::ResponseResult> {
     let (request_id, method, respond_to, response_rx) = proxy?;
     let response = response_rx.recv().ok()?;
-    let result = serde_json::from_str::<api::schema::SuccessResponse>(&response)
-        .ok()
-        .map(|response| response.result);
+    let result = response.clone().ok();
     api::send_api_response(&respond_to, &request_id, method, response);
     result
 }

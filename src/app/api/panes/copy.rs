@@ -1,7 +1,11 @@
 use super::*;
 
 impl App {
-    pub(crate) fn handle_pane_clear(&mut self, id: String, target: &PaneTarget) -> String {
+    pub(crate) fn handle_pane_clear(
+        &mut self,
+        id: String,
+        target: &PaneTarget,
+    ) -> crate::api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
@@ -12,12 +16,16 @@ impl App {
             return pane_not_found(id, &target.pane_id);
         };
         match runtime.clear_screen() {
-            Ok(()) => encode_success(id, ResponseResult::Ok {}),
-            Err(err) => encode_error(id, "pane_clear_failed", err),
+            Ok(()) => success(id, ResponseResult::Ok {}),
+            Err(err) => failure(id, crate::api::error::ApiErrorCode::PaneClearFailed, err),
         }
     }
 
-    pub(crate) fn handle_pane_scroll(&mut self, id: String, params: &PaneScrollParams) -> String {
+    pub(crate) fn handle_pane_scroll(
+        &mut self,
+        id: String,
+        params: &PaneScrollParams,
+    ) -> crate::api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -33,7 +41,7 @@ impl App {
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
-        encode_success(id, ResponseResult::PaneInfo { pane })
+        success(id, ResponseResult::PaneInfo { pane })
     }
 
     pub(crate) fn pane_selection_text(
@@ -83,16 +91,16 @@ impl App {
         &mut self,
         id: String,
         params: PaneSelectionReadParams,
-    ) -> String {
+    ) -> crate::api::error::ApiResult {
         match self.pane_selection_text(&params) {
-            Ok(text) => encode_success(
+            Ok(text) => success(
                 id,
                 ResponseResult::PaneSelection {
                     pane_id: params.pane_id,
                     text,
                 },
             ),
-            Err((code, message)) => encode_error(id, code, message),
+            Err((code, message)) => failure(id, code, message),
         }
     }
 
@@ -100,7 +108,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneCopyMotionParams,
-    ) -> String {
+    ) -> crate::api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -115,7 +123,11 @@ impl App {
             .content_revision
             .is_some_and(|revision| revision != before || !before.is_multiple_of(2))
         {
-            return encode_error(id, "stale_content", "pane content changed");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::StaleContent,
+                "pane content changed",
+            );
         }
         let origin = runtime
             .scroll_metrics()
@@ -132,9 +144,9 @@ impl App {
                     crate::terminal::Point::new(absolute_cursor_row, width.saturating_sub(1)),
                 );
                 let Some(text) = runtime.extract_selection(&selection) else {
-                    return encode_error(
+                    return failure(
                         id,
-                        "copy_motion_unavailable",
+                        crate::api::error::ApiErrorCode::CopyMotionUnavailable,
                         "terminal row is unavailable",
                     );
                 };
@@ -155,9 +167,9 @@ impl App {
             | PaneCopyMotion::PreviousBigWordStart
             | PaneCopyMotion::NextBigWordEnd => {
                 let Some(motion) = terminal_word_motion(params.motion) else {
-                    return encode_error(
+                    return failure(
                         id,
-                        "copy_motion_unavailable",
+                        crate::api::error::ApiErrorCode::CopyMotionUnavailable,
                         "copy motion is not a word motion",
                     );
                 };
@@ -188,9 +200,13 @@ impl App {
         };
         let after = runtime.content_seq();
         if params.content_revision.is_some() && after != before {
-            return encode_error(id, "stale_content", "pane content changed");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::StaleContent,
+                "pane content changed",
+            );
         }
-        encode_success(
+        success(
             id,
             ResponseResult::PaneCopyMotion {
                 pane_id: params.pane_id,
@@ -207,7 +223,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneCopySearchParams,
-    ) -> String {
+    ) -> crate::api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -220,11 +236,19 @@ impl App {
         const MAX_QUERY_BYTES: usize = 4096;
         const MAX_RETURNED_MATCHES: usize = 1024;
         if params.query.len() > MAX_QUERY_BYTES {
-            return encode_error(id, "query_too_large", "copy search query is too large");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::QueryTooLarge,
+                "copy search query is too large",
+            );
         }
         let before = runtime.content_seq();
         if before != params.content_revision || !before.is_multiple_of(2) {
-            return encode_error(id, "stale_content", "pane content changed");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::StaleContent,
+                "pane content changed",
+            );
         }
         let cursor = crate::pane::TerminalTextPoint {
             row: params.cursor.row,
@@ -256,7 +280,11 @@ impl App {
         );
         let after = runtime.content_seq();
         if after != before || !after.is_multiple_of(2) {
-            return encode_error(id, "stale_content", "pane content changed");
+            return failure(
+                id,
+                crate::api::error::ApiErrorCode::StaleContent,
+                "pane content changed",
+            );
         }
         let matches = result
             .matches
@@ -272,7 +300,7 @@ impl App {
                 },
             })
             .collect();
-        encode_success(
+        success(
             id,
             ResponseResult::PaneCopySearch {
                 pane_id: params.pane_id,

@@ -5,7 +5,7 @@ use bytes::Bytes;
 use crossterm::event::{KeyModifiers, MouseEventKind};
 use tracing::debug;
 
-use crate::api::schema::{PaneReadResult, ResponseResult, SuccessResponse};
+use crate::api::schema::{PaneReadResult, ResponseResult};
 use crate::terminal::{ScreenSnapshot, TerminalId, TerminalRuntime, UpwardMerge};
 
 const INITIAL_QUIET: Duration = Duration::from_millis(10);
@@ -27,8 +27,8 @@ enum Phase {
 pub(crate) struct PendingAltScreenRead {
     pub(crate) terminal_id: TerminalId,
     request_id: String,
-    respond_to: mpsc::Sender<String>,
-    fallback_response: String,
+    respond_to: mpsc::Sender<crate::api::error::ApiResult>,
+    fallback_response: crate::api::error::ApiResult,
     read: PaneReadResult,
     lines: usize,
     unwrap: bool,
@@ -53,8 +53,8 @@ impl PendingAltScreenRead {
     pub(crate) fn start(
         terminal_id: TerminalId,
         request_id: String,
-        respond_to: mpsc::Sender<String>,
-        fallback_response: String,
+        respond_to: mpsc::Sender<crate::api::error::ApiResult>,
+        fallback_response: crate::api::error::ApiResult,
         read: PaneReadResult,
         lines: usize,
         unwrap: bool,
@@ -444,13 +444,7 @@ impl PendingAltScreenRead {
         self.read.text = snapshot.text;
         self.read.truncated = snapshot.truncated;
         let request_id = self.request_id.clone();
-        let response = crate::api::serialize_response_or_error(
-            &request_id,
-            &SuccessResponse {
-                id: request_id.clone(),
-                result: ResponseResult::PaneRead { read: self.read },
-            },
-        );
+        let response = Ok(ResponseResult::PaneRead { read: self.read });
         crate::api::send_api_response(&self.respond_to, &request_id, "pane.read", response);
         None
     }
@@ -536,24 +530,33 @@ mod tests {
         runtime: &TerminalRuntime,
         now: Instant,
         lines: usize,
-    ) -> (PendingAltScreenRead, mpsc::Receiver<String>) {
+    ) -> (
+        PendingAltScreenRead,
+        mpsc::Receiver<crate::api::error::ApiResult>,
+    ) {
         let (_, initial) = runtime.screen_text_snapshot().expect("initial snapshot");
         let (respond_to, response_rx) = mpsc::channel();
+        let read = PaneReadResult {
+            pane_id: "w1:p1".into(),
+            workspace_id: "w1".into(),
+            tab_id: "w1:t1".into(),
+            source: ReadSource::Recent,
+            format: ReadFormat::Text,
+            text: String::new(),
+            revision: 0,
+            truncated: false,
+        };
         let pending = PendingAltScreenRead::start(
             TerminalId::alloc(),
             "read".into(),
             respond_to,
-            "fallback".into(),
-            PaneReadResult {
-                pane_id: "w1:p1".into(),
-                workspace_id: "w1".into(),
-                tab_id: "w1:t1".into(),
-                source: ReadSource::Recent,
-                format: ReadFormat::Text,
-                text: String::new(),
-                revision: 0,
-                truncated: false,
-            },
+            Ok(ResponseResult::PaneRead {
+                read: PaneReadResult {
+                    text: "fallback".into(),
+                    ..read.clone()
+                },
+            }),
+            read,
             lines,
             false,
             initial,
@@ -563,14 +566,12 @@ mod tests {
         (pending, response_rx)
     }
 
-    fn response_text(response_rx: &mpsc::Receiver<String>) -> String {
-        let response: SuccessResponse = serde_json::from_str(
-            &response_rx
-                .recv_timeout(Duration::from_millis(50))
-                .expect("read response"),
-        )
-        .expect("valid response");
-        let ResponseResult::PaneRead { read } = response.result else {
+    fn response_text(response_rx: &mpsc::Receiver<crate::api::error::ApiResult>) -> String {
+        let response = response_rx
+            .recv_timeout(Duration::from_millis(50))
+            .expect("read response")
+            .expect("successful read");
+        let ResponseResult::PaneRead { read } = response else {
             panic!("expected pane read response");
         };
         read.text
@@ -594,12 +595,7 @@ mod tests {
                 .poll(Some(&runtime), started + MAX_DURATION)
                 .is_none()
         );
-        assert_eq!(
-            response_rx
-                .recv_timeout(Duration::from_millis(50))
-                .expect("fallback response"),
-            "fallback"
-        );
+        assert_eq!(response_text(&response_rx), "fallback");
 
         drop(runtime);
         drop(_guard);
@@ -628,12 +624,7 @@ mod tests {
                 .poll(Some(&runtime), started + MAX_DURATION)
                 .is_none()
         );
-        assert_eq!(
-            response_rx
-                .recv_timeout(Duration::from_millis(50))
-                .expect("fallback response"),
-            "fallback"
-        );
+        assert_eq!(response_text(&response_rx), "fallback");
 
         drop(runtime);
         drop(_guard);
@@ -662,12 +653,7 @@ mod tests {
                 .poll(Some(&runtime), started + MAX_DURATION)
                 .is_none()
         );
-        assert_eq!(
-            response_rx
-                .recv_timeout(Duration::from_millis(50))
-                .expect("fallback response"),
-            "fallback"
-        );
+        assert_eq!(response_text(&response_rx), "fallback");
 
         drop(runtime);
         drop(_guard);

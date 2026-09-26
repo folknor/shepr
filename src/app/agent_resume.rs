@@ -299,7 +299,7 @@ impl App {
         tab_idx: usize,
         tab: &crate::workspace::Tab,
         terminal_area: Rect,
-    ) -> Vec<crate::layout::PaneInfo> {
+    ) -> Vec<crate::ui::PaneChromeInfo> {
         let mut pane_infos = derived_pending_agent_resume_pane_infos(
             tab,
             terminal_area,
@@ -498,7 +498,7 @@ fn derived_pending_agent_resume_pane_infos(
     pane_gaps: bool,
     pane_outer_borders: bool,
     pane_scrollbars: bool,
-) -> Vec<crate::layout::PaneInfo> {
+) -> Vec<crate::ui::PaneChromeInfo> {
     let geometry = crate::workspace::PaneGeometry {
         area: terminal_area,
         pane_borders,
@@ -811,7 +811,10 @@ mod tests {
             .expect("test precondition");
         let pane_infos = workspace.tabs[0]
             .layout
-            .panes(ratatui::layout::Rect::new(0, 0, 100, 30));
+            .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
+            .into_iter()
+            .map(Into::into)
+            .collect();
         app.state.workspaces = vec![workspace];
         app.state.active = Some(0);
         app.state.ensure_test_terminals();
@@ -891,7 +894,10 @@ mod tests {
             .expect("test precondition");
         app.state.view.pane_infos = workspace.tabs[0]
             .layout
-            .panes(ratatui::layout::Rect::new(0, 0, 100, 30));
+            .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
+            .into_iter()
+            .map(Into::into)
+            .collect();
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![workspace];
         app.state.active = Some(0);
@@ -926,7 +932,10 @@ mod tests {
             .expect("test precondition");
         app.state.view.pane_infos = workspace.tabs[0]
             .layout
-            .panes(ratatui::layout::Rect::new(0, 0, 100, 30));
+            .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
+            .into_iter()
+            .map(Into::into)
+            .collect();
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![workspace];
         app.state.active = Some(0);
@@ -986,7 +995,10 @@ mod tests {
             .expect("test precondition");
         app.state.view.pane_infos = active_workspace.tabs[0]
             .layout
-            .panes(ratatui::layout::Rect::new(0, 0, 100, 30));
+            .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
+            .into_iter()
+            .map(Into::into)
+            .collect();
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![active_workspace, hidden_workspace];
         app.state.active = Some(0);
@@ -1049,7 +1061,10 @@ mod tests {
             .expect("test precondition");
         app.state.view.pane_infos = workspace.tabs[0]
             .layout
-            .panes(ratatui::layout::Rect::new(0, 0, 100, 30));
+            .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
+            .into_iter()
+            .map(Into::into)
+            .collect();
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![workspace];
         app.state.active = Some(0);
@@ -1111,7 +1126,7 @@ mod tests {
             .terminal_id(hidden_pane)
             .cloned()
             .expect("test precondition");
-        app.state.view.pane_infos = vec![crate::layout::PaneInfo {
+        app.state.view.pane_infos = vec![crate::ui::PaneChromeInfo {
             id: visible_pane,
             rect: ratatui::layout::Rect::new(0, 0, 100, 30),
             inner_rect: ratatui::layout::Rect::new(1, 1, 98, 28),
@@ -1174,7 +1189,10 @@ mod tests {
         let current_workspace = crate::workspace::Workspace::test_new("current");
         app.state.view.pane_infos = previous_workspace.tabs[0]
             .layout
-            .panes(ratatui::layout::Rect::new(0, 0, 100, 30));
+            .panes(ratatui::layout::Rect::new(0, 0, 100, 30))
+            .into_iter()
+            .map(Into::into)
+            .collect();
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 80, 24);
         app.state.workspaces = vec![previous_workspace, current_workspace];
         app.state.active = Some(1);
@@ -1229,7 +1247,7 @@ mod tests {
             .terminal_id(pane_id)
             .cloned()
             .expect("test precondition");
-        app.state.view.pane_infos = vec![crate::layout::PaneInfo {
+        app.state.view.pane_infos = vec![crate::ui::PaneChromeInfo {
             id: pane_id,
             rect: ratatui::layout::Rect::new(0, 0, 100, 30),
             inner_rect: ratatui::layout::Rect::new(1, 1, 98, 28),

@@ -6,7 +6,7 @@ use crate::api::schema::{
     PaneOutputMatchedEvent, PaneScrollChangedEvent, PaneScrollInfo, Request, Subscription,
     SubscriptionEventData, SubscriptionEventEnvelope, SubscriptionEventKind,
 };
-use crate::api::server::{APP_RESPONSE_TIMEOUT, dispatch_to_app_with_timeout};
+use crate::api::server::{APP_RESPONSE_TIMEOUT, dispatch_to_app_with_timeout_result};
 use crate::api::{ApiRequestSender, EventHub};
 
 pub(super) fn output_match_read_source(
@@ -166,10 +166,11 @@ impl ActiveSubscription {
                         Err(err) => {
                             return Err(ErrorResponse {
                                 id: request_id.to_string(),
-                                error: ErrorBody {
-                                    code: "invalid_regex".into(),
-                                    message: err.to_string(),
-                                },
+                                error: crate::api::error::ApiError::new(
+                                    crate::api::error::ApiErrorCode::InvalidRegex,
+                                    err.to_string(),
+                                )
+                                .into_body(),
                             });
                         }
                     },
@@ -445,22 +446,23 @@ pub(super) fn subscription_events_after(
     sequence: u64,
 ) -> Result<Vec<(u64, crate::api::schema::EventEnvelope)>, ErrorBody> {
     event_hub.events_after_checked(sequence).map_err(|error| match error {
-        EventHistoryError::Lost => ErrorBody {
-            code: "events_lost".into(),
-            message: "event subscription fell behind retained history; resubscribe and resync with session.snapshot".into(),
-        },
-        EventHistoryError::Unavailable => ErrorBody {
-            code: "server_unavailable".into(),
-            message: "event history is unavailable".into(),
-        },
+        EventHistoryError::Lost => crate::api::error::ApiError::new(
+            crate::api::error::ApiErrorCode::EventsLost,
+            "event subscription fell behind retained history; resubscribe and resync with session.snapshot",
+        ).into_body(),
+        EventHistoryError::Unavailable => crate::api::error::ApiError::new(
+            crate::api::error::ApiErrorCode::ServerUnavailable,
+            "event history is unavailable",
+        ).into_body(),
     })
 }
 
 fn event_encoding_error(error: &serde_json::Error) -> ErrorBody {
-    ErrorBody {
-        code: "internal_error".into(),
-        message: format!("failed to encode subscription event: {error}"),
-    }
+    crate::api::error::ApiError::new(
+        crate::api::error::ApiErrorCode::InternalError,
+        format!("failed to encode subscription event: {error}"),
+    )
+    .into_body()
 }
 
 impl ActiveEventSubscription {
@@ -705,7 +707,7 @@ fn pane_read(
     strip_ansi: bool,
     api_tx: &ApiRequestSender,
 ) -> Result<crate::api::schema::PaneReadResult, ErrorResponse> {
-    let response = dispatch_to_app_with_timeout(
+    let response = dispatch_to_app_with_timeout_result(
         Request {
             id: request_id.clone(),
             method: Method::PaneRead(crate::api::schema::PaneReadParams {
@@ -721,31 +723,21 @@ fn pane_read(
         api_tx,
         Some(APP_RESPONSE_TIMEOUT),
     );
-    let value: serde_json::Value = serde_json::from_str(&response).map_err(|_| ErrorResponse {
-        id: request_id.clone(),
-        error: ErrorBody {
-            code: "internal_error".into(),
-            message: "failed to decode pane read response".into(),
-        },
-    })?;
-    if value.get("error").is_some() {
-        let response =
-            serde_json::from_value::<ErrorResponse>(value).map_err(|_| ErrorResponse {
-                id: request_id,
-                error: ErrorBody {
-                    code: "internal_error".into(),
-                    message: "failed to decode pane read error".into(),
-                },
-            })?;
-        return Err(response);
+    match response {
+        Ok(crate::api::schema::ResponseResult::PaneRead { read }) => Ok(read),
+        Err(error) => Err(ErrorResponse {
+            id: request_id,
+            error: error.into_body(),
+        }),
+        Ok(_) => Err(ErrorResponse {
+            id: request_id,
+            error: crate::api::error::ApiError::new(
+                crate::api::error::ApiErrorCode::InternalError,
+                "app returned an unexpected pane read result",
+            )
+            .into_body(),
+        }),
     }
-    serde_json::from_value(value["result"]["read"].clone()).map_err(|_| ErrorResponse {
-        id: request_id,
-        error: ErrorBody {
-            code: "internal_error".into(),
-            message: "failed to decode pane read result".into(),
-        },
-    })
 }
 
 fn pane_get(
@@ -753,7 +745,7 @@ fn pane_get(
     pane_id: &str,
     api_tx: &ApiRequestSender,
 ) -> Result<crate::api::schema::PaneInfo, ErrorResponse> {
-    let response = dispatch_to_app_with_timeout(
+    let response = dispatch_to_app_with_timeout_result(
         Request {
             id: request_id.clone(),
             method: Method::PaneGet(crate::api::schema::PaneTarget {
@@ -763,31 +755,21 @@ fn pane_get(
         api_tx,
         Some(APP_RESPONSE_TIMEOUT),
     );
-    let value: serde_json::Value = serde_json::from_str(&response).map_err(|_| ErrorResponse {
-        id: request_id.clone(),
-        error: ErrorBody {
-            code: "internal_error".into(),
-            message: "failed to decode pane get response".into(),
-        },
-    })?;
-    if value.get("error").is_some() {
-        let response =
-            serde_json::from_value::<ErrorResponse>(value).map_err(|_| ErrorResponse {
-                id: request_id,
-                error: ErrorBody {
-                    code: "internal_error".into(),
-                    message: "failed to decode pane get error".into(),
-                },
-            })?;
-        return Err(response);
+    match response {
+        Ok(crate::api::schema::ResponseResult::PaneInfo { pane }) => Ok(pane),
+        Err(error) => Err(ErrorResponse {
+            id: request_id,
+            error: error.into_body(),
+        }),
+        Ok(_) => Err(ErrorResponse {
+            id: request_id,
+            error: crate::api::error::ApiError::new(
+                crate::api::error::ApiErrorCode::InternalError,
+                "app returned an unexpected pane get result",
+            )
+            .into_body(),
+        }),
     }
-    serde_json::from_value(value["result"]["pane"].clone()).map_err(|_| ErrorResponse {
-        id: request_id,
-        error: ErrorBody {
-            code: "internal_error".into(),
-            message: "failed to decode pane get result".into(),
-        },
-    })
 }
 
 #[cfg(test)]
@@ -845,7 +827,9 @@ mod tests {
     }
 
     /// An app stand-in that answers every request with `respond`.
-    fn answering_app(respond: impl Fn(&Request) -> String + Send + 'static) -> ApiRequestSender {
+    fn answering_app(
+        respond: impl Fn(&Request) -> crate::api::error::ApiResult + Send + 'static,
+    ) -> ApiRequestSender {
         let (api_tx, mut api_rx) =
             tokio::sync::mpsc::unbounded_channel::<crate::api::ApiRequestMessage>();
         std::thread::spawn(move || {
@@ -857,15 +841,11 @@ mod tests {
     }
 
     fn pane_not_found_app() -> ApiRequestSender {
-        answering_app(|request| {
-            serde_json::to_string(&ErrorResponse {
-                id: request.id.clone(),
-                error: ErrorBody {
-                    code: "pane_not_found".into(),
-                    message: "pane gone".into(),
-                },
-            })
-            .expect("test precondition")
+        answering_app(|_request| {
+            Err(crate::api::error::ApiError::new(
+                crate::api::error::ApiErrorCode::PaneNotFound,
+                "pane gone",
+            ))
         })
     }
 
@@ -998,17 +978,13 @@ mod tests {
     #[test]
     fn stream_sequences_never_decrease_across_history_and_samples() {
         let event_hub = EventHub::default();
-        let api_tx = answering_app(|request| {
+        let api_tx = answering_app(|_request| {
             let pane = pane_info_with_scroll(Some(PaneScrollInfo {
                 offset_from_bottom: 3,
                 max_offset_from_bottom: 10,
                 viewport_rows: 5,
             }));
-            serde_json::to_string(&crate::api::schema::SuccessResponse {
-                id: request.id.clone(),
-                result: crate::api::schema::ResponseResult::PaneInfo { pane },
-            })
-            .expect("test precondition")
+            Ok(crate::api::schema::ResponseResult::PaneInfo { pane })
         });
         let start = event_hub.current_sequence();
         let focused = ActiveSubscription::new(

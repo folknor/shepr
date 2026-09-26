@@ -272,9 +272,15 @@ impl ValidatedConfig {
         provenance: ConfigProvenance,
         keybind_validation: super::keybinds::KeybindValidation,
         paths: AppPaths,
-    ) -> Result<Self, Vec<String>> {
+    ) -> Result<Self, Vec<super::ConfigDiagnostic>> {
         let resolved_palette = config
-            .resolve_palette_with_ui_accent(provenance.is_explicit(UiPreferenceKey::Accent))?;
+            .resolve_palette_with_ui_accent(provenance.is_explicit(UiPreferenceKey::Accent))
+            .map_err(|diagnostics| {
+                diagnostics
+                    .into_iter()
+                    .map(super::ConfigDiagnostic::Validation)
+                    .collect::<Vec<_>>()
+            })?;
         Ok(Self {
             config,
             provenance,

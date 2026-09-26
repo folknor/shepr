@@ -1,3 +1,4 @@
+mod diagnostic;
 mod io;
 mod keybinds;
 mod model;
@@ -13,6 +14,7 @@ pub use self::theme::CustomThemeColors;
 #[cfg(test)]
 pub(crate) use self::theme::THEME_NAMES;
 pub use self::{
+    diagnostic::ConfigDiagnostic,
     io::AppPaths,
     keybinds::{
         ActionKeybinds, BindingConfig, IndexedKeybind, Keybinds, LiveKeybindConfig,

@@ -89,7 +89,7 @@ pub(super) fn run_on_machine(
     selector: &str,
     command: Option<&super::CliCommand>,
     paths: &crate::config::AppPaths,
-) -> io::Result<i32> {
+) -> super::CliResult<i32> {
     let Some(command) = command else {
         return usage_error("usage: shepr --machine <label-or-id> <command>");
     };
@@ -109,12 +109,11 @@ pub(super) fn run_on_machine(
     super::dispatch_with_config(command, Some(config), &context)
 }
 
-fn usage_error(error: &str) -> io::Result<i32> {
-    eprintln!("error: {error}");
-    Ok(2)
+fn usage_error(error: &str) -> super::CliResult<i32> {
+    Err(super::CliError::Usage(error.into()))
 }
 
-pub(super) fn api_client(context: &CliContext) -> io::Result<ApiClient> {
+pub(super) fn api_client(context: &CliContext) -> super::CliResult<ApiClient> {
     let mut target = context.target.borrow_mut();
     let ApiTarget::Machine(target) = &mut *target else {
         return Ok(ApiClient::local(context));
@@ -449,9 +448,9 @@ mod tests {
 
         // A machine with no command to run is a usage error before any
         // catalog or network access.
-        let outcome = run_on_machine("mac", None, &crate::config::AppPaths::default())
-            .expect("test precondition");
-        assert_eq!(outcome, 2);
+        let error = run_on_machine("mac", None, &crate::config::AppPaths::default())
+            .expect_err("a missing command is a usage error");
+        assert_eq!(error.exit_code(), 2);
     }
 
     #[test]

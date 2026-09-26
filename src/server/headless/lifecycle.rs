@@ -144,10 +144,13 @@ impl ShutdownLifecycle {
     /// entered its terminal stopping phase.
     pub(super) fn shutdown_error(&self) -> Option<api::schema::ErrorBody> {
         if self.phase == ShutdownPhase::Stopping {
-            Some(api::schema::ErrorBody {
-                code: "server_unavailable".into(),
-                message: "server is shutting down".into(),
-            })
+            Some(
+                api::error::ApiError::new(
+                    api::error::ApiErrorCode::ServerUnavailable,
+                    "server is shutting down",
+                )
+                .into_body(),
+            )
         } else {
             None
         }
@@ -248,7 +251,9 @@ impl HeadlessServer {
 
         // Clear client-local host graphics, then send ServerShutdown to all connected clients.
         let shutdown_msg = ServerMessage::ServerShutdown {
-            reason: Some("server is shutting down".to_owned()),
+            reason: Some(crate::protocol::ShutdownReason::Message(
+                "server is shutting down".to_owned(),
+            )),
         };
         self.send_to_all_clients(&shutdown_msg);
 
@@ -276,7 +281,9 @@ impl HeadlessServer {
         // Send ServerShutdown to all remaining clients.
         if !self.clients.is_empty() {
             let shutdown_msg = ServerMessage::ServerShutdown {
-                reason: Some("server is shutting down".to_owned()),
+                reason: Some(crate::protocol::ShutdownReason::Message(
+                    "server is shutting down".to_owned(),
+                )),
             };
             self.send_to_all_clients(&shutdown_msg);
 

@@ -48,12 +48,12 @@ use terminal_geometry::query_host_terminal_appearance;
 #[cfg(test)]
 use terminal_geometry::{
     cell_size_fallback, current_terminal_geometry_with, ioctl_cell_size, pack_cell_size,
-    resize_report_required, should_query_host_cell_size, write_host_cell_size_query,
-    write_host_terminal_appearance_query, write_host_terminal_theme_query,
+    resize_report_required, write_host_cell_size_query, write_host_terminal_appearance_query,
+    write_host_terminal_theme_query,
 };
 use terminal_geometry::{
     host_cell_size_query_required, initial_terminal_geometry, query_host_cell_size,
-    query_host_terminal_theme, resize_poll_loop, should_query_host_terminal_theme,
+    query_host_terminal_theme, resize_poll_loop,
 };
 use terminal_geometry::{reported_cell_size_from_events, store_reported_cell_size};
 use terminal_setup::{
@@ -71,9 +71,10 @@ use attach::AttachEscapeState;
 use attach::direct_attach_pixel_mouse;
 use attach::{AttachInputAction, attach_semantic_message};
 pub use errors::ClientError;
+use errors::ClientErrorContext;
 #[cfg(test)]
-use handshake::{REMOTE_HANDSHAKE_READ_TIMEOUT, handshake_read_timeout};
-use handshake::{client_shell_keybinding_source, do_handshake, is_remote_client_process};
+use handshake::REMOTE_HANDSHAKE_READ_TIMEOUT;
+use handshake::{ClientProcessRole, do_handshake};
 
 use std::collections::VecDeque;
 use std::io::{self, Write as _};
@@ -110,7 +111,12 @@ fn run_client_with_mode(
     crate::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let client_rendered_shell = attach_request.is_none();
     let socket_path = client_socket_path(paths);
-    let keybinding_source = client_shell_keybinding_source().map_err(io::Error::other)?;
+    let error_context = ClientErrorContext::new(
+        paths.server_address().attach_command(paths.session_id()),
+        std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR).ok(),
+    );
+    let role = ClientProcessRole::from_env().map_err(io::Error::other)?;
+    let keybinding_source = role.keybinding_source();
     let shell_config = client_rendered_shell.then(|| {
         shell::ClientShellConfig::from_validated_config(config)
             .with_keybinding_source(keybinding_source)
@@ -123,6 +129,7 @@ fn run_client_with_mode(
     settings.pixel_geometry_enabled = pixel_geometry_enabled;
     settings.pixel_geometry_fallback = pixel_geometry_fallback;
     let mut loop_config = ClientLoopConfig {
+        role,
         settings,
         host_escape_disambiguation_active: false,
         initial_host_input: Vec::new(),
@@ -134,7 +141,7 @@ fn run_client_with_mode(
     crate::logging::startup("client");
     info!(path = %socket_path.display(), "{log_message}");
 
-    let endpoint_catalog = if client_rendered_shell && !is_remote_client_process() {
+    let endpoint_catalog = if client_rendered_shell && role == ClientProcessRole::Local {
         endpoint::EndpointCatalog::load(paths).unwrap_or_else(|error| {
             warn!(%error, "saved SSH endpoint catalog is unavailable");
             endpoint::EndpointCatalog::default()
@@ -170,6 +177,7 @@ fn run_client_with_mode(
         .map(|mut stream| {
             let handshake = do_handshake(
                 &mut stream,
+                role,
                 cols,
                 rows,
                 cell_width_px,
@@ -274,9 +282,9 @@ fn run_client_with_mode(
             &err,
             ClientError::ServerShutdown {
                 reason: Some(reason)
-            } if reason == "detached"
+            } if *reason == protocol::ShutdownReason::Detached
         );
-        let error_message = err.display_with_target(paths.session_id(), paths.server_address());
+        let error_message = err.display_with_context(&error_context);
         let _ = writeln!(io::stderr(), "shepr: {error_message}");
         rt.shutdown_timeout(Duration::from_millis(100));
         crate::remote::release_ssh_resources_before_exit(Duration::from_secs(1));
@@ -361,7 +369,7 @@ async fn run_client_loop(
     state.set_host_size(cols, rows);
     // Only a client that loaded the saved machines follows them; attach and remote-client
     // processes run with an empty catalog.
-    let catalog_watch = (state.mode.is_shell() && !is_remote_client_process())
+    let catalog_watch = (state.mode.is_shell() && config.role == ClientProcessRole::Local)
         .then(|| endpoint::EndpointCatalogWatch::new(&config.paths, std::time::Instant::now()));
     let freeze_recovery_attempted = None;
     if let Some(shell) = state.mode.shell_mut() {
@@ -388,8 +396,7 @@ async fn run_client_loop(
     let endpoint_commands = endpoint::commands::EndpointCommands::default();
 
     // Spawn the stdin reader thread.
-    let will_query_host_terminal_theme =
-        !state.mode.is_escape_attach() && should_query_host_terminal_theme();
+    let will_query_host_terminal_theme = !state.mode.is_escape_attach();
     // Terminals that report no pixel size through the ioctl are asked directly
     // instead of falling back to an assumed cell size.
     let will_query_host_cell_size = !state.mode.is_escape_attach()
@@ -1005,18 +1012,15 @@ impl ClientLoop<'_> {
                     state.present_chrome(frame, pending_activation.is_some());
                 }
                 let surface_decoder = protocol::surface_reuse::Decoder::default();
-                let reader_tx = event_tx.clone();
-                std::thread::spawn(move || {
-                    server_reader_thread(
-                        reader,
-                        &reader_tx,
-                        &reader_quit,
-                        MAX_FRAME_SIZE,
-                        endpoint_id,
-                        generation,
-                        surface_decoder,
-                    );
-                });
+                spawn_endpoint_reader(
+                    reader,
+                    event_tx,
+                    &reader_quit,
+                    MAX_FRAME_SIZE,
+                    endpoint_id,
+                    generation,
+                    surface_decoder,
+                )?;
             }
         };
         Ok(ClientLoopAction::NextEvent)
@@ -1178,13 +1182,13 @@ impl ClientLoop<'_> {
                     endpoint_id,
                     &io::Error::new(
                         io::ErrorKind::ConnectionAborted,
-                        reason.unwrap_or_else(|| "server stopped".into()),
+                        reason.map_or_else(|| "server stopped".into(), |reason| reason.to_string()),
                     ),
                 );
             }
-            ServerMessage::ClientShellError { message } => {
+            ServerMessage::ClientShellError { kind } => {
                 if let Some(shell) = state.mode.shell_mut()
-                    && shell.receive_endpoint_error(message)
+                    && shell.receive_endpoint_error(kind.to_string())
                     && let Some(frame) = shell.compose(state.reported_size.0, state.reported_size.1)
                 {
                     // The error banner is chrome; it must show through an
@@ -1302,9 +1306,9 @@ impl ClientLoop<'_> {
                     return Ok(ClientLoopAction::Exit);
                 }
             }
-            ServerMessage::DirectTerminalNotice { message } => {
+            ServerMessage::DirectTerminalNotice { kind } => {
                 if state.mode.is_escape_attach() {
-                    remember_direct_notice(direct_notices, message);
+                    remember_direct_notice(direct_notices, kind.to_string());
                 }
             }
             ServerMessage::Clipboard { data } => {
@@ -1440,12 +1444,7 @@ impl ClientLoop<'_> {
                 debug!("received unexpected Welcome in main loop");
             }
             ServerMessage::SurfaceUpdate(_) => {
-                return Err(ClientError::Protocol(protocol::FramingError::Io(
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "surface update reached presentation before decoding",
-                    ),
-                )));
+                return Err(ClientError::SurfaceUpdateBeforeDecode);
             }
         }
         Ok(ClientLoopAction::NextEvent)

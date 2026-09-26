@@ -1,17 +1,4 @@
-use std::fmt;
-
 use crate::api::schema::{ErrorBody, ErrorResponse};
-
-#[derive(Debug)]
-pub(super) struct ProtocolMismatchReported;
-
-impl fmt::Display for ProtocolMismatchReported {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("protocol mismatch was already reported")
-    }
-}
-
-impl std::error::Error for ProtocolMismatchReported {}
 
 /// The error reported for a server whose protocol is another build's, as
 /// classified by `protocol::Compatibility`.
@@ -39,14 +26,13 @@ pub(super) fn mismatch_response(
     }
 }
 
-pub(super) fn reported_error() -> std::io::Error {
-    std::io::Error::other(ProtocolMismatchReported)
+pub(super) fn cli_error(response: ErrorResponse) -> super::CliError {
+    super::CliError::Response(response)
 }
 
-pub(super) fn was_reported(err: &std::io::Error) -> bool {
-    err.get_ref()
-        .and_then(|source| source.downcast_ref::<ProtocolMismatchReported>())
-        .is_some()
+#[cfg(test)]
+pub(super) fn was_reported(error: &super::CliError) -> bool {
+    matches!(error, super::CliError::Response(response) if response.error.code == "protocol_mismatch")
 }
 
 #[cfg(test)]
@@ -101,10 +87,12 @@ mod tests {
     }
 
     #[test]
-    fn reported_error_is_recognizable_without_string_matching() {
-        assert!(was_reported(&reported_error()));
-        assert!(!was_reported(&std::io::Error::other(
-            "protocol mismatch was already reported"
+    fn cli_error_is_recognizable_without_string_matching() {
+        assert!(was_reported(&cli_error(mismatch_response(
+            "req", 0, "restart"
+        ))));
+        assert!(!was_reported(&super::super::CliError::Io(
+            std::io::Error::other("unrelated")
         )));
     }
 }

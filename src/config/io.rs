@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CONFIG_PATH_ENV_VAR, Config, ConfigProvenance, ConfigSource, NewTerminalCwdConfig,
-    ValidatedConfig,
+    CONFIG_PATH_ENV_VAR, Config, ConfigDiagnostic, ConfigProvenance, ConfigSource,
+    NewTerminalCwdConfig, ValidatedConfig,
     model::{ConfigDocumentState, LoadedConfig},
 };
 
@@ -410,7 +410,7 @@ impl Config {
         if !config_unavailable
             && let Some(error) = configured_home_path_error(&loaded.config, paths.home_dir())
         {
-            loaded.diagnostics.push(error);
+            loaded.diagnostics.push(ConfigDiagnostic::Path(error));
         }
         loaded
     }
@@ -418,7 +418,7 @@ impl Config {
     /// Load a config for an application launch. Every path or validation
     /// problem is fatal, so a default config from an unsuccessful parse is
     /// never returned to runtime callers.
-    pub fn load_validated(paths: &AppPaths) -> Result<ValidatedConfig, Vec<String>> {
+    pub fn load_validated(paths: &AppPaths) -> Result<ValidatedConfig, Vec<ConfigDiagnostic>> {
         Self::load_for_check(paths).into_validated(paths.clone())
     }
 
@@ -437,7 +437,9 @@ impl Config {
                     document_state: ConfigDocumentState::Missing,
                 }
             }
-            Err(err) => default_loaded_config(vec![format!("config read error: {err}")]),
+            Err(err) => default_loaded_config(vec![ConfigDiagnostic::Read(format!(
+                "config read error: {err}"
+            ))]),
         }
     }
 
@@ -451,16 +453,22 @@ impl Config {
                             match ConfigProvenance::from_config(&config, Some(&document)) {
                                 Ok(provenance) => provenance,
                                 Err(error) => {
-                                    return default_loaded_config(vec![format!(
-                                        "config provenance error: {error}"
-                                    )]);
+                                    return default_loaded_config(vec![
+                                        ConfigDiagnostic::Provenance(format!(
+                                            "config provenance error: {error}"
+                                        )),
+                                    ]);
                                 }
                             };
                         let keybind_validation = config.compute_keybind_validation(|field| {
                             provenance.key_is_configured(&format!("keys.{field}"))
                         });
-                        let (unknown_sections, mut diagnostics) =
+                        let (unknown_sections, unknown_diagnostics) =
                             unknown_top_level_sections(&document, &ignored_keys);
+                        let mut diagnostics = unknown_diagnostics
+                            .into_iter()
+                            .map(ConfigDiagnostic::Unknown)
+                            .collect::<Vec<_>>();
                         diagnostics.extend(unknown_config_key_diagnostics(
                             ignored_keys
                                 .into_iter()
@@ -468,9 +476,12 @@ impl Config {
                                     !matches!(path.as_slice(), [ConfigKeyPathSegment::Key(key)] if unknown_sections.contains(key))
                                 })
                                 .collect(),
-                        ));
+                        ).into_iter().map(ConfigDiagnostic::Unknown));
                         diagnostics.extend(
-                            config.collect_diagnostics_with_keybind_validation(&keybind_validation),
+                            config
+                                .collect_diagnostics_with_keybind_validation(&keybind_validation)
+                                .into_iter()
+                                .map(ConfigDiagnostic::Validation),
                         );
                         LoadedConfig {
                             config,
@@ -480,15 +491,19 @@ impl Config {
                             document_state: ConfigDocumentState::Loaded,
                         }
                     }
-                    Err(err) => default_loaded_config(vec![format!("config parse error: {err}")]),
+                    Err(err) => default_loaded_config(vec![ConfigDiagnostic::Parse(format!(
+                        "config parse error: {err}"
+                    ))]),
                 }
             }
-            Err(err) => default_loaded_config(vec![format!("config parse error: {err}")]),
+            Err(err) => default_loaded_config(vec![ConfigDiagnostic::Parse(format!(
+                "config parse error: {err}"
+            ))]),
         }
     }
 }
 
-fn default_loaded_config(diagnostics: Vec<String>) -> LoadedConfig {
+fn default_loaded_config(diagnostics: Vec<ConfigDiagnostic>) -> LoadedConfig {
     let config = Config::default();
     let provenance = ConfigProvenance::defaults(&config);
     let keybind_validation = config.compute_keybind_validation(|_| false);
@@ -632,6 +647,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn load_diagnostics_keep_their_kind() {
+        let parse = Config::load_from_str("[keys\nprefix = 'ctrl+a'");
+        assert!(matches!(
+            parse.diagnostics.as_slice(),
+            [ConfigDiagnostic::Parse(_)]
+        ));
+
+        let unknown = Config::load_from_str("[keys]\nunknown_binding = 'ctrl+a'");
+        assert!(matches!(
+            unknown.diagnostics.as_slice(),
+            [ConfigDiagnostic::Unknown(_)]
+        ));
+
+        let invalid = Config::load_from_str("[keys]\nprefix = 'ctrl+'");
+        assert!(
+            invalid
+                .diagnostics
+                .iter()
+                .any(|diagnostic| matches!(diagnostic, ConfigDiagnostic::Validation(_)))
+        );
+    }
+
+    #[test]
     fn config_load_reports_unreadable_path() {
         // A directory where the config file should be cannot be read.
         let scratch = crate::test_support::ScratchDir::new("config");
@@ -640,7 +678,7 @@ mod tests {
             startup
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.contains("config read error"))
+                .any(|diagnostic| diagnostic.message().contains("config read error"))
         );
     }
 
@@ -675,7 +713,9 @@ mod tests {
                 .into_validated(AppPaths::default())
                 .expect_err("invalid config must not be returned for launch");
             assert!(
-                errors.iter().any(|diagnostic| diagnostic.contains(message)),
+                errors
+                    .iter()
+                    .any(|diagnostic| diagnostic.message().contains(message)),
                 "expected {message:?} in {errors:?}"
             );
         }
@@ -729,7 +769,7 @@ mod tests {
             report
                 .diagnostics
                 .iter()
-                .any(|error| error.contains("terminal.new_cwd")),
+                .any(|error| error.message().contains("terminal.new_cwd")),
             "{:?}",
             report.diagnostics
         );
@@ -737,7 +777,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|error| error.contains("terminal.new_cwd")),
+                .any(|error| error.message().contains("terminal.new_cwd")),
             "{errors:?}"
         );
     }
@@ -843,7 +883,11 @@ mouse_captur = true
         );
 
         assert_eq!(
-            loaded.diagnostics,
+            loaded
+                .diagnostics
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
             vec![
                 "unknown config key keys.new_tabb",
                 "unknown config key plugin",
@@ -910,7 +954,11 @@ id = "example"
         );
 
         assert_eq!(
-            loaded.diagnostics,
+            loaded
+                .diagnostics
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
             vec!["unknown config section [[plugin]]"]
         );
     }

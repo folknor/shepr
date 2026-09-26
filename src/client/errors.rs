@@ -2,6 +2,21 @@ use std::io;
 
 use crate::protocol;
 
+/// All environment and target details needed to present a client failure.
+pub(crate) struct ClientErrorContext {
+    remote_reattach: Option<String>,
+    local_reattach: String,
+}
+
+impl ClientErrorContext {
+    pub(crate) fn new(local_reattach: String, remote_reattach: Option<String>) -> Self {
+        Self {
+            remote_reattach,
+            local_reattach,
+        }
+    }
+}
+
 /// Errors that can occur during client operation.
 #[derive(Debug)]
 pub enum ClientError {
@@ -10,9 +25,17 @@ pub enum ClientError {
     /// A host terminal write failed while updating terminal modes or output.
     HostTerminal(io::Error),
     /// Server rejected our handshake.
-    HandshakeRejected { error: String },
+    HandshakeRejected { error: protocol::HandshakeRefusal },
+    /// The peer did not send a valid build preamble.
+    Preamble(protocol::preamble::PreambleError),
+    /// The first framed reply had the wrong message kind.
+    UnexpectedWelcome { endpoint: bool },
+    /// A delta bypassed connection-local surface decoding.
+    SurfaceUpdateBeforeDecode,
     /// Server shut down.
-    ServerShutdown { reason: Option<String> },
+    ServerShutdown {
+        reason: Option<protocol::ShutdownReason>,
+    },
     /// Lost connection to the server.
     ConnectionLost(io::Error),
     /// Protocol error (framing, deserialization).
@@ -20,25 +43,26 @@ pub enum ClientError {
 }
 
 impl ClientError {
-    pub(crate) fn display_with_target(
-        &self,
-        session: &crate::session::SessionId,
-        address: &crate::server::socket_paths::ServerAddress,
-    ) -> String {
-        let message = self.to_string();
-        if matches!(
-            self,
+    pub(crate) fn display_with_context(&self, context: &ClientErrorContext) -> String {
+        match self {
             Self::ServerShutdown {
-                reason: Some(reason)
-            } if reason == "detached"
-        ) && std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR).is_err()
-        {
-            format!(
-                "{message}\nRun `{}` to reattach",
-                address.attach_command(session)
-            )
-        } else {
-            message
+                reason: Some(protocol::ShutdownReason::Detached),
+            } => {
+                if let Some(command) = &context.remote_reattach {
+                    format!("detached from remote server\nRun `{command}` to reattach")
+                } else {
+                    format!(
+                        "detached from server\nRun `{}` to reattach",
+                        context.local_reattach
+                    )
+                }
+            }
+            Self::ConnectionLost(error) if let Some(command) = &context.remote_reattach => {
+                format!(
+                    "lost connection to remote Shepr: {error}\nIf the remote server survived the SSH or network drop, its panes may still be running.\nRun `{command}` to reattach"
+                )
+            }
+            _ => self.to_string(),
         }
     }
 }
@@ -57,18 +81,23 @@ impl std::fmt::Display for ClientError {
             ClientError::HandshakeRejected { error } => {
                 write!(f, "server rejected handshake: {error}")
             }
+            ClientError::Preamble(error @ protocol::preamble::PreambleError::DifferentBuild(_)) => {
+                write!(f, "server rejected handshake: {error}")
+            }
+            ClientError::Preamble(error) => write!(f, "protocol error: {error}"),
+            ClientError::UnexpectedWelcome { endpoint: true } => {
+                write!(f, "protocol error: expected endpoint welcome")
+            }
+            ClientError::UnexpectedWelcome { endpoint: false } => {
+                write!(f, "protocol error: expected Welcome message")
+            }
+            ClientError::SurfaceUpdateBeforeDecode => write!(
+                f,
+                "protocol error: surface update reached presentation before decoding"
+            ),
             ClientError::ServerShutdown { reason } => {
-                match reason.as_deref() {
-                    Some("detached") => {
-                        if let Ok(reattach_command) =
-                            std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR)
-                        {
-                            write!(f, "detached from remote server")?;
-                            write!(f, "\nRun `{reattach_command}` to reattach")?;
-                        } else {
-                            write!(f, "detached from server")?;
-                        }
-                    }
+                match reason {
+                    Some(protocol::ShutdownReason::Detached) => write!(f, "detached from server")?,
                     _ => {
                         write!(f, "server shut down")?;
                         if let Some(reason) = reason {
@@ -78,19 +107,7 @@ impl std::fmt::Display for ClientError {
                 }
                 Ok(())
             }
-            ClientError::ConnectionLost(err) => {
-                if let Ok(reattach_command) = std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR)
-                {
-                    write!(f, "lost connection to remote Shepr: {err}")?;
-                    write!(
-                        f,
-                        "\nIf the remote server survived the SSH or network drop, its panes may still be running."
-                    )?;
-                    write!(f, "\nRun `{reattach_command}` to reattach")
-                } else {
-                    write!(f, "lost connection to server: {err}")
-                }
-            }
+            ClientError::ConnectionLost(err) => write!(f, "lost connection to server: {err}"),
             ClientError::Protocol(err) => write!(f, "protocol error: {err}"),
         }
     }
@@ -103,6 +120,7 @@ impl std::error::Error for ClientError {
             ClientError::HostTerminal(err) => Some(err),
             ClientError::ConnectionLost(err) => Some(err),
             ClientError::Protocol(err) => Some(err),
+            ClientError::Preamble(err) => Some(err),
             _ => None,
         }
     }

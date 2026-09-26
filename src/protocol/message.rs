@@ -1,6 +1,73 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
+/// Why a client connection ended. Detach is a normal exit for an attached terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShutdownReason {
+    Detached,
+    Message(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HandshakeRefusal {
+    ExpectedHello,
+    InvalidSurface(String),
+}
+
+impl std::fmt::Display for HandshakeRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ExpectedHello => f.write_str("expected a handshake as the first message"),
+            Self::InvalidSurface(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for HandshakeRefusal {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NoticeKind {
+    InputDropped { terminal_id: String },
+    PaneInputDropped { pane_id: String, events: usize },
+    PasteRejected { size: usize, max: usize },
+    OversizedFrame { claimed: usize, max: usize },
+}
+
+impl std::fmt::Display for NoticeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InputDropped { terminal_id } => write!(
+                f,
+                "Input to terminal {terminal_id} dropped: the pane is not reading its input"
+            ),
+            Self::PaneInputDropped { pane_id, events } => {
+                let unit = if *events == 1 { "event" } else { "events" };
+                write!(
+                    f,
+                    "Input to pane {pane_id} dropped ({events} {unit}): the pane is not reading its input"
+                )
+            }
+            Self::PasteRejected { size, max } => write!(
+                f,
+                "Paste rejected: Input message is {size} bytes; Shepr's limit is {max} bytes"
+            ),
+            Self::OversizedFrame { claimed, max } => write!(
+                f,
+                "The screen is too large to send ({claimed} bytes; the limit is {max}). Make the window smaller; the display resumes once a frame fits."
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for ShutdownReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Detached => f.write_str("detached"),
+            Self::Message(message) => f.write_str(message),
+        }
+    }
+}
+
 /// Terminal ANSI bytes encoded by the server for direct terminal-attach clients.
 ///
 /// The client writes `bytes` straight to stdout and needs nothing else, so the
@@ -23,7 +90,7 @@ pub enum ServerMessage {
     Welcome {
         /// If present, the handshake failed and this describes why.
         /// The client should exit with a clear error message.
-        error: Option<String>,
+        error: Option<HandshakeRefusal>,
     },
 
     /// Terminal bytes to write directly for a terminal-ANSI client.
@@ -32,7 +99,7 @@ pub enum ServerMessage {
     /// Server is shutting down. Clients should exit gracefully.
     ServerShutdown {
         /// Optional reason for the shutdown.
-        reason: Option<String>,
+        reason: Option<ShutdownReason>,
     },
 
     /// OSC 52 clipboard data forwarded from a PTY through the server.
@@ -59,7 +126,7 @@ pub enum ServerMessage {
     PaneSurface(PaneSurfaceFrame),
 
     /// Immediate endpoint error that the client-rendered shell must show.
-    ClientShellError { message: String },
+    ClientShellError { kind: NoticeKind },
 
     /// Exact Kitty keyboard flags requested by a directly attached terminal.
     /// Zero restores the host terminal's previous keyboard mode.
@@ -98,14 +165,14 @@ pub enum ServerMessage {
     /// Something a direct terminal-attach client must tell its user because
     /// the server could not do what the user asked: input dropped because the
     /// pane stopped reading, a paste over the input limit rejected, or a
-    /// screen too large to send in one frame. The text is complete and
-    /// human-readable; the client shows it as-is.
+    /// screen too large to send in one frame. The client formats the cause
+    /// for its terminal after receiving it.
     ///
     /// The server rate-limits it: a repeating condition (dropped input,
     /// oversized frames) is sent once until it clears, a rejected paste once
     /// per paste. The connection stays up either way, so the client must not
     /// treat this as fatal and must keep the attached terminal usable.
-    DirectTerminalNotice { message: String },
+    DirectTerminalNotice { kind: NoticeKind },
 
     /// Decoded local handoff to the shell. The server sends `SurfaceUpdate`.
     #[serde(skip)]

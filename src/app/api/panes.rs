@@ -1,3 +1,4 @@
+use crate::api::error::{ApiError, ApiErrorCode, ApiResult};
 use bytes::Bytes;
 
 #[cfg(test)]
@@ -30,18 +31,18 @@ use super::super::api_helpers::{
 };
 #[cfg(test)]
 use super::super::api_helpers::{METADATA_SOURCE_MAX_CHARS, METADATA_TTL_MAX_MS};
-use super::responses::{encode_error, encode_success};
+use super::responses::{failure, success};
 
 mod copy;
 mod geometry;
 mod reports;
 
 impl App {
-    pub(super) fn handle_pane_split(&mut self, id: String, params: PaneSplitParams) -> String {
+    pub(super) fn handle_pane_split(&mut self, id: String, params: PaneSplitParams) -> ApiResult {
         let pane_target = match params.target_pane_id.as_deref() {
             Some(pane_id) => match self.parse_pane_id(pane_id) {
                 Some(target) => Some(target),
-                None => return encode_error(id, "pane_not_found", "pane not found"),
+                None => return failure(id, ApiErrorCode::PaneNotFound, "pane not found"),
             },
             None => None,
         };
@@ -52,7 +53,7 @@ impl App {
                     .filter(|index| self.state.workspaces.get(*index).is_some())
                 {
                     Some(index) => Some(index),
-                    None => return encode_error(id, "pane_not_found", "pane not found"),
+                    None => return failure(id, ApiErrorCode::PaneNotFound, "pane not found"),
                 },
                 None => None,
             }
@@ -64,14 +65,11 @@ impl App {
             workspace_target,
             crate::app::actions::PaneContextFallback::ActiveWorkspace,
         ) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(id, ApiErrorCode::PaneNotFound, "pane not found");
         };
         let ws_idx = context.workspace_index;
         let target_pane_id = context.pane_id;
-        let extra_env = match super::env::normalize_launch_env(params.env) {
-            Ok(env) => env,
-            Err((code, message)) => return encode_error(id, &code, message),
-        };
+        let extra_env = super::env::normalize_launch_env(params.env)?;
         let geometry = self.state.pane_geometry();
         let split_cwd = params.cwd.map(std::path::PathBuf::from).or_else(|| {
             let follow_cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, target_pane_id);
@@ -89,7 +87,7 @@ impl App {
         let previous_focus = self.state.current_pane_focus_target();
         let spawn = self.pane_spawn_handles();
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(id, ApiErrorCode::PaneNotFound, "pane not found");
         };
         let direction = match params.direction {
             crate::api::schema::SplitDirection::Right => ratatui::layout::Direction::Horizontal,
@@ -130,8 +128,8 @@ impl App {
         };
         let (target_tab_idx, new_pane) = match split_result {
             Some(Ok(result)) => result,
-            Some(Err(err)) => return encode_error(id, "pane_split_failed", err.to_string()),
-            None => return encode_error(id, "pane_not_found", "pane not found"),
+            Some(Err(err)) => return failure(id, ApiErrorCode::PaneSplitFailed, err.to_string()),
+            None => return failure(id, ApiErrorCode::PaneNotFound, "pane not found"),
         };
         let crate::workspace::NewPane {
             pane_id,
@@ -154,48 +152,52 @@ impl App {
             previous_focus,
         ) else {
             drop(runtime);
-            return encode_error(
+            return failure(
                 id,
-                "pane_split_failed",
+                ApiErrorCode::PaneSplitFailed,
                 "split target is no longer available",
             );
         };
         self.terminal_runtimes.insert(terminal_id, runtime);
         self.schedule_session_save();
         let Some(pane) = self.pane_info(outcome.workspace_index, outcome.pane_id) else {
-            return encode_error(id, "pane_split_failed", "new pane is unavailable");
+            return failure(id, ApiErrorCode::PaneSplitFailed, "new pane is unavailable");
         };
         self.emit_event(EventEnvelope {
             data: EventData::PaneCreated { pane: pane.clone() },
         });
         self.emit_layout_updated_event(outcome.workspace_index, outcome.tab_index);
 
-        encode_success(id, ResponseResult::PaneInfo { pane })
+        success(id, ResponseResult::PaneInfo { pane })
     }
 
-    pub(super) fn handle_pane_list(&mut self, id: String, params: &PaneListParams) -> String {
+    pub(super) fn handle_pane_list(&mut self, id: String, params: &PaneListParams) -> ApiResult {
         match self.collect_panes_for_workspace(params.workspace_id.as_deref()) {
-            Ok(panes) => encode_success(id, ResponseResult::PaneList { panes }),
-            Err((code, message)) => encode_error(id, &code, message),
+            Ok(panes) => success(id, ResponseResult::PaneList { panes }),
+            Err((code, message)) => failure(id, &code, message),
         }
     }
 
-    pub(super) fn handle_pane_current(&mut self, id: String, params: &PaneCurrentParams) -> String {
+    pub(super) fn handle_pane_current(
+        &mut self,
+        id: String,
+        params: &PaneCurrentParams,
+    ) -> ApiResult {
         let target = match params.caller_pane_id.as_deref() {
             Some(caller_pane_id) => self.parse_pane_id(caller_pane_id),
             None => self.resolve_optional_pane(None),
         };
         let Some((ws_idx, pane_id)) = target else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(id, ApiErrorCode::PaneNotFound, "pane not found");
         };
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
-            return encode_error(id, "pane_not_found", "pane not found");
+            return failure(id, ApiErrorCode::PaneNotFound, "pane not found");
         };
 
-        encode_success(id, ResponseResult::PaneCurrent { pane })
+        success(id, ResponseResult::PaneCurrent { pane })
     }
 
-    pub(super) fn handle_pane_get(&mut self, id: String, target: &PaneTarget) -> String {
+    pub(super) fn handle_pane_get(&mut self, id: String, target: &PaneTarget) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
@@ -203,10 +205,10 @@ impl App {
             return pane_not_found(id, &target.pane_id);
         };
 
-        encode_success(id, ResponseResult::PaneInfo { pane })
+        success(id, ResponseResult::PaneInfo { pane })
     }
 
-    pub(super) fn handle_pane_focus(&mut self, id: String, target: &PaneTarget) -> String {
+    pub(super) fn handle_pane_focus(&mut self, id: String, target: &PaneTarget) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
@@ -220,14 +222,14 @@ impl App {
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
-        encode_success(id, ResponseResult::PaneInfo { pane })
+        success(id, ResponseResult::PaneInfo { pane })
     }
 
     pub(super) fn handle_pane_input_set(
         &mut self,
         id: String,
         params: &PaneInputSetParams,
-    ) -> String {
+    ) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -243,10 +245,10 @@ impl App {
             params.right_click,
             crate::api::schema::PaneRightClickTarget::Pane
         );
-        encode_success(id, ResponseResult::Ok {})
+        success(id, ResponseResult::Ok {})
     }
 
-    pub(super) fn handle_pane_rename(&mut self, id: String, params: PaneRenameParams) -> String {
+    pub(super) fn handle_pane_rename(&mut self, id: String, params: PaneRenameParams) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -276,10 +278,10 @@ impl App {
             data: EventData::PaneUpdated { pane: pane.clone() },
         });
 
-        encode_success(id, ResponseResult::PaneInfo { pane })
+        success(id, ResponseResult::PaneInfo { pane })
     }
 
-    pub(super) fn handle_pane_read(&mut self, id: String, params: &PaneReadParams) -> String {
+    pub(super) fn handle_pane_read(&mut self, id: String, params: &PaneReadParams) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -310,13 +312,13 @@ impl App {
             params.lines,
         ) {
             Ok(snapshot) => snapshot,
-            Err((code, message)) => return encode_error(id, code, message),
+            Err((code, message)) => return failure(id, code, message),
         };
         let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
             crate::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
         });
 
-        encode_success(
+        success(
             id,
             ResponseResult::PaneRead {
                 read: PaneReadResult {
@@ -337,7 +339,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneSendTextParams,
-    ) -> String {
+    ) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -345,17 +347,17 @@ impl App {
             return pane_not_found(id, &params.pane_id);
         };
         if let Err(err) = runtime.try_send_bytes(Bytes::from(params.text)) {
-            return encode_error(id, "pane_send_failed", err.to_string());
+            return failure(id, ApiErrorCode::PaneSendFailed, err.to_string());
         }
 
-        encode_success(id, ResponseResult::Ok {})
+        success(id, ResponseResult::Ok {})
     }
 
     pub(super) fn handle_pane_send_input(
         &mut self,
         id: String,
         params: &PaneSendInputParams,
-    ) -> String {
+    ) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -368,33 +370,39 @@ impl App {
             &params.keys,
         ) {
             Ok(bytes) => bytes,
-            Err(key) => return encode_error(id, "invalid_key", format!("unsupported key {key}")),
+            Err(key) => {
+                return failure(
+                    id,
+                    ApiErrorCode::InvalidKey,
+                    format!("unsupported key {key}"),
+                );
+            }
         };
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
-            return encode_error(id, "pane_send_failed", err.to_string());
+            return failure(id, ApiErrorCode::PaneSendFailed, err.to_string());
         }
 
-        encode_success(id, ResponseResult::Ok {})
+        success(id, ResponseResult::Ok {})
     }
 
-    pub(super) fn handle_pane_close(&mut self, id: String, target: &PaneTarget) -> String {
-        match self.close_pane(id.clone(), target) {
-            Ok(()) => encode_success(id, ResponseResult::Ok {}),
-            Err(response) => response,
+    pub(super) fn handle_pane_close(&mut self, id: String, target: &PaneTarget) -> ApiResult {
+        match self.close_pane(target) {
+            Ok(()) => success(id, ResponseResult::Ok {}),
+            Err(error) => Err(error),
         }
     }
 
-    /// Close a pane; `Err` carries the encoded error response.
-    pub(super) fn close_pane(&mut self, id: String, target: &PaneTarget) -> Result<(), String> {
+    /// Close a pane; errors remain typed until the API response is sent.
+    pub(super) fn close_pane(&mut self, target: &PaneTarget) -> Result<(), ApiError> {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
-            return Err(pane_not_found(id, &target.pane_id));
+            return Err(ApiError::pane_not_found(target.pane_id.clone()));
         };
         let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
-            return Err(pane_not_found(id, &target.pane_id));
+            return Err(ApiError::pane_not_found(target.pane_id.clone()));
         };
         let workspace_id = self.public_workspace_id(ws_idx);
         let Some(plan) = self.state.prepare_pane_removal(ws_idx, pane_id) else {
-            return Err(pane_not_found(id, &target.pane_id));
+            return Err(ApiError::pane_not_found(target.pane_id.clone()));
         };
         let layout_update_target = (plan.scope == crate::workspace::PaneRemovalScope::Pane)
             .then_some((ws_idx, plan.tab_index));
@@ -406,7 +414,7 @@ impl App {
             crate::workspace::PaneRemovalScope::Workspace => self.workspace_close_events(ws_idx),
         };
         let PaneRemovalCommit::Removed(outcome) = self.state.commit_pane_removal(&plan) else {
-            return Err(pane_not_found(id, &target.pane_id));
+            return Err(ApiError::pane_not_found(target.pane_id.clone()));
         };
         self.shutdown_detached_terminal_runtimes();
         self.schedule_session_save();
@@ -433,7 +441,7 @@ impl App {
         &mut self,
         id: String,
         params: &PaneSendKeysParams,
-    ) -> String {
+    ) -> ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -442,17 +450,23 @@ impl App {
         };
         let encoded_keys = match encode_api_keys(runtime, &params.keys) {
             Ok(encoded_keys) => encoded_keys,
-            Err(key) => return encode_error(id, "invalid_key", format!("unsupported key {key}")),
+            Err(key) => {
+                return failure(
+                    id,
+                    ApiErrorCode::InvalidKey,
+                    format!("unsupported key {key}"),
+                );
+            }
         };
         // One write for the whole sequence: per-key writes let backpressure
         // reject a later key after earlier ones went out, leaving a partial
         // chord sequence in the pane.
         let bytes: Vec<u8> = encoded_keys.into_iter().flatten().collect();
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
-            return encode_error(id, "pane_send_failed", err.to_string());
+            return failure(id, ApiErrorCode::PaneSendFailed, err.to_string());
         }
 
-        encode_success(id, ResponseResult::Ok {})
+        success(id, ResponseResult::Ok {})
     }
 }
 
@@ -498,8 +512,8 @@ fn terminal_word_motion(motion: PaneCopyMotion) -> Option<crate::pane::TerminalW
     }
 }
 
-fn pane_not_found(id: String, pane_id: &str) -> String {
-    encode_error(id, "pane_not_found", format!("pane {pane_id} not found"))
+fn pane_not_found(_id: String, pane_id: &str) -> ApiResult {
+    Err(ApiError::pane_not_found(pane_id))
 }
 
 impl App {
@@ -653,9 +667,9 @@ fn encode_unchanged_pane_move(
     pane: PaneInfo,
     source_layout: Option<PaneLayoutSnapshot>,
     target_layout: PaneLayoutSnapshot,
-) -> String {
+) -> ApiResult {
     let focused_pane_id = target_layout.focused_pane_id.clone();
-    encode_success(
+    success(
         id,
         ResponseResult::PaneMove {
             move_result: PaneMoveResult {
@@ -709,8 +723,12 @@ fn split_path_id(idx: usize, path: &[bool]) -> String {
     format!("split_{idx}_{path}")
 }
 
-fn invalid_agent(id: String) -> String {
-    encode_error(id, "invalid_agent", "agent label must not be empty")
+fn invalid_agent(id: String) -> ApiResult {
+    failure(
+        id,
+        ApiErrorCode::InvalidAgent,
+        "agent label must not be empty",
+    )
 }
 
 #[cfg(test)]
@@ -752,7 +770,7 @@ mod tests {
             },
         );
 
-        let response: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let response: SuccessResponse = crate::api::error::test_success(&response);
         assert!(matches!(response.result, ResponseResult::Ok {}));
         assert!(
             app.state.workspaces[0]
@@ -813,9 +831,12 @@ mod tests {
         }
     }
 
-    fn metadata_error_code(response: &str) -> String {
-        let response: ErrorResponse = serde_json::from_str(response).expect("test precondition");
-        response.error.code
+    fn metadata_error_code(response: &ApiResult) -> ApiErrorCode {
+        response
+            .as_ref()
+            .expect_err("request must fail")
+            .code
+            .clone()
     }
 
     #[tokio::test]
@@ -835,8 +856,7 @@ mod tests {
             }),
         });
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
-        assert_eq!(success.id, "req");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(
             rx.try_recv().expect("test precondition"),
@@ -859,7 +879,7 @@ mod tests {
             }),
         });
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(
             rx.try_recv().expect("test precondition"),
@@ -880,7 +900,7 @@ mod tests {
             }),
         });
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(
             rx.try_recv().expect("test precondition"),
@@ -900,7 +920,7 @@ mod tests {
         };
         assert!(request.method.traits().mutates_ui);
         let response = app.handle_api_request(request);
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         let runtime = app
             .state
@@ -931,7 +951,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneInfo { pane } = success.result else {
             panic!("expected pane info response");
         };
@@ -961,7 +981,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneInfo { pane } = success.result else {
             panic!("expected pane info response");
         };
@@ -1013,7 +1033,7 @@ mod tests {
         params.content_revision = None;
         let response = app.handle_pane_selection_read("req".into(), params);
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(
             success.result,
             ResponseResult::PaneSelection {
@@ -1050,7 +1070,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(
             success.result,
             ResponseResult::PaneCopyMotion {
@@ -1089,7 +1109,7 @@ mod tests {
                 content_revision: None,
             },
         );
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(
             success.result,
             ResponseResult::PaneCopyMotion {
@@ -1137,7 +1157,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneCopySearch {
             pane_id,
             matches,
@@ -1204,7 +1224,7 @@ mod tests {
                 previous: None,
             },
         );
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneCopySearch { matches, total, .. } = success.result else {
             panic!("expected copy search response");
         };
@@ -1239,7 +1259,7 @@ mod tests {
                 previous: None,
             },
         );
-        assert!(response.contains("stale_content"));
+        assert!(crate::api::error::test_json(&response).contains("stale_content"));
     }
 
     #[tokio::test]
@@ -1257,7 +1277,7 @@ mod tests {
                 intent: crate::api::schema::ReadIntent::Interactive,
             },
         );
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneRead { read } = success.result else {
             panic!("expected pane read response");
         };
@@ -1283,7 +1303,7 @@ mod tests {
         };
 
         let kept = read(&mut app, false, Some(2));
-        let success: SuccessResponse = serde_json::from_str(&kept).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&kept);
         let ResponseResult::PaneRead { read: kept } = success.result else {
             panic!("expected pane read response");
         };
@@ -1296,7 +1316,7 @@ mod tests {
         );
 
         let stripped = read(&mut app, true, Some(2));
-        let success: SuccessResponse = serde_json::from_str(&stripped).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&stripped);
         let ResponseResult::PaneRead { read: stripped } = success.result else {
             panic!("expected pane read response");
         };
@@ -1307,7 +1327,7 @@ mod tests {
             true,
             Some(crate::app::api_helpers::MAX_READ_LINES + 1),
         );
-        let error: ErrorResponse = serde_json::from_str(&oversized).expect("test precondition");
+        let error: ErrorResponse = crate::api::error::test_error(&oversized);
         assert_eq!(error.error.code, "invalid_lines");
     }
 
@@ -1323,7 +1343,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert!(matches!(success.result, ResponseResult::PaneInfo { .. }));
         assert!(
             app.event_hub
@@ -1349,8 +1369,7 @@ mod tests {
             }),
         });
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
-        assert_eq!(success.id, "req");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(
             rx.try_recv().expect("test precondition"),
@@ -1378,8 +1397,7 @@ mod tests {
             }),
         });
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
-        assert_eq!(success.id, "req");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(
             rx.try_recv().expect("test precondition"),
@@ -1400,8 +1418,7 @@ mod tests {
             }),
         });
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
-        assert_eq!(success.id, "req");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(
             rx.try_recv().expect("test precondition"),
@@ -1432,8 +1449,7 @@ mod tests {
             }),
         });
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
-        assert_eq!(success.id, "req");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(
             rx.try_recv().expect("test precondition"),
@@ -1459,7 +1475,7 @@ mod tests {
             }),
         });
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(
             rx.try_recv().expect("test precondition"),
@@ -1481,8 +1497,7 @@ mod tests {
             }),
         });
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
-        assert_eq!(success.id, "req");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(
             rx.try_recv().expect("test precondition"),
@@ -1503,7 +1518,7 @@ mod tests {
             }),
         });
 
-        let error: ErrorResponse = serde_json::from_str(&response).expect("test precondition");
+        let error: ErrorResponse = crate::api::error::test_error(&response);
         assert_eq!(error.error.code, "invalid_key");
         assert_eq!(error.error.message, "unsupported key not-a-key");
         assert!(rx.try_recv().is_err());
@@ -1523,7 +1538,7 @@ mod tests {
             }),
         });
 
-        let error: ErrorResponse = serde_json::from_str(&response).expect("test precondition");
+        let error: ErrorResponse = crate::api::error::test_error(&response);
         assert_eq!(error.error.code, "invalid_key");
         assert_eq!(error.error.message, format!("unsupported key {raw_key}"));
         assert!(rx.try_recv().is_err());
@@ -1576,8 +1591,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
-        assert_eq!(success.id, "req");
+        let _: SuccessResponse = crate::api::error::test_success(&response);
         assert!(app.state.workspaces.is_empty());
         assert!(!app.state.public_pane_id_aliases.contains_key("old-pane"));
         assert_eq!(
@@ -1610,7 +1624,7 @@ mod tests {
             },
         );
 
-        let _: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let _: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(app.state.workspaces[0].tabs.len(), 1);
         let events = app.event_hub.events_after(0);
         assert_eq!(events.len(), 2);
@@ -1643,7 +1657,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneCurrent { pane } = success.result else {
             panic!("expected pane current response");
         };
@@ -1667,7 +1681,7 @@ mod tests {
             &crate::api::schema::PaneCurrentParams::default(),
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneCurrent { pane } = success.result else {
             panic!("expected pane current response");
         };
@@ -1690,7 +1704,7 @@ mod tests {
             ),
         });
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneCurrent { pane } = success.result else {
             panic!("expected pane current response");
         };
@@ -1708,7 +1722,7 @@ mod tests {
             },
         );
 
-        assert_eq!(metadata_error_code(&response), "pane_not_found");
+        assert_eq!(metadata_error_code(&response), ApiErrorCode::PaneNotFound);
     }
 
     #[test]
@@ -1721,7 +1735,7 @@ mod tests {
             &crate::api::schema::PaneCurrentParams::default(),
         );
 
-        assert_eq!(metadata_error_code(&response), "pane_not_found");
+        assert_eq!(metadata_error_code(&response), ApiErrorCode::PaneNotFound);
     }
 
     #[test]
@@ -1747,7 +1761,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneSwap { swap } = success.result else {
             panic!("expected pane swap response");
         };
@@ -1782,7 +1796,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneSwap { swap } = success.result else {
             panic!("expected pane swap response");
         };
@@ -1809,7 +1823,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneSwap { swap } = success.result else {
             panic!("expected pane swap response");
         };
@@ -1835,7 +1849,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneSwap { swap } = success.result else {
             panic!("expected pane swap response");
         };
@@ -1864,7 +1878,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneSwap { swap } = success.result else {
             panic!("expected pane swap response");
         };
@@ -1905,7 +1919,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneMove { move_result } = success.result else {
             panic!("expected pane move response");
         };
@@ -1962,7 +1976,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneMove { move_result } = success.result else {
             panic!("expected pane move response");
         };
@@ -2024,7 +2038,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneMove { move_result } = success.result else {
             panic!("expected pane move response");
         };
@@ -2064,7 +2078,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneMove { move_result } = success.result else {
             panic!("expected pane move response");
         };
@@ -2143,7 +2157,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneMove { move_result } = success.result else {
             panic!("expected pane move response");
         };
@@ -2175,7 +2189,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneMove { move_result } = success.result else {
             panic!("expected pane move response");
         };
@@ -2266,7 +2280,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneMove { move_result } = success.result else {
             panic!("expected pane move response");
         };
@@ -2303,7 +2317,8 @@ mod tests {
         );
 
         let error: crate::api::schema::ErrorResponse =
-            serde_json::from_str(&response).expect("test precondition");
+            serde_json::from_str(&crate::api::error::test_json(&response))
+                .expect("test precondition");
         assert_eq!(error.error.code, "target_pane_not_found");
         assert_eq!(app.state.workspaces[0].tabs.len(), 3);
     }
@@ -2344,7 +2359,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneMove { move_result } = success.result else {
             panic!("expected pane move response");
         };
@@ -2419,7 +2434,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneMove { move_result } = success.result else {
             panic!("expected pane move response");
         };
@@ -2447,7 +2462,7 @@ mod tests {
 
         let response = app.handle_pane_zoom("req".into(), &PaneZoomParams::default());
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneZoom { zoom } = success.result else {
             panic!("expected pane zoom response");
         };
@@ -2466,7 +2481,7 @@ mod tests {
         ));
 
         let response = app.handle_pane_zoom("req".into(), &PaneZoomParams::default());
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneZoom { zoom } = success.result else {
             panic!("expected pane zoom response");
         };
@@ -2498,7 +2513,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneZoom { zoom } = success.result else {
             panic!("expected pane zoom response");
         };
@@ -2528,7 +2543,7 @@ mod tests {
                 mode: PaneZoomMode::On,
             },
         );
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneZoom { zoom } = success.result else {
             panic!("expected pane zoom response");
         };
@@ -2544,7 +2559,7 @@ mod tests {
                 mode: PaneZoomMode::On,
             },
         );
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneZoom { zoom } = success.result else {
             panic!("expected pane zoom response");
         };
@@ -2561,7 +2576,7 @@ mod tests {
                 mode: PaneZoomMode::Off,
             },
         );
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneZoom { zoom } = success.result else {
             panic!("expected pane zoom response");
         };
@@ -2577,7 +2592,7 @@ mod tests {
                 mode: PaneZoomMode::Off,
             },
         );
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneZoom { zoom } = success.result else {
             panic!("expected pane zoom response");
         };
@@ -2607,7 +2622,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneZoom { zoom } = success.result else {
             panic!("expected pane zoom response");
         };
@@ -2639,7 +2654,8 @@ mod tests {
         assert!(encoded.contains("\"mode\":\"on\""));
 
         let decoded: crate::api::schema::Request =
-            serde_json::from_str(&encoded).expect("test precondition");
+            serde_json::from_str(&crate::api::error::test_json(&encoded))
+                .expect("test precondition");
         let crate::api::schema::Method::PaneZoom(params) = decoded.method else {
             panic!("expected pane zoom request");
         };
@@ -2695,7 +2711,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneLayout { layout } = success.result else {
             panic!("expected pane layout response");
         };
@@ -2731,7 +2747,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneNeighbor { neighbor } = success.result else {
             panic!("expected pane neighbor response");
         };
@@ -2760,7 +2776,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneEdges { edges } = success.result else {
             panic!("expected pane edges response");
         };
@@ -2794,7 +2810,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneResize { resize } = success.result else {
             panic!("expected pane resize response");
         };
@@ -2835,7 +2851,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneFocusDirection { focus } = success.result else {
             panic!("expected pane focus direction response");
         };
@@ -2868,7 +2884,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneInfo { pane } = success.result else {
             panic!("expected pane info response");
         };
@@ -2904,7 +2920,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneInfo { pane } = success.result else {
             panic!("expected pane info response");
         };
@@ -2922,7 +2938,7 @@ mod tests {
             },
         );
 
-        let error: ErrorResponse = serde_json::from_str(&response).expect("test precondition");
+        let error: ErrorResponse = crate::api::error::test_error(&response);
         assert_eq!(error.error.code, "pane_not_found");
     }
 
@@ -2946,7 +2962,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::PaneFocusDirection { focus } = success.result else {
             panic!("expected pane focus direction response");
         };
@@ -2986,8 +3002,7 @@ mod tests {
                 id: "set".into(),
                 method: crate::api::schema::Method::PaneReportMetadata(params),
             });
-            let success: SuccessResponse =
-                serde_json::from_str(&response).expect("test precondition");
+            let success: SuccessResponse = crate::api::error::test_success(&response);
             assert_eq!(success.result, ResponseResult::Ok {});
 
             let response = app.handle_api_request(crate::api::schema::Request {
@@ -2996,8 +3011,7 @@ mod tests {
                     pane_id: pane_id.clone(),
                 }),
             });
-            let success: SuccessResponse =
-                serde_json::from_str(&response).expect("test precondition");
+            let success: SuccessResponse = crate::api::error::test_success(&response);
             let ResponseResult::PaneInfo { pane } = success.result else {
                 panic!("expected pane info");
             };
@@ -3034,7 +3048,7 @@ mod tests {
 
         let response = app.handle_pane_report_metadata("guarded".into(), params);
 
-        let _: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let _: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(
             app.state.terminals[&terminal_id].metadata_tokens.values(),
             std::collections::HashMap::from([("summary".into(), "global".into())])
@@ -3047,7 +3061,7 @@ mod tests {
         let mut presentation = metadata_params(pane_id.clone());
         presentation.seq = Some(10);
         let response = app.handle_pane_report_metadata("presentation".into(), presentation);
-        let _: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let _: SuccessResponse = crate::api::error::test_success(&response);
 
         let mut stale_token = metadata_params(pane_id.clone());
         stale_token.title = None;
@@ -3055,7 +3069,7 @@ mod tests {
             std::collections::HashMap::from([("summary".into(), Some("stale".into()))]);
         stale_token.seq = Some(9);
         let response = app.handle_pane_report_metadata("stale".into(), stale_token);
-        let _: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let _: SuccessResponse = crate::api::error::test_success(&response);
 
         let (_, internal_pane_id) = app.parse_pane_id(&pane_id).expect("test precondition");
         let terminal_id = app.state.workspaces[0]
@@ -3091,7 +3105,7 @@ mod tests {
         initial.agent = Some("pi".into());
         initial.seq = Some(100);
         let response = app.handle_pane_report_metadata("initial".into(), initial);
-        let _: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let _: SuccessResponse = crate::api::error::test_success(&response);
 
         let mut initial_tokens = metadata_params(pane_id.clone());
         initial_tokens.source = "custom:pi-tokens".into();
@@ -3101,7 +3115,7 @@ mod tests {
             std::collections::HashMap::from([("generation".into(), Some("old".into()))]);
         initial_tokens.seq = Some(100);
         let response = app.handle_pane_report_metadata("initial-tokens".into(), initial_tokens);
-        let _: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let _: SuccessResponse = crate::api::error::test_success(&response);
 
         let exit_at = std::time::Instant::now() + std::time::Duration::from_millis(1);
         app.state
@@ -3133,13 +3147,13 @@ mod tests {
         stale.title = Some("stale".into());
         stale.seq = Some(200);
         let response = app.handle_pane_report_metadata("stale".into(), stale);
-        let _: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let _: SuccessResponse = crate::api::error::test_success(&response);
 
         let mut official = metadata_params(pane_id.clone());
         official.source = "shepr:pi".into();
         official.seq = Some(200);
         let response = app.handle_pane_report_metadata("official".into(), official);
-        let _: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let _: SuccessResponse = crate::api::error::test_success(&response);
 
         let terminal = &app.state.terminals[&terminal_id];
         assert!(terminal.metadata_report_sequence_is_fresh("custom:pi-metadata", Some(1)));
@@ -3163,7 +3177,7 @@ mod tests {
         fresh.title = Some("fresh".into());
         fresh.seq = Some(1);
         let response = app.handle_pane_report_metadata("fresh".into(), fresh);
-        let _: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let _: SuccessResponse = crate::api::error::test_success(&response);
 
         let mut fresh_tokens = metadata_params(pane_id);
         fresh_tokens.source = "custom:pi-tokens".into();
@@ -3173,7 +3187,7 @@ mod tests {
             std::collections::HashMap::from([("generation".into(), Some("new".into()))]);
         fresh_tokens.seq = Some(1);
         let response = app.handle_pane_report_metadata("fresh-tokens".into(), fresh_tokens);
-        let _: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let _: SuccessResponse = crate::api::error::test_success(&response);
 
         let terminal = &app.state.terminals[&terminal_id];
         assert_eq!(
@@ -3200,8 +3214,7 @@ mod tests {
 
         let response = app.handle_pane_report_metadata("req".into(), params);
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
-        assert_eq!(success.id, "req");
+        let _: SuccessResponse = crate::api::error::test_success(&response);
     }
 
     #[test]
@@ -3213,7 +3226,10 @@ mod tests {
 
             let response = app.handle_pane_report_metadata("req".into(), params);
 
-            assert_eq!(metadata_error_code(&response), "invalid_metadata_source");
+            assert_eq!(
+                metadata_error_code(&response),
+                ApiErrorCode::InvalidMetadataSource
+            );
         }
     }
 
@@ -3225,7 +3241,10 @@ mod tests {
 
         let response = app.handle_pane_report_metadata("req".into(), params);
 
-        assert_eq!(metadata_error_code(&response), "invalid_metadata_source");
+        assert_eq!(
+            metadata_error_code(&response),
+            ApiErrorCode::InvalidMetadataSource
+        );
     }
 
     #[test]
@@ -3236,7 +3255,10 @@ mod tests {
 
         let response = app.handle_pane_report_metadata("req".into(), params);
 
-        assert_eq!(metadata_error_code(&response), "invalid_metadata_source");
+        assert_eq!(
+            metadata_error_code(&response),
+            ApiErrorCode::InvalidMetadataSource
+        );
     }
 
     #[test]
@@ -3248,7 +3270,10 @@ mod tests {
 
             let response = app.handle_pane_report_metadata("req".into(), params);
 
-            assert_eq!(metadata_error_code(&response), "invalid_metadata_ttl");
+            assert_eq!(
+                metadata_error_code(&response),
+                ApiErrorCode::InvalidMetadataTtl
+            );
         }
     }
 }

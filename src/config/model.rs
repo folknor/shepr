@@ -230,7 +230,7 @@ pub struct LoadedConfig {
     pub config: Config,
     pub provenance: super::ConfigProvenance,
     pub(crate) keybind_validation: super::keybinds::KeybindValidation,
-    pub diagnostics: Vec<String>,
+    pub diagnostics: Vec<super::ConfigDiagnostic>,
     pub(crate) document_state: ConfigDocumentState,
 }
 
@@ -245,7 +245,7 @@ impl LoadedConfig {
     pub(crate) fn into_validated(
         self,
         paths: super::AppPaths,
-    ) -> Result<super::ValidatedConfig, Vec<String>> {
+    ) -> Result<super::ValidatedConfig, Vec<super::ConfigDiagnostic>> {
         if self.diagnostics.is_empty() {
             super::ValidatedConfig::from_loaded(
                 self.config,

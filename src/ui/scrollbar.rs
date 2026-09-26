@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::app::AppState;
-use crate::layout::PaneInfo;
+use crate::ui::PaneChromeInfo as PaneInfo;
 
 pub(crate) fn pane_scrollbar_rect(info: &PaneInfo) -> Option<Rect> {
     info.scrollbar_rect
@@ -166,7 +166,7 @@ pub(crate) fn render_pane_scrollbar_buffer(
     buffer: &mut Buffer,
     metrics: crate::pane::ScrollMetrics,
     track: Rect,
-    palette: &crate::app::state::Palette,
+    palette: &crate::theme::Palette,
     focused: bool,
 ) {
     let (track_color, thumb_color, thumb_symbol) = if focused {

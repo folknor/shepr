@@ -93,7 +93,7 @@ pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
 pub(super) fn run_workspace_command(
     command: Command,
     paths: &super::target::CliContext,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     match command {
         Command::List => super::runtime::workspace_list(paths),
         Command::Create(args) => match create_params(args, paths) {

@@ -14,8 +14,6 @@ use crossterm::event::{
 use crossterm::execute;
 use crossterm::terminal::{DisableLineWrap, EnableLineWrap};
 
-use super::terminal_geometry::should_query_host_terminal_theme;
-
 // ---------------------------------------------------------------------------
 // Terminal setup / restore
 // ---------------------------------------------------------------------------
@@ -66,9 +64,7 @@ pub(super) fn setup_terminal_with_capabilities(
         }
         (active, buffered_input)
     } else {
-        if should_query_host_terminal_theme() {
-            write_host_color_scheme_report_mode(&mut io::stdout(), false)?;
-        }
+        write_host_color_scheme_report_mode(&mut io::stdout(), false)?;
         set_mouse_capture(mouse_capture, false)?;
         execute!(io::stdout(), EnableBracketedPaste)?;
         (false, Vec::new())
@@ -91,7 +87,7 @@ pub(super) fn setup_terminal_with_capabilities(
 }
 
 pub(super) fn should_enable_host_color_scheme_reports(enable_client_protocols: bool) -> bool {
-    enable_client_protocols && should_query_host_terminal_theme()
+    enable_client_protocols
 }
 
 /// Guard that restores the terminal when dropped.
@@ -361,10 +357,7 @@ pub(super) fn set_mouse_capture(enabled: bool, sgr_pixels: bool) -> io::Result<(
         }
         Ok(())
     } else {
-        match execute!(io::stdout(), DisableMouseCapture) {
-            Ok(()) => Ok(()),
-            Err(err) => Err(err),
-        }
+        execute!(io::stdout(), DisableMouseCapture)
     }
 }
 

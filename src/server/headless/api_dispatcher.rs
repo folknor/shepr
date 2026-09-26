@@ -243,22 +243,16 @@ impl ApiDispatcher {
         server: &super::HeadlessServer,
         msg: &api::ApiRequestMessage,
     ) {
-        let error = server
-            .lifecycle
-            .shutdown_error()
-            .unwrap_or_else(|| api::schema::ErrorBody {
-                code: "server_unavailable".into(),
-                message: "server is shutting down".into(),
-            });
+        let error = server.lifecycle.shutdown_error().unwrap_or_else(|| {
+            api::error::ApiError::new(
+                api::error::ApiErrorCode::ServerUnavailable,
+                "server is shutting down",
+            )
+            .into_body()
+        });
         let request_id = msg.request.id.clone();
         let method = msg.request.method.traits().name;
-        let response = api::serialize_response_or_error(
-            &request_id,
-            &api::schema::ErrorResponse {
-                id: request_id.clone(),
-                error,
-            },
-        );
+        let response = Err(api::error::ApiError::from_body(error));
         api::send_api_response(&msg.respond_to, &request_id, method, response);
     }
 
@@ -391,13 +385,13 @@ impl ApiDispatcher {
             return None;
         }
         let status = crate::detect::manifest::agent_state_label(terminal.state);
-        Some(api::schema::ErrorBody {
-            code: "agent_not_idle".into(),
-            message: format!(
+        Some(api::error::ApiError::new(
+            api::error::ApiErrorCode::AgentNotIdle,
+            format!(
                 "cannot read {requested} lines while {} is {status}: its alternate-screen history can only be captured by scrolling while idle. Wait and retry, or use --source visible",
                 params.target
             ),
-        })
+        ).into_body())
     }
 
     pub(super) fn alt_screen_read_spec(

@@ -1,3 +1,4 @@
+use crate::api::error::{ApiErrorCode, ApiResult};
 use std::path::PathBuf;
 
 #[cfg(test)]
@@ -8,10 +9,10 @@ use crate::api::schema::{
 };
 use crate::app::App;
 
-use super::responses::{encode_error, encode_success};
+use super::responses::{failure, success};
 
 impl App {
-    pub(super) fn handle_tab_list(&mut self, id: String, params: TabListParams) -> String {
+    pub(super) fn handle_tab_list(&mut self, id: String, params: TabListParams) -> ApiResult {
         let tabs = if let Some(workspace_id) = params.workspace_id {
             let Some(ws_idx) = self.parse_workspace_id(&workspace_id) else {
                 return workspace_not_found(id, &workspace_id);
@@ -32,10 +33,10 @@ impl App {
             tabs
         };
 
-        encode_success(id, ResponseResult::TabList { tabs })
+        success(id, ResponseResult::TabList { tabs })
     }
 
-    pub(super) fn handle_tab_get(&mut self, id: String, target: &TabTarget) -> String {
+    pub(super) fn handle_tab_get(&mut self, id: String, target: &TabTarget) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return tab_not_found(id, &target.tab_id);
         };
@@ -43,10 +44,10 @@ impl App {
             return tab_not_found(id, &target.tab_id);
         };
 
-        encode_success(id, ResponseResult::TabInfo { tab })
+        success(id, ResponseResult::TabInfo { tab })
     }
 
-    pub(super) fn handle_tab_create(&mut self, id: String, params: TabCreateParams) -> String {
+    pub(super) fn handle_tab_create(&mut self, id: String, params: TabCreateParams) -> ApiResult {
         let TabCreateParams {
             workspace_id,
             cwd,
@@ -62,7 +63,7 @@ impl App {
         } else if let Some(active) = self.state.active {
             active
         } else {
-            return encode_error(id, "workspace_not_found", "no active workspace");
+            return failure(id, ApiErrorCode::WorkspaceNotFound, "no active workspace");
         };
         let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| {
             self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx))
@@ -73,10 +74,7 @@ impl App {
         let host_terminal_theme = self.state.host_terminal_theme;
         let host_terminal_appearance = self.state.host_terminal_appearance;
         let spawn = self.pane_spawn_handles();
-        let extra_env = match super::env::normalize_launch_env(env) {
-            Ok(env) => env,
-            Err((code, message)) => return encode_error(id, &code, message),
-        };
+        let extra_env = super::env::normalize_launch_env(env)?;
         let result = self
             .state
             .workspaces
@@ -104,7 +102,7 @@ impl App {
                 let Some(outcome) = self.state.commit_tab_creation(ws_idx, tab, terminal, focus)
                 else {
                     drop(runtime);
-                    return encode_error(id, "tab_create_failed", "workspace disappeared");
+                    return failure(id, ApiErrorCode::TabCreateFailed, "workspace disappeared");
                 };
                 let tab_idx = outcome.tab_index;
                 self.terminal_runtimes.insert(terminal_id, runtime);
@@ -126,15 +124,15 @@ impl App {
                 self.schedule_session_save();
                 self.emit_tab_created_events(ws_idx, tab_idx);
                 match self.tab_created_result(ws_idx, tab_idx) {
-                    Some(result) => encode_success(id, result),
-                    None => encode_error(id, "tab_create_failed", "new tab is unavailable"),
+                    Some(result) => success(id, result),
+                    None => failure(id, ApiErrorCode::TabCreateFailed, "new tab is unavailable"),
                 }
             }
-            Err(err) => encode_error(id, "tab_create_failed", err.to_string()),
+            Err(err) => failure(id, ApiErrorCode::TabCreateFailed, err.to_string()),
         }
     }
 
-    pub(super) fn handle_tab_focus(&mut self, id: String, target: &TabTarget) -> String {
+    pub(super) fn handle_tab_focus(&mut self, id: String, target: &TabTarget) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return tab_not_found(id, &target.tab_id);
         };
@@ -143,10 +141,10 @@ impl App {
             return tab_not_found(id, &target.tab_id);
         };
 
-        encode_success(id, ResponseResult::TabInfo { tab })
+        success(id, ResponseResult::TabInfo { tab })
     }
 
-    pub(super) fn handle_tab_rename(&mut self, id: String, params: TabRenameParams) -> String {
+    pub(super) fn handle_tab_rename(&mut self, id: String, params: TabRenameParams) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
             return tab_not_found(id, &params.tab_id);
         };
@@ -178,10 +176,10 @@ impl App {
             return tab_not_found(id, &params.tab_id);
         };
 
-        encode_success(id, ResponseResult::TabInfo { tab })
+        success(id, ResponseResult::TabInfo { tab })
     }
 
-    pub(super) fn handle_tab_move(&mut self, id: String, params: &TabMoveParams) -> String {
+    pub(super) fn handle_tab_move(&mut self, id: String, params: &TabMoveParams) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
             return tab_not_found(id, &params.tab_id);
         };
@@ -189,9 +187,9 @@ impl App {
             return tab_not_found(id, &params.tab_id);
         };
         if params.insert_index > ws.tabs.len() {
-            return encode_error(
+            return failure(
                 id,
-                "tab_move_failed",
+                ApiErrorCode::TabMoveFailed,
                 format!("insert_index {} is out of bounds", params.insert_index),
             );
         }
@@ -219,10 +217,10 @@ impl App {
             });
         }
 
-        encode_success(id, ResponseResult::TabList { tabs })
+        success(id, ResponseResult::TabList { tabs })
     }
 
-    pub(super) fn handle_tab_close(&mut self, id: String, target: &TabTarget) -> String {
+    pub(super) fn handle_tab_close(&mut self, id: String, target: &TabTarget) -> ApiResult {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return tab_not_found(id, &target.tab_id);
         };
@@ -240,9 +238,9 @@ impl App {
             self.state.commit_tab_removal(&plan),
             crate::app::actions::TabRemovalCommit::Removed(_)
         ) {
-            return encode_error(
+            return failure(
                 id,
-                "tab_close_failed",
+                ApiErrorCode::TabCloseFailed,
                 format!("tab {} could not be closed", target.tab_id),
             );
         }
@@ -250,7 +248,7 @@ impl App {
         self.schedule_session_save();
         self.emit_events(close_events);
 
-        encode_success(id, ResponseResult::Ok {})
+        success(id, ResponseResult::Ok {})
     }
 
     fn tab_list_info(&self, ws_idx: usize) -> Vec<crate::api::schema::TabInfo> {
@@ -266,16 +264,20 @@ impl App {
     }
 }
 
-fn workspace_not_found(id: String, workspace_id: &str) -> String {
-    encode_error(
+fn workspace_not_found(id: String, workspace_id: &str) -> ApiResult {
+    failure(
         id,
-        "workspace_not_found",
+        ApiErrorCode::WorkspaceNotFound,
         format!("workspace {workspace_id} not found"),
     )
 }
 
-fn tab_not_found(id: String, tab_id: &str) -> String {
-    encode_error(id, "tab_not_found", format!("tab {tab_id} not found"))
+fn tab_not_found(id: String, tab_id: &str) -> ApiResult {
+    failure(
+        id,
+        ApiErrorCode::TabNotFound,
+        format!("tab {tab_id} not found"),
+    )
 }
 
 #[cfg(test)]
@@ -309,7 +311,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert!(app.state.workspaces.is_empty());
         assert!(app.state.active.is_none());
@@ -386,7 +388,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(app.state.workspaces[0].tabs.len(), 1);
         assert!(!app.state.public_pane_id_aliases.contains_key("old-root"));
@@ -436,7 +438,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         let ResponseResult::TabList { tabs } = success.result else {
             panic!("expected tab list");
         };
@@ -502,7 +504,7 @@ mod tests {
             },
         );
 
-        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        let success: SuccessResponse = crate::api::error::test_success(&response);
         assert!(matches!(success.result, ResponseResult::TabCreated { .. }));
         let created = &app.state.workspaces[0].tabs[1];
         let created_terminal_id = created

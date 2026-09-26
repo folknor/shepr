@@ -9,6 +9,27 @@ use super::{
     ServerMessage,
 };
 
+#[derive(Debug)]
+pub(crate) enum SurfaceDeltaError {
+    InvalidGrid,
+    InvalidRows(&'static str),
+    SpanOutOfBounds,
+    Encoding(super::codec::CodecError),
+}
+
+impl std::fmt::Display for SurfaceDeltaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidGrid => f.write_str("cell grid does not match its dimensions"),
+            Self::InvalidRows(reason) => f.write_str(reason),
+            Self::SpanOutOfBounds => f.write_str("patch span exceeds the cell grid"),
+            Self::Encoding(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for SurfaceDeltaError {}
+
 /// Whether a full surface can safely be represented as delta metadata.
 fn metadata_fits(surface: &PaneSurfaceFrame) -> bool {
     super::surface_grid_size(surface.frame.width, surface.frame.height)
@@ -31,17 +52,18 @@ pub(crate) fn apply_rows(
     width: u16,
     height: u16,
     rows: &[PaneSurfacePatchRow],
-) -> Result<(), String> {
+) -> Result<(), SurfaceDeltaError> {
     if super::surface_grid_size(width, height) != Some(cells.len()) {
-        return Err("cell grid does not match its dimensions".into());
+        return Err(SurfaceDeltaError::InvalidGrid);
     }
-    crate::protocol::validate_patch_rows(width, height, rows)?;
+    crate::protocol::validate_patch_rows(width, height, rows)
+        .map_err(SurfaceDeltaError::InvalidRows)?;
     for row in rows {
         let start = usize::from(row.y) * usize::from(width) + usize::from(row.x);
         let end = start + row.cells.len();
         cells
             .get_mut(start..end)
-            .ok_or("patch span exceeds the cell grid")?
+            .ok_or(SurfaceDeltaError::SpanOutOfBounds)?
             .clone_from_slice(&row.cells);
     }
     Ok(())
@@ -59,7 +81,7 @@ fn changed_rows<'a>(
     next: &'a [CellData],
     width: u16,
     full_size: usize,
-) -> Result<Option<Vec<CellSpan<'a>>>, String> {
+) -> Result<Option<Vec<CellSpan<'a>>>, SurfaceDeltaError> {
     let mut rows = Vec::new();
     if width == 0 {
         return Ok(Some(rows));
@@ -97,14 +119,14 @@ fn changed_rows<'a>(
     Ok(Some(rows))
 }
 
-fn encoded_size(value: &impl Serialize) -> Result<usize, String> {
-    super::codec::encoded_len(value).map_err(|error| error.to_string())
+fn encoded_size(value: &impl Serialize) -> Result<usize, SurfaceDeltaError> {
+    super::codec::encoded_len(value).map_err(SurfaceDeltaError::Encoding)
 }
 
 pub(crate) fn message(
     last: &PaneSurfaceFrame,
     full: &mut ServerMessage,
-) -> Result<Option<ServerMessage>, String> {
+) -> Result<Option<ServerMessage>, SurfaceDeltaError> {
     let ServerMessage::PaneSurface(surface) = &*full else {
         return Ok(None);
     };

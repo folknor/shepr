@@ -126,7 +126,10 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert!(server.send_to_client(
         client_id,
         &ServerMessage::ClientShellError {
-            message: "metadata event".into(),
+            kind: protocol::NoticeKind::PaneInputDropped {
+                pane_id: "metadata event".into(),
+                events: 1
+            },
         }
     ));
     assert!(matches!(

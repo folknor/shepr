@@ -5,7 +5,7 @@ impl App {
         &mut self,
         id: String,
         params: PaneReportAgentParams,
-    ) -> String {
+    ) -> crate::api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -27,14 +27,14 @@ impl App {
             seq: params.seq,
         });
 
-        encode_success(id, ResponseResult::Ok {})
+        success(id, ResponseResult::Ok {})
     }
 
     pub(crate) fn handle_pane_report_agent_session(
         &mut self,
         id: String,
         params: PaneReportAgentSessionParams,
-    ) -> String {
+    ) -> crate::api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -57,14 +57,14 @@ impl App {
             ),
         });
 
-        encode_success(id, ResponseResult::Ok {})
+        success(id, ResponseResult::Ok {})
     }
 
     pub(crate) fn handle_pane_report_metadata(
         &mut self,
         id: String,
         params: PaneReportMetadataParams,
-    ) -> String {
+    ) -> crate::api::error::ApiResult {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -77,7 +77,13 @@ impl App {
         };
         let source = match normalize_metadata_source(&params.source) {
             Ok(source) => source,
-            Err(message) => return encode_error(id, "invalid_metadata_source", message),
+            Err(message) => {
+                return failure(
+                    id,
+                    crate::api::error::ApiErrorCode::InvalidMetadataSource,
+                    message,
+                );
+            }
         };
         let raw_title_set = params.title.is_some();
         let raw_display_agent_set = params.display_agent.is_some();
@@ -87,28 +93,46 @@ impl App {
         } else {
             match normalize_metadata_tokens(params.tokens) {
                 Ok(tokens) => Some(tokens),
-                Err(message) => return encode_error(id, "invalid_metadata_token", message),
+                Err(message) => {
+                    return failure(
+                        id,
+                        crate::api::error::ApiErrorCode::InvalidMetadataToken,
+                        message,
+                    );
+                }
             }
         };
         let ttl = match normalize_metadata_ttl(params.ttl_ms) {
             Ok(ttl) => ttl,
-            Err(message) => return encode_error(id, "invalid_metadata_ttl", message),
+            Err(message) => {
+                return failure(
+                    id,
+                    crate::api::error::ApiErrorCode::InvalidMetadataTtl,
+                    message,
+                );
+            }
         };
         let title = normalize_presentation_text(params.title);
         let display_agent = normalize_presentation_text(params.display_agent);
         let applies_to_source = match params.applies_to_source {
             Some(ref applies_to_source) => match normalize_metadata_source(applies_to_source) {
                 Ok(applies_to_source) => Some(applies_to_source),
-                Err(message) => return encode_error(id, "invalid_metadata_source", message),
+                Err(message) => {
+                    return failure(
+                        id,
+                        crate::api::error::ApiErrorCode::InvalidMetadataSource,
+                        message,
+                    );
+                }
             },
             None => None,
         };
         let state_labels = match normalize_state_labels(params.state_labels) {
             Ok(labels) => labels,
             Err(status) => {
-                return encode_error(
+                return failure(
                     id,
-                    "invalid_state_label",
+                    crate::api::error::ApiErrorCode::InvalidStateLabel,
                     format!("unknown state label: {status}"),
                 );
             }
@@ -117,9 +141,9 @@ impl App {
             || raw_display_agent_set && params.clear_display_agent
             || raw_state_labels_set && params.clear_state_labels
         {
-            return encode_error(
+            return failure(
                 id,
-                "invalid_metadata_request",
+                crate::api::error::ApiErrorCode::InvalidMetadataRequest,
                 "cannot set and clear the same metadata field",
             );
         }
@@ -131,9 +155,9 @@ impl App {
             && !params.clear_display_agent
             && !params.clear_state_labels
         {
-            return encode_error(
+            return failure(
                 id,
-                "invalid_metadata_request",
+                crate::api::error::ApiErrorCode::InvalidMetadataRequest,
                 "missing metadata field to set or clear",
             );
         }
@@ -160,10 +184,10 @@ impl App {
             agent_label.as_deref(),
             applies_to_source.as_deref(),
         ) {
-            return encode_success(id, ResponseResult::Ok {});
+            return success(id, ResponseResult::Ok {});
         }
         if !terminal.metadata_report_sequence_is_fresh(&source, params.seq) {
-            return encode_success(id, ResponseResult::Ok {});
+            return success(id, ResponseResult::Ok {});
         }
         let metadata_agent = crate::terminal::TerminalState::metadata_report_agent(
             &source,
@@ -174,9 +198,9 @@ impl App {
             && terminal.metadata_tokens.key_count_after_patch(tokens)
                 > MAX_METADATA_TOKEN_KEYS_PER_RESOURCE
         {
-            return encode_error(
+            return failure(
                 id,
-                "metadata_token_limit",
+                crate::api::error::ApiErrorCode::MetadataTokenLimit,
                 format!(
                     "pane metadata may contain at most {MAX_METADATA_TOKEN_KEYS_PER_RESOURCE} tokens"
                 ),
@@ -185,11 +209,11 @@ impl App {
         match terminal.accept_metadata_report(&source, params.seq, tokens.is_some(), metadata_agent)
         {
             Ok(true) => {}
-            Ok(false) => return encode_success(id, ResponseResult::Ok {}),
+            Ok(false) => return success(id, ResponseResult::Ok {}),
             Err(()) => {
-                return encode_error(
+                return failure(
                     id,
-                    "metadata_sequence_source_limit",
+                    crate::api::error::ApiErrorCode::MetadataSequenceSourceLimit,
                     format!(
                         "pane metadata may track at most {} sequenced sources",
                         crate::terminal::metadata_tokens::MAX_SEQUENCE_SOURCES
@@ -228,14 +252,14 @@ impl App {
             self.emit_pane_updated(ws_idx, pane_id);
         }
 
-        encode_success(id, ResponseResult::Ok {})
+        success(id, ResponseResult::Ok {})
     }
 
     pub(crate) fn handle_pane_clear_agent_authority(
         &mut self,
         id: String,
         params: PaneClearAgentAuthorityParams,
-    ) -> String {
+    ) -> crate::api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -245,14 +269,14 @@ impl App {
             seq: params.seq,
         });
 
-        encode_success(id, ResponseResult::Ok {})
+        success(id, ResponseResult::Ok {})
     }
 
     pub(crate) fn handle_pane_release_agent(
         &mut self,
         id: String,
         params: PaneReleaseAgentParams,
-    ) -> String {
+    ) -> crate::api::error::ApiResult {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -267,6 +291,6 @@ impl App {
             seq: params.seq,
         });
 
-        encode_success(id, ResponseResult::Ok {})
+        success(id, ResponseResult::Ok {})
     }
 }

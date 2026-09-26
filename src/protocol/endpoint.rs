@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ClientShellSnapshot, ClientSurfaceSize, ServerMessage};
+use super::{ClientShellSnapshot, ClientSurfaceSize, HandshakeRefusal, ServerMessage};
 
 /// Client-owned shell hello.
 ///
@@ -19,16 +19,10 @@ pub struct EndpointClientHello {
     pub surface_active: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EndpointHandshakeError {
-    pub code: String,
-    pub message: String,
-}
-
 /// Client-owned shell welcome: why the server refused, if it did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointServerWelcome {
-    pub error: Option<EndpointHandshakeError>,
+    pub error: Option<HandshakeRefusal>,
 }
 
 pub fn snapshot_message(snapshot: &ClientShellSnapshot) -> ServerMessage {
@@ -40,12 +34,9 @@ impl EndpointServerWelcome {
         Self { error: None }
     }
 
-    pub fn incompatible(code: &str, message: impl Into<String>) -> Self {
+    pub fn incompatible(reason: HandshakeRefusal) -> Self {
         Self {
-            error: Some(EndpointHandshakeError {
-                code: code.into(),
-                message: message.into(),
-            }),
+            error: Some(reason),
         }
     }
 }

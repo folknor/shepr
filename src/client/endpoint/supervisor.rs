@@ -387,6 +387,7 @@ fn establish(
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
     super::super::do_handshake(
         &mut stream,
+        crate::client::handshake::ClientProcessRole::Local,
         options.cols,
         options.rows,
         options.cell_width_px,
@@ -438,6 +439,18 @@ fn handshake_error(error: crate::client::ClientError) -> std::io::Error {
         ClientError::HandshakeRejected { error, .. } => {
             std::io::Error::new(std::io::ErrorKind::Unsupported, error)
         }
+        ClientError::Preamble(
+            error @ crate::protocol::preamble::PreambleError::DifferentBuild(_),
+        ) => std::io::Error::new(std::io::ErrorKind::Unsupported, error),
+        ClientError::Preamble(error) => std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+        ClientError::UnexpectedWelcome { endpoint } => std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            crate::client::ClientError::UnexpectedWelcome { endpoint },
+        ),
+        ClientError::SurfaceUpdateBeforeDecode => std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            crate::client::ClientError::SurfaceUpdateBeforeDecode,
+        ),
         ClientError::Protocol(FramingError::Io(error)) => error,
         // A peer that closes before Welcome is a server restarting, a dropped SSH link or a
         // remote launch that failed: all transient, so this must stay out of InvalidData,
@@ -451,7 +464,10 @@ fn handshake_error(error: crate::client::ClientError) -> std::io::Error {
         }
         ClientError::ServerShutdown { reason } => std::io::Error::new(
             std::io::ErrorKind::ConnectionAborted,
-            reason.unwrap_or_else(|| "server shut down while connecting".into()),
+            reason.map_or_else(
+                || "server shut down while connecting".into(),
+                |reason| reason.to_string(),
+            ),
         ),
     };
     let kind = error.kind();
@@ -701,7 +717,9 @@ mod tests {
         ));
         assert!(!crate::remote::SshFailureDiagnostic::from_error(&timeout).needs_attention());
         let rejected = handshake_error(crate::client::ClientError::HandshakeRejected {
-            error: "surface capability missing".into(),
+            error: crate::protocol::HandshakeRefusal::InvalidSurface(
+                "surface capability missing".into(),
+            ),
         });
         assert_eq!(rejected.kind(), std::io::ErrorKind::Unsupported);
         assert!(crate::remote::SshFailureDiagnostic::from_error(&rejected).needs_attention());

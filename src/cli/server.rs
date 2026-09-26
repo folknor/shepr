@@ -40,7 +40,7 @@ pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
 pub(super) fn run_server_command(
     command: Command,
     paths: &super::target::CliContext,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     match command {
         Command::Stop => server_stop(paths),
         Command::AgentManifests { json } => server_agent_manifests(paths, json),
@@ -52,7 +52,7 @@ pub(super) fn run_server_command(
 /// The local path skips the protocol check on purpose, like `session stop`:
 /// the protocol-mismatch error tells the user to run this command, so it must
 /// be able to stop a server from another build.
-fn server_stop(paths: &super::target::CliContext) -> std::io::Result<i32> {
+fn server_stop(paths: &super::target::CliContext) -> super::CliResult<i32> {
     if paths.is_remote() {
         return super::send_ok_request(paths, Method::ServerStop(EmptyParams::default()));
     }
@@ -66,7 +66,7 @@ fn server_stop(paths: &super::target::CliContext) -> std::io::Result<i32> {
     }
 }
 
-fn server_agent_manifests(paths: &super::target::CliContext, json: bool) -> std::io::Result<i32> {
+fn server_agent_manifests(paths: &super::target::CliContext, json: bool) -> super::CliResult<i32> {
     let response = super::send_request(
         paths,
         &Request {
@@ -82,7 +82,7 @@ fn server_agent_manifests(paths: &super::target::CliContext, json: bool) -> std:
     Ok(0)
 }
 
-fn server_reload_agent_manifests(paths: &super::target::CliContext) -> std::io::Result<i32> {
+fn server_reload_agent_manifests(paths: &super::target::CliContext) -> super::CliResult<i32> {
     super::print_response(&super::send_request(
         paths,
         &Request {

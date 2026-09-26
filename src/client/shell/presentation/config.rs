@@ -36,7 +36,7 @@ impl ClientShellConfig {
             preferences::ConfiguredChrome::default(),
             config
                 .resolve_palette()
-                .unwrap_or_else(|_| crate::app::state::Palette::catppuccin()),
+                .unwrap_or_else(|_| crate::theme::Palette::catppuccin()),
             config.live_keybinds(),
         )
     }
@@ -53,7 +53,7 @@ impl ClientShellConfig {
     fn from_config_with_configured(
         config: &Config,
         configured: preferences::ConfiguredChrome,
-        palette: crate::app::state::Palette,
+        palette: crate::theme::Palette,
         keybinds: LiveKeybindConfig,
     ) -> Self {
         Self {

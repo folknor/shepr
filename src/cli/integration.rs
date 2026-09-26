@@ -43,7 +43,7 @@ pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
 pub(super) fn run_integration_command(
     command: Command,
     _paths: &crate::config::AppPaths,
-) -> std::io::Result<i32> {
+) -> super::CliResult<i32> {
     let integration_paths = crate::integration::AgentIntegrationPaths::resolve();
     match command {
         Command::Install { target } => Ok(integration_install(&target, &integration_paths)),

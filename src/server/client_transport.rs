@@ -131,8 +131,8 @@ enum DecodedEndpointRequest {
     },
 }
 
-fn write_endpoint_rejection(stream: &mut LocalStream, code: &str, message: impl Into<String>) {
-    let welcome = EndpointServerWelcome::incompatible(code, message);
+fn write_endpoint_rejection(stream: &mut LocalStream, reason: protocol::HandshakeRefusal) {
+    let welcome = EndpointServerWelcome::incompatible(reason);
     let response = ServerMessage::EndpointWelcome(welcome);
     let _ = protocol::write_message(stream, &response);
 }
@@ -683,9 +683,9 @@ pub(crate) fn handle_client_handshake(
                 hello.cell_width_px,
                 hello.cell_height_px,
             )
-            .map(|reason| ("invalid_surface", reason.to_owned()));
-            if let Some((code, reason)) = incompatibility {
-                write_endpoint_rejection(&mut stream, code, reason);
+            .map(|reason| protocol::HandshakeRefusal::InvalidSurface(reason.to_owned()));
+            if let Some(reason) = incompatibility {
+                write_endpoint_rejection(&mut stream, reason);
                 return Ok(());
             }
             (
@@ -700,7 +700,7 @@ pub(crate) fn handle_client_handshake(
         _ => {
             debug!(client_id, "first message was not a handshake, closing");
             let welcome = ServerMessage::Welcome {
-                error: Some("expected a handshake as the first message".to_owned()),
+                error: Some(protocol::HandshakeRefusal::ExpectedHello),
             };
             let _ = protocol::write_message(&mut stream, &welcome);
             return Ok(());
@@ -792,7 +792,9 @@ pub(crate) fn handle_client_handshake(
 
 fn send_shutdown_to_unregistered_client(writer: &ClientWriter) {
     if let Ok(framed) = protocol::encode_frame(&ServerMessage::ServerShutdown {
-        reason: Some("server is shutting down".to_owned()),
+        reason: Some(crate::protocol::ShutdownReason::Message(
+            "server is shutting down".to_owned(),
+        )),
     }) {
         let _ = writer.control.send(framed);
     }
@@ -1809,7 +1811,7 @@ mod tests {
         assert!(
             welcome
                 .error
-                .is_some_and(|error| error.message.contains("non-empty pane surface"))
+                .is_some_and(|error| matches!(error, protocol::HandshakeRefusal::InvalidSurface(message) if message.contains("non-empty pane surface")))
         );
         handle
             .join()

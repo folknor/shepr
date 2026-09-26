@@ -48,6 +48,7 @@ mod session;
 mod terminal;
 #[cfg(test)]
 mod test_support;
+mod theme;
 mod ui;
 mod workspace;
 
@@ -93,32 +94,20 @@ where
         .collect()
 }
 
-fn finish_cli(outcome: io::Result<i32>) -> io::Result<()> {
+fn finish_cli(outcome: cli::CliResult<i32>) -> io::Result<()> {
     match outcome {
         Ok(code) => std::process::exit(code),
-        Err(err) if cli::protocol_mismatch_was_reported(&err) => std::process::exit(1),
-        Err(err) if cli::server_not_running_was_reported(&err) => {
-            if let Some(response) = cli::server_not_running_reported_response(&err)
-                && let Ok(json) = serde_json::to_string(response)
-            {
-                eprintln!("{json}");
-            }
-            std::process::exit(1);
-        }
-        Err(err) => {
-            // Transport and I/O failures of a CLI command: report them like
-            // every other CLI error instead of letting `main` print the
-            // error's Debug form.
-            eprintln!("error: {err}");
-            std::process::exit(1);
+        Err(error) => {
+            error.print();
+            std::process::exit(error.exit_code());
         }
     }
 }
 
 fn usage_exit(message: &str) -> ! {
-    eprintln!("error: {message}");
-    eprintln!("run 'shepr --help' for usage");
-    std::process::exit(2);
+    let error = cli::CliError::Usage(message.into());
+    error.print();
+    std::process::exit(error.exit_code());
 }
 
 fn main() -> io::Result<()> {
@@ -150,7 +139,7 @@ fn main() -> io::Result<()> {
         .transpose()
     {
         Ok(session) => session,
-        Err(err) => usage_exit(&err),
+        Err(err) => usage_exit(&err.to_string()),
     };
     let remote_launch = match remote::remote_launch(
         invocation.remote().as_deref(),

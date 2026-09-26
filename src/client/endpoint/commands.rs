@@ -8,6 +8,48 @@ use crate::protocol::ClientMessage;
 use super::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
 use crate::client::shell::ClientShellEndpointError;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EndpointFailureCode {
+    Timeout,
+    ResponseTooLarge,
+    Cancelled,
+    Remote(String),
+}
+
+impl EndpointFailureCode {
+    pub(crate) fn as_str(&self) -> &str {
+        match self {
+            Self::Timeout => "endpoint_timeout",
+            Self::ResponseTooLarge => "endpoint_response_too_large",
+            Self::Cancelled => "endpoint_cancelled",
+            Self::Remote(code) => code,
+        }
+    }
+}
+
+impl From<String> for EndpointFailureCode {
+    fn from(code: String) -> Self {
+        match code.as_str() {
+            "endpoint_timeout" => Self::Timeout,
+            "endpoint_response_too_large" => Self::ResponseTooLarge,
+            "endpoint_cancelled" => Self::Cancelled,
+            _ => Self::Remote(code),
+        }
+    }
+}
+
+impl From<&str> for EndpointFailureCode {
+    fn from(code: &str) -> Self {
+        code.to_owned().into()
+    }
+}
+
+impl PartialEq<&str> for EndpointFailureCode {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
 const ENDPOINT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_RETIRED_REQUESTS_PER_ENDPOINT: usize = 128;
 /// Upper bound on one reassembled endpoint command response. Large pane selections and
@@ -190,7 +232,7 @@ impl EndpointCommands {
                     boot_id: command.boot_id,
                     request_id: command.request_id,
                     result: Err(ClientShellEndpointError {
-                        code: Some("endpoint_timeout".into()),
+                        code: Some(EndpointFailureCode::Timeout),
                         message: "this server did not respond to the action".into(),
                     }),
                 })
@@ -240,7 +282,7 @@ impl EndpointCommands {
                 boot_id: in_flight.boot_id,
                 request_id: in_flight.request_id,
                 result: Err(ClientShellEndpointError {
-                    code: Some("endpoint_response_too_large".into()),
+                    code: Some(EndpointFailureCode::ResponseTooLarge),
                     message: format!(
                         "this server's response exceeded {} MiB",
                         MAX_ENDPOINT_RESPONSE_BYTES / (1024 * 1024)
@@ -301,7 +343,7 @@ pub(in crate::client) fn parse_response(
         }),
         Err(ApiClientError::ErrorResponse(response)) if response.id == expected_id => {
             Err(ClientShellEndpointError {
-                code: Some(response.error.code),
+                code: Some(response.error.code.into()),
                 message: response.error.message,
             })
         }

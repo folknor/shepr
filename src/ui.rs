@@ -1,11 +1,13 @@
 use ratatui::layout::Rect;
 
+mod pane_info;
 mod panes;
 mod scrollbar;
 mod tab_surface;
 mod text;
 mod widgets;
 
+pub(crate) use self::pane_info::PaneChromeInfo;
 pub(crate) use self::panes::{
     apply_pane_chrome, pane_inner_rect, pane_is_scrolled_back, render_selection_highlight,
 };
