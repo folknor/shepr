@@ -41,10 +41,11 @@ pub(super) fn server_reader_thread(
     generation: u64,
     mut surface_decoder: Option<protocol::surface_reuse::Decoder>,
 ) {
-    if stream.set_nonblocking(true).is_err() {
+    if let Err(error) = stream.set_nonblocking(true) {
         let _ = event_tx.blocking_send(ClientLoopEvent::ServerDisconnected {
             endpoint_id,
             generation,
+            error,
         });
         return;
     }
@@ -83,6 +84,7 @@ pub(super) fn server_reader_thread(
                 let _ = event_tx.blocking_send(ClientLoopEvent::ServerDisconnected {
                     endpoint_id: endpoint_id.clone(),
                     generation,
+                    error: framing_error_to_io(protocol::FramingError::UnexpectedEof),
                 });
                 break;
             }
@@ -92,10 +94,21 @@ pub(super) fn server_reader_thread(
                 let _ = event_tx.blocking_send(ClientLoopEvent::ServerDisconnected {
                     endpoint_id: endpoint_id.clone(),
                     generation,
+                    error: framing_error_to_io(err),
                 });
                 break;
             }
         }
+    }
+}
+
+fn framing_error_to_io(error: protocol::FramingError) -> io::Error {
+    match error {
+        protocol::FramingError::UnexpectedEof => {
+            io::Error::new(io::ErrorKind::UnexpectedEof, "server closed connection")
+        }
+        protocol::FramingError::Io(error) => error,
+        error => io::Error::new(io::ErrorKind::InvalidData, error.to_string()),
     }
 }
 
@@ -161,6 +174,31 @@ mod tests {
     use interprocess::local_socket::traits::Listener as _;
     use std::io::{Read as _, Write as _};
     use std::time::Instant;
+
+    #[test]
+    fn server_reader_errors_keep_eof_io_and_decode_causes() {
+        let eof = framing_error_to_io(protocol::FramingError::UnexpectedEof);
+        assert_eq!(eof.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(eof.to_string().contains("server closed connection"));
+
+        let io_error = framing_error_to_io(protocol::FramingError::Io(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "peer reset",
+        )));
+        assert_eq!(io_error.kind(), io::ErrorKind::BrokenPipe);
+        assert!(io_error.to_string().contains("peer reset"));
+
+        let decode_error = framing_error_to_io(protocol::FramingError::Oversized {
+            claimed: 32,
+            max: 16,
+        });
+        assert_eq!(decode_error.kind(), io::ErrorKind::InvalidData);
+        assert!(
+            decode_error
+                .to_string()
+                .contains("frame size 32 exceeds maximum 16")
+        );
+    }
 
     #[test]
     fn upload_cancellation_preserves_pending_endpoint_download() {

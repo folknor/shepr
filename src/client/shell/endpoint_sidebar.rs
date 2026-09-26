@@ -589,13 +589,7 @@ fn render_endpoint_row(
         rect.width.saturating_sub(signal_width.saturating_add(1)),
         &format!(" {marker} {}", endpoint.label),
         Style::default()
-            .fg(
-                if matches!(endpoint.status, ClientEndpointStatus::Disabled) {
-                    palette.overlay0
-                } else {
-                    palette.text
-                },
-            )
+            .fg(palette.text)
             .add_modifier(Modifier::BOLD),
     );
     put_right_text(

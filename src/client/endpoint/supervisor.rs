@@ -81,10 +81,10 @@ pub(crate) enum EndpointSupervisorEvent {
 #[derive(Clone)]
 enum ConnectTarget {
     Local(PathBuf),
-    /// One connector per saved machine for as long as it stays enabled with the same
-    /// target and session: it carries the launch-time ssh settings, the temporary ssh
-    /// config and the remembered remote executable from one attempt to the next. A
-    /// catalog change that retires the machine drops it; re-enabling builds a new one.
+    /// One connector per saved machine with the same target and session: it carries the
+    /// launch-time ssh settings, the temporary ssh config and the remembered remote
+    /// executable from one attempt to the next. A catalog change that retires the machine
+    /// drops it; adding it again builds a new one.
     Ssh(Arc<crate::remote::SavedSshConnector>),
 }
 
@@ -139,7 +139,7 @@ impl EndpointSupervisors {
             next_generation: 2,
             shutdown: Arc::new(AtomicBool::new(false)),
         };
-        for profile in profiles.iter().filter(|profile| profile.enabled) {
+        for profile in profiles {
             supervisors.start_ssh(profile, now);
         }
         supervisors
@@ -298,10 +298,6 @@ impl EndpointSupervisors {
                 // retry a Local in attention stayed dead until the client restarted.
                 state.next_attempt = Some(retry_base + ATTENTION_RETRY_DELAY);
             }
-            ClientEndpointStatus::Disabled => {
-                state.online_since = None;
-                state.next_attempt = None;
-            }
             ClientEndpointStatus::Connecting | ClientEndpointStatus::Reconnecting => {
                 // A brief maintenance wake can complete a handshake without restoring the link.
                 if state.online_since.take().is_some_and(|connected| {
@@ -435,6 +431,7 @@ fn handshake_error(error: crate::client::ClientError) -> std::io::Error {
     use crate::protocol::FramingError;
     match error {
         ClientError::ConnectionFailed(error) | ClientError::ConnectionLost(error) => error,
+        ClientError::HostTerminal(error) => error,
         ClientError::HandshakeRejected { error, .. } => {
             std::io::Error::new(std::io::ErrorKind::Unsupported, error)
         }
@@ -477,7 +474,6 @@ mod tests {
             label: "Build".into(),
             target: "build".into(),
             session: "agents".into(),
-            enabled: true,
         }
     }
 
@@ -572,6 +568,34 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_saved_machine_stays_supervised_and_retries() {
+        let now = Instant::now();
+        let profile = profile();
+        let id = ClientEndpointId::Ssh(profile.id.clone());
+        let mut supervisors = supervisors_for(&[profile], now);
+        supervisors
+            .endpoints
+            .get_mut(&id)
+            .expect("test precondition")
+            .generation = Some(9);
+
+        assert!(supervisors.record_status(&id, 9, ClientEndpointStatus::Attention, now));
+        assert_eq!(
+            supervisors.endpoints[&id].next_attempt,
+            Some(now + ATTENTION_RETRY_DELAY)
+        );
+        assert!(supervisors.supervises(&id));
+
+        let retry_at = now + ATTENTION_RETRY_DELAY;
+        assert!(supervisors.record_status(&id, 9, ClientEndpointStatus::Reconnecting, retry_at,));
+        assert_eq!(
+            supervisors.endpoints[&id].next_attempt,
+            Some(retry_at + INITIAL_RETRY_DELAY)
+        );
+        assert!(supervisors.supervises(&id));
+    }
+
+    #[test]
     fn a_slow_failed_attempt_still_retries_within_thirty_seconds_of_any_moment() {
         // An attempt that hangs until its budget runs out, at the longest backoff, and the
         // user runs `shepr machine reconnect` just after it started.
@@ -648,7 +672,7 @@ mod tests {
             state.generation = Some(5);
         }
 
-        // Disabled and re-enabled (or re-pointed) while that attempt still runs: the new
+        // Removed and re-added (or re-pointed) while that attempt still runs: the new
         // connector shares the profile's bridge socket path, so it must not start yet.
         supervisors.retire(&id);
         supervisors.start_ssh(&profile, now);

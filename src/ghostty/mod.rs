@@ -127,8 +127,9 @@ pub const MODE_IN_BAND_RESIZE: u16 = 2048;
 
 // Unicode private-use codepoint used by the kitty graphics unicode-placeholder
 // convention. Shepr does not render kitty graphics, but programs may still
-// emit this codepoint as literal text; keep filtering it out of copied text
-// and history so stray placeholder glyphs don't leak into user-visible output.
+// emit this codepoint as literal text; keep filtering it out of copied,
+// history and rendered text so stray placeholder glyphs don't leak into
+// user-visible output.
 pub(crate) const KITTY_UNICODE_PLACEHOLDER: u32 = 0x10EEEE;
 
 /// Default colours reported while the program and host have set none. They
@@ -440,7 +441,14 @@ impl PtyResponse {
     }
 }
 
+fn is_halfwidth_voiced_mark(codepoint: u32) -> bool {
+    matches!(codepoint, 0xff9e | 0xff9f)
+}
+
 pub fn unicode_codepoint_width(codepoint: u32) -> u8 {
+    if is_halfwidth_voiced_mark(codepoint) {
+        return 1;
+    }
     match char::from_u32(codepoint) {
         Some(ch) => u8::try_from(ch.width().unwrap_or(0).min(2)).unwrap_or(2),
         None => 1,
@@ -453,6 +461,9 @@ pub fn unicode_grapheme_width(codepoints: &[u32]) -> (usize, u8) {
     let Some(&first) = codepoints.first() else {
         return (0, 0);
     };
+    if is_halfwidth_voiced_mark(first) {
+        return (1, 1);
+    }
     if char::from_u32(first).is_none() {
         return (1, 1);
     }
@@ -1100,8 +1111,11 @@ impl Terminal {
             .unwrap_or_else(PoisonError::into_inner)
             .len();
         self.term.set_options(term_config(history_lines));
-        // `set_options` re-announces the current title; that is not a change
-        // the child made, so drop it.
+        // Term::set_options sends only the current title (or reset) through
+        // this listener, synchronously. Term mutation is private to this
+        // &mut Terminal API and no other event producer can reach this queue,
+        // so truncating the tail drops only that synthetic reannouncement,
+        // which is not a title change made by the child.
         self.events
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1558,6 +1572,9 @@ impl Terminal {
         let current = self.term.grid().display_offset();
         let target_offset_i64 = i64::try_from(target_offset).unwrap_or(i64::MAX);
         let current_i64 = i64::try_from(current).unwrap_or(i64::MAX);
+        // row.min(history) keeps the first subtraction nonnegative. These
+        // offsets are in [0, i64::MAX], so their difference cannot overflow
+        // i64; clamp to Scroll::Delta's range before converting to i32.
         let delta = i32::try_from(
             (target_offset_i64 - current_i64).clamp(i64::from(i32::MIN), i64::from(i32::MAX)),
         )
@@ -1627,40 +1644,55 @@ fn cell_zerowidth(cell: &Cell) -> &[char] {
     cell.zerowidth().unwrap_or(&[])
 }
 
-/// The cell's text as codepoints; empty for blank cells and spacers.
-fn cell_graphemes(cell: &Cell) -> Vec<u32> {
-    if cell
-        .flags
-        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-    {
-        return Vec::new();
-    }
-    let zerowidth = cell_zerowidth(cell);
-    if (cell.c == ' ' || cell.c == '\t') && zerowidth.is_empty() {
-        return Vec::new();
-    }
-    let base = if cell.c == '\t' { ' ' } else { cell.c };
-    let mut graphemes = Vec::with_capacity(1 + zerowidth.len());
-    graphemes.push(u32::from(base));
-    graphemes.extend(zerowidth.iter().map(|&ch| u32::from(ch)));
-    graphemes
+enum CellText<'a> {
+    Empty,
+    Grapheme { base: char, zerowidth: &'a [char] },
 }
 
-/// The cell's text as readers show it, into `out`: the grapheme, or a single
-/// space for blank cells, wide-character spacers and kitty placeholders (the
-/// same text [`cell_graphemes`] yields once empty cells read as a space).
-fn cell_text_into(cell: &Cell, out: &mut String) {
-    out.clear();
+/// One classification for the text-facing cell adapters. Empty cells,
+/// spacers and kitty graphics placeholders all represent a blank cell.
+fn cell_text(cell: &Cell) -> CellText<'_> {
     if cell
         .flags
         .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
         || u32::from(cell.c) == KITTY_UNICODE_PLACEHOLDER
     {
-        out.push(' ');
-        return;
+        return CellText::Empty;
     }
-    out.push(if cell.c == '\t' { ' ' } else { cell.c });
-    out.extend(cell_zerowidth(cell).iter().copied());
+    let zerowidth = cell_zerowidth(cell);
+    if (cell.c == ' ' || cell.c == '\t') && zerowidth.is_empty() {
+        return CellText::Empty;
+    }
+    CellText::Grapheme {
+        base: if cell.c == '\t' { ' ' } else { cell.c },
+        zerowidth,
+    }
+}
+
+/// The cell's text as codepoints; empty for blank cells and spacers.
+fn cell_graphemes(cell: &Cell) -> Vec<u32> {
+    match cell_text(cell) {
+        CellText::Empty => Vec::new(),
+        CellText::Grapheme { base, zerowidth } => {
+            let mut graphemes = Vec::with_capacity(1 + zerowidth.len());
+            graphemes.push(u32::from(base));
+            graphemes.extend(zerowidth.iter().map(|&ch| u32::from(ch)));
+            graphemes
+        }
+    }
+}
+
+/// The cell's text as readers show it, into `out`: the grapheme, or a single
+/// space for a cell classified as empty.
+fn cell_text_into(cell: &Cell, out: &mut String) {
+    out.clear();
+    match cell_text(cell) {
+        CellText::Empty => out.push(' '),
+        CellText::Grapheme { base, zerowidth } => {
+            out.push(base);
+            out.extend(zerowidth.iter().copied());
+        }
+    }
 }
 
 fn cell_color(color: Color) -> Option<CellColor> {
@@ -2031,24 +2063,20 @@ impl<'a> RowCellIter<'a> {
         Ok(text)
     }
 
-    /// Writes the cell's grapheme into `text` (empty for blank cells and wide
-    /// spacers). `bytes` is scratch space kept for API compatibility.
+    /// Writes the cell's grapheme into `text` (empty for blank cells, spacers
+    /// and kitty placeholders). `bytes` is scratch space kept for API
+    /// compatibility.
     pub fn grapheme_text_into(&self, bytes: &mut Vec<u8>, text: &mut String) -> Result<(), Error> {
         text.clear();
         bytes.clear();
         let cell = self.cell()?;
-        if cell
-            .flags
-            .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-        {
-            return Ok(());
+        match cell_text(cell) {
+            CellText::Empty => {}
+            CellText::Grapheme { base, zerowidth } => {
+                text.push(base);
+                text.extend(zerowidth.iter().copied());
+            }
         }
-        let zerowidth = cell_zerowidth(cell);
-        if (cell.c == ' ' || cell.c == '\t') && zerowidth.is_empty() {
-            return Ok(());
-        }
-        text.push(if cell.c == '\t' { ' ' } else { cell.c });
-        text.extend(zerowidth.iter().copied());
         Ok(())
     }
 }

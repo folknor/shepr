@@ -27,14 +27,19 @@ pub(super) fn is_remote_client_process() -> bool {
     std::env::var(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR).is_ok()
 }
 
-pub(super) fn client_shell_keybinding_source() -> shell::ClientShellKeybindingSource {
-    match std::env::var(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR)
-        .ok()
-        .as_deref()
-    {
-        Some("server") => shell::ClientShellKeybindingSource::Endpoint,
-        Some(_) => shell::ClientShellKeybindingSource::RemoteLocal,
-        None => shell::ClientShellKeybindingSource::RemoteLocal,
+/// Where this client's keybindings come from. "server" imports the endpoint's; "local" or
+/// no value keeps this client's own. Any other value refuses startup rather than guessing.
+pub(super) fn client_shell_keybinding_source() -> Result<shell::ClientShellKeybindingSource, String>
+{
+    let var = crate::remote::REMOTE_KEYBINDINGS_ENV_VAR;
+    match std::env::var(var) {
+        Ok(value) if value == "server" => Ok(shell::ClientShellKeybindingSource::Endpoint),
+        Ok(value) if value == "local" => Ok(shell::ClientShellKeybindingSource::RemoteLocal),
+        Err(std::env::VarError::NotPresent) => Ok(shell::ClientShellKeybindingSource::RemoteLocal),
+        Ok(value) => Err(format!("{var} must be 'local' or 'server', got {value:?}")),
+        Err(std::env::VarError::NotUnicode(value)) => {
+            Err(format!("{var} must be 'local' or 'server', got {value:?}"))
+        }
     }
 }
 
@@ -106,11 +111,12 @@ pub(super) fn do_handshake(
     surface_active: bool,
     deadline: Option<std::time::Instant>,
 ) -> Result<HandshakeResult, ClientError> {
-    let exact_cell_size = exact_cell_size
-        && cell_width_px <= protocol::MAX_CELL_SIZE_PX
-        && cell_height_px <= protocol::MAX_CELL_SIZE_PX;
-    let cell_width_px = cell_width_px.min(protocol::MAX_CELL_SIZE_PX);
-    let cell_height_px = cell_height_px.min(protocol::MAX_CELL_SIZE_PX);
+    let (cell_width_px, cell_height_px, exact_cell_size) =
+        super::terminal_geometry::bounded_cell_geometry(
+            cell_width_px,
+            cell_height_px,
+            exact_cell_size,
+        );
     stream
         .set_nonblocking(false)
         .map_err(ClientError::ConnectionFailed)?;

@@ -61,13 +61,13 @@ pub(super) fn client_shell_resize_message(
     cell_height_px: u32,
     pixel_mouse: bool,
 ) -> ClientMessage {
+    let (cell_width_px, cell_height_px, pixel_mouse) =
+        super::terminal_geometry::bounded_cell_geometry(cell_width_px, cell_height_px, pixel_mouse);
     ClientMessage::ClientShellResize {
-        cell_width_px: cell_width_px.min(crate::protocol::MAX_CELL_SIZE_PX),
-        cell_height_px: cell_height_px.min(crate::protocol::MAX_CELL_SIZE_PX),
+        cell_width_px,
+        cell_height_px,
         surface_size: shell.surface_size(cols, rows),
-        pixel_mouse: pixel_mouse
-            && cell_width_px <= crate::protocol::MAX_CELL_SIZE_PX
-            && cell_height_px <= crate::protocol::MAX_CELL_SIZE_PX,
+        pixel_mouse,
     }
 }
 
@@ -82,7 +82,7 @@ pub(super) fn sync_client_shell_keyboard_report_all(
         return Ok(());
     }
     crate::terminal_modes::set_host_kitty_keyboard_report_all(&mut io::stdout(), desired)
-        .map_err(ClientError::ConnectionFailed)?;
+        .map_err(ClientError::HostTerminal)?;
     state.keyboard_report_all_active = desired;
     Ok(())
 }
@@ -473,7 +473,7 @@ pub(super) fn present_handoff_unavailable(state: &mut ClientState, message: Stri
 
 /// The rollback reason when an endpoint a machine switch involves disconnects mid-switch.
 /// `notice` is the same predicate the active-endpoint path shows after the label ("connection
-/// was lost; reconnecting", "is no longer an enabled saved machine"), so both read as one
+/// was lost; reconnecting", "was removed or re-pointed"), so both read as one
 /// sentence about the named machine.
 fn handoff_interrupted_notice(label: &str, notice: &str) -> String {
     format!("machine switch interrupted: {label} {notice}")
@@ -657,8 +657,8 @@ pub(super) fn stale_freeze_recovery(
 }
 
 /// Makes an open client follow a newer copy of the saved-machine catalog: machines that
-/// were removed, disabled or pointed at another target or session are disconnected and stop
-/// being supervised; added, enabled or re-pointed ones start connecting; labels update.
+/// were removed or pointed at another target or session are disconnected and stop being
+/// supervised; added or re-pointed ones start connecting; labels update.
 /// Config is still read once at launch; the catalog is state that `shepr machine` edits.
 ///
 /// Returns whether the endpoint that owned (or last owned) the presentation was retired.
@@ -695,21 +695,20 @@ pub(super) fn follow_endpoint_catalog(
             &endpoint_id,
             generation,
             now,
-            "is no longer an enabled saved machine",
+            "was removed or re-pointed",
         );
         endpoints.disconnect(&endpoint_id);
     }
     if let Some(shell) = state.shell.as_mut() {
-        // Retired machines first go through a disabled state, which drops what the shell
-        // kept from them (status, snapshot, agents). A re-pointed machine is then shown
-        // afresh by the final catalog instead of with the old target's workspaces.
+        // Retired machines are first dropped from the shell, which discards what it kept
+        // from them (status, snapshot, agents). A re-pointed machine is then shown afresh
+        // by the final catalog instead of with the old target's workspaces.
         if !changes.retired.is_empty() {
-            let mut interim = profiles.clone();
-            for profile in &mut interim {
-                if changes.retired.contains(&profile.id) {
-                    profile.enabled = false;
-                }
-            }
+            let interim: Vec<_> = profiles
+                .iter()
+                .filter(|profile| !changes.retired.contains(&profile.id))
+                .cloned()
+                .collect();
             shell.set_endpoint_catalog(&interim);
         }
         shell.set_endpoint_catalog(&profiles);
@@ -718,10 +717,10 @@ pub(super) fn follow_endpoint_catalog(
         supervisors.start_ssh(profile, now);
     }
     catalog.replace_profiles(profiles);
-    // A client that launched with no enabled machine had no Local supervisor: losing Local
+    // A client that launched with no saved machine had no Local supervisor: losing Local
     // ended it. Once a machine exists, Local is supervised like the rest, so its loss is
     // recovered instead of ending the client and taking the machine with it.
-    if catalog.has_enabled_ssh() && !supervisors.supervises(&endpoint::ClientEndpointId::Local) {
+    if catalog.has_ssh() && !supervisors.supervises(&endpoint::ClientEndpointId::Local) {
         supervisors.add_local(
             client_socket_path(),
             endpoints
@@ -970,8 +969,8 @@ mod tests {
             "machine switch interrupted: buildbox connection was lost; reconnecting"
         );
         assert_eq!(
-            handoff_interrupted_notice("buildbox", "is no longer an enabled saved machine"),
-            "machine switch interrupted: buildbox is no longer an enabled saved machine"
+            handoff_interrupted_notice("buildbox", "was removed or re-pointed"),
+            "machine switch interrupted: buildbox was removed or re-pointed"
         );
     }
 
@@ -1129,14 +1128,14 @@ mod tests {
             now,
         );
 
-        // `shepr machine disable` for the active machine and `shepr machine add` for another.
+        // The active machine is re-pointed at another target and another machine is added.
         let mut added = endpoint::EndpointCatalog::default();
         let docs = added
             .add_ssh("Docs", "docs", "default")
             .expect("test precondition");
         let docs_id = endpoint::ClientEndpointId::Ssh(docs);
         let mut profiles = catalog.ssh.clone();
-        profiles[0].enabled = false;
+        profiles[0].target = "build-moved".into();
         profiles.extend(added.ssh);
 
         assert!(
@@ -1153,14 +1152,16 @@ mod tests {
             "retiring the active machine hands presentation back to Local"
         );
         assert!(endpoints.connection(&build_id).is_none());
-        assert!(!supervisors.supervises(&build_id));
+        assert!(
+            supervisors.supervises(&build_id),
+            "a re-pointed machine is retired and started again"
+        );
         assert!(supervisors.supervises(&docs_id));
         assert!(
             supervisors.supervises(&local),
             "Local is supervised once the client has a saved machine"
         );
         assert_eq!(catalog.ssh, profiles);
-        assert_eq!(catalog.selected_profile, None);
         assert!(
             state.presentation_frozen,
             "nothing owns presentation until Local commits"
@@ -1168,7 +1169,8 @@ mod tests {
         let shell = state.shell.as_ref().expect("test shell");
         assert_eq!(
             shell.endpoint_status(&build_id),
-            Some(endpoint::ClientEndpointStatus::Disabled)
+            Some(endpoint::ClientEndpointStatus::Connecting),
+            "the re-pointed machine is shown afresh, not with the old target's state"
         );
         assert_eq!(
             shell.endpoint_status(&docs_id),
@@ -1201,7 +1203,8 @@ mod tests {
             now,
         ));
         assert!(!supervisors.supervises(&docs_id));
-        assert!(!catalog.has_enabled_ssh());
+        assert!(!supervisors.supervises(&build_id));
+        assert!(!catalog.has_ssh());
         assert!(
             state
                 .shell

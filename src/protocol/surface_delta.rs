@@ -30,27 +30,26 @@ pub(crate) fn decode_for(
     decode::decode(data, Some(expected))
 }
 
-/// Copies each span into a row-major grid of `width` columns.
+/// Copies each span into a row-major grid of `width` x `height` cells.
 ///
-/// Fails on a span that crosses its row or the grid instead of panicking. The
-/// decoder validates spans against the baseline first, so this is a backstop;
-/// on failure the grid may hold the spans applied before the bad one, and the
-/// caller must discard it.
+/// Every span is checked against the shared span rule before any cell is
+/// written, so a rejected set leaves the grid untouched.
 pub(crate) fn apply_rows(
     cells: &mut [CellData],
     width: u16,
+    height: u16,
     rows: &[PaneSurfacePatchRow],
 ) -> Result<(), String> {
+    if cells.len() != usize::from(width) * usize::from(height) {
+        return Err("cell grid does not match its dimensions".into());
+    }
+    crate::protocol::validate_patch_rows(width, height, rows)?;
     for row in rows {
         let start = usize::from(row.y) * usize::from(width) + usize::from(row.x);
-        let end = start.saturating_add(row.cells.len());
-        let target = if usize::from(row.x) + row.cells.len() <= usize::from(width) {
-            cells.get_mut(start..end)
-        } else {
-            None
-        };
-        target
-            .ok_or("surface delta span exceeds the cell grid")?
+        let end = start + row.cells.len();
+        cells
+            .get_mut(start..end)
+            .ok_or("patch span exceeds the cell grid")?
             .clone_from_slice(&row.cells);
     }
     Ok(())
@@ -132,7 +131,6 @@ pub(crate) fn message(
     let ServerMessage::PaneSurface(surface) = full else {
         return Ok(None);
     };
-    let max = super::MAX_FRAME_SIZE;
     let cells = std::mem::take(&mut surface.frame.cells);
     let encoded = (|| {
         let Some(rows) = changed_rows(&last.frame.cells, &cells, surface.frame.width, full_size)?
@@ -147,7 +145,7 @@ pub(crate) fn message(
         };
         let size = encoded_size(&delta)?;
         let encoded_len = base64::encoded_len(size, false).ok_or("surface delta size overflow")?;
-        if encoded_len > max || encoded_len >= full_size {
+        if !super::frame_payload_fits(encoded_len) || encoded_len >= full_size {
             return Ok(None);
         }
         super::codec::to_vec(&delta)
@@ -163,7 +161,7 @@ pub(crate) fn message(
         data: STANDARD_NO_PAD.encode(bytes),
     };
     let size = encoded_size(&message)?;
-    Ok((size <= max && size < full_size).then_some(message))
+    Ok((super::frame_payload_fits(size) && size < full_size).then_some(message))
 }
 
 #[cfg(test)]
@@ -211,17 +209,29 @@ mod tests {
     }
 
     #[test]
-    fn apply_rows_rejects_spans_outside_the_grid_instead_of_panicking() {
+    fn apply_rows_rejects_invalid_spans_without_touching_the_grid() {
         let mut cells = surface().frame.cells;
-        let cell = cells[0].clone();
+        let original = cells.clone();
+        let mut changed = cells[0].clone();
+        changed.symbol = "#".into();
         let span = |x, y, len| PaneSurfacePatchRow {
             x,
             y,
-            cells: vec![cell.clone(); len],
+            cells: vec![changed.clone(); len],
         };
-        assert!(apply_rows(&mut cells, 120, &[span(119, 0, 2)]).is_err());
-        assert!(apply_rows(&mut cells, 120, &[span(0, 40, 1)]).is_err());
-        assert!(apply_rows(&mut cells, 120, &[span(119, 39, 1)]).is_ok());
+        for rows in [
+            vec![span(119, 0, 2)],
+            vec![span(0, 40, 1)],
+            vec![span(0, 0, 0)],
+            // A valid span followed by one that overlaps it or is out of order.
+            vec![span(0, 0, 3), span(2, 0, 1)],
+            vec![span(0, 1, 1), span(0, 0, 1)],
+        ] {
+            assert!(apply_rows(&mut cells, 120, 40, &rows).is_err(), "{rows:?}");
+            assert_eq!(cells, original, "a rejected set must not be half-applied");
+        }
+        assert!(apply_rows(&mut cells, 120, 40, &[span(0, 0, 3), span(3, 0, 1)]).is_ok());
+        assert!(apply_rows(&mut cells, 120, 40, &[span(119, 39, 1)]).is_ok());
     }
 
     #[test]

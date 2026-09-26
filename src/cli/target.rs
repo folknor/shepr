@@ -296,9 +296,6 @@ pub(super) fn resolve_machine<'a>(
         }
         profile
     };
-    if !profile.enabled {
-        return Err(format!("machine '{selector}' is disabled"));
-    }
     Ok(profile)
 }
 
@@ -424,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn machine_resolution_requires_a_unique_enabled_saved_machine() {
+    fn machine_resolution_requires_a_unique_saved_machine() {
         let mac = SavedSshEndpoint::new("mac", "mac-ssh", "agents").expect("test precondition");
         let other =
             SavedSshEndpoint::new("build", "builder", "default").expect("test precondition");
@@ -448,9 +445,6 @@ mod tests {
         let duplicate =
             SavedSshEndpoint::new("mac", "other", "default").expect("test precondition");
         assert!(resolve_machine(&[mac.clone(), duplicate], "mac").is_err());
-        let mut disabled = mac;
-        disabled.enabled = false;
-        assert!(resolve_machine(&[disabled], "mac").is_err());
     }
 
     /// Whether `shepr --machine mac <command>` would reach the network: it

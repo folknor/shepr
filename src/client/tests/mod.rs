@@ -42,11 +42,65 @@ fn missing_pixel_geometry_keeps_a_valid_terminal_grid() {
 }
 
 #[test]
+fn cell_geometry_is_bounded_before_wire_use_and_disables_inexact_pixel_mouse() {
+    let (width, height, exact) = super::terminal_geometry::bounded_cell_geometry(
+        crate::protocol::MAX_CELL_SIZE_PX + 1,
+        crate::protocol::MAX_CELL_SIZE_PX + 2,
+        true,
+    );
+
+    assert_eq!(
+        (width, height, exact),
+        (
+            crate::protocol::MAX_CELL_SIZE_PX,
+            crate::protocol::MAX_CELL_SIZE_PX,
+            false,
+        )
+    );
+}
+
+#[test]
+fn direct_notices_keep_only_the_most_recent_bounded_history() {
+    let mut notices = std::collections::VecDeque::new();
+    for index in 0..70 {
+        remember_direct_notice(&mut notices, index.to_string());
+    }
+
+    assert_eq!(notices.len(), 64);
+    assert_eq!(notices.front().map(String::as_str), Some("6"));
+    assert_eq!(notices.back().map(String::as_str), Some("69"));
+}
+
+#[test]
 fn remote_client_uses_extended_handshake_timeout() {
     let env = IsolatedEnv::new();
     env.set(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR, "local");
 
     assert_eq!(handshake_read_timeout(), REMOTE_HANDSHAKE_READ_TIMEOUT);
+}
+
+#[test]
+fn keybinding_source_refuses_unknown_values() {
+    let env = IsolatedEnv::new();
+    env.remove(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR);
+    assert_eq!(
+        client_shell_keybinding_source(),
+        Ok(shell::ClientShellKeybindingSource::RemoteLocal)
+    );
+    env.set(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR, "local");
+    assert_eq!(
+        client_shell_keybinding_source(),
+        Ok(shell::ClientShellKeybindingSource::RemoteLocal)
+    );
+    env.set(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR, "server");
+    assert_eq!(
+        client_shell_keybinding_source(),
+        Ok(shell::ClientShellKeybindingSource::Endpoint)
+    );
+    for unknown in ["Server", "", "remote"] {
+        env.set(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR, unknown);
+        assert!(client_shell_keybinding_source().is_err(), "{unknown:?}");
+    }
 }
 
 #[test]
@@ -218,6 +272,22 @@ fn client_error_display_connection_failed() {
         msg.contains("shepr server"),
         "should suggest starting server: {msg}"
     );
+}
+
+#[test]
+fn client_error_display_host_terminal_does_not_claim_server_connection_failed() {
+    let err = ClientError::HostTerminal(io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "terminal output was closed",
+    ));
+    let msg = err.to_string();
+
+    assert!(
+        msg.contains("host terminal error"),
+        "should identify the host terminal: {msg}"
+    );
+    assert!(msg.contains("terminal output was closed"));
+    assert!(!msg.contains("Is shepr server running?"));
 }
 
 #[test]

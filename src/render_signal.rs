@@ -56,6 +56,9 @@ impl RenderSignal {
     }
 
     pub(crate) fn set_immediate_pty_sources(&self, sources: HashSet<PaneId>) {
+        // The headless loop refreshes this classification before checking
+        // pending presentation work in that same iteration, so no extra wake
+        // is needed when queued hidden work becomes immediately actionable.
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -77,15 +80,18 @@ impl RenderSignal {
     }
 
     /// Coalesces terminal-title changes separately from ordinary PTY damage so
-    /// consumers can update metadata without inspecting every pane.
+    /// consumers can update metadata without inspecting every pane. The first
+    /// title source makes hidden-only pending PTY work immediately actionable;
+    /// later title sources join that already queued work.
     pub(crate) fn request_terminal_title(&self, pane_id: PaneId) -> bool {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let first_title_source = state.request.terminal_title_sources.is_empty();
         let source_added = state.request.terminal_title_sources.insert(pane_id);
         let became_pending = !self.pending.swap(true, Ordering::AcqRel);
-        became_pending || source_added
+        became_pending || (source_added && first_title_source)
     }
 
     pub(crate) fn pending_terminal_title_sources(&self) -> HashSet<PaneId> {
@@ -154,13 +160,33 @@ mod tests {
     }
 
     #[test]
-    fn terminal_title_source_wakes_pending_pty_work() {
+    fn newly_visible_queued_pty_work_is_immediate_before_the_loop_checks_it() {
         let signal = RenderSignal::new();
         let pane_id = PaneId::from_raw(10);
 
+        signal.set_immediate_pty_sources(HashSet::new());
         assert!(signal.request_pty(pane_id));
-        assert!(signal.request_terminal_title(pane_id));
-        assert!(!signal.request_terminal_title(pane_id));
+        assert!(!signal.has_immediate_work());
+
+        signal.set_immediate_pty_sources(HashSet::from([pane_id]));
+        assert!(signal.has_immediate_work());
+        assert!(signal.is_pending());
+    }
+
+    #[test]
+    fn terminal_title_source_wakes_pending_pty_work() {
+        let signal = RenderSignal::new();
+        let hidden = PaneId::from_raw(10);
+        let first_title = PaneId::from_raw(20);
+        let second_title = PaneId::from_raw(30);
+
+        assert!(signal.request_pty(hidden));
+        assert!(signal.request_terminal_title(first_title));
+        assert!(!signal.request_terminal_title(second_title));
+        assert_eq!(
+            signal.pending_terminal_title_sources(),
+            HashSet::from([first_title, second_title])
+        );
     }
 
     #[test]

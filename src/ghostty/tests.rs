@@ -65,12 +65,16 @@ fn scrollback_bytes_convert_to_bounded_line_counts() {
 fn unicode_width_helpers_match_terminal_layout_rules() {
     assert_eq!(unicode_codepoint_width('A' as u32), 1);
     assert_eq!(unicode_codepoint_width('\u{301}' as u32), 0);
+    assert_eq!(unicode_codepoint_width('\u{ff9e}' as u32), 1);
+    assert_eq!(unicode_codepoint_width('\u{ff9f}' as u32), 1);
     assert_eq!(unicode_codepoint_width('界' as u32), 2);
     assert_eq!(unicode_codepoint_width(0x11_0000), 1);
 
     let cases: &[(&[u32], usize, u8)] = &[
         (&[], 0, 0),
         (&['e' as u32, '\u{301}' as u32], 2, 1),
+        (&['\u{ff9e}' as u32, 'A' as u32], 1, 1),
+        (&['\u{ff9f}' as u32, 'A' as u32], 1, 1),
         (&['\u{26A0}' as u32, '\u{fe0f}' as u32], 2, 2),
         (&['\u{26A0}' as u32, '\u{fe0e}' as u32], 2, 1),
         (&['\u{1F1E7}' as u32, '\u{1F1F7}' as u32], 2, 2),
@@ -1537,6 +1541,37 @@ fn visited_rows_match_the_owned_text_rows() {
             .visit_screen_row_text(owned.len(), &mut scratch, |_, _, _| {})
             .is_none()
     );
+}
+
+#[test]
+fn kitty_unicode_placeholder_is_blank_in_reads_and_rendering() {
+    let mut terminal = Terminal::new(8, 2, 0).expect("test precondition");
+    terminal.write("A\u{10eeee}B".as_bytes());
+
+    assert_eq!(
+        terminal.screen_cell(1, 0).expect("test precondition").1,
+        Vec::<u32>::new()
+    );
+    let rows = terminal.screen_text_rows().expect("test precondition");
+    assert!(rows[0].cells[1].graphemes.is_empty());
+    assert_eq!(
+        terminal
+            .read_text_screen((0, 0), (2, 0), true)
+            .expect("test precondition"),
+        "A B"
+    );
+
+    let mut scratch = String::new();
+    let mut visited = Vec::new();
+    terminal
+        .visit_screen_row_text(0, &mut scratch, |x, _, text| {
+            if x < 3 {
+                visited.push(text.to_owned());
+            }
+        })
+        .expect("screen row is retained");
+    assert_eq!(visited, ["A", " ", "B"]);
+    assert_eq!(first_rendered_row_text(&terminal), "A B");
 }
 
 #[test]

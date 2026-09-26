@@ -54,14 +54,14 @@ pub fn session_ref_from_report(
     source: &str,
     agent: &str,
     agent_session_id: Option<String>,
-    _agent_session_path: Option<String>,
+    agent_session_path: Option<String>,
 ) -> Option<AgentSessionRef> {
     if !is_official_agent_source(source, agent) {
         return None;
     }
 
     if agent == "pi" || agent == "omp" {
-        return _agent_session_path
+        return agent_session_path
             .and_then(AgentSessionRef::path)
             .or_else(|| agent_session_id.and_then(AgentSessionRef::id));
     }
@@ -135,6 +135,17 @@ pub fn session_ref_from_snapshot(
 
 pub fn plan(source: &str, agent: &str, session_ref: &AgentSessionRef) -> Option<AgentResumePlan> {
     if !is_official_agent_source(source, agent) {
+        return None;
+    }
+
+    // Session refs can come from serde and their fields are public, so the
+    // constructors are not a trust boundary. Revalidate before any value is
+    // copied into a command, even when the caller built the struct directly.
+    let valid = match session_ref.kind {
+        AgentSessionRefKind::Id => valid_session_id(&session_ref.value),
+        AgentSessionRefKind::Path => valid_session_path(&session_ref.value),
+    };
+    if !valid {
         return None;
     }
 
@@ -770,6 +781,12 @@ mod tests {
         )
         .expect("test precondition");
         assert_eq!(codex_plan.argv, vec!["codex", "resume", id]);
+        // This is the exact text sent to the PTY for the restored shell to
+        // parse, not just the planner's argv representation.
+        assert_eq!(
+            crate::platform::interactive_shell_command(&codex_plan.argv).as_deref(),
+            Some("codex resume 'abc; rm -rf /'")
+        );
 
         let copilot_plan = plan(
             "shepr:copilot",
@@ -807,6 +824,23 @@ mod tests {
             value: "default:--yolo".into(),
         };
         assert!(plan("shepr:letta", "letta", &letta_flag).is_none());
+    }
+
+    #[test]
+    fn planner_revalidates_session_refs_built_without_constructors() {
+        for value in ["--dangerously-skip-permissions", "bad\nid"] {
+            let forged = AgentSessionRef {
+                kind: AgentSessionRefKind::Id,
+                value: value.into(),
+            };
+            assert!(plan("shepr:codex", "codex", &forged).is_none(), "{value:?}");
+        }
+
+        let forged_path = AgentSessionRef {
+            kind: AgentSessionRefKind::Path,
+            value: "relative-session.jsonl".into(),
+        };
+        assert!(plan("shepr:pi", "pi", &forged_path).is_none());
     }
 
     #[test]

@@ -13,7 +13,6 @@ fn remote_profile() -> SavedSshEndpoint {
         label: "Build".into(),
         target: "dev@build.example".into(),
         session: "agents".into(),
-        enabled: true,
     }
 }
 
@@ -400,7 +399,7 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
 }
 
 #[test]
-fn live_catalog_rename_preserves_snapshot_and_disable_reenable_clears_it() {
+fn live_catalog_rename_preserves_snapshot_and_remove_readd_clears_it() {
     let (mut state, remote) = state_with_remote();
     let mut profile = remote_profile();
     profile.label = "Renamed".into();
@@ -408,14 +407,9 @@ fn live_catalog_rename_preserves_snapshot_and_disable_reenable_clears_it() {
     assert_eq!(state.endpoint_label(&remote), "Renamed");
     assert!(state.endpoint_is_online(&remote));
     assert_eq!(state.endpoint_boot_id(&remote), Some("remote-boot"));
-    profile.enabled = false;
-    state.set_endpoint_catalog(&[profile.clone()]);
-    assert_eq!(
-        state.endpoint_status(&remote),
-        Some(ClientEndpointStatus::Disabled)
-    );
+    state.set_endpoint_catalog(&[]);
+    assert_eq!(state.endpoint_status(&remote), None);
     assert!(!state.endpoint_has_snapshot(&remote));
-    profile.enabled = true;
     state.set_endpoint_catalog(&[profile]);
     assert_eq!(
         state.endpoint_status(&remote),

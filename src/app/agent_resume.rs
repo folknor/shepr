@@ -393,6 +393,9 @@ impl App {
             return false;
         }
 
+        // A restored resume runs through the shell by design. Quote each argv
+        // element into shell text before sending it to the PTY; the planner's
+        // metacharacter regression asserts on this resulting text.
         let Some(resume_command) = crate::platform::interactive_shell_command(&plan.argv) else {
             tracing::warn!(
                 pane = pane_id.raw(),

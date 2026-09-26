@@ -36,16 +36,18 @@ fn classify_shell_focus_transition<'a>(
 
 pub(super) fn forward_proxied_api_response(
     proxy: Option<(
+        String,
+        &'static str,
         std::sync::mpsc::Sender<String>,
         std::sync::mpsc::Receiver<String>,
     )>,
 ) -> Option<api::schema::ResponseResult> {
-    let (respond_to, response_rx) = proxy?;
+    let (request_id, method, respond_to, response_rx) = proxy?;
     let response = response_rx.recv().ok()?;
     let result = serde_json::from_str::<api::schema::SuccessResponse>(&response)
         .ok()
         .map(|response| response.result);
-    let _ = respond_to.send(response);
+    api::send_api_response(&respond_to, &request_id, method, response);
     result
 }
 
@@ -738,6 +740,8 @@ impl HeadlessServer {
         &mut self,
         mut msg: api::ApiRequestMessage,
     ) -> bool {
+        let request_id = msg.request.id.clone();
+        let method = api::api_method_name(&msg.request.method);
         let target_before = self.default_shell_target();
         let method_claims_geometry = Self::public_request_may_change_geometry(&msg.request.method);
         let explicit_public_focus_target = match &msg.request.method {
@@ -787,7 +791,7 @@ impl HeadlessServer {
         let response_proxy = (agent_focus_target.is_some() || inspect_pane_move).then(|| {
             let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
             let original = std::mem::replace(&mut msg.respond_to, proxy_tx);
-            (original, proxy_rx)
+            (request_id.clone(), method, original, proxy_rx)
         });
         let reconcile = Self::shell_locations_may_need_reconcile(&msg.request.method);
         let changed = self.handle_api_request_with_shutdown_check_inner(msg);

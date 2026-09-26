@@ -14,6 +14,7 @@ pub(super) enum ClientLoopEvent {
     ServerDisconnected {
         endpoint_id: endpoint::ClientEndpointId,
         generation: u64,
+        error: std::io::Error,
     },
     EndpointSupervisor(endpoint::EndpointSupervisorEvent),
     ActivateEndpoint {

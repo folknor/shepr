@@ -28,7 +28,7 @@ pub(crate) fn message(
     // JSON can expand non-cell data (for example escaped hyperlink URLs). A
     // failed compact encoding must fall back, not strand a newer snapshot.
     match super::codec::encoded_len(&message) {
-        Ok(size) => Ok((size <= super::MAX_FRAME_SIZE).then_some(message)),
+        Ok(size) => Ok(super::frame_payload_fits(size).then_some(message)),
         Err(error) => {
             tracing::warn!(%error, "failed to size surface reuse");
             Ok(None)
@@ -118,29 +118,28 @@ impl Decoder {
                 base.cells.clone_from(&surface.frame.cells);
             }
             ServerMessage::PaneSurfacePatch(patch) => {
-                if let Some(base) = &mut self.baseline {
-                    if patch.boot_id != base.boot_id
-                        || patch.projection_revision != base.projection_revision
-                        || patch.base_surface_revision != base.surface_revision
-                        || patch.surface_revision != base.surface_revision.saturating_add(1)
-                    {
-                        return Err("surface patch does not match its baseline".into());
-                    }
-                    // Validate every row before touching the grid so a bad
-                    // patch cannot leave the baseline half-applied.
-                    let fits = patch.rows.iter().all(|row| {
-                        let start =
-                            usize::from(row.y) * usize::from(base.width) + usize::from(row.x);
-                        row.y < base.height
-                            && usize::from(row.x) + row.cells.len() <= usize::from(base.width)
-                            && start.saturating_add(row.cells.len()) <= base.cells.len()
-                    });
-                    if !fits {
-                        return Err("surface patch exceeds the cell baseline".into());
-                    }
-                    super::surface_delta::apply_rows(&mut base.cells, base.width, &patch.rows)?;
-                    base.surface_revision = patch.surface_revision;
+                let Some(base) = &mut self.baseline else {
+                    return Err("surface patch without a baseline".into());
+                };
+                if patch.boot_id != base.boot_id
+                    || patch.projection_revision != base.projection_revision
+                    || patch.base_surface_revision != base.surface_revision
+                    || patch.surface_revision != base.surface_revision.saturating_add(1)
+                {
+                    return Err("surface patch does not match its baseline".into());
                 }
+                // `apply_rows` checks every span before touching the grid, so a
+                // bad patch does not leave the baseline half-applied.
+                super::surface_delta::apply_rows(
+                    &mut base.cells,
+                    base.width,
+                    base.height,
+                    &patch.rows,
+                )
+                .map_err(|error| {
+                    format!("surface patch rejected against the cell baseline: {error}")
+                })?;
+                base.surface_revision = patch.surface_revision;
             }
             _ => {}
         }
@@ -164,7 +163,12 @@ impl Decoder {
             return Err("surface delta does not match its baseline".into());
         }
         surface.frame.cells.clone_from(&base.cells);
-        surface_delta::apply_rows(&mut surface.frame.cells, base.width, &delta.rows)?;
+        surface_delta::apply_rows(
+            &mut surface.frame.cells,
+            base.width,
+            base.height,
+            &delta.rows,
+        )?;
         if surface.frame.cells.iter().any(|cell| {
             cell.hyperlink
                 .is_some_and(|index| index as usize >= surface.frame.hyperlinks.len())
@@ -174,7 +178,7 @@ impl Decoder {
         // Validate the entire update before advancing either grid or revision.
         // The same spans already applied to an identically sized copy above,
         // so this cannot fail partway through the baseline.
-        surface_delta::apply_rows(&mut base.cells, base.width, &delta.rows)?;
+        surface_delta::apply_rows(&mut base.cells, base.width, base.height, &delta.rows)?;
         base.projection_revision = surface.projection_revision;
         base.surface_revision = surface.surface_revision;
         Ok(surface)
@@ -262,6 +266,22 @@ mod tests {
     }
 
     #[test]
+    fn patch_without_a_full_surface_baseline_is_rejected() {
+        let mut decoder = Decoder::new(false);
+        let error = decoder
+            .decode(patch(1, 2, vec![row(0, 0, "x")]))
+            .expect_err("a patch cannot establish its own baseline");
+        assert!(error.contains("without a baseline"), "{error}");
+
+        decoder
+            .decode(ServerMessage::PaneSurface(surface(2, 2)))
+            .expect("a later full surface establishes the baseline");
+        decoder
+            .decode(patch(1, 2, vec![row(0, 0, "x")]))
+            .expect("patch applies after a full surface");
+    }
+
+    #[test]
     fn mismatched_patch_fails_with_its_own_reason_and_keeps_the_baseline() {
         let mut decoder = Decoder::new(false);
         decoder
@@ -276,9 +296,25 @@ mod tests {
         let error = decoder
             .decode(patch(1, 2, vec![row(0, 0, "x"), row(0, 2, "y")]))
             .expect_err("a patch outside the grid is a protocol error");
-        assert!(error.contains("exceeds the cell baseline"), "{error}");
+        assert!(error.contains("against the cell baseline"), "{error}");
 
-        // Neither failure touched the baseline: its first row was not
+        // Patches obey the same span rule as deltas: sorted, disjoint, non-empty.
+        for rows in [
+            vec![row(0, 1, "x"), row(0, 0, "y")],
+            vec![row(0, 0, "x"), row(0, 0, "y")],
+            vec![PaneSurfacePatchRow {
+                x: 0,
+                y: 0,
+                cells: Vec::new(),
+            }],
+        ] {
+            let error = decoder
+                .decode(patch(1, 2, rows))
+                .expect_err("a patch breaking the span rule is a protocol error");
+            assert!(error.contains("against the cell baseline"), "{error}");
+        }
+
+        // No failure touched the baseline: its first row was not
         // half-applied, and revision 1 still anchors the next update.
         let reused = reuse_after(&mut decoder, 1).expect("baseline intact");
         assert_eq!(reused.frame.cells, surface(2, 2).frame.cells);

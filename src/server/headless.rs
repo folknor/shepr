@@ -549,7 +549,7 @@ impl HeadlessServer {
                     }
                     // Already dequeued, so the shutdown drain would never see
                     // it; answer it here.
-                    LoopEvent::Api(msg) => Self::reject_api_request_for_shutdown(*msg),
+                    LoopEvent::Api(msg) => Self::reject_api_request_for_shutdown(&msg),
                     _ => {}
                 }
                 continue;
@@ -1154,21 +1154,21 @@ impl HeadlessServer {
         sent
     }
 
-    fn handle_client_window_title_api(&mut self, id: String, title: Option<String>) -> String {
+    fn handle_client_window_title_api(&mut self, id: &str, title: Option<String>) -> String {
         use api::schema::{ClientWindowTitleReason, ResponseResult};
 
         let title = match title {
             Some(title) => match crate::config::sanitize_window_title_text(&title) {
                 Some(title) => Some(title),
                 None => {
-                    return serde_json::to_string(&api::schema::ErrorResponse {
-                        id,
+                    let response = api::schema::ErrorResponse {
+                        id: id.to_string(),
                         error: api::schema::ErrorBody {
                             code: "invalid_params".into(),
                             message: "window title is empty".into(),
                         },
-                    })
-                    .unwrap_or_else(|_| "{}".to_string());
+                    };
+                    return api::serialize_response_or_error(id, &response);
                 }
             },
             None => None,
@@ -1184,11 +1184,13 @@ impl HeadlessServer {
             (true, false) => ClientWindowTitleReason::Cleared,
             (false, _) => ClientWindowTitleReason::NoForegroundClient,
         };
-        serde_json::to_string(&api::schema::SuccessResponse {
+        api::serialize_response_or_error(
             id,
-            result: ResponseResult::ClientWindowTitle { changed, reason },
-        })
-        .unwrap_or_else(|_| "{}".to_string())
+            &api::schema::SuccessResponse {
+                id: id.to_string(),
+                result: ResponseResult::ClientWindowTitle { changed, reason },
+            },
+        )
     }
 
     /// Encodes a server message into a length-prefixed frame.
@@ -2159,7 +2161,7 @@ impl HeadlessServer {
     fn reject_queued_api_requests_for_shutdown(&mut self) {
         self.app.api_rx.close();
         while let Ok(msg) = self.app.api_rx.try_recv() {
-            Self::reject_api_request_for_shutdown(msg);
+            Self::reject_api_request_for_shutdown(&msg);
         }
     }
 
@@ -2167,26 +2169,27 @@ impl HeadlessServer {
     /// and the traversals themselves, before the loop that drives them exits.
     fn finish_alt_screen_reads_for_shutdown(&mut self) {
         for msg in std::mem::take(&mut self.deferred_alt_screen_reads) {
-            Self::reject_api_request_for_shutdown(msg);
+            Self::reject_api_request_for_shutdown(&msg);
         }
         for read in std::mem::take(&mut self.pending_alt_screen_reads) {
             read.finish_for_shutdown();
         }
     }
 
-    fn reject_api_request_for_shutdown(msg: api::ApiRequestMessage) {
-        let response = serde_json::to_string(&api::schema::ErrorResponse {
-            id: msg.request.id,
-            error: api::schema::ErrorBody {
-                code: "server_unavailable".into(),
-                message: "server is shutting down".into(),
+    fn reject_api_request_for_shutdown(msg: &api::ApiRequestMessage) {
+        let request_id = msg.request.id.clone();
+        let method = api::api_method_name(&msg.request.method);
+        let response = api::serialize_response_or_error(
+            &request_id,
+            &api::schema::ErrorResponse {
+                id: request_id.clone(),
+                error: api::schema::ErrorBody {
+                    code: "server_unavailable".into(),
+                    message: "server is shutting down".into(),
+                },
             },
-        })
-        .unwrap_or_else(|_| {
-            r#"{"id":"","error":{"code":"server_unavailable","message":"server is shutting down"}}"#
-                .to_string()
-        });
-        let _ = msg.respond_to.send(response);
+        );
+        api::send_api_response(&msg.respond_to, &request_id, method, response);
     }
 
     fn handle_api_request_with_shutdown_check_inner(
@@ -2194,9 +2197,11 @@ impl HeadlessServer {
         msg: api::ApiRequestMessage,
     ) -> bool {
         if self.shutting_down {
-            Self::reject_api_request_for_shutdown(msg);
+            Self::reject_api_request_for_shutdown(&msg);
             return false;
         }
+        let request_id = msg.request.id.clone();
+        let method = api::api_method_name(&msg.request.method);
         self.immediate_pty_sources_dirty = true;
 
         let frozen_alt_screen_read = match self.alt_screen_read_conflict(&msg.request) {
@@ -2212,16 +2217,14 @@ impl HeadlessServer {
 
         match &msg.request.method {
             api::schema::Method::ClientWindowTitleSet(params) => {
-                let response = self.handle_client_window_title_api(
-                    msg.request.id.clone(),
-                    Some(params.title.clone()),
-                );
-                let _ = msg.respond_to.send(response);
+                let response = self
+                    .handle_client_window_title_api(&msg.request.id, Some(params.title.clone()));
+                api::send_api_response(&msg.respond_to, &request_id, method, response);
                 return true;
             }
             api::schema::Method::ClientWindowTitleClear(_) => {
-                let response = self.handle_client_window_title_api(msg.request.id.clone(), None);
-                let _ = msg.respond_to.send(response);
+                let response = self.handle_client_window_title_api(&msg.request.id, None);
+                api::send_api_response(&msg.respond_to, &request_id, method, response);
                 return true;
             }
             _ => {}
@@ -2236,12 +2239,14 @@ impl HeadlessServer {
         // without anything cheaper recording that it did.
         self.sync_foreground_client_state();
         if let Some(error) = self.agent_read_not_idle_error(&msg.request) {
-            let response = serde_json::to_string(&api::schema::ErrorResponse {
-                id: msg.request.id.clone(),
-                error,
-            })
-            .unwrap_or_else(|_| "{}".to_owned());
-            let _ = msg.respond_to.send(response);
+            let response = api::serialize_response_or_error(
+                &request_id,
+                &api::schema::ErrorResponse {
+                    id: request_id.clone(),
+                    error,
+                },
+            );
+            api::send_api_response(&msg.respond_to, &request_id, method, response);
             return changed;
         }
         let alt_screen_read_spec = self.alt_screen_read_spec(&msg.request);
@@ -2291,7 +2296,7 @@ impl HeadlessServer {
             self.pending_alt_screen_reads.push(pending);
             return changed;
         }
-        let _ = msg.respond_to.send(response);
+        api::send_api_response(&msg.respond_to, &request_id, method, response);
 
         if latest_shell_client(&self.clients).is_some() {
             changed |= self.app.ensure_default_workspace();

@@ -371,7 +371,7 @@ fn handle_connection_with_stop(
                     return write_text_line_allow_disconnect(
                         &mut stream,
                         &error_response_json(
-                            request_id,
+                            &request_id,
                             if error.kind() == io::ErrorKind::InvalidInput {
                                 "invalid_ssh_agent"
                             } else {
@@ -526,23 +526,20 @@ fn handle_request(
     server_stop: Option<&Arc<AtomicBool>>,
 ) -> String {
     if matches!(&request.method, Method::Ping(_)) {
-        return serde_json::to_string(&SuccessResponse {
-            id: request.id,
+        let response = SuccessResponse {
+            id: request.id.clone(),
             result: ResponseResult::Pong {
                 version: crate::build_info::version(),
                 protocol: crate::protocol::PROTOCOL_VERSION,
                 capabilities,
             },
-        })
-        .unwrap_or_else(|_| {
-            r#"{"id":"","error":{"code":"internal_error","message":"failed to encode response"}}"#
-                .to_string()
-        });
+        };
+        return crate::api::serialize_response_or_error(&request.id, &response);
     }
 
     if matches!(&request.method, Method::ClientShellSurfaceSet(_)) {
         return error_response_json(
-            request.id,
+            &request.id,
             "connection_local_only",
             "client_shell.surface.set is only available through a client shell endpoint".into(),
         );
@@ -551,15 +548,15 @@ fn handle_request(
     if matches!(&request.method, Method::ServerStop(_)) {
         if let Some(server_stop) = server_stop {
             server_stop.store(true, Ordering::Release);
-            return serde_json::to_string(&SuccessResponse {
-                id: request.id,
+            let response = SuccessResponse {
+                id: request.id.clone(),
                 result: ResponseResult::Ok {},
-            })
-            .unwrap_or_else(|_| "{}".to_string());
+            };
+            return crate::api::serialize_response_or_error(&request.id, &response);
         }
     } else if server_stop.is_some_and(|stop| stop.load(Ordering::Acquire)) {
         return error_response_json(
-            request.id,
+            &request.id,
             "server_unavailable",
             "server is shutting down".into(),
         );
@@ -889,7 +886,7 @@ fn dispatch_to_app(
         respond_to,
     }) {
         return error_response_json(
-            request_id,
+            &request_id,
             "server_unavailable",
             format!("failed to dispatch request: {err}"),
         );
@@ -920,10 +917,10 @@ fn dispatch_to_app(
             if err.kind() == std::io::ErrorKind::TimedOut
                 && let Some((code, message)) = timeout_response
             {
-                return error_response_json(request_id, code, message.into());
+                return error_response_json(&request_id, code, message.into());
             }
             error_response_json(
-                request_id,
+                &request_id,
                 "server_unavailable",
                 format!("request handling failed: {err}"),
             )
@@ -951,18 +948,15 @@ fn caller_timeout_dispatch_uses_timeout_error() {
     assert_eq!(error.error.code, "timeout");
 }
 
-pub(super) fn error_response_json(id: String, code: &str, message: String) -> String {
-    serde_json::to_string(&ErrorResponse {
-        id,
+pub(super) fn error_response_json(id: &str, code: &str, message: String) -> String {
+    let response = ErrorResponse {
+        id: id.to_string(),
         error: ErrorBody {
             code: code.into(),
             message,
         },
-    })
-    .unwrap_or_else(|_| {
-        r#"{"id":"","error":{"code":"internal_error","message":"failed to encode error response"}}"#
-            .to_string()
-    })
+    };
+    crate::api::serialize_response_or_error(id, &response)
 }
 
 #[cfg(test)]
@@ -1192,7 +1186,7 @@ mod tests {
                     Method::EventsWait(_) => msg
                         .respond_to
                         .send(error_response_json(
-                            msg.request.id,
+                            &msg.request.id,
                             "unexpected_dispatch",
                             "events.wait should be handled by the api server".into(),
                         ))
@@ -1494,7 +1488,7 @@ mod tests {
                         });
                     }
                     error_response_json(
-                        msg.request.id,
+                        &msg.request.id,
                         "pane_not_found",
                         "pane pane_1 not found".into(),
                     )
@@ -1650,7 +1644,7 @@ mod tests {
             });
             msg.respond_to
                 .send(error_response_json(
-                    msg.request.id,
+                    &msg.request.id,
                     "pane_not_found",
                     "pane w999:p9 not found".into(),
                 ))

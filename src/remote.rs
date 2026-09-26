@@ -54,7 +54,7 @@ pub(crate) fn print_remote_error_hint(err: &std::io::Error, target: &str) {
             ssh_check_command(target)
         );
         eprintln!(
-            "hint: if your SSH key has a passphrase, load it into ssh-agent with `ssh-add` before running `shepr --remote`."
+            "hint: if your SSH key has a passphrase, load it into ssh-agent with `ssh-add` before retrying."
         );
     }
 }
@@ -66,11 +66,7 @@ fn is_remote_host_key_error(err: &std::io::Error) -> bool {
 }
 
 fn is_remote_auth_error(err: &std::io::Error) -> bool {
-    let message = err.to_string();
-    message.contains("Permission denied")
-        && (message.contains("(publickey")
-            || message.contains("(keyboard-interactive")
-            || message.contains("(password"))
+    ssh_error_requires_authentication(&err.to_string())
 }
 
 fn ssh_check_command(target: &str) -> String {
@@ -117,6 +113,23 @@ mod tests {
     #[test]
     fn remote_auth_error_ignores_non_auth_errors() {
         let err = std::io::Error::other("remote platform detection failed: unsupported platform");
+
+        assert!(!is_remote_auth_error(&err));
+    }
+
+    #[test]
+    fn remote_auth_error_matches_case_insensitive_signing_failures() {
+        let err = std::io::Error::other(
+            "SIGN_AND_SEND_PUBKEY: SIGNING FAILED for ED25519 from agent: agent refused operation",
+        );
+
+        assert!(is_remote_auth_error(&err));
+    }
+
+    #[test]
+    fn remote_auth_error_does_not_treat_host_key_errors_as_authentication() {
+        let err =
+            std::io::Error::other("Permission denied (publickey). Host key verification failed.");
 
         assert!(!is_remote_auth_error(&err));
     }

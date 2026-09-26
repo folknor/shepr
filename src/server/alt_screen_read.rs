@@ -443,12 +443,15 @@ impl PendingAltScreenRead {
             crate::terminal::snapshot_text(&self.history, self.lines, self.unwrap, truncated);
         self.read.text = snapshot.text;
         self.read.truncated = snapshot.truncated;
-        let response = serde_json::to_string(&SuccessResponse {
-            id: self.request_id,
-            result: ResponseResult::PaneRead { read: self.read },
-        })
-        .unwrap_or(self.fallback_response);
-        let _ = self.respond_to.send(response);
+        let request_id = self.request_id.clone();
+        let response = crate::api::serialize_response_or_error(
+            &request_id,
+            &SuccessResponse {
+                id: request_id.clone(),
+                result: ResponseResult::PaneRead { read: self.read },
+            },
+        );
+        crate::api::send_api_response(&self.respond_to, &request_id, "pane.read", response);
         None
     }
 
@@ -461,7 +464,12 @@ impl PendingAltScreenRead {
             valid = self.valid,
             "alternate-screen read fell back to passive snapshot"
         );
-        let _ = self.respond_to.send(self.fallback_response);
+        crate::api::send_api_response(
+            &self.respond_to,
+            &self.request_id,
+            "pane.read",
+            self.fallback_response,
+        );
         None
     }
 }

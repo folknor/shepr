@@ -117,4 +117,10 @@ mod tests {
             last_character_col("  e\u{301}")
         );
     }
+
+    #[test]
+    fn halfwidth_voiced_marks_take_their_terminal_columns() {
+        assert_eq!(first_non_blank_col("  \u{ff9e}x"), Some(2));
+        assert_eq!(last_character_col("x\u{ff9f}"), Some(1));
+    }
 }

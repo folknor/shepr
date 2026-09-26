@@ -45,6 +45,7 @@ impl ProfileId {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+        // Profile IDs are local row identities, not secrets; practical uniqueness is enough.
         let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -95,7 +96,6 @@ pub(crate) enum ClientEndpointStatus {
     Online,
     Reconnecting,
     Attention,
-    Disabled,
 }
 
 #[cfg(test)]

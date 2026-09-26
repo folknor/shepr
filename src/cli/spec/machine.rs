@@ -10,8 +10,8 @@ pub(super) fn command() -> Command {
 A missing or incompatible remote Shepr binary fails with an error; install Shepr on
 the remote host yourself and retry.
 Changes apply automatically to open local Shepr clients.
-Removing or disabling a machine leaves its remote sessions running.
-Saved machines contain only a label, SSH target, explicit Shepr session, and enabled state.
+Removing a machine leaves its remote sessions running.
+Saved machines contain only a label, SSH target, and explicit Shepr session.
 SSH credentials and key material remain owned by OpenSSH.",
         )
         .subcommand(
@@ -56,8 +56,6 @@ SSH credentials and key material remain owned by OpenSSH.",
             ),
         )
         .subcommand(profile_command("remove", "Remove a saved SSH machine"))
-        .subcommand(profile_command("enable", "Enable a saved SSH machine"))
-        .subcommand(profile_command("disable", "Disable a saved SSH machine"))
 }
 
 fn profile_command(name: &'static str, about: &'static str) -> Command {

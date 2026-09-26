@@ -36,6 +36,11 @@ pub const PROTOCOL_VERSION: u32 = crate::build_info::PROTOCOL_VERSION;
 /// the sender instead of making the peer tear the connection down.
 pub const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 
+/// Whether an encoded payload fits in one protocol frame.
+pub(crate) const fn frame_payload_fits(size: usize) -> bool {
+    size <= MAX_FRAME_SIZE
+}
+
 /// Maximum text payload (bytes) the server accepts in one input message: the
 /// data of one `ClientMessage::Input`, or the summed paste, committed text and
 /// generated key text of one `ClientShellPaneInput` batch.
@@ -570,7 +575,7 @@ pub enum AttachScrollSource {
 pub struct CellData {
     /// Grapheme cluster displayed in this cell (usually 1-2 chars).
     pub symbol: String,
-    /// Foreground color as a packed u32 (0xAARRGGBB or ratatui Color index).
+    /// Packed color with a high-byte tag: 0 for named colors, 1 for indexed, 2 for RGB.
     pub fg: u32,
     /// Background color as a packed u32.
     pub bg: u32,
@@ -937,6 +942,62 @@ pub struct PaneSurfacePatchRow {
     pub cells: Vec<CellData>,
 }
 
+/// The single rule for changed-cell spans against a `width` x `height` grid, shared by
+/// every producer and consumer of patch and delta rows: each span is non-empty, lies
+/// within one row of the grid, and starts at or after the end of the previous span in
+/// row-major order (so spans are sorted and never overlap).
+pub(crate) struct PatchSpanCheck {
+    width: usize,
+    height: u16,
+    previous_end: usize,
+}
+
+impl PatchSpanCheck {
+    pub(crate) fn new(width: u16, height: u16) -> Self {
+        Self {
+            width: usize::from(width),
+            height,
+            previous_end: 0,
+        }
+    }
+
+    /// Accepts the next span or says why it breaks the rule.
+    pub(crate) fn push(&mut self, x: u16, y: u16, len: usize) -> Result<(), &'static str> {
+        let x = usize::from(x);
+        if len == 0 {
+            return Err("patch span is empty");
+        }
+        if y >= self.height || x >= self.width || len > self.width - x {
+            return Err("patch span is outside its row");
+        }
+        let start = usize::from(y)
+            .checked_mul(self.width)
+            .and_then(|row| row.checked_add(x))
+            .ok_or("patch span overflows the grid")?;
+        if start < self.previous_end {
+            return Err("patch spans overlap or are not sorted");
+        }
+        self.previous_end = start + len;
+        Ok(())
+    }
+}
+
+/// Checks a whole set of rows with [`PatchSpanCheck`].
+pub(crate) fn validate_patch_rows(
+    width: u16,
+    height: u16,
+    rows: &[PaneSurfacePatchRow],
+) -> Result<(), &'static str> {
+    let mut check = PatchSpanCheck::new(width, height);
+    rows.iter()
+        .try_for_each(|row| check.push(row.x, row.y, row.cells.len()))
+}
+
+/// Puts rows into the row-major order [`PatchSpanCheck`] requires.
+pub(crate) fn sort_patch_rows(rows: &mut [PaneSurfacePatchRow]) {
+    rows.sort_unstable_by_key(|row| (row.y, row.x));
+}
+
 /// Incremental terminal-cell update against one committed complete pane surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSurfacePatch {
@@ -1245,7 +1306,7 @@ pub fn write_message<W: Write, M: Serialize>(writer: &mut W, msg: &M) -> Result<
 pub fn encode_frame<M: Serialize>(msg: &M) -> Result<Vec<u8>, FramingError> {
     let mut frame = vec![0u8; LENGTH_PREFIX_BYTES];
     let len = codec::encode_into(&mut frame, msg)?;
-    if len > MAX_FRAME_SIZE {
+    if !frame_payload_fits(len) {
         return Err(FramingError::Oversized {
             claimed: len,
             max: MAX_FRAME_SIZE,

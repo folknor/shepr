@@ -7,5 +7,6 @@ pub(crate) mod render_ansi;
 pub(crate) mod surface_delta;
 pub(crate) mod surface_reuse;
 mod wire;
+pub(crate) use wire::frame_payload_fits;
 
 pub use wire::*;

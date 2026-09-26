@@ -57,8 +57,8 @@ use terminal_geometry::{
 };
 use terminal_geometry::{reported_cell_size_from_events, store_reported_cell_size};
 use terminal_setup::{
-    TerminalGuard, effective_mouse_capture, effective_sgr_pixel_mouse, set_mouse_capture,
-    setup_direct_attach_terminal, setup_terminal, should_draw_host_cursor,
+    TerminalGuard, effective_mouse_capture, effective_sgr_pixel_mouse, host_mouse_capture_update,
+    set_mouse_capture, setup_direct_attach_terminal, setup_terminal, should_draw_host_cursor,
 };
 
 fn refresh_host_mouse_capture(enabled: bool, sgr_pixels: bool) {
@@ -81,6 +81,7 @@ pub use errors::ClientError;
 use handshake::{REMOTE_HANDSHAKE_READ_TIMEOUT, handshake_read_timeout};
 use handshake::{client_shell_keybinding_source, do_handshake, is_remote_client_process};
 
+use std::collections::VecDeque;
 use std::io::{self, Write as _};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -99,12 +100,12 @@ fn init_logging() {
     crate::logging::init_file_logging(crate::logging::CLIENT_LOG_FILE);
 }
 
-fn remember_direct_notice(notices: &mut Vec<String>, message: String) {
+fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
     const MAX_NOTICES: usize = 64;
     if notices.len() == MAX_NOTICES {
-        notices.remove(0);
+        let _ = notices.pop_front();
     }
-    notices.push(message);
+    notices.push_back(message);
 }
 
 fn run_client_with_mode(
@@ -120,7 +121,7 @@ fn run_client_with_mode(
     crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let client_rendered_shell = attach_request.is_none();
     let socket_path = client_socket_path();
-    let keybinding_source = client_shell_keybinding_source();
+    let keybinding_source = client_shell_keybinding_source().map_err(io::Error::other)?;
     let startup_config_diagnostic =
         if keybinding_source == shell::ClientShellKeybindingSource::Endpoint {
             crate::config::config_diagnostic_summary_without_keybindings(&loaded_config.diagnostics)
@@ -167,7 +168,7 @@ fn run_client_with_mode(
     } else {
         endpoint::EndpointCatalog::default()
     };
-    let federated = endpoint_catalog.has_enabled_ssh();
+    let federated = endpoint_catalog.has_ssh();
 
     let initial_stream = match crate::ipc::connect_local_stream(&socket_path) {
         Ok(stream) => Some(stream),
@@ -268,7 +269,7 @@ fn run_client_with_mode(
         warn!(%err, "failed to install termination handler; terminal restore relies on TerminalGuard::Drop and the panic hook");
     }
 
-    let mut direct_notices = Vec::new();
+    let mut direct_notices = VecDeque::new();
     let result = rt.block_on(async {
         run_client_loop(
             initial,
@@ -289,6 +290,7 @@ fn run_client_with_mode(
 
     // Restore the terminal before printing any final status message.
     let terminal_restore_failed = terminal_guard.restore().is_err();
+    // A later successful detach does not erase notices collected while forwarding earlier input.
     for notice in direct_notices {
         let _ = writeln!(io::stderr(), "shepr: {notice}");
     }
@@ -342,7 +344,7 @@ async fn run_client_loop(
     should_quit: Arc<AtomicBool>,
     mut config: ClientLoopConfig,
     attach_escape: Option<AttachEscapeState>,
-    direct_notices: &mut Vec<String>,
+    direct_notices: &mut VecDeque<String>,
     _terminal_guard: &TerminalGuard,
 ) -> Result<(), ClientError> {
     let draw_host_cursor = attach_escape.is_none() && should_draw_host_cursor(config.host_cursor);
@@ -354,6 +356,12 @@ async fn run_client_loop(
     } else {
         (cols, rows)
     };
+    let (initial_cell_width_px, initial_cell_height_px, initial_pixel_geometry_exact) =
+        terminal_geometry::bounded_cell_geometry(
+            initial_cell_width_px,
+            initial_cell_height_px,
+            initial_pixel_geometry_exact,
+        );
 
     let mut state = ClientState {
         blit_encoder: render_ansi::BlitEncoder::new(),
@@ -382,7 +390,7 @@ async fn run_client_loop(
     };
     // Whether this client keeps running without Local. It follows the live catalog: a client
     // that gains a saved machine survives losing Local from then on.
-    let mut federated = endpoint_catalog.has_enabled_ssh();
+    let mut federated = endpoint_catalog.has_ssh();
     // Only a client that loaded the saved machines follows them; attach and remote-client
     // processes run with an empty catalog.
     let mut catalog_watch = (state.shell.is_some() && !is_remote_client_process())
@@ -751,15 +759,22 @@ async fn run_client_loop(
                 cell_height_px,
                 pixel_geometry_exact,
             ) => {
-                if !pixel_geometry_exact && host_sgr_pixels_active.load(Ordering::Acquire) {
-                    set_mouse_capture(state.mouse_capture_active, false)
-                        .map_err(ClientError::ConnectionFailed)?;
-                    host_sgr_pixels_active.store(false, Ordering::Release);
-                } else {
-                    refresh_host_mouse_capture(
-                        state.mouse_capture_active,
-                        host_sgr_pixels_active.load(Ordering::Acquire),
+                let (cell_width_px, cell_height_px, pixel_geometry_exact) =
+                    terminal_geometry::bounded_cell_geometry(
+                        cell_width_px,
+                        cell_height_px,
+                        pixel_geometry_exact,
                     );
+                if let Some((enabled, sgr_pixels)) = host_mouse_capture_update(
+                    host_mouse_capture_active.load(Ordering::Acquire),
+                    host_sgr_pixels_active.load(Ordering::Acquire),
+                    state.mouse_capture_active,
+                    state.endpoint_sgr_pixels_requested,
+                    pixel_geometry_exact,
+                ) {
+                    set_mouse_capture(enabled, sgr_pixels).map_err(ClientError::HostTerminal)?;
+                    host_mouse_capture_active.store(enabled, Ordering::Release);
+                    host_sgr_pixels_active.store(sgr_pixels, Ordering::Release);
                 }
                 state.reported_size = if client_shell_size {
                     let bounded = protocol::ClientSurfaceSize {
@@ -1205,16 +1220,21 @@ async fn run_client_loop(
                         state.endpoint_sgr_pixels_requested = sgr_pixels;
                         let enabled =
                             effective_mouse_capture(enabled, state.direct_mouse_capture_preference);
+                        let update = host_mouse_capture_update(
+                            host_mouse_capture_active.load(Ordering::Acquire),
+                            host_sgr_pixels_active.load(Ordering::Acquire),
+                            enabled,
+                            sgr_pixels,
+                            state.pixel_geometry_exact,
+                        );
                         let next_sgr_pixels = effective_sgr_pixel_mouse(
                             enabled,
                             sgr_pixels,
                             state.pixel_geometry_exact,
                         );
-                        let mouse_mode_changed = enabled != state.mouse_capture_active
-                            || next_sgr_pixels != host_sgr_pixels_active.load(Ordering::Acquire);
-                        if mouse_mode_changed {
-                            set_mouse_capture(enabled, next_sgr_pixels)
-                                .map_err(ClientError::ConnectionFailed)?;
+                        if let Some((enabled, sgr_pixels)) = update {
+                            set_mouse_capture(enabled, sgr_pixels)
+                                .map_err(ClientError::HostTerminal)?;
                         }
                         state.mouse_capture_active = enabled;
                         host_mouse_capture_active.store(enabled, Ordering::Release);
@@ -1231,7 +1251,7 @@ async fn run_client_loop(
                                 flags,
                                 modify_other_keys_level,
                             )
-                            .map_err(ClientError::ConnectionFailed)?;
+                            .map_err(ClientError::HostTerminal)?;
                         }
                     }
                     ServerMessage::ClientShellKeyboardReportAll { enabled } => {
@@ -1379,14 +1399,12 @@ async fn run_client_loop(
             ClientLoopEvent::ServerDisconnected {
                 endpoint_id,
                 generation,
+                error,
             } => {
                 if !write_stream.accepts(&endpoint_id, generation) {
                     continue;
                 }
-                write_stream.fail(
-                    &endpoint_id,
-                    &io::Error::new(io::ErrorKind::UnexpectedEof, "connection was lost"),
-                );
+                write_stream.fail(&endpoint_id, &error);
             }
             ClientLoopEvent::Timer => {
                 client_timer.fired();
@@ -1471,7 +1489,7 @@ async fn run_client_loop(
                                 });
                             }
                         }
-                        federated = endpoint_catalog.has_enabled_ssh();
+                        federated = endpoint_catalog.has_ssh();
                     }
                     Some(Err(error)) => {
                         warn!(%error, "saved SSH endpoint catalog changed but is unusable; keeping the machines already loaded");

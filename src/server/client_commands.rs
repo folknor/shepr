@@ -50,17 +50,15 @@ pub(crate) fn supports_client_shell_method(method: &Method) -> bool {
     supports_client_shell_method_name(crate::api::api_method_name(method))
 }
 
-pub(crate) fn error_response(id: String, code: &str, message: impl Into<String>) -> String {
-    serde_json::to_string(&ErrorResponse {
-        id,
+pub(crate) fn error_response(id: &str, code: &str, message: impl Into<String>) -> String {
+    let response = ErrorResponse {
+        id: id.to_string(),
         error: ErrorBody {
             code: code.into(),
             message: message.into(),
         },
-    })
-    .unwrap_or_else(|_| {
-        r#"{"id":"","error":{"code":"serialization_error","message":"failed to serialize endpoint response"}}"#.into()
-    })
+    };
+    crate::api::serialize_response_or_error(id, &response)
 }
 
 pub(crate) fn success_message_with_result(
@@ -68,17 +66,11 @@ pub(crate) fn success_message_with_result(
     request_id: String,
     result: crate::api::schema::ResponseResult,
 ) -> crate::protocol::ServerMessage {
-    let response = serde_json::to_string(&crate::api::schema::SuccessResponse {
+    let success = crate::api::schema::SuccessResponse {
         id: request_id.clone(),
         result,
-    })
-    .unwrap_or_else(|_| {
-        error_response(
-            request_id.clone(),
-            "serialization_error",
-            "failed to serialize endpoint response",
-        )
-    });
+    };
+    let response = crate::api::serialize_response_or_error(&request_id, &success);
     crate::protocol::ServerMessage::ClientShellEndpointResponseChunk {
         boot_id,
         request_id,
@@ -93,7 +85,7 @@ pub(crate) fn error_message(
     code: &str,
     message: impl Into<String>,
 ) -> crate::protocol::ServerMessage {
-    let response = error_response(request_id.clone(), code, message);
+    let response = error_response(&request_id, code, message);
     crate::protocol::ServerMessage::ClientShellEndpointResponseChunk {
         boot_id,
         request_id,
@@ -128,7 +120,7 @@ pub(crate) fn spawn_response_waiter(
         .spawn(move || {
             let response = response_rx.recv().unwrap_or_else(|_| {
                 error_response(
-                    request_id.clone(),
+                    &request_id,
                     "server_unavailable",
                     "endpoint command ended without a response",
                 )

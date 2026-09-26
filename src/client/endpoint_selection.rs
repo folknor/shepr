@@ -44,7 +44,7 @@ impl EndpointSelectionTracker {
     }
 
     /// Selects `endpoint_id` for an activation request. Returns false for an endpoint
-    /// the catalog does not know or has disabled.
+    /// the catalog does not contain.
     pub(super) fn begin(
         &mut self,
         catalog: &mut EndpointCatalog,
@@ -96,8 +96,8 @@ impl EndpointSelectionTracker {
             let persist = catalog.selected_profile != self.persisted;
             return SelectionOutcome::Committed { persist };
         }
-        // The catalog may have lost the previous machine while the handoff ran (the client
-        // follows `shepr machine remove/disable`); an unselectable one falls back to Local.
+        // The catalog may have lost the previous machine while the handoff ran; a removed
+        // selection falls back to Local.
         catalog.selected_profile = attempt
             .previous
             .filter(|previous| catalog.is_selectable(previous));
@@ -234,10 +234,8 @@ mod tests {
         assert!(catalog.select_ssh(&first));
         let mut tracker = EndpointSelectionTracker::new(&catalog);
         assert!(tracker.begin(&mut catalog, &ClientEndpointId::Ssh(second), Some(3)));
-        // `shepr machine disable` lands while the handoff runs.
-        let mut profiles = catalog.ssh.clone();
-        profiles[0].enabled = false;
-        catalog.replace_profiles(profiles);
+        // The first machine is removed while the handoff runs.
+        catalog.replace_profiles(vec![catalog.ssh[1].clone()]);
         assert_eq!(
             tracker.settle(&mut catalog, false, &ClientEndpointId::Local, true),
             SelectionOutcome::Reverted

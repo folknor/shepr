@@ -314,7 +314,7 @@ async fn complete_shutdown_answers_queued_and_deferred_requests_and_closes_the_c
 #[test]
 fn api_request_selected_during_shutdown_is_answered() {
     let (request, response_rx) = shutdown_test_request("selected");
-    HeadlessServer::reject_api_request_for_shutdown(request);
+    HeadlessServer::reject_api_request_for_shutdown(&request);
     assert_server_unavailable(&response_rx, "selected");
 }
 
@@ -583,7 +583,7 @@ fn api_window_title_wins_until_it_is_cleared() {
     let (mut server, control_rx) = window_title_test_server();
     server.app.configure_window_title("{workspace}");
 
-    server.handle_client_window_title_api("set".into(), Some("shepr api".into()));
+    server.handle_client_window_title_api("set", Some("shepr api".into()));
     assert_eq!(
         next_window_title(&control_rx),
         Some(Some("shepr api".to_string()))
@@ -594,7 +594,7 @@ fn api_window_title_wins_until_it_is_cleared() {
     assert!(no_window_title(&control_rx));
 
     // Clearing hands the title back to ui.window_title, not to "shepr".
-    server.handle_client_window_title_api("clear".into(), None);
+    server.handle_client_window_title_api("clear", None);
     assert_eq!(
         next_window_title(&control_rx),
         Some(Some("ops".to_string()))
@@ -608,13 +608,13 @@ fn clearing_the_api_title_falls_back_to_shepr_when_window_titles_are_disabled() 
     let (mut server, control_rx) = window_title_test_server();
     server.app.configure_window_title("");
 
-    server.handle_client_window_title_api("set".into(), Some("shepr api".into()));
+    server.handle_client_window_title_api("set", Some("shepr api".into()));
     assert_eq!(
         next_window_title(&control_rx),
         Some(Some("shepr api".to_string()))
     );
 
-    server.handle_client_window_title_api("clear".into(), None);
+    server.handle_client_window_title_api("clear", None);
     assert_eq!(next_window_title(&control_rx), Some(None));
 
     shutdown_test_runtimes(&mut server);

@@ -8,6 +8,8 @@ use crate::server::socket_paths::client_socket_path;
 pub enum ClientError {
     /// Could not connect to the server's client socket.
     ConnectionFailed(io::Error),
+    /// A host terminal write failed while updating terminal modes or output.
+    HostTerminal(io::Error),
     /// Server rejected our handshake.
     HandshakeRejected { version: u32, error: String },
     /// Server shut down.
@@ -30,6 +32,7 @@ impl std::fmt::Display for ClientError {
                 )?;
                 write!(f, "\nSocket path: {}", path.display())
             }
+            ClientError::HostTerminal(err) => write!(f, "host terminal error: {err}"),
             ClientError::HandshakeRejected { version, error } => {
                 write!(f, "server rejected handshake (version {version}): {error}")
             }
@@ -81,6 +84,7 @@ impl std::error::Error for ClientError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ClientError::ConnectionFailed(err) => Some(err),
+            ClientError::HostTerminal(err) => Some(err),
             ClientError::ConnectionLost(err) => Some(err),
             ClientError::Protocol(err) => Some(err),
             _ => None,

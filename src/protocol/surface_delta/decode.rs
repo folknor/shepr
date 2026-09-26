@@ -24,14 +24,11 @@ use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
 use super::SurfaceDelta;
 use crate::protocol::codec::{CodecError, Decoder};
 use crate::protocol::{
-    CellData, CursorState, FrameData, MAX_FRAME_SIZE, PaneSurfaceFrame, PaneSurfacePane,
-    PaneSurfacePatchRow, PaneSurfaceSplit, PaneSurfaceSplitDirection, SurfaceRect,
+    CellData, CursorState, FrameData, MAX_FRAME_SIZE, MAX_SURFACE_CELLS, MAX_SURFACE_DIMENSION,
+    PaneSurfaceFrame, PaneSurfacePane, PaneSurfacePatchRow, PaneSurfaceSplit,
+    PaneSurfaceSplitDirection, SurfaceRect,
 };
 
-// These are intentionally practical protocol limits rather than byte limits.
-// A sender that exceeds one uses the unchanged full-frame codec.
-const MAX_GRID_DIMENSION: u16 = 4096;
-const MAX_GRID_CELLS: usize = 1_000_000;
 const MAX_PANES: usize = 4096;
 const MAX_SPLITS: usize = 4096;
 const MAX_SPLIT_PATH: usize = 4096;
@@ -43,7 +40,10 @@ pub(super) fn decode(
 ) -> Result<SurfaceDelta<PaneSurfaceFrame>, String> {
     // Checking before base64 decoding also bounds that allocation, and with it
     // every length prefix the codec will accept.
-    if data.len() > MAX_FRAME_SIZE {
+    let Some(max_encoded_len) = base64::encoded_len(MAX_FRAME_SIZE, false) else {
+        return Err("surface delta frame limit overflow".into());
+    };
+    if data.len() > max_encoded_len {
         return Err("surface delta exceeds the frame limit".into());
     }
     let bytes = STANDARD_NO_PAD
@@ -155,29 +155,14 @@ fn decode_rows(
         super::MAX_SPANS.min(cell_budget),
         "too many surface delta spans",
     )?;
-    let row_width = usize::from(width);
+    let mut spans = crate::protocol::PatchSpanCheck::new(width, height);
     let mut total_cells = 0usize;
-    let mut previous_end = 0usize;
     let mut rows = Vec::with_capacity(count);
     for _ in 0..count {
         let x = decoder.decode::<u16>()?;
         let y = decoder.decode::<u16>()?;
         let cells_len = decoder.read_len()?;
-        let x_usize = usize::from(x);
-        let y_usize = usize::from(y);
-        if cells_len == 0 || y >= height || x_usize >= row_width || cells_len > row_width - x_usize
-        {
-            return Err(CodecError::Invalid("surface delta span is outside its row"));
-        }
-        let start = y_usize
-            .checked_mul(row_width)
-            .and_then(|value| value.checked_add(x_usize))
-            .ok_or(CodecError::Invalid("surface delta span overflow"))?;
-        if start < previous_end {
-            return Err(CodecError::Invalid(
-                "surface delta spans overlap or are not sorted",
-            ));
-        }
+        spans.push(x, y, cells_len).map_err(CodecError::Invalid)?;
         total_cells = total_cells
             .checked_add(cells_len)
             .ok_or(CodecError::Invalid("surface delta cell budget overflow"))?;
@@ -188,7 +173,6 @@ fn decode_rows(
         for _ in 0..cells_len {
             cells.push(decoder.decode::<CellData>()?);
         }
-        previous_end = start + cells_len;
         rows.push(PaneSurfacePatchRow { x, y, cells });
     }
     Ok(rows)
@@ -235,11 +219,11 @@ fn decode_count(
 }
 
 fn checked_grid_size(width: u16, height: u16) -> Result<usize, CodecError> {
-    if width > MAX_GRID_DIMENSION || height > MAX_GRID_DIMENSION {
+    if width > MAX_SURFACE_DIMENSION || height > MAX_SURFACE_DIMENSION {
         return Err(CodecError::Invalid("surface dimensions exceed the limit"));
     }
     let cells = usize::from(width) * usize::from(height);
-    if cells > MAX_GRID_CELLS {
+    if cells > MAX_SURFACE_CELLS {
         Err(CodecError::Invalid("surface cell count exceeds the limit"))
     } else {
         Ok(cells)
@@ -568,17 +552,37 @@ mod tests {
 
     #[test]
     fn sender_eligibility_matches_grid_and_metadata_limits() {
-        let mut exact = surface(2, 2);
-        exact.frame.cells = vec![cell(); 4];
+        let mut exact = surface(1024, 128);
+        exact.frame.cells = vec![cell(); MAX_SURFACE_CELLS];
         assert!(metadata_fits(&exact));
         exact.frame.cells.pop();
         assert!(!metadata_fits(&exact));
 
-        let mut candidate = surface(MAX_GRID_DIMENSION + 1, 1);
+        let mut candidate = surface(1024, 129);
+        assert!(!metadata_fits(&candidate));
+        candidate.frame.width = MAX_SURFACE_DIMENSION + 1;
+        candidate.frame.height = 1;
+        candidate.frame.cells = vec![cell()];
         assert!(!metadata_fits(&candidate));
         candidate.frame.width = 1;
-        candidate.frame.cells = vec![cell()];
         candidate.frame.hyperlinks = vec![String::new(); MAX_HYPERLINKS + 1];
         assert!(!metadata_fits(&candidate));
+    }
+
+    #[test]
+    fn base64_input_limit_uses_encoded_characters_for_a_frame_sized_payload() {
+        let between_raw_and_encoded_limit = "!".repeat(MAX_FRAME_SIZE + 1);
+        let error = decode(&between_raw_and_encoded_limit, None)
+            .err()
+            .expect("the decoder should reach base64 validation before the character limit");
+        assert!(!error.contains("exceeds the frame limit"), "{error}");
+
+        let max_encoded_len = base64::encoded_len(MAX_FRAME_SIZE, false)
+            .expect("the frame size has a representable base64 length");
+        let over_encoded_limit = "!".repeat(max_encoded_len + 1);
+        let error = decode(&over_encoded_limit, None)
+            .err()
+            .expect("input beyond the decoded frame budget is rejected");
+        assert!(error.contains("exceeds the frame limit"), "{error}");
     }
 }

@@ -121,7 +121,7 @@ impl BlitEncoder {
         suppress_visible_cursor: bool,
     ) -> Option<EncodedBlit> {
         let frame = self.last_frame.as_ref()?;
-        if rows.iter().any(|row| !patch_row_fits(frame, row)) || patch_rows_overlap(rows) {
+        if !patch_rows_fit(frame, rows) {
             return None;
         }
         // Metadata revisions need no terminal output. Keep visible cursors on
@@ -196,6 +196,8 @@ impl BlitEncoder {
                 });
             }
         }
+        // Cursor cells were appended; restore the row-major order spans require.
+        crate::protocol::sort_patch_rows(&mut rows);
         Some(rows)
     }
 
@@ -208,6 +210,12 @@ impl BlitEncoder {
         let Some(frame) = self.last_frame.as_mut() else {
             return false;
         };
+        // The client calls this only after encode_patch accepts the same rows
+        // and after their encoded bytes are written successfully; the check
+        // keeps a misuse from wrapping a span into the next row.
+        if crate::protocol::validate_patch_rows(frame.width, frame.height, rows).is_err() {
+            return false;
+        }
         for row in rows {
             let start = usize::from(row.y) * usize::from(frame.width) + usize::from(row.x);
             let end = start + row.cells.len();
@@ -471,33 +479,17 @@ fn patch_cell_mut(rows: &mut [PaneSurfacePatchRow], x: u16, y: u16) -> Option<&m
     })
 }
 
-fn patch_rows_overlap(rows: &[PaneSurfacePatchRow]) -> bool {
-    if rows.len() < 2 {
-        return false;
-    }
-    let mut spans = rows
-        .iter()
-        .map(|row| {
-            // Patch rows are validated against a u16-wide frame, so this fits in a u16;
-            // saturate defensively rather than panic on a pathological patch.
-            let len = u16::try_from(row.cells.len()).unwrap_or(u16::MAX);
-            (row.y, row.x, row.x.saturating_add(len))
-        })
-        .collect::<Vec<_>>();
-    spans.sort_unstable();
-    spans
-        .windows(2)
-        .any(|pair| pair[0].0 == pair[1].0 && pair[1].1 < pair[0].2)
+/// Whether `rows` may be drawn over `frame`: they obey the shared span rule and
+/// neither the new cells nor the cells they replace carry a hyperlink.
+fn patch_rows_fit(frame: &FrameData, rows: &[PaneSurfacePatchRow]) -> bool {
+    crate::protocol::validate_patch_rows(frame.width, frame.height, rows).is_ok()
+        && rows
+            .iter()
+            .all(|row| patch_row_has_no_hyperlinks(frame, row))
 }
 
-fn patch_row_fits(frame: &FrameData, row: &PaneSurfacePatchRow) -> bool {
-    let Ok(len) = u16::try_from(row.cells.len()) else {
-        return false;
-    };
-    if row.y >= frame.height
-        || row.x.saturating_add(len) > frame.width
-        || row.cells.iter().any(|cell| cell.hyperlink.is_some())
-    {
+fn patch_row_has_no_hyperlinks(frame: &FrameData, row: &PaneSurfacePatchRow) -> bool {
+    if row.cells.iter().any(|cell| cell.hyperlink.is_some()) {
         return false;
     }
     let start = usize::from(row.y) * usize::from(frame.width) + usize::from(row.x);
@@ -527,7 +519,7 @@ fn blit_patch_to(
         let mut to_skip = 0usize;
         let mut next_inline_col = None;
         for (offset, cell) in row.cells.iter().enumerate() {
-            // `row` was validated by `patch_row_fits` to stay within the u16-wide frame.
+            // `row` was validated by `patch_rows_fit` to stay within the u16-wide frame.
             let col = row.x + u16::try_from(offset).unwrap_or(u16::MAX);
             let idx = usize::from(row.y) * usize::from(frame.width) + usize::from(col);
             let prev_cell = &frame.cells[idx];
@@ -1761,7 +1753,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_patch_rejects_overlapping_rows() {
+    fn retained_patch_rejects_overlapping_unsorted_and_empty_rows() {
         let frame = make_frame(
             3,
             1,
@@ -1792,16 +1784,24 @@ mod tests {
         reversed.reverse();
         assert!(encoder.encode_patch(&reversed, None, false).is_none());
 
-        // Input order need not match screen order; touching runs are disjoint.
-        let disjoint = vec![
-            PaneSurfacePatchRow {
-                x: 2,
-                y: 0,
-                cells: vec![make_cell("Z", 0, 0, 0)],
-            },
-            rows[0].clone(),
-        ];
-        assert!(encoder.encode_patch(&disjoint, None, false).is_some());
+        // Disjoint runs are still rejected out of row-major order.
+        let tail = PaneSurfacePatchRow {
+            x: 2,
+            y: 0,
+            cells: vec![make_cell("Z", 0, 0, 0)],
+        };
+        let unsorted = vec![tail.clone(), rows[0].clone()];
+        assert!(encoder.encode_patch(&unsorted, None, false).is_none());
+        let empty = vec![PaneSurfacePatchRow {
+            x: 0,
+            y: 0,
+            cells: Vec::new(),
+        }];
+        assert!(encoder.encode_patch(&empty, None, false).is_none());
+
+        // Touching runs in row-major order are disjoint.
+        let sorted = vec![rows[0].clone(), tail];
+        assert!(encoder.encode_patch(&sorted, None, false).is_some());
     }
 
     #[test]

@@ -58,6 +58,20 @@ fn unpack_cell_size(packed: u64) -> Option<(u32, u32)> {
 
 type TerminalGeometry = (u16, u16, u32, u32, bool);
 
+pub(super) fn bounded_cell_geometry(
+    cell_width_px: u32,
+    cell_height_px: u32,
+    pixel_geometry_exact: bool,
+) -> (u32, u32, bool) {
+    (
+        cell_width_px.min(crate::protocol::MAX_CELL_SIZE_PX),
+        cell_height_px.min(crate::protocol::MAX_CELL_SIZE_PX),
+        pixel_geometry_exact
+            && cell_width_px <= crate::protocol::MAX_CELL_SIZE_PX
+            && cell_height_px <= crate::protocol::MAX_CELL_SIZE_PX,
+    )
+}
+
 pub(super) fn current_terminal_geometry_with(
     pixel_geometry_enabled: bool,
     pixel_geometry_fallback: bool,
@@ -210,8 +224,8 @@ pub(super) fn should_query_host_cell_size() -> bool {
     true
 }
 
-pub(super) fn host_cell_size_query_required(kitty_graphics_enabled: bool) -> bool {
-    kitty_graphics_enabled && should_query_host_cell_size() && ioctl_terminal_geometry().is_none()
+pub(super) fn host_cell_size_query_required(pixel_geometry_enabled: bool) -> bool {
+    pixel_geometry_enabled && should_query_host_cell_size() && ioctl_terminal_geometry().is_none()
 }
 
 pub(super) fn write_host_cell_size_query(mut writer: impl io::Write) -> io::Result<()> {

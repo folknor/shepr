@@ -810,7 +810,7 @@ fn event_match_subscription(match_event: EventMatch) -> Subscription {
 fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
     let Ok(event) = serde_json::from_value::<SubscriptionEventEnvelope>(event) else {
         return error_response_json(
-            request_id.into(),
+            request_id,
             "internal_error",
             "failed to decode matched event".into(),
         );
@@ -818,7 +818,7 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
 
     let SubscriptionEventData::PaneAgentStatusChanged(data) = event.data else {
         return error_response_json(
-            request_id.into(),
+            request_id,
             "unsupported_event_wait_match",
             "events.wait currently supports pane agent status matches".into(),
         );
@@ -843,7 +843,7 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
     })
     .unwrap_or_else(|err| {
         error_response_json(
-            request_id.into(),
+            request_id,
             "internal_error",
             format!("failed to encode matched event: {err}"),
         )

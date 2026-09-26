@@ -74,7 +74,9 @@ impl TerminalTheme {
     }
 
     pub fn is_empty(self) -> bool {
-        self.foreground.is_none() && self.background.is_none()
+        self.foreground.is_none()
+            && self.background.is_none()
+            && self.palette.iter().all(Option::is_none)
     }
 }
 
@@ -224,5 +226,12 @@ mod tests {
         assert_eq!(parse_hex_component("80"), Some(128));
         assert_eq!(parse_hex_component("800"), Some(128));
         assert_eq!(parse_hex_component("8000"), Some(128));
+    }
+
+    #[test]
+    fn palette_only_theme_is_not_empty() {
+        let theme = TerminalTheme::default().with_palette_color(12, RgbColor { r: 1, g: 2, b: 3 });
+        assert!(!theme.is_empty());
+        assert!(TerminalTheme::default().is_empty());
     }
 }

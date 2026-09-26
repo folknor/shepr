@@ -10,6 +10,10 @@ There is no compatibility with upstream herdr installs. The fork is stripped
 hard: the goal is the smallest code surface that does what the owner uses,
 not parity with upstream.
 
+shepr has never been run: no config, catalog, session or other on-disk state
+exists anywhere, so there is nothing to stay compatible with. Remove legacy
+fields and migration code freely.
+
 ## Scope
 
 Kept:
@@ -32,7 +36,15 @@ Kept:
   check`, `session list/delete`, `integration`, `machine`, `agent explain
   --file`) run in the CLI process and cannot be sent with `--machine`
 
-Config is read and validated once at launch. There is no reload.
+Config is read and validated once at launch. There is no reload. Any config
+problem fails the launch; no fallbacks. Directories follow the XDG spec.
+
+Agent states are Working, Blocked and Idle. Unknown presents as Idle.
+
+Saved machines are add/remove only. Unreachable ones fail soft. With saved
+machines configured, losing the local server does not end the client either:
+it keeps serving the remote machines and reconnects once the local server is
+restarted.
 
 ## Build and test
 

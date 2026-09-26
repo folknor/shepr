@@ -58,6 +58,9 @@ pub(crate) fn validate_remote_target(target: &str) -> Result<&str, String> {
     if target.starts_with('-') {
         return Err("--remote target must not start with '-'".to_string());
     }
+    if target.chars().any(char::is_control) {
+        return Err("--remote target must not contain control characters".to_string());
+    }
     Ok(target)
 }
 
@@ -88,5 +91,8 @@ mod tests {
         assert!(remote_launch(Some("-oProxyCommand=x"), None).is_err());
         assert!(remote_launch(Some(""), None).is_err());
         assert!(remote_launch(Some("dev@box"), Some("both")).is_err());
+        for target in ["host\ncommand", "host\u{7f}"] {
+            assert!(remote_launch(Some(target), None).is_err(), "{target:?}");
+        }
     }
 }

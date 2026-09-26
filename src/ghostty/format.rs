@@ -14,7 +14,7 @@ use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 
-use super::KITTY_UNICODE_PLACEHOLDER;
+use super::{CellText, cell_text};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Format {
@@ -221,9 +221,7 @@ fn emit_line(
 }
 
 fn is_blank_text(cell: &Cell) -> bool {
-    let no_zerowidth = cell.zerowidth().is_none_or(<[char]>::is_empty);
-    ((cell.c == ' ' || cell.c == '\t') && no_zerowidth)
-        || u32::from(cell.c) == KITTY_UNICODE_PLACEHOLDER
+    matches!(cell_text(cell), CellText::Empty)
 }
 
 fn is_trimmable(cell: &Cell, format: Format) -> bool {
@@ -245,13 +243,12 @@ fn is_trimmable(cell: &Cell, format: Format) -> bool {
 }
 
 fn push_cell_text(out: &mut String, cell: &Cell) {
-    if u32::from(cell.c) == KITTY_UNICODE_PLACEHOLDER {
-        out.push(' ');
-        return;
-    }
-    out.push(if cell.c == '\t' { ' ' } else { cell.c });
-    if let Some(zerowidth) = cell.zerowidth() {
-        out.extend(zerowidth.iter().copied());
+    match cell_text(cell) {
+        CellText::Empty => out.push(' '),
+        CellText::Grapheme { base, zerowidth } => {
+            out.push(base);
+            out.extend(zerowidth.iter().copied());
+        }
     }
 }
 

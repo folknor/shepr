@@ -40,21 +40,12 @@ impl ClientShellState {
             let previous = self
                 .endpoints
                 .iter()
-                .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-                .filter(|endpoint| {
-                    profile.enabled && endpoint.status != ClientEndpointStatus::Disabled
-                });
+                .find(|endpoint| endpoint.endpoint_id == endpoint_id);
             next.push(ClientShellEndpoint {
                 endpoint_id,
                 label: profile.label.clone(),
-                status: previous.map_or(
-                    if profile.enabled {
-                        ClientEndpointStatus::Connecting
-                    } else {
-                        ClientEndpointStatus::Disabled
-                    },
-                    |endpoint| endpoint.status,
-                ),
+                status: previous
+                    .map_or(ClientEndpointStatus::Connecting, |endpoint| endpoint.status),
                 snapshot: previous.and_then(|endpoint| endpoint.snapshot.clone()),
                 snapshot_generation: previous.and_then(|endpoint| endpoint.snapshot_generation),
                 agent_recency: previous
@@ -92,10 +83,7 @@ impl ClientShellState {
         endpoint_id: &ClientEndpointId,
         status: ClientEndpointStatus,
     ) {
-        if matches!(
-            status,
-            ClientEndpointStatus::Online | ClientEndpointStatus::Disabled
-        ) {
+        if status == ClientEndpointStatus::Online {
             self.clear_machine_diagnostic(endpoint_id);
         }
         if endpoint_id == &self.active_endpoint_id && status != ClientEndpointStatus::Online {
@@ -475,7 +463,6 @@ pub(super) fn endpoint_status_presentation(
         ClientEndpointStatus::Online => ("●", "online", palette.green),
         ClientEndpointStatus::Reconnecting => ("◐", "reconnecting", palette.yellow),
         ClientEndpointStatus::Attention => ("!", "attention", palette.red),
-        ClientEndpointStatus::Disabled => ("·", "disabled", palette.overlay0),
     }
 }
 

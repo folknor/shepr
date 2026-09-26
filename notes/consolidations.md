@@ -50,10 +50,15 @@ Sites:
 - Glyph and colour: `status_icon` / `status_color` are one owner but paired by hand at 5+ call sites, with a stale-colour override in endpoint_sidebar.
 - The completion rule `is_background_completion_transition` sits in `app/actions.rs`.
 
-Proposed owner: one `AgentState` plus a separate attention/seen fact, with
-`attention_rank()` / `Ord`, one display-text function, and a `StatusGlyph { text,
-style }` built from (status, indicator style, palette, stale). Completion rule
-next to `AgentState`.
+Decision (owner): the presented states are Working, Blocked and Idle. "Seen" and
+Done are removed (CON-003), and Unknown presents as Idle (BUG-024). The 5-state
+`AgentStatus`, the Done = Idle+unseen mapping and the Idle+unseen step in both
+ladders all go.
+
+Proposed owner: one `AgentState` with `attention_rank()` / `Ord` (Blocked >
+Working > Idle), one display-text function, and a `StatusGlyph { text, style }`
+built from (state, indicator style, palette, stale). Completion rule next to
+`AgentState`.
 
 Reported by: ui, app-state.
 
@@ -64,9 +69,11 @@ Sites:
 - Client: `client/shell/endpoint_agent_state.rs` (`EndpointAgentPresentation`: its own acknowledged/completed/working maps, then `projected_status`).
 - `project_aggregate_status` overwrites the server's tab and workspace `agent_status` only when that tab/workspace has at least one agent; otherwise the server value survives (mixed authority).
 
-Proposed owner (ui hunter): the client, since acknowledgement is per client. The
-server would send raw `AgentState` plus a completion sequence and drop
-server-side `seen`, `pane_agent_status` and the presentation aggregate.
+Decision (owner): remove "seen" entirely rather than choose an owner. Delete
+`pane.seen`, the Done mapping in `pane_agent_status`, the client's
+acknowledged/completed tracking in `EndpointAgentPresentation`, and the
+`project_aggregate_status` override; the server's aggregate of `AgentState` is
+the only answer. Resolved once that code is gone (see BUG-025).
 
 Reported by: ui.
 
@@ -132,15 +139,6 @@ Proposed owner: the vt module owns one set of types; protocol conversions are
 `From` impls next to the protocol types.
 
 Reported by: terminal-core, server.
-
-## CON-009 - What is a cell's text?
-
-Sites: `cell_graphemes`, `cell_text_into`, `RowCellIter::grapheme_text_into` in
-`src/ghostty/`. Already disagree on `KITTY_UNICODE_PLACEHOLDER` (BUG-001).
-
-Proposed owner: one `cell_text(cell) -> CellText` classifier.
-
-Reported by: terminal-core.
 
 ## CON-010 - Row wrap flags
 
@@ -409,17 +407,6 @@ Proposed owner: one `Baseline::accepts(kind, base_rev, next_rev, proj, boot)`.
 
 Reported by: protocol.
 
-## CON-033 - Does a span fit the grid?
-
-Sites: the patch pre-check in `Decoder::decode`; `decode_rows` in
-`surface_delta/decode.rs` (also requires sorted, non-overlapping, length > 0);
-`apply_rows` (backstop, different formula); `render_ansi::patch_row_fits` plus
-`patch_rows_overlap`. Rules differ (BUG-013).
-
-Proposed owner: a validated `Spans` type built through one checker.
-
-Reported by: protocol.
-
 ## CON-034 - Surface size and frame size limits
 
 Sites: `wire.rs` `MAX_SURFACE_DIMENSION = 4096`, `MAX_SURFACE_CELLS =
@@ -676,16 +663,6 @@ each clear selection; `EndpointSelectionTracker::settle`; `cli/machine.rs`
 
 Proposed owner: selection out of the catalog, as `Option<ProfileId>` resolved
 through one `effective_selection(&profiles)` (STR-050).
-
-Reported by: remote.
-
-## CON-054 - Is this machine enabled / live?
-
-Sites: catalog filters; `EndpointCatalogChanges::between` (own "live"
-definition); `EndpointSupervisors::with_ssh_settings`; `resolve_machine`;
-`contains_enabled_target_session`.
-
-Proposed owner: a "live" method on the profile.
 
 Reported by: remote.
 

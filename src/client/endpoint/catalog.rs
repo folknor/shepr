@@ -16,14 +16,39 @@ const MAX_LABEL_BYTES: usize = 128;
 const MAX_TARGET_BYTES: usize = 1024;
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct SavedSshEndpoint {
     pub(crate) id: ProfileId,
     pub(crate) label: String,
     pub(crate) target: String,
     pub(crate) session: String,
-    pub(crate) enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedSshEndpointFile {
+    id: ProfileId,
+    label: String,
+    target: String,
+    session: String,
+    // Older catalogs stored a status bit; presence now means the machine is active.
+    #[serde(default, rename = "enabled")]
+    _legacy_enabled: Option<bool>,
+}
+
+impl<'de> Deserialize<'de> for SavedSshEndpoint {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let saved = SavedSshEndpointFile::deserialize(deserializer)?;
+        Ok(Self {
+            id: saved.id,
+            label: saved.label,
+            target: saved.target,
+            session: saved.session,
+        })
+    }
 }
 
 impl SavedSshEndpoint {
@@ -37,7 +62,6 @@ impl SavedSshEndpoint {
             label: label.into(),
             target: target.into(),
             session: session.into(),
-            enabled: true,
         };
         profile.validate()?;
         Ok(profile)
@@ -119,17 +143,14 @@ impl EndpointCatalog {
         match load_selection_from_path(selection_path) {
             Ok(Some(selection)) => {
                 let valid = selection.selected_profile.as_ref().is_none_or(|selected| {
-                    catalog
-                        .ssh
-                        .iter()
-                        .any(|profile| &profile.id == selected && profile.enabled)
+                    catalog.ssh.iter().any(|profile| &profile.id == selected)
                 });
                 if valid {
                     catalog.selected_profile = selection.selected_profile;
                 } else {
                     tracing::warn!(
                         path = %selection_path.display(),
-                        "saved endpoint selection is absent or disabled; using Local"
+                        "saved endpoint selection is absent; using Local"
                     );
                 }
             }
@@ -217,36 +238,21 @@ impl EndpointCatalog {
     }
 
     pub(crate) fn select_ssh(&mut self, id: &ProfileId) -> bool {
-        if !self
-            .ssh
-            .iter()
-            .any(|profile| &profile.id == id && profile.enabled)
-        {
+        if !self.ssh.iter().any(|profile| &profile.id == id) {
             return false;
         }
         self.selected_profile = Some(id.clone());
         true
     }
 
-    pub(crate) fn has_enabled_ssh(&self) -> bool {
-        self.ssh.iter().any(|profile| profile.enabled)
+    pub(crate) fn has_ssh(&self) -> bool {
+        !self.ssh.is_empty()
     }
 
-    pub(crate) fn contains_enabled_target_session(&self, target: &str, session: &str) -> bool {
-        self.ssh.iter().any(|profile| {
-            profile.enabled && profile.target == target && profile.session == session
-        })
-    }
-
-    pub(crate) fn set_enabled(&mut self, id: &ProfileId, enabled: bool) -> bool {
-        let Some(profile) = self.ssh.iter_mut().find(|profile| &profile.id == id) else {
-            return false;
-        };
-        profile.enabled = enabled;
-        if !enabled && self.selected_profile.as_ref() == Some(id) {
-            self.selected_profile = None;
-        }
-        true
+    pub(crate) fn contains_target_session(&self, target: &str, session: &str) -> bool {
+        self.ssh
+            .iter()
+            .any(|profile| profile.target == target && profile.session == session)
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -268,13 +274,12 @@ impl EndpointCatalog {
                 return Err(format!("duplicate endpoint profile id {}", profile.id));
             }
         }
-        if self.selected_profile.as_ref().is_some_and(|selected| {
-            !self
-                .ssh
-                .iter()
-                .any(|profile| &profile.id == selected && profile.enabled)
-        }) {
-            return Err("selected SSH endpoint is absent or disabled in the catalog".into());
+        if self
+            .selected_profile
+            .as_ref()
+            .is_some_and(|selected| !self.ssh.iter().any(|profile| &profile.id == selected))
+        {
+            return Err("selected SSH endpoint is absent from the catalog".into());
         }
         Ok(())
     }
@@ -345,8 +350,8 @@ fn catalog_fingerprint(path: &Path) -> Option<CatalogFingerprint> {
 }
 
 /// Watches the saved-machine catalog for an open client. The catalog is state, not config:
-/// `shepr machine add/remove/enable/disable` rewrite it while clients run, and those clients
-/// pick the change up here instead of at their next launch.
+/// `shepr machine add/remove` rewrite it while clients run, and those clients pick the
+/// change up here instead of at their next launch.
 ///
 /// It polls a `stat` at most once per `CATALOG_POLL_INTERVAL` and reloads only when the
 /// file's identity changed. The first poll always reloads, so a write that landed between
@@ -390,9 +395,9 @@ impl EndpointCatalogWatch {
 }
 
 /// What a catalog change means for connections: which saved machines stop being
-/// supervised and which start. A machine counts as live when it is enabled; a live machine
-/// whose target or session changed is both retired and started, because its connector,
-/// bridge and remote server all belong to the old target. A label change is neither.
+/// supervised and which start. A machine whose target or session changed is both retired
+/// and started, because its connector, bridge and remote server belong to the old target.
+/// A label change is neither.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct EndpointCatalogChanges {
     pub(crate) retired: Vec<ProfileId>,
@@ -401,19 +406,17 @@ pub(crate) struct EndpointCatalogChanges {
 
 impl EndpointCatalogChanges {
     pub(crate) fn between(previous: &[SavedSshEndpoint], next: &[SavedSshEndpoint]) -> Self {
-        fn same_live_machine(a: &SavedSshEndpoint, b: &SavedSshEndpoint) -> bool {
-            a.id == b.id && a.enabled && b.enabled && a.target == b.target && a.session == b.session
+        fn same_machine(a: &SavedSshEndpoint, b: &SavedSshEndpoint) -> bool {
+            a.id == b.id && a.target == b.target && a.session == b.session
         }
         let retired = previous
             .iter()
-            .filter(|old| old.enabled)
-            .filter(|old| !next.iter().any(|new| same_live_machine(old, new)))
+            .filter(|old| !next.iter().any(|new| same_machine(old, new)))
             .map(|old| old.id.clone())
             .collect();
         let started = next
             .iter()
-            .filter(|new| new.enabled)
-            .filter(|new| !previous.iter().any(|old| same_live_machine(old, new)))
+            .filter(|new| !previous.iter().any(|old| same_machine(old, new)))
             .cloned()
             .collect();
         Self { retired, started }
@@ -422,7 +425,7 @@ impl EndpointCatalogChanges {
 
 impl EndpointCatalog {
     /// Replaces the saved profiles with a newer copy of the catalog file, keeping this
-    /// client's in-memory selection only while it still names an enabled machine.
+    /// client's in-memory selection only while it still names a saved machine.
     pub(crate) fn replace_profiles(&mut self, profiles: Vec<SavedSshEndpoint>) {
         self.ssh = profiles;
         if let Some(selected) = self.selected_profile.as_ref()
@@ -441,11 +444,9 @@ impl EndpointCatalog {
             })
     }
 
-    /// Whether `id` names an enabled saved machine, i.e. whether it may be selected.
+    /// Whether `id` names a saved machine that may be selected.
     pub(crate) fn is_selectable(&self, id: &ProfileId) -> bool {
-        self.ssh
-            .iter()
-            .any(|profile| &profile.id == id && profile.enabled)
+        self.ssh.iter().any(|profile| &profile.id == id)
     }
 }
 
@@ -559,6 +560,27 @@ mod tests {
     }
 
     #[test]
+    fn catalog_ignores_the_legacy_machine_enabled_field() {
+        let old_catalog = r#"{
+            "version": 1,
+            "ssh": [{
+                "id": "0123456789abcdef0123456789abcdef",
+                "label": "Build",
+                "target": "build",
+                "session": "agents",
+                "enabled": false
+            }]
+        }"#;
+        let mut catalog: EndpointCatalog =
+            serde_json::from_str(old_catalog).expect("legacy catalog remains loadable");
+        let id = catalog.ssh[0].id.clone();
+
+        assert!(catalog.select_ssh(&id));
+        let encoded = serde_json::to_string(&catalog).expect("test precondition");
+        assert!(!encoded.contains("enabled"));
+    }
+
+    #[test]
     fn duplicate_target_and_session_profiles_keep_distinct_opaque_ids() {
         let mut catalog = EndpointCatalog::default();
         let first = catalog
@@ -592,15 +614,13 @@ mod tests {
     }
 
     #[test]
-    fn interactive_bootstrap_matches_only_enabled_target_and_session() {
+    fn interactive_bootstrap_matches_target_and_session() {
         let mut catalog = EndpointCatalog::default();
-        let id = catalog
+        catalog
             .add_ssh("Build", "build", "agents")
             .expect("test precondition");
-        assert!(catalog.contains_enabled_target_session("build", "agents"));
-        assert!(!catalog.contains_enabled_target_session("build", "default"));
-        assert!(catalog.set_enabled(&id, false));
-        assert!(!catalog.contains_enabled_target_session("build", "agents"));
+        assert!(catalog.contains_target_session("build", "agents"));
+        assert!(!catalog.contains_target_session("build", "default"));
     }
 
     #[test]
@@ -621,16 +641,11 @@ mod tests {
     }
 
     #[test]
-    fn removal_and_disable_return_selection_to_local() {
+    fn removal_returns_selection_to_local() {
         let mut catalog = EndpointCatalog::default();
         let first = catalog
             .add_ssh("One", "one", "default")
             .expect("test precondition");
-        assert!(catalog.select_ssh(&first));
-        assert!(catalog.set_enabled(&first, false));
-        assert_eq!(catalog.selected_profile, None);
-
-        assert!(catalog.set_enabled(&first, true));
         assert!(catalog.select_ssh(&first));
         assert!(catalog.remove_ssh(&first));
         assert_eq!(catalog.selected_profile, None);
@@ -787,13 +802,12 @@ mod tests {
             .expect("test precondition");
     }
 
-    fn machine(id: &str, target: &str, enabled: bool) -> SavedSshEndpoint {
+    fn machine(id: &str, target: &str) -> SavedSshEndpoint {
         SavedSshEndpoint {
             id: ProfileId::parse(id).expect("test precondition"),
             label: "Build".into(),
             target: target.into(),
             session: "agents".into(),
-            enabled,
         }
     }
 
@@ -802,11 +816,7 @@ mod tests {
         let a = "0123456789abcdef0123456789abcdef";
         let b = "fedcba9876543210fedcba9876543210";
         let c = "00112233445566778899aabbccddeeff";
-        let previous = vec![
-            machine(a, "one", true),
-            machine(b, "two", true),
-            machine(c, "three", false),
-        ];
+        let previous = vec![machine(a, "one"), machine(b, "two"), machine(c, "three")];
 
         // A label change touches no connection.
         let mut renamed = previous.clone();
@@ -816,12 +826,12 @@ mod tests {
             EndpointCatalogChanges::default()
         );
 
-        // Removed, disabled, enabled, added and re-pointed machines.
+        // Removed, added and re-pointed machines.
         let d = "ffeeddccbbaa99887766554433221100";
         let next = vec![
-            machine(a, "one-moved", true),
-            machine(c, "three", true),
-            machine(d, "four", true),
+            machine(a, "one-moved"),
+            machine(c, "three"),
+            machine(d, "four"),
         ];
         let changes = EndpointCatalogChanges::between(&previous, &next);
         assert_eq!(
@@ -837,20 +847,12 @@ mod tests {
                 .iter()
                 .map(|profile| profile.id.as_str())
                 .collect::<Vec<_>>(),
-            vec![a, c, d]
+            vec![a, d]
         );
-
-        let disabled = vec![machine(a, "one", false), machine(b, "two", true)];
-        let changes = EndpointCatalogChanges::between(&previous, &disabled);
-        assert_eq!(
-            changes.retired,
-            vec![ProfileId::parse(a).expect("test precondition")]
-        );
-        assert!(changes.started.is_empty());
     }
 
     #[test]
-    fn replacing_profiles_drops_a_selection_that_is_no_longer_selectable() {
+    fn replacing_profiles_drops_a_selection_that_was_removed() {
         let mut catalog = EndpointCatalog::default();
         let id = catalog
             .add_ssh("Build", "build", "agents")
@@ -865,9 +867,7 @@ mod tests {
         catalog.replace_profiles(kept.clone());
         assert_eq!(catalog.selected_profile, Some(id));
 
-        let mut disabled = kept;
-        disabled[0].enabled = false;
-        catalog.replace_profiles(disabled);
+        catalog.replace_profiles(Vec::new());
         assert_eq!(catalog.selected_profile, None);
         assert_eq!(
             catalog.selected_endpoint(),

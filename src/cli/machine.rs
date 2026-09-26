@@ -11,7 +11,6 @@ struct MachineListRow<'a> {
     label: &'a str,
     target: &'a str,
     session: &'a str,
-    enabled: bool,
     selected: bool,
 }
 
@@ -28,8 +27,6 @@ pub(super) fn run_machine_command(matches: &ArgMatches) -> std::io::Result<i32> 
             &required(matches, "label"),
         ),
         Some(("remove", matches)) => remove(&required(matches, "profile-id")),
-        Some(("enable", matches)) => set_enabled(&required(matches, "profile-id"), true),
-        Some(("disable", matches)) => set_enabled(&required(matches, "profile-id"), false),
         _ => Ok(super::missing_subcommand()),
     }
 }
@@ -44,7 +41,6 @@ fn list(json: bool) -> std::io::Result<i32> {
             label: &profile.label,
             target: &profile.target,
             session: &profile.session,
-            enabled: profile.enabled,
             selected: catalog.selected_profile.as_ref() == Some(&profile.id),
         })
         .collect::<Vec<_>>();
@@ -60,11 +56,7 @@ fn list(json: bool) -> std::io::Result<i32> {
         return Ok(0);
     }
     for row in rows {
-        let state = if row.enabled { "enabled" } else { "disabled" };
-        println!(
-            "{}\t{}\t{}\t{}\t{}",
-            row.id, row.label, row.target, row.session, state
-        );
+        println!("{}\t{}\t{}\t{}", row.id, row.label, row.target, row.session);
     }
     Ok(0)
 }
@@ -92,9 +84,7 @@ fn status(selector: Option<&str>, json: bool) -> std::io::Result<i32> {
     let rows = profiles
         .into_iter()
         .map(|profile| {
-            let (status, error) = if !profile.enabled {
-                ("disabled", None)
-            } else {
+            let (status, error) =
                 match crate::remote::check_saved_ssh(&profile.target, &profile.session) {
                     Ok(()) => ("reachable", None),
                     Err(error) => {
@@ -106,8 +96,7 @@ fn status(selector: Option<&str>, json: bool) -> std::io::Result<i32> {
                         };
                         (status, Some(message))
                     }
-                }
-            };
+                };
             MachineStatusRow {
                 id: profile.id.as_str(),
                 label: &profile.label,
@@ -187,6 +176,9 @@ fn add(args: AddArgs) -> std::io::Result<i32> {
         session,
     } = args;
     let mut catalog = load_catalog()?;
+    // This preflight validates fields and capacity before remote setup can wait. Its ID is
+    // intentionally discarded; IDs identify saved rows. Duplicate labels are permitted,
+    // and selectors report ambiguity so callers can use the profile ID.
     match catalog.add_ssh(label.clone(), &target, session.clone()) {
         Ok(_) => {}
         Err(error) => {
@@ -287,27 +279,6 @@ fn remove(raw_id: &str) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn set_enabled(raw_id: &str, enabled: bool) -> std::io::Result<i32> {
-    let Some(id) = profile_id(raw_id) else {
-        return Ok(2);
-    };
-    let mut catalog = load_catalog()?;
-    let previous_selection = catalog.selected_profile.clone();
-    if !catalog.set_enabled(&id, enabled) {
-        eprintln!("machine profile {id} was not found");
-        return Ok(1);
-    }
-    store_catalog(&catalog)?;
-    if catalog.selected_profile != previous_selection {
-        catalog.store_selection().map_err(std::io::Error::other)?;
-    }
-    println!(
-        "{} SSH machine {id}.",
-        if enabled { "Enabled" } else { "Disabled" }
-    );
-    Ok(0)
-}
-
 fn profile_id(raw: &str) -> Option<ProfileId> {
     match ProfileId::parse(raw.to_owned()) {
         Ok(id) => Some(id),
@@ -345,6 +316,24 @@ mod tests {
             panic!("machine add did not parse");
         };
         Ok(add_args(add))
+    }
+
+    #[test]
+    fn enable_and_disable_are_not_machine_subcommands() {
+        for command in ["enable", "disable"] {
+            let argv = [
+                "shepr",
+                "machine",
+                command,
+                "0123456789abcdef0123456789abcdef",
+            ];
+            assert!(
+                super::super::spec::command()
+                    .try_get_matches_from(argv)
+                    .is_err(),
+                "{command} must not be exposed"
+            );
+        }
     }
 
     #[test]
@@ -434,11 +423,11 @@ mod tests {
             label: "Build",
             target: "dev@build",
             session: "agents",
-            enabled: true,
             selected: false,
         })
         .expect("test precondition");
         assert!(!encoded.contains("password"));
         assert!(!encoded.contains("key"));
+        assert!(!encoded.contains("enabled"));
     }
 }

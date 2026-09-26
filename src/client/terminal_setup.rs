@@ -330,6 +330,18 @@ pub(super) fn effective_sgr_pixel_mouse(
     enabled && requested && exact_geometry
 }
 
+pub(super) fn host_mouse_capture_update(
+    current_enabled: bool,
+    current_sgr_pixels: bool,
+    enabled: bool,
+    sgr_pixels_requested: bool,
+    exact_geometry: bool,
+) -> Option<(bool, bool)> {
+    let sgr_pixels = effective_sgr_pixel_mouse(enabled, sgr_pixels_requested, exact_geometry);
+    (current_enabled != enabled || current_sgr_pixels != sgr_pixels)
+        .then_some((enabled, sgr_pixels))
+}
+
 pub(super) fn set_mouse_capture(enabled: bool, sgr_pixels: bool) -> io::Result<()> {
     crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
     if enabled {
@@ -533,5 +545,21 @@ mod tests {
         assert_eq!(responses.flags, None);
         assert!(!responses.primary_device_attributes);
         assert_eq!(buffered, b"a\x1b[?7;1ub\x1b[?65536uc");
+    }
+
+    #[test]
+    fn mouse_capture_update_only_emits_changed_modes_and_restores_exact_pixels() {
+        assert_eq!(
+            host_mouse_capture_update(true, false, true, true, false),
+            None
+        );
+        assert_eq!(
+            host_mouse_capture_update(true, false, true, true, true),
+            Some((true, true))
+        );
+        assert_eq!(
+            host_mouse_capture_update(true, true, true, true, true),
+            None
+        );
     }
 }

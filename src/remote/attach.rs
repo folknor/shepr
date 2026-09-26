@@ -49,7 +49,7 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
         .remote
         .manage_ssh_config;
     let require_surface_interest = crate::client::endpoint::EndpointCatalog::load()
-        .map(|catalog| catalog.contains_enabled_target_session(&remote.target, &session_name))
+        .map(|catalog| catalog.contains_target_session(&remote.target, &session_name))
         .unwrap_or(false);
     let remote_ssh = RemoteSsh::new(
         remote.target.clone(),
@@ -980,14 +980,8 @@ fn remote_shepr_from_path(path: &str) -> Option<RemoteShepr> {
     if !path.starts_with('/') {
         return None;
     }
-    if is_mise_shim_path(path) {
-        return None;
-    }
-    Some(RemoteShepr::new(path))
-}
-
-fn is_mise_shim_path(path: &str) -> bool {
-    path.ends_with("/mise/shims/shepr")
+    let candidate = RemoteShepr::new(path);
+    candidate.machine_metadata().map(|_| candidate)
 }
 
 fn remote_client_status(
@@ -996,7 +990,7 @@ fn remote_client_status(
 ) -> io::Result<Option<RemoteClientStatusJson>> {
     let output = ssh.sh_output(&remote_shepr.status_client_command())?;
     if !output.status.success() {
-        if output.status.code() == Some(255) {
+        if output.status.code() == Some(SSH_OWN_FAILURE_EXIT_CODE) {
             return Err(command_failed("remote SSH connection failed", &output));
         }
         return Ok(None);
@@ -1808,10 +1802,21 @@ fn bridge_connection(
 fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io::Error {
     let stderr = String::from_utf8_lossy(stderr);
     let stderr = stderr.trim();
-    let message = if stderr.is_empty() {
-        format!("ssh bridge exited with {status}")
+    let (failure, exit_status) = if status.code() == Some(SSH_OWN_FAILURE_EXIT_CODE) {
+        (
+            "remote SSH connection failed",
+            format!("exit status {SSH_OWN_FAILURE_EXIT_CODE}"),
+        )
     } else {
-        format!("remote SSH connection failed: {stderr}")
+        let exit_status = status
+            .code()
+            .map_or_else(|| status.to_string(), |code| format!("exit status {code}"));
+        ("remote command failed", exit_status)
+    };
+    let message = if stderr.is_empty() {
+        format!("{failure} ({exit_status})")
+    } else {
+        format!("{failure} ({exit_status}): {stderr}")
     };
     io::Error::new(
         io::ErrorKind::ConnectionAborted,
@@ -2543,11 +2548,20 @@ mod tests {
         assert_eq!(link.kind(), io::ErrorKind::ConnectionAborted);
         assert_eq!(
             link.to_string(),
-            "remote SSH connection failed: Connection refused"
+            "remote SSH connection failed (exit status 255): Connection refused"
         );
         let missing =
             ssh_bridge_exit_error(exit_status(127), b"sh: 1: exec: /old/shepr: not found");
         assert!(!is_ssh_link_failure(&missing));
+        assert_eq!(
+            missing.to_string(),
+            "remote command failed (exit status 127): sh: 1: exec: /old/shepr: not found"
+        );
+        let stale = ssh_bridge_exit_error(exit_status(78), super::STALE_API_METADATA.as_bytes());
+        assert!(!is_ssh_link_failure(&stale));
+        assert!(crate::remote::SavedSshApiBridge::stale_metadata_failure(
+            &stale
+        ));
         assert!(is_ssh_link_failure(&io::Error::new(
             io::ErrorKind::TimedOut,
             "handshake timed out"
@@ -2958,6 +2972,17 @@ mod tests {
             candidates[0].path,
             "/home/can/.local/share/mise/installs/shepr/0.7.1/bin/shepr"
         );
+    }
+
+    #[test]
+    fn remote_path_discovery_only_accepts_cacheable_executables() {
+        let too_long = format!("/{}/shepr", "a".repeat(4090));
+        let output = format!("/opt/shepr\u{1}\n{too_long}\n/usr/bin/shepr\n");
+        let candidates = remote_sheprs_from_path_discovery(&output);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].path, "/usr/bin/shepr");
+        assert!(candidates[0].machine_metadata().is_some());
     }
 
     #[test]

@@ -31,9 +31,9 @@ pub(crate) struct SavedSshSettings {
     pub(crate) manage_ssh_config: bool,
 }
 
-/// Connects one saved SSH machine, repeatedly, for as long as a client keeps it enabled
-/// with the same target and session (the client follows catalog edits and builds a new
-/// connector when a machine is re-enabled or re-pointed).
+/// Connects one saved SSH machine repeatedly while it remains in the catalog with the same
+/// target and session (the client follows catalog edits and builds a new connector when a
+/// machine is removed, re-added or re-pointed).
 ///
 /// It owns what used to be rebuilt on every attempt: the ssh settings fixed at
 /// launch, one temporary managed ssh config (instead of a new directory per
@@ -154,7 +154,9 @@ impl SavedSshConnector {
                         "remembered remote Shepr did not connect; rediscovering"
                     );
                     *remote_shepr = None;
-                    metadata_cache.invalidate();
+                    // This hint cache is shared with API bridges. A failed connection or
+                    // handshake only invalidates this connector's in-memory hint; an API
+                    // bridge removes the shared entry only after its explicit stale marker.
                 }
             }
         }
@@ -312,7 +314,8 @@ pub(crate) fn saved_ssh_failure_needs_attention(error: &io::Error) -> bool {
         "unsupported remote platform",
         "not ready",
         "install or update",
-        "protocol",
+        "remote shepr server speaks a different protocol",
+        "predates shepr's stable endpoint protocol",
         // Only a rejection is a compatibility problem; a bare "handshake" also matched
         // transient shutdowns that happened to occur mid-handshake.
         "handshake rejected",
@@ -397,6 +400,8 @@ mod tests {
             "Permission denied (publickey)",
             "Host key verification failed",
             "matching Shepr is not ready; install or update",
+            "remote Shepr server speaks a different protocol",
+            "the remote server predates Shepr's stable endpoint protocol",
             "handshake rejected",
         ] {
             assert!(saved_ssh_failure_needs_attention(&io::Error::other(
@@ -411,5 +416,14 @@ mod tests {
             io::ErrorKind::ConnectionAborted,
             "server shut down during handshake"
         )));
+        for message in [
+            "Protocol mismatch in unrelated SSH stderr",
+            "remote command mentioned protocol in its output",
+        ] {
+            assert!(!saved_ssh_failure_needs_attention(&io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                message,
+            )));
+        }
     }
 }
