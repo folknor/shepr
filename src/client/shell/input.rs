@@ -164,7 +164,10 @@ impl ClientShellState {
                 RawInputEvent::OuterFocusGained => {
                     self.outer_focused = Some(true);
                     outcome.query_host_appearance = true;
-                    outcome.repaint |= self.config.redraw_on_focus_gained;
+                    if self.config.redraw_on_focus_gained {
+                        outcome.repaint = true;
+                        outcome.full_redraw = true;
+                    }
                     if let Some(surface) = self.pane_surface.clone() {
                         outcome.repaint |= self.acknowledge_active_surface_agents(&surface);
                     }
@@ -188,9 +191,16 @@ impl ClientShellState {
                         outcome.repaint = true;
                     }
                 }
+                RawInputEvent::HostColorSchemeChanged(_) => {
+                    // A dark/light switch changes the host's default and palette
+                    // colours too. Re-query them so panes and the selection
+                    // highlight (`host_background`) follow. Direct attach does the
+                    // same; the stdin framer arms itself for the replies whenever
+                    // it tracks scheme changes.
+                    outcome.query_host_theme = true;
+                }
                 RawInputEvent::HostDefaultColor { .. }
                 | RawInputEvent::HostPaletteColors { .. }
-                | RawInputEvent::HostColorSchemeChanged(_)
                 | RawInputEvent::HostCellSizeReport { .. }
                 | RawInputEvent::Unsupported => {}
             }
@@ -686,6 +696,11 @@ impl ClientShellState {
                 self.mode = ClientShellMode::Terminal;
             }
             self.record_binding(binding, outcome);
+            // Navigate mode was left just above, but a close dialog opened from
+            // it should still cancel back into it.
+            if let Some(ClientShellOverlay::ConfirmClose(confirm)) = self.overlay.as_mut() {
+                confirm.return_to_navigate = true;
+            }
         }
         if !preserve_navigate {
             if self.mode == ClientShellMode::Navigate {

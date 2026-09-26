@@ -198,8 +198,6 @@ fn workspace_command() -> Command {
                 .arg(u64_option("seq", "N"))
                 .arg(u64_option("ttl-ms", "N")),
         )
-        // Workspace grouping does not exist in shepr, so `close` has no
-        // `--group`; the request always sends `close_group: false`.
         .subcommand(id_command("close", "workspace_id", "Close a workspace"))
 }
 
@@ -388,6 +386,9 @@ pub(super) fn agent_kind_values() -> Vec<&'static str> {
 fn pane_command() -> Command {
     group("pane")
         .about("Control terminal panes")
+        .after_help(
+            "Commands that take --pane/--current act on the calling pane when neither is given, and on the server's focused pane when run outside a pane of that server.",
+        )
         .subcommand(
             Command::new("list")
                 .about("List panes")
@@ -462,12 +463,13 @@ fn pane_command() -> Command {
                 .arg(read_source_option(READ_SOURCES))
                 .arg(u32_option("lines", "N"))
                 .arg(read_format_option())
+                // No `--raw`: there is no raw PTY byte history, so it could
+                // only repeat `--ansi`.
                 .arg(
                     flag("ansi")
                         .conflicts_with("format")
                         .help("Same as --format ansi"),
-                )
-                .arg(flag("raw").help("Return the ANSI snapshot without stripping escapes")),
+                ),
         )
         .subcommand(
             Command::new("rename")
@@ -740,8 +742,14 @@ fn integration_command() -> Command {
         )
 }
 
+/// Resolved by `selected_pane` in `pane.rs`, the same way for every command.
 fn current_pane_args() -> [Arg; 2] {
-    [option("pane", "ID"), flag("current")]
+    [
+        option("pane", "ID").help("Act on this pane"),
+        flag("current").help(
+            "Act on the calling pane (SHEPR_PANE_ID); an error outside a pane of the targeted server",
+        ),
+    ]
 }
 
 /// At most one way of naming the pane (`required` makes it exactly one).
@@ -1246,10 +1254,11 @@ mod tests {
     }
 
     #[test]
-    fn spec_includes_pane_read_raw_flag() {
+    fn spec_pane_read_has_ansi_and_no_raw_alias() {
         let cmd = super::command();
         let pane_read = command_path(&cmd, &["pane", "read"]);
-        assert!(has_option(pane_read, "raw"));
+        assert!(has_option(pane_read, "ansi"));
+        assert!(!has_option(pane_read, "raw"));
         assert_eq!(
             option_values(pane_read, "source"),
             ["visible", "recent", "recent-unwrapped", "detection"]

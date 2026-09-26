@@ -146,22 +146,42 @@ enum IntegrationCommandTarget {
     Letta,
 }
 
+/// Every target label the CLI accepts, in the order usage and help list them.
+/// Usage, the unknown-target hint and the help text all come from this list,
+/// so a new target cannot be added to one and forgotten in another.
+const INTEGRATION_TARGET_LABELS: &[&str] = &[
+    "pi",
+    "omp",
+    "claude",
+    "codex",
+    "copilot",
+    "devin",
+    "droid",
+    "kimi",
+    "opencode",
+    "kilo",
+    "hermes",
+    "qodercli",
+    "qwen",
+    "letta",
+    "cursor",
+    "mastracode",
+    "antigravity-cli",
+    "grok",
+];
+
 fn parse_integration_target(
     args: &[String],
     action: &str,
 ) -> std::io::Result<Option<IntegrationCommandTarget>> {
-    let Some(target) = args.first().map(String::as_str) else {
+    let [target] = args else {
         eprintln!(
-            "usage: shepr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
+            "usage: shepr integration {action} <{}>",
+            INTEGRATION_TARGET_LABELS.join("|")
         );
         return Ok(None);
     };
-    if args.len() != 1 {
-        eprintln!(
-            "usage: shepr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
-        );
-        return Ok(None);
-    }
+    let target = target.as_str();
 
     let parsed = match target {
         "pi" => IntegrationCommandTarget::Builtin(IntegrationTarget::Pi),
@@ -187,7 +207,8 @@ fn parse_integration_target(
         _ => {
             eprintln!("unknown integration target: {target}");
             eprintln!(
-                "currently supported: pi, omp, claude, codex, copilot, devin, droid, kimi, opencode, kilo, hermes, qodercli, qwen, letta, cursor, mastracode, antigravity-cli, grok"
+                "currently supported: {}",
+                INTEGRATION_TARGET_LABELS.join(", ")
             );
             return Ok(None);
         }
@@ -198,41 +219,49 @@ fn parse_integration_target(
 
 fn print_integration_help() {
     eprintln!("shepr integration commands:");
-    eprintln!("  shepr integration install pi");
-    eprintln!("  shepr integration install omp");
-    eprintln!("  shepr integration install claude");
-    eprintln!("  shepr integration install codex");
-    eprintln!("  shepr integration install copilot");
-    eprintln!("  shepr integration install devin");
-    eprintln!("  shepr integration install droid");
-    eprintln!("  shepr integration install kimi");
-    eprintln!("  shepr integration install opencode");
-    eprintln!("  shepr integration install kilo");
-    eprintln!("  shepr integration install hermes");
-    eprintln!("  shepr integration install qodercli");
-    eprintln!("  shepr integration install qwen");
-    eprintln!("  shepr integration install letta");
-    eprintln!("  shepr integration install cursor");
-    eprintln!("  shepr integration install mastracode");
-    eprintln!("  shepr integration install antigravity-cli");
-    eprintln!("  shepr integration install grok");
-    eprintln!("  shepr integration uninstall pi");
-    eprintln!("  shepr integration uninstall omp");
-    eprintln!("  shepr integration uninstall claude");
-    eprintln!("  shepr integration uninstall codex");
-    eprintln!("  shepr integration uninstall copilot");
-    eprintln!("  shepr integration uninstall devin");
-    eprintln!("  shepr integration uninstall droid");
-    eprintln!("  shepr integration uninstall kimi");
-    eprintln!("  shepr integration uninstall opencode");
-    eprintln!("  shepr integration uninstall kilo");
-    eprintln!("  shepr integration uninstall hermes");
-    eprintln!("  shepr integration uninstall qodercli");
-    eprintln!("  shepr integration uninstall qwen");
-    eprintln!("  shepr integration uninstall letta");
-    eprintln!("  shepr integration uninstall cursor");
-    eprintln!("  shepr integration uninstall mastracode");
-    eprintln!("  shepr integration uninstall antigravity-cli");
-    eprintln!("  shepr integration uninstall grok");
+    for action in ["install", "uninstall"] {
+        for target in INTEGRATION_TARGET_LABELS {
+            eprintln!("  shepr integration {action} {target}");
+        }
+    }
     eprintln!("  shepr integration status [--outdated-only]");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_listed_label_parses_and_every_target_is_listed() {
+        for label in INTEGRATION_TARGET_LABELS {
+            let parsed = parse_integration_target(&[label.to_string()], "install")
+                .expect("test precondition");
+            assert!(parsed.is_some(), "listed label {label} does not parse");
+        }
+        for target in [
+            IntegrationTarget::Pi,
+            IntegrationTarget::Omp,
+            IntegrationTarget::Claude,
+            IntegrationTarget::Codex,
+            IntegrationTarget::Copilot,
+            IntegrationTarget::Devin,
+            IntegrationTarget::Droid,
+            IntegrationTarget::Kimi,
+            IntegrationTarget::Opencode,
+            IntegrationTarget::Kilo,
+            IntegrationTarget::Hermes,
+            IntegrationTarget::Qodercli,
+            IntegrationTarget::Qwen,
+            IntegrationTarget::Cursor,
+            IntegrationTarget::Mastracode,
+            IntegrationTarget::AntigravityCli,
+            IntegrationTarget::Grok,
+        ] {
+            let label = crate::integration::integration_target_label(target);
+            assert!(
+                INTEGRATION_TARGET_LABELS.contains(&label),
+                "{label} missing from the CLI target list"
+            );
+        }
+    }
 }

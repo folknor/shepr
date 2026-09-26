@@ -189,6 +189,12 @@ pub(super) fn prompt_agent(
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<Option<String>> {
     let Some(wait) = params.wait.clone() else {
+        // Deliberately unbounded. The app answers a plain prompt only once the
+        // PTY actor has written it, on a side thread, not on the main loop;
+        // an agent that is busy and not reading stdin can legitimately hold
+        // that for minutes. A timeout here would report failure for a prompt
+        // that is still queued and will be typed later (nothing can cancel
+        // it). Callers that need a bound pass `wait` with `timeout_ms`.
         return Ok(Some(dispatch_to_app_with_timeout(
             Request {
                 id: request_id,
@@ -733,14 +739,7 @@ pub(super) fn wait_for_event(
         .timeout_ms
         .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
 
-    let subscription = match event_match_subscription(&request_id, params.match_event) {
-        Ok(subscription) => subscription,
-        Err(response) => {
-            return Ok(Some(
-                serde_json::to_string(&response).map_err(std::io::Error::other)?,
-            ));
-        }
-    };
+    let subscription = event_match_subscription(params.match_event);
     let mut active = match ActiveSubscription::new(
         subscription,
         &request_id,
@@ -794,25 +793,17 @@ pub(super) fn wait_for_event(
     }
 }
 
-fn event_match_subscription(
-    request_id: &str,
-    match_event: EventMatch,
-) -> Result<Subscription, ErrorResponse> {
+/// `EventMatch` only has variants this function can serve, so an unsupported
+/// match is rejected when the request is parsed, not here.
+fn event_match_subscription(match_event: EventMatch) -> Subscription {
     match match_event {
         EventMatch::PaneAgentStatusChanged {
             pane_id,
             agent_status,
-        } => Ok(Subscription::PaneAgentStatusChanged {
+        } => Subscription::PaneAgentStatusChanged {
             pane_id,
             agent_status: Some(agent_status),
-        }),
-        _ => Err(ErrorResponse {
-            id: request_id.into(),
-            error: ErrorBody {
-                code: "unsupported_event_wait_match".into(),
-                message: "events.wait currently supports pane agent status matches".into(),
-            },
-        }),
+        },
     }
 }
 

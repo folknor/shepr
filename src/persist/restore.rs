@@ -31,7 +31,6 @@ struct PaneRestoreStartup<'a> {
     restore_plan: Option<crate::agent_resume::AgentResumePlan>,
     initial_history_ansi: Option<&'a str>,
     duplicate_agent_session: bool,
-    reserved_agent_session: Option<String>,
 }
 
 struct RestoreRuntimeContext<'a> {
@@ -261,29 +260,27 @@ fn restore_workspace(
 }
 
 fn unavailable_restored_terminal(
-    pane: Option<&super::snapshot::PaneSnapshot>,
+    pane: &super::snapshot::PaneSnapshot,
     cwd: PathBuf,
     reason: String,
 ) -> TerminalState {
     warn!(cwd = %cwd.display(), reason = %reason, "preserving unavailable restored pane");
     let mut terminal = TerminalState::new(TerminalId::alloc(), cwd);
     terminal.restore_error = Some(reason);
-    if let Some(pane) = pane {
-        terminal.manual_label = pane.label.clone();
-        terminal.launch_argv = pane.launch_argv.clone();
-        if let Some(session) = restored_terminal_agent_session(pane.agent_session.as_ref(), false) {
-            terminal.set_persisted_agent_session(session);
-        }
-        match (
-            pane.agent_name.as_ref(),
-            pane.managed_agent_kind
-                .as_deref()
-                .and_then(crate::detect::parse_canonical_agent_label),
-        ) {
-            (Some(name), Some(agent)) => terminal.restore_managed_agent(name.clone(), agent),
-            (Some(name), None) => terminal.set_agent_name(name.clone()),
-            _ => {}
-        }
+    terminal.manual_label = pane.label.clone();
+    terminal.launch_argv = pane.launch_argv.clone();
+    if let Some(session) = restored_terminal_agent_session(pane.agent_session.as_ref(), false) {
+        terminal.set_persisted_agent_session(session);
+    }
+    match (
+        pane.agent_name.as_ref(),
+        pane.managed_agent_kind
+            .as_deref()
+            .and_then(crate::detect::parse_canonical_agent_label),
+    ) {
+        (Some(name), Some(agent)) => terminal.restore_managed_agent(name.clone(), agent),
+        (Some(name), None) => terminal.set_agent_name(name.clone()),
+        _ => {}
     }
     terminal
 }
@@ -311,12 +308,23 @@ fn restore_tab(
     let mut terminal_runtimes = HashMap::new();
     for id in &pane_ids {
         let old_id = reverse_id_map.get(id);
-        let saved_pane = old_id.and_then(|old_id| snap.panes.get(old_id));
-        let saved_cwd = saved_pane
-            .map(|p| p.cwd.clone())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+        // A layout leaf with no saved pane (a repeated ID, or an entry missing
+        // from `panes`) has nothing to restore. Inventing one would open a
+        // shell in the server's own working directory and then save that
+        // directory as if it had been the user's; drop the leaf and let the
+        // pruning below collapse its split.
+        let Some(saved_pane) = old_id.and_then(|old_id| snap.panes.get(old_id)) else {
+            warn!(
+                tab = ?snap.custom_name,
+                pane_id = ?old_id,
+                "saved layout names a pane with no saved state; dropping it"
+            );
+            continue;
+        };
+        let saved_history =
+            old_id.and_then(|old_id| history.and_then(|history| history.panes.get(old_id)));
 
-        let cwd = saved_cwd;
+        let cwd = saved_pane.cwd.clone();
         if !cwd.is_dir() {
             let terminal = unavailable_restored_terminal(
                 saved_pane,
@@ -324,19 +332,19 @@ fn restore_tab(
                 "Saved directory is unavailable. Restore the directory and restart this session."
                     .into(),
             );
+            super::snapshot::carry_history(&terminal.id, saved_history);
             panes.insert(*id, PaneState::new(terminal.id.clone()));
             terminals.push(terminal);
             continue;
         }
 
-        let saved_label = saved_pane.and_then(|p| p.label.clone());
-        let saved_agent_name = saved_pane.and_then(|p| p.agent_name.clone());
+        let saved_label = saved_pane.label.clone();
+        let saved_agent_name = saved_pane.agent_name.clone();
         let saved_managed_agent = saved_pane
-            .and_then(|pane| pane.managed_agent_kind.as_deref())
+            .managed_agent_kind
+            .as_deref()
             .and_then(crate::detect::parse_canonical_agent_label);
-        let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
-        let saved_history =
-            old_id.and_then(|old_id| history.and_then(|history| history.panes.get(old_id)));
+        let saved_agent_session = saved_pane.agent_session.as_ref();
         let startup = {
             let mut agent_restore = AgentRestoreState {
                 enabled: runtime_context.resume_agents_on_restore,
@@ -371,6 +379,7 @@ fn restore_tab(
             if let Some(label) = saved_label {
                 terminal.set_manual_label(label);
             }
+            terminal.launch_argv = saved_pane.launch_argv.clone();
             if let Some(session) = restored_agent_session {
                 terminal.set_persisted_agent_session(session);
             }
@@ -392,6 +401,12 @@ fn restore_tab(
                     std::time::Instant::now(),
                 );
             }
+            // Native resume owns what this pane shows once it runs, so the
+            // saved screen is not replayed. Until a runtime exists, though,
+            // saves must keep writing it: the resume may be deferred for a
+            // while (no client yet) or fail outright (missing cwd or shell),
+            // and neither may cost the pane its saved history.
+            super::snapshot::carry_history(&terminal_id, saved_history);
             panes.insert(*id, PaneState::new(terminal_id));
             terminals.push(terminal);
             continue;
@@ -420,28 +435,21 @@ fn restore_tab(
                 if let Some(label) = saved_label {
                     terminal.set_manual_label(label);
                 }
+                terminal.launch_argv = saved_pane.launch_argv.clone();
                 if let Some(session) = restored_agent_session {
                     terminal.set_persisted_agent_session(session);
                 }
-                if let Some(agent) = initial_restore_agent {
-                    let _ = terminal.set_detected_state_with_screen_signals_at(
-                        Some(agent),
-                        AgentState::Idle,
-                        false,
-                        false,
-                        false,
-                        false,
-                        std::time::Instant::now(),
-                    );
-                }
+                // No detected-agent seeding here: a pane with a resume plan
+                // took the deferred branch above, so this shell has no agent
+                // until detection or a hook reports one.
                 panes.insert(*id, PaneState::new(terminal_id.clone()));
                 terminal_runtimes.insert(terminal_id, runtime);
                 terminals.push(terminal);
             }
             Err(e) => {
-                if let Some(key) = startup.reserved_agent_session.as_deref() {
-                    resumed_agent_sessions.remove(key);
-                }
+                // Nothing to roll back in the resumed-session set: only a pane
+                // with a resume plan reserves its session, and such a pane
+                // took the deferred branch above without spawning anything.
                 error!(
                     tab = ?snap.custom_name,
                     pane_id = id.raw(),
@@ -455,6 +463,7 @@ fn restore_tab(
                         "Could not start the saved shell: {e}. Fix the shell configuration and restart this session."
                     ),
                 );
+                super::snapshot::carry_history(&terminal.id, saved_history);
                 panes.insert(*id, PaneState::new(terminal.id.clone()));
                 terminals.push(terminal);
             }
@@ -514,20 +523,13 @@ fn pane_restore_startup<'a>(
     let restore_plan =
         session.and_then(|session| restore_plan_for_snapshot(session, agent_restore.enabled));
     let has_native_agent_restore = restore_plan.is_some();
-    // Reserve before spawning so later panes in the same restore pass cannot
-    // launch the same native agent session. The caller rolls this reservation
-    // back if runtime spawn fails before any agent process is started.
-    let mut reserved_agent_session = None;
+    // Reserve the session so later panes in the same restore pass cannot
+    // launch the same native agent session. A reserving pane always defers its
+    // launch, so no restore-time spawn failure can leave a stale reservation.
     let duplicate_agent_session = restore_plan.as_ref().is_some_and(|plan| {
-        if agent_restore
+        !agent_restore
             .resumed_sessions
             .insert(plan.dedupe_key.clone())
-        {
-            reserved_agent_session = Some(plan.dedupe_key.clone());
-            false
-        } else {
-            true
-        }
     });
     let restore_plan = if duplicate_agent_session {
         None
@@ -543,7 +545,6 @@ fn pane_restore_startup<'a>(
             history.map(|history| history.ansi.as_str())
         },
         duplicate_agent_session,
-        reserved_agent_session,
     }
 }
 
@@ -628,6 +629,13 @@ pub(super) fn resolve_restored_pane(
 
 /// Restore a layout tree, remapping every pane ID to a fresh globally unique one.
 /// Returns the new tree and a map of old_raw_id → new PaneId.
+///
+/// The session file is plain JSON and may be hand-edited or damaged, so the
+/// tree is sanitized the way live layout edits are: split ratios go through
+/// the same clamp as live splits and resizes, and a saved pane ID that appears
+/// more than once maps only its first leaf. Later copies get a fresh ID with
+/// no saved pane behind it, and `restore_tab` drops such leaves instead of
+/// inventing a pane for them.
 pub(super) fn restore_node_remapped(snap: &LayoutSnapshot) -> (Node, HashMap<u32, PaneId>) {
     let mut id_map = HashMap::new();
     let node = remap_inner(snap, &mut id_map);
@@ -638,7 +646,14 @@ fn remap_inner(snap: &LayoutSnapshot, id_map: &mut HashMap<u32, PaneId>) -> Node
     match snap {
         LayoutSnapshot::Pane(old_id) => {
             let new_id = PaneId::alloc();
-            id_map.insert(*old_id, new_id);
+            if id_map.contains_key(old_id) {
+                warn!(
+                    pane_id = old_id,
+                    "saved layout repeats a pane; dropping the repeat"
+                );
+            } else {
+                id_map.insert(*old_id, new_id);
+            }
             Node::Pane(new_id)
         }
         LayoutSnapshot::Split {
@@ -655,7 +670,7 @@ fn remap_inner(snap: &LayoutSnapshot, id_map: &mut HashMap<u32, PaneId>) -> Node
             };
             Node::Split {
                 direction: dir,
-                ratio: *ratio,
+                ratio: crate::layout::valid_split_ratio(*ratio),
                 first: Box::new(first_node),
                 second: Box::new(second_node),
             }
@@ -717,6 +732,176 @@ mod tests {
         assert_eq!(ids.len(), 3);
         let unique: std::collections::HashSet<u32> = ids.iter().map(|id| id.raw()).collect();
         assert_eq!(unique.len(), 3);
+    }
+
+    #[test]
+    fn restored_split_ratios_are_clamped_like_live_splits() {
+        for (saved, expected) in [
+            (f32::NAN, 0.5),
+            (f32::INFINITY, 0.5),
+            (5.0, 0.9),
+            (-1.0, 0.1),
+        ] {
+            let snap = LayoutSnapshot::Split {
+                direction: DirectionSnapshot::Horizontal,
+                ratio: saved,
+                first: Box::new(LayoutSnapshot::Pane(0)),
+                second: Box::new(LayoutSnapshot::Pane(1)),
+            };
+            let (node, _) = restore_node_remapped(&snap);
+            let Node::Split { ratio, .. } = node else {
+                panic!("expected split");
+            };
+            assert_eq!(ratio, expected, "saved ratio {saved}");
+        }
+    }
+
+    #[test]
+    fn repeated_saved_pane_maps_only_its_first_leaf() {
+        let snap = LayoutSnapshot::Split {
+            direction: DirectionSnapshot::Vertical,
+            ratio: 0.5,
+            first: Box::new(LayoutSnapshot::Pane(4)),
+            second: Box::new(LayoutSnapshot::Pane(4)),
+        };
+        let (node, id_map) = restore_node_remapped(&snap);
+        let ids = collect_pane_ids(&node);
+        assert_eq!(ids.len(), 2);
+        assert_eq!(id_map.len(), 1);
+        assert_eq!(id_map.get(&4), ids.first());
+    }
+
+    #[tokio::test]
+    async fn restore_drops_layout_leaves_without_saved_state() {
+        let (mut snapshot, _) = snapshot_with_saved_pane_history();
+        let cwd = snapshot.workspaces[0].tabs[0].panes[&0].cwd.clone();
+        // Pane 0 appears twice and pane 7 has no entry in `panes`.
+        snapshot.workspaces[0].tabs[0].layout = LayoutSnapshot::Split {
+            direction: DirectionSnapshot::Horizontal,
+            ratio: 0.5,
+            first: Box::new(LayoutSnapshot::Pane(0)),
+            second: Box::new(LayoutSnapshot::Split {
+                direction: DirectionSnapshot::Vertical,
+                ratio: 0.5,
+                first: Box::new(LayoutSnapshot::Pane(7)),
+                second: Box::new(LayoutSnapshot::Pane(0)),
+            }),
+        };
+        let (events, _rx) = mpsc::channel(8);
+        let (workspaces, terminals, runtimes) = restore(
+            &snapshot,
+            None,
+            5,
+            40,
+            4096,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            &events,
+            &Arc::new(Notify::new()),
+            &Arc::new(RenderSignal::new()),
+        );
+        let tab = &workspaces[0].tabs[0];
+        assert_eq!(tab.layout.pane_ids(), vec![tab.root_pane]);
+        assert_eq!(tab.panes.len(), 1);
+        assert_eq!(terminals.len(), 1);
+        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let panes = &captured.workspaces[0].tabs[0].panes;
+        assert_eq!(panes.len(), 1);
+        assert!(panes.values().all(|pane| pane.cwd == cwd));
+        for (_, runtime) in runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    /// Restored panes keep every saved field whichever way they come back, and
+    /// a pane without a runtime keeps its saved screen history in later saves
+    /// until a runtime of its own replaces it.
+    #[tokio::test]
+    async fn restored_panes_keep_launch_argv_and_runtimeless_history() {
+        // (resume agents, saved cwd missing)
+        for (resume, missing_cwd) in [(false, false), (true, false), (false, true)] {
+            let (mut snapshot, mut history) = snapshot_with_saved_pane_history();
+            let pane = snapshot.workspaces[0].tabs[0]
+                .panes
+                .get_mut(&0)
+                .expect("test precondition");
+            pane.launch_argv = Some(vec!["just".into(), "dev".into()]);
+            pane.agent_session = Some(super::super::snapshot::PaneAgentSessionSnapshot {
+                source: "shepr:codex".into(),
+                agent: "codex".into(),
+                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                value: "codex-session".into(),
+            });
+            if missing_cwd {
+                pane.cwd = pane.cwd.join("__shepr_missing_restore_directory__");
+                assert!(!pane.cwd.exists());
+            }
+            history.layout_fingerprint = super::super::snapshot::layout_fingerprint(&snapshot);
+            let (events, _rx) = mpsc::channel(8);
+            let (workspaces, terminals, runtimes) = restore(
+                &snapshot,
+                Some(&history),
+                5,
+                40,
+                4096,
+                test_restore_shell(),
+                crate::config::ShellModeConfig::NonLogin,
+                resume,
+                &events,
+                &Arc::new(Notify::new()),
+                &Arc::new(RenderSignal::new()),
+            );
+            let runtimeless = resume || missing_cwd;
+            assert_eq!(runtimes.is_empty(), runtimeless);
+            let mut runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+            let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+            let pane = captured.workspaces[0].tabs[0]
+                .panes
+                .values()
+                .next()
+                .expect("test precondition");
+            assert_eq!(
+                pane.launch_argv.as_deref(),
+                Some(["just".to_string(), "dev".to_string()].as_slice()),
+                "resume={resume} missing_cwd={missing_cwd}"
+            );
+
+            if runtimeless {
+                let saved = crate::persist::capture_history(&captured, &workspaces, &runtimes);
+                let pane_history = saved.workspaces[0].tabs[0]
+                    .panes
+                    .values()
+                    .next()
+                    .expect("a pane without a runtime keeps its saved history");
+                assert!(pane_history.ansi.contains("RESTORED_HISTORY"));
+
+                // Once the pane runs, its live screen supersedes the carried one
+                // for good.
+                let tab = &workspaces[0].tabs[0];
+                let terminal_id = tab.terminal_id(tab.root_pane).expect("test precondition");
+                runtimes.insert(
+                    terminal_id.clone(),
+                    crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+                        20,
+                        3,
+                        4096,
+                        b"LIVE_SCREEN\r\n",
+                    ),
+                );
+                let saved = crate::persist::capture_history(&captured, &workspaces, &runtimes);
+                let live = &saved.workspaces[0].tabs[0].panes[&tab.root_pane.raw()];
+                assert!(live.ansi.contains("LIVE_SCREEN"));
+                assert!(!live.ansi.contains("RESTORED_HISTORY"));
+                runtimes.remove(terminal_id);
+                let saved = crate::persist::capture_history(&captured, &workspaces, &runtimes);
+                assert!(saved.workspaces[0].tabs[0].panes.is_empty());
+            }
+            for (_, runtime) in runtimes.drain() {
+                runtime.shutdown();
+            }
+        }
     }
 
     #[test]
@@ -814,7 +999,6 @@ mod tests {
         };
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
-            lines: 1,
         };
         let mut resumed = HashSet::new();
         let mut agent_restore = AgentRestoreState {
@@ -839,7 +1023,6 @@ mod tests {
         };
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
-            lines: 1,
         };
         let mut resumed = HashSet::new();
         let mut agent_restore = AgentRestoreState {
@@ -867,7 +1050,6 @@ mod tests {
         };
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
-            lines: 1,
         };
         let mut resumed = HashSet::new();
         let mut agent_restore = AgentRestoreState {
@@ -1520,10 +1702,9 @@ mod tests {
                         super::super::snapshot::PaneHistorySnapshot {
                             ansi: concat!(
                                 "\x1b[31mRESTORED_HISTORY \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\x1b[0m ",
-                                "\x1b]8;;https://example.com\x1b\\LINK\x1b]8;;\x1b\\\r\n"
+                                "\x1b]8;;https://example.com\x1b\\LINK\x1b]8;;\x1b\\"
                             )
                             .to_string(),
-                            lines: 1,
                         },
                     )]),
                 }],

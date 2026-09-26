@@ -44,15 +44,6 @@ pub fn compute_view_with_runtime_registry(
     );
 }
 
-pub fn compute_view_with_cell_size(
-    app: &mut AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
-    area: Rect,
-    cell_size: crate::terminal_cell_size::HostCellSize,
-) {
-    compute_view_internal(app, terminal_runtimes, area, true, cell_size);
-}
-
 pub(crate) fn compute_view_without_resizing_panes(
     app: &mut AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,

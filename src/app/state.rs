@@ -1,4 +1,5 @@
-use crate::config::{Keybinds, NewTerminalCwdConfig};
+use crate::config::NewTerminalCwdConfig;
+#[cfg(test)]
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -627,12 +628,6 @@ pub struct AppState {
         std::collections::HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
     /// Terminal ids whose size is currently owned by a direct attach client.
     pub direct_attach_resize_locks: std::collections::HashSet<crate::terminal::TerminalId>,
-    /// Raw-pane-id aliases. Nothing inserts into this map any more and
-    /// `parse_pane_id` no longer reads it (raw ids are not accepted as public
-    /// targets), so it is always empty. It survives only because `App::new`
-    /// and several API handlers still call `remove_alias_shadowed_by_new_pane`;
-    /// delete it together with those call sites.
-    pub(crate) pane_id_aliases: std::collections::HashMap<u32, PaneId>,
     /// Keeps a pane's pre-move public id (`<old workspace>:p<n>`) resolving
     /// after a cross-workspace pane move.
     pub(crate) public_pane_id_aliases: std::collections::HashMap<String, PaneId>,
@@ -645,13 +640,10 @@ pub struct AppState {
     // Geometry of the most recently computed server pane surface.
     pub view: ViewState,
     // Notifications
-    pub config_diagnostic: Option<String>,
     /// Last reported focus state for the outer terminal hosting shepr.
     /// None means unsupported or not yet reported, which preserves active-pane suppression.
     pub outer_terminal_focus: Option<bool>,
     // Config
-    pub prefix_code: KeyCode,
-    pub prefix_mods: KeyModifiers,
     /// Virtual terminal size (columns, rows) used when no client is attached.
     pub(crate) headless_size: (u16, u16),
     pub sidebar_agents: crate::config::AgentsSidebarConfig,
@@ -677,7 +669,6 @@ pub struct AppState {
     pub shell_mode: crate::config::ShellModeConfig,
     pub new_terminal_cwd: NewTerminalCwdConfig,
     pub pane_scrollback_limit_bytes: usize,
-    pub keybinds: Keybinds,
     /// UI color palette - all sidebar/UI colors centralized for theming.
     pub palette: Palette,
     /// Last known foreground host terminal appearance.
@@ -702,10 +693,6 @@ impl AppState {
         self.session_dirty = true;
     }
 
-    pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {
-        self.pane_id_aliases.remove(&pane_id.raw());
-    }
-
     pub(crate) fn pane_exposes_host_cursor(
         &self,
         _ws_idx: usize,
@@ -718,11 +705,21 @@ impl AppState {
         self.agent_manifest_summaries = crate::detect::manifest::manifest_summaries();
     }
 
-    pub fn estimate_pane_size(&self) -> (u16, u16) {
-        if let Some(info) = self.view.pane_infos.first() {
-            (info.rect.height, info.rect.width)
+    /// Geometry a new pane's PTY is sized against: the most recently computed
+    /// pane surface, or the headless size before any view has been computed
+    /// (at startup, or when no client has ever attached).
+    pub(crate) fn pane_geometry(&self) -> crate::workspace::PaneGeometry {
+        let area = if self.view.terminal_area.is_empty() {
+            Rect::new(0, 0, self.headless_size.0, self.headless_size.1)
         } else {
-            (self.headless_size.1, self.headless_size.0)
+            self.view.terminal_area
+        };
+        crate::workspace::PaneGeometry {
+            area,
+            pane_borders: self.pane_borders,
+            pane_gaps: self.pane_gaps,
+            pane_outer_borders: self.pane_outer_borders,
+            pane_scrollbars: self.pane_scrollbars,
         }
     }
 
@@ -776,7 +773,6 @@ impl AppState {
         Self {
             terminals: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
-            pane_id_aliases: std::collections::HashMap::new(),
             public_pane_id_aliases: std::collections::HashMap::new(),
             workspaces: Vec::new(),
             active: None,
@@ -788,10 +784,7 @@ impl AppState {
                 terminal_area: Rect::default(),
                 pane_infos: Vec::new(),
             },
-            config_diagnostic: None,
             outer_terminal_focus: None,
-            prefix_code: KeyCode::Char('b'),
-            prefix_mods: KeyModifiers::CONTROL,
             headless_size: (
                 crate::config::DEFAULT_HEADLESS_COLS,
                 crate::config::DEFAULT_HEADLESS_ROWS,
@@ -814,7 +807,6 @@ impl AppState {
             shell_mode: crate::config::ShellModeConfig::Auto,
             new_terminal_cwd: NewTerminalCwdConfig::Follow,
             pane_scrollback_limit_bytes: crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES,
-            keybinds: Keybinds::default(),
             palette: Palette::catppuccin(),
             host_terminal_appearance: None,
             host_terminal_appearance_explicit: false,
@@ -864,10 +856,6 @@ impl AppState {
             assert_eq!(
                 self.selected, 0,
                 "empty app state should keep selected workspace at 0"
-            );
-            assert!(
-                self.pane_id_aliases.is_empty(),
-                "empty app state must not keep raw pane aliases"
             );
             assert!(
                 self.public_pane_id_aliases.is_empty(),
@@ -947,9 +935,6 @@ impl AppState {
                 "{context} references pane {pane_id:?} outside workspace {workspace_id}"
             );
         };
-        for (&raw, &pane_id) in &self.pane_id_aliases {
-            assert_live_pane(pane_id, &format!("raw pane alias {raw}"));
-        }
         for (public_id, &pane_id) in &self.public_pane_id_aliases {
             assert_live_pane(pane_id, &format!("public pane alias {public_id}"));
         }
@@ -979,11 +964,32 @@ mod tests {
     use crossterm::event::KeyEvent;
 
     #[test]
-    fn pane_size_estimate_uses_headless_size_before_first_view() {
+    fn pane_geometry_uses_headless_size_before_first_view() {
         let mut state = AppState::test_new();
         state.headless_size = (132, 41);
+        state.pane_scrollbars = false;
 
-        assert_eq!(state.estimate_pane_size(), (41, 132));
+        assert_eq!(state.pane_geometry().area, Rect::new(0, 0, 132, 41));
+        assert_eq!(state.pane_geometry().sole_pane_size(), (41, 132));
+    }
+
+    #[test]
+    fn split_spawn_size_is_the_new_panes_content_size_not_the_first_panes_outer_rect() {
+        let mut state = AppState::test_new();
+        state.view.terminal_area = Rect::new(5, 2, 120, 40);
+        state.pane_borders = crate::config::PaneBordersConfig::Always;
+        state.pane_scrollbars = true;
+        let geometry = state.pane_geometry();
+        assert_eq!(geometry.area, state.view.terminal_area);
+
+        let (mut layout, root) = crate::layout::TileLayout::new();
+        let new_pane = layout
+            .split_pane(root, ratatui::layout::Direction::Horizontal, 0.25)
+            .expect("test precondition");
+
+        // Right three quarters (90 cols), minus left+right border and the
+        // scrollbar gutter; rows minus top+bottom border.
+        assert_eq!(geometry.pane_size(&layout, new_pane), Some((38, 87)));
     }
 
     #[test]

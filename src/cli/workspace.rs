@@ -12,7 +12,10 @@ use super::matches::{flag, required, string, value, values, words};
 pub(super) fn run_workspace_command(matches: &ArgMatches) -> std::io::Result<i32> {
     match matches.subcommand() {
         Some(("list", _)) => super::runtime::workspace_list(),
-        Some(("create", matches)) => super::runtime::workspace_create(create_params(matches)),
+        Some(("create", matches)) => match create_params(matches) {
+            Ok(params) => super::runtime::workspace_create(params),
+            Err(message) => Ok(super::usage_error(&message)),
+        },
         Some(("get", matches)) => super::runtime::workspace_get(required(matches, "workspace_id")),
         Some(("focus", matches)) => {
             super::runtime::workspace_focus(required(matches, "workspace_id"))
@@ -27,25 +30,21 @@ pub(super) fn run_workspace_command(matches: &ArgMatches) -> std::io::Result<i32
         },
         Some(("close", matches)) => super::runtime::workspace_close(WorkspaceCloseParams {
             workspace_id: required(matches, "workspace_id"),
-            // shepr has no workspace groups: the client never forms one and the
-            // server's close handler does not read this field, so the CLI has
-            // no `--group` flag and always sends false.
-            close_group: false,
         }),
         _ => Ok(super::missing_subcommand()),
     }
 }
 
-fn create_params(matches: &ArgMatches) -> WorkspaceCreateParams {
-    WorkspaceCreateParams {
+fn create_params(matches: &ArgMatches) -> Result<WorkspaceCreateParams, String> {
+    Ok(WorkspaceCreateParams {
         source_workspace_id: None,
-        cwd: string(matches, "cwd"),
+        cwd: super::matches::cwd(matches)?,
         focus: flag(matches, "focus"),
         label: string(matches, "label"),
         env: values::<(String, String)>(matches, "env")
             .into_iter()
             .collect::<HashMap<_, _>>(),
-    }
+    })
 }
 
 fn report_metadata_params(matches: &ArgMatches) -> Result<WorkspaceReportMetadataParams, String> {
@@ -77,7 +76,8 @@ mod tests {
             "A=1",
             "--env=B=",
             "--focus",
-        ]));
+        ]))
+        .expect("test precondition");
         assert_eq!(params.cwd.as_deref(), Some("/srv"));
         assert_eq!(params.label.as_deref(), Some("api"));
         assert!(params.focus);
@@ -89,8 +89,16 @@ mod tests {
             "create",
             "--focus",
             "--no-focus",
-        ]));
+        ]))
+        .expect("test precondition");
         assert!(!params.focus);
+        assert_eq!(params.cwd, None);
+
+        // A relative directory is the caller's, not the server's.
+        let params = super::create_params(&command_matches(&["workspace", "create", "--cwd", "."]))
+            .expect("test precondition");
+        let expected = std::env::current_dir().expect("test precondition");
+        assert_eq!(params.cwd.as_deref(), expected.to_str());
     }
 
     #[test]

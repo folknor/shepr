@@ -10,7 +10,7 @@ const KITTY_FLAG_REPORT_ALTERNATE_KEYS: u16 = 0b0000_0100;
 const KITTY_FLAG_REPORT_ASSOCIATED_TEXT: u16 = 0b0001_0000;
 
 /// Encode a key event for a PTY child using the pane's negotiated keyboard protocol.
-#[allow(dead_code)] // exercised in input unit tests; production uses TerminalRuntime helpers
+#[allow(dead_code)] // Only unit tests call this; production keys go through `encode_terminal_key_with_modes`.
 pub fn encode_key(key: KeyEvent, protocol: KeyboardProtocol) -> Vec<u8> {
     encode_terminal_key(key.into(), protocol)
 }
@@ -79,7 +79,7 @@ pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<
     encode_legacy(key)
 }
 
-#[allow(dead_code)] // exercised in input unit tests; production uses TerminalRuntime helpers
+#[allow(dead_code)] // Only unit tests call this; production applies DECCKM in `encode_terminal_key_with_modes`.
 pub fn encode_cursor_key(code: KeyCode, application_cursor: bool) -> Vec<u8> {
     match (code, application_cursor) {
         (KeyCode::Up, true) => b"\x1bOA".to_vec(),
@@ -94,7 +94,7 @@ pub fn encode_cursor_key(code: KeyCode, application_cursor: bool) -> Vec<u8> {
     }
 }
 
-#[allow(dead_code)] // exercised in input unit tests; pane runtime uses backend helpers
+#[allow(dead_code)] // Only unit tests call this; production mouse reports go through `encode_mouse_event`.
 pub fn encode_mouse_scroll(
     kind: MouseEventKind,
     column: u16,
@@ -119,7 +119,7 @@ pub fn encode_mouse_scroll(
     )
 }
 
-#[allow(dead_code)] // exercised in input unit tests; pane runtime uses backend helpers
+#[allow(dead_code)] // Only unit tests call this; production mouse reports go through `encode_mouse_event`.
 pub fn encode_mouse_button(
     kind: MouseEventKind,
     column: u16,

@@ -22,7 +22,7 @@ use super::env::{
     grok_dir, hermes_dir, hermes_plugin_dir, kilo_dir, kimi_dir, letta_dir, mastracode_dir,
     omp_extension_dir, opencode_dir, opencode_state_dir, pi_extension_dir, qodercli_dir, qwen_dir,
 };
-use super::file_ops::{make_executable, remove_dir_all_if_exists, remove_file_if_exists};
+use super::file_ops::{remove_dir_all_if_exists, remove_file_if_exists, write_managed_asset};
 use super::opencode_config::{
     add_cli_plugin, add_tui_plugin, remove_cli_plugin, remove_tui_plugin,
     validate_tui_plugin_config,
@@ -56,6 +56,26 @@ use super::{
     QODERCLI_HOOK_INSTALL_NAME, QWEN_HOOK_ASSET, QWEN_HOOK_EVENTS, QWEN_HOOK_INSTALL_NAME,
 };
 
+// Install order for targets that register the hook in an agent config: read,
+// parse and edit the config in memory first, then write the hook script, then
+// the config. A config that cannot be edited then fails the install before
+// anything is written, instead of leaving a hook script that `integration
+// status` would see while the agent never runs it.
+
+/// Write an executable hook script via temp-file-and-rename (see
+/// `write_managed_asset` for why it must not be rewritten in place).
+fn write_hook_script(path: &Path, asset: &str) -> io::Result<()> {
+    write_managed_asset(path, asset.as_bytes(), true)
+}
+
+fn read_json_config(path: &Path, default: Value) -> io::Result<Value> {
+    if !path.is_file() {
+        return Ok(default);
+    }
+    serde_json::from_str::<Value>(&fs::read_to_string(path)?)
+        .map_err(|err| io::Error::other(format!("failed to parse {}: {err}", path.display())))
+}
+
 fn ensure_extension_dir(dir: &Path, agent: &str) -> io::Result<()> {
     if dir.is_dir() {
         return Ok(());
@@ -74,7 +94,7 @@ pub(crate) fn install_pi() -> io::Result<PathBuf> {
     ensure_extension_dir(&dir, "pi")?;
 
     let path = dir.join(PI_EXTENSION_INSTALL_NAME);
-    fs::write(&path, PI_EXTENSION_ASSET)?;
+    write_managed_asset(&path, PI_EXTENSION_ASSET.as_bytes(), false)?;
     Ok(path)
 }
 
@@ -90,7 +110,7 @@ pub(crate) fn install_omp() -> io::Result<OmpInstallPaths> {
     ensure_extension_dir(&dir, "omp")?;
 
     let extension_path = dir.join(OMP_EXTENSION_INSTALL_NAME);
-    fs::write(&extension_path, OMP_EXTENSION_ASSET)?;
+    write_managed_asset(&extension_path, OMP_EXTENSION_ASSET.as_bytes(), false)?;
     Ok(OmpInstallPaths { extension_path })
 }
 
@@ -105,11 +125,7 @@ pub(crate) fn install_claude() -> io::Result<ClaudeInstallPaths> {
     }
 
     let hooks_dir = dir.join("hooks");
-    fs::create_dir_all(&hooks_dir)?;
-
     let hook_path = hooks_dir.join(CLAUDE_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, CLAUDE_HOOK_ASSET)?;
-    make_executable(&hook_path)?;
 
     let settings_path = dir.join("settings.json");
     let existing_settings = if settings_path.is_file() {
@@ -117,7 +133,12 @@ pub(crate) fn install_claude() -> io::Result<ClaudeInstallPaths> {
     } else {
         "{}".to_string()
     };
+    // Edit the settings in memory before writing anything, so settings that
+    // cannot be parsed or edited leave no orphan hook behind.
     let updated_settings = install_claude_settings(&existing_settings, &settings_path, &hook_path)?;
+
+    fs::create_dir_all(&hooks_dir)?;
+    write_hook_script(&hook_path, CLAUDE_HOOK_ASSET)?;
 
     if updated_settings != existing_settings {
         write_config(&settings_path, updated_settings)?;
@@ -140,17 +161,9 @@ pub(crate) fn install_codex() -> io::Result<CodexInstallPaths> {
     }
 
     let hook_path = dir.join(CODEX_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, CODEX_HOOK_ASSET)?;
-    make_executable(&hook_path)?;
 
     let hooks_path = dir.join("hooks.json");
-    let mut hooks_file = if hooks_path.is_file() {
-        serde_json::from_str::<Value>(&fs::read_to_string(&hooks_path)?).map_err(|err| {
-            io::Error::other(format!("failed to parse {}: {err}", hooks_path.display()))
-        })?
-    } else {
-        json!({})
-    };
+    let mut hooks_file = read_json_config(&hooks_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
         &mut hooks_file,
@@ -166,8 +179,7 @@ pub(crate) fn install_codex() -> io::Result<CodexInstallPaths> {
         10,
         None,
     )?;
-
-    write_config(&hooks_path, serde_json::to_string_pretty(&hooks_file)?)?;
+    let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
     let config_path = dir.join("config.toml");
     let existing_config = if config_path.is_file() {
@@ -176,6 +188,9 @@ pub(crate) fn install_codex() -> io::Result<CodexInstallPaths> {
         String::new()
     };
     let new_config = build_codex_config_with_hooks(&existing_config)?;
+
+    write_hook_script(&hook_path, CODEX_HOOK_ASSET)?;
+    write_config(&hooks_path, hooks_contents)?;
     if new_config != existing_config {
         write_config(&config_path, new_config)?;
     }
@@ -211,8 +226,7 @@ pub(crate) fn install_kimi() -> io::Result<KimiInstallPaths> {
     // be edited safely leaves nothing installed.
     let new_config = build_kimi_config_with_hooks(&existing_config, &hook_path)?;
 
-    fs::write(&hook_path, KIMI_HOOK_ASSET)?;
-    make_executable(&hook_path)?;
+    write_hook_script(&hook_path, KIMI_HOOK_ASSET)?;
 
     if new_config != existing_config {
         write_config(&config_path, new_config)?;
@@ -235,23 +249,10 @@ pub(crate) fn install_copilot() -> io::Result<CopilotInstallPaths> {
     }
 
     let hooks_dir = dir.join("hooks");
-    fs::create_dir_all(&hooks_dir)?;
-
     let hook_path = hooks_dir.join(COPILOT_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, COPILOT_HOOK_ASSET)?;
-    make_executable(&hook_path)?;
 
     let settings_path = dir.join("settings.json");
-    let mut settings = if settings_path.is_file() {
-        serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?).map_err(|err| {
-            io::Error::other(format!(
-                "failed to parse {}: {err}",
-                settings_path.display()
-            ))
-        })?
-    } else {
-        json!({})
-    };
+    let mut settings = read_json_config(&settings_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
         &mut settings,
@@ -266,8 +267,11 @@ pub(crate) fn install_copilot() -> io::Result<CopilotInstallPaths> {
     for event in COPILOT_HOOK_EVENTS {
         ensure_direct_command_hook(hooks, event, command.clone(), 10, None)?;
     }
+    let settings_contents = serde_json::to_string_pretty(&settings)?;
 
-    write_config(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+    fs::create_dir_all(&hooks_dir)?;
+    write_hook_script(&hook_path, COPILOT_HOOK_ASSET)?;
+    write_config(&settings_path, settings_contents)?;
 
     Ok(CopilotInstallPaths {
         hook_path,
@@ -286,20 +290,9 @@ pub(crate) fn install_devin() -> io::Result<DevinInstallPaths> {
     }
 
     let hook_path = dir.join(DEVIN_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, DEVIN_HOOK_ASSET)?;
-    make_executable(&hook_path)?;
 
     let settings_path = dir.join("config.json");
-    let mut settings = if settings_path.is_file() {
-        serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?).map_err(|err| {
-            io::Error::other(format!(
-                "failed to parse {}: {err}",
-                settings_path.display()
-            ))
-        })?
-    } else {
-        json!({})
-    };
+    let mut settings = read_json_config(&settings_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
         &mut settings,
@@ -319,8 +312,10 @@ pub(crate) fn install_devin() -> io::Result<DevinInstallPaths> {
             None,
         )?;
     }
+    let settings_contents = serde_json::to_string_pretty(&settings)?;
 
-    write_config(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+    write_hook_script(&hook_path, DEVIN_HOOK_ASSET)?;
+    write_config(&settings_path, settings_contents)?;
 
     Ok(DevinInstallPaths {
         hook_path,
@@ -339,23 +334,10 @@ pub(crate) fn install_droid() -> io::Result<DroidInstallPaths> {
     }
 
     let hooks_dir = dir.join("hooks");
-    fs::create_dir_all(&hooks_dir)?;
-
     let hook_path = hooks_dir.join(DROID_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, DROID_HOOK_ASSET)?;
-    make_executable(&hook_path)?;
 
     let settings_path = dir.join("settings.json");
-    let mut settings = if settings_path.is_file() {
-        serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?).map_err(|err| {
-            io::Error::other(format!(
-                "failed to parse {}: {err}",
-                settings_path.display()
-            ))
-        })?
-    } else {
-        json!({})
-    };
+    let mut settings = read_json_config(&settings_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
         &mut settings,
@@ -375,8 +357,11 @@ pub(crate) fn install_droid() -> io::Result<DroidInstallPaths> {
             None,
         )?;
     }
+    let settings_contents = serde_json::to_string_pretty(&settings)?;
 
-    write_config(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+    fs::create_dir_all(&hooks_dir)?;
+    write_hook_script(&hook_path, DROID_HOOK_ASSET)?;
+    write_config(&settings_path, settings_contents)?;
 
     Ok(DroidInstallPaths {
         hook_path,
@@ -399,13 +384,21 @@ pub(crate) fn install_opencode() -> io::Result<OpenCodeInstallPaths> {
     fs::create_dir_all(&plugins_dir)?;
 
     let plugin_path = plugins_dir.join(OPENCODE_PLUGIN_INSTALL_NAME);
-    fs::write(&plugin_path, OPENCODE_PLUGIN_ASSET)?;
+    write_managed_asset(&plugin_path, OPENCODE_PLUGIN_ASSET.as_bytes(), false)?;
     let tui_plugin_path = dir.join(OPENCODE_TUI_PLUGIN_INSTALL_NAME);
-    fs::write(&tui_plugin_path, OPENCODE_TUI_PLUGIN_ASSET)?;
+    write_managed_asset(
+        &tui_plugin_path,
+        OPENCODE_TUI_PLUGIN_ASSET.as_bytes(),
+        false,
+    )?;
     let tui_config_path = add_tui_plugin(&dir, OPENCODE_TUI_PLUGIN_SPEC)?;
     let v2_dir = dir.join(super::OPENCODE_V2_TUI_PLUGIN_DIR);
     fs::create_dir_all(&v2_dir)?;
-    fs::write(v2_dir.join("tui.js"), super::OPENCODE_V2_TUI_PLUGIN_ASSET)?;
+    write_managed_asset(
+        &v2_dir.join("tui.js"),
+        super::OPENCODE_V2_TUI_PLUGIN_ASSET.as_bytes(),
+        false,
+    )?;
     let cli_config_path = add_cli_plugin(
         &dir,
         &opencode_state_dir()?,
@@ -433,7 +426,7 @@ pub(crate) fn install_kilo() -> io::Result<KiloInstallPaths> {
     fs::create_dir_all(&plugins_dir)?;
 
     let plugin_path = plugins_dir.join(KILO_PLUGIN_INSTALL_NAME);
-    fs::write(&plugin_path, KILO_PLUGIN_ASSET)?;
+    write_managed_asset(&plugin_path, KILO_PLUGIN_ASSET.as_bytes(), false)?;
 
     Ok(KiloInstallPaths { plugin_path })
 }
@@ -448,17 +441,6 @@ pub(crate) fn install_hermes() -> io::Result<HermesInstallPaths> {
         )));
     }
 
-    let plugin_dir = hermes_plugin_dir()?;
-    fs::create_dir_all(&plugin_dir)?;
-    fs::write(
-        plugin_dir.join(HERMES_PLUGIN_MANIFEST_INSTALL_NAME),
-        HERMES_PLUGIN_MANIFEST_ASSET,
-    )?;
-    fs::write(
-        plugin_dir.join(HERMES_PLUGIN_INIT_INSTALL_NAME),
-        HERMES_PLUGIN_INIT_ASSET,
-    )?;
-
     let config_path = dir.join("config.yaml");
     let existing_config = if config_path.is_file() {
         fs::read_to_string(&config_path)?
@@ -466,6 +448,20 @@ pub(crate) fn install_hermes() -> io::Result<HermesInstallPaths> {
         String::new()
     };
     let new_config = ensure_hermes_plugin_enabled(&existing_config);
+
+    let plugin_dir = hermes_plugin_dir()?;
+    fs::create_dir_all(&plugin_dir)?;
+    write_managed_asset(
+        &plugin_dir.join(HERMES_PLUGIN_MANIFEST_INSTALL_NAME),
+        HERMES_PLUGIN_MANIFEST_ASSET.as_bytes(),
+        false,
+    )?;
+    write_managed_asset(
+        &plugin_dir.join(HERMES_PLUGIN_INIT_INSTALL_NAME),
+        HERMES_PLUGIN_INIT_ASSET.as_bytes(),
+        false,
+    )?;
+
     if new_config != existing_config {
         write_config(&config_path, new_config)?;
     }
@@ -804,11 +800,7 @@ pub(crate) fn install_qodercli() -> io::Result<QodercliInstallPaths> {
     }
 
     let hooks_dir = dir.join("hooks");
-    fs::create_dir_all(&hooks_dir)?;
-
     let hook_path = hooks_dir.join(QODERCLI_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, QODERCLI_HOOK_ASSET)?;
-    make_executable(&hook_path)?;
 
     // Register the hook in ~/.qoder/settings.json. The schema mirrors claude
     // settings.json (per https://docs.qoder.com/zh/cli/hooks): a top-level
@@ -816,16 +808,7 @@ pub(crate) fn install_qodercli() -> io::Result<QodercliInstallPaths> {
     // list of `{type: "command", command, timeout?}` invocations. The hook
     // script reads the event payload from stdin via `hook_event_name`.
     let settings_path = dir.join("settings.json");
-    let mut settings = if settings_path.is_file() {
-        serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?).map_err(|err| {
-            io::Error::other(format!(
-                "failed to parse {}: {err}",
-                settings_path.display()
-            ))
-        })?
-    } else {
-        json!({})
-    };
+    let mut settings = read_json_config(&settings_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
         &mut settings,
@@ -845,8 +828,11 @@ pub(crate) fn install_qodercli() -> io::Result<QodercliInstallPaths> {
             Some("*"),
         )?;
     }
+    let settings_contents = serde_json::to_string_pretty(&settings)?;
 
-    write_config(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+    fs::create_dir_all(&hooks_dir)?;
+    write_hook_script(&hook_path, QODERCLI_HOOK_ASSET)?;
+    write_config(&settings_path, settings_contents)?;
 
     Ok(QodercliInstallPaths {
         hook_path,
@@ -865,23 +851,10 @@ pub(crate) fn install_qwen() -> io::Result<QwenInstallPaths> {
     }
 
     let hooks_dir = dir.join("hooks");
-    fs::create_dir_all(&hooks_dir)?;
-
     let hook_path = hooks_dir.join(QWEN_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, QWEN_HOOK_ASSET)?;
-    make_executable(&hook_path)?;
 
     let settings_path = dir.join("settings.json");
-    let mut settings = if settings_path.is_file() {
-        serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?).map_err(|err| {
-            io::Error::other(format!(
-                "failed to parse {}: {err}",
-                settings_path.display()
-            ))
-        })?
-    } else {
-        json!({})
-    };
+    let mut settings = read_json_config(&settings_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
         &mut settings,
@@ -899,8 +872,11 @@ pub(crate) fn install_qwen() -> io::Result<QwenInstallPaths> {
             Some("*"),
         )?;
     }
+    let settings_contents = serde_json::to_string_pretty(&settings)?;
 
-    write_config(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+    fs::create_dir_all(&hooks_dir)?;
+    write_hook_script(&hook_path, QWEN_HOOK_ASSET)?;
+    write_config(&settings_path, settings_contents)?;
 
     Ok(QwenInstallPaths {
         hook_path,
@@ -912,7 +888,7 @@ pub(crate) fn install_qwen() -> io::Result<QwenInstallPaths> {
 /// rewrite its previous contents, or remove it if the install created it.
 fn restore_letta_hook(hook_path: &Path, previous: Option<&[u8]>) -> io::Result<()> {
     match previous {
-        Some(contents) => fs::write(hook_path, contents),
+        Some(contents) => write_managed_asset(hook_path, contents, true),
         None => remove_file_if_exists(hook_path).map(|_| ()),
     }
 }
@@ -982,9 +958,8 @@ pub(crate) fn install_letta() -> io::Result<LettaInstallPaths> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => None,
         Err(err) => return Err(err),
     };
-    let write_hook =
-        fs::write(&hook_path, LETTA_HOOK_ASSET).and_then(|()| make_executable(&hook_path));
-    let result = write_hook.and_then(|()| write_config(&settings_path, &settings_contents));
+    let result = write_hook_script(&hook_path, LETTA_HOOK_ASSET)
+        .and_then(|()| write_config(&settings_path, &settings_contents));
     if let Err(err) = result {
         return Err(
             match restore_letta_hook(&hook_path, previous_hook.as_deref()) {
@@ -1017,17 +992,9 @@ pub(crate) fn install_cursor() -> io::Result<CursorInstallPaths> {
     }
 
     let hook_path = dir.join(CURSOR_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, CURSOR_HOOK_ASSET)?;
-    make_executable(&hook_path)?;
 
     let hooks_path = dir.join("hooks.json");
-    let mut hooks_file = if hooks_path.is_file() {
-        serde_json::from_str::<Value>(&fs::read_to_string(&hooks_path)?).map_err(|err| {
-            io::Error::other(format!("failed to parse {}: {err}", hooks_path.display()))
-        })?
-    } else {
-        json!({ "version": 1 })
-    };
+    let mut hooks_file = read_json_config(&hooks_path, json!({ "version": 1 }))?;
 
     if hooks_file.get("version").is_none() {
         hooks_file
@@ -1049,8 +1016,10 @@ pub(crate) fn install_cursor() -> io::Result<CursorInstallPaths> {
     )?;
     let session_command = hook_command(&hook_path, Some("session"));
     ensure_simple_command_hook(hooks, "sessionStart", &session_command)?;
+    let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
-    write_config(&hooks_path, serde_json::to_string_pretty(&hooks_file)?)?;
+    write_hook_script(&hook_path, CURSOR_HOOK_ASSET)?;
+    write_config(&hooks_path, hooks_contents)?;
 
     Ok(CursorInstallPaths {
         hook_path,
@@ -1229,20 +1198,10 @@ pub(crate) fn install_mastracode() -> io::Result<MastracodeInstallPaths> {
     let mastracode_home = mastracode_dir()?;
     check_config_targets(&mastracode_home, &["hooks.json"])?;
     let hook_dir = mastracode_home.join("hooks");
-    fs::create_dir_all(&hook_dir)?;
-
     let hook_path = hook_dir.join(MASTRACODE_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, MASTRACODE_HOOK_ASSET)?;
-    make_executable(&hook_path)?;
 
     let hooks_path = mastracode_home.join("hooks.json");
-    let mut hooks_file = if hooks_path.is_file() {
-        serde_json::from_str::<Value>(&fs::read_to_string(&hooks_path)?).map_err(|err| {
-            io::Error::other(format!("failed to parse {}: {err}", hooks_path.display()))
-        })?
-    } else {
-        json!({})
-    };
+    let mut hooks_file = read_json_config(&hooks_path, json!({}))?;
 
     let hooks = hooks_file.as_object_mut().ok_or_else(|| {
         io::Error::other(format!(
@@ -1260,8 +1219,11 @@ pub(crate) fn install_mastracode() -> io::Result<MastracodeInstallPaths> {
             MASTRACODE_HOOK_TIMEOUT_MS,
         )?;
     }
+    let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
-    write_config(&hooks_path, serde_json::to_string_pretty(&hooks_file)?)?;
+    fs::create_dir_all(&hook_dir)?;
+    write_hook_script(&hook_path, MASTRACODE_HOOK_ASSET)?;
+    write_config(&hooks_path, hooks_contents)?;
 
     Ok(MastracodeInstallPaths {
         hook_path,
@@ -1321,20 +1283,10 @@ pub(crate) fn install_antigravity_cli() -> io::Result<AntigravityCliInstallPaths
     }
 
     let hooks_dir = dir.join("hooks");
-    fs::create_dir_all(&hooks_dir)?;
-
     let hook_path = hooks_dir.join(ANTIGRAVITY_CLI_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, ANTIGRAVITY_CLI_HOOK_ASSET)?;
-    make_executable(&hook_path)?;
 
     let hooks_path = dir.join("hooks.json");
-    let mut hooks_file = if hooks_path.is_file() {
-        serde_json::from_str::<Value>(&fs::read_to_string(&hooks_path)?).map_err(|err| {
-            io::Error::other(format!("failed to parse {}: {err}", hooks_path.display()))
-        })?
-    } else {
-        json!({})
-    };
+    let mut hooks_file = read_json_config(&hooks_path, json!({}))?;
 
     let hooks = hooks_file.as_object_mut().ok_or_else(|| {
         io::Error::other(format!(
@@ -1349,8 +1301,11 @@ pub(crate) fn install_antigravity_cli() -> io::Result<AntigravityCliInstallPaths
         ANTIGRAVITY_CLI_HOOK_BLOCK_NAME.to_string(),
         antigravity_cli_hook_block(&hook_path),
     );
+    let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
-    write_config(&hooks_path, serde_json::to_string_pretty(&hooks_file)?)?;
+    fs::create_dir_all(&hooks_dir)?;
+    write_hook_script(&hook_path, ANTIGRAVITY_CLI_HOOK_ASSET)?;
+    write_config(&hooks_path, hooks_contents)?;
 
     Ok(AntigravityCliInstallPaths {
         hook_path,
@@ -1366,7 +1321,7 @@ pub(crate) fn antigravity_cli_hook_command(hook_path: &Path, action: &str) -> St
 ///
 /// Every event Shepr registers takes a flat handler list; the `matcher`/`hooks`
 /// group is only valid for the tool events, which Shepr does not use.
-fn antigravity_cli_hook_block(hook_path: &Path) -> Value {
+pub(crate) fn antigravity_cli_hook_block(hook_path: &Path) -> Value {
     let mut block = Map::new();
     for (event, action) in ANTIGRAVITY_CLI_HOOK_EVENTS {
         let handler = json!({
@@ -1460,13 +1415,13 @@ pub(crate) fn install_grok() -> io::Result<GrokInstallPaths> {
     fs::create_dir_all(&hooks_dir)?;
 
     let hook_path = hooks_dir.join(GROK_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, GROK_HOOK_ASSET)?;
-    make_executable(&hook_path)?;
+    write_hook_script(&hook_path, GROK_HOOK_ASSET)?;
 
     let config_path = hooks_dir.join(GROK_HOOK_CONFIG_INSTALL_NAME);
-    fs::write(
+    write_managed_asset(
         &config_path,
-        serde_json::to_string_pretty(&grok_hook_config(&hook_path))?,
+        serde_json::to_string_pretty(&grok_hook_config(&hook_path))?.as_bytes(),
+        false,
     )?;
 
     Ok(GrokInstallPaths {

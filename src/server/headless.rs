@@ -37,9 +37,7 @@ use crate::ipc::{
     LocalListener, SocketFileIdentity, bind_local_listener, remove_socket_file_if_owned,
     socket_file_identity,
 };
-use crate::protocol::{
-    self, AttachScrollDirection, AttachScrollSource, FrameData, MAX_FRAME_SIZE, ServerMessage,
-};
+use crate::protocol::{self, AttachScrollDirection, AttachScrollSource, FrameData, ServerMessage};
 use crate::server::client_accept::accept_pending_client_connections;
 use crate::server::client_shell::{
     render_pane_surface as render_client_shell_pane_surface,
@@ -50,7 +48,6 @@ use crate::server::clients::{
     ClientConnection, ClientConnectionMode, DeferredRender, latest_shell_client, render_targets,
     terminal_stream_client_ids,
 };
-use crate::server::keybindings::{app_keybindings, apply_keybindings};
 use crate::server::pane_input::{
     apply_client_pane_input_events, apply_terminal_attach_input, apply_terminal_attach_scroll,
     terminal_attach_mouse_position,
@@ -70,6 +67,8 @@ mod surface_interest;
 
 pub use bootstrap::run_server;
 
+#[cfg(test)]
+use crate::protocol::MAX_FRAME_SIZE;
 #[cfg(test)]
 use crate::protocol::RenderEncoding;
 #[cfg(test)]
@@ -155,9 +154,10 @@ pub struct HeadlessServer {
     /// Window title set through `client.window_title.set`. While present it wins
     /// over the configured `ui.window_title` until the API clears it again.
     api_window_title: Option<String>,
-    /// Server-owned keybindings, restored when foreground clients use server mode.
-    server_keybindings: crate::config::LiveKeybindConfig,
-    /// Full server config warning shown to clients that use server keybindings.
+    /// Full server config warning shown to shell clients that use the server's
+    /// (endpoint) keybindings. Config is read once at launch, so this and the
+    /// variant below are fixed for the server's lifetime; each shell snapshot
+    /// picks one per client.
     server_config_diagnostic: Option<String>,
     /// Server config warning with keybinding diagnostics removed for local-keybinding clients.
     server_config_diagnostic_without_keybindings: Option<String>,
@@ -219,7 +219,6 @@ impl HeadlessServer {
         // Channel for server events from client threads.
         let (server_event_tx, server_event_rx) = mpsc::channel(64);
 
-        let server_keybindings = app_keybindings(&app);
         let headless_size = app.state.headless_size;
         let (server_config_diagnostic, server_config_diagnostic_without_keybindings) =
             server_config_diagnostic_summaries(config_diagnostics);
@@ -243,7 +242,6 @@ impl HeadlessServer {
             ),
             sent_window_title: None,
             api_window_title: None,
-            server_keybindings,
             server_config_diagnostic,
             server_config_diagnostic_without_keybindings,
             terminal_attach_owners: HashMap::new(),
@@ -535,61 +533,14 @@ impl HeadlessServer {
         stamp
     }
 
-    fn resize_shared_runtime_to_effective_size_before_input(&mut self) {
-        self.resize_shared_runtime_to_effective_size_with_pending_agent_resumes(false);
-    }
-
-    fn resize_shared_runtime_to_effective_size_with_pending_agent_resumes(
-        &mut self,
-        start_pending_agent_resumes: bool,
-    ) {
-        let Some(client_id) = self.foreground_client_id else {
-            return;
-        };
-        let Some(client) = self.clients.get(&client_id) else {
-            return;
-        };
-        if matches!(client.mode, ClientConnectionMode::ClientShell) {
+    /// Re-applies the foreground client's tab geometry when it controls that
+    /// tab. The foreground client is always an active shell connection
+    /// (`promote_client_to_foreground` and `latest_shell_client` admit nothing
+    /// else), so there is no whole-session resize path: pane geometry is owned
+    /// per tab by its shell controller.
+    fn resize_foreground_shell_tab_if_controller(&mut self, start_pending_agent_resumes: bool) {
+        if let Some(client_id) = self.foreground_client_id {
             self.resize_shell_tab_if_controller(client_id, start_pending_agent_resumes);
-            return;
-        }
-        let cell_size = client.cell_size;
-        let (cols, rows) = self.effective_size;
-        let area = Rect::new(0, 0, cols, rows);
-        if cell_size.is_known() {
-            crate::ui::compute_view_with_cell_size(
-                &mut self.app.state,
-                &self.app.terminal_runtimes,
-                area,
-                cell_size,
-            );
-        } else {
-            crate::ui::compute_view_with_runtime_registry(
-                &mut self.app.state,
-                &self.app.terminal_runtimes,
-                area,
-            );
-        }
-
-        // Shared runtime size changes affect pane wrapping and foreground-driven
-        // rendering semantics. Force one fresh frame to every remaining client
-        // even if the next rendered buffer compares equal to its cached frame.
-        for client in self.clients.values_mut() {
-            client.request_recompute();
-        }
-        if !start_pending_agent_resumes {
-            self.app.pending_agent_resume_deadline = None;
-            return;
-        }
-        let now = Instant::now();
-        self.app.sync_pending_agent_resume_deadline(now);
-        if self
-            .app
-            .start_pending_agent_resumes(now, self.app.pending_agent_resume_due(now))
-        {
-            for client in self.clients.values_mut() {
-                client.request_recompute();
-            }
         }
     }
 
@@ -612,9 +563,6 @@ impl HeadlessServer {
             self.app.state.outer_terminal_focus = None;
             self.app.state.host_cell_size = crate::terminal_cell_size::HostCellSize::default();
             self.sync_runtime_view_geometry();
-            let server_keybindings = self.server_keybindings.clone();
-            apply_keybindings(&mut self.app, &server_keybindings);
-            self.sync_visible_server_config_diagnostic(false);
             return;
         };
         let Some(client) = self.clients.get(&client_id) else {
@@ -623,9 +571,6 @@ impl HeadlessServer {
             self.app.state.outer_terminal_focus = None;
             self.app.state.host_cell_size = crate::terminal_cell_size::HostCellSize::default();
             self.sync_runtime_view_geometry();
-            let server_keybindings = self.server_keybindings.clone();
-            apply_keybindings(&mut self.app, &server_keybindings);
-            self.sync_visible_server_config_diagnostic(false);
             return;
         };
 
@@ -644,9 +589,6 @@ impl HeadlessServer {
         self.sync_runtime_view_geometry();
         self.app.state.outer_terminal_focus = outer_terminal_focus;
         self.app.state.host_cell_size = host_cell_size;
-        let server_keybindings = self.server_keybindings.clone();
-        apply_keybindings(&mut self.app, &server_keybindings);
-        self.sync_visible_server_config_diagnostic(false);
         if outer_terminal_focus == Some(true) {
             self.app.state.mark_active_tab_seen();
         }
@@ -657,25 +599,14 @@ impl HeadlessServer {
         self.app.set_host_terminal_theme(host_terminal_theme);
     }
 
-    fn sync_visible_server_config_diagnostic(&mut self, uses_local_keybindings: bool) {
-        let visible = if uses_local_keybindings {
-            &self.server_config_diagnostic_without_keybindings
-        } else {
-            &self.server_config_diagnostic
-        };
-        if self.app.state.config_diagnostic == self.server_config_diagnostic
-            || self.app.state.config_diagnostic == self.server_config_diagnostic_without_keybindings
-        {
-            self.app.state.config_diagnostic = visible.clone();
-        }
-    }
-
     fn promote_client_to_foreground(&mut self, client_id: u64) -> bool {
         let stamp = self.allocate_activity_stamp();
         let Some(client) = self.clients.get_mut(&client_id) else {
             return false;
         };
-        if !client.shell_surface_active {
+        // Only an active shell connection may drive session-wide presentation;
+        // a direct terminal stream never becomes the foreground client.
+        if !client.is_active_shell_client() {
             return false;
         }
         client.last_activity = stamp;
@@ -766,11 +697,38 @@ impl HeadlessServer {
             ) else {
                 continue;
             };
+            // The client is gone, so there is nobody to show a failure to.
             let result = apply_client_pane_input_events(runtime, &[held.release]);
             if let Err(err) = result {
                 warn!(client_id, err = %err, "client shell teardown release failed");
             }
         }
+    }
+
+    /// Logs a shell client's failed pane input and, when input was dropped
+    /// because the pane's PTY queue is full, tells that client. Losing
+    /// keystrokes or a paste silently is worse than a visible error: the user
+    /// would otherwise keep typing into a pane that is not reading.
+    fn report_client_shell_input_failures(
+        &mut self,
+        client_id: u64,
+        pane_id: &str,
+        failures: &crate::server::pane_input::PaneInputFailures,
+    ) {
+        warn!(client_id, pane_id, err = %failures, "targeted client shell input failed");
+        let dropped = failures.dropped_for_backpressure();
+        if dropped == 0 {
+            return;
+        }
+        let events = if dropped == 1 { "event" } else { "events" };
+        self.send_to_client(
+            client_id,
+            &ServerMessage::ClientShellError {
+                message: format!(
+                    "Input to pane {pane_id} dropped ({dropped} {events}): the pane is not reading its input"
+                ),
+            },
+        );
     }
 
     fn remove_client_and_resize_if_needed(&mut self, client_id: u64) {
@@ -1050,24 +1008,13 @@ impl HeadlessServer {
     }
 
     /// Encodes a server message into a length-prefixed frame.
+    ///
+    /// A payload over `MAX_FRAME_SIZE` fails with `FramingError::Oversized`:
+    /// `protocol::write_message` refuses it before writing anything, since
+    /// every reader would drop the connection on such a frame.
     fn frame_server_message(msg: &ServerMessage) -> Result<Vec<u8>, protocol::FramingError> {
-        Self::frame_server_message_with_max(msg, MAX_FRAME_SIZE)
-    }
-
-    /// Encodes a server message using an explicit payload cap.
-    fn frame_server_message_with_max(
-        msg: &ServerMessage,
-        max_frame_size: usize,
-    ) -> Result<Vec<u8>, protocol::FramingError> {
         let mut framed = Vec::new();
         protocol::write_message(&mut framed, msg)?;
-        let payload_len = framed.len().saturating_sub(4);
-        if payload_len > max_frame_size {
-            return Err(protocol::FramingError::Oversized {
-                claimed: payload_len,
-                max: max_frame_size,
-            });
-        }
         Ok(framed)
     }
 
@@ -1436,10 +1383,14 @@ impl HeadlessServer {
                 else {
                     return false;
                 };
+                // A direct attach client is a raw byte stream into the host
+                // terminal with no shell chrome to show an error in, so input
+                // dropped on a full PTY queue is only logged here; shell
+                // clients get a visible error instead.
                 if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id)
                     && let Err(err) = apply_terminal_attach_input(runtime, data)
                 {
-                    warn!(client_id, terminal_id = %terminal_id, err = %err);
+                    warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach input failed");
                 }
                 true
             }
@@ -1571,7 +1522,7 @@ impl HeadlessServer {
                 );
                 changed |= self.app.set_host_terminal_theme(client.host_terminal_theme);
                 if changed {
-                    self.resize_shared_runtime_to_effective_size_before_input();
+                    self.resize_foreground_shell_tab_if_controller(false);
                 }
                 changed
             }
@@ -1688,10 +1639,12 @@ impl HeadlessServer {
                         client.track_shell_input(&pane_id, &releases);
                     }
                     let scroll_before = runtime.scroll_metrics();
-                    if let Err(err) = apply_client_pane_input_events(runtime, &releases) {
-                        warn!(client_id, pane_id, err = %err, "targeted client shell release failed");
+                    let result = apply_client_pane_input_events(runtime, &releases);
+                    let scrolled = runtime.scroll_metrics() != scroll_before;
+                    if let Err(failures) = result {
+                        self.report_client_shell_input_failures(client_id, &pane_id, &failures);
                     }
-                    return runtime.scroll_metrics() != scroll_before;
+                    return scrolled;
                 }
                 let interaction = client_pane_input_has_interaction(&events);
                 if let Some(client) = self.clients.get_mut(&client_id) {
@@ -1709,10 +1662,12 @@ impl HeadlessServer {
                     return foreground_changed | geometry_changed;
                 };
                 let scroll_before = runtime.scroll_metrics();
-                if let Err(err) = apply_client_pane_input_events(runtime, &events) {
-                    warn!(client_id, pane_id, err = %err, "targeted client shell input failed");
+                let result = apply_client_pane_input_events(runtime, &events);
+                let scrolled = runtime.scroll_metrics() != scroll_before;
+                if let Err(failures) = result {
+                    self.report_client_shell_input_failures(client_id, &pane_id, &failures);
                 }
-                foreground_changed | geometry_changed || runtime.scroll_metrics() != scroll_before
+                foreground_changed | geometry_changed || scrolled
             }
             ServerEvent::ClientShellEndpointRequestError {
                 client_id,
@@ -2041,8 +1996,6 @@ impl HeadlessServer {
     fn handle_api_request_with_shutdown_check_inner(
         &mut self,
         msg: api::ApiRequestMessage,
-        skip_default_workspace_for_request: bool,
-        _client_local: bool,
     ) -> bool {
         if self.shutting_down {
             Self::reject_api_request_for_shutdown(msg);
@@ -2078,8 +2031,8 @@ impl HeadlessServer {
         }
 
         let mut changed = metadata_expired | api::request_changes_ui(&msg.request);
-        let skip_default_workspace = skip_default_workspace_for_request
-            || matches!(&msg.request.method, api::schema::Method::ServerStop(_));
+        let skip_default_workspace =
+            matches!(&msg.request.method, api::schema::Method::ServerStop(_));
         changed |= self.drain_all_internal_events_with_forwarding();
 
         self.sync_foreground_client_state();
@@ -2156,16 +2109,8 @@ impl HeadlessServer {
 
         // No resize polling needed - server has no terminal.
         // Client resize messages drive size changes instead.
-
-        if self
-            .app
-            .config_diagnostic_deadline
-            .is_some_and(|deadline| now >= deadline)
-        {
-            self.app.config_diagnostic_deadline = None;
-            self.app.state.config_diagnostic = None;
-            changed = true;
-        }
+        // The config diagnostic never expires on a timer: it is fixed at launch
+        // and carried per client in each shell snapshot.
 
         if self.has_app_client() {
             self.app.start_git_status_refresh_if_due(now);

@@ -11,17 +11,22 @@
 //!    `CUP` positions during the frame stream.
 //! 5. After writing all changed cells, restore the final cursor visibility
 //!    and position from `frame.cursor`.
-//! 6. On platforms that need it, repeat the final cursor anchor after ending
-//!    synchronized output so external IMEs can place candidate windows at the
-//!    real input position. Windows Terminal exposes that repeat as visible
-//!    cursor movement during active TUI repaints, so Windows skips it.
+//! 6. Repeat the final cursor anchor after ending synchronized output so
+//!    external IMEs, which may not observe cursor moves made inside a
+//!    synchronized block, can place candidate windows at the real input
+//!    position.
 //!
 //! Escape sequences used:
 //! - `CSI H` (CUP) - move cursor to (row, col)
 //! - `CSI m` (SGR) - set graphic rendition (colors, bold, etc.)
 //! - `CSI ? 2026 h/l` - begin/end synchronized output
+//! - `CSI ? 25 h/l` - show/hide cursor
 //! - `CSI Ps SP q` - DECSCUSR cursor shape
-//! - `ESC ] 52 ; c ; <base64> BEL` - OSC 52 clipboard write
+//! - `CSI 2 J` - clear screen before the first full redraw
+//! - `OSC 8 ; ; <uri> ST` - hyperlinks
+//!
+//! Clipboard (OSC 52) output is not written here; it travels as its own
+//! `ServerMessage::Clipboard`.
 //!
 //! The goal is minimal output: skip unchanged cells, batch adjacent changes,
 //! and minimize cursor movement.
@@ -88,7 +93,7 @@ impl BlitEncoder {
             prev,
             &mut next_last_visible_cursor,
             &mut next_last_cursor_shape,
-            repeat_ime_anchor_after_sync(),
+            REPEAT_IME_ANCHOR_AFTER_SYNC,
             clear_before_full_redraw,
             suppress_visible_cursor,
         );
@@ -141,7 +146,7 @@ impl BlitEncoder {
             cursor,
             &mut next_last_visible_cursor,
             &mut next_last_cursor_shape,
-            repeat_ime_anchor_after_sync(),
+            REPEAT_IME_ANCHOR_AFTER_SYNC,
             suppress_visible_cursor,
         );
         Some(EncodedBlit {
@@ -425,7 +430,7 @@ fn blit_frame_to_with_cursor_memory(
         prev,
         last_visible_cursor,
         last_cursor_shape,
-        repeat_ime_anchor_after_sync(),
+        REPEAT_IME_ANCHOR_AFTER_SYNC,
         suppress_visible_cursor,
     );
 }
@@ -626,18 +631,17 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
 
     // Some native IMEs track candidate-window placement from normal terminal
     // cursor updates and may not observe cursor moves emitted inside synchronized
-    // output. Re-emit only the resolved final cursor anchor after the sync block
-    // on targets that need it; Windows Terminal exposes that repeat as cursor
-    // movement during active TUI repaints.
+    // output. Re-emit only the resolved final cursor anchor after the sync block.
     if repeat_ime_anchor {
         write_ime_anchor_cursor_state(&mut writer, host_cursor);
     }
     let _ = writer.flush();
 }
 
-fn repeat_ime_anchor_after_sync() -> bool {
-    true
-}
+/// Production always repeats the IME anchor after the synchronized block;
+/// the parameter threaded through the blit functions exists so tests can
+/// check both output shapes.
+const REPEAT_IME_ANCHOR_AFTER_SYNC: bool = true;
 
 /// Writes all cells in the frame (full redraw).
 fn cell_width(cell: &CellData) -> usize {

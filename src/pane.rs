@@ -3,7 +3,7 @@ use std::io;
 use std::path::Path;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
 use bytes::Bytes;
@@ -17,7 +17,9 @@ use crate::detect::{Agent, AgentState};
 use crate::events::AppEvent;
 use crate::layout::PaneId;
 use crate::pty::PtyCommand;
-use crate::pty::actor::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult};
+use crate::pty::actor::{
+    PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult, ReaderExit,
+};
 use crate::render_signal::RenderSignal;
 
 mod agent_detection;
@@ -740,6 +742,16 @@ impl AgentDetectionPresence {
 // PaneRuntime - PTY, parser, channels, background tasks
 // ---------------------------------------------------------------------------
 
+const MIN_PANE_ROWS: u16 = 2;
+const MIN_PANE_COLS: u16 = 4;
+
+/// The smallest geometry a pane's PTY and emulator ever get. Spawn and resize
+/// both go through this so the child never sees a 0-row or 0-column PTY and
+/// the PTY and the emulator always agree on the size.
+fn clamp_pane_size(rows: u16, cols: u16) -> (u16, u16) {
+    (rows.max(MIN_PANE_ROWS), cols.max(MIN_PANE_COLS))
+}
+
 /// PTY runtime for a pane. Owns the terminal, I/O channels, and background tasks.
 /// Dropping this aborts async tasks and closes the PTY.
 pub struct PaneRuntime {
@@ -751,7 +763,6 @@ pub struct PaneRuntime {
     reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
     persistence_cwd: Mutex<Option<std::path::PathBuf>>,
     child_wait_completed: Arc<AtomicBool>,
-    kitty_keyboard_flags: Arc<AtomicU16>,
     content_seq: Arc<AtomicU64>,
     content_write_lock: Arc<Mutex<()>>,
     detection_content_seq: Arc<AtomicU64>,
@@ -1259,19 +1270,18 @@ impl PaneRuntime {
         spawn_error_message: &'static str,
         initial_history_ansi: Option<&str>,
     ) -> std::io::Result<Self> {
+        let (rows, cols) = clamp_pane_size(rows, cols);
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
 
-        let (response_tx, _response_rx) = mpsc::channel::<Bytes>(1);
         let terminal = crate::ghostty::Terminal::new(cols, rows, scrollback_limit_bytes)
             .map_err(|e| std::io::Error::other(e.to_string()))?;
-        let pane_terminal = GhosttyPaneTerminal::new(terminal, response_tx.clone())?;
+        let pane_terminal = GhosttyPaneTerminal::new(terminal)?;
         pane_terminal.apply_host_terminal_theme(host_terminal_theme);
         let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
         if let Some(ansi) = initial_history_ansi {
             pane_terminal.seed_history_ansi(ansi);
         }
         let terminal = Arc::new(PaneTerminal::new(pane_terminal));
-        let kitty_keyboard_flags = Arc::new(AtomicU16::new(0));
         let content_write_lock = Arc::new(Mutex::new(()));
 
         let spawned = crate::pty::backend::spawn_pty(rows, cols, cmd)
@@ -1321,7 +1331,6 @@ impl PaneRuntime {
 
         let io = {
             let terminal = Arc::clone(&terminal);
-            let response_writer = response_tx.clone();
             let render_notify = Arc::clone(render_notify);
             let render_dirty = Arc::clone(render_dirty);
             let content_seq = Arc::clone(&content_seq);
@@ -1329,6 +1338,7 @@ impl PaneRuntime {
             let detection_content_seq = Arc::clone(&detection_content_seq);
             let child_pid = Arc::clone(&child_pid);
             let events = events.clone();
+            let reader_exit_events = events.clone();
             let reported_cwd = Arc::clone(&reported_cwd);
             let rt = tokio::runtime::Handle::current();
             let on_read = Box::new(move |bytes: &[u8]| {
@@ -1338,8 +1348,7 @@ impl PaneRuntime {
                 };
                 content_seq.fetch_add(1, Ordering::AcqRel);
                 let shell_pid = child_pid.load(Ordering::Acquire);
-                let result =
-                    terminal.process_pty_bytes(pane_id, shell_pid, bytes, &response_writer);
+                let result = terminal.process_pty_bytes(pane_id, shell_pid, bytes);
                 content_seq.fetch_add(1, Ordering::Release);
                 drop(_content_write_guard);
                 observe_detection_content_change(bytes, &detection_content_seq);
@@ -1375,11 +1384,38 @@ impl PaneRuntime {
                     terminal_responses: result.terminal_responses,
                 }
             });
+            // A normal reader exit needs no report: the child watcher above
+            // sends PaneDied once the child is reaped. A panic in the terminal
+            // core is different. The PTY actor catches it and closes the
+            // master, but a child that ignores SIGHUP keeps running and is
+            // never reaped, and the poisoned core leaves the pane frozen.
+            // Report the pane dead so the app removes it and tears down its
+            // session. The child watcher's own PaneDied that may follow is
+            // ignored for a pane that no longer exists.
+            let on_reader_exit: Box<dyn FnOnce(ReaderExit) + Send> = {
+                Box::new(move |exit: ReaderExit| {
+                    if exit != ReaderExit::Panicked {
+                        return;
+                    }
+                    // Not Interrupted: that checkpoints the session first,
+                    // which would read history out of the broken core.
+                    if let Err(err) = reader_exit_events.blocking_send(AppEvent::PaneDied {
+                        pane_id,
+                        exit_reason: crate::platform::ChildExitReason::Exited,
+                    }) {
+                        error!(
+                            pane = pane_id.raw(),
+                            err = %err,
+                            "failed to report a pane whose PTY reader panicked"
+                        );
+                    }
+                })
+            };
             PaneRuntimeIo::Actor(PtyIoActor::spawn(PtyIoActorConfig {
                 pane_id: pane_id.raw(),
                 master_fd: spawned.master_fd,
                 on_read,
-                on_reader_exit: None,
+                on_reader_exit: Some(on_reader_exit),
             })?)
         };
 
@@ -1492,9 +1528,21 @@ impl PaneRuntime {
                         pending_foreground_shell_clear,
                         elapsed_since_process_check: now.duration_since(last_process_check),
                     };
-                    let foreground_pgid = (pid > 0)
-                        .then(|| detect::foreground_process_group_id(pid))
-                        .flatten();
+                    let foreground_pgid = if pid > 0 {
+                        match tokio::task::spawn_blocking(move || {
+                            detect::foreground_process_group_id(pid)
+                        })
+                        .await
+                        {
+                            Ok(pgid) => pgid,
+                            Err(error) => {
+                                tracing::warn!(?error, "foreground process group probe failed");
+                                continue;
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let process_group_changed =
                         foreground_group_changed(foreground_pgid, last_foreground_pgid);
                     let should_check_process = pid > 0 && {
@@ -1514,7 +1562,17 @@ impl PaneRuntime {
                         let had_process_probe = has_process_probe;
                         has_process_probe = true;
                         if pid > 0 {
-                            let probe = probe_foreground_process(pid, foreground_pgid);
+                            let probe = match tokio::task::spawn_blocking(move || {
+                                probe_foreground_process(pid, foreground_pgid)
+                            })
+                            .await
+                            {
+                                Ok(probe) => probe,
+                                Err(error) => {
+                                    tracing::warn!(?error, "foreground process probe failed");
+                                    continue;
+                                }
+                            };
                             let process_name = probe.process_name;
                             let process_group_id = probe.process_group_id;
                             let tracked_process_group_id = process_group_for_change_tracking(
@@ -1619,11 +1677,24 @@ impl PaneRuntime {
                     }
 
                     let pid = child_pid.load(Ordering::Acquire);
-                    // Keep the terminal restore side effect separate from render notification state.
-                    #[allow(clippy::collapsible_if)]
-                    if pid > 0 && terminal.maybe_restore_host_terminal_theme(pane_id, pid) {
-                        if render_dirty.request_pty(pane_id) {
-                            render_notify.notify_one();
+                    // The restore check reads /proc only while an override is
+                    // active; keep that rare probe off the runtime worker too.
+                    if pid > 0 && terminal.has_transient_default_color_override() {
+                        let theme_terminal = Arc::clone(&terminal);
+                        match tokio::task::spawn_blocking(move || {
+                            theme_terminal.maybe_restore_host_terminal_theme(pane_id, pid)
+                        })
+                        .await
+                        {
+                            Ok(true) => {
+                                if render_dirty.request_pty(pane_id) {
+                                    render_notify.notify_one();
+                                }
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                tracing::warn!(?error, "host terminal theme probe failed");
+                            }
                         }
                     }
 
@@ -1768,7 +1839,6 @@ impl PaneRuntime {
             reported_cwd,
             persistence_cwd: Mutex::new(None),
             child_wait_completed,
-            kitty_keyboard_flags,
             content_seq,
             content_write_lock,
             detection_content_seq,
@@ -1819,8 +1889,7 @@ impl PaneRuntime {
 
     /// Resize if the dimensions actually changed.
     pub fn resize(&self, rows: u16, cols: u16, cell_width_px: u32, cell_height_px: u32) {
-        let rows = rows.max(2);
-        let cols = cols.max(4);
+        let (rows, cols) = clamp_pane_size(rows, cols);
         let size = (rows, cols, cell_width_px, cell_height_px);
         if self.current_size.get() == size {
             return;
@@ -2060,10 +2129,9 @@ impl PaneRuntime {
     }
 
     pub fn keyboard_protocol(&self) -> crate::input::KeyboardProtocol {
-        let fallback = crate::input::KeyboardProtocol::from_kitty_flags(
-            self.kitty_keyboard_flags.load(Ordering::Relaxed),
-        );
-        self.terminal.keyboard_protocol(fallback)
+        // Legacy only when the terminal core is unreadable (a poisoned lock).
+        self.terminal
+            .keyboard_protocol(crate::input::KeyboardProtocol::Legacy)
     }
 
     pub fn modify_other_keys_level(&self) -> u8 {
@@ -2321,8 +2389,7 @@ impl PaneRuntime {
                 sequence.fetch_add(1, Ordering::AcqRel);
                 guard
             });
-            let (tx, _rx) = mpsc::channel(1);
-            let _ = terminal.process_pty_bytes(pane_id, 0, &bytes, &tx);
+            let _ = terminal.process_pty_bytes(pane_id, 0, &bytes);
             sequence.fetch_add(1, Ordering::Release);
             announced
         });
@@ -2335,8 +2402,7 @@ impl PaneRuntime {
             Err(poisoned) => poisoned.into_inner(),
         };
         self.content_seq.fetch_add(1, Ordering::AcqRel);
-        let (tx, _rx) = mpsc::channel(1);
-        let _ = self.terminal.process_pty_bytes(self.pane_id, 0, bytes, &tx);
+        let _ = self.terminal.process_pty_bytes(self.pane_id, 0, bytes);
         self.content_seq.fetch_add(1, Ordering::Release);
     }
 
@@ -2363,7 +2429,7 @@ impl PaneRuntime {
         terminal.write(bytes);
         let pane_id = PaneId::from_raw(0);
         let terminal = Arc::new(PaneTerminal::new(
-            GhosttyPaneTerminal::new(terminal, tx.clone())
+            GhosttyPaneTerminal::new(terminal)
                 .expect("test ghostty pane terminal creation succeeds"),
         ));
 
@@ -2380,7 +2446,6 @@ impl PaneRuntime {
                 reported_cwd: Arc::new(Mutex::new(None)),
                 persistence_cwd: Mutex::new(None),
                 child_wait_completed: Arc::new(AtomicBool::new(false)),
-                kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
                 content_seq: Arc::new(AtomicU64::new(0)),
                 content_write_lock: Arc::new(Mutex::new(())),
                 detection_content_seq: Arc::new(AtomicU64::new(0)),
@@ -2719,6 +2784,14 @@ mod tests {
     }
 
     #[test]
+    fn pane_size_clamp_never_yields_an_empty_pty() {
+        assert_eq!(clamp_pane_size(0, 0), (MIN_PANE_ROWS, MIN_PANE_COLS));
+        assert_eq!(clamp_pane_size(1, 80), (MIN_PANE_ROWS, 80));
+        assert_eq!(clamp_pane_size(24, 3), (24, MIN_PANE_COLS));
+        assert_eq!(clamp_pane_size(24, 80), (24, 80));
+    }
+
+    #[test]
     fn shutdown_liveness_treats_reaped_direct_child_as_gone() {
         assert!(!process_alive_for_shutdown(42, 42, true, |_| true));
     }
@@ -2972,7 +3045,7 @@ mod tests {
             .expect("test precondition");
         let pane_id = PaneId::from_raw(0);
         let terminal = Arc::new(PaneTerminal::new(
-            GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition"),
+            GhosttyPaneTerminal::new(terminal).expect("test precondition"),
         ));
         let runtime = PaneRuntime {
             persistence_cwd: Mutex::new(None),
@@ -2986,7 +3059,6 @@ mod tests {
             child_pid: Arc::new(AtomicU32::new(0)),
             reported_cwd: Arc::new(Mutex::new(None)),
             child_wait_completed: Arc::new(AtomicBool::new(false)),
-            kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),
             detection_content_seq: Arc::new(AtomicU64::new(0)),
@@ -3011,7 +3083,7 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         let pane_id = PaneId::from_raw(0);
         let terminal = Arc::new(PaneTerminal::new(
-            GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition"),
+            GhosttyPaneTerminal::new(terminal).expect("test precondition"),
         ));
         let runtime = PaneRuntime {
             persistence_cwd: Mutex::new(None),
@@ -3025,7 +3097,6 @@ mod tests {
             child_pid: Arc::new(AtomicU32::new(0)),
             reported_cwd: Arc::new(Mutex::new(None)),
             child_wait_completed: Arc::new(AtomicBool::new(false)),
-            kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),
             detection_content_seq: Arc::new(AtomicU64::new(0)),

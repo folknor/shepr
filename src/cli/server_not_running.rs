@@ -4,10 +4,10 @@ use std::path::Path;
 use crate::api::schema::{ErrorBody, ErrorResponse};
 
 /// Marker error signalling a dead API socket. Carries the `ErrorResponse` that
-/// should be printed at the edge that finally surfaces the error, so callers
-/// that recover (e.g. plugin offline fallback) print nothing. Mirrors
-/// `ProtocolMismatchReported`, except printing is deferred because several CLI
-/// commands recover from a dead server instead of reporting it.
+/// should be printed at the edge that finally surfaces the error, so a caller
+/// that drops the error (such as `agent start`'s best-effort reconcile request
+/// at its deadline) prints nothing. Mirrors `ProtocolMismatchReported`, except
+/// that printing is deferred to that edge.
 #[derive(Debug)]
 pub(super) struct ServerNotRunningReported {
     pub(super) response: ErrorResponse,

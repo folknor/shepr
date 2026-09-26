@@ -485,7 +485,14 @@ impl ClientShellState {
             let Some(key) = self.copy_input_queue.pop_front() else {
                 return;
             };
+            // A replayed `q`, `y` or Enter leaves copy mode, and leaving clears
+            // the queue (`reset_copy_pipeline`). The keys behind it were typed
+            // after that exit and belong to the pane, so hold them aside and
+            // put them back: they then route in whatever mode the key left.
+            let mut later = std::mem::take(&mut self.copy_input_queue);
             self.handle_key(key, outcome);
+            later.extend(self.copy_input_queue.drain(..));
+            self.copy_input_queue = later;
         }
     }
 

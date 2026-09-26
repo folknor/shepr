@@ -200,11 +200,33 @@ pub(crate) enum ClientShellAction {
 pub(crate) struct ClientShellInput {
     pub detach: bool,
     pub repaint: bool,
+    /// Present the next frame in full rather than diffed against what the
+    /// host terminal is assumed to show (`ui.redraw_on_focus_gained`).
+    pub full_redraw: bool,
     pub resize: bool,
     pub query_host_appearance: bool,
     pub query_host_theme: bool,
     pub requests: Vec<ClientMessage>,
     pub actions: Vec<ClientShellAction>,
+}
+
+impl ClientShellInput {
+    /// Folds a later outcome into this one, keeping request and action order.
+    pub(crate) fn merge(&mut self, later: ClientShellInput) {
+        self.detach |= later.detach;
+        self.repaint |= later.repaint;
+        self.resize |= later.resize;
+        self.query_host_appearance |= later.query_host_appearance;
+        self.query_host_theme |= later.query_host_theme;
+        self.full_redraw |= later.full_redraw;
+        self.requests.extend(later.requests);
+        self.actions.extend(later.actions);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_parts(self) -> (bool, Vec<ClientShellAction>) {
+        (self.repaint, self.actions)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -372,6 +394,9 @@ pub(super) struct ClientConfirmCloseOverlay {
     pub(super) tab_target: Option<ClientTabCloseConfirmation>,
     pub(super) title: String,
     pub(super) detail: String,
+    /// Cancelling returns to Navigate mode only when the dialog came from it;
+    /// otherwise the user lands back in the mode they were in.
+    pub(super) return_to_navigate: bool,
 }
 
 #[derive(Debug)]
@@ -609,6 +634,11 @@ pub(crate) struct ClientShellState {
     pub(super) previous_pane_id: Option<String>,
     pub(super) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
     pub(super) selection: Option<crate::selection::Selection<String>>,
+    /// Pane a mouse selection was started in while another pane held focus.
+    /// The click's `PaneFocus` travels the serialized command lane, so
+    /// snapshots can still report the old focus for a while; until one shows
+    /// this pane focused, those snapshots must not cancel the drag.
+    pub(super) selection_focus_pending: Option<String>,
     pub(super) last_pane_click: Option<ClientPaneClick>,
     pub(super) selection_autoscroll: Option<ClientSelectionAutoscroll>,
     pub(super) selection_autoscroll_deadline: Option<std::time::Instant>,
@@ -712,6 +742,7 @@ impl ClientShellState {
             previous_pane_id: None,
             pane_mouse_gesture: None,
             selection: None,
+            selection_focus_pending: None,
             last_pane_click: None,
             selection_autoscroll: None,
             selection_autoscroll_deadline: None,
@@ -817,6 +848,7 @@ impl ClientShellState {
         self.previous_pane_id = None;
         self.pane_mouse_gesture = None;
         self.selection = None;
+        self.selection_focus_pending = None;
         self.last_pane_click = None;
         self.selection_autoscroll = None;
         self.selection_autoscroll_deadline = None;
@@ -960,17 +992,28 @@ impl ClientShellState {
                 .any(|pane| pane.pane_id == gesture.pane_id)
                 || (gesture.focus_confirmed
                     && focused_pane.is_some_and(|pane_id| pane_id != gesture.pane_id))
+        } else if let Some(selection) = self.selection.as_ref() {
+            let focused_pane = snapshot.focused_pane_id.as_deref();
+            let focused_here = focused_pane == Some(selection.pane_id.as_str());
+            // Like the word-gesture guard above: a selection started in an
+            // unfocused pane survives snapshots that predate its focus
+            // request, and only a focus change after that ends it.
+            let awaiting_focus = !focused_here
+                && self.selection_focus_pending.as_deref() == Some(selection.pane_id.as_str());
+            if focused_here {
+                self.selection_focus_pending = None;
+            }
+            !snapshot
+                .panes
+                .iter()
+                .any(|pane| pane.pane_id == selection.pane_id)
+                || (!focused_here && !awaiting_focus)
         } else {
-            self.selection.as_ref().is_some_and(|selection| {
-                snapshot.focused_pane_id.as_deref() != Some(selection.pane_id.as_str())
-                    || !snapshot
-                        .panes
-                        .iter()
-                        .any(|pane| pane.pane_id == selection.pane_id)
-            })
+            false
         };
         if selection_focus_lost {
             self.selection = None;
+            self.selection_focus_pending = None;
             self.selection_autoscroll = None;
             self.selection_autoscroll_deadline = None;
             self.selection_highlight_clear_deadline = None;

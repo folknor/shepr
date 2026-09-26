@@ -10,8 +10,6 @@ import path from "node:path";
 
 const SHEPR_ENV = process.env.SHEPR_ENV;
 const socketPath = process.env.SHEPR_SOCKET_PATH;
-const socketEndpoint =
-  process.platform === "win32" && socketPath ? `\\\\.\\pipe\\${socketPath}` : socketPath;
 const paneId = process.env.SHEPR_PANE_ID;
 const source = "shepr:omp";
 // OMP marks every shell it spawns with OMPCODE=1. A nested `omp` launched from
@@ -43,7 +41,7 @@ function sendRequestAttempt(request: unknown, timeoutMs: number): Promise<boolea
       resolve(delivered);
     };
 
-    const socket = net.createConnection(socketEndpoint!);
+    const socket = net.createConnection(socketPath!);
     socket.on("error", () => finish(false));
     socket.on("connect", () => socket.write(`${JSON.stringify(request)}\n`));
     socket.on("data", () => finish(true));
@@ -90,10 +88,7 @@ function nextReportSeq(): number {
 }
 
 export function isAbsoluteSessionPath(file: unknown): file is string {
-  return (
-    typeof file === "string" &&
-    (path.posix.isAbsolute(file) || path.win32.isAbsolute(file))
-  );
+  return typeof file === "string" && path.posix.isAbsolute(file);
 }
 
 function updateSessionRef(ctx: any): void {

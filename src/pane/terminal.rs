@@ -8,7 +8,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::{Frame, layout::Rect};
 #[cfg(test)]
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 use tracing::{debug, error};
 use unicode_width::UnicodeWidthStr;
 
@@ -18,9 +17,7 @@ use crate::protocol::CellData;
 #[cfg(test)]
 mod migration_tests;
 
-#[cfg(test)]
-use super::cursor::CURSOR_POSITION_SETTLE;
-use super::cursor::{CursorPositionSettleState, DecscusrTracker};
+use super::cursor::DecscusrTracker;
 use super::osc::{
     AgentOscStateTracker, DefaultColorEvent, DefaultColorEventTracker, DefaultColorOscTracker,
     DefaultColorQuery, DefaultColorTrackedEvent, OscDebugTracker,
@@ -29,7 +26,6 @@ use super::osc::{
 };
 
 const DEFAULT_DETECTION_ROWS: usize = 24;
-const CURSOR_POSITION_SETTLE_ENABLED: bool = false;
 /// Slack after a synchronized update's deadline before the follow-up render.
 const SYNCHRONIZED_OUTPUT_FLUSH_MARGIN: Duration = Duration::from_millis(5);
 const MODE_MOUSE_X10: u16 = 9;
@@ -155,7 +151,6 @@ pub(crate) struct ProcessBytesResult {
     pub request_render: bool,
     pub render_delay: Option<Duration>,
     pub terminal_title_changed: bool,
-    pub terminal_bells: u16,
     pub clipboard_writes: Vec<Vec<u8>>,
     pub reported_cwd: Option<std::path::PathBuf>,
     pub terminal_responses: Vec<Bytes>,
@@ -188,7 +183,6 @@ pub(crate) struct GhosttyPaneCore {
     pub osc_debug_tracker: OscDebugTracker,
     pub agent_osc_state: AgentOscStateTracker,
     decscusr_tracker: DecscusrTracker,
-    cursor_settle_state: CursorPositionSettleState,
 }
 
 pub(crate) struct PaneTerminal {
@@ -205,10 +199,8 @@ impl PaneTerminal {
         pane_id: PaneId,
         shell_pid: u32,
         bytes: &[u8],
-        response_writer: &mpsc::Sender<Bytes>,
     ) -> ProcessBytesResult {
-        self.ghostty
-            .process_pty_bytes(pane_id, shell_pid, bytes, response_writer)
+        self.ghostty.process_pty_bytes(pane_id, shell_pid, bytes)
     }
 
     pub fn resize(
@@ -1071,10 +1063,7 @@ fn text_fingerprint(text: &str) -> u64 {
 }
 
 impl GhosttyPaneTerminal {
-    pub fn new(
-        mut terminal: crate::ghostty::Terminal,
-        _response_writer: mpsc::Sender<Bytes>,
-    ) -> std::io::Result<Self> {
+    pub fn new(mut terminal: crate::ghostty::Terminal) -> std::io::Result<Self> {
         // Replies to anything written before the pane existed have no reader.
         let _ = terminal.take_pty_responses();
 
@@ -1104,7 +1093,6 @@ impl GhosttyPaneTerminal {
                 osc_debug_tracker: OscDebugTracker::default(),
                 agent_osc_state: AgentOscStateTracker::default(),
                 decscusr_tracker: DecscusrTracker::default(),
-                cursor_settle_state: CursorPositionSettleState::default(),
             }),
         })
     }
@@ -1241,7 +1229,6 @@ impl GhosttyPaneTerminal {
         pane_id: PaneId,
         shell_pid: u32,
         bytes: &[u8],
-        _response_writer: &mpsc::Sender<Bytes>,
     ) -> ProcessBytesResult {
         let Ok(mut core) = self.core.lock() else {
             error!(pane = pane_id.raw(), "ghostty core lock poisoned in reader");
@@ -1249,7 +1236,6 @@ impl GhosttyPaneTerminal {
                 request_render: false,
                 render_delay: None,
                 terminal_title_changed: false,
-                terminal_bells: 0,
                 clipboard_writes: Vec::new(),
                 reported_cwd: None,
                 terminal_responses: Vec::new(),
@@ -1258,7 +1244,9 @@ impl GhosttyPaneTerminal {
 
         let _ = core.terminal.take_pwd_changes();
         // Restored history may have exercised terminal callbacks before this live PTY write.
-        // Those effects must not be delivered as live pane output.
+        // Those effects must not be delivered as live pane output. Bells are
+        // not surfaced anywhere; draining them here keeps the core's counter
+        // from sitting at a stale value.
         let _ = core.terminal.take_bell_count();
         let _ = core.terminal.take_clipboard_writes();
         let default_color_observation = core.default_color_tracker.observe(bytes);
@@ -1298,7 +1286,6 @@ impl GhosttyPaneTerminal {
             default_color_events,
             &mut terminal_responses,
         );
-        let terminal_bells = core.terminal.take_bell_count();
         let clipboard_writes = core.terminal.take_clipboard_writes();
         let reported_cwd = core
             .terminal
@@ -1314,12 +1301,6 @@ impl GhosttyPaneTerminal {
         if synchronized_output != synchronized_output_before {
             core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
         }
-        // Intermediate synchronized-frame positions must not become settled cursors.
-        if CURSOR_POSITION_SETTLE_ENABLED && !synchronized_output {
-            let cursor_after_write = current_cursor_state(&mut core);
-            core.cursor_settle_state
-                .observe(cursor_after_write, Instant::now());
-        }
         let request_render = !synchronized_output;
         // A synchronized update that never ends is force-flushed by the core
         // after its timeout; schedule a render for then so the pane does not
@@ -1332,17 +1313,12 @@ impl GhosttyPaneTerminal {
                         + SYNCHRONIZED_OUTPUT_FLUSH_MARGIN
                 })
         } else {
-            render_delay_after_pty_write(
-                synchronized_output,
-                core.cursor_settle_state.render_delay(),
-                CURSOR_POSITION_SETTLE_ENABLED,
-            )
+            None
         };
         ProcessBytesResult {
             request_render,
             render_delay,
             terminal_title_changed,
-            terminal_bells,
             clipboard_writes,
             reported_cwd,
             terminal_responses,
@@ -1357,6 +1333,12 @@ impl GhosttyPaneTerminal {
             return;
         };
         core.terminal.write(ansi.as_bytes());
+        // Saved history is trimmed, so it normally ends on the last restored
+        // line with no line break. Without one the cursor stays at the end of
+        // that line and the fresh shell prints its first prompt glued onto it.
+        if !ansi.ends_with('\n') {
+            core.terminal.write(b"\r\n");
+        }
         // Restored history must never answer the live child.
         let _ = core.terminal.take_pty_responses();
     }
@@ -1383,7 +1365,7 @@ impl GhosttyPaneTerminal {
                         .saturating_sub(scrollbar.offset + scrollbar.len)
                 })
                 .unwrap_or(0);
-            let bottom_before_resize = ghostty_detection_text(&mut core)
+            let bottom_before_resize = ghostty_bottom_rows_text(&mut core)
                 .map(|text| !text.trim().is_empty())
                 .unwrap_or(false);
             let resize_recovery_probe_lines = usize::from(rows)
@@ -1412,7 +1394,7 @@ impl GhosttyPaneTerminal {
             }
             let terminal_responses = drain_terminal_responses(&mut core);
 
-            let bottom_is_blank = ghostty_detection_text(&mut core)
+            let bottom_is_blank = ghostty_bottom_rows_text(&mut core)
                 .map(|text| text.trim().is_empty())
                 .unwrap_or(false);
             if bottom_is_blank && let Some(ansi) = replay_ansi.as_deref() {
@@ -1647,8 +1629,7 @@ impl GhosttyPaneTerminal {
 
     pub fn cursor_state(&self) -> Option<TerminalCursorState> {
         let mut core = self.core.lock().ok()?;
-        let current = current_cursor_state(&mut core);
-        effective_cursor_state(&mut core, current)
+        current_cursor_state(&mut core)
     }
 
     pub fn synchronized_output_active(&self) -> bool {
@@ -2051,10 +2032,9 @@ impl GhosttyPaneTerminal {
 
         ghostty_clear_render_dirty(render_state, area.height);
 
-        let current_cursor = cursor_state_from_render_state(render_state, decscusr_tracker);
         if show_cursor
-            && let Some(cursor) =
-                effective_cursor_state(&mut core, current_cursor).filter(|cursor| cursor.visible)
+            && let Some(cursor) = cursor_state_from_render_state(render_state, decscusr_tracker)
+                .filter(|cursor| cursor.visible)
             && cursor.x < area.width
             && cursor.y < area.height
         {
@@ -2178,31 +2158,6 @@ fn color_query_response(
 fn flush_expired_synchronized_output(core: &mut GhosttyPaneCore) {
     if core.terminal.flush_expired_synchronized_output() {
         core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
-    }
-}
-
-fn effective_cursor_state(
-    core: &mut GhosttyPaneCore,
-    current: Option<TerminalCursorState>,
-) -> Option<TerminalCursorState> {
-    if !CURSOR_POSITION_SETTLE_ENABLED {
-        return current;
-    }
-    core.cursor_settle_state
-        .reported_cursor(current, Instant::now())
-}
-
-fn render_delay_after_pty_write(
-    synchronized_output: bool,
-    cursor_position_settle_delay: Option<Duration>,
-    cursor_position_settle_enabled: bool,
-) -> Option<Duration> {
-    if synchronized_output {
-        None
-    } else {
-        cursor_position_settle_enabled
-            .then_some(cursor_position_settle_delay)
-            .flatten()
     }
 }
 
@@ -2460,7 +2415,30 @@ fn ghostty_visible_ansi(core: &GhosttyPaneCore) -> Result<String, crate::ghostty
     )
 }
 
+/// The detector's snapshot: the active screen's rows up to the last content
+/// (or cursor) row, never anything above the screen. After ED2, Ctrl-L or an
+/// agent redrawing from the top, alacritty has pushed the previous frame into
+/// history; reading a screen's worth of rows ending at the last content row
+/// would hand the detector that stale frame (an old "proceed?" blocker, say).
 fn ghostty_detection_text(core: &mut GhosttyPaneCore) -> Result<String, crate::ghostty::Error> {
+    let terminal = &core.terminal;
+    let screen_rows = terminal
+        .rows()
+        .ok()
+        .map(|rows| usize::from(rows).max(1))
+        .unwrap_or(DEFAULT_DETECTION_ROWS);
+    let Some((start, end, _)) = ghostty_recent_read_range(terminal, screen_rows)? else {
+        return Ok(String::new());
+    };
+    let screen_start = terminal.total_rows()?.saturating_sub(screen_rows);
+    ghostty_text_rows(terminal, start.max(screen_start), end, screen_rows)
+}
+
+/// A screen's worth of rows ending at the last content (or cursor) row, which
+/// may reach into history when the content sits high on the screen. Resize
+/// recovery uses this to tell whether a resize blanked the pane's bottom; it is
+/// not the detector's snapshot (see `ghostty_detection_text`).
+fn ghostty_bottom_rows_text(core: &mut GhosttyPaneCore) -> Result<String, crate::ghostty::Error> {
     let lines = core
         .terminal
         .rows()
@@ -2481,16 +2459,31 @@ fn ghostty_recent_text_snapshot(
     core: &mut GhosttyPaneCore,
     lines: usize,
 ) -> Result<TerminalReadSnapshot, crate::ghostty::Error> {
-    let text = ghostty_recent_text_for_terminal(&core.terminal, lines)?;
-    Ok(finish_recent_snapshot(core, text, lines, false))
+    let terminal = &core.terminal;
+    let Some((start, end, _)) = ghostty_recent_read_range(terminal, lines)? else {
+        return Ok(TerminalReadSnapshot::default());
+    };
+    let text = ghostty_text_rows(terminal, start, end, lines)?;
+    Ok(finish_recent_snapshot(text, start))
 }
 
 fn ghostty_recent_text_unwrapped_snapshot(
     core: &mut GhosttyPaneCore,
     lines: usize,
 ) -> Result<TerminalReadSnapshot, crate::ghostty::Error> {
-    let text = ghostty_recent_text_unwrapped_for_terminal(&core.terminal, lines)?;
-    Ok(finish_recent_snapshot(core, text, lines, true))
+    let terminal = &core.terminal;
+    let Some((start, end, cols)) = ghostty_recent_read_range(terminal, lines)? else {
+        return Ok(TerminalReadSnapshot::default());
+    };
+    let text = terminal.read_text_screen(
+        (0, u32::try_from(start).unwrap_or(u32::MAX)),
+        (
+            cols.saturating_sub(1),
+            u32::try_from(end).unwrap_or(u32::MAX),
+        ),
+        false,
+    )?;
+    Ok(finish_recent_snapshot(text, start))
 }
 
 fn ghostty_recent_ansi(
@@ -2506,35 +2499,38 @@ fn ghostty_recent_ansi_snapshot(
     lines: usize,
     unwrap: bool,
 ) -> Result<TerminalReadSnapshot, crate::ghostty::Error> {
-    let text = ghostty_recent_ansi_for_terminal(&core.terminal, lines, unwrap)?;
-    Ok(finish_recent_snapshot(core, text, lines, unwrap))
+    let terminal = &core.terminal;
+    let Some((start, end, cols)) = ghostty_recent_read_range(terminal, lines)? else {
+        return Ok(TerminalReadSnapshot::default());
+    };
+    let text = terminal.read_ansi_screen(
+        (0, u32::try_from(start).unwrap_or(u32::MAX)),
+        (
+            cols.saturating_sub(1),
+            u32::try_from(end).unwrap_or(u32::MAX),
+        ),
+        false,
+        unwrap,
+    )?;
+    Ok(finish_recent_snapshot(text, start))
 }
 
-fn finish_recent_snapshot(
-    core: &mut GhosttyPaneCore,
-    text: String,
-    lines: usize,
-    unwrap: bool,
-) -> TerminalReadSnapshot {
-    let _ = unwrap;
-
-    // Recent read limits are measured in rendered rows, including blank or styled rows.
+/// Recent read limits are measured in rendered rows, including blank or styled
+/// rows. The read is truncated only when rows above its first row were left
+/// out; trailing blank rows below the content are not "omitted" history.
+fn finish_recent_snapshot(text: String, start: usize) -> TerminalReadSnapshot {
     TerminalReadSnapshot {
         text,
-        truncated: core
-            .terminal
-            .total_rows()
-            .is_ok_and(|total_rows| total_rows > lines),
+        truncated: start > 0,
     }
 }
 
-fn ghostty_recent_text_for_terminal(
+fn ghostty_text_rows(
     terminal: &crate::ghostty::Terminal,
+    start: usize,
+    end: usize,
     lines: usize,
 ) -> Result<String, crate::ghostty::Error> {
-    let Some((start, end, _)) = ghostty_recent_read_range(terminal, lines)? else {
-        return Ok(String::new());
-    };
     let mut rows = Vec::with_capacity(end.saturating_sub(start).saturating_add(1));
     for y in start..=end {
         rows.push(ghostty_screen_row(
@@ -2544,42 +2540,6 @@ fn ghostty_recent_text_for_terminal(
     }
     trim_trailing_blank_rows(&mut rows);
     Ok(recent_text_from_rows(&rows, lines))
-}
-
-fn ghostty_recent_text_unwrapped_for_terminal(
-    terminal: &crate::ghostty::Terminal,
-    lines: usize,
-) -> Result<String, crate::ghostty::Error> {
-    let Some((start, end, cols)) = ghostty_recent_read_range(terminal, lines)? else {
-        return Ok(String::new());
-    };
-    terminal.read_text_screen(
-        (0, u32::try_from(start).unwrap_or(u32::MAX)),
-        (
-            cols.saturating_sub(1),
-            u32::try_from(end).unwrap_or(u32::MAX),
-        ),
-        false,
-    )
-}
-
-fn ghostty_recent_ansi_for_terminal(
-    terminal: &crate::ghostty::Terminal,
-    lines: usize,
-    unwrap: bool,
-) -> Result<String, crate::ghostty::Error> {
-    let Some((start, end, cols)) = ghostty_recent_read_range(terminal, lines)? else {
-        return Ok(String::new());
-    };
-    terminal.read_ansi_screen(
-        (0, u32::try_from(start).unwrap_or(u32::MAX)),
-        (
-            cols.saturating_sub(1),
-            u32::try_from(end).unwrap_or(u32::MAX),
-        ),
-        false,
-        unwrap,
-    )
 }
 
 fn ghostty_recent_read_range(
@@ -3103,7 +3063,6 @@ fn should_probe_host_terminal_theme_restore(core: &GhosttyPaneCore) -> bool {
 mod tests {
     use super::*;
     use ratatui::{layout::Rect, style::Color};
-    use tokio::sync::mpsc;
 
     #[test]
     fn plain_page_keys_host_scroll_for_shell_like_decckm_with_bracketed_paste() {
@@ -3136,11 +3095,10 @@ mod tests {
 
     #[test]
     fn dirty_full_collects_bounded_viewport_patch() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(4, 3, 200).expect("test precondition");
         terminal.write(b"one\r\ntwo\r\nthree");
         let pane =
-            PaneTerminal::new(GhosttyPaneTerminal::new(terminal, tx).expect("test precondition"));
+            PaneTerminal::new(GhosttyPaneTerminal::new(terminal).expect("test precondition"));
 
         let patch = match pane.collect_dirty_patch(4, 3) {
             TerminalDirtyPatchOutcome::Patch(patch) => patch,
@@ -3479,7 +3437,6 @@ mod tests {
 
     #[test]
     fn live_terminal_word_motion_expands_across_long_blank_history() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(10, 3, 200).expect("test precondition");
         terminal.write(b"origin\r\n");
         for _ in 0..80 {
@@ -3493,7 +3450,7 @@ mod tests {
         )
         .expect("row count fits in u32");
         let pane =
-            PaneTerminal::new(GhosttyPaneTerminal::new(terminal, tx).expect("test precondition"));
+            PaneTerminal::new(GhosttyPaneTerminal::new(terminal).expect("test precondition"));
 
         assert_eq!(
             pane.word_motion_target(last_row, 0, TerminalWordMotion::PreviousStart),
@@ -3503,12 +3460,11 @@ mod tests {
 
     #[test]
     fn live_terminal_word_end_expands_through_a_long_soft_wrap() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(2, 3, 200).expect("test precondition");
         let word = "a".repeat(132);
         terminal.write(word.as_bytes());
         let pane =
-            PaneTerminal::new(GhosttyPaneTerminal::new(terminal, tx).expect("test precondition"));
+            PaneTerminal::new(GhosttyPaneTerminal::new(terminal).expect("test precondition"));
         let text_match = pane
             .search_text_window(
                 &word,
@@ -3532,12 +3488,11 @@ mod tests {
 
     #[test]
     fn live_terminal_word_end_expands_through_a_long_wide_soft_wrap() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(2, 3, 200).expect("test precondition");
         let word = "界".repeat(66);
         terminal.write(word.as_bytes());
         let pane =
-            PaneTerminal::new(GhosttyPaneTerminal::new(terminal, tx).expect("test precondition"));
+            PaneTerminal::new(GhosttyPaneTerminal::new(terminal).expect("test precondition"));
         let text_match = pane
             .search_text_window(
                 &word,
@@ -3584,15 +3539,14 @@ mod tests {
 
     #[test]
     fn process_pty_bytes_reports_latest_working_directory_report() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 100).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        let partial = pane.process_pty_bytes(pane_id, 0, b"\x1b]7;file:///tmp/shepr%20", &tx);
+        let partial = pane.process_pty_bytes(pane_id, 0, b"\x1b]7;file:///tmp/shepr%20");
         assert_eq!(partial.reported_cwd, None);
 
-        let completed = pane.process_pty_bytes(pane_id, 0, b"repo\x07", &tx);
+        let completed = pane.process_pty_bytes(pane_id, 0, b"repo\x07");
         assert_eq!(
             completed.reported_cwd,
             Some(std::path::PathBuf::from("/tmp/shepr repo"))
@@ -3602,7 +3556,6 @@ mod tests {
             pane_id,
             0,
             b"\x1b]9;9;/tmp/conemu\x1b\\\x1b]1337;CurrentDir=/tmp/iterm2\x1b\\",
-            &tx,
         );
         assert_eq!(
             latest.reported_cwd,
@@ -3611,63 +3564,41 @@ mod tests {
     }
 
     #[test]
-    fn process_pty_bytes_surfaces_live_bells_only() {
-        let (tx, _rx) = mpsc::channel(4);
-        let terminal = crate::ghostty::Terminal::new(80, 24, 100).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
-        let pane_id = PaneId::from_raw(1);
-
-        pane.seed_history_ansi("stale\x07");
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x07\x1b]0;title\x07\x07", &tx);
-
-        assert_eq!(result.terminal_bells, 2);
-        let drained = pane.process_pty_bytes(pane_id, 0, b"live output", &tx);
-        assert_eq!(drained.terminal_bells, 0);
-    }
-
-    #[test]
     fn process_pty_bytes_reports_only_completed_title_changes() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 100).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
         assert!(
             !pane
-                .process_pty_bytes(pane_id, 0, b"\x1b]0;buil", &tx)
+                .process_pty_bytes(pane_id, 0, b"\x1b]0;buil")
                 .terminal_title_changed
         );
         assert!(
-            pane.process_pty_bytes(pane_id, 0, b"ding\x07", &tx)
+            pane.process_pty_bytes(pane_id, 0, b"ding\x07")
                 .terminal_title_changed
         );
         assert!(
             !pane
-                .process_pty_bytes(pane_id, 0, b"\x1b]2;building\x07", &tx)
+                .process_pty_bytes(pane_id, 0, b"\x1b]2;building\x07")
                 .terminal_title_changed
         );
         assert!(
-            pane.process_pty_bytes(pane_id, 0, b"\x1b]2;done\x07", &tx)
+            pane.process_pty_bytes(pane_id, 0, b"\x1b]2;done\x07")
                 .terminal_title_changed
         );
     }
 
     #[test]
     fn process_pty_bytes_surfaces_clipboard_writes_without_other_results() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 100).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
-        let result = pane.process_pty_bytes(
-            PaneId::from_raw(1),
-            0,
-            b"output\x1b]52;c;Y2xpcGJvYXJk\x07",
-            &tx,
-        );
+        let result =
+            pane.process_pty_bytes(PaneId::from_raw(1), 0, b"output\x1b]52;c;Y2xpcGJvYXJk\x07");
 
         assert!(result.request_render);
         assert_eq!(result.render_delay, None);
-        assert_eq!(result.terminal_bells, 0);
         assert_eq!(result.clipboard_writes, vec![b"clipboard".to_vec()]);
         assert_eq!(result.reported_cwd, None);
         assert!(result.terminal_responses.is_empty());
@@ -3675,24 +3606,22 @@ mod tests {
 
     #[test]
     fn seeded_history_clipboard_write_does_not_leak_into_live_output() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 100).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         pane.seed_history_ansi("\x1b]52;c;c3RhbGU=\x07");
 
-        let result = pane.process_pty_bytes(PaneId::from_raw(1), 0, b"live output", &tx);
+        let result = pane.process_pty_bytes(PaneId::from_raw(1), 0, b"live output");
 
         assert!(result.clipboard_writes.is_empty());
     }
 
     #[test]
     fn seeded_history_pwd_does_not_leak_into_live_output() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 100).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         pane.seed_history_ansi("\x1b]7;file:///tmp/restored\x07");
 
-        let result = pane.process_pty_bytes(PaneId::from_raw(1), 0, b"live output", &tx);
+        let result = pane.process_pty_bytes(PaneId::from_raw(1), 0, b"live output");
 
         assert_eq!(result.reported_cwd, None);
     }
@@ -3749,56 +3678,52 @@ mod tests {
 
     #[test]
     fn cursor_state_uses_terminal_default_until_child_sets_shape() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
         assert_eq!(pane.cursor_state().expect("test precondition").shape, 0);
 
-        pane.process_pty_bytes(pane_id, 0, b"\x1b[6 q", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[6 q");
 
         assert_eq!(pane.cursor_state().expect("test precondition").shape, 6);
     }
 
     #[test]
     fn cursor_state_returns_terminal_default_after_decscusr_reset() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        pane.process_pty_bytes(pane_id, 0, b"\x1b[2 q", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[2 q");
         assert_eq!(pane.cursor_state().expect("test precondition").shape, 2);
 
-        pane.process_pty_bytes(pane_id, 0, b"\x1b[0 q", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[0 q");
 
         assert_eq!(pane.cursor_state().expect("test precondition").shape, 0);
     }
 
     #[test]
     fn cursor_shape_tracker_handles_split_decscusr_sequences() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        pane.process_pty_bytes(pane_id, 0, b"\x1b[", &tx);
-        pane.process_pty_bytes(pane_id, 0, b"5 ", &tx);
-        pane.process_pty_bytes(pane_id, 0, b"q", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[");
+        pane.process_pty_bytes(pane_id, 0, b"5 ");
+        pane.process_pty_bytes(pane_id, 0, b"q");
 
         assert_eq!(pane.cursor_state().expect("test precondition").shape, 5);
     }
 
     #[test]
-    fn cursor_state_uses_live_position_when_settle_policy_disabled() {
-        let (tx, _rx) = mpsc::channel(4);
+    fn cursor_state_reports_the_live_position() {
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        pane.process_pty_bytes(pane_id, 0, b"x", &tx);
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[6;21H", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"x");
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[6;21H");
 
         assert_eq!(result.render_delay, None);
         assert_eq!(
@@ -3809,23 +3734,9 @@ mod tests {
     }
 
     #[test]
-    fn cursor_settle_policy_controls_render_delay() {
-        let delay = Some(CURSOR_POSITION_SETTLE);
-        assert_eq!(render_delay_after_pty_write(false, delay, true), delay);
-        assert_eq!(render_delay_after_pty_write(false, delay, false), None);
-        assert_eq!(render_delay_after_pty_write(true, delay, true), None);
-        let jump_delay = Some(Duration::from_millis(100));
-        assert_eq!(
-            render_delay_after_pty_write(false, jump_delay, true),
-            jump_delay
-        );
-    }
-
-    #[test]
     fn host_terminal_theme_restore_probe_skips_when_no_transient_override() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let core = pane.core.lock().expect("test precondition");
 
         assert!(!should_probe_host_terminal_theme_restore(&core));
@@ -3833,9 +3744,8 @@ mod tests {
 
     #[test]
     fn host_terminal_theme_restore_probe_skips_when_host_theme_unknown() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         {
             let mut core = pane.core.lock().expect("test precondition");
             core.transient_default_color_owner_pgid = Some(42);
@@ -3847,10 +3757,9 @@ mod tests {
 
     #[test]
     fn host_terminal_theme_restore_probe_skips_on_alternate_screen() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.write(b"\x1b[?1049h");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         {
             let mut core = pane.core.lock().expect("test precondition");
             core.transient_default_color_owner_pgid = Some(42);
@@ -3875,9 +3784,8 @@ mod tests {
 
     #[test]
     fn host_terminal_theme_restore_probe_runs_when_restore_is_pending() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         {
             let mut core = pane.core.lock().expect("test precondition");
             core.transient_default_color_owner_pgid = Some(42);
@@ -3902,17 +3810,15 @@ mod tests {
 
     #[test]
     fn ghostty_render_can_suppress_cursor_position() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut first_terminal =
             crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
         first_terminal.write(b"left");
-        let first =
-            GhosttyPaneTerminal::new(first_terminal, tx.clone()).expect("test precondition");
+        let first = GhosttyPaneTerminal::new(first_terminal).expect("test precondition");
 
         let mut second_terminal =
             crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
         second_terminal.write(b"r\r\nb");
-        let second = GhosttyPaneTerminal::new(second_terminal, tx).expect("test precondition");
+        let second = GhosttyPaneTerminal::new(second_terminal).expect("test precondition");
 
         let backend = ratatui::backend::TestBackend::new(40, 5);
         let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
@@ -3928,10 +3834,9 @@ mod tests {
 
     #[test]
     fn ghostty_keyboard_protocol_tracks_live_terminal_flags() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.write(b"\x1b[>3u");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         assert_eq!(
             pane.keyboard_protocol(),
@@ -3941,9 +3846,8 @@ mod tests {
 
     #[test]
     fn ghostty_plain_text_chars_still_encode_as_text() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let encoded = pane.encode_terminal_key(
             crate::input::TerminalKey::new(
@@ -3962,12 +3866,11 @@ mod tests {
             (None, b"\x1b[Z".as_slice()),
             (Some(1), b"\x1b[9;2u".as_slice()),
         ] {
-            let (tx, _rx) = mpsc::channel(4);
             let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
             if let Some(flags) = kitty_flags {
                 terminal.write(format!("\x1b[>{flags}u").as_bytes());
             }
-            let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+            let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
             let protocol = pane.keyboard_protocol().expect("test precondition");
 
             for modifiers in [
@@ -3982,9 +3885,8 @@ mod tests {
             }
         }
 
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let encoded = pane.encode_terminal_key(
             crate::input::TerminalKey::new(
                 crossterm::event::KeyCode::Tab,
@@ -3997,9 +3899,8 @@ mod tests {
 
     #[test]
     fn ghostty_ctrl_tab_matches_the_pane_keyboard_protocol() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let legacy = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let legacy = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let key = crate::input::TerminalKey::new(
             crossterm::event::KeyCode::Tab,
             crossterm::event::KeyModifiers::CONTROL,
@@ -4012,7 +3913,7 @@ mod tests {
 
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.write(b"\x1b[>3u");
-        let kitty = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let kitty = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         // Flags 3 include REPORT_EVENT_TYPES; shepr's encoder always spells out
         // the press event type (`:1`), which the protocol allows.
         assert_eq!(
@@ -4026,9 +3927,8 @@ mod tests {
     fn ghostty_legacy_modified_enter_is_shell_compatible() {
         use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let protocol = crate::input::KeyboardProtocol::Legacy;
 
         for modifiers in [
@@ -4072,9 +3972,8 @@ mod tests {
     fn ghostty_modified_enter_tracks_live_protocol_negotiation() {
         use crossterm::event::{KeyCode, KeyModifiers};
 
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         let legacy = ["\r", "\r", "\r", "\x1b\r"];
         let mode_one = ["\x1b[27;2;13~", "\x1b[27;5;13~", "\x1b[27;9;13~", "\x1b\r"];
@@ -4104,7 +4003,7 @@ mod tests {
             ("\x1b[>4", mode_two),
             ("n", legacy),
         ] {
-            pane.process_pty_bytes(pane_id, 0, sequence.as_bytes(), &tx);
+            pane.process_pty_bytes(pane_id, 0, sequence.as_bytes());
             for (modifiers, expected) in [
                 KeyModifiers::SHIFT,
                 KeyModifiers::CONTROL,
@@ -4126,10 +4025,9 @@ mod tests {
 
     #[test]
     fn ghostty_modified_enter_respects_existing_terminal_mode() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.write(b"\x1b[>4;2m");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let key = crate::input::TerminalKey::new(
             crossterm::event::KeyCode::Enter,
             crossterm::event::KeyModifiers::SHIFT,
@@ -4143,9 +4041,8 @@ mod tests {
 
     #[test]
     fn ghostty_enter_backspace_release_in_legacy_pane_emits_nothing() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         for code in [
             crossterm::event::KeyCode::Enter,
@@ -4170,11 +4067,10 @@ mod tests {
 
     #[test]
     fn ghostty_report_event_pane_keeps_basic_compatibility_keys_legacy() {
-        let (tx, _rx) = mpsc::channel(4);
         // Push kitty flags including REPORT_EVENT_TYPES (0b10) + DISAMBIGUATE (0b1).
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.write(b"\x1b[>3u");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         for (code, expected) in [
             (crossterm::event::KeyCode::Enter, b"\r".as_slice()),
@@ -4203,10 +4099,9 @@ mod tests {
 
     #[test]
     fn ghostty_char_keys_still_use_shepr_encoding() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.write(b"\x1b[>1u");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let encoded = pane.encode_terminal_key(
             crate::input::TerminalKey::new(
@@ -4221,12 +4116,11 @@ mod tests {
 
     #[test]
     fn ghostty_key_encoding_honors_application_cursor_mode() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal
             .mode_set(crate::ghostty::MODE_APPLICATION_CURSOR_KEYS, true)
             .expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let encoded = pane.encode_terminal_key(
             crate::input::TerminalKey::new(
@@ -4241,9 +4135,8 @@ mod tests {
 
     #[test]
     fn grouped_key_repeats_expand_at_the_destination() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let key = crate::input::TerminalKey::new(
             crossterm::event::KeyCode::Char('x'),
             crossterm::event::KeyModifiers::empty(),
@@ -4275,8 +4168,7 @@ mod tests {
         );
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.write(b"\x1b[>15u");
-        let (tx, _rx) = mpsc::channel(4);
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         assert_eq!(
             pane.encode_terminal_key(shifted, crate::input::KeyboardProtocol::Kitty { flags: 15 },),
             b"\x1b[47;2:1u\x1b[47;2:2u\x1b[47;2:2u"
@@ -4285,10 +4177,9 @@ mod tests {
 
     #[test]
     fn grouped_release_is_encoded_once() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.write(b"\x1b[>11u");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let protocol = pane.keyboard_protocol().expect("test precondition");
         let release = crate::input::TerminalKey::new(
             crossterm::event::KeyCode::Up,
@@ -4308,9 +4199,8 @@ mod tests {
 
     #[test]
     fn ghostty_key_encoder_updates_after_terminal_mode_changes() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
         let before = pane.encode_terminal_key(
@@ -4322,7 +4212,7 @@ mod tests {
         );
         assert_eq!(before, b"\x1b[A");
 
-        pane.process_pty_bytes(pane_id, 0, b"\x1b[?1h", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[?1h");
 
         let after = pane.encode_terminal_key(
             crate::input::TerminalKey::new(
@@ -4336,9 +4226,8 @@ mod tests {
 
     #[test]
     fn ghostty_key_encoder_updates_after_kitty_flag_changes() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         let key = crate::input::TerminalKey::new(
             crossterm::event::KeyCode::Enter,
@@ -4346,7 +4235,7 @@ mod tests {
         );
 
         let before = pane.encode_terminal_key(key.clone(), crate::input::KeyboardProtocol::Legacy);
-        pane.process_pty_bytes(pane_id, 0, b"\x1b[>1u", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[>1u");
         let after = pane.encode_terminal_key(key.clone(), crate::input::KeyboardProtocol::Legacy);
 
         assert_ne!(before, after);
@@ -4355,11 +4244,10 @@ mod tests {
 
     #[test]
     fn ghostty_kitty_pane_encodes_shift_enter_as_csi_u() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
-        pane.process_pty_bytes(pane_id, 0, b"\x1b[>5u", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[>5u");
 
         let key =
             crate::input::parse_terminal_key_sequence("\x1b[13;2u").expect("test precondition");
@@ -4374,9 +4262,8 @@ mod tests {
 
     #[test]
     fn ghostty_modify_other_keys_mode_one_preserves_shift_enter() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let key =
             crate::input::parse_terminal_key_sequence("\x1b[13;2u").expect("test precondition");
 
@@ -4389,11 +4276,10 @@ mod tests {
 
     #[test]
     fn ghostty_kitty_pane_encodes_parsed_legacy_alt_backspace_as_csi_u() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
-        pane.process_pty_bytes(pane_id, 0, b"\x1b[>1u", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[>1u");
 
         let key = crate::input::parse_terminal_key_sequence("\x1b\x7f").expect("test precondition");
         let encoded = pane.encode_terminal_key(key.clone(), crate::input::KeyboardProtocol::Legacy);
@@ -4403,11 +4289,10 @@ mod tests {
 
     #[test]
     fn ghostty_kitty_pane_preserves_legacy_ctrl_alt_letter() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
-        pane.process_pty_bytes(pane_id, 0, b"\x1b[>5u", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[>5u");
 
         let mut events = crate::raw_input::parse_raw_input_bytes_sync(b"\x1b\x06");
         let crate::raw_input::RawInputEvent::Key(key) = events.remove(0) else {
@@ -4421,10 +4306,8 @@ mod tests {
 
     #[test]
     fn ghostty_pane_characterizes_ctrl_backspace_encoding() {
-        let (tx, _rx) = mpsc::channel(4);
         let legacy = GhosttyPaneTerminal::new(
             crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition"),
-            tx.clone(),
         )
         .expect("test precondition");
 
@@ -4451,11 +4334,10 @@ mod tests {
 
         let kitty = GhosttyPaneTerminal::new(
             crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition"),
-            tx.clone(),
         )
         .expect("test precondition");
         let pane_id = PaneId::from_raw(1);
-        kitty.process_pty_bytes(pane_id, 0, b"\x1b[>1u", &tx);
+        kitty.process_pty_bytes(pane_id, 0, b"\x1b[>1u");
 
         assert_eq!(
             kitty.encode_terminal_key(ctrl_backspace, crate::input::KeyboardProtocol::Legacy),
@@ -4465,19 +4347,16 @@ mod tests {
 
     #[test]
     fn ghostty_key_encoders_are_isolated_per_pane() {
-        let (tx, _rx) = mpsc::channel(4);
         let first = GhosttyPaneTerminal::new(
             crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition"),
-            tx.clone(),
         )
         .expect("test precondition");
         let second = GhosttyPaneTerminal::new(
             crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition"),
-            tx.clone(),
         )
         .expect("test precondition");
 
-        first.process_pty_bytes(PaneId::from_raw(1), 0, b"\x1b[?1h", &tx);
+        first.process_pty_bytes(PaneId::from_raw(1), 0, b"\x1b[?1h");
 
         let first_encoded = first.encode_terminal_key(
             crate::input::TerminalKey::new(
@@ -4500,10 +4379,9 @@ mod tests {
 
     #[test]
     fn ghostty_mouse_button_encoding_uses_live_terminal_state() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.write(b"\x1b[?1000h\x1b[?1006h");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let encoded = pane.encode_mouse_button(
             crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
@@ -4516,10 +4394,9 @@ mod tests {
 
     #[test]
     fn ghostty_mouse_drag_encoding_uses_motion_reporting_state() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.write(b"\x1b[?1002h\x1b[?1006h");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let encoded = pane.encode_mouse_button(
             crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
@@ -4532,10 +4409,9 @@ mod tests {
 
     #[test]
     fn ghostty_mouse_drag_without_motion_reporting_is_not_forwarded() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.write(b"\x1b[?1000h\x1b[?1006h");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let encoded = pane.encode_mouse_button(
             crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
@@ -4548,10 +4424,9 @@ mod tests {
 
     #[test]
     fn ghostty_mouse_moved_encoding_uses_any_motion_state() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.write(b"\x1b[?1003h\x1b[?1006h");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let encoded = pane.encode_mouse_motion(
             crossterm::event::MouseEventKind::Moved,
@@ -4564,11 +4439,10 @@ mod tests {
 
     #[test]
     fn ghostty_mouse_sgr_pixels_preserves_exact_and_downgrades_cell_input() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.resize(80, 24, 10, 20).expect("test precondition");
         terminal.write(b"\x1b[?1003h\x1b[?1006h\x1b[?1016h");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let exact = pane.encode_mouse_motion(
             crossterm::event::MouseEventKind::Moved,
@@ -4712,10 +4586,9 @@ mod tests {
 
     #[test]
     fn render_keeps_halfwidth_katakana_and_voiced_mark_in_their_own_cells() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(20, 1, 0).expect("test precondition");
         terminal.write("ｶﾞZ".as_bytes());
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let backend = ratatui::backend::TestBackend::new(20, 1);
         let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
@@ -4732,10 +4605,9 @@ mod tests {
 
     #[test]
     fn pane_scrollback_controls_round_trip_and_clamp_without_ui_interference() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 3, 100).expect("test precondition");
         write_numbered_lines(&mut terminal, 1000);
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let before = pane.scroll_metrics().expect("scroll metrics before scroll");
         assert!(before.max_offset_from_bottom > 0);
@@ -4761,11 +4633,10 @@ mod tests {
     #[test]
     fn empty_or_short_resize_keeps_following_bottom_when_output_creates_scrollback() {
         for initial in [b"".as_slice(), b"seed\r\n".as_slice()] {
-            let (tx, _rx) = mpsc::channel(4);
             let mut terminal =
                 crate::ghostty::Terminal::new(10, 3, 100).expect("test precondition");
             terminal.write(initial);
-            let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+            let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
             let pane_id = PaneId::from_raw(1);
 
             pane.resize(3, 10, 0, 0);
@@ -4773,7 +4644,6 @@ mod tests {
                 pane_id,
                 0,
                 b"000000\r\n000001\r\n000002\r\n000003\r\n000004",
-                &tx,
             );
 
             let metrics = pane.scroll_metrics().expect("scroll metrics after output");
@@ -4784,10 +4654,9 @@ mod tests {
 
     #[test]
     fn resize_that_removes_scrollback_restores_live_follow() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(10, 3, 100).expect("test precondition");
         terminal.write(b"000000\r\n000001\r\n000002\r\n000003\r\n000004");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
         pane.set_scroll_offset_from_bottom(1);
@@ -4795,7 +4664,7 @@ mod tests {
         let resized = pane.scroll_metrics().expect("scroll metrics after resize");
         assert_eq!(resized.max_offset_from_bottom, 0);
 
-        pane.process_pty_bytes(pane_id, 0, b"\r\n000005\r\n000006", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\r\n000005\r\n000006");
 
         let metrics = pane.scroll_metrics().expect("scroll metrics after output");
         assert_eq!(metrics.offset_from_bottom, 0);
@@ -4804,10 +4673,9 @@ mod tests {
 
     #[test]
     fn detection_text_stays_at_bottom_when_viewport_is_scrolled() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 3, 100).expect("test precondition");
         write_numbered_lines(&mut terminal, 10);
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let bottom_snapshot = pane.detection_text();
         assert_eq!(bottom_snapshot, pane.recent_text(3));
@@ -4822,10 +4690,9 @@ mod tests {
 
     #[test]
     fn extract_selection_reads_screen_rows_not_current_viewport() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(8, 3, 1024).expect("test precondition");
         write_numbered_lines(&mut terminal, 8);
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         pane.set_scroll_offset_from_bottom(3);
         let metrics = pane
@@ -4845,12 +4712,11 @@ mod tests {
 
     #[test]
     fn recent_reads_include_viewport_before_scrollback_exists() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal =
             crate::ghostty::Terminal::new(20, 20, crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES)
                 .expect("test precondition");
         terminal.write(b"hello123");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         assert_eq!(pane.recent_text(3), "hello123\n");
         assert_eq!(pane.recent_unwrapped_text(3), "hello123");
@@ -4858,10 +4724,9 @@ mod tests {
 
     #[test]
     fn alternate_screen_recent_reads_keep_physical_row_ranges() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(20, 20, 100).expect("test precondition");
         terminal.write(b"\x1b[?1049hhello123");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         assert_eq!(pane.recent_text(3), "");
         assert_eq!(pane.recent_unwrapped_text(3), "");
@@ -4869,10 +4734,9 @@ mod tests {
 
     #[test]
     fn recent_unwrapped_text_ignores_soft_wraps() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(5, 3, 100).expect("test precondition");
         terminal.write(b"ABCDEFGHIJ");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         assert_eq!(pane.recent_text(3), "ABCDE\nFGHIJ\n");
         assert_eq!(pane.recent_unwrapped_text(3), "ABCDEFGHIJ");
@@ -4880,10 +4744,9 @@ mod tests {
 
     #[test]
     fn recent_snapshots_report_omitted_rendered_rows() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(20, 3, 100).expect("test precondition");
         terminal.write(b"one\r\ntwo\r\nthree\r\nfour");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         assert!(pane.recent_text_snapshot(2).truncated);
         assert!(pane.recent_ansi_snapshot(2).truncated);
@@ -4893,11 +4756,59 @@ mod tests {
     }
 
     #[test]
+    fn recent_snapshots_do_not_count_trailing_blank_rows_as_omitted() {
+        let mut terminal = crate::ghostty::Terminal::new(20, 10, 100).expect("test precondition");
+        terminal.write(b"one\r\ntwo");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
+
+        // Ten rows exist but only two hold content; a five-row read leaves
+        // nothing out above it.
+        let snapshot = pane.recent_text_snapshot(5);
+        assert_eq!(snapshot.text, "one\ntwo\n");
+        assert!(!snapshot.truncated);
+        assert!(!pane.recent_ansi_snapshot(5).truncated);
+        assert!(!pane.recent_unwrapped_text_snapshot(5).truncated);
+    }
+
+    #[test]
+    fn detection_text_ignores_the_frame_a_clear_pushed_into_history() {
+        let mut terminal = crate::ghostty::Terminal::new(20, 4, 100).expect("test precondition");
+        terminal.write(b"a\r\nb\r\nc\r\nproceed? [y/n]");
+        terminal.write(b"\x1b[H\x1b[2Jfresh");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
+
+        let detection = pane.detection_text();
+        assert_eq!(detection, "fresh\n");
+        assert!(!detection.contains("proceed"));
+    }
+
+    #[test]
+    fn seeded_history_leaves_the_cursor_on_a_fresh_line() {
+        let terminal = crate::ghostty::Terminal::new(20, 5, 100).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
+        // Saved history is trimmed and ends mid-line on the old prompt.
+        pane.seed_history_ansi("output\r\nuser@host $ ");
+        let cursor = pane.cursor_state().expect("test precondition");
+        assert_eq!((cursor.x, cursor.y), (0, 2));
+
+        pane.process_pty_bytes(PaneId::from_raw(1), 0, b"new $ ");
+        assert_eq!(pane.recent_text(5), "output\nuser@host $\nnew $\n");
+    }
+
+    #[test]
+    fn seeded_history_ending_in_a_line_break_gets_no_extra_blank_line() {
+        let terminal = crate::ghostty::Terminal::new(20, 5, 100).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
+        pane.seed_history_ansi("restored\r\n");
+        let cursor = pane.cursor_state().expect("test precondition");
+        assert_eq!((cursor.x, cursor.y), (0, 1));
+    }
+
+    #[test]
     fn plain_text_reads_skip_wide_character_spacer_cells() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(40, 3, 100).expect("test precondition");
         terminal.write("日本語テスト ABC 123".as_bytes());
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         assert_eq!(pane.visible_text(), "日本語テスト ABC 123\n");
         assert_eq!(pane.recent_text(3), "日本語テスト ABC 123\n");
@@ -4907,12 +4818,11 @@ mod tests {
 
     #[test]
     fn recent_rows_preserve_combining_text_and_hide_image_placeholders() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal =
             crate::ghostty::Terminal::new(40, 3, 1024 * 1024).expect("test precondition");
         terminal.write("old\r\n".repeat(100).as_bytes());
         terminal.write("界 e\u{301} \u{10eeee} tail  ".as_bytes());
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         assert_eq!(pane.recent_text(1), "界 e\u{301}   tail\n");
         let detection = pane.detection_text();
         assert_eq!(detection, "old\nold\n界 e\u{301}   tail\n");
@@ -4922,10 +4832,9 @@ mod tests {
 
     #[test]
     fn visible_ansi_preserves_cell_style_sequences() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(20, 3, 100).expect("test precondition");
         terminal.write(b"\x1b[31;1mred\x1b[0m plain");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let ansi = pane.visible_ansi();
         assert!(ansi.contains("red"));
@@ -4935,10 +4844,9 @@ mod tests {
 
     #[test]
     fn recent_ansi_can_read_styled_scrollback() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(20, 3, 100).expect("test precondition");
         terminal.write(b"\x1b[34mblue\x1b[0m\r\nline2\r\nline3\r\nline4");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let ansi = pane.recent_ansi(4);
         assert!(ansi.contains("blue"));
@@ -4948,10 +4856,9 @@ mod tests {
 
     #[test]
     fn resize_shrinks_both_axes_with_cursor_at_old_bottom() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(8, 4, 10_000).expect("test precondition");
         terminal.write(b"alpha\r\nbeta\r\ngamma\r\ndelta");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         pane.resize(3, 7, 8, 16);
 
@@ -4969,10 +4876,9 @@ mod tests {
 
     #[test]
     fn resize_reflow_keeps_scrolled_viewport_and_bottom_detection_sane() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(12, 4, 10_000).expect("test precondition");
         write_wrapped_contract_lines(&mut terminal, 40);
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let bottom_snapshot = pane.detection_text();
         assert!(bottom_snapshot.contains("END"));
@@ -5015,10 +4921,9 @@ mod tests {
 
     #[test]
     fn resize_recovery_does_not_replay_history_when_visible_screen_was_blank() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(20, 3, 10_000).expect("test precondition");
         terminal.write(b"old history\r\n\x1b[2J\x1b[H");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         assert!(pane.visible_text().trim().is_empty());
         assert!(pane.detection_text().trim().is_empty());
@@ -5032,11 +4937,10 @@ mod tests {
 
     #[test]
     fn resize_recovery_does_not_replay_scrolled_history_over_blank_bottom() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(20, 3, 10_000).expect("test precondition");
         write_numbered_lines(&mut terminal, 20);
         terminal.write(b"\x1b[2J\x1b[H");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         assert!(pane.detection_text().trim().is_empty());
         let metrics = pane.scroll_metrics().expect("scroll metrics");
@@ -5051,13 +4955,12 @@ mod tests {
 
     #[test]
     fn process_pty_bytes_answers_xtwinops_size_queries() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.resize(24, 80, 9, 18);
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[14t\x1b[16t\x1b[18t", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[14t\x1b[16t\x1b[18t");
 
         assert_eq!(
             result.terminal_responses,
@@ -5071,14 +4974,13 @@ mod tests {
 
     #[test]
     fn xtwinops_size_queries_follow_successful_resize() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.resize(24, 80, 9, 18);
         pane.resize(30, 100, 10, 20);
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[14t\x1b[16t\x1b[18t", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[14t\x1b[16t\x1b[18t");
 
         assert_eq!(
             result.terminal_responses,
@@ -5092,27 +4994,31 @@ mod tests {
 
     #[test]
     fn xtwinops_size_queries_stay_silent_without_pixel_geometry() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         for (cell_width_px, cell_height_px) in [(0, 0), (0, 18), (9, 0)] {
             pane.resize(24, 80, cell_width_px, cell_height_px);
-            let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[14t\x1b[16t\x1b[18t", &tx);
-            assert!(result.terminal_responses.is_empty());
+            let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[14t\x1b[16t\x1b[18t");
+            // CSI 14 t (pixel geometry) and CSI 16 t (cell size in pixels) stay
+            // silent without pixel geometry, but CSI 18 t reports characters,
+            // which is always known, so it is answered regardless.
+            assert_eq!(
+                result.terminal_responses,
+                vec![Bytes::from_static(b"\x1b[8;24;80t")]
+            );
         }
     }
 
     #[test]
     fn enabling_in_band_size_reports_after_alt_screen_resize_reports_current_size() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(91, 24, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
-        pane.process_pty_bytes(pane_id, 0, b"\x1b[?1049h", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[?1049h");
         assert!(pane.resize(24, 92, 9, 18).is_empty());
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[?2048h", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[?2048h");
 
         assert_eq!(
             result.terminal_responses,
@@ -5122,10 +5028,9 @@ mod tests {
 
     #[test]
     fn resize_returns_in_band_size_report_response() {
-        let (tx, _rx) = mpsc::channel(4);
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.mode_set(2048, true).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
 
         let responses = pane.resize(40, 100, 9, 18);
 
@@ -5137,34 +5042,31 @@ mod tests {
 
     #[test]
     fn synchronized_output_suppresses_intermediate_render_requests_until_batch_ends() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane_terminal =
-            GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane_terminal = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
         assert_eq!(pane_terminal.synchronized_output_state(), (false, 0));
-        pane_terminal.process_pty_bytes(pane_id, 0, b"ordinary output", &tx);
+        pane_terminal.process_pty_bytes(pane_id, 0, b"ordinary output");
         assert_eq!(pane_terminal.synchronized_output_state(), (false, 0));
 
-        let begin = pane_terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026h", &tx);
+        let begin = pane_terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026h");
         assert!(!begin.request_render);
         assert_eq!(pane_terminal.synchronized_output_state(), (true, 1));
 
-        let body = pane_terminal.process_pty_bytes(pane_id, 0, b"hello", &tx);
+        let body = pane_terminal.process_pty_bytes(pane_id, 0, b"hello");
         assert!(!body.request_render);
         assert_eq!(pane_terminal.synchronized_output_state(), (true, 1));
 
-        let end = pane_terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026l", &tx);
+        let end = pane_terminal.process_pty_bytes(pane_id, 0, b"\x1b[?2026l");
         assert!(end.request_render);
         assert_eq!(pane_terminal.synchronized_output_state(), (false, 2));
     }
 
     #[test]
     fn seeded_history_is_rendered_on_next_draw() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 100).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         pane.seed_history_ansi("restored history");
 
         let backend = ratatui::backend::TestBackend::new(20, 5);
@@ -5180,9 +5082,8 @@ mod tests {
 
     #[test]
     fn render_leaves_unknown_host_default_background_transparent() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         {
             let mut core = pane.core.lock().expect("test precondition");
             core.terminal.write(b"hi");
@@ -5205,9 +5106,8 @@ mod tests {
 
     #[test]
     fn render_blanks_kitty_unicode_placeholders() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         {
             let mut core = pane.core.lock().expect("test precondition");
             core.terminal
@@ -5230,9 +5130,8 @@ mod tests {
 
     #[test]
     fn render_keeps_explicit_cell_foreground_when_host_is_unknown() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         {
             let mut core = pane.core.lock().expect("test precondition");
             core.terminal.write(b"\x1b[38;2;68;85;102mhi\x1b[0m");
@@ -5254,9 +5153,8 @@ mod tests {
 
     #[test]
     fn render_keeps_explicit_cell_background_when_host_is_unknown() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         {
             let mut core = pane.core.lock().expect("test precondition");
             core.terminal.write(b"\x1b[48;2;68;85;102mhi\x1b[0m");
@@ -5278,9 +5176,8 @@ mod tests {
 
     #[test]
     fn render_preserves_palette_colors_instead_of_flattening_to_rgb() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         {
             let mut core = pane.core.lock().expect("test precondition");
             core.terminal.write(
@@ -5307,9 +5204,8 @@ mod tests {
 
     #[test]
     fn render_preserves_palette_background_fill_cells() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         {
             let mut core = pane.core.lock().expect("test precondition");
             core.terminal.write(b"\x1b[48;5;4m\x1b[K");
@@ -5330,9 +5226,8 @@ mod tests {
 
     #[test]
     fn render_preserves_rgb_background_fill_cells() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         {
             let mut core = pane.core.lock().expect("test precondition");
             core.terminal.write(b"\x1b[48;2;17;34;51m\x1b[K");
@@ -5353,49 +5248,44 @@ mod tests {
 
     #[test]
     fn process_pty_bytes_does_not_advertise_unsupported_glyph_protocol() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b_25a1;s\x1b\\", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b_25a1;s\x1b\\");
 
         assert!(result.terminal_responses.is_empty());
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_returns_core_query_responses_without_queuing_input() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[6n", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[6n");
 
         assert_eq!(result.terminal_responses.len(), 1);
         assert!(String::from_utf8_lossy(&result.terminal_responses[0]).contains('R'));
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
         assert!(
             pane.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Dark))
                 .is_none()
         );
-        let query = pane.process_pty_bytes(pane_id, 0, b"\x1b[?996n", &tx);
+        let query = pane.process_pty_bytes(pane_id, 0, b"\x1b[?996n");
         assert_eq!(
             query.terminal_responses,
             vec![Bytes::from_static(b"\x1b[?997;1n")]
         );
 
-        pane.process_pty_bytes(pane_id, 0, b"\x1b[?2031h", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[?2031h");
         assert!(
             pane.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Dark))
                 .is_none()
@@ -5406,33 +5296,30 @@ mod tests {
         );
 
         assert!(pane.apply_host_terminal_appearance(None).is_none());
-        let unknown_query = pane.process_pty_bytes(pane_id, 0, b"\x1b[?996n", &tx);
+        let unknown_query = pane.process_pty_bytes(pane_id, 0, b"\x1b[?996n");
         assert!(unknown_query.terminal_responses.is_empty());
         assert!(
             pane.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Dark))
                 .is_none()
         );
 
-        pane.process_pty_bytes(pane_id, 0, b"\x1bc", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1bc");
         assert!(
             pane.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Light))
                 .is_none()
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_returns_xtgettcap_truecolor_query_responses_without_queuing_input() {
-        let (tx, mut rx) = mpsc::channel(8);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
         let result = pane.process_pty_bytes(
             pane_id,
             0,
             b"\x1bP+q5463;524742;73657472676266;73657472676262\x1b\\",
-            &tx,
         );
 
         assert_eq!(
@@ -5444,21 +5331,21 @@ mod tests {
                 expected_xtgettcap_response("73657472676262", Some(b"\\E[48:2:%p1%d:%p2%d:%p3%dm")),
             ]
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_returns_fragmented_c1_xtgettcap_once_in_order() {
-        for query in [
-            b"\x90+q5463;524742\x9c".as_slice(),
-            b"\x1bP+q5463;524742\x9c".as_slice(),
-            b"\x90+q5463;524742\x1b\\".as_slice(),
+        // Raw C1 bytes (0x90 here) are text/no-ops to the 7-bit vte parser
+        // and never open a DCS: only the ESC-introduced form is a real
+        // query. See the framing note atop `ghostty/scan.rs`.
+        for (query, opens_dcs) in [
+            (b"\x90+q5463;524742\x9c".as_slice(), false),
+            (b"\x1bP+q5463;524742\x9c".as_slice(), true),
+            (b"\x90+q5463;524742\x1b\\".as_slice(), false),
         ] {
             for fragmented in [false, true] {
-                let (tx, mut rx) = mpsc::channel(4);
                 let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-                let pane =
-                    GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+                let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
                 let pane_id = PaneId::from_raw(1);
                 pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
                     background: Some(crate::terminal_theme::RgbColor {
@@ -5469,50 +5356,51 @@ mod tests {
                     ..Default::default()
                 });
                 let mut replies = pane
-                    .process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07", &tx)
+                    .process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07")
                     .terminal_responses;
                 for chunk in query.chunks(if fragmented { 1 } else { query.len() }) {
-                    replies.extend(
-                        pane.process_pty_bytes(pane_id, 0, chunk, &tx)
-                            .terminal_responses,
-                    );
+                    replies.extend(pane.process_pty_bytes(pane_id, 0, chunk).terminal_responses);
                 }
                 replies.extend(
-                    pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x1b\\\x1bP+q5375\x1b\\", &tx)
+                    pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x1b\\\x1bP+q5375\x1b\\")
                         .terminal_responses,
                 );
-                assert_eq!(
-                    replies,
+                let expected = if opens_dcs {
                     vec![
                         Bytes::from_static(b"\x1b]11;rgb:0000/2b2b/3636\x1b\\"),
                         expected_xtgettcap_response("5463", None),
                         expected_xtgettcap_response("524742", Some(b"8")),
                         Bytes::from_static(b"\x1b]11;rgb:0000/2b2b/3636\x1b\\"),
                         expected_xtgettcap_response("5375", None),
-                    ],
+                    ]
+                } else {
+                    vec![
+                        Bytes::from_static(b"\x1b]11;rgb:0000/2b2b/3636\x1b\\"),
+                        Bytes::from_static(b"\x1b]11;rgb:0000/2b2b/3636\x1b\\"),
+                        expected_xtgettcap_response("5375", None),
+                    ]
+                };
+                assert_eq!(
+                    replies, expected,
                     "query={query:?}, fragmented={fragmented}"
                 );
-                assert!(rx.try_recv().is_err());
             }
         }
     }
 
     #[test]
     fn process_pty_bytes_returns_split_xtgettcap_query_response() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1bP+q4", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1bP+q4");
         assert!(result.terminal_responses.is_empty());
-        assert!(rx.try_recv().is_err());
-        let result = pane.process_pty_bytes(pane_id, 0, b"d73", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"d73");
         assert!(result.terminal_responses.is_empty());
-        assert!(rx.try_recv().is_err());
         // The parser ends DCS on ESC, before the final ST backslash.
         // Splitting ST must not lose the reply or emit it again on completion.
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b");
 
         assert_eq!(
             result.terminal_responses,
@@ -5521,20 +5409,17 @@ mod tests {
                 Some(b"\\E]52;%p1%s;%p2%s\\007")
             )]
         );
-        assert!(rx.try_recv().is_err());
-        let result = pane.process_pty_bytes(pane_id, 0, b"\\", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\\");
         assert!(result.terminal_responses.is_empty());
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_orders_device_attribute_reply_before_following_xtgettcap_reply() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[c\x1bP+q5463\x1b\\", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[c\x1bP+q5463\x1b\\");
 
         assert_eq!(result.terminal_responses.len(), 2);
         assert!(String::from_utf8_lossy(&result.terminal_responses[0]).contains('c'));
@@ -5542,17 +5427,15 @@ mod tests {
             result.terminal_responses[1],
             expected_xtgettcap_response("5463", None)
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_orders_xtgettcap_reply_before_following_device_attribute_reply() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1bP+q5463\x1b\\\x1b[c", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1bP+q5463\x1b\\\x1b[c");
 
         assert_eq!(result.terminal_responses.len(), 2);
         assert_eq!(
@@ -5560,14 +5443,12 @@ mod tests {
             expected_xtgettcap_response("5463", None)
         );
         assert!(String::from_utf8_lossy(&result.terminal_responses[1]).contains('c'));
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_orders_xtgettcap_reply_before_following_default_color_reply() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
             foreground: None,
@@ -5579,7 +5460,7 @@ mod tests {
             ..Default::default()
         });
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1bP+q5463\x1b\\\x1b]11;?\x07", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1bP+q5463\x1b\\\x1b]11;?\x07");
 
         assert_eq!(
             result.terminal_responses,
@@ -5588,17 +5469,15 @@ mod tests {
                 Bytes::from_static(b"\x1b]11;rgb:0000/2b2b/3636\x1b\\"),
             ]
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn host_theme_update_preserves_child_default_color_override() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;#112233\x07", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;#112233\x07");
         assert!(result.terminal_responses.is_empty());
 
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
@@ -5611,22 +5490,20 @@ mod tests {
             ..Default::default()
         });
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07");
         assert_eq!(
             result.terminal_responses,
             vec![Bytes::from_static(b"\x1b]11;rgb:1111/2222/3333\x07")]
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn child_default_color_reset_restores_cached_host_color() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        pane.process_pty_bytes(pane_id, 0, b"\x1b]11;#112233\x07", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b]11;#112233\x07");
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
             foreground: None,
             background: Some(crate::terminal_theme::RgbColor {
@@ -5636,38 +5513,34 @@ mod tests {
             }),
             ..Default::default()
         });
-        pane.process_pty_bytes(pane_id, 0, b"\x1b]111\x07", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b]111\x07");
         assert!(!pane.has_transient_default_color_override());
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07");
         assert_eq!(
             result.terminal_responses,
             vec![Bytes::from_static(b"\x1b]11;rgb:aaaa/bbbb/cccc\x1b\\")]
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_recovers_xtgettcap_after_osc_bel_terminator() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]0;title\x07\x1bP+q5463\x1b\\", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]0;title\x07\x1bP+q5463\x1b\\");
 
         assert_eq!(
             result.terminal_responses,
             vec![expected_xtgettcap_response("5463", None)]
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_orders_default_color_reset_reply_before_xtgettcap() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
             background: Some(crate::terminal_theme::RgbColor {
@@ -5680,51 +5553,39 @@ mod tests {
 
         // OSC ends at the ESC of its string terminator, so the reply to the
         // query arrives with the chunk that carries that ESC.
-        let result = pane.process_pty_bytes(
-            pane_id,
-            0,
-            b"\x1b]11;#112233\x07\x1b]111\x07\x1b]11;?\x1b",
-            &tx,
-        );
+        let result =
+            pane.process_pty_bytes(pane_id, 0, b"\x1b]11;#112233\x07\x1b]111\x07\x1b]11;?\x1b");
         assert_eq!(
             result.terminal_responses,
             vec![Bytes::from_static(b"\x1b]11;rgb:0000/2b2b/3636\x1b\\")]
         );
-        let result = pane.process_pty_bytes(pane_id, 0, b"\\\x1bP+q436f\x1b\\", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\\\x1bP+q436f\x1b\\");
 
         assert_eq!(
             result.terminal_responses,
             vec![expected_xtgettcap_response("436F", Some(b"256"))]
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_ignores_unknown_and_unsupported_xtgettcap_queries() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1bP+q6E6F7065;4D7\x1b\\", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1bP+q6E6F7065;4D7\x1b\\");
 
         assert!(result.terminal_responses.is_empty());
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_returns_underline_color_xtgettcap_query_responses() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        let result = pane.process_pty_bytes(
-            pane_id,
-            0,
-            b"\x1bP+q5375;536D756C78;536574756C63\x1b\\",
-            &tx,
-        );
+        let result =
+            pane.process_pty_bytes(pane_id, 0, b"\x1bP+q5375;536D756C78;536574756C63\x1b\\");
 
         assert_eq!(
             result.terminal_responses,
@@ -5737,14 +5598,12 @@ mod tests {
                 ),
             ]
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn render_preserves_underline_color() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         {
             let mut core = pane.core.lock().expect("test precondition");
             core.terminal.write(b"\x1b[4m\x1b[58:2::17:34:51mU");
@@ -5763,9 +5622,8 @@ mod tests {
 
     #[test]
     fn full_frame_preserves_curly_underline_style() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         {
             let mut core = pane.core.lock().expect("test precondition");
             core.terminal.write(b"\x1b[4:3mU");
@@ -5788,9 +5646,8 @@ mod tests {
 
     #[test]
     fn process_pty_bytes_orders_default_color_reply_before_following_device_attribute_reply() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
             foreground: None,
@@ -5802,7 +5659,7 @@ mod tests {
             ..Default::default()
         });
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07\x1b[c", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07\x1b[c");
 
         assert_eq!(result.terminal_responses.len(), 2);
         assert_eq!(
@@ -5810,14 +5667,12 @@ mod tests {
             Bytes::from_static(b"\x1b]11;rgb:0000/2b2b/3636\x1b\\")
         );
         assert!(String::from_utf8_lossy(&result.terminal_responses[1]).contains('c'));
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_returns_host_palette_color_without_queuing_input() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(
             crate::terminal_theme::TerminalTheme::default().with_palette_color(
@@ -5830,22 +5685,20 @@ mod tests {
             ),
         );
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;0;?\x07", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;0;?\x07");
 
         assert_eq!(
             result.terminal_responses,
             vec![Bytes::from_static(b"\x1b]4;0;rgb:1111/2222/3333\x1b\\")]
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn opentui_256_palette_query_burst_uses_host_snapshot() {
         use std::fmt::Write as _;
 
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         let mut theme = crate::terminal_theme::TerminalTheme::default();
         let mut queries = String::new();
@@ -5862,7 +5715,7 @@ mod tests {
         }
         pane.apply_host_terminal_theme(theme);
 
-        let result = pane.process_pty_bytes(pane_id, 0, queries.as_bytes(), &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, queries.as_bytes());
 
         assert_eq!(result.terminal_responses.len(), 256);
         assert_eq!(
@@ -5877,9 +5730,8 @@ mod tests {
 
     #[test]
     fn child_palette_override_survives_host_refresh_until_reset() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(
             crate::terminal_theme::TerminalTheme::default().with_palette_color(
@@ -5891,7 +5743,7 @@ mod tests {
                 },
             ),
         );
-        pane.process_pty_bytes(pane_id, 0, b"\x1b]4;7;rgb:aa/bb/cc\x1b\\", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b]4;7;rgb:aa/bb/cc\x1b\\");
 
         pane.apply_host_terminal_theme(
             crate::terminal_theme::TerminalTheme::default().with_palette_color(
@@ -5903,14 +5755,14 @@ mod tests {
                 },
             ),
         );
-        let overridden = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;7;?\x1b\\", &tx);
+        let overridden = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;7;?\x1b\\");
         assert_eq!(
             overridden.terminal_responses,
             vec![Bytes::from_static(b"\x1b]4;7;rgb:aaaa/bbbb/cccc\x1b\\")]
         );
 
-        pane.process_pty_bytes(pane_id, 0, b"\x1b]104;7\x1b\\", &tx);
-        let reset = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;7;?\x1b\\", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b]104;7\x1b\\");
+        let reset = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;7;?\x1b\\");
         assert_eq!(
             reset.terminal_responses,
             vec![Bytes::from_static(b"\x1b]4;7;rgb:4444/5555/6666\x1b\\")]
@@ -5919,54 +5771,46 @@ mod tests {
 
     #[test]
     fn process_pty_bytes_returns_split_palette_color_query_response() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         let color = current_palette_color(&pane, 255);
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;25", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;25");
         assert!(result.terminal_responses.is_empty());
-        assert!(rx.try_recv().is_err());
         // The OSC is complete at the ESC of its terminator.
-        let result = pane.process_pty_bytes(pane_id, 0, b"5;?\x1b", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"5;?\x1b");
         assert_eq!(
             result.terminal_responses,
             vec![expected_osc_rgb_response("4;255", color)]
         );
-        assert!(rx.try_recv().is_err());
-        let result = pane.process_pty_bytes(pane_id, 0, b"\\", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\\");
 
         assert!(result.terminal_responses.is_empty());
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_ignores_malformed_and_preserves_multi_palette_queries() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
         let result = pane.process_pty_bytes(
             pane_id,
             0,
             b"\x1b]4;;?\x07\x1b]4;-1;?\x07\x1b]4;256;?\x07\x1b]4;0;?;1;?\x07\x1b]4;0;rgb:1111/2222/3333\x07",
-            &tx,
         );
 
         // A multi-entry query is answered one entry per reply.
         assert_eq!(result.terminal_responses.len(), 2);
         assert!(result.terminal_responses[0].starts_with(b"\x1b]4;0;rgb:"));
         assert!(result.terminal_responses[1].starts_with(b"\x1b]4;1;rgb:"));
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_orders_palette_reply_before_following_terminal_replies() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         let color = current_palette_color(&pane, 0);
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
@@ -5979,7 +5823,7 @@ mod tests {
             ..Default::default()
         });
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;0;?\x07\x1b]11;?\x07\x1b[c", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;0;?\x07\x1b]11;?\x07\x1b[c");
 
         assert_eq!(result.terminal_responses.len(), 3);
         assert_eq!(
@@ -5991,14 +5835,12 @@ mod tests {
             Bytes::from_static(b"\x1b]11;rgb:0000/2b2b/3636\x1b\\")
         );
         assert!(String::from_utf8_lossy(&result.terminal_responses[2]).contains('c'));
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_returns_default_color_query_responses_without_queuing_input() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
             foreground: None,
@@ -6010,20 +5852,18 @@ mod tests {
             ..Default::default()
         });
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;?\x07");
 
         assert_eq!(
             result.terminal_responses,
             vec![Bytes::from_static(b"\x1b]11;rgb:0000/2b2b/3636\x1b\\")]
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_preserves_untracked_multi_color_query_responses() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
             foreground: Some(crate::terminal_theme::RgbColor {
@@ -6039,7 +5879,7 @@ mod tests {
             ..Default::default()
         });
 
-        let palette = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;0;?;1;?\x1b\\", &tx);
+        let palette = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;0;?;1;?\x1b\\");
         let palette_response = palette.terminal_responses.concat();
         assert!(palette_response.starts_with(b"\x1b]4;0;rgb:"));
         assert_eq!(
@@ -6050,7 +5890,7 @@ mod tests {
             2
         );
 
-        let defaults = pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?;?;?\x1b\\", &tx);
+        let defaults = pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?;?;?\x1b\\");
         let default_response = defaults.terminal_responses.concat();
         assert!(
             default_response.starts_with(b"\x1b]10;rgb:"),
@@ -6068,49 +5908,42 @@ mod tests {
         assert!(!core.child_default_foreground_changed);
         assert!(!core.child_default_background_changed);
         drop(core);
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_preserves_earlier_aggregate_palette_reply() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        let result =
-            pane.process_pty_bytes(pane_id, 0, b"\x1b]4;0;?;1;?\x1b\\\x1b]4;0;?\x1b\\", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]4;0;?;1;?\x1b\\\x1b]4;0;?\x1b\\");
 
         assert_eq!(result.terminal_responses.len(), 3);
         assert!(result.terminal_responses[0].starts_with(b"\x1b]4;0;rgb:"));
         assert!(result.terminal_responses[1].starts_with(b"\x1b]4;1;rgb:"));
         assert!(result.terminal_responses[2].starts_with(b"\x1b]4;0;rgb:"));
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_preserves_core_reply_for_child_color_override() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        pane.process_pty_bytes(pane_id, 0, b"\x1b]10;rgb:11/22/33\x07", &tx);
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?\x1b\\", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b]10;rgb:11/22/33\x07");
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?\x1b\\");
 
         assert_eq!(result.terminal_responses.len(), 1);
         assert!(result.terminal_responses[0].starts_with(b"\x1b]10;rgb:1111/2222/3333"));
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_tracks_later_multi_value_color_set() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
 
-        pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?;rgb:44/55/66\x1b\\", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?;rgb:44/55/66\x1b\\");
 
         let core = pane.core.lock().expect("test precondition");
         assert!(!core.child_default_foreground_changed);
@@ -6119,9 +5952,8 @@ mod tests {
 
     #[test]
     fn process_pty_bytes_returns_cursor_color_query_response_from_foreground_fallback() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
             foreground: Some(crate::terminal_theme::RgbColor {
@@ -6133,20 +5965,18 @@ mod tests {
             ..Default::default()
         });
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]12;?\x07", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]12;?\x07");
 
         assert_eq!(
             result.terminal_responses,
             vec![Bytes::from_static(b"\x1b]12;rgb:6565/7b7b/8383\x1b\\")]
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_returns_cursor_color_query_response_from_child_foreground() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
             foreground: Some(crate::terminal_theme::RgbColor {
@@ -6158,21 +5988,19 @@ mod tests {
             ..Default::default()
         });
 
-        pane.process_pty_bytes(pane_id, 0, b"\x1b]10;rgb:11/22/33\x07", &tx);
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]12;?\x07", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b]10;rgb:11/22/33\x07");
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]12;?\x07");
 
         assert_eq!(
             result.terminal_responses,
             vec![Bytes::from_static(b"\x1b]12;rgb:1111/2222/3333\x1b\\")]
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_returns_explicit_cursor_color_query_response() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
             foreground: Some(crate::terminal_theme::RgbColor {
@@ -6184,21 +6012,19 @@ mod tests {
             ..Default::default()
         });
 
-        pane.process_pty_bytes(pane_id, 0, b"\x1b]12;rgb:11/22/33\x07", &tx);
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]12;?\x07", &tx);
+        pane.process_pty_bytes(pane_id, 0, b"\x1b]12;rgb:11/22/33\x07");
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]12;?\x07");
 
         assert_eq!(
             result.terminal_responses,
             vec![Bytes::from_static(b"\x1b]12;rgb:1111/2222/3333\x1b\\")]
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_returns_default_color_query_responses_in_order() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
             foreground: Some(crate::terminal_theme::RgbColor {
@@ -6214,8 +6040,7 @@ mod tests {
             ..Default::default()
         });
 
-        let result =
-            pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?\x07\x1b]11;?\x07\x1b]12;?\x07");
 
         assert_eq!(
             result.terminal_responses,
@@ -6225,14 +6050,12 @@ mod tests {
                 Bytes::from_static(b"\x1b]12;rgb:6565/7b7b/8383\x1b\\"),
             ]
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_returns_split_default_color_query_response() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
             foreground: None,
@@ -6244,26 +6067,22 @@ mod tests {
             ..Default::default()
         });
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11");
         assert!(result.terminal_responses.is_empty());
-        assert!(rx.try_recv().is_err());
-        let result = pane.process_pty_bytes(pane_id, 0, b";?\x1b", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b";?\x1b");
         assert_eq!(
             result.terminal_responses,
             vec![Bytes::from_static(b"\x1b]11;rgb:fdfd/f6f6/e3e3\x1b\\")]
         );
-        assert!(rx.try_recv().is_err());
-        let result = pane.process_pty_bytes(pane_id, 0, b"\\", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\\");
 
         assert!(result.terminal_responses.is_empty());
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_returns_split_cursor_color_query_response() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
             foreground: Some(crate::terminal_theme::RgbColor {
@@ -6275,26 +6094,22 @@ mod tests {
             ..Default::default()
         });
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]12", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]12");
         assert!(result.terminal_responses.is_empty());
-        assert!(rx.try_recv().is_err());
-        let result = pane.process_pty_bytes(pane_id, 0, b";?\x1b", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b";?\x1b");
         assert_eq!(
             result.terminal_responses,
             vec![Bytes::from_static(b"\x1b]12;rgb:fdfd/f6f6/e3e3\x1b\\")]
         );
-        assert!(rx.try_recv().is_err());
-        let result = pane.process_pty_bytes(pane_id, 0, b"\\", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\\");
 
         assert!(result.terminal_responses.is_empty());
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn process_pty_bytes_tracks_default_color_set_and_reset_before_replying() {
-        let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
             foreground: None,
@@ -6306,27 +6121,23 @@ mod tests {
             ..Default::default()
         });
 
-        let result =
-            pane.process_pty_bytes(pane_id, 0, b"\x1b]11;rgb:11/22/33\x07\x1b]11;?\x07", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;rgb:11/22/33\x07\x1b]11;?\x07");
         assert_eq!(
             result.terminal_responses,
             vec![Bytes::from_static(b"\x1b]11;rgb:1111/2222/3333\x07")]
         );
-        assert!(rx.try_recv().is_err());
 
-        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]111\x07\x1b]11;?\x07", &tx);
+        let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]111\x07\x1b]11;?\x07");
         assert_eq!(
             result.terminal_responses,
             vec![Bytes::from_static(b"\x1b]11;rgb:fdfd/f6f6/e3e3\x1b\\")]
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn render_leaves_host_default_background_transparent() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let host_theme = crate::terminal_theme::TerminalTheme {
             foreground: Some(crate::terminal_theme::RgbColor {
                 r: 0xaa,
@@ -6363,9 +6174,8 @@ mod tests {
 
     #[test]
     fn render_keeps_explicit_default_foreground_when_it_differs_from_host() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let host_theme = crate::terminal_theme::TerminalTheme {
             foreground: Some(crate::terminal_theme::RgbColor {
                 r: 0xaa,
@@ -6401,9 +6211,8 @@ mod tests {
 
     #[test]
     fn render_keeps_explicit_default_background_when_it_differs_from_host() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let host_theme = crate::terminal_theme::TerminalTheme {
             foreground: Some(crate::terminal_theme::RgbColor {
                 r: 0xaa,
@@ -6439,9 +6248,8 @@ mod tests {
 
     #[test]
     fn render_inverse_text_swaps_fg_and_resolved_bg_when_bg_is_transparent() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
-        let pane = GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let host_theme = crate::terminal_theme::TerminalTheme {
             foreground: Some(crate::terminal_theme::RgbColor {
                 r: 0xaa,

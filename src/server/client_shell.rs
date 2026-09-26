@@ -44,37 +44,53 @@ pub(super) fn snapshot_with_completions(
             app.public_pane_id(workspace_index, pane_id)
         })
         .or_else(|| snapshot.focused_pane_id.clone());
+    // Snapshot entries are joined to live state by their public ids, never by
+    // position: a snapshot that filtered or reordered entries would otherwise
+    // hand one workspace's or tab's labels, branch and zoom to another. The
+    // snapshot is built from this same `app`, so the positional slot is tried
+    // first and the id lookup only runs when it does not match.
     let workspaces = snapshot
         .workspaces
         .into_iter()
-        .zip(&app.state.workspaces)
         .enumerate()
-        .map(|(workspace_index, (workspace, state))| {
+        .map(|(position, workspace)| {
             let mut tokens = workspace.tokens.into_iter().collect::<Vec<_>>();
             tokens.sort_by(|left, right| left.0.cmp(&right.0));
             let workspace_id = workspace.workspace_id;
+            let workspace_index = app
+                .state
+                .workspaces
+                .get(position)
+                .is_some_and(|state| state.id == workspace_id)
+                .then_some(position)
+                .or_else(|| app.parse_workspace_id(&workspace_id));
+            let state = workspace_index.and_then(|index| app.state.workspaces.get(index));
             let active_tab_id = location
                 .and_then(|location| location.active_tab_ids.get(&workspace_id))
                 .cloned()
                 .unwrap_or(workspace.active_tab_id);
-            let active_tab_index =
-                app.parse_tab_id(&active_tab_id)
-                    .and_then(|(tab_workspace_index, tab_index)| {
-                        (tab_workspace_index == workspace_index).then_some(tab_index)
-                    });
+            let new_workspace_cwd = workspace_index
+                .map(|workspace_index| {
+                    let active_tab_index = app.parse_tab_id(&active_tab_id).and_then(
+                        |(tab_workspace_index, tab_index)| {
+                            (tab_workspace_index == workspace_index).then_some(tab_index)
+                        },
+                    );
+                    app.resolved_new_workspace_cwd_from_tab(workspace_index, active_tab_index)
+                        .display()
+                        .to_string()
+                })
+                .unwrap_or_default();
             protocol::ClientShellWorkspace {
                 focused: focused_workspace_id.as_deref() == Some(workspace_id.as_str()),
                 workspace_id,
                 active_tab_id,
-                new_workspace_cwd: app
-                    .resolved_new_workspace_cwd_from_tab(workspace_index, active_tab_index)
-                    .display()
-                    .to_string(),
+                new_workspace_cwd,
                 number: workspace.number,
                 label: workspace.label,
-                custom_label: state.custom_name.is_some(),
-                branch: state.branch(),
-                git_ahead_behind: state.git_ahead_behind(),
+                custom_label: state.is_some_and(|state| state.custom_name.is_some()),
+                branch: state.and_then(crate::workspace::Workspace::branch),
+                git_ahead_behind: state.and_then(crate::workspace::Workspace::git_ahead_behind),
                 tokens,
                 agent_status: workspace.agent_status,
             }
@@ -83,22 +99,25 @@ pub(super) fn snapshot_with_completions(
     let tabs = snapshot
         .tabs
         .into_iter()
-        .zip(
-            app.state
-                .workspaces
-                .iter()
-                .flat_map(|workspace| workspace.tabs.iter()),
-        )
-        .map(|(tab, state)| {
+        .map(|tab| {
             let tab_id = tab.tab_id;
+            let state = app
+                .parse_tab_id(&tab_id)
+                .and_then(|(workspace_index, tab_index)| {
+                    app.state
+                        .workspaces
+                        .get(workspace_index)?
+                        .tabs
+                        .get(tab_index)
+                });
             protocol::ClientShellTab {
                 focused: focused_tab_id.as_deref() == Some(tab_id.as_str()),
                 tab_id,
                 workspace_id: tab.workspace_id,
                 number: tab.number,
                 label: tab.label,
-                custom_label: !state.is_auto_named(),
-                zoomed: state.zoomed,
+                custom_label: state.is_some_and(|state| !state.is_auto_named()),
+                zoomed: state.is_some_and(|state| state.zoomed),
                 agent_status: tab.agent_status,
             }
         })
@@ -439,6 +458,50 @@ fn split_hit_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_state_fields_follow_ids_not_positions() {
+        let mut app = app::App::new(
+            &crate::config::Config::default(),
+            app::AppPolicy::TEST,
+            tokio::sync::mpsc::unbounded_channel().1,
+            crate::api::EventHub::default(),
+        );
+        let mut first = crate::workspace::Workspace::test_new("first");
+        // `test_new` always sets a custom name for identification; clear it
+        // so only `second` below is actually custom-named, which is what
+        // this test's `custom_label` assertions check.
+        first.custom_name = None;
+        first.test_add_tab(Some("second-tab"));
+        let mut second = crate::workspace::Workspace::test_new("second");
+        second.custom_name = Some("named".into());
+        second.tabs[0].zoomed = true;
+        app.state.workspaces = vec![first, second];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+
+        let second_workspace_id = app.state.workspaces[1].id.clone();
+        let zoomed_tab_id = app.public_tab_id(1, 0).expect("zoomed tab id");
+        let (snapshot, _) = snapshot_with_completions(&app, "boot", 1, None, None);
+
+        for workspace in &snapshot.workspaces {
+            assert_eq!(
+                workspace.custom_label,
+                workspace.workspace_id == second_workspace_id,
+                "workspace {}",
+                workspace.workspace_id
+            );
+        }
+        assert_eq!(snapshot.tabs.len(), 3);
+        for tab in &snapshot.tabs {
+            assert_eq!(
+                tab.zoomed,
+                tab.tab_id == zoomed_tab_id,
+                "tab {}",
+                tab.tab_id
+            );
+        }
+    }
 
     #[test]
     fn split_hits_follow_released_border_and_gap_geometry() {

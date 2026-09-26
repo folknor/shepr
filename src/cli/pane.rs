@@ -14,10 +14,13 @@ use crate::api::schema::{
 };
 
 use super::matches::{flag, report_source, required, string, value, values, words};
+use super::target::CallerPane;
 
 pub(super) fn run_pane_command(matches: &ArgMatches) -> std::io::Result<i32> {
-    let env_pane_id = super::target::caller_pane_id();
-    let env_pane_id = env_pane_id.as_deref();
+    let caller = super::target::caller_pane();
+    // Every command below that takes `--pane`/`--current` resolves it with
+    // `selected_pane`; a `--current` the caller cannot satisfy is a usage error.
+    let pane = |matches: &ArgMatches| selected_pane(matches, &caller);
     match matches.subcommand() {
         Some(("list", matches)) => print_request(
             "cli:pane:list",
@@ -25,53 +28,69 @@ pub(super) fn run_pane_command(matches: &ArgMatches) -> std::io::Result<i32> {
                 workspace_id: string(matches, "workspace"),
             }),
         ),
-        Some(("current", matches)) => print_request(
-            "cli:pane:current",
-            Method::PaneCurrent(PaneCurrentParams {
-                caller_pane_id: current_caller_pane(matches, env_pane_id),
-            }),
-        ),
+        Some(("current", matches)) => match pane(matches) {
+            Ok(caller_pane_id) => print_request(
+                "cli:pane:current",
+                Method::PaneCurrent(PaneCurrentParams { caller_pane_id }),
+            ),
+            Err(message) => Ok(super::usage_error(&message)),
+        },
         Some(("get", matches)) => print_request(
             "cli:pane:get",
             Method::PaneGet(PaneTarget {
                 pane_id: required(matches, "pane_id"),
             }),
         ),
-        Some(("layout", matches)) => print_request(
-            "cli:pane:layout",
-            Method::PaneLayout(PaneLayoutParams {
-                pane_id: optional_current_pane(matches, env_pane_id),
-            }),
-        ),
-        Some(("process-info", matches)) => print_request(
-            "cli:pane:process_info",
-            Method::PaneProcessInfo(PaneProcessInfoParams {
-                pane_id: optional_current_pane(matches, env_pane_id),
-            }),
-        ),
-        Some(("neighbor", matches)) => print_request(
-            "cli:pane:neighbor",
-            Method::PaneNeighbor(PaneNeighborParams {
-                pane_id: focused_fallback_pane(matches),
+        Some(("layout", matches)) => match pane(matches) {
+            Ok(pane_id) => print_request(
+                "cli:pane:layout",
+                Method::PaneLayout(PaneLayoutParams { pane_id }),
+            ),
+            Err(message) => Ok(super::usage_error(&message)),
+        },
+        Some(("process-info", matches)) => match pane(matches) {
+            Ok(pane_id) => print_request(
+                "cli:pane:process_info",
+                Method::PaneProcessInfo(PaneProcessInfoParams { pane_id }),
+            ),
+            Err(message) => Ok(super::usage_error(&message)),
+        },
+        Some(("neighbor", matches)) => match pane(matches) {
+            Ok(pane_id) => print_request(
+                "cli:pane:neighbor",
+                Method::PaneNeighbor(PaneNeighborParams {
+                    pane_id,
+                    direction: direction(matches),
+                }),
+            ),
+            Err(message) => Ok(super::usage_error(&message)),
+        },
+        Some(("edges", matches)) => match pane(matches) {
+            Ok(pane_id) => print_request(
+                "cli:pane:edges",
+                Method::PaneEdges(PaneEdgesParams { pane_id }),
+            ),
+            Err(message) => Ok(super::usage_error(&message)),
+        },
+        Some(("focus", matches)) => match pane(matches) {
+            Ok(pane_id) => super::runtime::pane_focus(PaneFocusDirectionParams {
+                pane_id,
                 direction: direction(matches),
             }),
-        ),
-        Some(("edges", matches)) => print_request(
-            "cli:pane:edges",
-            Method::PaneEdges(PaneEdgesParams {
-                pane_id: optional_current_pane(matches, env_pane_id),
+            Err(message) => Ok(super::usage_error(&message)),
+        },
+        Some(("resize", matches)) => match pane(matches) {
+            Ok(pane_id) => super::runtime::pane_resize(PaneResizeParams {
+                pane_id,
+                direction: direction(matches),
+                amount: value::<f32>(matches, "amount"),
             }),
-        ),
-        Some(("focus", matches)) => super::runtime::pane_focus(PaneFocusDirectionParams {
-            pane_id: focused_fallback_pane(matches),
-            direction: direction(matches),
-        }),
-        Some(("resize", matches)) => super::runtime::pane_resize(PaneResizeParams {
-            pane_id: focused_fallback_pane(matches),
-            direction: direction(matches),
-            amount: value::<f32>(matches, "amount"),
-        }),
-        Some(("zoom", matches)) => super::runtime::pane_zoom(zoom_params(matches)),
+            Err(message) => Ok(super::usage_error(&message)),
+        },
+        Some(("zoom", matches)) => match zoom_params(matches, &caller) {
+            Ok(params) => super::runtime::pane_zoom(params),
+            Err(message) => Ok(super::usage_error(&message)),
+        },
         Some(("read", matches)) => {
             let response = super::send_request(&Request {
                 id: "cli:pane:read".into(),
@@ -83,15 +102,15 @@ pub(super) fn run_pane_command(matches: &ArgMatches) -> std::io::Result<i32> {
             pane_id: required(matches, "pane_id"),
             label: (!flag(matches, "clear")).then(|| words(matches, "label")),
         }),
-        Some(("input", matches)) => match input_params(matches, env_pane_id) {
+        Some(("input", matches)) => match input_params(matches, &caller) {
             Ok(params) => super::runtime::pane_input_set(params),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("split", matches)) => match split_params(matches, env_pane_id) {
+        Some(("split", matches)) => match split_params(matches, &caller) {
             Ok(params) => super::runtime::pane_split(params),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("swap", matches)) => match swap_params(matches) {
+        Some(("swap", matches)) => match swap_params(matches, &caller) {
             Ok(params) => super::runtime::pane_swap(params),
             Err(message) => Ok(super::usage_error(&message)),
         },
@@ -150,29 +169,29 @@ fn print_request(id: &'static str, method: Method) -> std::io::Result<i32> {
     })?)
 }
 
-// `--pane` and `--current` (and a positional pane id where the command takes
-// one) are mutually exclusive in the spec. What `--current`, and no selector
-// at all, resolve to still differs between commands; the helpers below keep
-// each command's existing meaning.
-
-/// `pane current`: the calling pane by default; `--current` is the same.
-fn current_caller_pane(matches: &ArgMatches, env_pane_id: Option<&str>) -> Option<String> {
-    string(matches, "pane").or_else(|| env_pane_id.map(str::to_string))
-}
-
-/// `layout`, `process-info`, `edges`: the server's focused pane by default;
-/// `--current` names the calling pane when there is one.
-fn optional_current_pane(matches: &ArgMatches, env_pane_id: Option<&str>) -> Option<String> {
-    if flag(matches, "current") {
-        return env_pane_id.map(str::to_string);
+/// The pane a pane command acts on. One rule for every command that takes
+/// `--pane`/`--current` (the spec makes the selectors mutually exclusive):
+///
+/// - an explicit id, positional or `--pane`, is that pane;
+/// - `--current` is the calling pane (`SHEPR_PANE_ID`), and an error when the
+///   caller is not in a pane of the targeted server;
+/// - no selector is the calling pane when there is one, and otherwise unset,
+///   which the server resolves to its focused pane.
+///
+/// So an agent in a background pane that runs `pane resize` resizes its own
+/// pane, not whichever pane the user happens to have focused.
+fn selected_pane(matches: &ArgMatches, caller: &CallerPane) -> Result<Option<String>, String> {
+    if let Some(pane_id) = explicit_pane(matches) {
+        return Ok(Some(pane_id));
     }
-    string(matches, "pane")
+    if flag(matches, "current") {
+        return caller.require().map(Some);
+    }
+    Ok(caller.id())
 }
 
-/// `neighbor`, `focus`, `resize`, `swap`, `zoom`: `--current` and no selector
-/// both leave the pane unset, which the server resolves to its focused pane.
-fn focused_fallback_pane(matches: &ArgMatches) -> Option<String> {
-    string(matches, "pane")
+fn explicit_pane(matches: &ArgMatches) -> Option<String> {
+    string(matches, "pane_id").or_else(|| string(matches, "pane"))
 }
 
 fn direction(matches: &ArgMatches) -> PaneDirection {
@@ -180,7 +199,7 @@ fn direction(matches: &ArgMatches) -> PaneDirection {
     value::<PaneDirection>(matches, "direction").unwrap_or(PaneDirection::Right)
 }
 
-fn zoom_params(matches: &ArgMatches) -> PaneZoomParams {
+fn zoom_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneZoomParams, String> {
     let mode = if flag(matches, "on") {
         PaneZoomMode::On
     } else if flag(matches, "off") {
@@ -188,17 +207,17 @@ fn zoom_params(matches: &ArgMatches) -> PaneZoomParams {
     } else {
         PaneZoomMode::Toggle
     };
-    PaneZoomParams {
-        pane_id: string(matches, "pane_id").or_else(|| focused_fallback_pane(matches)),
+    Ok(PaneZoomParams {
+        pane_id: selected_pane(matches, caller)?,
         mode,
-    }
+    })
 }
 
 fn read_params(matches: &ArgMatches) -> PaneReadParams {
-    // `--raw` returns the ANSI snapshot with escapes kept; `--ansi` and
-    // `--format ansi` request the ANSI format without changing `strip_ansi`.
-    let raw = flag(matches, "raw");
-    let format = if raw || flag(matches, "ansi") {
+    // `--ansi` and `--format ansi` keep escapes through the ANSI renderer.
+    // There is no `--raw`: no raw PTY byte history exists to return, so it
+    // could only ever repeat `--ansi`.
+    let format = if flag(matches, "ansi") {
         ReadFormat::Ansi
     } else {
         value::<ReadFormat>(matches, "format").unwrap_or(ReadFormat::Text)
@@ -208,55 +227,28 @@ fn read_params(matches: &ArgMatches) -> PaneReadParams {
         source: value::<ReadSource>(matches, "source").unwrap_or(ReadSource::Recent),
         lines: value::<u32>(matches, "lines"),
         format,
-        strip_ansi: !raw,
+        strip_ansi: true,
         intent: crate::api::schema::ReadIntent::Interactive,
     }
 }
 
-fn input_params(
-    matches: &ArgMatches,
-    env_pane_id: Option<&str>,
-) -> Result<PaneInputSetParams, String> {
-    let pane_id = if flag(matches, "current") {
-        env_pane_id
-            .map(str::to_string)
-            .ok_or("--current requires SHEPR_PANE_ID")?
-    } else {
-        // The spec requires exactly one of the positional, `--pane` or `--current`.
-        string(matches, "pane_id")
-            .or_else(|| string(matches, "pane"))
-            .unwrap_or_default()
-    };
+fn input_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneInputSetParams, String> {
+    // The spec requires exactly one of the positional, `--pane` or `--current`,
+    // so the no-selector fallback never applies here.
     Ok(PaneInputSetParams {
-        pane_id,
+        pane_id: selected_pane(matches, caller)?.unwrap_or_default(),
         right_click: value::<PaneRightClickTarget>(matches, "right-click")
             .unwrap_or(PaneRightClickTarget::Shepr),
     })
 }
 
-fn split_params(
-    matches: &ArgMatches,
-    env_pane_id: Option<&str>,
-) -> Result<PaneSplitParams, String> {
-    // Unlike the other pane commands, split targets the calling pane when no
-    // pane is named.
-    let target_pane_id = if flag(matches, "current") {
-        Some(
-            env_pane_id
-                .map(str::to_string)
-                .ok_or("--current requires SHEPR_PANE_ID")?,
-        )
-    } else {
-        string(matches, "pane_id")
-            .or_else(|| string(matches, "pane"))
-            .or_else(|| env_pane_id.map(str::to_string))
-    };
+fn split_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneSplitParams, String> {
     Ok(PaneSplitParams {
         workspace_id: None,
-        target_pane_id,
+        target_pane_id: selected_pane(matches, caller)?,
         direction: value::<SplitDirection>(matches, "direction").unwrap_or(SplitDirection::Right),
         ratio: value::<f32>(matches, "ratio"),
-        cwd: string(matches, "cwd"),
+        cwd: super::matches::cwd(matches)?,
         focus: flag(matches, "focus"),
         right_click: value::<PaneRightClickTarget>(matches, "right-click")
             .unwrap_or(PaneRightClickTarget::Shepr),
@@ -266,20 +258,21 @@ fn split_params(
     })
 }
 
-fn swap_params(matches: &ArgMatches) -> Result<PaneSwapParams, String> {
+fn swap_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneSwapParams, String> {
     const USAGE: &str = "usage: shepr pane swap --direction left|right|up|down [--pane ID|--current]\n       shepr pane swap --source-pane ID --target-pane ID";
 
-    let pane_id = focused_fallback_pane(matches);
     let direction = value::<PaneDirection>(matches, "direction");
     let source_pane_id = string(matches, "source-pane");
     let target_pane_id = string(matches, "target-pane");
+    // `--pane`/`--current` only belong to the directional form.
+    let selector_given = explicit_pane(matches).is_some() || flag(matches, "current");
     match (direction, source_pane_id, target_pane_id) {
         (Some(direction), None, None) => Ok(PaneSwapParams {
-            pane_id,
+            pane_id: selected_pane(matches, caller)?,
             direction: Some(direction),
             ..PaneSwapParams::default()
         }),
-        (None, Some(source_pane_id), Some(target_pane_id)) if pane_id.is_none() => {
+        (None, Some(source_pane_id), Some(target_pane_id)) if !selector_given => {
             Ok(PaneSwapParams {
                 source_pane_id: Some(source_pane_id),
                 target_pane_id: Some(target_pane_id),
@@ -440,6 +433,12 @@ mod tests {
             .is_err()
     }
 
+    fn known(pane_id: &str) -> CallerPane {
+        CallerPane::Known(pane_id.into())
+    }
+
+    const OUTSIDE: CallerPane = CallerPane::Unset;
+
     #[test]
     fn split_accepts_ratio() {
         let params = split_params(
@@ -451,7 +450,7 @@ mod tests {
                 "--ratio",
                 "0.333",
             ]),
-            None,
+            &OUTSIDE,
         )
         .expect("test precondition");
 
@@ -466,7 +465,7 @@ mod tests {
         for form in [&["--right-click", "pane"][..], &["--right-click=pane"]] {
             let mut args = vec!["split", "--direction", "right"];
             args.extend_from_slice(form);
-            let params = split_params(&pane(&args), None).expect("test precondition");
+            let params = split_params(&pane(&args), &OUTSIDE).expect("test precondition");
             assert_eq!(params.right_click, PaneRightClickTarget::Pane);
         }
     }
@@ -481,7 +480,7 @@ mod tests {
                 "--ratio=0.25",
                 "--env=A=b",
             ]),
-            None,
+            &OUTSIDE,
         )
         .expect("test precondition");
         assert_eq!(params.direction, SplitDirection::Down);
@@ -491,16 +490,33 @@ mod tests {
     }
 
     #[test]
+    fn split_resolves_relative_cwd_against_the_caller() {
+        let params = split_params(
+            &pane(&["split", "--direction", "down", "--cwd", "."]),
+            &OUTSIDE,
+        )
+        .expect("test precondition");
+        let expected = std::env::current_dir().expect("test precondition");
+        assert_eq!(params.cwd.as_deref(), expected.to_str());
+    }
+
+    #[test]
     fn split_current_uses_calling_pane_and_requires_it() {
         let params = split_params(
             &pane(&["split", "--direction", "down", "--current"]),
-            Some("issue-1"),
+            &known("issue-1"),
         )
         .expect("test precondition");
         assert_eq!(params.target_pane_id, Some("issue-1".into()));
         assert_eq!(params.direction, SplitDirection::Down);
 
-        assert!(split_params(&pane(&["split", "--direction", "down", "--current"]), None).is_err());
+        assert!(
+            split_params(
+                &pane(&["split", "--direction", "down", "--current"]),
+                &OUTSIDE
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -514,7 +530,7 @@ mod tests {
                 "--cwd",
                 "/var/tmp",
             ]),
-            Some("w1:p2"),
+            &known("w1:p2"),
         )
         .expect("test precondition");
 
@@ -524,10 +540,15 @@ mod tests {
 
     #[test]
     fn split_without_caller_keeps_focused_fallback() {
-        let params = split_params(&pane(&["split", "--direction", "down"]), None)
-            .expect("test precondition");
-
-        assert_eq!(params.target_pane_id, None);
+        for caller in [
+            CallerPane::Unset,
+            CallerPane::OtherServer,
+            CallerPane::Remote,
+        ] {
+            let params = split_params(&pane(&["split", "--direction", "down"]), &caller)
+                .expect("test precondition");
+            assert_eq!(params.target_pane_id, None);
+        }
     }
 
     #[test]
@@ -536,7 +557,7 @@ mod tests {
             let mut args = vec!["split"];
             args.extend_from_slice(target);
             args.extend_from_slice(&["--direction", "right"]);
-            let params = split_params(&pane(&args), Some("w1:p2")).expect("test precondition");
+            let params = split_params(&pane(&args), &known("w1:p2")).expect("test precondition");
 
             assert_eq!(params.target_pane_id, Some("w2:p3".into()));
         }
@@ -567,7 +588,7 @@ mod tests {
     fn input_requires_and_uses_calling_pane() {
         let params = input_params(
             &pane(&["input", "--current", "--right-click", "pane"]),
-            Some("issue-1:p1"),
+            &known("issue-1:p1"),
         )
         .expect("test precondition");
 
@@ -576,7 +597,7 @@ mod tests {
         assert!(
             input_params(
                 &pane(&["input", "--current", "--right-click", "pane"]),
-                None
+                &OUTSIDE
             )
             .is_err()
         );
@@ -604,66 +625,101 @@ mod tests {
         assert!(rejected(&["input", "pane-a"]));
     }
 
-    #[test]
-    fn current_uses_env_pane_by_default_and_explicit_pane_when_given() {
-        assert_eq!(
-            current_caller_pane(&pane(&["current"]), Some("issue-1")),
-            Some("issue-1".into())
-        );
-        assert_eq!(
-            current_caller_pane(&pane(&["current", "--pane", "issue-2"]), Some("issue-1")),
-            Some("issue-2".into())
-        );
-        assert_eq!(
-            current_caller_pane(&pane(&["current", "--current"]), Some("issue-1")),
-            Some("issue-1".into())
-        );
-        assert_eq!(current_caller_pane(&pane(&["current"]), None), None);
-    }
+    /// Every command with a pane selector, with the arguments it needs besides it.
+    const SELECTOR_COMMANDS: &[&[&str]] = &[
+        &["current"],
+        &["layout"],
+        &["process-info"],
+        &["edges"],
+        &["neighbor", "--direction", "down"],
+        &["focus", "--direction", "left"],
+        &["resize", "--direction", "up"],
+        &["zoom"],
+        &["split", "--direction", "right"],
+        &["swap", "--direction", "right"],
+    ];
 
     #[test]
-    fn optional_current_pane_resolution() {
-        assert_eq!(
-            optional_current_pane(&pane(&["layout", "--current"]), Some("issue-1")),
-            Some("issue-1".into())
-        );
-        assert_eq!(
-            optional_current_pane(&pane(&["edges", "--current"]), None),
-            None
-        );
-        assert_eq!(
-            optional_current_pane(&pane(&["process-info"]), Some("issue-1")),
-            None
-        );
-        assert_eq!(
-            optional_current_pane(&pane(&["layout", "--pane", "issue-2"]), Some("issue-1")),
-            Some("issue-2".into())
-        );
-        assert!(rejected(&["layout", "--pane", "a", "--current"]));
+    fn every_pane_command_resolves_its_pane_the_same_way() {
+        for command in SELECTOR_COMMANDS {
+            let with = |extra: &[&str]| {
+                let mut args = command.to_vec();
+                args.extend_from_slice(extra);
+                pane(&args)
+            };
+
+            // `--current` is the caller's pane, and an error without one.
+            assert_eq!(
+                selected_pane(&with(&["--current"]), &known("w1:p2")),
+                Ok(Some("w1:p2".into())),
+                "{command:?}"
+            );
+            for caller in [
+                CallerPane::Unset,
+                CallerPane::OtherServer,
+                CallerPane::Remote,
+            ] {
+                assert!(
+                    selected_pane(&with(&["--current"]), &caller).is_err(),
+                    "{command:?} {caller:?}"
+                );
+            }
+
+            // No selector: the caller's pane when known, else the server's
+            // focused pane.
+            assert_eq!(
+                selected_pane(&with(&[]), &known("w1:p2")),
+                Ok(Some("w1:p2".into())),
+                "{command:?}"
+            );
+            assert_eq!(
+                selected_pane(&with(&[]), &CallerPane::OtherServer),
+                Ok(None),
+                "{command:?}"
+            );
+
+            // An explicit pane always wins.
+            assert_eq!(
+                selected_pane(&with(&["--pane", "w9:p9"]), &known("w1:p2")),
+                Ok(Some("w9:p9".into())),
+                "{command:?}"
+            );
+            let mut both = command.to_vec();
+            both.extend_from_slice(&["--pane", "a", "--current"]);
+            assert!(rejected(&both), "{command:?}");
+        }
     }
 
     #[test]
     fn swap_accepts_directional_current() {
-        let params =
-            swap_params(&pane(&["swap", "--direction", "right"])).expect("test precondition");
+        let params = swap_params(&pane(&["swap", "--direction", "right"]), &OUTSIDE)
+            .expect("test precondition");
 
         assert_eq!(params.pane_id, None);
         assert_eq!(params.direction, Some(PaneDirection::Right));
         assert_eq!(params.source_pane_id, None);
         assert_eq!(params.target_pane_id, None);
+
+        let params = swap_params(&pane(&["swap", "--direction", "right"]), &known("w1:p2"))
+            .expect("test precondition");
+        assert_eq!(params.pane_id, Some("w1:p2".into()));
     }
 
     #[test]
     fn swap_accepts_explicit_source_and_target() {
-        let params = swap_params(&pane(&[
-            "swap",
-            "--source-pane",
-            "issue-1",
-            "--target-pane",
-            "issue-2",
-        ]))
+        let params = swap_params(
+            &pane(&[
+                "swap",
+                "--source-pane",
+                "issue-1",
+                "--target-pane",
+                "issue-2",
+            ]),
+            &known("w1:p2"),
+        )
         .expect("test precondition");
 
+        assert_eq!(params.pane_id, None);
         assert_eq!(params.direction, None);
         assert_eq!(params.source_pane_id, Some("issue-1".into()));
         assert_eq!(params.target_pane_id, Some("issue-2".into()));
@@ -671,18 +727,38 @@ mod tests {
 
     #[test]
     fn swap_rejects_mixed_forms() {
-        let err = swap_params(&pane(&[
-            "swap",
-            "--direction",
-            "left",
-            "--source-pane",
-            "issue-1",
-            "--target-pane",
-            "issue-2",
-        ]))
+        let err = swap_params(
+            &pane(&[
+                "swap",
+                "--direction",
+                "left",
+                "--source-pane",
+                "issue-1",
+                "--target-pane",
+                "issue-2",
+            ]),
+            &OUTSIDE,
+        )
         .expect_err("test precondition");
 
         assert!(err.contains("usage: shepr pane swap"));
+
+        // A pane selector belongs to the directional form only, even when the
+        // caller's pane is known.
+        for selector in [&["--current"][..], &["--pane", "issue-3"]] {
+            let mut args = vec![
+                "swap",
+                "--source-pane",
+                "issue-1",
+                "--target-pane",
+                "issue-2",
+            ];
+            args.extend_from_slice(selector);
+            assert!(
+                swap_params(&pane(&args), &known("w1:p2")).is_err(),
+                "{selector:?}"
+            );
+        }
     }
 
     #[test]
@@ -744,8 +820,8 @@ mod tests {
     }
 
     #[test]
-    fn zoom_defaults_to_focused_toggle() {
-        let params = zoom_params(&pane(&["zoom"]));
+    fn zoom_defaults_to_toggle_outside_a_pane() {
+        let params = zoom_params(&pane(&["zoom"]), &OUTSIDE).expect("test precondition");
 
         assert_eq!(params.pane_id, None);
         assert_eq!(params.mode, PaneZoomMode::Toggle);
@@ -753,21 +829,23 @@ mod tests {
 
     #[test]
     fn zoom_accepts_positional_or_option_pane_and_one_mode() {
-        let params = zoom_params(&pane(&["zoom", "issue-1", "--on"]));
+        let params = zoom_params(&pane(&["zoom", "issue-1", "--on"]), &known("w1:p2"))
+            .expect("test precondition");
         assert_eq!(params.pane_id, Some("issue-1".into()));
         assert_eq!(params.mode, PaneZoomMode::On);
 
-        let params = zoom_params(&pane(&["zoom", "--pane", "issue-2", "--off"]));
+        let params = zoom_params(&pane(&["zoom", "--pane", "issue-2", "--off"]), &OUTSIDE)
+            .expect("test precondition");
         assert_eq!(params.pane_id, Some("issue-2".into()));
         assert_eq!(params.mode, PaneZoomMode::Off);
 
         assert!(rejected(&["zoom", "--on", "--off"]));
+        assert!(rejected(&["zoom", "issue-1", "--current"]));
     }
 
     #[test]
-    fn directional_commands_leave_current_to_the_focused_pane() {
+    fn directional_commands_read_direction_and_amount() {
         let neighbor = pane(&["neighbor", "--direction", "down", "--current"]);
-        assert_eq!(focused_fallback_pane(&neighbor), None);
         assert_eq!(direction(&neighbor), PaneDirection::Down);
 
         let resize = pane(&[
@@ -779,7 +857,10 @@ mod tests {
             "--amount",
             "0.125",
         ]);
-        assert_eq!(focused_fallback_pane(&resize), Some("issue-2".into()));
+        assert_eq!(
+            selected_pane(&resize, &known("w1:p2")),
+            Ok(Some("issue-2".into()))
+        );
         assert_eq!(direction(&resize), PaneDirection::Left);
         assert_eq!(value::<f32>(&resize, "amount"), Some(0.125));
 
@@ -814,10 +895,8 @@ mod tests {
         assert_eq!(params.source, ReadSource::Visible);
         assert_eq!(params.lines, Some(5));
 
-        let params = read_params(&pane(&["read", "issue-1", "--raw"]));
-        assert_eq!(params.format, ReadFormat::Ansi);
-        assert!(!params.strip_ansi);
-
+        // `--raw` only ever repeated `--ansi`; it is gone.
+        assert!(rejected(&["read", "issue-1", "--raw"]));
         assert!(rejected(&["read", "issue-1", "--lines", "-3"]));
         assert!(rejected(&["read", "issue-1", "--source", "nowhere"]));
     }

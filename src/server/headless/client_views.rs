@@ -641,7 +641,7 @@ impl HeadlessServer {
         if !self
             .clients
             .get(&client_id)
-            .is_some_and(|client| client.shell_surface_active)
+            .is_some_and(ClientConnection::is_active_shell_client)
         {
             return false;
         }
@@ -662,7 +662,7 @@ impl HeadlessServer {
         if !self
             .clients
             .get(&client_id)
-            .is_some_and(|client| client.shell_surface_active)
+            .is_some_and(ClientConnection::is_active_shell_client)
         {
             return false;
         }
@@ -684,7 +684,7 @@ impl HeadlessServer {
         if !self
             .clients
             .get(&client_id)
-            .is_some_and(|client| client.shell_surface_active)
+            .is_some_and(ClientConnection::is_active_shell_client)
         {
             return false;
         }
@@ -790,7 +790,7 @@ impl HeadlessServer {
             (original, proxy_rx)
         });
         let reconcile = Self::shell_locations_may_need_reconcile(&msg.request.method);
-        let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, false);
+        let changed = self.handle_api_request_with_shutdown_check_inner(msg);
         let proxied_result = forward_proxied_api_response(response_proxy);
         let proxied_request_succeeded = proxied_result.is_some();
         // Same-tab and zoomed moves succeed without moving or requesting focus.
@@ -842,7 +842,7 @@ impl HeadlessServer {
         let navigation_changed =
             self.apply_shell_navigation_request(client_id, &msg.request.method);
         self.set_default_shell_target_from_client(client_id);
-        let changed = self.handle_api_request_with_shutdown_check_inner(msg, false, true);
+        let changed = self.handle_api_request_with_shutdown_check_inner(msg);
         self.focus_shell_client_on_default_target(client_id);
         if reconcile {
             self.reconcile_client_shell_locations();

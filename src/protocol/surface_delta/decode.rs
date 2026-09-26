@@ -9,6 +9,15 @@
 //! Leaf values (cells, strings, rectangles, pane metadata) go through their
 //! ordinary serde `Deserialize` implementations, so the byte layout is exactly
 //! what `codec::to_vec(&SurfaceDelta { .. })` produces.
+//!
+//! The price is that `decode_surface`, `decode_frame` and `decode_splits`
+//! restate the field order of `PaneSurfaceFrame`, `FrameData` and
+//! `PaneSurfaceSplit` from `protocol/wire.rs`. Two guards keep them in step:
+//! the struct literals below stop compiling when a field is added or removed,
+//! and `bounded_decoder_matches_the_serde_wire_layout` gives every field a
+//! distinct value and compares the whole decoded surface, so reordering
+//! fields in `wire.rs` (even two of the same type) fails that test. Change
+//! those structs and this file together.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
 
@@ -295,22 +304,96 @@ mod tests {
         codec::to_vec(value)
     }
 
+    fn rect(seed: u16) -> SurfaceRect {
+        SurfaceRect {
+            x: seed,
+            y: seed + 1,
+            width: seed + 2,
+            height: seed + 3,
+        }
+    }
+
+    /// A surface whose every hand-decoded field holds a value distinct from
+    /// its neighbours of the same type, so a field-order mismatch between
+    /// this decoder and `wire.rs` cannot decode to an equal value.
+    fn populated_surface(width: u16, height: u16) -> PaneSurfaceFrame {
+        use crate::protocol::PaneSurfaceScrollMetrics;
+
+        let mut surface = surface(width, height);
+        surface.boot_id = "boot-layout".into();
+        surface.projection_revision = 11;
+        surface.surface_revision = 12;
+        surface.frame.cursor = Some(CursorState {
+            x: 1,
+            y: 1,
+            visible: true,
+            shape: 5,
+        });
+        surface.frame.hyperlinks = vec!["https://a.example".into(), "https://b.example".into()];
+        surface.panes = vec![PaneSurfacePane {
+            pane_id: "w1:p1".into(),
+            content_revision: 13,
+            rect: rect(10),
+            inner_rect: rect(20),
+            scrollbar_rect: Some(rect(30)),
+            scroll: Some(PaneSurfaceScrollMetrics {
+                offset_from_bottom: 14,
+                max_offset_from_bottom: 15,
+                viewport_rows: 16,
+            }),
+            focused: true,
+            mouse_reporting: false,
+            sgr_pixel_mouse: true,
+            alternate_screen_active: false,
+            pixel_width: 17,
+            pixel_height: 18,
+        }];
+        surface.splits = vec![
+            PaneSurfaceSplit {
+                direction: PaneSurfaceSplitDirection::Vertical,
+                pos: 19,
+                area: rect(40),
+                hit_rect: rect(50),
+                path: vec![true, false],
+            },
+            PaneSurfaceSplit {
+                direction: PaneSurfaceSplitDirection::Horizontal,
+                pos: 21,
+                area: rect(60),
+                hit_rect: rect(70),
+                path: vec![false],
+            },
+        ];
+        surface
+    }
+
     #[test]
     fn bounded_decoder_matches_the_serde_wire_layout() -> TestResult {
+        let surface = populated_surface(4, 2);
+        let mut linked = cell();
+        linked.hyperlink = Some(1);
         let delta = SurfaceDelta {
             base_projection_revision: 1,
             base_surface_revision: 2,
-            surface: surface(4, 2),
-            rows: vec![PaneSurfacePatchRow {
-                x: 1,
-                y: 1,
-                cells: vec![cell()],
-            }],
+            surface: surface.clone(),
+            rows: vec![
+                PaneSurfacePatchRow {
+                    x: 1,
+                    y: 0,
+                    cells: vec![linked.clone()],
+                },
+                PaneSurfacePatchRow {
+                    x: 2,
+                    y: 1,
+                    cells: vec![cell(), linked],
+                },
+            ],
         };
         let decoded = decode_bytes(&encoded(&delta)?, Some((4, 2)))?;
-        assert!(decoded.surface.frame.cells.is_empty());
-        assert_eq!(decoded.rows.len(), 1);
-        assert_eq!(decoded.rows[0].cells, vec![cell()]);
+        assert_eq!(decoded.base_projection_revision, 1);
+        assert_eq!(decoded.base_surface_revision, 2);
+        assert_eq!(decoded.surface, surface);
+        assert_eq!(decoded.rows, delta.rows);
         Ok(())
     }
 

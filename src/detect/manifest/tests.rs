@@ -24,37 +24,66 @@ id = "codex"
     )
 }
 
-fn with_manifest_dirs<T>(name: &str, f: impl FnOnce() -> T) -> T {
-    let _guard = crate::config::test_config_env_lock()
-        .lock()
-        .expect("test precondition");
-    let old_config = std::env::var_os("XDG_CONFIG_HOME");
-    let base = std::env::temp_dir().join(format!(
-        "shepr-manifest-loader-{name}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&base);
-    unsafe { std::env::set_var("XDG_CONFIG_HOME", base.join("config")) };
-    reload_manifests();
-    let result = f();
-    match old_config {
-        Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
-        None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+/// A private manifest registry over a private override directory. Loader
+/// tests go through this instead of the process-wide registry, so they change
+/// no environment variable and no global cache: other tests in the same
+/// process (plain `cargo test` runs them on parallel threads) keep seeing the
+/// bundled manifests.
+struct TestManifests {
+    dir: PathBuf,
+    registry: ManifestRegistry,
+}
+
+impl TestManifests {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "shepr-manifest-loader-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("test precondition");
+        let registry = ManifestRegistry::new(&dir);
+        Self { dir, registry }
     }
-    reload_manifests();
-    let _ = std::fs::remove_dir_all(&base);
-    result
+
+    fn write_codex_without_reload(&self, content: &str) {
+        std::fs::write(override_path(&self.dir, Agent::Codex), content).expect("test precondition");
+    }
+
+    fn write_codex(&self, content: &str) {
+        self.write_codex_without_reload(content);
+        self.reload();
+    }
+
+    fn reload(&self) {
+        self.registry.reload(&self.dir);
+    }
+
+    fn get(&self, agent: Agent) -> Option<Arc<LoadedManifest>> {
+        self.registry.get(agent)
+    }
+
+    fn explain(&self, agent: Agent, screen: &str) -> DetectionExplain {
+        self.explain_input(agent, screen_input(screen))
+    }
+
+    fn explain_input(&self, agent: Agent, input: DetectionInput<'_>) -> DetectionExplain {
+        explain_with_manifest(agent, input, self.get(agent).as_deref())
+    }
+
+    fn detect(&self, agent: Agent, screen: &str) -> AgentDetection {
+        self.detect_input(agent, screen_input(screen))
+    }
+
+    fn detect_input(&self, agent: Agent, input: DetectionInput<'_>) -> AgentDetection {
+        detect_with_manifest(agent, input, self.get(agent).as_deref())
+    }
 }
 
-fn write_local_codex_without_reload(content: &str) {
-    let path = override_path(Agent::Codex);
-    std::fs::create_dir_all(path.parent().expect("test precondition")).expect("test precondition");
-    std::fs::write(path, content).expect("test precondition");
-}
-
-fn write_local_codex(content: &str) {
-    write_local_codex_without_reload(content);
-    reload_manifests();
+impl Drop for TestManifests {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 fn screen_input(screen: &str) -> DetectionInput<'_> {
@@ -283,29 +312,50 @@ fn opencode_permission_header_needs_live_dialog_controls() {
 
 #[test]
 fn codex_no_match_is_unknown_without_changing_other_agents() {
-    with_manifest_dirs("no-match", || {
-        write_local_codex(&local_manifest("working", "active-marker"));
-        let explain = explain(Agent::Codex, "unmatched-marker");
+    let manifests = TestManifests::new("no-match");
+    manifests.write_codex(&local_manifest("working", "active-marker"));
+    let explain = manifests.explain(Agent::Codex, "unmatched-marker");
 
-        assert_eq!(explain.state, AgentState::Unknown);
-        assert!(!explain.visible_idle);
-        assert_eq!(
-            explain.fallback_reason.as_deref(),
-            Some("codex_state_ambiguous")
-        );
-        let other = fallback_explain(Some(Agent::Pi), None);
-        assert_eq!(other.state, AgentState::Idle);
-        assert_eq!(
-            other.fallback_reason.as_deref(),
-            Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
-        );
-    });
+    assert_eq!(explain.state, AgentState::Unknown);
+    assert!(!explain.visible_idle);
+    assert_eq!(
+        explain.fallback_reason.as_deref(),
+        Some("codex_state_ambiguous")
+    );
+    let other = fallback_explain(Some(Agent::Pi), None);
+    assert_eq!(other.state, AgentState::Idle);
+    assert_eq!(
+        other.fallback_reason.as_deref(),
+        Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
+    );
+}
+
+#[test]
+fn private_registry_leaves_the_process_wide_registry_alone() {
+    let manifests = TestManifests::new("isolation");
+    manifests.write_codex(&local_manifest("blocked", "isolation-marker"));
+    assert_eq!(
+        manifests.explain(Agent::Codex, "isolation-marker").state,
+        AgentState::Blocked
+    );
+    // The process-wide registry reads the real config directory; the private
+    // override must not leak into it.
+    let global = explain(Agent::Codex, "isolation-marker");
+    assert_ne!(
+        global.matched_rule.map(|rule| rule.id).as_deref(),
+        Some("test")
+    );
+    assert_ne!(
+        detect(Agent::Codex, "isolation-marker").state,
+        AgentState::Blocked
+    );
 }
 
 #[test]
 fn rule_semantics_apply_gates_priority_and_line_regex() {
-    with_manifest_dirs("rule-semantics", || {
-        write_local_codex(&rules_manifest(
+    let manifests = TestManifests::new("rule-semantics");
+    {
+        manifests.write_codex(&rules_manifest(
             r#"
 [[rules]]
 id = "low_contains"
@@ -333,151 +383,152 @@ line_regex = ["^exact line$"]
 "#,
         ));
 
-        let high = explain(Agent::Codex, "match win");
+        let high = manifests.explain(Agent::Codex, "match win");
         assert_eq!(high.state, AgentState::Working);
         assert_eq!(
             high.matched_rule.as_ref().map(|rule| rule.id.as_str()),
             Some("high_nested_gates")
         );
 
-        let not_gate = explain(Agent::Codex, "match win blocked");
+        let not_gate = manifests.explain(Agent::Codex, "match win blocked");
         assert_eq!(not_gate.state, AgentState::Idle);
         assert_eq!(
             not_gate.matched_rule.as_ref().map(|rule| rule.id.as_str()),
             Some("low_contains")
         );
 
-        let line = explain(Agent::Codex, "before\nexact line\nafter");
+        let line = manifests.explain(Agent::Codex, "before\nexact line\nafter");
         assert_eq!(line.state, AgentState::Blocked);
         assert_eq!(
             line.matched_rule.as_ref().map(|rule| rule.id.as_str()),
             Some("line_regex")
         );
-    });
+    }
 }
 
 #[test]
 fn local_override_replaces_bundled_manifest() {
-    with_manifest_dirs("local-override", || {
-        write_local_codex(&local_manifest("idle", "local-ready"));
+    let manifests = TestManifests::new("local-override");
+    manifests.write_codex(&local_manifest("idle", "local-ready"));
 
-        let explain = explain(Agent::Codex, "local-ready");
+    let explain = manifests.explain(Agent::Codex, "local-ready");
 
-        assert_eq!(explain.state, AgentState::Idle);
-        assert!(matches!(explain.source, Some(ManifestSource::Override(_))));
-    });
+    assert_eq!(explain.state, AgentState::Idle);
+    assert!(matches!(explain.source, Some(ManifestSource::Override(_))));
 }
 
 #[test]
 fn invalid_local_override_falls_back_to_bundled_manifest() {
-    with_manifest_dirs("invalid-local-bundled-fallback", || {
-        write_local_codex("id = ");
+    let manifests = TestManifests::new("invalid-local-bundled-fallback");
+    manifests.write_codex("id = ");
 
-        let explain = explain(Agent::Codex, "ordinary prompt text");
+    let explain = manifests.explain(Agent::Codex, "ordinary prompt text");
 
-        assert!(matches!(explain.source, Some(ManifestSource::Bundled)));
-        assert!(explain.warning.is_some());
-    });
+    assert!(matches!(explain.source, Some(ManifestSource::Bundled)));
+    assert!(explain.warning.is_some());
 }
 
 #[test]
 fn detection_uses_cached_manifest_until_explicit_reload() {
-    with_manifest_dirs("cache-boundary", || {
-        write_local_codex(&local_manifest("blocked", "cached-ready"));
+    let manifests = TestManifests::new("cache-boundary");
+    manifests.write_codex(&local_manifest("blocked", "cached-ready"));
 
-        let cached = explain(Agent::Codex, "cached-ready");
-        assert_eq!(cached.state, AgentState::Blocked);
-        assert_eq!(
-            cached.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-            Some("test")
-        );
+    let cached = manifests.explain(Agent::Codex, "cached-ready");
+    assert_eq!(cached.state, AgentState::Blocked);
+    assert_eq!(
+        cached.matched_rule.as_ref().map(|rule| rule.id.as_str()),
+        Some("test")
+    );
 
-        write_local_codex_without_reload(&local_manifest("working", "new-ready"));
+    manifests.write_codex_without_reload(&local_manifest("working", "new-ready"));
 
-        let unchanged = explain(Agent::Codex, "new-ready");
-        assert_eq!(unchanged.state, AgentState::Unknown);
-        assert_eq!(
-            unchanged.fallback_reason.as_deref(),
-            Some("codex_state_ambiguous")
-        );
+    let unchanged = manifests.explain(Agent::Codex, "new-ready");
+    assert_eq!(unchanged.state, AgentState::Unknown);
+    assert_eq!(
+        unchanged.fallback_reason.as_deref(),
+        Some("codex_state_ambiguous")
+    );
 
-        reload_manifests();
+    manifests.reload();
 
-        let reloaded = explain(Agent::Codex, "new-ready");
-        assert_eq!(reloaded.state, AgentState::Working);
-        assert_eq!(
-            reloaded.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-            Some("test")
-        );
-    });
+    let reloaded = manifests.explain(Agent::Codex, "new-ready");
+    assert_eq!(reloaded.state, AgentState::Working);
+    assert_eq!(
+        reloaded.matched_rule.as_ref().map(|rule| rule.id.as_str()),
+        Some("test")
+    );
 }
 
 #[test]
 fn compiled_rules_are_shared_until_manifest_reload() {
-    with_manifest_dirs("shared-compiled-rules", || {
-        write_local_codex(&format!(
-            "{}\nregex = ['^cached-[a-z]+$']\n",
-            local_manifest("blocked", "cached-ready")
-        ));
-        let first = load_manifest(Agent::Codex).expect("test precondition");
-        let second = load_manifest(Agent::Codex).expect("test precondition");
-        assert!(!first.compiled_rules.is_empty());
-        assert_eq!(
-            first.compiled_rules.as_ptr(),
-            second.compiled_rules.as_ptr(),
-            "cached loads must retain the same compiled rules and regex search caches"
-        );
+    let manifests = TestManifests::new("shared-compiled-rules");
+    manifests.write_codex(&format!(
+        "{}\nregex = ['^cached-[a-z]+$']\n",
+        local_manifest("blocked", "cached-ready")
+    ));
+    let first = manifests.get(Agent::Codex).expect("test precondition");
+    let second = manifests.get(Agent::Codex).expect("test precondition");
+    assert!(!first.compiled_rules.is_empty());
+    assert_eq!(
+        first.compiled_rules.as_ptr(),
+        second.compiled_rules.as_ptr(),
+        "cached loads must retain the same compiled rules and regex search caches"
+    );
 
-        write_local_codex_without_reload(&format!(
-            "{}\nregex = ['^new-[a-z]+$']\n",
-            local_manifest("working", "new-ready")
-        ));
-        let unchanged = load_manifest(Agent::Codex).expect("test precondition");
-        assert_eq!(
-            first.compiled_rules.as_ptr(),
-            unchanged.compiled_rules.as_ptr()
-        );
+    manifests.write_codex_without_reload(&format!(
+        "{}\nregex = ['^new-[a-z]+$']\n",
+        local_manifest("working", "new-ready")
+    ));
+    let unchanged = manifests.get(Agent::Codex).expect("test precondition");
+    assert_eq!(
+        first.compiled_rules.as_ptr(),
+        unchanged.compiled_rules.as_ptr()
+    );
 
-        reload_manifests();
-        let reloaded = load_manifest(Agent::Codex).expect("test precondition");
-        let shared_reload = load_manifest(Agent::Codex).expect("test precondition");
-        assert_ne!(
-            first.compiled_rules.as_ptr(),
-            reloaded.compiled_rules.as_ptr()
-        );
-        assert_eq!(
-            reloaded.compiled_rules.as_ptr(),
-            shared_reload.compiled_rules.as_ptr()
-        );
-        assert!(loaded_rule_matches(&first, 0, "cached-ready"));
-        assert!(!loaded_rule_matches(&first, 0, "new-ready"));
-        assert_eq!(
-            explain(Agent::Codex, "new-ready").state,
-            AgentState::Working
-        );
+    manifests.reload();
+    let reloaded = manifests.get(Agent::Codex).expect("test precondition");
+    let shared_reload = manifests.get(Agent::Codex).expect("test precondition");
+    assert_ne!(
+        first.compiled_rules.as_ptr(),
+        reloaded.compiled_rules.as_ptr()
+    );
+    assert_eq!(
+        reloaded.compiled_rules.as_ptr(),
+        shared_reload.compiled_rules.as_ptr()
+    );
+    assert!(loaded_rule_matches(&first, 0, "cached-ready"));
+    assert!(!loaded_rule_matches(&first, 0, "new-ready"));
+    assert_eq!(
+        manifests.explain(Agent::Codex, "new-ready").state,
+        AgentState::Working
+    );
 
-        std::thread::scope(|scope| {
-            for _ in 0..4 {
-                let reloaded = &reloaded;
-                scope.spawn(move || {
-                    let loaded = load_manifest(Agent::Codex).expect("test precondition");
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            let reloaded = &reloaded;
+            let manifests = &manifests;
+            scope.spawn(move || {
+                let loaded = manifests.get(Agent::Codex).expect("test precondition");
+                assert_eq!(
+                    loaded.compiled_rules.as_ptr(),
+                    reloaded.compiled_rules.as_ptr()
+                );
+                for _ in 0..8 {
                     assert_eq!(
-                        loaded.compiled_rules.as_ptr(),
-                        reloaded.compiled_rules.as_ptr()
+                        manifests.detect(Agent::Codex, "new-ready").state,
+                        AgentState::Working
                     );
-                    for _ in 0..8 {
-                        assert_eq!(detect(Agent::Codex, "new-ready").state, AgentState::Working);
-                    }
-                });
-            }
-        });
+                }
+            });
+        }
     });
 }
 
 #[test]
 fn osc_regions_use_separate_inputs_and_share_rule_priority() {
-    with_manifest_dirs("osc-regions", || {
-        write_local_codex(&rules_manifest(
+    let manifests = TestManifests::new("osc-regions");
+    {
+        manifests.write_codex(&rules_manifest(
             r#"
 [[rules]]
 id = "screen"
@@ -533,7 +584,7 @@ regex = ['^progress-marker$']
                 osc_title: title,
                 osc_progress: progress,
             };
-            let result = explain_with_input(Agent::Codex, input);
+            let result = manifests.explain_input(Agent::Codex, input);
             assert_eq!(result.state, state);
             assert_eq!(
                 result
@@ -542,14 +593,13 @@ regex = ['^progress-marker$']
                     .map(|matched| matched.id.as_str()),
                 Some(rule)
             );
-            let detection =
-                crate::detect::detect_agent_with_osc(Some(Agent::Codex), screen, title, progress);
+            let detection = manifests.detect_input(Agent::Codex, input);
             assert_eq!(detection.state, state);
             assert_eq!(detection.visible_idle, state == AgentState::Idle);
             assert_eq!(detection.visible_working, state == AgentState::Working);
             assert_eq!(detection.visible_blocker, state == AgentState::Blocked);
         }
-        let swapped = explain_with_input(
+        let swapped = manifests.explain_input(
             Agent::Codex,
             DetectionInput {
                 screen: "",
@@ -558,13 +608,14 @@ regex = ['^progress-marker$']
             },
         );
         assert!(swapped.matched_rule.is_none());
-    });
+    }
 }
 
 #[test]
 fn skip_rule_suppresses_state_update_without_visible_state_evidence() {
-    with_manifest_dirs("skip-rule", || {
-        write_local_codex(&rules_manifest(
+    let manifests = TestManifests::new("skip-rule");
+    {
+        manifests.write_codex(&rules_manifest(
             r#"
 [[rules]]
 id = "activity"
@@ -582,7 +633,7 @@ contains = ["overlay-marker"]
 "#,
         ));
         let screen = "activity-marker overlay-marker";
-        let result = explain(Agent::Codex, screen);
+        let result = manifests.explain(Agent::Codex, screen);
         assert_eq!(result.state, AgentState::Unknown);
         assert!(result.skip_state_update);
         assert_eq!(
@@ -592,8 +643,8 @@ contains = ["overlay-marker"]
         assert!(!result.visible_idle);
         assert!(!result.visible_working);
         assert!(!result.visible_blocker);
-        assert!(detect(Agent::Codex, screen).skip_state_update);
-    });
+        assert!(manifests.detect(Agent::Codex, screen).skip_state_update);
+    }
 }
 
 #[test]

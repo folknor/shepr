@@ -222,7 +222,9 @@ pub fn plan(source: &str, agent: &str, session_ref: &AgentSessionRef) -> Option<
         }
         ("shepr:letta", "letta", AgentSessionRefKind::Id) => {
             if let Some(agent_id) = session_ref.value.strip_prefix("default:") {
-                if agent_id.is_empty() {
+                // The agent ID becomes the argument of `--agent`; like session
+                // IDs it must not be readable as a flag.
+                if agent_id.is_empty() || agent_id.starts_with('-') {
                     return None;
                 }
                 vec![
@@ -281,8 +283,16 @@ pub(crate) fn is_official_agent_source(source: &str, agent: &str) -> bool {
     )
 }
 
+// A session ID ends up as its own argv element after flags such as `--resume`
+// and `--session`, and the resume argv is typed into an interactive shell. An
+// ID starting with `-` would be parsed by the agent as another flag, so a hook
+// report, API call or edited session file could smuggle options into the
+// resumed agent. No agent issues IDs of that shape.
 fn valid_session_id(value: &str) -> bool {
-    !value.is_empty() && value.len() <= MAX_SESSION_ID_LEN && !value.chars().any(char::is_control)
+    !value.is_empty()
+        && value.len() <= MAX_SESSION_ID_LEN
+        && !value.starts_with('-')
+        && !value.chars().any(char::is_control)
 }
 
 fn valid_session_path(value: &str) -> bool {
@@ -776,6 +786,27 @@ mod tests {
         )
         .expect("test precondition");
         assert_eq!(devin_plan.argv, vec!["devin", "--resume", id]);
+    }
+
+    #[test]
+    fn ids_that_read_as_flags_are_rejected_on_every_path() {
+        for id in ["-", "--dangerously-skip-permissions", "-x"] {
+            assert!(AgentSessionRef::id(id).is_none(), "{id}");
+            assert!(
+                session_ref_from_report("shepr:claude", "claude", Some(id.into()), None).is_none()
+            );
+            assert!(
+                session_ref_from_snapshot("shepr:claude", "claude", AgentSessionRefKind::Id, id)
+                    .is_none()
+            );
+        }
+        // A value only has to avoid a leading dash; dashes inside are fine.
+        assert!(AgentSessionRef::id("abc-def").is_some());
+        let letta_flag = AgentSessionRef {
+            kind: AgentSessionRefKind::Id,
+            value: "default:--yolo".into(),
+        };
+        assert!(plan("shepr:letta", "letta", &letta_flag).is_none());
     }
 
     #[test]

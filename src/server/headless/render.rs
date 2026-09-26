@@ -629,10 +629,7 @@ impl HeadlessServer {
                 client.clear_deferred_render();
                 continue;
             };
-            let serialized = match Self::frame_server_message_with_max(
-                prepared.message(),
-                crate::protocol::MAX_FRAME_SIZE,
-            ) {
+            let serialized = match Self::frame_server_message(prepared.message()) {
                 Ok(frame) => frame,
                 Err(protocol::FramingError::Oversized { claimed, max }) => {
                     warn!(

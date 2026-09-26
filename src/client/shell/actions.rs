@@ -81,10 +81,7 @@ impl ClientShellState {
                         } else {
                             self.push_endpoint_method(
                                 crate::api::schema::Method::WorkspaceClose(
-                                    crate::api::schema::WorkspaceCloseParams {
-                                        workspace_id,
-                                        close_group: true,
-                                    },
+                                    crate::api::schema::WorkspaceCloseParams { workspace_id },
                                 ),
                                 outcome,
                             );
@@ -343,7 +340,7 @@ impl ClientShellState {
             return false;
         };
         let boot_id = pending.boot_id.clone();
-        let (repaint, actions) = self.handle_endpoint_result(
+        let outcome = self.handle_endpoint_result(
             &boot_id,
             request_id,
             Err(ClientShellEndpointError {
@@ -352,18 +349,43 @@ impl ClientShellState {
                     .into(),
             }),
         );
+        // A cancelled copy-mode request does not continue its key queue
+        // (`continue_queue` is false on every error), so nothing but a repaint
+        // can come out of it.
         debug_assert!(
-            actions.is_empty(),
+            outcome.actions.is_empty() && outcome.requests.is_empty(),
             "cancellation must not start another action"
         );
-        repaint
+        outcome.repaint
     }
 
+    /// Applies an endpoint response and returns everything it produced.
+    ///
+    /// A copy-mode motion or search response replays the keys queued while it
+    /// was in flight, and those keys can yield pane input, a resize, a detach or
+    /// host queries, not just repaints and actions. The caller must route the
+    /// whole outcome (`finish_client_shell_input`), or the replayed keystrokes
+    /// are lost.
     pub(crate) fn handle_endpoint_result(
         &mut self,
         boot_id: &str,
         request_id: &str,
         result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+    ) -> ClientShellInput {
+        let mut outcome = ClientShellInput::default();
+        let (repaint, actions) =
+            self.apply_endpoint_result(boot_id, request_id, result, &mut outcome);
+        outcome.repaint |= repaint;
+        outcome.actions.extend(actions);
+        outcome
+    }
+
+    fn apply_endpoint_result(
+        &mut self,
+        boot_id: &str,
+        request_id: &str,
+        result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+        outcome: &mut ClientShellInput,
     ) -> (bool, Vec<ClientShellAction>) {
         let Some(pending) = self.pending_requests.remove(request_id) else {
             return (false, Vec::new());
@@ -429,9 +451,8 @@ impl ClientShellState {
         match pending.kind {
             PendingEndpointKind::Generic => {}
             PendingEndpointKind::PaneScroll { pane_id, serial } => {
-                let mut outcome = ClientShellInput::default();
-                let repaint = self.complete_pane_scroll(&pane_id, serial, result, &mut outcome);
-                return (repaint, outcome.actions);
+                let repaint = self.complete_pane_scroll(&pane_id, serial, result, outcome);
+                return (repaint, Vec::new());
             }
             PendingEndpointKind::SelectionCopy => {
                 return match result {
@@ -470,7 +491,6 @@ impl ClientShellState {
                 origin,
                 session_generation,
             } => {
-                let mut outcome = ClientShellInput::default();
                 let (repaint, continue_queue) = match result {
                     Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
                         pane_id: returned_pane_id,
@@ -482,7 +502,7 @@ impl ClientShellState {
                             origin,
                             cursor,
                             content_revision,
-                            &mut outcome,
+                            outcome,
                         ),
                         true,
                     ),
@@ -495,8 +515,8 @@ impl ClientShellState {
                     }
                     Err(_) => (true, false),
                 };
-                self.complete_copy_operation(session_generation, continue_queue, &mut outcome);
-                return (repaint || outcome.repaint, outcome.actions);
+                self.complete_copy_operation(session_generation, continue_queue, outcome);
+                return (repaint, Vec::new());
             }
             PendingEndpointKind::CopySearch {
                 pane_id,
@@ -507,7 +527,6 @@ impl ClientShellState {
                 generation,
                 session_generation,
             } => {
-                let mut outcome = ClientShellInput::default();
                 let (repaint, continue_queue) = match result {
                     Ok(crate::api::schema::ResponseResult::PaneCopySearch {
                         pane_id: returned_pane_id,
@@ -531,7 +550,7 @@ impl ClientShellState {
                                 current: current.and_then(|index| usize::try_from(index).ok()),
                                 current_global,
                             },
-                            &mut outcome,
+                            outcome,
                         );
                         if !repaint {
                             self.cancel_deferred_copy_after_search(generation);
@@ -554,8 +573,8 @@ impl ClientShellState {
                         (true, false)
                     }
                 };
-                self.complete_copy_operation(session_generation, continue_queue, &mut outcome);
-                return (repaint || outcome.repaint, outcome.actions);
+                self.complete_copy_operation(session_generation, continue_queue, outcome);
+                return (repaint, Vec::new());
             }
         }
         let repaint = match result {

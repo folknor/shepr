@@ -3,8 +3,16 @@
 //! Defines the message types, framing, version check, and safety
 //! constraints for the binary protocol over local sockets.
 //!
-//! Client and server are always the same build; `PROTOCOL_VERSION` only turns
-//! an accidental mismatch into a clear handshake error.
+//! Client and server are always the same build. `PROTOCOL_VERSION` is derived
+//! from the build's source fingerprint (see `build.rs`), so any two different
+//! builds disagree on it and the handshake, `ping` and `status` report the
+//! mismatch; there is no number to bump by hand.
+//!
+//! The version travels inside a positional message (`TerminalHello`,
+//! `Welcome`, or the JSON endpoint hello inside `EndpointControl`), so a peer
+//! whose layout of that message differs fails to decode the hello at all and
+//! sees a closed connection rather than the mismatch text. The JSON API `ping`
+//! is self-describing and is the path that reports a mismatch reliably.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -17,8 +25,9 @@ use super::codec::{self, CodecError};
 // Protocol constants
 // ---------------------------------------------------------------------------
 
-/// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Protocol identity of this build: a fold of the source fingerprint into
+/// `1..u32::MAX`, so it changes whenever any source file does.
+pub const PROTOCOL_VERSION: u32 = crate::build_info::PROTOCOL_VERSION;
 
 /// Maximum allowed frame payload size (2 MB) in either direction. Readers
 /// reject larger length prefixes to prevent denial-of-service, and
@@ -1105,9 +1114,23 @@ pub(crate) fn modifier_with_underline_style(
     ratatui::style::Modifier::from_bits_retain(bits)
 }
 
-/// Converts a u16 back to a ratatui `Modifier`.
+/// Converts a u16 back to a ratatui `Modifier`, the inverse of
+/// `modifier_to_u16`.
+///
+/// The underline style in bits 12-15 is kept (`from_bits_retain`): the client
+/// shell round-trips whole frames through a ratatui buffer whenever it draws a
+/// selection, copy-mode highlight, banner, notice or overlay, and truncating
+/// here turned every curly, dotted or dashed underline into a plain one for as
+/// long as any of those was on screen. The style is dropped only when the
+/// cell is not underlined, so a stale style cannot resurface as a styled
+/// underline if an overlay later adds a plain `UNDERLINED`.
 fn u16_to_modifier(val: u16) -> ratatui::style::Modifier {
-    ratatui::style::Modifier::from_bits_truncate(val & !UNDERLINE_STYLE_MASK)
+    let val = if val & ratatui::style::Modifier::UNDERLINED.bits() == 0 {
+        val & !UNDERLINE_STYLE_MASK
+    } else {
+        val
+    };
+    ratatui::style::Modifier::from_bits_retain(val)
 }
 
 // ---------------------------------------------------------------------------
@@ -1243,7 +1266,7 @@ fn read_exact_or_eof<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<(), Fram
 // Version check
 // ---------------------------------------------------------------------------
 
-/// Checks that a peer speaks exactly this build's protocol version.
+/// Checks that a peer is exactly this build (same `PROTOCOL_VERSION`).
 ///
 /// Returns the error to report when it does not.
 pub fn check_client_version(client_version: u32) -> Result<(), String> {
@@ -2316,6 +2339,47 @@ mod tests {
                 "roundtrip failed for {m:?}"
             );
         }
+    }
+
+    #[test]
+    fn underline_style_survives_ratatui_buffer_roundtrip() {
+        // Curly (3), dotted (4) and dashed (5) underlines ride in the
+        // modifier's high bits and must survive the client's composition
+        // round trip through a ratatui buffer.
+        for style in [2u8, 3, 4, 5] {
+            let modifier = modifier_to_u16(modifier_with_underline_style(
+                Modifier::UNDERLINED | Modifier::BOLD,
+                style,
+            ));
+            let frame = FrameData {
+                cells: vec![CellData {
+                    symbol: "u".into(),
+                    fg: 0,
+                    bg: 0,
+                    modifier,
+                    skip: false,
+                    hyperlink: None,
+                }],
+                width: 1,
+                height: 1,
+                cursor: None,
+                hyperlinks: Vec::new(),
+            };
+            let buffer = frame.to_ratatui_buffer().expect("test precondition");
+            let mut restored = frame.clone();
+            restored.replace_from_ratatui_buffer_preserving_effects(&buffer, None);
+            assert_eq!(restored.cells[0].modifier, modifier, "style {style}");
+            assert_eq!(
+                underline_style_from_modifier(restored.cells[0].modifier),
+                style
+            );
+        }
+    }
+
+    #[test]
+    fn underline_style_is_dropped_from_cells_that_are_not_underlined() {
+        let stale = modifier_to_u16(modifier_with_underline_style(Modifier::BOLD, 3));
+        assert_eq!(u16_to_modifier(stale), Modifier::BOLD);
     }
 
     #[test]

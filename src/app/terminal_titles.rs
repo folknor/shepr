@@ -91,7 +91,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub.clone(),
         );
@@ -183,7 +182,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub,
         );
@@ -217,7 +215,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub,
         );

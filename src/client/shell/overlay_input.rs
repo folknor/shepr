@@ -591,10 +591,20 @@ impl ClientShellState {
             if key.code == KeyCode::Enter {
                 self.accept_close_confirmation(outcome);
             } else if key.code == KeyCode::Esc {
-                self.overlay = None;
-                self.mode = ClientShellMode::Navigate;
-                self.navigate_workspace_id = self.focused_navigation_target();
-                self.reveal_navigation_workspace = true;
+                let return_to_navigate = matches!(
+                    self.overlay.take(),
+                    Some(ClientShellOverlay::ConfirmClose(
+                        ClientConfirmCloseOverlay {
+                            return_to_navigate: true,
+                            ..
+                        }
+                    ))
+                );
+                if return_to_navigate {
+                    self.mode = ClientShellMode::Navigate;
+                    self.navigate_workspace_id = self.focused_navigation_target();
+                    self.reveal_navigation_workspace = true;
+                }
                 outcome.repaint = true;
             }
             return;
@@ -747,7 +757,6 @@ impl ClientShellState {
         } else {
             crate::api::schema::Method::WorkspaceClose(crate::api::schema::WorkspaceCloseParams {
                 workspace_id: confirm.workspace_id,
-                close_group: true,
             })
         };
         self.push_endpoint_method(method, outcome);
@@ -793,6 +802,7 @@ impl ClientShellState {
                 tab_target,
                 title: "Close workspace?".to_owned(),
                 detail: format!("{} \u{2014} {scope}", workspace.label),
+                return_to_navigate: self.mode == ClientShellMode::Navigate,
             },
         ));
         true

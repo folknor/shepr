@@ -28,12 +28,25 @@ mod subscription_socket_tests;
 const SOCKET_PERMISSION_MODE: u32 = 0o600;
 pub(super) const CONNECTION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub(super) const APP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bound on how long an ordinary (non-wait, non-stream) request waits for the
+/// app main loop to answer. Without one, a stalled main loop hangs every CLI
+/// call and every agent hook that shells out to the CLI.
+///
+/// Most requests are answered in the same loop turn. The slowest legitimate
+/// case is a `pane.read`/`agent.read` of alternate-screen history, which the
+/// server serves by scrolling the agent and can take up to 20 s (15 s harvest
+/// plus 5 s restore in `src/server/alt_screen_read.rs`), and a second read of
+/// the same pane is parked until the first finishes. A minute covers that
+/// with margin. Requests that carry their own timeout (`events.wait`,
+/// `agent.wait`, `pane.wait_for_output`, `agent.prompt` with `wait`) are
+/// dispatched on their own paths and are not subject to this bound.
+pub(super) const ORDINARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_INITIAL_REQUEST_BYTES: usize = 1024 * 1024;
 
 pub struct ServerHandle {
-    _thread: std::thread::JoinHandle<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
     path: PathBuf,
     identity: SocketFileIdentity,
     running: Arc<AtomicBool>,
@@ -41,12 +54,30 @@ pub struct ServerHandle {
 
 impl Drop for ServerHandle {
     fn drop(&mut self) {
-        self.running.store(false, Ordering::Relaxed);
+        self.running.store(false, Ordering::Release);
+
+        // The listener thread only looks at `running` after an accept returns,
+        // so without a wake-up it would sit in `accept` holding the listening
+        // fd until the process exits. Connect to it once while the socket file
+        // is still ours; the accept returns, the thread sees `running` false
+        // and exits, dropping the listener. Only then is joining safe.
+        let woke = self.wake_listener();
 
         if let Err(err) = self.remove_socket_file_if_owned()
             && err.kind() != std::io::ErrorKind::NotFound
         {
             warn!(path = %self.path.display(), err = %err, "failed to remove api socket on shutdown");
+        }
+
+        if let Some(thread) = self.thread.take() {
+            if woke {
+                // Bounded by one accept-failure backoff (at most a second).
+                if thread.join().is_err() {
+                    warn!("api listener thread panicked");
+                }
+            } else {
+                debug!("api listener not woken; leaving its thread to process exit");
+            }
         }
     }
 }
@@ -54,6 +85,24 @@ impl Drop for ServerHandle {
 impl ServerHandle {
     pub(crate) fn remove_socket_file_if_owned(&self) -> std::io::Result<()> {
         remove_socket_file_if_owned(&self.path, &self.identity)
+    }
+
+    /// Unblocks the listener's `accept` with a throwaway connection. Skipped
+    /// when the socket path no longer names this listener's socket (removed,
+    /// or replaced by another server), since connecting would then reach
+    /// somebody else. Returns whether the wake-up connection was made.
+    fn wake_listener(&self) -> bool {
+        let ours = socket_file_identity(&self.path).is_ok_and(|found| found == self.identity);
+        if !ours {
+            return false;
+        }
+        match crate::ipc::connect_local_stream(&self.path) {
+            Ok(_stream) => true,
+            Err(err) => {
+                debug!(err = %err, "could not wake api listener for shutdown");
+                false
+            }
+        }
     }
 }
 
@@ -112,58 +161,69 @@ fn start_server_inner(
     // agent hook fails until someone kills it by hand. Transient errors such
     // as EMFILE/ENFILE (one fd and thread per subscription, plus PTYs) or
     // ECONNABORTED are therefore logged and retried with a bounded backoff.
-    let thread = std::thread::spawn(move || {
+    let connection_running = Arc::clone(&running);
+    let thread = spawn_listener_thread(listener, listener_running, move |stream| {
+        let api_tx = api_tx.clone();
+        let event_hub = event_hub.clone();
+        let capabilities = capabilities.clone();
+        let server_stop = server_stop.clone();
+        let connection_running = Arc::clone(&connection_running);
+        let ssh_agents = ssh_agents.clone();
+        // `std::thread::spawn` panics when the OS refuses a new thread, which
+        // would take the listener down with it. On failure the closure (and
+        // the accepted stream) is dropped, which closes that one connection;
+        // the client sees EOF and the listener keeps serving.
+        std::thread::Builder::new()
+            .name("shepr-api-conn".into())
+            .spawn(move || {
+                if let Err(err) = handle_connection_with_stop(
+                    stream,
+                    &api_tx,
+                    &event_hub,
+                    &connection_running,
+                    capabilities,
+                    server_stop.as_ref(),
+                    ssh_agents.as_ref(),
+                ) {
+                    warn!(err = %err, "api connection failed");
+                }
+            })
+            .map(|_| ())
+    });
+
+    Ok(ServerHandle {
+        thread: Some(thread),
+        path,
+        identity,
+        running,
+    })
+}
+
+/// Runs the accept loop on its own thread, handing each accepted connection
+/// to `serve`, whose error (a failed thread spawn) feeds the backoff.
+fn spawn_listener_thread(
+    listener: crate::ipc::LocalListener,
+    running: Arc<AtomicBool>,
+    mut serve: impl FnMut(LocalStream) -> io::Result<()> + Send + 'static,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
         let mut backoff = AcceptBackoff::default();
         for stream in listener.incoming() {
-            if !listener_running.load(Ordering::Relaxed) {
+            // Checked for every accept outcome, errors included, so the
+            // shutdown wake-up in `ServerHandle::drop` ends the loop even
+            // while accepts are failing.
+            if !running.load(Ordering::Acquire) {
                 break;
             }
             match stream {
-                Ok(stream) => {
-                    let api_tx = api_tx.clone();
-                    let event_hub = event_hub.clone();
-                    let capabilities = capabilities.clone();
-                    let server_stop = server_stop.clone();
-                    let connection_running = Arc::clone(&listener_running);
-                    let ssh_agents = ssh_agents.clone();
-                    // `std::thread::spawn` panics when the OS refuses a new
-                    // thread, which would take the listener down with it. On
-                    // failure the closure (and the accepted stream) is
-                    // dropped, which closes that one connection; the client
-                    // sees EOF and the listener keeps serving.
-                    let spawned = std::thread::Builder::new()
-                        .name("shepr-api-conn".into())
-                        .spawn(move || {
-                            if let Err(err) = handle_connection_with_stop(
-                                stream,
-                                &api_tx,
-                                &event_hub,
-                                &connection_running,
-                                capabilities,
-                                server_stop.as_ref(),
-                                ssh_agents.as_ref(),
-                            ) {
-                                warn!(err = %err, "api connection failed");
-                            }
-                        });
-                    match spawned {
-                        Ok(_) => backoff.recovered(),
-                        Err(err) => {
-                            backoff.failed("api connection thread spawn failed", &err);
-                        }
-                    }
-                }
+                Ok(stream) => match serve(stream) {
+                    Ok(()) => backoff.recovered(),
+                    Err(err) => backoff.failed("api connection thread spawn failed", &err),
+                },
                 Err(err) => backoff.failed("api listener accept failed", &err),
             }
         }
         debug!("api server thread exiting");
-    });
-
-    Ok(ServerHandle {
-        _thread: thread,
-        path,
-        identity,
-        running,
     })
 }
 
@@ -495,7 +555,7 @@ fn handle_request(
         );
     }
 
-    dispatch_to_app(request, api_tx, None, None)
+    dispatch_to_app(request, api_tx, Some(ORDINARY_REQUEST_TIMEOUT), None)
 }
 
 pub(crate) fn api_method_name(method: &Method) -> &'static str {
@@ -592,46 +652,75 @@ fn api_response_outcome(response: &str) -> &'static str {
 }
 
 fn read_initial_request_line(stream: &mut LocalStream) -> std::io::Result<Option<String>> {
-    let max_bytes = MAX_INITIAL_REQUEST_BYTES;
-    set_local_stream_polling(stream, true)?;
-    let deadline = Instant::now() + INITIAL_REQUEST_TIMEOUT;
-    let mut bytes = Vec::new();
-    let mut byte = [0u8; 1];
+    read_request_line_until(stream, Instant::now() + INITIAL_REQUEST_TIMEOUT)
+}
 
-    let result = loop {
-        let read = match poll_local_stream_read(stream, &mut byte) {
-            Ok(read) => read,
-            Err(err) => break Err(err),
-        };
-        match read {
-            LocalStreamRead::Closed => break Ok(None),
-            LocalStreamRead::Data => {
-                bytes.push(byte[0]);
-                if byte[0] == b'\n' {
-                    break String::from_utf8(bytes)
-                        .map(Some)
-                        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err));
-                }
-                if bytes.len() > max_bytes {
-                    break Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "api request line is too large",
-                    ));
-                }
-            }
-            LocalStreamRead::Pending => {
-                if Instant::now() >= deadline {
-                    break Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "timed out reading api request",
-                    ));
-                }
-                std::thread::sleep(CONNECTION_POLL_INTERVAL);
-            }
-        }
-    };
+/// Reads the connection's one request line with blocking reads bounded by an
+/// overall deadline.
+///
+/// Blocking reads wake as soon as the client's bytes arrive, so a client that
+/// writes just after connecting pays no poll interval, and a large request
+/// costs one syscall per chunk rather than per byte. Reading in chunks can
+/// consume bytes past the newline, which are dropped. The protocol is one
+/// request per connection and no method reads a payload after its line:
+/// subscription and wait loops detect the peer's hang-up with a readiness
+/// check that ignores unread bytes, and the SSH-agent lease loop ends on EOF
+/// whether or not stray bytes preceded it.
+fn read_request_line_until(
+    stream: &mut LocalStream,
+    deadline: Instant,
+) -> std::io::Result<Option<String>> {
     set_local_stream_polling(stream, false)?;
-    result
+    let result = read_request_line_blocking(stream, deadline);
+    // Later phases arm their own modes; don't leave a stale receive timeout.
+    // A read error takes precedence over a failure to clear it.
+    let reset = stream.set_recv_timeout(None);
+    let line = result?;
+    reset?;
+    Ok(line)
+}
+
+fn read_request_line_blocking(
+    stream: &mut LocalStream,
+    deadline: Instant,
+) -> std::io::Result<Option<String>> {
+    use std::io::Read as _;
+
+    let mut reader = crate::ipc::DeadlineReader::new(stream, deadline);
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8 * 1024];
+    loop {
+        let read = match reader.read(&mut chunk) {
+            Ok(read) => read,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) if err.kind() == io::ErrorKind::TimedOut => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timed out reading api request",
+                ));
+            }
+            Err(err) => return Err(err),
+        };
+        if read == 0 {
+            return Ok(None);
+        }
+        let chunk = &chunk[..read];
+        let newline = chunk.iter().position(|byte| *byte == b'\n');
+        bytes.extend_from_slice(&chunk[..newline.map_or(read, |index| index + 1)]);
+        // The limit covers the line without its newline.
+        let line_len = bytes.len() - usize::from(newline.is_some());
+        if line_len > MAX_INITIAL_REQUEST_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "api request line is too large",
+            ));
+        }
+        if newline.is_some() {
+            return String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err));
+        }
+    }
 }
 
 fn stream_subscriptions(
@@ -905,6 +994,103 @@ mod tests {
         let client = crate::ipc::connect_local_stream(&path).expect("test precondition");
         let server = listener.accept().expect("test precondition");
         (client, server, path)
+    }
+
+    #[test]
+    fn request_line_arriving_after_connect_is_read_without_a_poll_delay() {
+        let (mut client, mut server, path) = local_stream_pair("request-line-latency");
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            client
+                .write_all(br#"{"id":"late","method":"ping","#)
+                .expect("test precondition");
+            client.flush().expect("test precondition");
+            std::thread::sleep(Duration::from_millis(20));
+            client
+                .write_all(b"\"params\":{}}\n")
+                .expect("test precondition");
+            client.flush().expect("test precondition");
+            client
+        });
+        let started = Instant::now();
+        let line = read_initial_request_line(&mut server)
+            .expect("test precondition")
+            .expect("request line");
+        let elapsed = started.elapsed();
+        let _client = writer.join().expect("test precondition");
+        assert_eq!(
+            line,
+            "{\"id\":\"late\",\"method\":\"ping\",\"params\":{}}\n"
+        );
+        // Polling slept a full interval after the first empty read, and again
+        // between the two writes; blocking reads wake on arrival.
+        assert!(
+            elapsed < CONNECTION_POLL_INTERVAL,
+            "request line took {elapsed:?}"
+        );
+        fs::remove_file(path).expect("test precondition");
+    }
+
+    #[test]
+    fn request_line_read_honours_its_deadline_and_size_limit() {
+        let (_client, mut server, path) = local_stream_pair("request-line-deadline");
+        let error =
+            read_request_line_until(&mut server, Instant::now() + Duration::from_millis(30))
+                .expect_err("silent client must time out");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        fs::remove_file(path).expect("test precondition");
+
+        let (mut client, mut server, path) = local_stream_pair("request-line-oversize");
+        let writer = std::thread::spawn(move || {
+            // The server stops reading at the limit, so the tail of this write
+            // may fail once it closes; only the server's verdict matters.
+            let _ = client.write_all(&vec![b'x'; MAX_INITIAL_REQUEST_BYTES + 1]);
+        });
+        let error = read_request_line_until(&mut server, Instant::now() + Duration::from_secs(5))
+            .expect_err("oversized line must be rejected");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        drop(server);
+        writer.join().expect("test precondition");
+        fs::remove_file(path).expect("test precondition");
+
+        let (client, mut server, path) = local_stream_pair("request-line-eof");
+        drop(client);
+        assert!(
+            read_request_line_until(&mut server, Instant::now() + Duration::from_secs(5))
+                .expect("test precondition")
+                .is_none()
+        );
+        fs::remove_file(path).expect("test precondition");
+    }
+
+    #[test]
+    fn dropping_the_handle_stops_the_listener_thread() {
+        let path = unique_test_path("listener-drop");
+        let listener = crate::ipc::bind_local_listener(&path).expect("test precondition");
+        let identity = socket_file_identity(&path).expect("test precondition");
+        let running = Arc::new(AtomicBool::new(true));
+        // The serve closure lives exactly as long as the listener thread.
+        let alive = Arc::new(());
+        let thread_alive = Arc::clone(&alive);
+        let thread = spawn_listener_thread(listener, Arc::clone(&running), move |_stream| {
+            let _ = &thread_alive;
+            Ok(())
+        });
+        let handle = ServerHandle {
+            thread: Some(thread),
+            path: path.clone(),
+            identity,
+            running,
+        };
+
+        drop(handle);
+
+        assert_eq!(
+            Arc::strong_count(&alive),
+            1,
+            "listener thread must have exited"
+        );
+        assert!(!path.exists(), "socket file must be removed");
     }
 
     #[test]

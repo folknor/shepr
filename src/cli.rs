@@ -155,6 +155,19 @@ impl Invocation {
     }
 }
 
+/// Whether `shepr <words...>` names a command (or command group) in the spec.
+#[cfg(test)]
+pub(crate) fn command_path_exists(words: &[&str]) -> bool {
+    let mut command = spec::command();
+    for word in words {
+        let Some(next) = command.find_subcommand(word).cloned() else {
+            return false;
+        };
+        command = next;
+    }
+    true
+}
+
 pub(super) fn print_read_response(response: &serde_json::Value) -> std::io::Result<i32> {
     if response.get("error").is_some() {
         eprintln!("{response}");

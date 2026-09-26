@@ -65,7 +65,7 @@ impl App {
         let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| {
             self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx))
         });
-        let (rows, cols) = self.state.estimate_pane_size();
+        let (rows, cols) = self.state.pane_geometry().sole_pane_size();
         let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
@@ -95,9 +95,6 @@ impl App {
             Ok((tab_idx, terminal, runtime)) => {
                 self.terminal_runtimes.insert(terminal.id.clone(), runtime);
                 self.state.terminals.insert(terminal.id.clone(), terminal);
-                self.state.remove_alias_shadowed_by_new_pane(
-                    self.state.workspaces[ws_idx].tabs[tab_idx].root_pane,
-                );
                 if let Some(label) = label {
                     let workspace_id = self.state.workspaces[ws_idx].id.clone();
                     let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
@@ -119,11 +116,10 @@ impl App {
                 }
                 self.schedule_session_save();
                 self.emit_tab_created_events(ws_idx, tab_idx);
-                encode_success(
-                    id,
-                    self.tab_created_result(ws_idx, tab_idx)
-                        .expect("new tab should produce a complete create response"),
-                )
+                match self.tab_created_result(ws_idx, tab_idx) {
+                    Some(result) => encode_success(id, result),
+                    None => encode_error(id, "tab_create_failed", "new tab is unavailable"),
+                }
             }
             Err(err) => encode_error(id, "tab_create_failed", err.to_string()),
         }
@@ -307,7 +303,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub.clone(),
         );
@@ -373,7 +368,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub.clone(),
         );
@@ -434,7 +428,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub.clone(),
         );
@@ -487,7 +480,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub,
         );

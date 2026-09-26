@@ -119,6 +119,8 @@ function reportSession(sessionID) {
   if (!sessionID) {
     return Promise.resolve();
   }
+  // Kilo's session events carry no start source, so a resumed session cannot
+  // be told apart from a new one here; "startup" is reported for both.
   return request("pane.report_agent_session", {
     agent_session_id: sessionID,
     session_start_source: "startup",

@@ -23,6 +23,7 @@ mod tab_bar_status;
 mod terminal_targets;
 mod terminal_titles;
 mod window_title;
+pub(crate) mod word_bounds;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -73,7 +74,6 @@ pub struct App {
     pub(crate) event_hub: crate::api::EventHub,
     pub(crate) last_focus: Option<(usize, crate::layout::PaneId)>,
     pub(crate) policy: AppPolicy,
-    pub(crate) config_diagnostic_deadline: Option<Instant>,
     pub(crate) last_git_remote_status_refresh: Instant,
     pub(crate) last_git_repo_discovery_refresh: Instant,
     pub(crate) git_refresh_in_flight: bool,
@@ -88,7 +88,6 @@ pub struct App {
     pub(crate) session_save_thread: Option<std::thread::JoinHandle<()>>,
     session_writer: Arc<std::sync::Mutex<crate::persist::SessionWriter>>,
     pane_exit_checkpoint_pending: bool,
-    tab_bar_status_generation: u64,
     tab_bar_datetimes: Vec<tab_bar_status::TabBarDatetimeRuntime>,
     tab_bar_commands: Vec<tab_bar_status::TabBarCommandRuntime>,
     next_tab_bar_datetime_refresh: Option<Instant>,
@@ -148,11 +147,9 @@ impl App {
     pub fn new(
         config: &Config,
         policy: AppPolicy,
-        config_diagnostic: Option<String>,
         api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
         event_hub: crate::api::EventHub,
     ) -> Self {
-        let (prefix_code, prefix_mods) = config.prefix_key();
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
         let render_notify = Arc::new(Notify::new());
         let render_dirty = Arc::new(crate::render_signal::RenderSignal::new());
@@ -170,11 +167,26 @@ impl App {
                 .pane_history
                 .then(crate::persist::load_history)
                 .flatten();
+            // No view exists yet, so restored panes start at the headless size
+            // (what the server lays out against until a client attaches); the
+            // first view computation resizes each to its split. Their theme is
+            // the default because no host has reported one yet: `AppState`
+            // holds the same default here, and a later report is applied to
+            // every runtime, restored or not.
+            let (headless_cols, headless_rows) = config.headless_size();
+            let (restore_rows, restore_cols) = crate::workspace::PaneGeometry {
+                area: Rect::new(0, 0, headless_cols, headless_rows),
+                pane_borders: config.ui.pane_borders,
+                pane_gaps: config.ui.pane_gaps,
+                pane_outer_borders: config.ui.pane_outer_borders,
+                pane_scrollbars: config.ui.pane_scrollbars,
+            }
+            .sole_pane_size();
             let (ws, terminals, terminal_runtimes) = crate::persist::restore(
                 &snap,
                 history.as_ref(),
-                24,
-                80,
+                restore_rows,
+                restore_cols,
                 config.advanced.scrollback_limit_bytes,
                 &config.terminal.default_shell,
                 config.terminal.shell_mode,
@@ -219,7 +231,6 @@ impl App {
         let mut state = AppState {
             terminals: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
-            pane_id_aliases: std::collections::HashMap::new(),
             public_pane_id_aliases: std::collections::HashMap::new(),
             workspaces,
             active,
@@ -231,10 +242,7 @@ impl App {
                 terminal_area: Rect::default(),
                 pane_infos: Vec::new(),
             },
-            config_diagnostic,
             outer_terminal_focus: None,
-            prefix_code,
-            prefix_mods,
             headless_size: config.headless_size(),
             sidebar_agents: config.ui.sidebar.agents.clone(),
             sidebar_spaces: config.ui.sidebar.spaces.clone(),
@@ -254,7 +262,6 @@ impl App {
             shell_mode: config.terminal.shell_mode,
             new_terminal_cwd: config.terminal.new_cwd.clone(),
             pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
-            keybinds: config.keybinds(),
             palette: palette_from_config(config),
             host_terminal_appearance: None,
             host_terminal_appearance_explicit: false,
@@ -283,7 +290,6 @@ impl App {
         let client_shell_keybindings_profile = config.local_keybindings_profile_toml().ok();
 
         let mut app = Self {
-            config_diagnostic_deadline: None,
             state,
             pixel_mouse_available: false,
             terminal_runtimes: restored_terminal_runtimes,
@@ -305,7 +311,6 @@ impl App {
             session_save_thread: None,
             session_writer,
             pane_exit_checkpoint_pending: false,
-            tab_bar_status_generation: 0,
             tab_bar_datetimes: Vec::new(),
             tab_bar_commands: Vec::new(),
             next_tab_bar_datetime_refresh: None,
@@ -371,7 +376,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );
@@ -425,20 +429,15 @@ mod tests {
             }],
             " ",
         );
-        let generation = app.tab_bar_status_generation;
-        let event = |generation, output: Option<&str>| AppEvent::TabBarCommandFinished {
-            generation,
-            segment_index: 0,
+        let event = |segment_index, output: Option<&str>| AppEvent::TabBarCommandFinished {
+            segment_index,
             result: Ok(output.map(str::to_string)),
         };
 
-        assert!(!app.handle_internal_event_with_render_impact(event(generation, None)));
-        assert!(app.handle_internal_event_with_render_impact(event(generation, Some("ready"))));
-        assert!(!app.handle_internal_event_with_render_impact(event(generation, Some("ready"))));
-        assert!(!app.handle_internal_event_with_render_impact(event(
-            generation.wrapping_add(1),
-            Some("stale"),
-        )));
+        assert!(!app.handle_internal_event_with_render_impact(event(0, None)));
+        assert!(app.handle_internal_event_with_render_impact(event(0, Some("ready"))));
+        assert!(!app.handle_internal_event_with_render_impact(event(0, Some("ready"))));
+        assert!(!app.handle_internal_event_with_render_impact(event(7, Some("unknown"))));
     }
 
     #[test]
@@ -551,7 +550,6 @@ mod tests {
         let app = App::new(
             &config,
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );
@@ -1433,7 +1431,6 @@ mod tests {
     fn headless_next_loop_deadline_returns_none_when_resize_poll_is_only_deadline() {
         let mut app = test_app();
         let now = Instant::now();
-        app.config_diagnostic_deadline = None;
         app.session_save_deadline = None;
         app.state.workspaces.clear();
 

@@ -29,6 +29,10 @@ pub(super) struct ClientState {
     /// Latest explicit Local selection awaiting this client's replacement Local connection.
     pub(super) deferred_local_activation: Option<endpoint::EndpointActivationIntent>,
     pub(super) draw_host_cursor: bool,
+    /// Whether this client has written an outer window title since the last
+    /// reset. An empty `ui.window_title` means the server never sends one, and
+    /// then the host title must be left alone rather than reset to "shepr".
+    pub(super) window_title_written: bool,
     pub(super) shell: Option<shell::ClientShellState>,
 }
 
@@ -70,6 +74,7 @@ impl ClientState {
             presentation_frozen: false,
             deferred_local_activation: None,
             draw_host_cursor: false,
+            window_title_written: false,
             shell: Some(shell::ClientShellState::new(
                 shell::ClientShellConfig::from_config(&crate::config::Config::default()),
             )),

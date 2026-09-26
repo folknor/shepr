@@ -1,8 +1,13 @@
 //! Remote thin-client launcher over SSH command stdio.
 
-use super::{args::*, process::wait_with_output_timeout, restart_policy::*, shell_quote};
+use super::{
+    args::*,
+    process::{PIPE_DRAIN_GRACE, PipeCapture, PipeEcho, wait_with_output_timeout},
+    restart_policy::*,
+    shell_quote,
+};
 use std::fs;
-use std::io::{self, IsTerminal, Read as _, Write as _};
+use std::io::{self, IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
@@ -172,6 +177,14 @@ impl RemoteShepr {
         }
     }
 
+    /// The executable recorded by an earlier successful discovery. It is only a hint:
+    /// the endpoint handshake still checks the protocol version it speaks.
+    pub(super) fn from_metadata(
+        metadata: &crate::client::endpoint::SshMachineMetadata,
+    ) -> Option<Self> {
+        metadata.is_valid().then(|| Self::new(&metadata.executable))
+    }
+
     pub(super) fn machine_metadata(&self) -> Option<crate::client::endpoint::SshMachineMetadata> {
         let metadata = crate::client::endpoint::SshMachineMetadata {
             os: "linux".to_owned(),
@@ -221,7 +234,13 @@ impl RemoteShepr {
             &["remote-client-bridge"][..]
         };
         let args = Self::session_args(session_name, command);
-        posix_remote_output_command(&format!("exec {}", self.command(&args)))
+        // sshd hands this string to the user's login shell, which need not be POSIX
+        // (xonsh, fish, nushell). Run the script under /bin/sh, as discovery and the
+        // API bridge do, so the login shell only has to launch one quoted command.
+        posix_shell_command(&posix_remote_output_command(&format!(
+            "exec {}",
+            self.command(&args)
+        )))
     }
 
     fn saved_bridge_command(&self, session_name: &str) -> String {
@@ -230,8 +249,20 @@ impl RemoteShepr {
     }
 }
 
+/// Prefixes `command` with the output-ready marker line (preceded by a newline, so
+/// the marker starts a line of its own after any login banner).
+///
+/// The prefix is deliberately plain words with no quotes or newlines. For a plain
+/// `command` such as the client bridge's `exec <path> ...`, the wrapped result of
+/// [`posix_shell_command`] reaches a non-POSIX login shell as `/bin/sh -c` plus one
+/// single-quoted argument with nothing inside it to escape.
 fn posix_remote_output_command(command: &str) -> String {
-    format!("printf '\n%s\n' '{REMOTE_OUTPUT_READY_MARKER}'\n{command}")
+    format!("echo; echo {REMOTE_OUTPUT_READY_MARKER}; {command}")
+}
+
+/// Runs a POSIX script under `/bin/sh` regardless of the remote login shell.
+fn posix_shell_command(script: &str) -> String {
+    format!("/bin/sh -c {}", shell_quote(script))
 }
 
 pub(super) struct PreparedRemoteShepr {
@@ -251,12 +282,132 @@ struct ManagedSshConfig {
     options: ManagedSshOptions,
 }
 
-struct ManagedSshConfigDirectory(PathBuf);
+struct ManagedSshConfigDirectory {
+    path: PathBuf,
+    // Declared after `path` and dropped after `Drop::drop` has removed the directory,
+    // so the exit sweep only ever sees directories that still exist.
+    _teardown: TeardownRegistration,
+}
+
+impl ManagedSshConfigDirectory {
+    fn new(path: PathBuf) -> Self {
+        let teardown = SSH_TEARDOWN.register(TeardownResource::Directory(path.clone()));
+        Self {
+            path,
+            _teardown: teardown,
+        }
+    }
+}
 
 impl Drop for ManagedSshConfigDirectory {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = fs::remove_dir_all(&self.path);
     }
+}
+
+/// Files the SSH machinery leaves in the temp directory while it runs: bridge
+/// sockets and temporary ssh config directories.
+enum TeardownResource {
+    Socket {
+        path: PathBuf,
+        identity: crate::ipc::SocketFileIdentity,
+    },
+    Directory(PathBuf),
+}
+
+impl TeardownResource {
+    fn remove(&self) {
+        match self {
+            Self::Socket { path, identity } => {
+                let _ = crate::ipc::remove_socket_file_if_owned(path, identity);
+            }
+            Self::Directory(path) => {
+                let _ = fs::remove_dir_all(path);
+            }
+        }
+    }
+}
+
+/// Tracks every live temp-directory resource so the process can remove them before
+/// it exits.
+///
+/// Their owners normally remove them on drop, but in a client those owners live on
+/// endpoint writer threads and in connection attempts on blocking tasks. Both are
+/// still unwinding when the main thread returns from the client loop, and process
+/// exit does not wait for them, which leaked sockets and config directories.
+struct TeardownRegistry {
+    pending: std::sync::Mutex<Vec<(u64, TeardownResource)>>,
+    changed: std::sync::Condvar,
+    next_id: std::sync::atomic::AtomicU64,
+}
+
+static SSH_TEARDOWN: TeardownRegistry = TeardownRegistry::new();
+
+impl TeardownRegistry {
+    const fn new() -> Self {
+        Self {
+            pending: std::sync::Mutex::new(Vec::new()),
+            changed: std::sync::Condvar::new(),
+            next_id: std::sync::atomic::AtomicU64::new(1),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<(u64, TeardownResource)>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn register(&'static self, resource: TeardownResource) -> TeardownRegistration {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.lock().push((id, resource));
+        TeardownRegistration { registry: self, id }
+    }
+
+    /// Gives owners that are already dropping up to `grace` to finish, then
+    /// removes whatever is still registered.
+    fn release_all(&self, grace: Duration) {
+        let deadline = Instant::now() + grace;
+        let mut pending = self.lock();
+        while !pending.is_empty() {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
+            pending = match self.changed.wait_timeout(pending, deadline - now) {
+                Ok((guard, _)) => guard,
+                Err(poisoned) => poisoned.into_inner().0,
+            };
+        }
+        for (_, resource) in pending.drain(..) {
+            resource.remove();
+        }
+    }
+}
+
+struct TeardownRegistration {
+    registry: &'static TeardownRegistry,
+    id: u64,
+}
+
+impl Drop for TeardownRegistration {
+    fn drop(&mut self) {
+        let mut pending = self.registry.lock();
+        pending.retain(|(id, _)| *id != self.id);
+        drop(pending);
+        self.registry.changed.notify_all();
+    }
+}
+
+/// Removes the SSH bridge sockets and temporary ssh config directories this process
+/// still owns. Call it once, after the client loop has returned and immediately
+/// before the process exits (including through `std::process::exit`).
+///
+/// Owners that are mid-teardown get up to `grace` to finish cleanly; anything left
+/// after that is removed directly. SSH children are not waited for: a bridge's ssh
+/// sees its stdin close when this process exits and ends on its own.
+pub(crate) fn release_ssh_resources_before_exit(grace: Duration) {
+    SSH_TEARDOWN.release_all(grace);
 }
 
 /// Classify only SSH authentication diagnostics, not transport failures or
@@ -355,14 +506,29 @@ impl RemoteSsh {
         }
     }
 
+    /// For one-shot CLI commands, which read the config at their own launch.
     pub(super) fn new_noninteractive(target: String) -> Self {
         let manage = crate::config::Config::load()
             .config
             .remote
             .manage_ssh_config;
-        let mut ssh = Self::new(target, manage, crate::session::DEFAULT_SESSION_NAME.into());
+        Self::new_noninteractive_with(target, manage)
+    }
+
+    /// For long-lived callers that already hold the launch-time config.
+    pub(super) fn new_noninteractive_with(target: String, manage_ssh_config: bool) -> Self {
+        let mut ssh = Self::new(
+            target,
+            manage_ssh_config,
+            crate::session::DEFAULT_SESSION_NAME.into(),
+        );
         ssh.noninteractive = true;
         ssh
+    }
+
+    /// Whether this was built to use a managed ssh config but writing it failed.
+    pub(super) fn missing_managed_config(&self, manage_ssh_config: bool) -> bool {
+        manage_ssh_config && self.managed_config.is_none()
     }
 
     fn target(&self) -> &str {
@@ -445,28 +611,13 @@ impl RemoteSsh {
 // Only interactive setup uses this relay. Background probes retain their
 // capture-only timeout path so SSH diagnostics cannot overwrite the active TUI.
 fn output_with_forwarded_stderr(mut child: Child, stdin: Option<&[u8]>) -> io::Result<Output> {
-    let mut child_stderr = child
+    let child_stderr = child
         .stderr
         .take()
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "ssh command stderr missing"))?;
-    let stderr_relay = thread::spawn(move || -> io::Result<Vec<u8>> {
-        let mut captured = Vec::new();
-        let mut buffer = [0_u8; 8 * 1024];
-        let mut destination = io::stderr();
-
-        loop {
-            let read = child_stderr.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            captured.extend_from_slice(&buffer[..read]);
-            if destination.write_all(&buffer[..read]).is_ok() {
-                let _ = destination.flush();
-            }
-        }
-
-        Ok(captured)
-    });
+    // A ControlPersist master forked by this command may keep stderr open after the
+    // command exits; the capture stops waiting for it shortly after the exit.
+    let stderr_relay = PipeCapture::spawn(child_stderr, usize::MAX, PipeEcho::Stderr);
 
     let write_result = if let Some(bytes) = stdin {
         if let Some(mut child_stdin) = child.stdin.take() {
@@ -480,10 +631,10 @@ fn output_with_forwarded_stderr(mut child: Child, stdin: Option<&[u8]>) -> io::R
     } else {
         Ok(())
     };
+    // Stdout is read to its end: OpenSSH points a daemonized master's stdin and stdout
+    // at /dev/null; only its stderr handling has varied between releases.
     let output_result = child.wait_with_output();
-    let stderr_result = stderr_relay
-        .join()
-        .map_err(|_| io::Error::other("ssh stderr relay panicked"))?;
+    let stderr_result = stderr_relay.finish(PIPE_DRAIN_GRACE);
 
     let mut output = output_result?;
     write_result?;
@@ -990,10 +1141,7 @@ exit 2"#,
         discovery = known_remote_binary_candidate_script(),
         session = shell_quote(session),
     );
-    format!(
-        "/bin/sh -c {}",
-        shell_quote(&posix_remote_output_command(&script))
-    )
+    posix_shell_command(&posix_remote_output_command(&script))
 }
 
 pub(super) const STALE_API_METADATA: &str = "shepr-machine-metadata-stale-v1";
@@ -1010,7 +1158,7 @@ pub(super) fn cached_remote_api_command(
             "exec {path} --session {session} remote-api-bridge"
         )),
     );
-    format!("/bin/sh -c {}", shell_quote(&script))
+    posix_shell_command(&script)
 }
 
 fn reattach_command(
@@ -1049,6 +1197,8 @@ pub(super) struct SshStdioBridge {
     should_stop: Arc<AtomicBool>,
     failure_rx: mpsc::Receiver<io::Error>,
     thread: Option<JoinHandle<()>>,
+    // Dropped after `Drop::drop` has removed the socket; see `TeardownRegistry`.
+    _teardown: TeardownRegistration,
 }
 
 impl SshStdioBridge {
@@ -1081,6 +1231,10 @@ impl SshStdioBridge {
         })?;
         let listener = crate::ipc::bind_private_local_listener(&local_socket)?;
         let socket_identity = crate::ipc::socket_file_identity(&local_socket)?;
+        let teardown = SSH_TEARDOWN.register(TeardownResource::Socket {
+            path: local_socket.clone(),
+            identity: socket_identity.clone(),
+        });
         if let Err(err) =
             crate::ipc::restrict_socket_permissions(&local_socket, BRIDGE_SOCKET_PERMISSION_MODE)
         {
@@ -1118,13 +1272,13 @@ impl SshStdioBridge {
                             noninteractive,
                             &thread_stop,
                         ) {
-                            let _ =
-                                failure_tx.try_send(io::Error::new(err.kind(), err.to_string()));
                             if noninteractive {
                                 tracing::warn!(error = %err, "saved SSH endpoint bridge failed");
                             } else {
                                 eprintln!("shepr: remote bridge failed: {err}");
                             }
+                            // The original error, so an `SshBridgeExit` payload survives.
+                            let _ = failure_tx.try_send(err);
                         }
                     }
                     Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
@@ -1148,6 +1302,7 @@ impl SshStdioBridge {
             should_stop,
             failure_rx,
             thread: Some(thread),
+            _teardown: teardown,
         })
     }
 
@@ -1223,7 +1378,7 @@ fn write_managed_ssh_config(target: &str) -> io::Result<ManagedSshConfig> {
         options: ManagedSshOptions {
             config_path: path,
             control_path,
-            _directory: Arc::new(ManagedSshConfigDirectory(dir)),
+            _directory: Arc::new(ManagedSshConfigDirectory::new(dir)),
         },
     })
 }
@@ -1331,7 +1486,11 @@ fn bridge_connection(
         let Some(child_stderr) = child.stderr.take() else {
             return terminate_bridge_child(child, "ssh bridge stderr missing");
         };
-        Some(thread::spawn(move || capture_ssh_stderr(child_stderr)))
+        Some(PipeCapture::spawn(
+            child_stderr,
+            NONINTERACTIVE_SSH_STDERR_LIMIT,
+            PipeEcho::None,
+        ))
     } else {
         None
     };
@@ -1434,10 +1593,10 @@ fn bridge_connection(
     let download_result = download
         .join()
         .map_err(|_| io::Error::other("remote bridge download worker panicked"))?;
+    // Bounded: a ControlPersist master forked by this ssh can hold its stderr open for
+    // the whole persist timeout after the bridge itself has exited.
     let stderr = match stderr_reader {
-        Some(reader) => reader
-            .join()
-            .map_err(|_| io::Error::other("SSH stderr reader panicked"))??,
+        Some(reader) => reader.finish(PIPE_DRAIN_GRACE)?,
         None => Vec::new(),
     };
     let status = status_result?;
@@ -1471,20 +1630,54 @@ fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io:
     } else {
         format!("remote SSH connection failed: {stderr}")
     };
-    io::Error::new(io::ErrorKind::ConnectionAborted, message)
+    io::Error::new(
+        io::ErrorKind::ConnectionAborted,
+        SshBridgeExit {
+            code: status.code(),
+            message,
+        },
+    )
 }
 
-fn capture_ssh_stderr(mut stderr: impl io::Read) -> io::Result<Vec<u8>> {
-    let mut captured = Vec::new();
-    let mut buffer = [0_u8; 4 * 1024];
-    loop {
-        let read = stderr.read(&mut buffer)?;
-        if read == 0 {
-            return Ok(captured);
-        }
-        let remaining = NONINTERACTIVE_SSH_STDERR_LIMIT.saturating_sub(captured.len());
-        captured.extend_from_slice(&buffer[..read.min(remaining)]);
+/// An ssh bridge process that exited unsuccessfully, keeping its exit code so
+/// callers can tell ssh's own failures from the remote command's.
+#[derive(Debug)]
+struct SshBridgeExit {
+    code: Option<i32>,
+    message: String,
+}
+
+impl std::fmt::Display for SshBridgeExit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
     }
+}
+
+impl std::error::Error for SshBridgeExit {}
+
+/// OpenSSH exits with 255 when ssh itself fails (resolve, connect, host key,
+/// authentication, a dropped link); any other code came from the remote command.
+const SSH_OWN_FAILURE_EXIT_CODE: i32 = 255;
+
+/// Whether `error` says the SSH link, not the remote side, failed: the remote end
+/// was never reached or was lost, so nothing is known about the remote install.
+pub(super) fn is_ssh_link_failure(error: &io::Error) -> bool {
+    if let Some(exit) = error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<SshBridgeExit>())
+    {
+        return exit.code == Some(SSH_OWN_FAILURE_EXIT_CODE);
+    }
+    matches!(
+        error.kind(),
+        io::ErrorKind::TimedOut
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::AddrInUse
+            | io::ErrorKind::HostUnreachable
+            | io::ErrorKind::NetworkUnreachable
+            | io::ErrorKind::NetworkDown
+    )
 }
 
 fn discard_remote_output_preamble(reader: &mut impl io::BufRead) -> io::Result<()> {
@@ -2142,10 +2335,93 @@ mod tests {
         );
     }
 
+    fn exit_status(code: i32) -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt as _;
+        std::process::ExitStatus::from_raw(code << 8)
+    }
+
+    #[test]
+    fn only_ssh_own_exit_code_counts_as_a_link_failure() {
+        let link = ssh_bridge_exit_error(exit_status(255), b"Connection refused");
+        assert!(is_ssh_link_failure(&link));
+        assert_eq!(link.kind(), io::ErrorKind::ConnectionAborted);
+        assert_eq!(
+            link.to_string(),
+            "remote SSH connection failed: Connection refused"
+        );
+        let missing =
+            ssh_bridge_exit_error(exit_status(127), b"sh: 1: exec: /old/shepr: not found");
+        assert!(!is_ssh_link_failure(&missing));
+        assert!(is_ssh_link_failure(&io::Error::new(
+            io::ErrorKind::TimedOut,
+            "handshake timed out"
+        )));
+        assert!(!is_ssh_link_failure(&io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "closed before welcome"
+        )));
+    }
+
+    #[test]
+    fn exit_sweep_removes_what_owners_left_behind() {
+        let registry: &'static TeardownRegistry = Box::leak(Box::new(TeardownRegistry::new()));
+        let root = std::env::temp_dir().join(format!(
+            "shepr-teardown-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_nanos())
+        ));
+        let leaked = root.join("leaked");
+        let released = root.join("released");
+        fs::create_dir_all(&leaked).expect("test precondition");
+        fs::create_dir_all(&released).expect("test precondition");
+
+        // An owner still alive at exit (a writer thread that has not run its drop yet).
+        let _stuck = registry.register(TeardownResource::Directory(leaked.clone()));
+        // An owner that finished its own teardown: it is no longer the sweep's business.
+        drop(registry.register(TeardownResource::Directory(released.clone())));
+
+        let started = Instant::now();
+        registry.release_all(Duration::from_millis(50));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(
+            !leaked.exists(),
+            "the sweep removes what is still registered"
+        );
+        assert!(released.exists(), "deregistered resources are left alone");
+        fs::remove_dir_all(root).expect("test precondition");
+    }
+
+    #[test]
+    fn exit_sweep_waits_for_owners_that_are_already_dropping() {
+        let registry: &'static TeardownRegistry = Box::leak(Box::new(TeardownRegistry::new()));
+        let registration = registry.register(TeardownResource::Directory(PathBuf::from(
+            "/nonexistent/shepr-teardown-test",
+        )));
+        let owner = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            drop(registration);
+        });
+        let started = Instant::now();
+        registry.release_all(Duration::from_secs(5));
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "returns as soon as the owner deregisters"
+        );
+        owner.join().expect("test precondition");
+    }
+
     #[test]
     fn noninteractive_ssh_stderr_capture_is_bounded() {
         let stderr = vec![b'x'; NONINTERACTIVE_SSH_STDERR_LIMIT + 4096];
-        let captured = capture_ssh_stderr(stderr.as_slice()).expect("capture stderr");
+        let captured = PipeCapture::spawn(
+            io::Cursor::new(stderr),
+            NONINTERACTIVE_SSH_STDERR_LIMIT,
+            PipeEcho::None,
+        )
+        .finish(Duration::from_secs(3))
+        .expect("capture stderr");
         assert_eq!(captured.len(), NONINTERACTIVE_SSH_STDERR_LIMIT);
     }
 
@@ -2201,7 +2477,7 @@ mod tests {
     #[test]
     fn saved_machine_compatibility_requires_matching_protocol() {
         let mut status = RemoteClientStatusJson {
-            version: Some("0.1.0".into()),
+            version: Some(crate::build_info::version()),
             protocol: Some(crate::protocol::PROTOCOL_VERSION),
         };
         assert!(status.supports_endpoint_requirement(true));
@@ -2327,7 +2603,7 @@ mod tests {
         assert!(
             remote
                 .bridge_command("agents", true)
-                .ends_with(" --session agents remote-client-bridge --idle-timeout-v1")
+                .ends_with(" --session agents remote-client-bridge --idle-timeout-v1'")
         );
     }
 
@@ -2336,7 +2612,7 @@ mod tests {
         let remote_shepr = RemoteShepr::new("/usr/bin/shepr");
         assert_eq!(
             remote_shepr.bridge_command(crate::session::DEFAULT_SESSION_NAME, false),
-            "printf '\n%s\n' 'shepr-remote-output-ready:1'\nexec /usr/bin/shepr remote-client-bridge"
+            "/bin/sh -c 'echo; echo shepr-remote-output-ready:1; exec /usr/bin/shepr remote-client-bridge'"
         );
         assert_eq!(
             remote_shepr.saved_bridge_command("agents"),
@@ -2351,7 +2627,7 @@ mod tests {
 
         assert_eq!(
             remote_shepr.bridge_command(crate::session::DEFAULT_SESSION_NAME, false),
-            "printf '\n%s\n' 'shepr-remote-output-ready:1'\nexec /usr/bin/shepr remote-client-bridge"
+            "/bin/sh -c 'echo; echo shepr-remote-output-ready:1; exec /usr/bin/shepr remote-client-bridge'"
         );
     }
 
@@ -2362,8 +2638,31 @@ mod tests {
 
         assert_eq!(
             remote_shepr.bridge_command(crate::session::DEFAULT_SESSION_NAME, false),
-            "printf '\n%s\n' 'shepr-remote-output-ready:1'\nexec '/opt/shepr bin/shepr' remote-client-bridge"
+            "/bin/sh -c 'echo; echo shepr-remote-output-ready:1; exec '\\''/opt/shepr bin/shepr'\\'' remote-client-bridge'"
         );
+    }
+
+    /// The bridge command is interpreted by /bin/sh, not by the login shell: the
+    /// login shell only sees `/bin/sh -c` and one quoted word without newlines.
+    #[test]
+    fn saved_bridge_command_does_not_depend_on_a_posix_login_shell() {
+        let command = RemoteShepr::new("/usr/bin/shepr").bridge_command("agents", true);
+        let script = command
+            .strip_prefix("/bin/sh -c '")
+            .and_then(|rest| rest.strip_suffix('\''))
+            .expect("wrapped in /bin/sh -c");
+        assert!(!script.contains('\''), "{script}");
+        assert!(!script.contains('\n'), "{script}");
+
+        // The script, run by a real /bin/sh, still frames its output with the marker.
+        let output = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(posix_remote_output_command("printf payload"))
+            .output()
+            .expect("test precondition");
+        let mut stdout = output.stdout;
+        normalize_remote_stdout(&mut stdout, output.status.success()).expect("marker line present");
+        assert_eq!(stdout, b"payload");
     }
 
     #[test]
@@ -2404,7 +2703,9 @@ mod tests {
 
         assert_eq!(
             remote_shepr.bridge_command(crate::session::DEFAULT_SESSION_NAME, false),
-            "printf '\n%s\n' 'shepr-remote-output-ready:1'\nexec '/opt/shepr'\\''s/bin/shepr' remote-client-bridge"
+            posix_shell_command(
+                "echo; echo shepr-remote-output-ready:1; exec '/opt/shepr'\\''s/bin/shepr' remote-client-bridge"
+            )
         );
     }
 

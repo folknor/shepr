@@ -67,7 +67,6 @@ mod tests {
         let mut app = crate::app::App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );

@@ -195,7 +195,8 @@ impl Tab {
 
     /// Split `target` with a shell pane. Focus moves to the new pane only when
     /// `focus_new_pane` is set; a spawn failure rolls the layout back without
-    /// touching focus or its history.
+    /// touching focus or its history. The child is spawned at the size
+    /// `geometry` gives the new pane in the split layout.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn split_pane_shell(
         &mut self,
@@ -203,8 +204,7 @@ impl Tab {
         focus_new_pane: bool,
         direction: Direction,
         ratio: Option<f32>,
-        rows: u16,
-        cols: u16,
+        geometry: &super::PaneGeometry,
         cwd: Option<PathBuf>,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
@@ -217,8 +217,7 @@ impl Tab {
             focus_new_pane,
             direction,
             ratio,
-            rows,
-            cols,
+            geometry,
             cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
@@ -238,8 +237,7 @@ impl Tab {
         focus_new_pane: bool,
         direction: Direction,
         ratio: Option<f32>,
-        rows: u16,
-        cols: u16,
+        geometry: &super::PaneGeometry,
         cwd: Option<PathBuf>,
         argv: &[String],
         launch_env: &PaneLaunchEnv,
@@ -252,8 +250,7 @@ impl Tab {
             focus_new_pane,
             direction,
             ratio,
-            rows,
-            cols,
+            geometry,
             cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
@@ -272,8 +269,7 @@ impl Tab {
         focus_new_pane: bool,
         direction: Direction,
         ratio: Option<f32>,
-        rows: u16,
-        cols: u16,
+        geometry: &super::PaneGeometry,
         cwd: Option<PathBuf>,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
@@ -291,6 +287,10 @@ impl Tab {
                 "split target pane is not in the layout",
             ));
         };
+        // The split un-zooms the tab (below), so size against the tiled layout.
+        let (rows, cols) = geometry
+            .pane_size(&self.layout, new_id)
+            .unwrap_or_else(|| geometry.sole_pane_size());
         let actual_cwd =
             cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         let launch_argv = argv.map(<[String]>::to_vec);
@@ -353,15 +353,28 @@ impl Tab {
     #[cfg(test)]
     pub fn close_focused(&mut self) -> Option<DetachedPane> {
         let pane_id = self.layout.focused();
-        self.detach_pane(pane_id)
+        self.close_pane(pane_id)
     }
 
+    /// Detaches `pane_id` from the layout and returns it with its terminal id.
+    /// The runtime is left to the caller. `None` when the pane is the tab's
+    /// last one (the tab itself must go) or is not in this tab.
     pub fn close_pane(&mut self, pane_id: PaneId) -> Option<DetachedPane> {
-        self.detach_pane(pane_id)
-    }
+        if self.layout.pane_count() <= 1 {
+            return None;
+        }
 
-    pub fn remove_pane(&mut self, pane_id: PaneId) -> Option<DetachedPane> {
-        self.detach_pane(pane_id)
+        let next_root = self.promoted_root_if_needed(pane_id);
+
+        self.layout.close_pane(pane_id);
+
+        let pane = self.panes.remove(&pane_id)?;
+        let terminal_id = pane.attached_terminal_id;
+        self.zoomed = false;
+        if let Some(next_root) = next_root {
+            self.root_pane = next_root;
+        }
+        Some((pane_id, terminal_id))
     }
 
     pub(crate) fn from_existing_pane(
@@ -429,24 +442,6 @@ impl Tab {
         self.panes.insert(pane_id, moved.pane_state);
         self.zoomed = false;
         Ok(pane_id)
-    }
-
-    fn detach_pane(&mut self, pane_id: PaneId) -> Option<DetachedPane> {
-        if self.layout.pane_count() <= 1 {
-            return None;
-        }
-
-        let next_root = self.promoted_root_if_needed(pane_id);
-
-        self.layout.close_pane(pane_id);
-
-        let pane = self.panes.remove(&pane_id)?;
-        let terminal_id = pane.attached_terminal_id;
-        self.zoomed = false;
-        if let Some(next_root) = next_root {
-            self.root_pane = next_root;
-        }
-        Some((pane_id, terminal_id))
     }
 
     fn promoted_root_if_needed(&self, closing: PaneId) -> Option<PaneId> {

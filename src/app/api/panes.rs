@@ -55,7 +55,7 @@ impl App {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
         };
-        let (rows, cols) = self.state.estimate_pane_size();
+        let geometry = self.state.pane_geometry();
         let split_cwd = params.cwd.map(std::path::PathBuf::from).or_else(|| {
             let follow_cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, target_pane_id);
             Some(self.resolve_new_terminal_cwd(follow_cwd))
@@ -78,8 +78,7 @@ impl App {
                 target_pane_id,
                 direction,
                 ratio,
-                rows,
-                cols,
+                &geometry,
                 split_cwd,
                 scrollback_limit_bytes,
                 host_terminal_theme,
@@ -91,8 +90,7 @@ impl App {
             None => ws.split_pane(
                 target_pane_id,
                 direction,
-                rows,
-                cols,
+                &geometry,
                 split_cwd,
                 scrollback_limit_bytes,
                 host_terminal_theme,
@@ -122,14 +120,12 @@ impl App {
         self.terminal_runtimes
             .insert(new_pane.terminal.id.clone(), new_pane.runtime);
         self.state
-            .remove_alias_shadowed_by_new_pane(new_pane.pane_id);
-        self.state
             .terminals
             .insert(new_pane.terminal.id.clone(), new_pane.terminal);
         self.schedule_session_save();
-        let pane = self
-            .pane_info(ws_idx, new_pane.pane_id)
-            .expect("pane info exists for pane just created by split");
+        let Some(pane) = self.pane_info(ws_idx, new_pane.pane_id) else {
+            return encode_error(id, "pane_split_failed", "new pane is unavailable");
+        };
         self.emit_event(EventEnvelope {
             event: EventKind::PaneCreated,
             data: EventData::PaneCreated { pane: pane.clone() },
@@ -1258,7 +1254,6 @@ impl App {
             None
         };
 
-        self.state.remove_alias_shadowed_by_new_pane(moved_pane_id);
         self.state.mark_session_dirty();
         self.schedule_session_save();
         let Some(pane) = self.pane_info(target_ws_idx, moved_pane_id) else {
@@ -2223,7 +2218,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );
@@ -2991,7 +2985,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );

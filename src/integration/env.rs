@@ -107,11 +107,7 @@ pub(crate) fn expand_tilde_path(path: PathBuf) -> io::Result<PathBuf> {
         return home_dir();
     }
 
-    if let Some(rest) = raw
-        .strip_prefix("~/")
-        .or_else(|| raw.strip_prefix("~\\"))
-        .or_else(|| raw.strip_prefix('~'))
-    {
+    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix('~')) {
         return Ok(home_dir()?.join(rest));
     }
 

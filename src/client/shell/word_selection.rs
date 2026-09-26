@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::word_bounds::word_bounds_at_column;
 
 /// Held second press. Keep only one row read in flight and use the latest
 /// pointer position when it returns, so remote latency cannot queue up motion.
@@ -130,9 +131,8 @@ impl ClientShellState {
             self.request_word_selection_row(gesture.cursor.0, outcome);
             return;
         };
-        let (start_col, end_col) =
-            crate::app::actions::word_bounds_at_column(text, gesture.cursor.1)
-                .unwrap_or((gesture.cursor.1, gesture.cursor.1));
+        let (start_col, end_col) = word_bounds_at_column(text, gesture.cursor.1)
+            .unwrap_or((gesture.cursor.1, gesture.cursor.1));
         let start = (gesture.anchor.0, anchor_start).min((gesture.cursor.0, start_col));
         let end = (gesture.anchor.0, anchor_end).max((gesture.cursor.0, end_col));
         self.selection = Some(crate::selection::Selection::absolute_range(
@@ -202,8 +202,7 @@ impl ClientShellState {
         };
         gesture.pending_row = None;
         if gesture.anchor_bounds.is_none() {
-            gesture.anchor_bounds =
-                crate::app::actions::word_bounds_at_column(&text, gesture.anchor.1);
+            gesture.anchor_bounds = word_bounds_at_column(&text, gesture.anchor.1);
             if gesture.anchor_bounds.is_none() {
                 self.cancel_word_selection();
                 return (true, Vec::new());

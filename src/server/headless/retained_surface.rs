@@ -446,10 +446,7 @@ impl HeadlessServer {
                 client.defer_full_render();
                 continue;
             };
-            let serialized = match Self::frame_server_message_with_max(
-                prepared.message(),
-                protocol::MAX_FRAME_SIZE,
-            ) {
+            let serialized = match Self::frame_server_message(prepared.message()) {
                 Ok(serialized) => serialized,
                 Err(error) => {
                     warn!(

@@ -16,11 +16,14 @@ use crate::render_signal::RenderSignal;
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
 
 mod aggregate;
+mod geometry;
 mod git;
 mod tab;
 
 use self::git::git_status_cache_key_for_space;
-pub(crate) use self::{git::git_status_snapshot_for_cwd_with_demand, tab::MovedPane};
+pub(crate) use self::{
+    geometry::PaneGeometry, git::git_status_snapshot_for_cwd_with_demand, tab::MovedPane,
+};
 pub use self::{
     git::{
         GitSpaceMetadata, GitStatusCacheEntry, GitStatusRefreshDemand, derive_label_from_cwd,
@@ -528,11 +531,7 @@ impl Workspace {
         for pane_id in tab.panes.keys() {
             self.unregister_pane(*pane_id);
         }
-        if self.active_tab >= self.tabs.len() {
-            self.active_tab = self.tabs.len() - 1;
-        } else if idx <= self.active_tab && self.active_tab > 0 {
-            self.active_tab -= 1;
-        }
+        self.adjust_active_tab_after_removal(idx);
         true
     }
 
@@ -568,12 +567,11 @@ impl Workspace {
 
     // Workspace split routing carries pane identity, geometry, host context, and focus policy.
     #[allow(clippy::too_many_arguments)]
-    pub fn split_pane(
+    pub(crate) fn split_pane(
         &mut self,
         pane_id: PaneId,
         direction: Direction,
-        rows: u16,
-        cols: u16,
+        geometry: &PaneGeometry,
         cwd: Option<PathBuf>,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
@@ -586,8 +584,7 @@ impl Workspace {
             pane_id,
             direction,
             None,
-            rows,
-            cols,
+            geometry,
             cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
@@ -600,13 +597,12 @@ impl Workspace {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn split_pane_with_ratio(
+    pub(crate) fn split_pane_with_ratio(
         &mut self,
         pane_id: PaneId,
         direction: Direction,
         ratio: f32,
-        rows: u16,
-        cols: u16,
+        geometry: &PaneGeometry,
         cwd: Option<PathBuf>,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
@@ -619,8 +615,7 @@ impl Workspace {
             pane_id,
             direction,
             Some(ratio),
-            rows,
-            cols,
+            geometry,
             cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
@@ -633,13 +628,12 @@ impl Workspace {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn split_pane_argv_command_with_ratio(
+    pub(crate) fn split_pane_argv_command_with_ratio(
         &mut self,
         pane_id: PaneId,
         direction: Direction,
         ratio: f32,
-        rows: u16,
-        cols: u16,
+        geometry: &PaneGeometry,
         cwd: Option<PathBuf>,
         argv: &[String],
         extra_env: Vec<(String, String)>,
@@ -652,8 +646,7 @@ impl Workspace {
             pane_id,
             direction,
             Some(ratio),
-            rows,
-            cols,
+            geometry,
             cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
@@ -671,8 +664,7 @@ impl Workspace {
         pane_id: PaneId,
         direction: Direction,
         ratio: Option<f32>,
-        rows: u16,
-        cols: u16,
+        geometry: &PaneGeometry,
         cwd: Option<PathBuf>,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
@@ -693,8 +685,7 @@ impl Workspace {
                 focus_new_pane,
                 direction,
                 ratio,
-                rows,
-                cols,
+                geometry,
                 cwd,
                 argv,
                 &launch_env,
@@ -708,8 +699,7 @@ impl Workspace {
                 focus_new_pane,
                 direction,
                 ratio,
-                rows,
-                cols,
+                geometry,
                 cwd,
                 scrollback_limit_bytes,
                 host_terminal_theme,
@@ -738,34 +728,6 @@ impl Workspace {
         }
 
         if let Some((removed, _terminal_id)) = self.active_tab_mut().and_then(Tab::close_focused) {
-            self.unregister_pane(removed);
-        }
-        false
-    }
-
-    /// Remove a specific pane from this workspace without terminating its runtime.
-    /// Returns true if the workspace should close.
-    pub fn remove_pane(&mut self, pane_id: PaneId) -> bool {
-        let Some(tab_idx) = self.find_tab_index_for_pane(pane_id) else {
-            return false;
-        };
-        let pane_count = self.tabs[tab_idx].layout.pane_count();
-        let tab_count = self.tabs.len();
-        if pane_count <= 1 {
-            if tab_count <= 1 {
-                return true;
-            }
-            self.tabs.remove(tab_idx);
-            self.unregister_pane(pane_id);
-            if self.active_tab >= self.tabs.len() {
-                self.active_tab = self.tabs.len() - 1;
-            } else if tab_idx <= self.active_tab && self.active_tab > 0 {
-                self.active_tab -= 1;
-            }
-            return false;
-        }
-
-        if let Some((removed, _terminal_id)) = self.tabs[tab_idx].remove_pane(pane_id) {
             self.unregister_pane(removed);
         }
         false
@@ -979,24 +941,21 @@ impl Workspace {
         self.active_tab().map(|tab| tab.layout.focused())
     }
 
+    /// Removes a pane from this workspace, dropping its tab when it was the
+    /// tab's last pane. The pane's runtime is not touched; the caller owns
+    /// terminal teardown. Returns true, leaving the workspace unchanged, when
+    /// the pane is the workspace's last one: the caller closes the workspace.
     pub fn close_pane(&mut self, pane_id: PaneId) -> bool {
-        let tab_idx = match self.find_tab_index_for_pane(pane_id) {
-            Some(idx) => idx,
-            None => return false,
+        let Some(tab_idx) = self.find_tab_index_for_pane(pane_id) else {
+            return false;
         };
-        let pane_count = self.tabs[tab_idx].layout.pane_count();
-        let tab_count = self.tabs.len();
-        if pane_count <= 1 {
-            if tab_count <= 1 {
+        if self.tabs[tab_idx].layout.pane_count() <= 1 {
+            if self.tabs.len() <= 1 {
                 return true;
             }
             self.tabs.remove(tab_idx);
             self.unregister_pane(pane_id);
-            if self.active_tab >= self.tabs.len() {
-                self.active_tab = self.tabs.len() - 1;
-            } else if tab_idx <= self.active_tab && self.active_tab > 0 {
-                self.active_tab -= 1;
-            }
+            self.adjust_active_tab_after_removal(tab_idx);
             return false;
         }
 

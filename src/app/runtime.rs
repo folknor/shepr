@@ -86,7 +86,6 @@ impl App {
         };
 
         [
-            self.config_diagnostic_deadline,
             self.state.next_managed_agent_deadline(),
             include_git_refresh
                 .then(|| self.git_refresh_deadline())
@@ -160,7 +159,6 @@ mod tests {
         let mut app = super::super::App::new(
             &crate::config::Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             tokio::sync::mpsc::unbounded_channel().1,
             crate::api::EventHub::default(),
         );

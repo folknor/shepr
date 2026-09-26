@@ -1877,7 +1877,7 @@ mod tests {
     }
 
     #[test]
-    fn client_read_loop_disconnects_marker_wrapped_invalid_utf8() {
+    fn client_read_loop_rejects_marker_wrapped_invalid_utf8_without_disconnect() {
         let (mut client_stream, server_stream, _path) =
             local_stream_pair("client-read-invalid-utf8-paste");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
@@ -1887,15 +1887,29 @@ mod tests {
             client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
         });
         let mut data = bracketed_paste_with_total_len(MAX_INPUT_PAYLOAD + 1);
-        data[b"\x1b[200~".len()] = 0xff;
+        let marker_len = b"\x1b[200~".len();
+        let expected_size = data.len();
+        data[marker_len] = 0xff;
 
         protocol::write_message(&mut client_stream, &ClientMessage::Input { data })
             .expect("write marker-wrapped invalid UTF-8 input");
 
-        assert!(matches!(
-            recv_server_event(&mut server_event_rx, "invalid UTF-8 input disconnect"),
-            ServerEvent::ClientDisconnected { client_id: 7 }
-        ));
+        // Only the bracketed-paste framing decides whether oversized input is
+        // recoverable; a paste whose body is not valid UTF-8 is still a
+        // paste, and must be forwarded as raw bytes elsewhere rather than
+        // disconnecting the client.
+        match recv_server_event(&mut server_event_rx, "invalid UTF-8 paste rejection") {
+            ServerEvent::ClientPasteRejected {
+                client_id,
+                size,
+                max,
+            } => {
+                assert_eq!(client_id, 7);
+                assert_eq!(size, expected_size);
+                assert_eq!(max, MAX_INPUT_PAYLOAD);
+            }
+            other => panic!("expected ClientPasteRejected, got {other:?}"),
+        }
 
         drop(client_stream);
         should_quit.store(true, Ordering::Release);

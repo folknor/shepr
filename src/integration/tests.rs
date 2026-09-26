@@ -3217,13 +3217,11 @@ fn cursor_v1_integration_status_is_current() {
     let base = unique_base();
     let cursor_dir = base.join(".cursor");
     fs::create_dir_all(&cursor_dir).expect("test precondition");
-    let hook_path = cursor_dir.join(CURSOR_HOOK_INSTALL_NAME);
-    fs::write(
-        &hook_path,
-        "#!/bin/sh\n# SHEPR_INTEGRATION_ID=cursor\n# SHEPR_INTEGRATION_VERSION=1\n",
-    )
-    .expect("test precondition");
     unsafe { std::env::set_var(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir) };
+    // A hook script alone is not enough: the agent's hooks.json must also
+    // register it, so install through the real path instead of hand-writing
+    // just the script.
+    install_cursor().expect("test precondition");
 
     let statuses = installed_integration_statuses();
     let cursor = statuses

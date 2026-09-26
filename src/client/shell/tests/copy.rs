@@ -203,14 +203,16 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
                 && params.content_revision.is_none()
     ));
 
-    let (_repaint, actions) = state.handle_endpoint_result(
-        "boot-1",
-        &request_id,
-        Ok(crate::api::schema::ResponseResult::PaneSelection {
-            pane_id: "pane_1".into(),
-            text: "LIV".into(),
-        }),
-    );
+    let (_repaint, actions) = state
+        .handle_endpoint_result(
+            "boot-1",
+            &request_id,
+            Ok(crate::api::schema::ResponseResult::PaneSelection {
+                pane_id: "pane_1".into(),
+                text: "LIV".into(),
+            }),
+        )
+        .into_parts();
     assert!(matches!(
         &actions[..],
         [ClientShellAction::ClipboardWrite(bytes)] if bytes == b"LIV"
@@ -312,14 +314,16 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
         ClientShellAction::Endpoint { request, .. } => request.id.clone(),
         _ => unreachable!(),
     };
-    let (_, actions) = state.handle_endpoint_result(
-        "boot-1",
-        &request_id,
-        Ok(crate::api::schema::ResponseResult::PaneSelection {
-            pane_id: "pane_1".into(),
-            text: "yIV".into(),
-        }),
-    );
+    let (_, actions) = state
+        .handle_endpoint_result(
+            "boot-1",
+            &request_id,
+            Ok(crate::api::schema::ResponseResult::PaneSelection {
+                pane_id: "pane_1".into(),
+                text: "yIV".into(),
+            }),
+        )
+        .into_parts();
     assert!(matches!(&actions[..], [ClientShellAction::ClipboardWrite(bytes)] if bytes == b"yIV"));
 }
 
@@ -365,8 +369,9 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
     state.selection_autoscroll_deadline = Some(now);
     let tick = state.tick_selection_autoscroll(now);
     assert!(tick.actions.is_empty());
-    let (_, next_scroll) =
-        state.handle_endpoint_result("boot-1", &drag_request_id, Ok(pane_scroll_result(3, 20, 3)));
+    let (_, next_scroll) = state
+        .handle_endpoint_result("boot-1", &drag_request_id, Ok(pane_scroll_result(3, 20, 3)))
+        .into_parts();
     assert!(matches!(
         &next_scroll[..],
         [ClientShellAction::Endpoint { request, .. }]
@@ -446,8 +451,9 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
         Some(0)
     );
-    let (_, top_actions) =
-        state.handle_endpoint_result("boot-1", &page_request_id, Ok(pane_scroll_result(1, 20, 2)));
+    let (_, top_actions) = state
+        .handle_endpoint_result("boot-1", &page_request_id, Ok(pane_scroll_result(1, 20, 2)))
+        .into_parts();
     let [ClientShellAction::Endpoint { request, .. }] = &top_actions[..] else {
         panic!("latest queued scroll should follow the completed request");
     };
@@ -679,7 +685,60 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed_and_stale_safe() {
             if params.cursor == origin
                 && params.motion == crate::api::schema::PaneCopyMotion::NextWordStart
     ));
-    let (repaint, actions) = state.handle_endpoint_result(
+    let (repaint, actions) = state
+        .handle_endpoint_result(
+            "boot-1",
+            &request_id,
+            Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
+                pane_id: "pane_1".into(),
+                cursor: crate::api::schema::PaneTextPoint {
+                    row: origin.row,
+                    col: 3,
+                },
+                content_revision: 0,
+            }),
+        )
+        .into_parts();
+    assert!(repaint);
+    assert!(actions.is_empty());
+    assert_eq!(
+        state.copy_mode.as_ref().map(|mode| mode.cursor.col),
+        Some(3)
+    );
+}
+
+#[test]
+fn keys_replayed_after_a_copy_motion_reach_the_pane() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 0,
+        viewport_rows: 2,
+    });
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("composed frame");
+    let mut enter = ClientShellInput::default();
+    state.record_binding(
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::CopyMode),
+        &mut enter,
+    );
+    let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
+    let key =
+        |code| RawInputEvent::Key(crate::input::TerminalKey::new(code, KeyModifiers::empty()));
+
+    let motion = state.handle_raw_events(vec![key(KeyCode::Char('w'))]);
+    let [ClientShellAction::Endpoint { request, .. }] = &motion.actions[..] else {
+        panic!("word motion should use endpoint semantics");
+    };
+    let request_id = request.id.clone();
+    // `q` leaves copy mode, and `x` is meant for the pane; both arrive while the
+    // motion is in flight and are queued.
+    let queued = state.handle_raw_events(vec![key(KeyCode::Char('q')), key(KeyCode::Char('x'))]);
+    assert!(queued.requests.is_empty());
+
+    let outcome = state.handle_endpoint_result(
         "boot-1",
         &request_id,
         Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
@@ -691,11 +750,21 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed_and_stale_safe() {
             content_revision: 0,
         }),
     );
-    assert!(repaint);
-    assert!(actions.is_empty());
-    assert_eq!(
-        state.copy_mode.as_ref().map(|mode| mode.cursor.col),
-        Some(3)
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert!(
+        outcome.requests.iter().any(|request| matches!(
+            request,
+            ClientMessage::ClientShellPaneInput { pane_id, events }
+                if pane_id == "pane_1"
+                    && events.iter().any(|event| matches!(
+                        event,
+                        ClientPaneInputEvent::Key {
+                            code: crate::protocol::ClientKeyCode::Char('x'),
+                            ..
+                        }
+                    ))
+        )),
+        "the replayed keystroke must reach the pane"
     );
 }
 
@@ -793,11 +862,13 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
             end: crate::api::schema::PaneTextPoint { row: 15, col: 6 },
         },
     ];
-    let (repaint, actions) = state.handle_endpoint_result(
-        "boot-1",
-        &request_id,
-        Ok(copy_search_result(matches.clone(), Some(0))),
-    );
+    let (repaint, actions) = state
+        .handle_endpoint_result(
+            "boot-1",
+            &request_id,
+            Ok(copy_search_result(matches.clone(), Some(0))),
+        )
+        .into_parts();
     assert!(repaint);
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
@@ -862,11 +933,13 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
             if params.direction == crate::api::schema::PaneCopySearchDirection::Forward
                 && params.previous == Some(matches[0])
     ));
-    let (_, repeat_actions) = state.handle_endpoint_result(
-        "boot-1",
-        &repeat_id,
-        Ok(copy_search_result(matches.clone(), Some(1))),
-    );
+    let (_, repeat_actions) = state
+        .handle_endpoint_result(
+            "boot-1",
+            &repeat_id,
+            Ok(copy_search_result(matches.clone(), Some(1))),
+        )
+        .into_parts();
     if let Some(scroll_id) = repeat_actions.iter().find_map(|action| match action {
         ClientShellAction::Endpoint { request, .. }
             if matches!(request.method, crate::api::schema::Method::PaneScroll(_)) =>
@@ -900,11 +973,13 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
             if params.direction == crate::api::schema::PaneCopySearchDirection::Backward
                 && params.previous == Some(matches[1])
     ));
-    let (_, reverse_actions) = state.handle_endpoint_result(
-        "boot-1",
-        &request.id,
-        Ok(copy_search_result(matches.clone(), Some(0))),
-    );
+    let (_, reverse_actions) = state
+        .handle_endpoint_result(
+            "boot-1",
+            &request.id,
+            Ok(copy_search_result(matches.clone(), Some(0))),
+        )
+        .into_parts();
     if let Some(scroll_id) = reverse_actions.iter().find_map(|action| match action {
         ClientShellAction::Endpoint { request, .. }
             if matches!(request.method, crate::api::schema::Method::PaneScroll(_)) =>
@@ -1982,15 +2057,17 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
         row: origin.row,
         col: 2,
     };
-    let (_, follow_up) = state.handle_endpoint_result(
-        "boot-1",
-        &first_id,
-        Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
-            pane_id: "pane_1".into(),
-            cursor: intermediate,
-            content_revision: 0,
-        }),
-    );
+    let (_, follow_up) = state
+        .handle_endpoint_result(
+            "boot-1",
+            &first_id,
+            Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
+                pane_id: "pane_1".into(),
+                cursor: intermediate,
+                content_revision: 0,
+            }),
+        )
+        .into_parts();
     assert!(matches!(
         &follow_up[..],
         [ClientShellAction::Endpoint { request, .. }]
@@ -2111,15 +2188,17 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
         row: origin.row,
         col: 2,
     };
-    let (_, actions) = state.handle_endpoint_result(
-        "boot-1",
-        &motion_id,
-        Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
-            pane_id: "pane_1".into(),
-            cursor: target,
-            content_revision: 0,
-        }),
-    );
+    let (_, actions) = state
+        .handle_endpoint_result(
+            "boot-1",
+            &motion_id,
+            Ok(crate::api::schema::ResponseResult::PaneCopyMotion {
+                pane_id: "pane_1".into(),
+                cursor: target,
+                content_revision: 0,
+            }),
+        )
+        .into_parts();
     assert_eq!(state.mode, ClientShellMode::Terminal);
     assert!(actions.iter().any(|action| matches!(
         action,
@@ -2186,14 +2265,16 @@ fn word_selection_result_survives_focus_snapshot_lag() {
     lagging.focused_pane_id = None;
     lagging.panes[0].focused = false;
     state.set_snapshot(Box::new(lagging));
-    let (repaint, _) = state.handle_endpoint_result(
-        "boot-1",
-        &request_id,
-        Ok(crate::api::schema::ResponseResult::PaneSelection {
-            pane_id: "pane_1".into(),
-            text: "hello world".into(),
-        }),
-    );
+    let (repaint, _) = state
+        .handle_endpoint_result(
+            "boot-1",
+            &request_id,
+            Ok(crate::api::schema::ResponseResult::PaneSelection {
+                pane_id: "pane_1".into(),
+                text: "hello world".into(),
+            }),
+        )
+        .into_parts();
     assert!(repaint);
     assert!(
         state

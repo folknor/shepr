@@ -48,16 +48,29 @@ pub(super) fn containing_directory(path: &Path) -> &Path {
     }
 }
 
+/// A save whose new content is in place at the target path.
+#[derive(Debug)]
+pub(super) enum Published {
+    /// The content and its directory entry are on disk.
+    Durable,
+    /// The rename happened, so readers already see the new content, but a
+    /// later directory sync failed and a crash could still bring back the
+    /// previous file. The save is not a failure to undo: the new content is
+    /// the best copy there is, and follow-up work may proceed.
+    NotDurable(std::io::Error),
+}
+
 /// Publishes `source` at `target` through a private (0600) temporary at
 /// `pending`: write, fsync the file, rename, fsync the directory. A crash
 /// leaves either the previous file or the complete new one, never a truncated
 /// one. `pending` must not exist yet.
 ///
 /// With `replace` false an existing `target` is refused with `AlreadyExists`,
-/// and a published target is withdrawn again when the directory sync fails.
+/// and a published target is withdrawn again when the directory sync fails,
+/// so that mode only ever returns `Published::Durable` or an error.
 /// With `replace` true the target is overwritten, and a completed rename is
-/// kept even when the directory sync then reports an error: the new content
-/// is still the best copy there is.
+/// kept even when the directory sync then reports an error; that comes back
+/// as `Published::NotDurable`.
 ///
 /// Both the live session files and the recovery copies go through here, so
 /// they share one durability and permission policy. Session history holds
@@ -68,7 +81,7 @@ pub(super) fn publish_private_file(
     pending: &Path,
     target: &Path,
     replace: bool,
-) -> std::io::Result<()> {
+) -> std::io::Result<Published> {
     let directory = containing_directory(target);
     let mut output = crate::platform::create_config_temporary(pending, true)?;
     let mut published = false;
@@ -92,13 +105,18 @@ pub(super) fn publish_private_file(
         published = true;
         crate::platform::sync_directory(directory)
     })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(pending);
-        if published && !replace {
+    match result {
+        Ok(()) => Ok(Published::Durable),
+        Err(err) if !published => {
+            let _ = std::fs::remove_file(pending);
+            Err(err)
+        }
+        Err(err) if replace => Ok(Published::NotDurable(err)),
+        Err(err) => {
             let _ = std::fs::remove_file(target);
+            Err(err)
         }
     }
-    result
 }
 
 // A crash between creating the temporary and renaming it leaves the file
@@ -114,11 +132,11 @@ fn remove_stale_temporary(path: &Path) -> std::io::Result<()> {
     }
 }
 
-pub(super) fn save_to_path(path: &Path, snapshot: &SessionSnapshot) -> std::io::Result<()> {
+pub(super) fn save_to_path(path: &Path, snapshot: &SessionSnapshot) -> std::io::Result<Published> {
     save_json_to_path(path, snapshot)
 }
 
-fn save_json_to_path<T: serde::Serialize>(path: &Path, snapshot: &T) -> std::io::Result<()> {
+fn save_json_to_path<T: serde::Serialize>(path: &Path, snapshot: &T) -> std::io::Result<Published> {
     let target = resolve_write_target(path)?;
     let directory = containing_directory(&target);
     let created = !directory.exists();
@@ -126,21 +144,28 @@ fn save_json_to_path<T: serde::Serialize>(path: &Path, snapshot: &T) -> std::io:
     let json = serde_json::to_string_pretty(snapshot)?;
     let pending = target.with_extension("json.tmp");
     remove_stale_temporary(&pending)?;
-    publish_private_file(&mut json.as_bytes(), &pending, &target, true)?;
-    if created {
+    let published = publish_private_file(&mut json.as_bytes(), &pending, &target, true)?;
+    if created && matches!(published, Published::Durable) {
         // A freshly created data directory is itself only an unsynced entry
         // in its parent until that parent is synced.
-        crate::platform::sync_directory(containing_directory(directory))?;
+        if let Err(err) = crate::platform::sync_directory(containing_directory(directory)) {
+            return Ok(Published::NotDurable(err));
+        }
     }
-    Ok(())
+    Ok(published)
 }
 
+/// Optional history has no follow-up work that depends on it, so a
+/// published-but-unsynced write is reported like any other failure.
 pub(super) fn save_history_to_path(
     path: &Path,
     history: Option<&SessionHistorySnapshot>,
 ) -> std::io::Result<()> {
     match history {
-        Some(history) => save_json_to_path(path, history),
+        Some(history) => match save_json_to_path(path, history)? {
+            Published::Durable => Ok(()),
+            Published::NotDurable(err) => Err(err),
+        },
         None => clear_path(path),
     }
 }
@@ -257,7 +282,6 @@ mod tests {
                         0,
                         PaneHistorySnapshot {
                             ansi: secret.to_string(),
-                            lines: 1,
                         },
                     )]),
                 }],

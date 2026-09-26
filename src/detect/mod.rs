@@ -239,6 +239,8 @@ pub fn identify_agent(process_name: &str) -> Option<Agent> {
     parse_agent_label(process_name)
 }
 
+/// Blocking: path-shaped argv tokens are resolved on the filesystem (through
+/// `/proc/<pid>/cwd` for relative ones). Call from a blocking context.
 pub fn identify_agent_in_job(job: &crate::platform::ForegroundJob) -> Option<(Agent, String)> {
     if let Some(process) = job
         .processes
@@ -332,6 +334,10 @@ pub(crate) fn session_identity_only_integration(source: &str, agent_label: &str)
 // ---------------------------------------------------------------------------
 // Process identification
 // ---------------------------------------------------------------------------
+//
+// Everything in this section reads `/proc` synchronously. The per-pane
+// detection task is async, so it has to reach these through a blocking
+// section rather than calling them on a runtime worker.
 
 /// Get the foreground job for a given child PID.
 pub fn foreground_job(child_pid: u32) -> Option<crate::platform::ForegroundJob> {
@@ -355,10 +361,11 @@ pub fn foreground_process_group_id(child_pid: u32) -> Option<u32> {
 fn normalized_process_name(process: &crate::platform::ForegroundProcess) -> String {
     let effective = process.argv0.as_deref().unwrap_or(&process.name);
     let lower_effective = effective.to_lowercase();
+    let cwd_pid = Some(process.pid);
 
     if is_generic_runtime_or_shell(&lower_effective)
         && let Some(wrapped_agent) =
-            wrapped_agent_name_from_runtime_argv(&lower_effective, process.argv.as_deref())
+            wrapped_agent_name_from_runtime_argv(&lower_effective, process.argv.as_deref(), cwd_pid)
     {
         return wrapped_agent;
     }
@@ -371,7 +378,7 @@ fn normalized_process_name(process: &crate::platform::ForegroundProcess) -> Stri
         let runtime_name = normalized_agent_lookup_name(path_basename(runtime));
         if matches!(runtime_name.as_str(), "node" | "bun")
             && let Some(wrapped_agent) =
-                wrapped_agent_name_from_runtime_argv(runtime, process.argv.as_deref())
+                wrapped_agent_name_from_runtime_argv(runtime, process.argv.as_deref(), cwd_pid)
             && matches!(
                 identify_agent(&wrapped_agent),
                 Some(Agent::Qwen | Agent::Cline | Agent::Letta)
@@ -381,23 +388,29 @@ fn normalized_process_name(process: &crate::platform::ForegroundProcess) -> Stri
         }
     }
 
-    if let Some(wrapped_agent) = argv0_agent_name(process.argv.as_deref())
-        .or_else(|| cmdline_argv0_agent_name(process.cmdline.as_deref().unwrap_or_default()))
-    {
+    if let Some(wrapped_agent) = argv0_agent_name(process.argv.as_deref(), cwd_pid).or_else(|| {
+        cmdline_argv0_agent_name(process.cmdline.as_deref().unwrap_or_default(), cwd_pid)
+    }) {
         return wrapped_agent;
     }
 
     effective.to_string()
 }
 
-fn wrapped_agent_name_from_runtime_argv(runtime: &str, argv: Option<&[String]>) -> Option<String> {
+fn wrapped_agent_name_from_runtime_argv(
+    runtime: &str,
+    argv: Option<&[String]>,
+    cwd_pid: Option<u32>,
+) -> Option<String> {
     let argv = argv?;
     let runtime_name = normalized_agent_lookup_name(path_basename(runtime));
 
     match runtime_name.as_str() {
-        "node" | "bun" => script_arg_agent_name(argv, &["-e", "--eval", "-p", "--print"], &[]),
-        name if is_python_runtime(name) => script_arg_agent_name(argv, &["-c"], &["-m"]),
-        "sh" | "bash" | "zsh" | "fish" => script_arg_agent_name(argv, &["-c"], &[]),
+        "node" | "bun" => {
+            script_arg_agent_name(argv, &["-e", "--eval", "-p", "--print"], &[], cwd_pid)
+        }
+        name if is_python_runtime(name) => script_arg_agent_name(argv, &["-c"], &["-m"], cwd_pid),
+        "sh" | "bash" | "zsh" | "fish" => script_arg_agent_name(argv, &["-c"], &[], cwd_pid),
         _ => None,
     }
 }
@@ -406,13 +419,14 @@ fn script_arg_agent_name(
     argv: &[String],
     eval_flags: &[&str],
     module_flags: &[&str],
+    cwd_pid: Option<u32>,
 ) -> Option<String> {
     let mut args = argv.iter().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--" {
             return args
                 .next()
-                .and_then(|token| agent_name_from_path_token(token));
+                .and_then(|token| agent_name_from_path_token(token, cwd_pid));
         }
 
         if flag_matches(arg, eval_flags) || flag_matches(arg, module_flags) {
@@ -426,7 +440,7 @@ fn script_arg_agent_name(
             continue;
         }
 
-        return agent_name_from_path_token(arg);
+        return agent_name_from_path_token(arg, cwd_pid);
     }
 
     None
@@ -468,15 +482,17 @@ fn option_takes_value(arg: &str) -> bool {
     )
 }
 
-fn argv0_agent_name(argv: Option<&[String]>) -> Option<String> {
-    agent_name_from_path_token(argv?.first()?)
+fn argv0_agent_name(argv: Option<&[String]>, cwd_pid: Option<u32>) -> Option<String> {
+    agent_name_from_path_token(argv?.first()?, cwd_pid)
 }
 
-fn cmdline_argv0_agent_name(cmdline: &str) -> Option<String> {
-    agent_name_from_path_token(cmdline.split_whitespace().next()?)
+fn cmdline_argv0_agent_name(cmdline: &str, cwd_pid: Option<u32>) -> Option<String> {
+    agent_name_from_path_token(cmdline.split_whitespace().next()?, cwd_pid)
 }
 
-fn agent_name_from_path_token(token: &str) -> Option<String> {
+/// `cwd_pid` is the process the token came from; relative paths resolve
+/// against its working directory (see `resolved_agent_name_from_path_token`).
+fn agent_name_from_path_token(token: &str, cwd_pid: Option<u32>) -> Option<String> {
     let trimmed = token.trim_matches(|c| matches!(c, '"' | '\''));
     if trimmed.is_empty() || trimmed.starts_with('-') {
         return None;
@@ -484,7 +500,7 @@ fn agent_name_from_path_token(token: &str) -> Option<String> {
 
     agent_name_from_basename(path_basename(trimmed))
         .or_else(|| agent_name_from_known_package_path(trimmed))
-        .or_else(|| resolved_agent_name_from_path_token(trimmed))
+        .or_else(|| resolved_agent_name_from_path_token(trimmed, cwd_pid))
 }
 
 fn agent_name_from_known_package_path(path: &str) -> Option<String> {
@@ -554,9 +570,10 @@ fn agent_name_from_known_package_path(path: &str) -> Option<String> {
     None
 }
 
-fn letta_entrypoint_index(argv: &[String]) -> Option<usize> {
-    let is_letta =
-        |arg: &str| agent_name_from_path_token(arg).as_deref() == Some(agent_label(Agent::Letta));
+fn letta_entrypoint_index(argv: &[String], cwd_pid: Option<u32>) -> Option<usize> {
+    let is_letta = |arg: &str| {
+        agent_name_from_path_token(arg, cwd_pid).as_deref() == Some(agent_label(Agent::Letta))
+    };
     if argv.first().is_some_and(|arg| is_letta(arg)) {
         return Some(0);
     }
@@ -621,7 +638,7 @@ fn is_interactive_letta_process(process: &crate::platform::ForegroundProcess) ->
         &parsed_cmdline
     };
 
-    let cli_args = letta_entrypoint_index(argv)
+    let cli_args = letta_entrypoint_index(argv, Some(process.pid))
         .map(|index| &argv[index + 1..])
         .unwrap_or(argv);
 
@@ -662,13 +679,32 @@ fn is_interactive_letta_process(process: &crate::platform::ForegroundProcess) ->
     letta_first_arg_after_backend_selection(cli_args).is_none_or(|arg| arg.starts_with('-'))
 }
 
-fn resolved_agent_name_from_path_token(token: &str) -> Option<String> {
+/// Resolve a path-shaped argv token (symlinks included) and identify the agent
+/// from the target's basename.
+///
+/// A relative token such as `./agent` or `bin/x` names a file relative to the
+/// *target* process's working directory, never the shepr server's, so it is
+/// resolved through `/proc/<pid>/cwd` (a magic link `canonicalize` follows).
+/// Without a pid a relative token is not resolved at all. Bare names (`agent`)
+/// were found through `PATH`, not the cwd, and are left alone; their basename
+/// has already been checked by the caller.
+///
+/// This touches the filesystem (`realpath`), like every other part of the
+/// foreground-process probe (`identify_agent_in_job` and the `/proc` readers
+/// behind `foreground_job`), so async callers must run the probe off the
+/// runtime's worker threads, e.g. inside `tokio::task::spawn_blocking`.
+fn resolved_agent_name_from_path_token(token: &str, cwd_pid: Option<u32>) -> Option<String> {
     let path = std::path::Path::new(token);
     if path.components().count() < 2 {
         return None;
     }
 
-    let resolved = std::fs::canonicalize(path).ok()?;
+    let resolved = if path.is_absolute() {
+        std::fs::canonicalize(path).ok()?
+    } else {
+        let pid = cwd_pid?;
+        std::fs::canonicalize(std::path::Path::new(&format!("/proc/{pid}/cwd")).join(path)).ok()?
+    };
     let basename = resolved.file_name()?.to_str()?;
     agent_name_from_basename(basename)
 }
@@ -1407,7 +1443,11 @@ mod tests {
     #[test]
     fn wrapped_agent_name_from_runtime_argv_ignores_plain_shell_flags() {
         assert_eq!(
-            wrapped_agent_name_from_runtime_argv("bash", Some(&["bash".into(), "-lc".into()])),
+            wrapped_agent_name_from_runtime_argv(
+                "bash",
+                Some(&["bash".into(), "-lc".into()]),
+                None
+            ),
             None
         );
     }
@@ -1474,14 +1514,52 @@ mod tests {
     #[test]
     fn cmdline_argv0_agent_name_canonicalizes_known_aliases() {
         assert_eq!(
-            cmdline_argv0_agent_name("/nix/store/example/bin/ghcs"),
+            cmdline_argv0_agent_name("/nix/store/example/bin/ghcs", None),
             Some("copilot".to_string())
         );
     }
 
     #[test]
     fn cmdline_argv0_agent_name_requires_exact_agent_basename() {
-        assert_eq!(cmdline_argv0_agent_name("/tmp/my-codex-helper"), None);
+        assert_eq!(cmdline_argv0_agent_name("/tmp/my-codex-helper", None), None);
+    }
+
+    #[test]
+    fn relative_argv_path_resolves_against_target_process_cwd() {
+        let dir = temp_detection_path("relative-argv-cwd");
+        std::fs::create_dir_all(dir.join("bin")).expect("test directory should be created");
+        let target = dir.join("bin").join("cursor-agent");
+        std::fs::write(&target, b"#!/bin/sh\n").expect("target should be written");
+        std::os::unix::fs::symlink(&target, dir.join("bin").join("agent"))
+            .expect("symlink should be created");
+
+        // A process whose cwd is the test directory stands in for the agent.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .current_dir(&dir)
+            .spawn()
+            .expect("sleep should spawn");
+        let resolved_via_target = agent_name_from_path_token("bin/agent", Some(child.id()));
+        let resolved_via_dot = agent_name_from_path_token("./bin/agent", Some(child.id()));
+        child.kill().ok();
+        child.wait().ok();
+
+        assert_eq!(resolved_via_target, Some("cursor".to_string()));
+        assert_eq!(resolved_via_dot, Some("cursor".to_string()));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn relative_argv_path_is_not_resolved_without_a_target_pid() {
+        // Without the target's pid the only cwd available is the server's own,
+        // which says nothing about where the agent was launched.
+        assert_eq!(agent_name_from_path_token("bin/agent", None), None);
+        assert_eq!(agent_name_from_path_token("./agent", None), None);
+        // Basename matches never needed the filesystem and still work.
+        assert_eq!(
+            agent_name_from_path_token("./bin/codex", None),
+            Some("codex".to_string())
+        );
     }
 
     #[test]

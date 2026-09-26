@@ -44,9 +44,32 @@ impl SessionWriter {
             self.preserve_snapshot_history();
             super::io::save_to_path(&self.path, snapshot)
         });
-        if let Err(err) = result {
-            crate::logging::session_save_failed(&self.path, &err.to_string());
-            return;
+        self.finish_save(result, snapshot, history);
+    }
+
+    fn finish_save(
+        &mut self,
+        result: io::Result<super::io::Published>,
+        snapshot: &SessionSnapshot,
+        history: Option<&SessionHistorySnapshot>,
+    ) {
+        match result {
+            Ok(super::io::Published::Durable) => {}
+            // The new layout already replaced the old file; only its
+            // directory entry may not be on disk yet. That is still our
+            // committed layout, so the history that pairs with it is written
+            // too and the unloaded-file guard is released, exactly as for a
+            // durable save.
+            Ok(super::io::Published::NotDurable(err)) => {
+                crate::logging::session_save_failed(
+                    &self.path,
+                    &format!("saved, but syncing its directory failed: {err}"),
+                );
+            }
+            Err(err) => {
+                crate::logging::session_save_failed(&self.path, &err.to_string());
+                return;
+            }
         }
         // Optional history failure must not reclassify our committed layout as unloaded.
         self.protect_unloaded = false;
@@ -186,7 +209,15 @@ fn preserve_existing_in(path: &Path, directory_name: &str, keep: usize) -> io::R
 }
 
 fn copy_recovery(source: &mut impl io::Read, backup: &Path) -> io::Result<()> {
-    super::io::publish_private_file(source, &backup.with_extension("pending"), backup, false)?;
+    // Without `replace` a failed directory sync withdraws the copy and comes
+    // back as an error, so `NotDurable` cannot happen here; treat it as a
+    // failure anyway rather than count an unsynced copy as a recovery copy.
+    if let super::io::Published::NotDurable(err) =
+        super::io::publish_private_file(source, &backup.with_extension("pending"), backup, false)?
+    {
+        let _ = std::fs::remove_file(backup);
+        return Err(err);
+    }
     // The recovery directory may have just been created; its own entry must be
     // durable too, or the copy is not a recovery copy at all.
     let directory = super::io::containing_directory(backup);
@@ -533,6 +564,44 @@ mod tests {
             saved.workspaces[0].custom_name.as_deref(),
             Some("latest layout")
         );
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
+    }
+
+    #[test]
+    fn unsynced_layout_save_still_writes_history_and_releases_the_guard() {
+        let history = SessionHistorySnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            layout_fingerprint: None,
+            workspaces: Vec::new(),
+        };
+        let mut writer = writer(true);
+        let history_path = writer.path.with_file_name("session-history.json");
+        // The layout rename happened; only the directory sync after it failed.
+        super::super::io::save_to_path(&writer.path, &snapshot()).expect("test precondition");
+        writer.finish_save(
+            Ok(super::super::io::Published::NotDurable(io::Error::other(
+                "directory sync failed",
+            ))),
+            &snapshot(),
+            Some(&history),
+        );
+        assert!(!writer.protect_unloaded);
+        assert!(history_path.exists(), "history pairs with the new layout");
+
+        // A save that never reached the target changes nothing else.
+        let mut failed = SessionWriter {
+            path: writer.path.clone(),
+            protect_unloaded: true,
+        };
+        std::fs::remove_file(&history_path).expect("test precondition");
+        failed.finish_save(
+            Err(io::Error::other("write failed")),
+            &snapshot(),
+            Some(&history),
+        );
+        assert!(failed.protect_unloaded);
+        assert!(!history_path.exists());
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
     }

@@ -45,7 +45,10 @@ pub(crate) enum EndpointSupervisorEvent {
 #[derive(Clone)]
 enum ConnectTarget {
     Local(PathBuf),
-    Ssh(super::SavedSshEndpoint),
+    /// One connector per endpoint for the supervisor's lifetime: it carries the
+    /// launch-time ssh settings, the temporary ssh config and the remembered remote
+    /// executable from one attempt to the next.
+    Ssh(Arc<crate::remote::SavedSshConnector>),
 }
 
 struct ReconnectState {
@@ -77,14 +80,31 @@ pub(crate) struct EndpointSupervisors {
 }
 
 impl EndpointSupervisors {
+    /// Reads the ssh settings from the config file once, here, and keeps them for
+    /// every reconnect. A caller that already holds its launch-time config should
+    /// use [`Self::with_ssh_settings`] instead, which reads nothing.
     pub(crate) fn new(profiles: &[super::SavedSshEndpoint], now: Instant) -> Self {
+        Self::with_ssh_settings(profiles, crate::remote::SavedSshSettings::load(), now)
+    }
+
+    pub(crate) fn with_ssh_settings(
+        profiles: &[super::SavedSshEndpoint],
+        settings: crate::remote::SavedSshSettings,
+        now: Instant,
+    ) -> Self {
         let endpoints = profiles
             .iter()
             .filter(|profile| profile.enabled)
             .map(|profile| {
+                let connector = crate::remote::SavedSshConnector::new(
+                    profile.id.as_str(),
+                    &profile.target,
+                    &profile.session,
+                    settings,
+                );
                 (
                     ClientEndpointId::Ssh(profile.id.clone()),
-                    ReconnectState::new(ConnectTarget::Ssh(profile.clone()), now),
+                    ReconnectState::new(ConnectTarget::Ssh(Arc::new(connector)), now),
                 )
             })
             .collect();
@@ -240,7 +260,7 @@ fn connect_once(
     endpoint_id: ClientEndpointId,
     generation: u64,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
-    let (mut stream, ssh_bridge) = match target {
+    match target {
         ConnectTarget::Local(path) => {
             let stream = crate::ipc::connect_local_stream(path).map_err(|error| {
                 // An absent Local socket is transient, unlike a missing SSH install.
@@ -253,17 +273,28 @@ fn connect_once(
                     error
                 }
             })?;
-            (stream, None)
+            establish(stream, None, options, endpoint_id, generation)
         }
-        ConnectTarget::Ssh(profile) => {
-            let connected = crate::remote::connect_saved_ssh(
-                profile.id.as_str(),
-                &profile.target,
-                &profile.session,
-            )?;
-            (connected.stream, Some(connected.bridge))
-        }
-    };
+        ConnectTarget::Ssh(connector) => connector.connect(|connected| {
+            establish(
+                connected.stream,
+                Some(connected.bridge),
+                options,
+                endpoint_id.clone(),
+                generation,
+            )
+        }),
+    }
+}
+
+/// Handshakes over a fresh endpoint stream and hands the connection to the loop.
+fn establish(
+    mut stream: crate::ipc::LocalStream,
+    ssh_bridge: Option<crate::remote::SavedSshBridge>,
+    options: EndpointConnectOptions,
+    endpoint_id: ClientEndpointId,
+    generation: u64,
+) -> Result<EndpointSupervisorEvent, std::io::Error> {
     let handshake = super::super::do_handshake(
         &mut stream,
         options.cols,
@@ -379,12 +410,43 @@ mod tests {
         }
     }
 
+    /// Tests never read the developer's own config file.
+    fn supervisors_for(
+        profiles: &[super::super::SavedSshEndpoint],
+        now: Instant,
+    ) -> EndpointSupervisors {
+        EndpointSupervisors::with_ssh_settings(
+            profiles,
+            crate::remote::SavedSshSettings {
+                manage_ssh_config: false,
+            },
+            now,
+        )
+    }
+
+    #[test]
+    fn every_attempt_for_an_endpoint_reuses_one_connector() {
+        let now = Instant::now();
+        let profile = profile();
+        let id = ClientEndpointId::Ssh(profile.id.clone());
+        let supervisors = supervisors_for(&[profile], now);
+        let ConnectTarget::Ssh(connector) = &supervisors.endpoints[&id].target else {
+            panic!("saved machine must have an SSH target");
+        };
+        // `spawn_due` clones the target per attempt; the connector (and so the settings,
+        // the ssh config and the remembered executable) is shared, never rebuilt.
+        let ConnectTarget::Ssh(attempt) = supervisors.endpoints[&id].target.clone() else {
+            panic!("saved machine must have an SSH target");
+        };
+        assert!(Arc::ptr_eq(connector, &attempt));
+    }
+
     #[test]
     fn brief_ssh_reconnections_do_not_reset_backoff() {
         let now = Instant::now();
         let profile = profile();
         let id = ClientEndpointId::Ssh(profile.id.clone());
-        let mut supervisors = EndpointSupervisors::new(&[profile], now);
+        let mut supervisors = supervisors_for(&[profile], now);
         supervisors
             .endpoints
             .get_mut(&id)
@@ -423,7 +485,7 @@ mod tests {
         ));
         assert!(!failure_needs_attention(&timeout));
         let rejected = handshake_error(crate::client::ClientError::HandshakeRejected {
-            version: 1,
+            version: crate::protocol::PROTOCOL_VERSION,
             error: "surface capability missing".into(),
         });
         assert_eq!(rejected.kind(), std::io::ErrorKind::Unsupported);
@@ -448,7 +510,7 @@ mod tests {
     #[test]
     fn local_in_attention_is_retried() {
         let now = Instant::now();
-        let mut supervisors = EndpointSupervisors::new(&[], now);
+        let mut supervisors = supervisors_for(&[], now);
         supervisors.add_local(PathBuf::from("local.sock"), Some(1), now);
         assert!(supervisors.record_status(
             &ClientEndpointId::Local,
@@ -465,7 +527,7 @@ mod tests {
     #[test]
     fn healthy_local_only_retries_after_its_connection_fails() {
         let now = Instant::now();
-        let mut supervisors = EndpointSupervisors::new(&[profile()], now);
+        let mut supervisors = supervisors_for(&[profile()], now);
         supervisors.add_local(PathBuf::from("local.sock"), Some(1), now);
         assert!(
             supervisors.endpoints[&ClientEndpointId::Local]
@@ -492,7 +554,7 @@ mod tests {
     #[test]
     fn ssh_recovery_rejects_stale_generations_and_rechecks_attention() {
         let now = Instant::now();
-        let mut supervisors = EndpointSupervisors::new(&[profile()], now);
+        let mut supervisors = supervisors_for(&[profile()], now);
         let endpoint_id = ClientEndpointId::Ssh(profile().id);
         supervisors
             .endpoints

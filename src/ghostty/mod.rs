@@ -9,17 +9,20 @@
 //! * render snapshots with row dirty flags derived from alacritty's damage
 //!   ([`RenderState`], [`RowIter`], [`RowCellIter`]);
 //! * plain and VT formatters for reads and history persistence (`format.rs`);
-//! * a scanner for sequences alacritty ignores (OSC 7, modes 9/1016/2031/2048,
-//!   CSI ? 996 n, CSI 16 t, XTGETTCAP, modifyOtherKeys; `scan.rs`);
-//! * a column of their own for the halfwidth voiced marks U+FF9E/U+FF9F,
-//!   which unicode-width (and so alacritty) treats as zero-width;
-//! * ordered query replies, with OSC colour queries surfaced as structured
-//!   [`ColorQuery`] values so the pane can answer from the host theme;
+//! * a `Handler` wrapper the parser drives in place of `Term` (`handler.rs`):
+//!   it caps the kitty keyboard-mode stack before alacritty's broken overflow
+//!   branch can panic, models modes 9/1016/2031/2048 and modifyOtherKeys,
+//!   and gives the halfwidth voiced marks U+FF9E/U+FF9F (zero-width to
+//!   unicode-width, and so to alacritty) a column of their own;
+//! * a byte scanner for sequences vte never hands to a `Handler` at all
+//!   (OSC 7 / 9;9 / 1337 CurrentDir, CSI ? 996 n, CSI 16 t, XTGETTCAP,
+//!   CSI ? 3 J, and the modifyOtherKeys spellings vte drops; `scan.rs`);
+//! * query replies in byte order, with OSC colour queries surfaced as
+//!   structured [`ColorQuery`] values so the pane can answer from the host
+//!   theme. Replies from the scanner are the exception inside a synchronized
+//!   update: see [`Terminal::write`];
 //! * byte-denominated scrollback limits converted to line counts;
-//! * synchronized-output (mode 2026) timeout flushing;
-//! * a `Handler` wrapper the parser drives in place of `Term` (`handler.rs`),
-//!   which caps the kitty keyboard-mode stack before alacritty's broken
-//!   overflow branch can panic.
+//! * synchronized-output (mode 2026) timeout flushing.
 
 // The adapter keeps a complete surface (mode constants, colour/scheme types,
 // query helpers) even where the current tree uses only part of it.
@@ -36,14 +39,12 @@ use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use alacritty_terminal::event::{Event, EventListener, WindowSize};
+use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, TermMode};
-use alacritty_terminal::vte::ansi::{
-    Color, CursorShape, Handler, NamedColor, NamedPrivateMode, Processor, Rgb,
-};
+use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -133,17 +134,16 @@ const DEFAULT_BACKGROUND: RgbColor = RgbColor { r: 0, g: 0, b: 0 };
 const MIN_COLUMNS: usize = 2;
 
 /// Scrollback is configured in bytes; alacritty counts lines. Any non-zero
-/// byte budget keeps at least this many lines so tiny budgets still scroll.
+/// byte budget keeps at least this many lines so tiny budgets still scroll,
+/// which means a small budget on a wide pane is exceeded by design.
 const MIN_SCROLLBACK_LINES: usize = 1_000;
-/// Sanity cap on the converted line count (the byte budget already bounds
-/// memory: lines * columns * size_of::<Cell>() <= bytes).
+/// Sanity cap on the converted line count. The byte budget alone does not
+/// bound memory: the line floor above, heap-held cell extras (combining
+/// marks, hyperlinks) and history kept across a widening resize (see
+/// [`Terminal::resize`]) all go past it.
 const MAX_SCROLLBACK_LINES: usize = 1_000_000;
 
 const MAX_CLIPBOARD_BYTES: usize = 192 * 1024;
-
-/// Private modes modelled by this adapter; alacritty reports them as
-/// unsupported in DECRPM, so those replies are rewritten.
-const ADAPTER_PRIVATE_MODES: &[u16] = &[9, 1016, 2031, 2048];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CursorVisualStyle {
@@ -464,11 +464,7 @@ impl EventListener for Listener {
     fn send_event(&self, event: Event) {
         let relevant = matches!(
             event,
-            Event::PtyWrite(_)
-                | Event::ColorRequest(..)
-                | Event::TextAreaSizeRequest(_)
-                | Event::Bell
-                | Event::ClipboardStore(..)
+            Event::PtyWrite(_) | Event::ColorRequest(..) | Event::Bell | Event::ClipboardStore(..)
         );
         if relevant {
             self.0
@@ -503,8 +499,6 @@ pub struct Terminal {
     keyboard_depth: KeyboardStackDepth,
     events: Arc<Mutex<Vec<Event>>>,
     scanner: Scanner,
-    /// Start of a U+FF9E/U+FF9F split across writes, not yet given to the parser.
-    held_utf8: Vec<u8>,
     max_scrollback: usize,
     history_lines: usize,
     default_palette: [RgbColor; 256],
@@ -547,7 +541,6 @@ impl Terminal {
             keyboard_depth: KeyboardStackDepth::default(),
             events,
             scanner: Scanner::default(),
-            held_utf8: Vec::new(),
             max_scrollback,
             history_lines,
             default_palette: default_palette(),
@@ -567,43 +560,38 @@ impl Terminal {
 
     /// Feed child output into the terminal. Replies are queued in byte order
     /// and collected with [`Terminal::take_pty_responses`].
+    ///
+    /// Everything vte dispatches to a `Handler` (including the adapter's own
+    /// modes, RIS, DECRQM and the voiced-mark printing in `handler.rs`) is
+    /// applied in byte order, and inside a synchronized update (mode 2026) only
+    /// when vte replays the buffered frame. The scanner's events cannot be: vte
+    /// never hands OSC 7, XTGETTCAP, `CSI ? 996 n` or `CSI 16 t` to a handler,
+    /// and it replays a frame in one call, so there is no point at which to
+    /// slot them in. They are applied as their bytes arrive, which inside a
+    /// frame puts their replies ahead of core replies requested earlier in the
+    /// same frame. Deferring them to the end of the frame instead was
+    /// rejected: queries are almost always followed by a DA1 sentinel, and a
+    /// deferred reply would land after the sentinel's answer, so the program
+    /// would conclude the capability is missing and read the late reply as
+    /// input.
     pub fn write(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
         self.flush_expired_synchronized_output();
         let events = self.scanner.scan(bytes);
-        // Bytes held back by the previous call come first; scan offsets are
-        // relative to `bytes`, so shift them past the held prefix.
-        let held = mem::take(&mut self.held_utf8);
-        let joined;
-        let bytes = if held.is_empty() {
-            bytes
-        } else {
-            joined = [held.as_slice(), bytes].concat();
-            joined.as_slice()
-        };
-        let offset = held.len();
-        // A trailing partial U+FF9E/U+FF9F must not reach the parser yet, or
-        // the mark could no longer be given its own cell once it completes.
-        let feed_end = bytes.len() - self.scanner.voiced_mark_prefix_len().min(bytes.len());
         let mut written = 0usize;
         for scanned in events {
-            let end = (scanned.end + offset).min(feed_end);
-            if let ScanEvent::HalfwidthVoicedMark(mark) = scanned.event {
-                written = self.input_halfwidth_voiced_mark(bytes, written, end, mark);
-                continue;
-            }
+            let end = scanned.end.min(bytes.len());
             if end > written {
                 self.advance(&bytes[written..end]);
                 written = end;
             }
             self.apply_scan_event(scanned.event);
         }
-        if written < feed_end {
-            self.advance(&bytes[written..feed_end]);
+        if written < bytes.len() {
+            self.advance(&bytes[written..]);
         }
-        self.held_utf8 = bytes[feed_end..].to_vec();
         self.collect_damage();
     }
 
@@ -611,54 +599,13 @@ impl Terminal {
         let mut handler = CoreHandler {
             term: &mut self.term,
             keyboard_depth: &mut self.keyboard_depth,
+            modes: &mut self.modes,
+            cell_width_px: self.cell_width_px,
+            cell_height_px: self.cell_height_px,
+            events: &self.events,
         };
         self.parser.advance(&mut handler, bytes);
         self.drain_events();
-    }
-
-    /// Prints U+FF9E/U+FF9F (whose UTF-8 ends just before `bytes[end]`) in a cell of its
-    /// own. unicode-width counts these Grapheme_Extend marks as zero-width, so
-    /// alacritty would fold them into the previous cell, while wcwidth, xterm
-    /// and the program writing them advance the cursor one column; left alone,
-    /// every later cell on the line would sit one column left of where the
-    /// program believes it is. Feeds everything before the mark first and
-    /// returns how much of `bytes` has now been consumed. The mark is left for
-    /// the parser to take normally when its bytes are not all in this slice or
-    /// a synchronized update is buffering output.
-    fn input_halfwidth_voiced_mark(
-        &mut self,
-        bytes: &[u8],
-        written: usize,
-        end: usize,
-        mark: char,
-    ) -> usize {
-        let mut encoded = [0u8; 4];
-        let encoded = mark.encode_utf8(&mut encoded).as_bytes();
-        let Some(start) = end.checked_sub(encoded.len()) else {
-            return written;
-        };
-        if start < written || bytes.get(start..end) != Some(encoded) {
-            return written;
-        }
-        if start > written {
-            self.advance(&bytes[written..start]);
-        }
-        if self.synchronized_output_deadline().is_some() {
-            return start;
-        }
-        // A plain width-1 print handles wrapping, insert mode and the SGR
-        // template; the cell it wrote then gets the mark as its character.
-        self.term.input(' ');
-        let grid = self.term.grid_mut();
-        let point = grid.cursor.point;
-        let column = if grid.cursor.input_needs_wrap {
-            point.column
-        } else {
-            Column(point.column.0.saturating_sub(1))
-        };
-        grid[point.line][column].c = mark;
-        self.drain_events();
-        end
     }
 
     /// The xterm modifyOtherKeys level the child selected (0, 1 or 2).
@@ -678,6 +625,10 @@ impl Terminal {
             let mut handler = CoreHandler {
                 term: &mut self.term,
                 keyboard_depth: &mut self.keyboard_depth,
+                modes: &mut self.modes,
+                cell_width_px: self.cell_width_px,
+                cell_height_px: self.cell_height_px,
+                events: &self.events,
             };
             self.parser.stop_sync(&mut handler);
             self.drain_events();
@@ -705,7 +656,6 @@ impl Terminal {
 
     fn apply_scan_event(&mut self, event: ScanEvent) {
         match event {
-            ScanEvent::PrivateMode { mode, enabled } => self.apply_private_mode(mode, enabled),
             ScanEvent::ColorSchemeQuery => {
                 if let Some(scheme) = self.color_scheme {
                     self.push_bytes(scheme.report().to_vec());
@@ -723,56 +673,23 @@ impl Terminal {
                 }
             }
             ScanEvent::WorkingDirectory(payload) => self.pwd_changes.push(payload),
-            ScanEvent::FullReset => self.modes = ExtraModes::default(),
             // The parser has just consumed (and ignored) `CSI ? 3 J`; feed the
             // ED3 spelling it does dispatch. Going through the parser keeps
             // the erase in byte order even inside a synchronized update.
             ScanEvent::EraseScrollback => self.advance(b"\x1b[3J"),
             ScanEvent::ModifyOtherKeys(level) => self.modes.modify_other_keys = level,
-            // Printed by `write` itself, in byte order.
-            ScanEvent::HalfwidthVoicedMark(_) => {}
-        }
-    }
-
-    fn apply_private_mode(&mut self, mode: u16, enabled: bool) {
-        match (mode, enabled) {
-            (9, true) => {
-                // X10 mouse replaces the other tracking modes, as in xterm.
-                self.modes.x10_mouse = true;
-                for other in [
-                    NamedPrivateMode::ReportMouseClicks,
-                    NamedPrivateMode::ReportCellMouseMotion,
-                    NamedPrivateMode::ReportAllMouseMotion,
-                ] {
-                    self.term.unset_private_mode(other.into());
-                }
-                self.drain_events();
-            }
-            (9, false) => self.modes.x10_mouse = false,
-            (1000 | 1002 | 1003, true) => self.modes.x10_mouse = false,
-            (1005, true) => self.modes.sgr_pixels_mouse = false,
-            (1016, _) => self.modes.sgr_pixels_mouse = enabled,
-            (2031, _) => self.modes.color_scheme_report = enabled,
-            (2048, _) => {
-                self.modes.in_band_resize = enabled;
-                if enabled {
-                    self.push_in_band_size_report();
-                }
-            }
-            _ => {}
         }
     }
 
     fn push_in_band_size_report(&mut self) {
-        if !self.has_pixel_geometry() {
-            return;
+        if let Some(report) = handler::in_band_size_report(
+            self.term.screen_lines(),
+            self.term.columns(),
+            self.cell_width_px,
+            self.cell_height_px,
+        ) {
+            self.push_bytes(report.into_bytes());
         }
-        let rows = self.term.screen_lines();
-        let cols = self.term.columns();
-        let height = rows as u64 * u64::from(self.cell_height_px);
-        let width = cols as u64 * u64::from(self.cell_width_px);
-        let reply = format!("\x1b[48;{rows};{cols};{height};{width}t");
-        self.push_bytes(reply.into_bytes());
     }
 
     fn drain_events(&mut self) {
@@ -782,11 +699,7 @@ impl Terminal {
         };
         for event in events {
             match event {
-                Event::PtyWrite(text) => {
-                    if let Some(bytes) = self.filter_core_reply(text) {
-                        self.push_bytes(bytes);
-                    }
-                }
+                Event::PtyWrite(text) => self.push_bytes(text.into_bytes()),
                 Event::ColorRequest(index, format) => {
                     if let Some(target) = ColorQueryTarget::from_index(index) {
                         let core_color = self.core_query_color(target);
@@ -795,18 +708,6 @@ impl Terminal {
                             core_color,
                             format,
                         }));
-                    }
-                }
-                Event::TextAreaSizeRequest(format) => {
-                    if self.has_pixel_geometry() {
-                        let size = WindowSize {
-                            num_lines: saturating_u16(self.term.screen_lines()),
-                            num_cols: saturating_u16(self.term.columns()),
-                            cell_width: u16::try_from(self.cell_width_px).unwrap_or(u16::MAX),
-                            cell_height: u16::try_from(self.cell_height_px).unwrap_or(u16::MAX),
-                        };
-                        let reply = (*format)(size);
-                        self.push_bytes(reply.into_bytes());
                     }
                 }
                 Event::Bell => self.bell_count = self.bell_count.saturating_add(1),
@@ -818,26 +719,6 @@ impl Terminal {
                 _ => {}
             }
         }
-    }
-
-    /// Adjusts replies alacritty generates on its own where shepr's contract
-    /// differs: DECRPM for adapter-modelled modes, and silence for window-size
-    /// reports while no pixel geometry is known.
-    fn filter_core_reply(&self, text: String) -> Option<Vec<u8>> {
-        if text.starts_with("\x1b[8;") && text.ends_with('t') && !self.has_pixel_geometry() {
-            return None;
-        }
-        if let Some(mode) = text
-            .strip_prefix("\x1b[?")
-            .and_then(|rest| rest.strip_suffix(";0$y"))
-            .and_then(|mode| mode.parse::<u16>().ok())
-            && ADAPTER_PRIVATE_MODES.contains(&mode)
-        {
-            let enabled = self.mode_get(mode).unwrap_or(false);
-            let state = if enabled { 1 } else { 2 };
-            return Some(format!("\x1b[?{mode};{state}$y").into_bytes());
-        }
-        Some(text.into_bytes())
     }
 
     fn core_query_color(&self, target: ColorQueryTarget) -> Option<RgbColor> {
@@ -968,18 +849,23 @@ impl Terminal {
             || cell_width_px != self.cell_width_px
             || cell_height_px != self.cell_height_px;
 
-        // Grow the history budget before reflowing into more lines, shrink it
-        // only afterwards, so a resize never truncates content it can keep.
-        let history_lines = scrollback_lines(self.max_scrollback, columns);
-        let grow_history_first = history_lines > self.history_lines;
-        if grow_history_first {
-            self.set_history_lines(history_lines);
+        // The byte budget buys fewer lines at a wider width. Grow the line
+        // limit before reflowing into more lines; afterwards lower it at most
+        // to the history already held, never below it: dropping history that
+        // fit before the resize would make a zoom/unzoom cycle, or attaching
+        // from a wider client, destroy scrollback for good. The cost is that
+        // a widened pane holds more than its byte budget until it narrows
+        // again (or its history is cleared).
+        let budget_lines = scrollback_lines(self.max_scrollback, columns);
+        if budget_lines > self.history_lines {
+            self.set_history_lines(budget_lines);
         }
         self.term.resize(TermSize {
             columns,
             screen_lines,
         });
-        if !grow_history_first && history_lines != self.history_lines {
+        let history_lines = budget_lines.max(self.term.history_size().min(self.history_lines));
+        if history_lines != self.history_lines {
             self.set_history_lines(history_lines);
         }
         self.cell_width_px = cell_width_px;
@@ -1276,7 +1162,9 @@ impl Terminal {
     }
 
     /// Clears the screen and scrollback but keeps the cursor's (possibly
-    /// soft-wrapped) line, moved to the top of the screen. A no-op returning
+    /// soft-wrapped) line, moved to the top of the screen together with any
+    /// DECSC-saved cursor position. Cleared rows are blank in default colours,
+    /// whatever SGR the child has active. A no-op returning
     /// `false` while the alternate screen is active: the full-screen app owns
     /// that screen, and the primary history must survive until it exits.
     pub fn clear_screen(&mut self) -> bool {
@@ -1286,6 +1174,10 @@ impl Terminal {
         let screen_lines = self.term.screen_lines();
         let last_column = self.term.last_column();
         let grid = self.term.grid_mut();
+        // This is a host action, not the child's erase, so vacated rows are
+        // blank in default colours rather than filled with the child's current
+        // pen (`scroll_up` and `reset_region` fill from the cursor template).
+        let pen = mem::take(&mut grid.cursor.template);
         let mut top = grid.cursor.point.line;
         while top > Line(0)
             && grid[Line(top.0 - 1)][last_column]
@@ -1301,6 +1193,10 @@ impl Terminal {
             // `shift` was derived from `top.0` (an i32) above, so this round-trips losslessly.
             let shift_i32 = i32::try_from(shift).unwrap_or(i32::MAX);
             grid.cursor.point.line = Line(grid.cursor.point.line.0 - shift_i32);
+            // Keep a DECSC-saved position on the same content; one whose row
+            // was cleared away is pinned to the top.
+            let saved = &mut grid.saved_cursor.point.line;
+            *saved = Line((saved.0 - shift_i32).max(0));
         }
         // Keep the rest of the logical line too: the cursor may sit on an
         // earlier row of soft-wrapped input.
@@ -1313,6 +1209,7 @@ impl Terminal {
         if kept_rows < screen_lines {
             grid.reset_region(Line(i32::try_from(kept_rows).unwrap_or(i32::MAX))..);
         }
+        grid.cursor.template = pen;
         grid.clear_history();
         self.bump_full_damage();
         true

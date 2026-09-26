@@ -17,8 +17,6 @@ function requestOnce(sessionID, state, seq, isCurrent = () => true) {
     return Promise.resolve(true);
   }
 
-  const socketEndpoint =
-    process.platform === "win32" ? `\\\\.\\pipe\\${socketPath}` : socketPath;
   const request = {
     id: `${SOURCE}:tui:${Date.now()}:${Math.floor(Math.random() * 1_000_000)
       .toString()
@@ -43,7 +41,7 @@ function requestOnce(sessionID, state, seq, isCurrent = () => true) {
       client.destroy();
       resolve(delivered);
     };
-    const client = net.createConnection(socketEndpoint, () => {
+    const client = net.createConnection(socketPath, () => {
       if (!isCurrent()) {
         settle(false);
         return;

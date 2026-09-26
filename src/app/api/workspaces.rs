@@ -370,7 +370,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );
@@ -457,7 +456,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );
@@ -557,7 +555,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub.clone(),
         );
@@ -616,7 +613,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub.clone(),
         );
@@ -654,7 +650,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub.clone(),
         );
@@ -702,7 +697,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub.clone(),
         );
@@ -761,7 +755,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub.clone(),
         );
@@ -789,7 +782,6 @@ mod tests {
             "req".into(),
             &WorkspaceCloseParams {
                 workspace_id: workspace_id.clone(),
-                close_group: false,
             },
         );
 
@@ -824,7 +816,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub.clone(),
         );

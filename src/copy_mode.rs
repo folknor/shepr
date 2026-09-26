@@ -2,13 +2,22 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::input::TerminalKey;
 
+/// Column of the first cell whose base character is not whitespace. Like
+/// `last_character_col`, zero-width characters (combining marks, joiners,
+/// variation selectors) belong to the cell before them: they neither take a
+/// column nor start a cell, so a mark riding on a leading space does not make
+/// that line "start" one column early.
 pub(crate) fn first_non_blank_col(text: &str) -> Option<u16> {
     let mut col = 0u16;
     for ch in text.chars() {
+        let width = u16::from(crate::ghostty::unicode_codepoint_width(ch as u32));
+        if width == 0 {
+            continue;
+        }
         if !ch.is_whitespace() {
             return Some(col);
         }
-        col = col.saturating_add(char_cell_width(ch));
+        col = col.saturating_add(width);
     }
     None
 }
@@ -24,10 +33,6 @@ pub(crate) fn last_character_col(text: &str) -> Option<u16> {
         }
     }
     last_col
-}
-
-fn char_cell_width(ch: char) -> u16 {
-    u16::from(crate::ghostty::unicode_codepoint_width(ch as u32)).max(1)
 }
 
 pub(crate) fn copy_mode_page_lines(height: u16, half_page: bool) -> usize {
@@ -82,5 +87,34 @@ fn shifted_ascii_char(ch: char) -> Option<char> {
         '/' => Some('?'),
         '`' => Some('~'),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_non_blank_col_counts_cells_not_codepoints() {
+        assert_eq!(first_non_blank_col("   foo"), Some(3));
+        assert_eq!(first_non_blank_col("      "), None);
+        // A wide first glyph starts where the blanks end.
+        assert_eq!(first_non_blank_col("  界x"), Some(2));
+        // An ideographic space is a two-column blank.
+        assert_eq!(first_non_blank_col("\u{3000}x"), Some(2));
+    }
+
+    #[test]
+    fn first_non_blank_col_folds_zero_width_marks_into_their_cell() {
+        // The combining acute rides on the leading space's cell; the first
+        // non-blank cell is the `x` at column 2, not the mark "at" column 1.
+        assert_eq!(first_non_blank_col(" \u{301} x"), Some(2));
+        // A zero-width joiner on a blank does not take a column either.
+        assert_eq!(first_non_blank_col(" \u{200d}x"), Some(1));
+        // Agrees with last_character_col about where a lone glyph sits.
+        assert_eq!(
+            first_non_blank_col("  e\u{301}"),
+            last_character_col("  e\u{301}")
+        );
     }
 }

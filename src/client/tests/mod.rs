@@ -279,7 +279,7 @@ fn client_error_display_connection_failed() {
 #[test]
 fn client_error_display_handshake_rejected() {
     let err = ClientError::HandshakeRejected {
-        version: 1,
+        version: crate::protocol::PROTOCOL_VERSION,
         error: "incompatible".into(),
     };
     let msg = err.to_string();

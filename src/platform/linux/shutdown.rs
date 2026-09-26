@@ -66,6 +66,17 @@ async fn watch_connection(
             wake();
             // Keep the delay lock until the server has saved and drops its monitor.
             // logind caps the delay even if the server gets stuck.
+            //
+            // A later `PrepareForShutdown(false)` (the shutdown was cancelled) is
+            // deliberately not watched for. The server answers the warning by
+            // saving and exiting at once, so by the time a cancellation could
+            // arrive there is nothing left to call off; reporting it here would
+            // change nothing. Surviving a cancelled shutdown needs the server to
+            // checkpoint and freeze session saving on the warning (so panes
+            // killed by the real shutdown are not saved as closed) and to exit
+            // only on SIGTERM, then thaw on a cancellation. Only then is it
+            // worth continuing this loop after `true`, clearing `requested` on
+            // `false`, and keeping the inhibitor across the wait.
             std::future::pending::<()>().await;
         }
         tokio::select! {

@@ -8,7 +8,7 @@ use std::{
 
 use bytes::Bytes;
 use tokio::sync::mpsc::{self, error::TryRecvError as DataTryRecvError};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::pty::fd;
 
@@ -32,7 +32,20 @@ impl PtyReadResult {
 }
 
 type ReadCallback = Box<dyn FnMut(&[u8]) -> PtyReadResult + Send + 'static>;
-type ReaderExitCallback = Box<dyn FnOnce() + Send + 'static>;
+type ReaderExitCallback = Box<dyn FnOnce(ReaderExit) + Send + 'static>;
+
+/// Why the actor's IO loop ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReaderExit {
+    /// EOF, an IO error, a shutdown request or closed command queues. The
+    /// child has gone or is being torn down; its own exit is reported by
+    /// whoever reaps it.
+    Closed,
+    /// The read callback panicked (a terminal core bug). The loop stops and
+    /// the master fd is closed, but the child may outlive the SIGHUP, so the
+    /// owner must be told the pane is dead.
+    Panicked,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PtyResize {
@@ -277,6 +290,7 @@ impl PtyIoActor {
             response_order,
             on_read: config.on_read,
             on_reader_exit: config.on_reader_exit,
+            read_callback_panicked: false,
             poll_observer,
         };
         std::thread::Builder::new()
@@ -309,6 +323,7 @@ struct PtyIoActorRunner {
     response_order: Arc<Mutex<()>>,
     on_read: ReadCallback,
     on_reader_exit: Option<ReaderExitCallback>,
+    read_callback_panicked: bool,
     poll_observer: Option<std_mpsc::Sender<()>>,
 }
 
@@ -428,7 +443,11 @@ impl PtyIoActorRunner {
 
         self.close_input_queue();
         if let Some(on_reader_exit) = self.on_reader_exit.take() {
-            on_reader_exit();
+            on_reader_exit(if self.read_callback_panicked {
+                ReaderExit::Panicked
+            } else {
+                ReaderExit::Closed
+            });
         }
         debug!(pane = self.pane_id, "PTY actor exiting");
     }
@@ -576,7 +595,26 @@ impl PtyIoActorRunner {
                 let _order = response_order
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let result = (self.on_read)(&buf[..n]);
+                // A panic in the terminal core must not unwind out of the
+                // actor thread: that would skip the reader-exit report and
+                // leave the pane dead with nobody told. Catching it costs
+                // nothing on the non-panicking path.
+                let on_read = &mut self.on_read;
+                let bytes = &buf[..n];
+                let result =
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| on_read(bytes)))
+                    {
+                        Ok(result) => result,
+                        Err(payload) => {
+                            error!(
+                                pane = self.pane_id,
+                                panic = panic_payload_message(&*payload),
+                                "PTY read callback panicked; closing the pane"
+                            );
+                            self.read_callback_panicked = true;
+                            return ReadOutcome::Closed;
+                        }
+                    };
                 self.controls
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -728,6 +766,16 @@ impl PtyIoActorRunner {
     }
 }
 
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        message
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.as_str()
+    } else {
+        "non-string panic payload"
+    }
+}
+
 fn input_submission_closed_error() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::BrokenPipe,
@@ -807,6 +855,7 @@ mod tests {
             response_order: Arc::new(Mutex::new(())),
             on_read: Box::new(|_| PtyReadResult::empty()),
             on_reader_exit: None,
+            read_callback_panicked: false,
             poll_observer: None,
         };
         (runner, peer)
@@ -841,6 +890,7 @@ mod tests {
                 PtyReadResult::empty()
             }),
             on_reader_exit: None,
+            read_callback_panicked: false,
             poll_observer: None,
         };
         // The child prints its last words and exits with a reply still queued.
@@ -1060,7 +1110,7 @@ mod tests {
             on_read: Box::new(|_| PtyReadResult::empty()),
             on_reader_exit: Some(Box::new({
                 let handle_slot = Arc::clone(&handle_slot);
-                move || {
+                move |_| {
                     let handle = handle_slot
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1094,6 +1144,61 @@ mod tests {
         };
 
         assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+    }
+
+    fn actor_reporting_exit(
+        on_read: ReadCallback,
+    ) -> (PtyIoActorHandle, UnixStream, std_mpsc::Receiver<ReaderExit>) {
+        let (actor_socket, peer) = UnixStream::pair().expect("socket pair");
+        actor_socket
+            .set_nonblocking(true)
+            .expect("actor socket nonblocking");
+        let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
+        let (exit_tx, exit_rx) = std_mpsc::channel();
+        let handle = PtyIoActor::spawn(PtyIoActorConfig {
+            pane_id: 1,
+            master_fd: owned,
+            on_read,
+            on_reader_exit: Some(Box::new(move |exit| {
+                let _ = exit_tx.send(exit);
+            })),
+        })
+        .expect("actor spawn");
+        (handle, peer, exit_rx)
+    }
+
+    #[test]
+    fn read_callback_panic_ends_the_loop_and_reports_it() {
+        let (_handle, mut peer, exit_rx) =
+            actor_reporting_exit(Box::new(|_| panic!("terminal core bug")));
+
+        peer.write_all(b"output").expect("peer write");
+
+        assert_eq!(
+            exit_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("reader exit is reported after the panic"),
+            ReaderExit::Panicked
+        );
+        // The master side is closed, as it would be for any other exit.
+        let mut buf = [0u8; 1];
+        peer.set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("peer timeout");
+        assert_eq!(peer.read(&mut buf).expect("peer read after close"), 0);
+    }
+
+    #[test]
+    fn peer_closure_reports_a_plain_reader_exit() {
+        let (_handle, peer, exit_rx) = actor_reporting_exit(Box::new(|_| PtyReadResult::empty()));
+
+        drop(peer);
+
+        assert_eq!(
+            exit_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("reader exit is reported after peer closure"),
+            ReaderExit::Closed
+        );
     }
 
     #[test]
@@ -1291,6 +1396,7 @@ mod tests {
                 }],
             }),
             on_reader_exit: None,
+            read_callback_panicked: false,
             poll_observer: None,
         };
         let handle = PtyIoActorHandle {

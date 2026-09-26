@@ -1,7 +1,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use super::attach::{RemoteSsh, SshStdioBridge, find_installed_remote_shepr};
+use super::attach::{RemoteShepr, RemoteSsh, SshStdioBridge, find_installed_remote_shepr};
 
 pub(crate) struct SavedSshBridge {
     bridge: SshStdioBridge,
@@ -21,32 +21,160 @@ pub(crate) struct SavedSshStream {
     pub(crate) bridge: SavedSshBridge,
 }
 
-pub(crate) fn connect_saved_ssh(
-    profile_id: &str,
-    target: &str,
-    session: &str,
-) -> io::Result<SavedSshStream> {
-    let ssh = validated_saved_ssh(profile_id, target, session)?;
-    let remote_shepr = find_installed_remote_shepr(&ssh)?;
-    let metadata = remote_shepr.machine_metadata();
-    let path = saved_bridge_path(profile_id);
-    let bridge = SshStdioBridge::start(
-        target.to_owned(),
-        &remote_shepr,
-        path.clone(),
-        session,
-        ssh.options(),
-        true,
-    )?;
-    let stream = crate::ipc::connect_local_stream(&path)?;
-    if let Some(metadata) = metadata {
-        crate::client::endpoint::SshMetadataCache::new(profile_id, target, session)?
-            .store(&metadata);
+/// Settings a saved-machine connector takes from the config. A client reads its
+/// config once at launch and hands these in, so reconnects never re-read it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SavedSshSettings {
+    pub(crate) manage_ssh_config: bool,
+}
+
+impl SavedSshSettings {
+    /// Reads the config file. Only for callers that have not loaded it themselves.
+    pub(crate) fn load() -> Self {
+        Self {
+            manage_ssh_config: crate::config::Config::load()
+                .config
+                .remote
+                .manage_ssh_config,
+        }
     }
-    Ok(SavedSshStream {
-        stream,
-        bridge: SavedSshBridge { bridge },
-    })
+}
+
+/// Connects one saved SSH machine, repeatedly, for the lifetime of a client.
+///
+/// It owns what used to be rebuilt on every attempt: the ssh settings fixed at
+/// launch, one temporary managed ssh config (instead of a new directory per
+/// attempt), and the remote executable found by the last successful discovery.
+/// Discovery costs several SSH round trips (a login-shell `command -v`, a `/bin/sh`
+/// `command -v`, the candidate script, a status probe per candidate), so a
+/// reconnect launches the bridge straight from the remembered executable, seeded
+/// from the on-disk metadata cache at first use.
+///
+/// A remembered executable is only a hint. When an attempt with it fails for any
+/// reason other than the SSH link itself, the hint is dropped and the same attempt
+/// runs full discovery once more, so a moved, removed or upgraded remote install
+/// costs one extra bridge launch and never a stuck endpoint.
+pub(crate) struct SavedSshConnector {
+    profile_id: String,
+    target: String,
+    session: String,
+    settings: SavedSshSettings,
+    state: std::sync::Mutex<ConnectorState>,
+}
+
+#[derive(Default)]
+struct ConnectorState {
+    ssh: Option<RemoteSsh>,
+    remote_shepr: Option<RemoteShepr>,
+    seeded_from_disk: bool,
+}
+
+impl SavedSshConnector {
+    pub(crate) fn new(
+        profile_id: &str,
+        target: &str,
+        session: &str,
+        settings: SavedSshSettings,
+    ) -> Self {
+        Self {
+            profile_id: profile_id.to_owned(),
+            target: target.to_owned(),
+            session: session.to_owned(),
+            settings,
+            state: std::sync::Mutex::new(ConnectorState::default()),
+        }
+    }
+
+    /// Starts a bridge and hands its stream to `establish`, which runs the endpoint
+    /// handshake. The handshake is part of the attempt so that a failure there can
+    /// still send the attempt back through discovery.
+    pub(crate) fn connect<T>(
+        &self,
+        mut establish: impl FnMut(SavedSshStream) -> io::Result<T>,
+    ) -> io::Result<T> {
+        validate_profile_path_id(&self.profile_id)?;
+        crate::session::validate_name(&self.session)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let metadata_cache = crate::client::endpoint::SshMetadataCache::new(
+            &self.profile_id,
+            &self.target,
+            &self.session,
+        )?;
+        // Attempts for one endpoint never overlap (the supervisor keeps one in flight),
+        // so holding the lock for the whole attempt contends with nothing.
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.seeded_from_disk {
+            state.seeded_from_disk = true;
+            state.remote_shepr = metadata_cache
+                .load()
+                .as_ref()
+                .and_then(RemoteShepr::from_metadata);
+        }
+        if state
+            .ssh
+            .as_ref()
+            .is_none_or(|ssh| ssh.missing_managed_config(self.settings.manage_ssh_config))
+        {
+            state.ssh = Some(RemoteSsh::new_noninteractive_with(
+                self.target.clone(),
+                self.settings.manage_ssh_config,
+            ));
+        }
+        let ConnectorState {
+            ssh, remote_shepr, ..
+        } = &mut *state;
+        let Some(ssh) = ssh.as_ref() else {
+            return Err(io::Error::other("saved SSH transport is unavailable"));
+        };
+
+        if let Some(known) = remote_shepr.clone() {
+            match self.attempt(ssh, &known, &mut establish) {
+                Ok(connected) => return Ok(connected),
+                Err(error) if super::attach::is_ssh_link_failure(&error) => return Err(error),
+                Err(error) => {
+                    tracing::debug!(
+                        %error,
+                        "remembered remote Shepr did not connect; rediscovering"
+                    );
+                    *remote_shepr = None;
+                    metadata_cache.invalidate();
+                }
+            }
+        }
+
+        let discovered = find_installed_remote_shepr(ssh)?;
+        let connected = self.attempt(ssh, &discovered, &mut establish)?;
+        if let Some(metadata) = discovered.machine_metadata() {
+            metadata_cache.store(&metadata);
+        }
+        *remote_shepr = Some(discovered);
+        Ok(connected)
+    }
+
+    fn attempt<T>(
+        &self,
+        ssh: &RemoteSsh,
+        remote_shepr: &RemoteShepr,
+        establish: &mut impl FnMut(SavedSshStream) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let path = saved_bridge_path(&self.profile_id);
+        let bridge = SshStdioBridge::start(
+            self.target.clone(),
+            remote_shepr,
+            path.clone(),
+            &self.session,
+            ssh.options(),
+            true,
+        )?;
+        let stream = crate::ipc::connect_local_stream(&path)?;
+        establish(SavedSshStream {
+            stream,
+            bridge: SavedSshBridge { bridge },
+        })
+    }
 }
 
 pub(crate) struct SavedSshApiBridge {
@@ -196,6 +324,23 @@ mod tests {
         assert_ne!(first, second);
         assert!(!first.to_string_lossy().contains("example.com"));
         assert!(!first.to_string_lossy().contains("default"));
+    }
+
+    #[test]
+    fn connector_rejects_invalid_profiles_before_touching_ssh() {
+        let settings = SavedSshSettings {
+            manage_ssh_config: false,
+        };
+        for (profile_id, session) in [
+            ("not-a-profile-id", "agents"),
+            ("0123456789abcdef0123456789abcdef", "bad session/name"),
+        ] {
+            let connector = SavedSshConnector::new(profile_id, "build", session, settings);
+            let error = connector
+                .connect(|_| -> io::Result<()> { panic!("no attempt may start") })
+                .expect_err("test precondition");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
     }
 
     #[test]

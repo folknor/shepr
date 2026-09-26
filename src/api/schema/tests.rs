@@ -20,37 +20,6 @@ fn request_uses_dot_method_names() {
 }
 
 #[test]
-fn workspace_close_group_intent_defaults_false_and_round_trips() {
-    let request: Request = serde_json::from_value(serde_json::json!({
-        "id": "close",
-        "method": "workspace.close",
-        "params": { "workspace_id": "w1" }
-    }))
-    .expect("test precondition");
-    assert!(matches!(
-        request.method,
-        Method::WorkspaceClose(WorkspaceCloseParams {
-            close_group: false,
-            ..
-        })
-    ));
-
-    let explicit = Request {
-        id: "close-group".into(),
-        method: Method::WorkspaceClose(WorkspaceCloseParams {
-            workspace_id: "w1".into(),
-            close_group: true,
-        }),
-    };
-    let json = serde_json::to_value(&explicit).expect("test precondition");
-    assert_eq!(json["params"]["close_group"], true);
-    assert_eq!(
-        serde_json::from_value::<Request>(json).expect("test precondition"),
-        explicit
-    );
-}
-
-#[test]
 fn agent_start_and_prompt_requests_round_trip() {
     let start = Request {
         id: "start".into(),
@@ -309,11 +278,10 @@ fn pane_process_info_request_round_trips() {
 fn event_envelope_round_trips() {
     let events = [
         EventEnvelope {
-            event: EventKind::PaneOutputChanged,
-            data: EventData::PaneOutputChanged {
+            event: EventKind::PaneExited,
+            data: EventData::PaneExited {
                 pane_id: "p_1".into(),
                 workspace_id: "w_1".into(),
-                revision: 42,
             },
         },
         EventEnvelope {
@@ -805,4 +773,31 @@ fn event_wait_parses_typed_match() {
             agent_status: AgentStatus::Done,
         }
     );
+}
+
+#[test]
+fn event_wait_rejects_matches_it_cannot_serve_at_parse_time() {
+    // events.wait only matches agent status; other kinds must not parse and
+    // then fail later with a runtime "unsupported" error.
+    for event in ["workspace_created", "pane_closed", "pane_output_changed"] {
+        let json = serde_json::json!({
+            "id": "req_unsupported",
+            "method": "events.wait",
+            "params": { "match_event": { "event": event, "pane_id": "p_1" } }
+        });
+        assert!(
+            serde_json::from_value::<Request>(json).is_err(),
+            "{event} should be rejected"
+        );
+    }
+}
+
+#[test]
+fn removed_never_emitted_subscriptions_do_not_parse() {
+    let json = serde_json::json!({
+        "id": "req_sub",
+        "method": "events.subscribe",
+        "params": { "subscriptions": [{ "type": "workspace.updated" }] }
+    });
+    assert!(serde_json::from_value::<Request>(json).is_err());
 }

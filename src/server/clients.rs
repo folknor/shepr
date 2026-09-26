@@ -208,6 +208,12 @@ impl ClientConnection {
         render_encoding: RenderEncoding,
         writer: Option<ClientWriter>,
     ) -> Self {
+        // Only a shell connection has a surface to activate. A direct terminal
+        // stream starting with this flag set would pass any check that reads the
+        // flag alone (foreground promotion, tab geometry claims) as an active
+        // shell; those checks go through `is_active_shell_client`, and this
+        // keeps the flag itself truthful as well.
+        let shell_surface_active = matches!(mode, ClientConnectionMode::ClientShell);
         Self {
             mode,
             terminal_size,
@@ -221,7 +227,7 @@ impl ClientConnection {
             outer_terminal_focus: None,
             host_keyboard_report_all_active: None,
             render_pending: false,
-            shell_surface_active: true,
+            shell_surface_active,
             shell_mouse_capture: false,
             host_mouse_capture_active: None,
             host_sgr_pixels_active: None,
@@ -508,6 +514,34 @@ mod tests {
             crate::protocol::RenderEncoding::SemanticFrame,
             None,
         )
+    }
+
+    #[test]
+    fn only_shell_connections_start_with_an_active_surface() {
+        let connection = |mode| {
+            ClientConnection::new_with_mode(
+                mode,
+                (80, 24),
+                crate::terminal_cell_size::HostCellSize::default(),
+                1,
+                crate::protocol::RenderEncoding::TerminalAnsi,
+                None,
+            )
+        };
+        assert!(connection(ClientConnectionMode::ClientShell).shell_surface_active);
+        let pending = connection(ClientConnectionMode::TerminalPending);
+        assert!(!pending.shell_surface_active);
+        assert!(!pending.is_active_shell_client());
+        let attached = connection(ClientConnectionMode::TerminalAttach {
+            terminal_id: "t1".into(),
+        });
+        assert!(!attached.shell_surface_active);
+        assert!(!attached.is_active_shell_client());
+
+        let mut clients = HashMap::new();
+        clients.insert(1, pending);
+        clients.insert(2, attached);
+        assert_eq!(latest_shell_client(&clients), None);
     }
 
     #[test]

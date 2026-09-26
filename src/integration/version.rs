@@ -72,8 +72,14 @@ pub(crate) fn enforce_agent_version(
             requirement.min_version
         )));
     };
-    let required = extract_version_triple(requirement.min_version)
-        .expect("static min version must be a valid version triple");
+    // The minimum is a compile-time constant (a test pins it as parseable);
+    // should it ever fail to parse, refuse the install rather than panic.
+    let Some(required) = extract_version_triple(requirement.min_version) else {
+        return Err(io::Error::other(format!(
+            "shepr's minimum {} version {:?} is not a version number",
+            requirement.label, requirement.min_version
+        )));
+    };
 
     if found < required {
         return Err(io::Error::other(format!(
@@ -86,4 +92,20 @@ pub(crate) fn enforce_agent_version(
         )));
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_minimum_agent_version_parses() {
+        let target = crate::api::schema::IntegrationTarget::Kimi;
+        let requirement = agent_version_requirement(target).expect("test precondition");
+        assert!(
+            extract_version_triple(requirement.min_version).is_some(),
+            "{}",
+            requirement.min_version
+        );
+    }
 }

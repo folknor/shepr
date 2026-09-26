@@ -167,8 +167,9 @@ fn failed_selection_copy_does_not_send_terminal_input() {
     ] {
         let mut outcome = ClientShellInput::default();
         state.request_selection_copy(&mut outcome, false);
-        let (_, actions) =
-            state.handle_endpoint_result("boot-1", request_id(&outcome.actions), result);
+        let actions = state
+            .handle_endpoint_result("boot-1", request_id(&outcome.actions), result)
+            .actions;
         assert!(actions.is_empty());
         assert!(state.pending_requests.is_empty());
     }

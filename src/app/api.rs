@@ -20,10 +20,9 @@ impl App {
                 cache_updates,
             } => self.handle_git_status_refreshed(results, cache_updates),
             AppEvent::TabBarCommandFinished {
-                generation,
                 segment_index,
                 result,
-            } => self.handle_tab_bar_command_finished(generation, segment_index, result),
+            } => self.handle_tab_bar_command_finished(segment_index, result),
             ev => {
                 self.handle_internal_event(ev);
                 true
@@ -78,12 +77,11 @@ impl App {
         }
 
         if let AppEvent::TabBarCommandFinished {
-            generation,
             segment_index,
             result,
         } = ev
         {
-            let _ = self.handle_tab_bar_command_finished(generation, segment_index, result);
+            let _ = self.handle_tab_bar_command_finished(segment_index, result);
             return Vec::new();
         }
 
@@ -718,7 +716,6 @@ mod tests {
         let mut app = App::new(
             &crate::config::Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );
@@ -762,7 +759,6 @@ mod tests {
         let mut app = App::new(
             &crate::config::Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );
@@ -808,7 +804,6 @@ mod tests {
         let mut app = App::new(
             &crate::config::Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );
@@ -854,7 +849,6 @@ mod tests {
         let mut app = App::new(
             &crate::config::Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );
@@ -897,7 +891,6 @@ mod tests {
         let mut app = App::new(
             &crate::config::Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );
@@ -932,7 +925,6 @@ mod tests {
         let mut app = App::new(
             &crate::config::Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );
@@ -968,7 +960,6 @@ mod tests {
         let mut app = App::new(
             &crate::config::Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub.clone(),
         );
@@ -1007,7 +998,6 @@ mod tests {
         let mut app = App::new(
             &crate::config::Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub.clone(),
         );
@@ -1088,7 +1078,6 @@ mod tests {
             let mut app = App::new(
                 &crate::config::Config::default(),
                 crate::app::AppPolicy::TEST,
-                None,
                 api_rx,
                 event_hub.clone(),
             );
@@ -1145,7 +1134,6 @@ mod tests {
         let mut app = App::new(
             &crate::config::Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             event_hub.clone(),
         );

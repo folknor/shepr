@@ -1435,6 +1435,7 @@ impl ClientShellState {
                 if self.selection.take().is_some() {
                     outcome.repaint = true;
                 }
+                self.selection_focus_pending = None;
                 self.stop_selection_autoscroll();
                 self.selection_highlight_clear_deadline = None;
                 self.word_selection_gesture = None;
@@ -1755,6 +1756,9 @@ impl ClientShellState {
                             if mouse.modifiers.is_empty() {
                                 self.last_pane_click = Some(click);
                             }
+                            self.selection_focus_pending = (self.focused_pane_id().as_deref()
+                                != Some(hit.pane_id.as_str()))
+                            .then(|| hit.pane_id.clone());
                             self.selection = Some(crate::selection::Selection::anchor(
                                 hit.pane_id.clone(),
                                 mouse.row.saturating_sub(hit.inner_rect.y),

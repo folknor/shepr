@@ -109,7 +109,17 @@ pub(super) fn clear_endpoint_host_effects(
 
     state.pane_keyboard_report_all = false;
     let _ = sync_client_shell_keyboard_report_all(state);
-    let _ = crate::terminal_effects::write_window_title(&mut std::io::stdout(), None);
+    let _ = reset_window_title(state, &mut std::io::stdout());
+}
+
+/// Undoes an outer window title only if this client set one. With
+/// `ui.window_title` empty nothing was ever written, and the host's own title
+/// must stay.
+fn reset_window_title(state: &mut ClientState, writer: &mut impl io::Write) -> io::Result<()> {
+    if std::mem::take(&mut state.window_title_written) {
+        crate::terminal_effects::write_window_title(writer, None)?;
+    }
+    Ok(())
 }
 
 fn install_pending_activation(
@@ -643,6 +653,11 @@ pub(super) fn finish_client_shell_input(
             let _ = write_to_server(endpoints, &resize);
         }
     }
+    if outcome.full_redraw {
+        // Discard the blit baseline so the frame below is written in full; the
+        // host may have lost or garbled what we last drew while unfocused.
+        state.request_repaint();
+    }
     if outcome.query_host_appearance {
         query_host_terminal_appearance();
     }
@@ -724,4 +739,26 @@ pub(super) fn finish_client_shell_input(
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_title_reset_only_undoes_a_title_this_client_wrote() {
+        let mut state = ClientState::test_new();
+        let mut output = Vec::new();
+        reset_window_title(&mut state, &mut output).expect("write to a Vec");
+        assert!(output.is_empty(), "an untouched host title must stay");
+
+        state.window_title_written = true;
+        reset_window_title(&mut state, &mut output).expect("write to a Vec");
+        assert_eq!(output, b"\x1b]0;shepr\x07");
+        assert!(!state.window_title_written);
+
+        output.clear();
+        reset_window_title(&mut state, &mut output).expect("write to a Vec");
+        assert!(output.is_empty(), "one reset per written title");
+    }
 }

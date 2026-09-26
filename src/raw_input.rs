@@ -25,8 +25,26 @@ pub(crate) const GHOSTTY_COLOR_SCHEME_LIGHT_REPORT: &[u8] = b"\x1b[?997;2n";
 const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
 const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
 
-/// Returns the UTF-8 payload when `data` is exactly one complete bracketed paste.
-pub(crate) fn complete_text_bracketed_paste(data: &[u8]) -> Option<&str> {
+/// Largest bracketed paste body the framer holds while waiting for its
+/// terminator. Past this the held part is closed and delivered as one paste and
+/// the rest of it is dropped up to the terminator, so a paste that never ends
+/// cannot grow the buffer without bound. It is far above the server's
+/// per-message input limit, which rejects such a paste in the client shell
+/// anyway (with a visible notice), so the cut only matters to direct attach,
+/// which streams large pastes through.
+const MAX_PENDING_PASTE_BYTES: usize = 16 * 1024 * 1024;
+
+/// How long a held, unterminated bracketed paste may go without receiving a
+/// byte before the framer stops waiting for its terminator. Terminals write a
+/// paste in one go, so a stall this long means the terminator is not coming;
+/// without the limit every later keystroke would queue behind the paste and
+/// the client would look hung. The check runs when input next arrives: the
+/// held part is delivered as a complete paste and the new input is framed
+/// normally.
+const PASTE_STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The body of `data` when it is exactly one complete bracketed paste.
+fn complete_bracketed_paste_payload(data: &[u8]) -> Option<&[u8]> {
     if !data.starts_with(BRACKETED_PASTE_START) {
         return None;
     }
@@ -34,13 +52,33 @@ pub(crate) fn complete_text_bracketed_paste(data: &[u8]) -> Option<&str> {
     if end + BRACKETED_PASTE_END.len() != data.len() {
         return None;
     }
-    std::str::from_utf8(&data[BRACKETED_PASTE_START.len()..end]).ok()
+    Some(&data[BRACKETED_PASTE_START.len()..end])
+}
+
+/// Returns the UTF-8 payload when `data` is exactly one complete bracketed paste.
+///
+/// A paste whose body is not valid UTF-8 returns `None`, so callers forward it
+/// as raw bytes instead of losing it.
+pub(crate) fn complete_text_bracketed_paste(data: &[u8]) -> Option<&str> {
+    std::str::from_utf8(complete_bracketed_paste_payload(data)?).ok()
 }
 
 /// Client transport uses this to distinguish recoverable oversized interactive
 /// pastes from generic oversized input, which remains a protocol violation.
+///
+/// Only the framing is checked: a paste carrying invalid UTF-8 is still a
+/// paste, and must get the paste treatment rather than a disconnect.
 pub(crate) fn is_complete_text_bracketed_paste(data: &[u8]) -> bool {
-    complete_text_bracketed_paste(data).is_some()
+    complete_bracketed_paste_payload(data).is_some()
+}
+
+/// Length of the longest proper prefix of `needle` that `haystack` ends with,
+/// so a terminator split across reads is not lost when the rest is dropped.
+fn partial_suffix_len(haystack: &[u8], needle: &[u8]) -> usize {
+    (1..needle.len())
+        .rev()
+        .find(|len| haystack.ends_with(&needle[..*len]))
+        .unwrap_or(0)
 }
 
 #[derive(Debug)]
@@ -64,6 +102,23 @@ pub enum RawInputEvent {
         height_px: u32,
     },
     Unsupported,
+}
+
+/// A content-free name for an input event, for logging.
+fn raw_input_event_kind(event: &RawInputEvent) -> &'static str {
+    match event {
+        RawInputEvent::Key(_) => "key",
+        RawInputEvent::Text(_) => "text",
+        RawInputEvent::Paste(_) => "paste",
+        RawInputEvent::Mouse(_) => "mouse",
+        RawInputEvent::OuterFocusGained => "focus_gained",
+        RawInputEvent::OuterFocusLost => "focus_lost",
+        RawInputEvent::HostDefaultColor { .. } => "host_default_color",
+        RawInputEvent::HostPaletteColors { .. } => "host_palette_colors",
+        RawInputEvent::HostColorSchemeChanged(_) => "host_color_scheme",
+        RawInputEvent::HostCellSizeReport { .. } => "host_cell_size",
+        RawInputEvent::Unsupported => "unsupported",
+    }
 }
 
 #[derive(Default)]
@@ -91,7 +146,14 @@ impl RawInputFramer {
                     ));
                 }
                 extract_one_event(&chunk).map(|(event, _consumed)| {
-                    tracing::debug!(raw_bytes = ?chunk, event = ?event, "raw input event parsed");
+                    // Length and kind only: the bytes and the parsed key are
+                    // what the user typed, passwords included, and the log
+                    // file outlives the session.
+                    tracing::debug!(
+                        len = chunk.len(),
+                        kind = raw_input_event_kind(&event),
+                        "raw input event parsed"
+                    );
                     event
                 })
             })
@@ -115,6 +177,15 @@ pub(crate) struct RawInputByteFramer {
     host_appearance_query_on_focus: bool,
     split_coalesced_escape: bool,
     host_escape_disambiguation_active: bool,
+    /// How many bytes of a held, unterminated bracketed paste have already
+    /// been searched for the terminator, so a paste arriving in many reads is
+    /// not rescanned from the start on every one.
+    paste_terminator_scanned: usize,
+    /// When bytes last arrived while a paste was held or its tail discarded.
+    paste_last_progress: Option<std::time::Instant>,
+    /// Dropping the rest of a paste cut at `MAX_PENDING_PASTE_BYTES` until its
+    /// terminator arrives.
+    discarding_paste_tail: bool,
 }
 
 const HOST_COLOR_QUERY_REPLIES: u16 = 258;
@@ -130,8 +201,99 @@ impl RawInputByteFramer {
     }
 
     pub(crate) fn push(&mut self, data: &[u8]) -> Vec<Vec<u8>> {
+        self.push_at(data, std::time::Instant::now())
+    }
+
+    fn push_at(&mut self, data: &[u8], now: std::time::Instant) -> Vec<Vec<u8>> {
+        let mut chunks = self.give_up_stalled_paste(now);
         self.buffer.extend_from_slice(data);
-        self.drain_available_chunks()
+        chunks.extend(self.drain_available_chunks());
+        self.paste_last_progress = if self.holding_paste() {
+            match self.paste_last_progress {
+                Some(last) if data.is_empty() => Some(last),
+                _ => Some(now),
+            }
+        } else {
+            None
+        };
+        chunks
+    }
+
+    /// A bracketed paste is held waiting for its terminator, or the tail of a
+    /// cut paste is being dropped.
+    fn holding_paste(&self) -> bool {
+        self.discarding_paste_tail || self.buffer.starts_with(BRACKETED_PASTE_START)
+    }
+
+    /// Stop waiting for the terminator of a paste that has received nothing for
+    /// `PASTE_STALL_TIMEOUT`. A held paste is delivered as a complete paste (it
+    /// stays bracketed, so the pane still treats it as pasted text); a tail
+    /// being dropped stops being dropped. Called before new input is appended,
+    /// so that input is framed on its own instead of joining the paste.
+    fn give_up_stalled_paste(&mut self, now: std::time::Instant) -> Vec<Vec<u8>> {
+        let Some(last) = self.paste_last_progress else {
+            return Vec::new();
+        };
+        if now.saturating_duration_since(last) < PASTE_STALL_TIMEOUT {
+            return Vec::new();
+        }
+        self.paste_last_progress = None;
+        self.paste_terminator_scanned = 0;
+        if self.discarding_paste_tail {
+            tracing::warn!("bracketed paste terminator never arrived; resuming input");
+            self.discarding_paste_tail = false;
+            self.buffer.clear();
+            return Vec::new();
+        }
+        if !self.buffer.starts_with(BRACKETED_PASTE_START) {
+            return Vec::new();
+        }
+        tracing::warn!(
+            len = self.buffer.len(),
+            "bracketed paste stalled without a terminator; delivering what arrived"
+        );
+        let mut paste = std::mem::take(&mut self.buffer);
+        paste.extend_from_slice(BRACKETED_PASTE_END);
+        vec![paste]
+    }
+
+    /// Whether the buffer holds a bracketed paste whose terminator has not
+    /// arrived. Searches only the bytes added since the last call (plus room
+    /// for a terminator split across reads).
+    fn pending_paste_is_unterminated(&mut self) -> bool {
+        if !self.buffer.starts_with(BRACKETED_PASTE_START) {
+            self.paste_terminator_scanned = 0;
+            return false;
+        }
+        let search_from = self
+            .paste_terminator_scanned
+            .saturating_sub(BRACKETED_PASTE_END.len() - 1)
+            .max(BRACKETED_PASTE_START.len())
+            .min(self.buffer.len());
+        if find_subsequence(&self.buffer[search_from..], BRACKETED_PASTE_END).is_some() {
+            self.paste_terminator_scanned = 0;
+            return false;
+        }
+        self.paste_terminator_scanned = self.buffer.len();
+        true
+    }
+
+    /// Close a held paste that outgrew `MAX_PENDING_PASTE_BYTES`: deliver what
+    /// arrived as one complete paste and drop the rest up to its terminator.
+    fn cut_oversized_paste(&mut self) -> Vec<u8> {
+        tracing::warn!(
+            len = self.buffer.len(),
+            max = MAX_PENDING_PASTE_BYTES,
+            "bracketed paste exceeds the held-paste limit; delivering its head and dropping the rest"
+        );
+        // Keep a terminator prefix split across reads so the tail discard
+        // still recognises it.
+        let split = self.buffer.len() - partial_suffix_len(&self.buffer, BRACKETED_PASTE_END);
+        let mut paste: Vec<u8> = self.buffer.drain(..split).collect();
+        paste.extend_from_slice(BRACKETED_PASTE_END);
+        self.paste_terminator_scanned = 0;
+        self.discarding_paste_tail = true;
+        paste
     }
 
     /// Hold a lone trailing ESC for one idle flush so an OSC 10/11 reply split
@@ -188,6 +350,12 @@ impl RawInputByteFramer {
 
     pub(crate) fn flush_timeout(&mut self) -> Vec<Vec<u8>> {
         let mut chunks = self.drain_available_chunks();
+
+        // Idle is not evidence that a paste has ended either; the retained
+        // bytes may be the start of the terminator.
+        if self.discarding_paste_tail {
+            return chunks;
+        }
 
         // Idle is not evidence that a mouse report has ended. The continuation
         // stays bounded and is released if it cannot complete a valid report.
@@ -250,9 +418,10 @@ impl RawInputByteFramer {
             return chunks;
         }
 
-        if self.buffer.starts_with(BRACKETED_PASTE_START)
-            && find_subsequence(&self.buffer, BRACKETED_PASTE_END).is_none()
-        {
+        // Held without a deadline here: a paste that stops arriving is given up
+        // by `give_up_stalled_paste` when input next arrives, and one that
+        // keeps growing is cut at `MAX_PENDING_PASTE_BYTES`.
+        if self.pending_paste_is_unterminated() {
             tracing::trace!(
                 len = self.buffer.len(),
                 "waiting for bracketed paste terminator"
@@ -357,18 +526,28 @@ impl RawInputByteFramer {
             return chunks;
         }
 
+        // Buffer contents are user keystrokes; log lengths, never bytes.
         if starts_with_incomplete_utf8_char(&self.buffer) {
-            tracing::trace!(bytes = ?self.buffer, "waiting for UTF-8 continuation bytes");
+            tracing::trace!(
+                len = self.buffer.len(),
+                "waiting for UTF-8 continuation bytes"
+            );
             return chunks;
         }
 
         if self.buffer.first() == Some(&ESC) && starts_with_incomplete_utf8_char(&self.buffer[1..])
         {
-            tracing::trace!(bytes = ?self.buffer, "waiting for escaped UTF-8 continuation bytes");
+            tracing::trace!(
+                len = self.buffer.len(),
+                "waiting for escaped UTF-8 continuation bytes"
+            );
             return chunks;
         }
 
-        tracing::debug!(bytes = ?self.buffer, "dropping incomplete raw input buffer after timeout");
+        tracing::debug!(
+            len = self.buffer.len(),
+            "dropping incomplete raw input buffer after timeout"
+        );
         self.lone_escape_recently_flushed = false;
         self.buffer.clear();
         chunks
@@ -384,6 +563,18 @@ impl RawInputByteFramer {
         let mut chunks = Vec::new();
 
         loop {
+            if self.discarding_paste_tail {
+                if let Some(end) = find_subsequence(&self.buffer, BRACKETED_PASTE_END) {
+                    self.buffer.drain(..end + BRACKETED_PASTE_END.len());
+                    self.discarding_paste_tail = false;
+                    continue;
+                }
+                let keep = partial_suffix_len(&self.buffer, BRACKETED_PASTE_END);
+                let drop = self.buffer.len() - keep;
+                self.buffer.drain(..drop);
+                break;
+            }
+
             if let Some(prefix) = &self.timed_out_mouse_prefix {
                 match classify_sgr_mouse_continuation(prefix, &self.buffer) {
                     SgrMouseContinuation::Incomplete => break,
@@ -440,6 +631,14 @@ impl RawInputByteFramer {
             {
                 self.buffer.drain(..1);
                 continue;
+            }
+
+            if self.pending_paste_is_unterminated() {
+                if self.buffer.len() - BRACKETED_PASTE_START.len() > MAX_PENDING_PASTE_BYTES {
+                    chunks.push(self.cut_oversized_paste());
+                    continue;
+                }
+                break;
             }
 
             let Some((event, consumed)) = extract_one_event(&self.buffer) else {
@@ -537,9 +736,12 @@ fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
 
     if buffer.starts_with(BRACKETED_PASTE_START) {
         let end = find_subsequence(buffer, BRACKETED_PASTE_END)?;
-        let content = std::str::from_utf8(&buffer[BRACKETED_PASTE_START.len()..end]).ok()?;
+        // Decode lossily: a complete paste is always one event. Rejecting
+        // invalid UTF-8 here would leave the framer stuck on it until the idle
+        // flush dropped the paste and everything typed after it.
+        let content = String::from_utf8_lossy(&buffer[BRACKETED_PASTE_START.len()..end]);
         return Some((
-            RawInputEvent::Paste(content.to_string()),
+            RawInputEvent::Paste(content.into_owned()),
             end + BRACKETED_PASTE_END.len(),
         ));
     }
@@ -1189,7 +1391,13 @@ mod tests {
         assert!(!is_complete_text_bracketed_paste(
             b"\x1b[200~one\x1b[201~\x1b[200~two\x1b[201~"
         ));
-        assert!(!is_complete_text_bracketed_paste(b"\x1b[200~\xff\x1b[201~"));
+        // Invalid UTF-8 has no text payload, but it is still one complete
+        // paste and must get the paste treatment rather than a disconnect.
+        assert_eq!(
+            complete_text_bracketed_paste(b"\x1b[200~\xff\x1b[201~"),
+            None
+        );
+        assert!(is_complete_text_bracketed_paste(b"\x1b[200~\xff\x1b[201~"));
     }
 
     #[test]
@@ -2188,6 +2396,121 @@ mod tests {
             panic!("expected paste");
         };
         assert_eq!(text, "hello\nworld");
+    }
+
+    #[test]
+    fn paste_with_invalid_utf8_is_delivered_and_does_not_swallow_later_keys() {
+        let mut framer = RawInputFramer::default();
+
+        let events = framer.push(b"\x1b[200~a\xffb\x1b[201~x");
+
+        assert_eq!(events.len(), 2);
+        let mut events = events.into_iter();
+        let Some(RawInputEvent::Paste(text)) = events.next() else {
+            panic!("expected paste");
+        };
+        assert_eq!(text, "a\u{FFFD}b");
+        assert_raw_key(
+            events.next().expect("test precondition"),
+            KeyCode::Char('x'),
+            KeyModifiers::empty(),
+        );
+        assert!(framer.flush_timeout().is_empty());
+    }
+
+    #[test]
+    fn host_framer_forwards_invalid_utf8_paste_bytes_unchanged() {
+        let mut framer = RawInputByteFramer::for_host_input();
+
+        assert_eq!(
+            framer.push(b"\x1b[200~a\xffb\x1b[201~x"),
+            vec![b"\x1b[200~a\xffb\x1b[201~".to_vec(), b"x".to_vec()]
+        );
+        assert!(!framer.has_pending_input());
+    }
+
+    #[test]
+    fn stalled_unterminated_paste_is_delivered_when_input_resumes() {
+        let mut framer = RawInputByteFramer::for_host_input();
+        let start = std::time::Instant::now();
+
+        assert!(framer.push_at(b"\x1b[200~hello", start).is_empty());
+        assert!(framer.flush_timeout().is_empty());
+        assert!(framer.has_pending_input());
+
+        // Nothing more of the paste arrives; the user types a key.
+        let chunks = framer.push_at(b"x", start + PASTE_STALL_TIMEOUT);
+
+        assert_eq!(
+            chunks,
+            vec![b"\x1b[200~hello\x1b[201~".to_vec(), b"x".to_vec()]
+        );
+        assert!(!framer.has_pending_input());
+    }
+
+    #[test]
+    fn slow_paste_that_keeps_arriving_is_not_cut() {
+        let mut framer = RawInputByteFramer::for_host_input();
+        let start = std::time::Instant::now();
+        let step = PASTE_STALL_TIMEOUT / 2;
+
+        assert!(framer.push_at(b"\x1b[200~one ", start).is_empty());
+        assert!(framer.push_at(b"two ", start + step).is_empty());
+        assert!(framer.push_at(b"three ", start + step * 2).is_empty());
+        let chunks = framer.push_at(b"four\x1b[201~", start + step * 3);
+
+        assert_eq!(
+            chunks,
+            vec![b"\x1b[200~one two three four\x1b[201~".to_vec()]
+        );
+    }
+
+    #[test]
+    fn oversized_unterminated_paste_is_cut_and_its_tail_dropped() {
+        let mut framer = RawInputByteFramer::for_host_input();
+        let block = vec![b'a'; 1024 * 1024];
+
+        assert!(framer.push(BRACKETED_PASTE_START).is_empty());
+        let mut chunks = Vec::new();
+        while chunks.is_empty() {
+            chunks = framer.push(&block);
+        }
+
+        assert_eq!(chunks.len(), 1);
+        let paste = &chunks[0];
+        assert!(paste.starts_with(BRACKETED_PASTE_START));
+        assert!(paste.ends_with(BRACKETED_PASTE_END));
+        assert!(paste.len() > MAX_PENDING_PASTE_BYTES);
+
+        // The rest of the paste, terminator split across reads, is dropped;
+        // the key typed after it is not.
+        assert!(framer.push(b"tail\x1b[20").is_empty());
+        assert!(framer.flush_timeout().is_empty());
+        assert_eq!(framer.push(b"1~x"), vec![b"x".to_vec()]);
+        assert!(!framer.has_pending_input());
+    }
+
+    #[test]
+    fn cut_paste_whose_terminator_never_comes_releases_input_after_a_stall() {
+        let mut framer = RawInputByteFramer::for_host_input();
+        let start = std::time::Instant::now();
+        framer.discarding_paste_tail = true;
+
+        assert!(framer.push_at(b"more paste", start).is_empty());
+        assert_eq!(
+            framer.push_at(b"y", start + PASTE_STALL_TIMEOUT),
+            vec![b"y".to_vec()]
+        );
+    }
+
+    #[test]
+    fn partial_suffix_len_finds_split_terminators() {
+        assert_eq!(partial_suffix_len(b"abc", BRACKETED_PASTE_END), 0);
+        assert_eq!(partial_suffix_len(b"abc\x1b", BRACKETED_PASTE_END), 1);
+        assert_eq!(partial_suffix_len(b"abc\x1b[20", BRACKETED_PASTE_END), 4);
+        assert_eq!(partial_suffix_len(b"abc\x1b[201", BRACKETED_PASTE_END), 5);
+        // A whole terminator is not a partial one.
+        assert_eq!(partial_suffix_len(b"abc\x1b[201~", BRACKETED_PASTE_END), 0);
     }
 
     #[test]

@@ -766,16 +766,17 @@ pub fn process_exists(pid: u32) -> bool {
 }
 
 pub fn write_clipboard(bytes: &[u8]) -> bool {
-    for command in clipboard_commands() {
-        if run_clipboard_command(&command, bytes) {
-            return true;
-        }
-    }
-    false
+    write_clipboard_with(&clipboard_commands(ClipboardSession::from_env()), bytes)
+}
+
+fn write_clipboard_with(commands: &[ClipboardCommand], bytes: &[u8]) -> bool {
+    commands
+        .iter()
+        .any(|command| run_clipboard_command(command, bytes))
 }
 
 pub fn read_clipboard_text() -> Option<String> {
-    for command in read_clipboard_text_commands() {
+    for command in read_clipboard_text_commands(ClipboardSession::from_env()) {
         if let Some(text) = read_clipboard_text_with_command(&command) {
             return Some(text);
         }
@@ -783,17 +784,41 @@ pub fn read_clipboard_text() -> Option<String> {
     None
 }
 
-fn clipboard_commands() -> Vec<ClipboardCommand> {
+/// Which display servers the clipboard commands may talk to. Read from the
+/// environment once per call and passed in, so the command lists are pure and
+/// tests never have to mutate the process environment.
+#[derive(Debug, Clone, Copy)]
+struct ClipboardSession {
+    wayland: bool,
+    x11: bool,
+}
+
+impl ClipboardSession {
+    fn from_env() -> Self {
+        Self {
+            wayland: std::env::var_os("WAYLAND_DISPLAY").is_some(),
+            x11: std::env::var_os("DISPLAY").is_some(),
+        }
+    }
+}
+
+/// The executable's base name, so a command given by absolute path is still
+/// recognised (`/usr/bin/wl-copy` is `wl-copy`).
+fn clipboard_program_name(program: &str) -> &str {
+    program.rsplit('/').next().unwrap_or(program)
+}
+
+fn clipboard_commands(session: ClipboardSession) -> Vec<ClipboardCommand> {
     let mut commands = Vec::new();
 
-    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+    if session.wayland {
         commands.push(ClipboardCommand {
             program: "wl-copy",
             args: &["--type", "text/plain;charset=utf-8"],
         });
     }
 
-    if std::env::var_os("DISPLAY").is_some() {
+    if session.x11 {
         commands.push(ClipboardCommand {
             program: "xclip",
             args: &["-selection", "clipboard", "-in"],
@@ -807,10 +832,10 @@ fn clipboard_commands() -> Vec<ClipboardCommand> {
     commands
 }
 
-fn read_clipboard_text_commands() -> Vec<ClipboardCommand> {
+fn read_clipboard_text_commands(session: ClipboardSession) -> Vec<ClipboardCommand> {
     let mut commands = Vec::new();
 
-    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+    if session.wayland {
         commands.push(ClipboardCommand {
             program: "wl-paste",
             args: &["--type", "text/plain;charset=utf-8"],
@@ -821,7 +846,7 @@ fn read_clipboard_text_commands() -> Vec<ClipboardCommand> {
         });
     }
 
-    if std::env::var_os("DISPLAY").is_some() {
+    if session.x11 {
         commands.push(ClipboardCommand {
             program: "xclip",
             args: &["-selection", "clipboard", "-out"],
@@ -898,7 +923,7 @@ fn run_clipboard_command(command: &ClipboardCommand, bytes: &[u8]) -> bool {
     }
     drop(stdin);
 
-    if command.program == "wl-copy" {
+    if clipboard_program_name(command.program) == "wl-copy" {
         return wait_for_wl_copy_startup(child);
     }
 
@@ -958,21 +983,45 @@ fn detach_clipboard_owner(child: std::process::Child) -> bool {
 
 fn process_session_id(pid: u32) -> Option<i32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    session_and_tty_from_stat(&stat).map(|(session, _tty)| session)
+}
+
+/// The session id and controlling-terminal device (`tty_nr`, 0 for none) from
+/// a `/proc/<pid>/stat` line. The command name is skipped by its last `)`, as
+/// it may itself contain spaces and parentheses.
+fn session_and_tty_from_stat(stat: &str) -> Option<(i32, i32)> {
     let rest = stat.get(stat.rfind(')')? + 2..)?;
-    let fields: Vec<&str> = rest.split_whitespace().collect();
-    fields.get(3)?.parse().ok()
+    let mut fields = rest.split_whitespace().skip(3);
+    let session = fields.next()?.parse().ok()?;
+    let tty_nr = fields.next()?.parse().ok()?;
+    Some((session, tty_nr))
+}
+
+/// Whether this server runs detached from any terminal, so closing the
+/// terminal or SSH session that started it cannot hang it up. Remote attach
+/// restarts a server that is not detached as a daemon.
+///
+/// Leading a session is not enough on its own: a terminal emulator or sshd
+/// also makes the program it starts a session leader, but gives that session
+/// the terminal as its controlling tty, and closing it sends SIGHUP. The
+/// daemon spawn path calls setsid and never opens a terminal, so it leads its
+/// session with no controlling tty; that pair is the test.
+pub fn current_process_is_detached_server_daemon() -> bool {
+    let Ok(stat) = std::fs::read_to_string("/proc/self/stat") else {
+        return false;
+    };
+    session_and_tty_from_stat(&stat)
+        .is_some_and(|(session, tty_nr)| is_detached_session(std::process::id(), session, tty_nr))
+}
+
+fn is_detached_session(pid: u32, session: i32, tty_nr: i32) -> bool {
+    i64::from(session) == i64::from(pid) && tty_nr == 0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
     use std::{cell::RefCell, collections::HashMap};
-
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     #[test]
     fn wsl_marker_detection_matches_kernel_release_text() {
@@ -1443,6 +1492,32 @@ mod tests {
     }
 
     #[test]
+    fn proc_stat_yields_session_and_controlling_tty() {
+        assert_eq!(
+            session_and_tty_from_stat("4242 (shepr (srv) x) S 1 4242 4242 0 -1 4194560"),
+            Some((4242, 0))
+        );
+        assert_eq!(
+            session_and_tty_from_stat("77 (shepr) S 70 77 77 34817 77 4194560"),
+            Some((77, 34817))
+        );
+        assert_eq!(session_and_tty_from_stat("77 (shepr) S 70"), None);
+    }
+
+    #[test]
+    fn only_a_session_leader_without_a_terminal_counts_as_detached() {
+        // The setsid daemon spawn: leads its session, no controlling tty.
+        assert!(is_detached_session(4242, 4242, 0));
+        // `terminal -e shepr server` or `ssh -t host shepr server`: a session
+        // leader too, but the terminal is its controlling tty.
+        assert!(!is_detached_session(77, 77, 34817));
+        // A server started from an interactive shell belongs to the shell's
+        // session.
+        assert!(!is_detached_session(90, 70, 34817));
+        assert!(!is_detached_session(90, 70, 0));
+    }
+
+    #[test]
     fn remote_memory_reads_reject_dead_and_uninterruptible_states() {
         for state in ['D', 'Z', 'X', 'x'] {
             assert!(!process_state_allows_remote_memory_read(state));
@@ -1452,28 +1527,82 @@ mod tests {
         }
     }
 
+    // None of these clipboard tests touch the process environment: the command
+    // lists take the session as an argument and fake clipboard programs are run
+    // by absolute path with their output paths baked into the script. Test
+    // threads run concurrently, and a PATH or DISPLAY mutated here would leak
+    // into every other test that spawns a program.
+
+    fn fake_clipboard_dir(name: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should follow unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "shepr-fake-clipboard-{name}-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir should be created");
+        dir
+    }
+
+    /// Write an executable script and return its absolute path as the
+    /// `'static` program name `ClipboardCommand` wants (leaked; tests only).
+    fn fake_clipboard_program(dir: &std::path::Path, name: &str, script: &str) -> &'static str {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join(name);
+        std::fs::write(&path, script).expect("fake clipboard program should be written");
+        let mut permissions = std::fs::metadata(&path)
+            .expect("fake clipboard program metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions)
+            .expect("fake clipboard program should be executable");
+        Box::leak(path.to_string_lossy().into_owned().into_boxed_str())
+    }
+
+    fn quoted_path(path: &std::path::Path) -> String {
+        shell_quote(&path.to_string_lossy())
+    }
+
     #[test]
     fn clipboard_commands_prefer_wayland_when_available() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe {
-            std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
-            std::env::remove_var("DISPLAY");
-        }
-        let commands = clipboard_commands();
+        let commands = clipboard_commands(ClipboardSession {
+            wayland: true,
+            x11: false,
+        });
         assert_eq!(commands.len(), 1);
         assert_eq!(commands[0].program, "wl-copy");
     }
 
     #[test]
+    fn clipboard_commands_are_empty_without_a_display_server() {
+        let session = ClipboardSession {
+            wayland: false,
+            x11: false,
+        };
+        assert!(clipboard_commands(session).is_empty());
+        assert!(read_clipboard_text_commands(session).is_empty());
+    }
+
+    #[test]
+    fn clipboard_program_name_strips_the_directory() {
+        assert_eq!(clipboard_program_name("wl-copy"), "wl-copy");
+        assert_eq!(clipboard_program_name("/usr/bin/wl-copy"), "wl-copy");
+        assert_eq!(
+            clipboard_program_name("/opt/wl-copy-wrapper"),
+            "wl-copy-wrapper"
+        );
+    }
+
+    #[test]
     fn wl_copy_owner_does_not_block_clipboard_write() {
-        use std::ffi::OsString;
-        use std::os::unix::fs::PermissionsExt;
         use std::path::PathBuf;
         use std::sync::mpsc;
-        use std::time::{Duration, Instant, SystemTime};
+        use std::time::{Duration, Instant};
 
         struct Cleanup {
-            old_path: Option<OsString>,
             temp_dir: PathBuf,
             owner_pid: Option<i32>,
         }
@@ -1481,73 +1610,39 @@ mod tests {
         impl Drop for Cleanup {
             fn drop(&mut self) {
                 if let Some(pid) = self.owner_pid {
+                    // SAFETY: kill(2) with a pid the fake wl-copy reported for
+                    // itself; it touches no memory of this process.
                     unsafe {
                         libc::kill(pid, libc::SIGTERM);
                     }
-                }
-                unsafe {
-                    match self.old_path.take() {
-                        Some(path) => std::env::set_var("PATH", path),
-                        None => std::env::remove_var("PATH"),
-                    }
-                    std::env::remove_var("SHEPR_TEST_WL_COPY_MARKER");
-                    std::env::remove_var("SHEPR_TEST_WL_COPY_PAYLOAD");
-                    std::env::remove_var("SHEPR_TEST_WL_COPY_ARGS");
                 }
                 let _ = std::fs::remove_dir_all(&self.temp_dir);
             }
         }
 
-        let _guard = env_lock().lock().expect("test precondition");
-        let unique = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("system time should follow unix epoch")
-            .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!(
-            "shepr-fake-wl-copy-{}-{unique}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+        let temp_dir = fake_clipboard_dir("wl-copy");
         let mut cleanup = Cleanup {
-            old_path: std::env::var_os("PATH"),
             temp_dir: temp_dir.clone(),
             owner_pid: None,
         };
-        let fake_wl_copy = temp_dir.join("wl-copy");
         let marker = temp_dir.join("owner-pid");
         let payload = temp_dir.join("payload");
         let args = temp_dir.join("args");
-        std::fs::write(
-            &fake_wl_copy,
-            "#!/bin/sh\ncat > \"$SHEPR_TEST_WL_COPY_PAYLOAD\"\nprintf '%s\\n' \"$@\" > \"$SHEPR_TEST_WL_COPY_ARGS\"\nprintf '%s' \"$$\" > \"$SHEPR_TEST_WL_COPY_MARKER\"\nexec sleep 30\n",
-        )
-        .expect("fake wl-copy should be written");
-        let mut permissions = std::fs::metadata(&fake_wl_copy)
-            .expect("fake wl-copy metadata")
-            .permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(&fake_wl_copy, permissions)
-            .expect("fake wl-copy should be executable");
-
-        let test_path = match cleanup.old_path.as_ref() {
-            Some(path) => {
-                let mut paths = vec![temp_dir.clone()];
-                paths.extend(std::env::split_paths(path));
-                std::env::join_paths(paths).expect("test path should be valid")
-            }
-            None => temp_dir.clone().into_os_string(),
-        };
-        unsafe {
-            std::env::set_var("PATH", test_path);
-            std::env::set_var("SHEPR_TEST_WL_COPY_MARKER", &marker);
-            std::env::set_var("SHEPR_TEST_WL_COPY_PAYLOAD", &payload);
-            std::env::set_var("SHEPR_TEST_WL_COPY_ARGS", &args);
-        }
+        let fake_wl_copy = fake_clipboard_program(
+            &temp_dir,
+            "wl-copy",
+            &format!(
+                "#!/bin/sh\ncat > {payload}\nprintf '%s\\n' \"$@\" > {args}\nprintf '%s' \"$$\" > {marker}\nexec sleep 30\n",
+                payload = quoted_path(&payload),
+                args = quoted_path(&args),
+                marker = quoted_path(&marker),
+            ),
+        );
 
         let (result_tx, result_rx) = mpsc::channel();
         let writer = std::thread::spawn(move || {
             let command = ClipboardCommand {
-                program: "wl-copy",
+                program: fake_wl_copy,
                 args: &["--type", "text/plain;charset=utf-8"],
             };
             let _ = result_tx.send(run_clipboard_command(&command, b"clipboard text"));
@@ -1568,6 +1663,7 @@ mod tests {
         let actual_payload = std::fs::read(&payload).expect("fake wl-copy should record stdin");
         let actual_args = std::fs::read_to_string(&args).expect("fake wl-copy should record args");
 
+        // SAFETY: kill(2) with the pid the fake wl-copy reported for itself.
         unsafe {
             libc::kill(owner_pid, libc::SIGTERM);
         }
@@ -1595,87 +1691,39 @@ mod tests {
 
     #[test]
     fn failed_wl_copy_uses_x11_fallback() {
-        use std::ffi::OsString;
-        use std::os::unix::fs::PermissionsExt;
-        use std::path::PathBuf;
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        struct Cleanup {
-            old_path: Option<OsString>,
-            old_wayland_display: Option<OsString>,
-            old_display: Option<OsString>,
-            temp_dir: PathBuf,
-        }
-
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                unsafe {
-                    match self.old_path.take() {
-                        Some(value) => std::env::set_var("PATH", value),
-                        None => std::env::remove_var("PATH"),
-                    }
-                    match self.old_wayland_display.take() {
-                        Some(value) => std::env::set_var("WAYLAND_DISPLAY", value),
-                        None => std::env::remove_var("WAYLAND_DISPLAY"),
-                    }
-                    match self.old_display.take() {
-                        Some(value) => std::env::set_var("DISPLAY", value),
-                        None => std::env::remove_var("DISPLAY"),
-                    }
-                    std::env::remove_var("SHEPR_TEST_XCLIP_PAYLOAD");
-                }
-                let _ = std::fs::remove_dir_all(&self.temp_dir);
-            }
-        }
-
-        let _guard = env_lock().lock().expect("test precondition");
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should follow unix epoch")
-            .as_nanos();
-        let temp_dir = std::env::temp_dir().join(format!(
-            "shepr-failed-wl-copy-{}-{unique}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
-        let cleanup = Cleanup {
-            old_path: std::env::var_os("PATH"),
-            old_wayland_display: std::env::var_os("WAYLAND_DISPLAY"),
-            old_display: std::env::var_os("DISPLAY"),
-            temp_dir: temp_dir.clone(),
-        };
+        let temp_dir = fake_clipboard_dir("fallback");
         let payload = temp_dir.join("xclip-payload");
-        let fake_wl_copy = temp_dir.join("wl-copy");
-        let fake_xclip = temp_dir.join("xclip");
-        std::fs::write(&fake_wl_copy, "#!/bin/sh\n/bin/cat >/dev/null\nexit 7\n")
-            .expect("fake wl-copy should be written");
-        std::fs::write(
-            &fake_xclip,
-            "#!/bin/sh\n/bin/cat > \"$SHEPR_TEST_XCLIP_PAYLOAD\"\n",
-        )
-        .expect("fake xclip should be written");
-        for command in [&fake_wl_copy, &fake_xclip] {
-            let mut permissions = std::fs::metadata(command)
-                .expect("fake clipboard command metadata")
-                .permissions();
-            permissions.set_mode(0o700);
-            std::fs::set_permissions(command, permissions)
-                .expect("fake clipboard command should be executable");
-        }
+        let fake_wl_copy = fake_clipboard_program(
+            &temp_dir,
+            "wl-copy",
+            "#!/bin/sh\n/bin/cat >/dev/null\nexit 7\n",
+        );
+        let fake_xclip = fake_clipboard_program(
+            &temp_dir,
+            "xclip",
+            &format!("#!/bin/sh\n/bin/cat > {}\n", quoted_path(&payload)),
+        );
 
-        unsafe {
-            std::env::set_var("PATH", &temp_dir);
-            std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
-            std::env::set_var("DISPLAY", ":0");
-            std::env::set_var("SHEPR_TEST_XCLIP_PAYLOAD", &payload);
-        }
+        // Same order `clipboard_commands` produces for a session with both a
+        // Wayland and an X11 display, with the fakes standing in by path.
+        let mut commands = clipboard_commands(ClipboardSession {
+            wayland: true,
+            x11: true,
+        });
+        assert_eq!(commands[0].program, "wl-copy");
+        assert_eq!(commands[1].program, "xclip");
+        commands[0].program = fake_wl_copy;
+        commands[1].program = fake_xclip;
 
-        assert!(write_clipboard(b"clipboard fallback"));
+        let wrote = write_clipboard_with(&commands, b"clipboard fallback");
+        let recorded = std::fs::read(&payload);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        assert!(wrote);
         assert_eq!(
-            std::fs::read(&payload).expect("xclip should record stdin"),
+            recorded.expect("xclip should record stdin"),
             b"clipboard fallback"
         );
-        drop(cleanup);
     }
 
     #[test]
@@ -1695,12 +1743,10 @@ mod tests {
 
     #[test]
     fn clipboard_commands_include_x11_fallbacks() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe {
-            std::env::remove_var("WAYLAND_DISPLAY");
-            std::env::set_var("DISPLAY", ":0");
-        }
-        let commands = clipboard_commands();
+        let commands = clipboard_commands(ClipboardSession {
+            wayland: false,
+            x11: true,
+        });
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].program, "xclip");
         assert_eq!(commands[1].program, "xsel");
@@ -1708,13 +1754,10 @@ mod tests {
 
     #[test]
     fn read_clipboard_text_commands_include_session_backends() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe {
-            std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
-            std::env::set_var("DISPLAY", ":0");
-        }
-
-        let commands = read_clipboard_text_commands();
+        let commands = read_clipboard_text_commands(ClipboardSession {
+            wayland: true,
+            x11: true,
+        });
         assert_eq!(commands[0].program, "wl-paste");
         assert_eq!(commands[1].program, "wl-paste");
         assert_eq!(commands[2].program, "xclip");

@@ -568,7 +568,6 @@ mod tests {
         super::super::App::new(
             config,
             crate::app::AppPolicy::TEST,
-            None,
             tokio::sync::mpsc::unbounded_channel().1,
             crate::api::EventHub::default(),
         )

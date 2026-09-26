@@ -300,6 +300,15 @@ fn install_target_inner(target: crate::api::schema::IntegrationTarget) -> io::Re
 pub(crate) fn uninstall_target(
     target: crate::api::schema::IntegrationTarget,
 ) -> io::Result<Vec<String>> {
+    let result = uninstall_target_inner(target);
+    let outcome = if result.is_ok() { "ok" } else { "error" };
+    crate::logging::integration_action("uninstall", integration_target_label(target), outcome);
+    result
+}
+
+fn uninstall_target_inner(
+    target: crate::api::schema::IntegrationTarget,
+) -> io::Result<Vec<String>> {
     let messages = match target {
         crate::api::schema::IntegrationTarget::Pi => {
             let result = uninstall_pi()?;
@@ -732,6 +741,5 @@ pub(crate) fn uninstall_target(
         }
     };
 
-    crate::logging::integration_action("uninstall", integration_target_label(target), "ok");
     Ok(messages)
 }

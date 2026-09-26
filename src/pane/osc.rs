@@ -463,7 +463,7 @@ const AGENT_OSC_MAX_CHARS: usize = 256;
 
 /// Always-on tracker that retains the latest OSC 0/2 title and OSC 9 progress
 /// payload emitted by the child process. Nothing here affects rendering; this
-/// is pure passive capture for the detection engine (Stage C / Stage D).
+/// is pure passive capture for agent detection and the agent read API.
 ///
 /// - `latest_title` - last OSC 0 or OSC 2 payload, sanitized. An empty
 ///   payload (e.g. `\x1b]0;\x07`) clears the stored value.
@@ -514,13 +514,11 @@ impl AgentOscStateTracker {
 
     /// Returns the latest retained OSC title, or `""` if none has been seen or
     /// the last title was an empty clear.
-    #[allow(dead_code)] // used by terminal.rs; full call chain wired in Stage C
     pub(super) fn latest_title(&self) -> &str {
         self.latest_title.as_deref().unwrap_or("")
     }
 
     /// Returns the latest retained OSC 9 progress payload, or `""` if none.
-    #[allow(dead_code)] // used by terminal.rs; full call chain wired in Stage C
     pub(super) fn latest_progress(&self) -> &str {
         self.latest_progress.as_deref().unwrap_or("")
     }
@@ -857,8 +855,6 @@ mod tests {
             }
         }
     }
-
-    use tokio::sync::mpsc;
 
     use super::*;
     use crate::layout::PaneId;
@@ -1421,9 +1417,8 @@ mod tests {
 
     #[test]
     fn restore_host_terminal_theme_reapplies_cached_colors() {
-        let (tx, _rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
-        let pane = super::super::GhosttyPaneTerminal::new(terminal, tx).expect("test precondition");
+        let pane = super::super::GhosttyPaneTerminal::new(terminal).expect("test precondition");
         let pane_id = PaneId::from_raw(1);
         let shell_pid = 7;
         let host_theme = crate::terminal_theme::TerminalTheme {

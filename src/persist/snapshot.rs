@@ -5,7 +5,7 @@ use ratatui::layout::Direction;
 use serde::{Deserialize, Serialize};
 
 use crate::layout::Node;
-use crate::terminal::TerminalRuntimeRegistry;
+use crate::terminal::{TerminalId, TerminalRuntimeRegistry};
 use crate::workspace::Workspace;
 
 /// Current snapshot format version. Files with any other version are ignored.
@@ -96,10 +96,11 @@ pub struct PaneAgentSessionSnapshot {
     pub value: String,
 }
 
+/// Saved screen history of one pane. Files written by older builds also carry
+/// a `lines` count; nothing read it, and serde skips it on load.
 #[derive(Serialize, Deserialize)]
 pub struct PaneHistorySnapshot {
     pub ansi: String,
-    pub lines: usize,
 }
 
 /// Serializable BSP tree.
@@ -265,12 +266,45 @@ pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
     Some(hex)
 }
 
+type CarriedHistory = HashMap<TerminalId, String>;
+
+/// Saved screen history of restored panes that have no runtime: panes waiting
+/// for a deferred agent resume, and panes whose restore failed (missing cwd
+/// or shell). History capture reads live runtimes only, so without this a
+/// save made before such a pane runs would write a history file without it,
+/// and a resume that then fails would have lost the pane's saved screen for
+/// good. Entries are keyed by the globally unique terminal ID and are dropped
+/// as soon as a capture sees a runtime for that terminal, whose live history
+/// supersedes them. An entry for a pane closed before it ever ran stays until
+/// the process exits; that is bounded by the history file loaded at startup.
+///
+/// This lives here rather than on `TerminalState` so restore and capture can
+/// share it without widening the terminal or app interfaces.
+static CARRIED_HISTORY: std::sync::LazyLock<std::sync::Mutex<CarriedHistory>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn carried_history() -> std::sync::MutexGuard<'static, CarriedHistory> {
+    // The map holds plain strings with no invariant a panic could break.
+    CARRIED_HISTORY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Keeps a restored pane's saved history for later saves until the pane has a
+/// runtime of its own.
+pub(super) fn carry_history(terminal: &TerminalId, history: Option<&PaneHistorySnapshot>) {
+    if let Some(history) = history {
+        carried_history().insert(terminal.clone(), history.ansi.clone());
+    }
+}
+
 /// Capture pane screen history separately from the structural session snapshot.
 pub fn capture_history(
     snapshot: &SessionSnapshot,
     workspaces: &[Workspace],
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> SessionHistorySnapshot {
+    let mut carried = carried_history();
     SessionHistorySnapshot {
         version: SNAPSHOT_VERSION,
         layout_fingerprint: layout_fingerprint(snapshot),
@@ -281,7 +315,7 @@ pub fn capture_history(
                     .tabs
                     .iter()
                     .map(|tab| TabHistorySnapshot {
-                        panes: capture_tab_history(tab, terminal_runtimes),
+                        panes: capture_tab_history(tab, terminal_runtimes, &mut carried),
                     })
                     .collect(),
             })
@@ -292,10 +326,11 @@ pub fn capture_history(
 fn capture_tab_history(
     tab: &crate::workspace::Tab,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    carried: &mut CarriedHistory,
 ) -> HashMap<u32, PaneHistorySnapshot> {
     let mut panes = HashMap::new();
     for (id, pane) in &tab.panes {
-        if let Some(history) = capture_pane_history(Some(pane), terminal_runtimes) {
+        if let Some(history) = capture_pane_history(pane, terminal_runtimes, carried) {
             panes.insert(id.raw(), history);
         }
     }
@@ -303,14 +338,18 @@ fn capture_tab_history(
 }
 
 fn capture_pane_history(
-    pane: Option<&crate::pane::PaneState>,
+    pane: &crate::pane::PaneState,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    carried: &mut CarriedHistory,
 ) -> Option<PaneHistorySnapshot> {
-    let ansi = terminal_runtimes
-        .get(&pane?.attached_terminal_id)?
-        .snapshot_history()?;
-    let lines = ansi.lines().count();
-    Some(PaneHistorySnapshot { ansi, lines })
+    let terminal = &pane.attached_terminal_id;
+    let Some(runtime) = terminal_runtimes.get(terminal) else {
+        let ansi = carried.get(terminal)?.clone();
+        return Some(PaneHistorySnapshot { ansi });
+    };
+    carried.remove(terminal);
+    let ansi = runtime.snapshot_history()?;
+    Some(PaneHistorySnapshot { ansi })
 }
 
 pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
@@ -901,7 +940,6 @@ mod tests {
 
         assert!(history.ansi.contains("alpha"));
         assert!(history.ansi.contains("gamma"));
-        assert!(history.lines >= 3);
     }
 
     #[tokio::test]

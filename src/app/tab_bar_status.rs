@@ -81,20 +81,25 @@ impl Drop for TabBarCommandRuntime {
     fn drop(&mut self) {
         if let Some(task) = self.task.take() {
             task.abort_handle.abort();
-            // Kill the process group on the reconfiguring thread instead of waiting
-            // for Tokio to schedule cancellation of the command task.
+            // Kill the whole process group now, when the app is torn down,
+            // instead of waiting for Tokio to cancel the task: aborting it only
+            // drops the direct `sh` child, and its descendants would outlive
+            // the server.
             task.control.terminate();
         }
     }
 }
 
 impl App {
+    /// Sets up the tab bar's right-hand segments. Config is read once at
+    /// launch and never reloaded, so this runs once from `App::new`; the
+    /// segment indices it hands out therefore stay valid for every command
+    /// result that comes back.
     pub(super) fn configure_tab_bar_status(
         &mut self,
         entries: &[TabBarRightEntryConfig],
         separator: &str,
     ) {
-        self.tab_bar_status_generation = self.tab_bar_status_generation.wrapping_add(1);
         self.tab_bar_datetimes.clear();
         self.tab_bar_commands.clear();
         self.state.tab_bar_right.clear();
@@ -195,7 +200,6 @@ impl App {
             return changed;
         }
 
-        let generation = self.tab_bar_status_generation;
         let (environment, cwd) = self.status_command_env();
         for runtime in &mut self.tab_bar_commands {
             if runtime.task.is_some() || now < runtime.next_run_at {
@@ -204,7 +208,6 @@ impl App {
             runtime.next_run_at = now.checked_add(runtime.interval).unwrap_or(now);
             runtime.task = Some(spawn_status_command(
                 self.event_tx.clone(),
-                generation,
                 runtime.segment_index,
                 runtime.command.clone(),
                 runtime.timeout,
@@ -227,13 +230,9 @@ impl App {
 
     pub(super) fn handle_tab_bar_command_finished(
         &mut self,
-        generation: u64,
         segment_index: usize,
         result: Result<Option<String>, String>,
     ) -> bool {
-        if generation != self.tab_bar_status_generation {
-            return false;
-        }
         let Some(runtime) = self
             .tab_bar_commands
             .iter_mut()
@@ -467,7 +466,6 @@ impl StatusCommandControl {
 
 fn spawn_status_command(
     event_tx: tokio::sync::mpsc::Sender<crate::events::AppEvent>,
-    generation: u64,
     segment_index: usize,
     command: String,
     timeout: Duration,
@@ -493,7 +491,6 @@ fn spawn_status_command(
         task_control.terminate();
         let _ = event_tx
             .send(crate::events::AppEvent::TabBarCommandFinished {
-                generation,
                 segment_index,
                 result,
             })
@@ -572,7 +569,6 @@ mod tests {
         App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         )
@@ -597,7 +593,6 @@ mod tests {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
         spawn_status_command(
             event_tx,
-            7,
             3,
             MULTILINE_COMMAND.into(),
             Duration::from_secs(2),
@@ -612,7 +607,6 @@ mod tests {
         assert!(matches!(
             event,
             AppEvent::TabBarCommandFinished {
-                generation: 7,
                 segment_index: 3,
                 result: Ok(Some(ref output)),
             } if output == "final"
@@ -626,7 +620,6 @@ mod tests {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
         spawn_status_command(
             event_tx,
-            7,
             3,
             command,
             Duration::from_secs(1),
@@ -656,7 +649,6 @@ mod tests {
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
         spawn_status_command(
             event_tx,
-            7,
             3,
             OVER_CAP_COMMAND.into(),
             Duration::from_secs(2),
@@ -677,35 +669,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn stale_command_result_does_not_replace_reloaded_status() {
-        let mut app = test_app();
-        app.configure_tab_bar_status(
-            &[TabBarRightEntryConfig::Command {
-                command: MULTILINE_COMMAND.into(),
-                interval_seconds: 5,
-                timeout_seconds: 2,
-            }],
-            " ",
-        );
-        let stale_generation = app.tab_bar_status_generation;
-        app.configure_tab_bar_status(
-            &[TabBarRightEntryConfig::Text {
-                text: "fresh".into(),
-            }],
-            " ",
-        );
-
-        app.handle_tab_bar_command_finished(stale_generation, 0, Ok(Some("stale".into())));
-
-        assert_eq!(
-            app.state.tab_bar_right,
-            vec![TabBarStatusSegment::Text(Some("fresh".into()))]
-        );
-    }
-
     #[tokio::test(flavor = "current_thread")]
-    async fn reload_aborts_an_in_flight_command_task_and_its_descendants() {
+    async fn dropping_the_app_kills_an_in_flight_command_and_its_descendants() {
         let descendant_started = unique_temp_path("descendant-started");
         let survived = unique_temp_path("survived");
         let command = format!(
@@ -734,27 +699,16 @@ mod tests {
             "status command descendant did not start"
         );
 
-        app.configure_tab_bar_status(
-            &[TabBarRightEntryConfig::Text {
-                text: "reloaded".into(),
-            }],
-            " ",
-        );
+        drop(app);
 
         // Task cancellation is delivered when Tokio next polls the task. Block
         // this current-thread test runtime long enough for the descendant to
-        // run, proving config reload kills its process group synchronously.
+        // run, proving teardown kills its process group synchronously.
         std::thread::sleep(Duration::from_millis(400));
         let descendant_survived = survived.exists();
         let _ = std::fs::remove_file(&descendant_started);
         let _ = std::fs::remove_file(&survived);
         assert!(!descendant_survived, "status command descendant survived");
-
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), app.event_rx.recv())
-                .await
-                .is_err()
-        );
     }
 
     #[tokio::test]

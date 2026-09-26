@@ -7,7 +7,9 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriter;
 
 const DEFAULT_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
-const DEFAULT_RETAINED_LOG_FILES: usize = 0;
+/// One previous generation (`<name>.1`) survives a rotation, so the lines
+/// leading up to it are not lost the moment the limit is hit.
+const DEFAULT_RETAINED_LOG_FILES: usize = 1;
 
 pub(crate) fn init_file_logging(file_name: &str) {
     let Ok(make_writer) = RotatingFileMakeWriter::new(
@@ -369,7 +371,6 @@ impl RotatingFileMakeWriter {
             max_bytes,
             retained_files,
             file: None,
-            current_size: 0,
             disabled: false,
         };
         state.open_current_file()?;
@@ -407,10 +408,7 @@ impl Write for RotatingFileGuard {
         }
         if let Some(file) = state.file.as_mut() {
             match file.write(buf) {
-                Ok(written) => {
-                    state.current_size = state.current_size.saturating_add(written as u64);
-                    Ok(written)
-                }
+                Ok(written) => Ok(written),
                 Err(_) => {
                     state.disabled = true;
                     Ok(buf.len())
@@ -441,46 +439,109 @@ impl Write for RotatingFileGuard {
     }
 }
 
+/// One log file that may be shared by several processes: every client appends
+/// to the same `shepr-client.log`. Nothing about the file is cached per
+/// process. Before each write the path is checked against the open file, so a
+/// rotation done by another process is noticed and followed instead of leaving
+/// this one writing to an unlinked inode, and the size limit is judged on the
+/// file's real size rather than on this process's own share of it.
 struct RotatingFileState {
     path: PathBuf,
     max_bytes: u64,
     retained_files: usize,
     file: Option<File>,
-    current_size: u64,
     disabled: bool,
 }
 
+/// Log files hold pane activity and error details; keep them private to the
+/// user like the rest of the data directory's state.
+const LOG_FILE_MODE: u32 = 0o600;
+
 impl RotatingFileState {
     fn rotate_if_needed(&mut self, incoming_len: u64) -> io::Result<()> {
-        if self.file.is_none() {
-            self.open_current_file()?;
-        }
-        if self.max_bytes == 0 || self.current_size.saturating_add(incoming_len) <= self.max_bytes {
+        let size = self.sync_with_path()?;
+        if !self.exceeds_limit(size, incoming_len) {
             return Ok(());
         }
-        self.rotate_files()?;
+
+        // Several processes can cross the limit together. Rotation happens
+        // under an exclusive lock on the current file, and whoever gets the
+        // lock second finds the path already pointing at a fresh file.
+        let Some(file) = self.file.as_ref() else {
+            return Ok(());
+        };
+        let lock = FileLock::exclusive(file)?;
+        let rotate = match fs::metadata(&self.path) {
+            Ok(meta) => self.is_current_file(&meta) && self.exceeds_limit(meta.len(), incoming_len),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+            Err(err) => return Err(err),
+        };
+        if rotate {
+            self.rotate_files()?;
+        }
+        drop(lock);
         self.open_current_file()
     }
 
+    fn exceeds_limit(&self, size: u64, incoming_len: u64) -> bool {
+        // An empty file is never rotated, or a single message above the limit
+        // would rotate forever.
+        self.max_bytes != 0 && size > 0 && size.saturating_add(incoming_len) > self.max_bytes
+    }
+
+    /// Make sure the open file is the one at `path` (reopening if another
+    /// process rotated or removed it) and return its current size.
+    fn sync_with_path(&mut self) -> io::Result<u64> {
+        match fs::metadata(&self.path) {
+            Ok(meta) if self.is_current_file(&meta) => return Ok(meta.len()),
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+        self.open_current_file()?;
+        match self.file.as_ref() {
+            Some(file) => Ok(file.metadata()?.len()),
+            None => Ok(0),
+        }
+    }
+
+    fn is_current_file(&self, path_meta: &fs::Metadata) -> bool {
+        use std::os::unix::fs::MetadataExt;
+
+        self.file
+            .as_ref()
+            .and_then(|file| file.metadata().ok())
+            .is_some_and(|open| open.dev() == path_meta.dev() && open.ino() == path_meta.ino())
+    }
+
     fn open_current_file(&mut self) -> io::Result<()> {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
         let file = OpenOptions::new()
             .create(true)
             .append(true)
+            .mode(LOG_FILE_MODE)
             .open(&self.path)?;
-        self.current_size = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+        // `mode` only applies to a file this call creates; tighten one left
+        // behind by an older build that created logs world-readable.
+        if let Ok(meta) = file.metadata()
+            && meta.permissions().mode() & 0o077 != 0
+        {
+            let _ = file.set_permissions(fs::Permissions::from_mode(LOG_FILE_MODE));
+        }
         self.file = Some(file);
         Ok(())
     }
 
-    fn rotate_files(&mut self) -> io::Result<()> {
-        self.file.take();
+    /// Move the current file out of the way (or delete it when no generations
+    /// are kept). The caller holds the rotation lock and reopens afterwards.
+    fn rotate_files(&self) -> io::Result<()> {
         if self.retained_files == 0 {
             match fs::remove_file(&self.path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == io::ErrorKind::NotFound => {}
                 Err(err) => return Err(err),
             }
-            self.current_size = 0;
             return Ok(());
         }
 
@@ -504,8 +565,42 @@ impl RotatingFileState {
             fs::rename(source, target)?;
         }
 
-        self.current_size = 0;
         Ok(())
+    }
+}
+
+/// An exclusive `flock(2)` on an open file, released on drop.
+struct FileLock<'a> {
+    file: &'a File,
+}
+
+impl<'a> FileLock<'a> {
+    fn exclusive(file: &'a File) -> io::Result<Self> {
+        use std::os::fd::AsRawFd;
+
+        loop {
+            // SAFETY: flock(2) on a descriptor owned by `file`, which outlives
+            // the returned guard; it touches no memory of this process.
+            let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+            if result == 0 {
+                return Ok(Self { file });
+            }
+            let err = io::Error::last_os_error();
+            if err.kind() != io::ErrorKind::Interrupted {
+                return Err(err);
+            }
+        }
+    }
+}
+
+impl Drop for FileLock<'_> {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+
+        // SAFETY: as in `exclusive`; `self.file` is still open here.
+        unsafe {
+            libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
+        }
     }
 }
 
@@ -555,12 +650,11 @@ mod tests {
         fs::write(&path, "current").expect("test precondition");
         fs::write(rotated_log_path(&path, 1), "older").expect("test precondition");
 
-        let mut state = RotatingFileState {
+        let state = RotatingFileState {
             path: path.clone(),
             max_bytes: 128,
             retained_files: 2,
             file: None,
-            current_size: 0,
             disabled: false,
         };
         state.rotate_files().expect("test precondition");
@@ -597,5 +691,78 @@ mod tests {
         assert!(!rotated_log_path(&path, 1).exists());
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn writers_sharing_a_log_follow_each_others_rotation() {
+        let path = temp_log_path("shared");
+        let dir = path.parent().expect("test precondition").to_path_buf();
+        fs::create_dir_all(&dir).expect("test precondition");
+
+        // Two processes' writers on the same client log.
+        let first = RotatingFileMakeWriter::new(&dir, "shepr.log", 16, 1).expect("first writer");
+        let second = RotatingFileMakeWriter::new(&dir, "shepr.log", 16, 1).expect("second writer");
+
+        first
+            .make_writer()
+            .write_all(b"aaaaaaaaaa")
+            .expect("first write");
+        // The second writer has written nothing itself, but the file is
+        // already 10 bytes: its write crosses the shared limit and rotates.
+        second
+            .make_writer()
+            .write_all(b"bbbbbbbbbb")
+            .expect("second write");
+        // The first writer must follow the rotation instead of appending to
+        // the file that was moved away.
+        first.make_writer().write_all(b"cc").expect("third write");
+
+        let current = fs::read_to_string(&path).expect("current log");
+        let rotated = fs::read_to_string(rotated_log_path(&path, 1)).expect("rotated log");
+        let _ = fs::remove_dir_all(&dir);
+
+        assert_eq!(rotated, "aaaaaaaaaa");
+        assert_eq!(current, "bbbbbbbbbbcc");
+    }
+
+    #[test]
+    fn writer_follows_a_log_deleted_by_another_process() {
+        let path = temp_log_path("deleted");
+        let dir = path.parent().expect("test precondition").to_path_buf();
+        fs::create_dir_all(&dir).expect("test precondition");
+
+        let writer = RotatingFileMakeWriter::new(&dir, "shepr.log", 0, 0).expect("writer");
+        writer.make_writer().write_all(b"before").expect("write");
+        fs::remove_file(&path).expect("simulated rotation by another process");
+        writer.make_writer().write_all(b"after").expect("write");
+
+        let contents = fs::read_to_string(&path);
+        let _ = fs::remove_dir_all(&dir);
+
+        assert_eq!(contents.expect("log recreated"), "after");
+    }
+
+    #[test]
+    fn log_files_are_private_to_the_user() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_log_path("mode");
+        let dir = path.parent().expect("test precondition").to_path_buf();
+        fs::create_dir_all(&dir).expect("test precondition");
+
+        let _created = RotatingFileMakeWriter::new(&dir, "shepr.log", 0, 0).expect("writer");
+        let created_mode = fs::metadata(&path).expect("log").permissions().mode() & 0o777;
+
+        // A log left world-readable by an older build is tightened on open.
+        let legacy = dir.join("legacy.log");
+        fs::write(&legacy, "old").expect("legacy log");
+        fs::set_permissions(&legacy, fs::Permissions::from_mode(0o644)).expect("legacy mode");
+        let _reopened = RotatingFileMakeWriter::new(&dir, "legacy.log", 0, 0).expect("writer");
+        let legacy_mode = fs::metadata(&legacy).expect("log").permissions().mode() & 0o777;
+
+        let _ = fs::remove_dir_all(&dir);
+
+        assert_eq!(created_mode, 0o600);
+        assert_eq!(legacy_mode, 0o600);
     }
 }

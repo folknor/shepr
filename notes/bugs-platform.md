@@ -11,85 +11,66 @@
 4. Once all findings are resolved, the file gets deleted.
 ```
 
-Findings raised in this scope but filed elsewhere: build identity (WIRE-001), pane teardown signalling (TERM-014), `config reset-keys` (CMD-006), clipboard read freeze (UI-007), stale scrollback config text (TERM-005).
+Findings raised in this scope but filed elsewhere: build identity (WIRE-001), pane teardown signalling (TERM-014), clipboard read freeze (UI-007).
 
-## PLAT-001 - `--help` names a log file nobody writes, and the unknown-command whitelist is dead
+## PLAT-001 - `--help` names a log file nobody writes
 
-- `src/main.rs:523` prints `logging::help_log_paths_summary()` (`logging.rs:33`), which names `<data_dir>/shepr.log`. No process ever writes it: only `shepr-server.log` (`server/headless/bootstrap.rs:5`) and `shepr-client.log` (`client/mod.rs:98`) exist.
-- The unknown-command whitelist at `main.rs:559-577` is effectively dead. `cli::maybe_run` has already consumed every listed command except bare `server` and `client`.
+- `src/main.rs` prints `logging::help_log_paths_summary()` (`logging.rs`), which names `<data_dir>/shepr.log`. No process ever writes it: only `shepr-server.log` (`server/headless/bootstrap.rs`) and `shepr-client.log` (`client/mod.rs`) exist.
 
 ## PLAT-002 - `SHEPR_BIN_PATH` is built two different ways
 
-- `platform::launch_executable()` (`linux.rs:89`) strips the " (deleted)" suffix Linux adds once a binary is replaced. Only `integration/env.rs:30` uses it.
-- `app/tab_bar_status.rs:22` exports `SHEPR_BIN_PATH` from raw `current_exe()`. After an install, status commands get `/…/shepr (deleted)` and fail.
-- `server/autodetect.rs:124` (`spawn_server_daemon`), `remote/attach.rs:1617` (`run_client_process`) and `cli/status.rs:334` also use raw `current_exe()`.
+- `platform::launch_executable()` (`linux.rs`) strips the " (deleted)" suffix Linux adds once a binary is replaced. Only `integration/env.rs` uses it.
+- `app/tab_bar_status.rs` exports `SHEPR_BIN_PATH` from raw `current_exe()`. After an install, status commands get `/…/shepr (deleted)` and fail.
+- `server/autodetect.rs` (`spawn_server_daemon`), `remote/attach.rs` (`run_client_process`) and `cli/status.rs` also use raw `current_exe()`.
 
 ## PLAT-003 - Windows code is still in the tree, and tests run a path production never takes
 
 Surfaced in five scopes: platform, wire protocol, CLI/config, headless server, detection/integrations.
 
 - **Claim:** "Linux only. No `#[cfg(windows)]`, `#[cfg(target_os = "macos")]` or `cfg!` branches for other platforms."
-- `src/input/model.rs:34-221` uses `#[cfg(any(windows, test))]` for `PhysicalKeyId`, `KeySource::WindowsConsole` and `with_windows_record`, and still has `WindowsKeyRecord` and `windows_dead_key`.
-- `src/protocol/wire.rs:284` has `cfg!(any(windows, test))` in `to_raw_input_event`, and `:315-320` repeats the cfg split.
-- `WindowsKeyRecord` / `windows_record` and `physical_key_id` still travel on the wire in `ClientPaneInputEvent::Key` (`wire.rs:135`); on Linux these fields are always `None`. `windows_dead_key` / `with_windows_composition_hint` still run in production. The held-input tracking carries `windows_record` / `WindowsKeyRecord` too (`server/clients.rs:251,267`).
+- `src/input/model.rs` uses `#[cfg(any(windows, test))]` for `PhysicalKeyId`, `KeySource::WindowsConsole` and `with_windows_record`, and still has `WindowsKeyRecord` and `windows_dead_key`.
+- `src/protocol/wire.rs` has `cfg!(any(windows, test))` in `to_raw_input_event`, and repeats the cfg split just below.
+- `WindowsKeyRecord` / `windows_record` and `physical_key_id` still travel on the wire in `ClientPaneInputEvent::Key`; on Linux these fields are always `None`. `windows_dead_key` / `with_windows_composition_hint` still run in production. The held-input tracking carries `windows_record` / `WindowsKeyRecord` too (`server/clients.rs`).
 - Under test the Windows branch is compiled in and exercised, so key-identity, release-tracking and lease tests (`src/input/lease.rs`), `client_shell_pane_input_roundtrips_semantic_and_windows_keys` and the dead-key tests pass on logic the shipped binary does not have. The "Windows dead key" guard at the top of `encode_terminal_key` can never fire on Linux.
-- Smaller cfg leftovers: `#[cfg(unix)]` in the integration tests, `pane/terminal.rs:4024,4070` and `client/endpoint/ssh_metadata.rs:160,201`, plus `#[cfg(target_os = "linux")]` in `pane/terminal/migration_tests.rs:121`.
-- Integration assets carry their own Windows leftovers (DET-013).
+- Smaller cfg leftovers: `#[cfg(unix)]` in the integration tests, `pane/terminal.rs` and `client/endpoint/ssh_metadata.rs`, plus `#[cfg(target_os = "linux")]` in `pane/terminal/migration_tests.rs`.
 - `reported_cwd_parses_file_uri_and_bare_paths` (`src/pane/osc.rs`) still checks Windows `C:\...` paths as bare cwd reports.
 - **Recommendation:** delete the whole Windows key-record path, including its wire fields.
-
-## PLAT-004 - Process environment is changed after threads exist
-
-Surfaced in two scopes: platform, headless server.
-
-- **Production:** `server/headless/bootstrap.rs:100` (`take_startup_cwd`) calls `unsafe { std::env::remove_var(SHEPR_STARTUP_CWD) }` inside `rt.block_on`. By then the multi-thread tokio workers, the API server thread (started at bootstrap.rs:13) and whatever `App::new` spawned during session restore are all running. That is exactly the precondition `remove_var`'s safety contract forbids (a getenv/unsetenv race, undefined behaviour in glibc). It has no SAFETY comment, which fits the mechanical `scripts/wrap_env_unsafe.py` pass.
-  - Suggested fix: read the value in `main` before any thread starts, or don't mutate the environment at all.
-- **Tests:** each module has its own `env_lock()`, so the locks do not exclude each other.
-  - `platform/linux.rs:1667` sets `PATH` to only a temp dir.
-  - Meanwhile the lock-free tests `finite_clipboard_commands_report_exit_status` ("sh") and `read_clipboard_text_with_command_reads_utf8` ("printf") depend on looking up `PATH`.
-  - `clipboard_commands_prefer_wayland_when_available` (`:1456`) and `read_clipboard_text_commands_include_session_backends` (`:1710`) leave fake `DISPLAY`/`WAYLAND_DISPLAY` values set for the rest of the run.
-  - Expect flaky tests, and tests that pass for the wrong reason.
-
-## PLAT-005 - Host input framing loses or stalls input
-
-- **Where:** `src/raw_input.rs`.
-- A complete bracketed paste containing invalid UTF-8 makes `extract_one_event` return `None` (`:540`). The framer stalls, and at the idle flush the whole buffer is dropped (`:371`): the paste and any keys typed after it within that window are lost silently. Decoding lossily would avoid this.
-- An unterminated `ESC[200~` is held forever with no size limit (`:253`). All later input queues behind it, so the client looks hung.
 
 ## PLAT-006 - The platform layer doesn't match its stated structure
 
 - **Contract:** "OS-specific code lives in linux.rs; mod.rs holds the shared interface."
-- `platform/mod.rs` itself holds libc calls: setsid, getsid, and the SIGWINCH sigaction.
+- `platform/mod.rs` itself holds libc calls: setsid, getsid, and the SIGWINCH sigaction. Its `unsafe` blocks (`detach_server_daemon_command`, the SIGWINCH `sigaction`, the resize-signal test) have no SAFETY comments.
 - `unix_common.rs` is a leftover unix-vs-windows layer.
 - Several shims only exist for other platforms:
   - `check_config_write_target` does nothing.
-  - `write_existing_config` always returns false; its caller branch at `integration/config_file.rs:75` is dead.
+  - `write_existing_config` always returns false; its caller branch in `integration/config_file.rs` is dead.
   - `monitor_host_shutdown` returns an `Option` that is always `Some`.
   - `noninteractive_process::command` is just `Command::new`.
   - `create_private_state_file` forwards to `create_remote_ssh_config_file`.
-- `fits_unix_socket_path` uses 103 bytes, which is macOS's limit (Linux allows 107), so it rejects SSH control paths that would work (`unix_common.rs:345`, duplicated in `remote/attach.rs:1654`).
+- `fits_unix_socket_path` uses 103 bytes, which is macOS's limit (Linux allows 107), so it rejects SSH control paths that would work (`unix_common.rs`, duplicated in `remote/attach.rs`).
 - **Recommendation:** collapse everything into one flat `platform` module with no re-export layering.
-
-## PLAT-007 - Concurrent clients share one rotating log file
-
-- `logging.rs` keeps no rotated files and deletes the log on rotation. Concurrent clients share `shepr-client.log`, so one client's rotation leaves the others writing to an unlinked inode.
-
-## PLAT-008 - Logs are world-readable and can record raw keystrokes
-
-- Logs are created 0644, and with `SHEPR_LOG=debug` they record raw keystrokes (`raw_input.rs:94`).
-
-## PLAT-009 - Daemon detection is true for any session leader
-
-- `current_process_is_detached_server_daemon` (`mod.rs:93`) is true for any session leader, including a client started with `terminal -e shepr`. It feeds the remote `DaemonDetach` restart decision.
 
 ## PLAT-010 - A cancelled host shutdown still stops the server
 
-- Once `PrepareForShutdown(true)` is seen, `linux/shutdown.rs:69` never looks at a later `false`, so the server exits even if the host shutdown is cancelled.
+- The monitor ignores a later `PrepareForShutdown(false)`, but watching for it alone would not help: `server/headless.rs` calls `initiate_shutdown()` as soon as the flag is set, so the server has saved and exited before a cancellation can arrive.
+- The fix is server-side: on the warning, save a checkpoint and freeze further session saves (so panes killed by the real shutdown aren't saved as closed); exit only on SIGTERM; unfreeze on cancellation. Only then should the monitor keep looping after `true`, clear the flag on `false`, and keep the inhibitor. A comment in `src/platform/linux/shutdown.rs` records this.
 
 ## PLAT-011 - Release-profile tests may touch the real config directory
 
-- `config/io.rs:20` picks the directory name with `cfg!(debug_assertions)`, and `brokkr test` defaults to release. Any test that does not override `XDG_CONFIG_HOME` touches the real `~/.config/shepr`. The hunter did not audit which tests do.
+- `config/io.rs` picks the directory name with `cfg!(debug_assertions)`, and `brokkr test` defaults to release. Any test that does not override `XDG_CONFIG_HOME` touches the real `~/.config/shepr`. The hunter did not audit which tests do.
 
 ## PLAT-012 - Tests write under `/tmp`
 
-- `test_headless_server` (`src/server/headless/tests/`) uses `std::env::temp_dir()`, and the `src/server/autodetect.rs` tests hard-code `/tmp/ha-*` paths. Test scratch data should live under a per-test temp dir the harness owns, not fixed shared paths.
+- `test_headless_server` (`src/server/headless/tests/`) uses `std::env::temp_dir()`, the `src/server/autodetect.rs` tests hard-code `/tmp/ha-*` paths, and the `logging.rs` and `platform/linux.rs` tests write under `temp_dir()`. Test scratch data should live under a per-test temp dir the harness owns, not fixed shared paths.
+
+## PLAT-013 - Test environment locks are per-module
+
+- Tests that change `PATH`, `HOME` or `XDG_*` each take their own module's lock (`server/autodetect.rs`, `api/server.rs`, `session.rs`, `client/tests/mod.rs`, `app/mod.rs`, `integration/env.rs`, `integration/mod.rs`, `remote/attach.rs`, `config.rs`). The locks don't exclude each other, so those tests can race. Needs one crate-wide lock, or no environment mutation in tests.
+
+## PLAT-014 - `unreachable!` in production platform code
+
+- `platform/linux.rs`: the PTY helper and `read_clipboard_text_with_command`'s `Oversized` arm call `unreachable!`, a panic path in production.
+
+## PLAT-015 - Keystroke logging outside `raw_input.rs` is unchecked
+
+- `raw_input.rs` now logs input lengths and content-free event kinds at debug level. Client and server input handling were not checked for debug lines that record typed text or paste contents.

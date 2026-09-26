@@ -742,7 +742,11 @@ pub struct ServerConfig {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct AdvancedConfig {
-    /// Maximum scrollback buffer size in bytes retained per pane terminal. Default: 10000000.
+    /// Approximate scrollback budget in bytes per pane terminal, converted to a
+    /// line count for the pane's width; 0 disables scrollback. Not a hard cap:
+    /// any non-zero budget keeps at least 1000 lines, and a pane that is
+    /// widened keeps the history it already holds rather than dropping it, so
+    /// it can exceed the budget until it narrows again. Default: 10000000.
     pub scrollback_limit_bytes: usize,
 }
 

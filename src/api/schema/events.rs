@@ -17,8 +17,10 @@ pub struct EventsSubscribeParams {
 pub enum Subscription {
     #[serde(rename = "workspace.created")]
     WorkspaceCreated {},
-    #[serde(rename = "workspace.updated")]
-    WorkspaceUpdated {},
+    // There is no `workspace.updated` subscription: nothing in the app ever
+    // emitted a generic workspace update, so a subscription to it was accepted
+    // and then never fired. The specific kinds below (`metadata_updated`,
+    // `renamed`, `moved`, ...) are the ones the app actually emits.
     #[serde(rename = "workspace.metadata_updated")]
     WorkspaceMetadataUpdated {},
     #[serde(rename = "workspace.renamed")]
@@ -106,78 +108,17 @@ pub enum OutputMatch {
     Regex { value: String },
 }
 
+/// What `events.wait` can wait for.
+///
+/// Only the variants the wait loop can actually match are accepted. The enum
+/// used to parse fifteen more (workspace, tab and pane lifecycle matches, plus
+/// `pane_output_changed`), all of which were then rejected at runtime with
+/// `unsupported_event_wait_match`; an unknown `event` is now a parse error
+/// (`invalid_request`) instead. For lifecycle events, use `events.subscribe`;
+/// for output, `pane.wait_for_output`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventMatch {
-    WorkspaceCreated {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        workspace_id: Option<String>,
-    },
-    WorkspaceUpdated {
-        workspace_id: String,
-    },
-    WorkspaceClosed {
-        workspace_id: String,
-    },
-    WorkspaceRenamed {
-        workspace_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        label: Option<String>,
-    },
-    WorkspaceMoved {
-        workspace_id: String,
-    },
-    WorkspaceFocused {
-        workspace_id: String,
-    },
-    TabCreated {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        tab_id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        workspace_id: Option<String>,
-    },
-    TabClosed {
-        tab_id: String,
-    },
-    TabRenamed {
-        tab_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        label: Option<String>,
-    },
-    TabMoved {
-        tab_id: String,
-    },
-    TabFocused {
-        tab_id: String,
-    },
-    PaneCreated {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        pane_id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        workspace_id: Option<String>,
-    },
-    PaneClosed {
-        pane_id: String,
-    },
-    PaneFocused {
-        pane_id: String,
-    },
-    PaneMoved {
-        pane_id: String,
-    },
-    PaneOutputChanged {
-        pane_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        min_revision: Option<u64>,
-    },
-    PaneExited {
-        pane_id: String,
-    },
-    PaneAgentDetected {
-        pane_id: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        agent: Option<String>,
-    },
     PaneAgentStatusChanged {
         pane_id: String,
         agent_status: AgentStatus,
@@ -186,9 +127,12 @@ pub enum EventMatch {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+// Every kind here must have an emitter in the app. `workspace_updated` and
+// `pane_output_changed` were once listed but never emitted; they were removed
+// rather than wired up, because a per-output emission would sit on the PTY hot
+// path and the specific workspace events already cover what changes.
 pub enum EventKind {
     WorkspaceCreated,
-    WorkspaceUpdated,
     WorkspaceMetadataUpdated,
     WorkspaceClosed,
     WorkspaceRenamed,
@@ -205,7 +149,6 @@ pub enum EventKind {
     PaneUpdated,
     PaneFocused,
     PaneMoved,
-    PaneOutputChanged,
     PaneExited,
     PaneAgentDetected,
     PaneAgentStatusChanged,
@@ -275,9 +218,6 @@ pub struct PaneScrollChangedEvent {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventData {
     WorkspaceCreated {
-        workspace: WorkspaceInfo,
-    },
-    WorkspaceUpdated {
         workspace: WorkspaceInfo,
     },
     WorkspaceMetadataUpdated {
@@ -355,11 +295,6 @@ pub enum EventData {
         closed_workspace_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         closed_tab_id: Option<String>,
-    },
-    PaneOutputChanged {
-        pane_id: String,
-        workspace_id: String,
-        revision: u64,
     },
     PaneExited {
         pane_id: String,

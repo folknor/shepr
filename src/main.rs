@@ -318,7 +318,7 @@ pane_history = false
 
 [advanced]
 # Maximum scrollback buffer size in bytes retained per pane terminal.
-# Matches Ghostty's default scrollback-limit behavior.
+# Approximate per-pane scrollback budget; nonzero values keep at least 1000 lines.
 # scrollback_limit_bytes = 10000000
 "##;
 
@@ -495,6 +495,47 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
+/// The "Common commands" section of `shepr --help`. A test checks that the
+/// clap spec accepts each one, so the list cannot advertise a command that
+/// does not exist.
+const COMMON_COMMANDS: &[(&str, &str)] = &[
+    ("shepr", "Launch or attach to the persistent session"),
+    (
+        "shepr status [server|client]",
+        "Show local client and running server status",
+    ),
+    (
+        "shepr server stop",
+        "Stop the running server via the API socket",
+    ),
+    (
+        "shepr config check",
+        "Validate config.toml and print diagnostics",
+    ),
+    ("shepr machine <subcommand>", "Manage saved SSH machines"),
+    (
+        "shepr workspace <subcommand>",
+        "Workspace helpers over the socket API",
+    ),
+    ("shepr tab <subcommand>", "Tab helpers over the socket API"),
+    (
+        "shepr agent <subcommand>",
+        "Agent/terminal helpers over the socket API",
+    ),
+    (
+        "shepr pane <subcommand>",
+        "Pane control helpers over the socket API",
+    ),
+    (
+        "shepr session <subcommand>",
+        "Manage named persistent sessions",
+    ),
+    (
+        "shepr integration <subcommand>",
+        "Manage built-in agent integrations",
+    ),
+];
+
 fn print_help() {
     platform::begin_cli_output();
     println!("shepr \u{2014} terminal workspace manager for AI coding agents");
@@ -515,43 +556,7 @@ fn print_help() {
     println!("       shepr integration <subcommand> ...");
     println!();
     println!("Common commands:");
-    for (command, description) in [
-        ("shepr", "Launch or attach to the persistent session"),
-        (
-            "shepr status [server|client]",
-            "Show local client and running server status",
-        ),
-        (
-            "shepr server stop",
-            "Stop the running server via the API socket",
-        ),
-        (
-            "shepr config reset-keys",
-            "Back up config.toml and remove custom keybindings",
-        ),
-        ("shepr machine <subcommand>", "Manage saved SSH machines"),
-        (
-            "shepr workspace <subcommand>",
-            "Workspace helpers over the socket API",
-        ),
-        ("shepr tab <subcommand>", "Tab helpers over the socket API"),
-        (
-            "shepr agent <subcommand>",
-            "Agent/terminal helpers over the socket API",
-        ),
-        (
-            "shepr pane <subcommand>",
-            "Pane control helpers over the socket API",
-        ),
-        (
-            "shepr session <subcommand>",
-            "Manage named persistent sessions",
-        ),
-        (
-            "shepr integration <subcommand>",
-            "Manage built-in agent integrations",
-        ),
-    ] {
+    for (command, description) in COMMON_COMMANDS {
         println!("  {command:<32} {description}");
     }
     println!();
@@ -590,6 +595,20 @@ mod tests {
             .expect("test precondition");
 
         assert!(accent < sidebar);
+    }
+
+    #[test]
+    fn help_advertises_only_commands_the_parser_accepts() {
+        for (command, _) in COMMON_COMMANDS {
+            // The literal words, up to the first placeholder.
+            let words: Vec<&str> = command
+                .split_whitespace()
+                .skip(1)
+                .take_while(|word| !word.starts_with('<') && !word.starts_with('['))
+                .collect();
+            assert!(cli::command_path_exists(&words), "{command}");
+        }
+        assert!(!cli::command_path_exists(&["config", "reset-keys"]));
     }
 
     #[test]

@@ -59,7 +59,7 @@ impl HeadlessServer {
             // Do not emit/cache a title during a frozen target activation. A committed client
             // explicitly requests the bounded replay after its coherent frame is visible.
             self.sent_window_title = None;
-            self.resize_shared_runtime_to_effective_size_with_pending_agent_resumes(true);
+            self.resize_foreground_shell_tab_if_controller(true);
             let focused_viewer_already_owns_tab = self
                 .shell_tab_id_for_client(client_id)
                 .is_some_and(|tab_id| {
@@ -79,7 +79,7 @@ impl HeadlessServer {
                 .retain(|_, controller_id| *controller_id != client_id);
             if self.foreground_client_id == Some(client_id) {
                 self.promote_latest_remaining_client();
-                self.resize_shared_runtime_to_effective_size_with_pending_agent_resumes(true);
+                self.resize_foreground_shell_tab_if_controller(true);
             } else {
                 self.sync_foreground_client_state();
             }

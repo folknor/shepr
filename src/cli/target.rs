@@ -181,13 +181,83 @@ pub(super) fn socket_label() -> String {
     }
 }
 
-pub(super) fn caller_pane_id() -> Option<String> {
-    if is_remote() {
-        return None;
+/// The pane this CLI process runs in, as far as the targeted server is
+/// concerned.
+///
+/// Every pane's environment carries `SHEPR_PANE_ID` together with
+/// `SHEPR_SOCKET_PATH`, the API socket of the server that owns the pane. The
+/// pane id only means something to that server, so it is used only when the
+/// command goes to the same socket: `--session` naming another session, a
+/// socket override that differs from the pane's, or `--machine` all make the
+/// id foreign. (A pane shell that re-exports `SHEPR_SOCKET_PATH` itself
+/// cannot be told apart from the pane's own value; nothing else records which
+/// server a pane belongs to.)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum CallerPane {
+    /// The command runs in this pane of the targeted server.
+    Known(String),
+    /// `SHEPR_PANE_ID` is unset: the command does not run inside a pane.
+    Unset,
+    /// `SHEPR_PANE_ID` names a pane of a different server than the target.
+    OtherServer,
+    /// `--machine`: the caller's pane can never be on that machine's server.
+    Remote,
+}
+
+impl CallerPane {
+    /// The pane id when it belongs to the targeted server.
+    pub(super) fn id(&self) -> Option<String> {
+        match self {
+            Self::Known(pane_id) => Some(pane_id.clone()),
+            Self::Unset | Self::OtherServer | Self::Remote => None,
+        }
     }
-    std::env::var("SHEPR_PANE_ID")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
+
+    /// The pane id for `--current`, which has no fallback.
+    pub(super) fn require(&self) -> Result<String, String> {
+        match self {
+            Self::Known(pane_id) => Ok(pane_id.clone()),
+            Self::Unset => Err(
+                "--current needs the calling pane, but SHEPR_PANE_ID is not set; run it inside a shepr pane or name the pane with --pane"
+                    .into(),
+            ),
+            Self::OtherServer => Err(
+                "--current names the calling pane, which belongs to a different server than this command targets (--session or SHEPR_SOCKET_PATH); name the pane with --pane"
+                    .into(),
+            ),
+            Self::Remote => Err(
+                "--current cannot be used with --machine: the calling pane is not on that machine; name the pane with --pane"
+                    .into(),
+            ),
+        }
+    }
+}
+
+pub(super) fn caller_pane() -> CallerPane {
+    if is_remote() {
+        return CallerPane::Remote;
+    }
+    caller_pane_from(
+        std::env::var(crate::integration::SHEPR_PANE_ID_ENV_VAR).ok(),
+        std::env::var_os(crate::api::SOCKET_PATH_ENV_VAR),
+        &crate::api::socket_path(),
+    )
+}
+
+fn caller_pane_from(
+    pane_id: Option<String>,
+    pane_socket: Option<std::ffi::OsString>,
+    target_socket: &std::path::Path,
+) -> CallerPane {
+    let Some(pane_id) = pane_id.filter(|value| !value.trim().is_empty()) else {
+        return CallerPane::Unset;
+    };
+    match pane_socket {
+        Some(socket) if std::path::Path::new(&socket) == target_socket => {
+            CallerPane::Known(pane_id)
+        }
+        _ => CallerPane::OtherServer,
+    }
 }
 
 pub(super) fn resolve_machine<'a>(
@@ -276,6 +346,45 @@ mod tests {
         let matches =
             parse(&["agent", "prompt", "w4:p1", "--machine=mac"]).expect("test precondition");
         assert_eq!(super::super::matches::string(&matches, "machine"), None);
+    }
+
+    #[test]
+    fn caller_pane_is_known_only_on_the_pane_s_own_server() {
+        let own = std::path::Path::new("/run/shepr/shepr.sock");
+        assert_eq!(
+            caller_pane_from(Some("w1:p2".into()), Some(own.into()), own),
+            CallerPane::Known("w1:p2".into())
+        );
+        // `--session other` or a different socket override.
+        let other = std::path::Path::new("/run/shepr/sessions/other/shepr.sock");
+        assert_eq!(
+            caller_pane_from(Some("w1:p2".into()), Some(own.into()), other),
+            CallerPane::OtherServer
+        );
+        // A pane id without the socket it belongs to cannot be placed.
+        assert_eq!(
+            caller_pane_from(Some("w1:p2".into()), None, own),
+            CallerPane::OtherServer
+        );
+        assert_eq!(
+            caller_pane_from(None, Some(own.into()), own),
+            CallerPane::Unset
+        );
+        assert_eq!(
+            caller_pane_from(Some("  ".into()), Some(own.into()), own),
+            CallerPane::Unset
+        );
+
+        assert_eq!(CallerPane::Known("p".into()).id().as_deref(), Some("p"));
+        assert_eq!(CallerPane::Known("p".into()).require().as_deref(), Ok("p"));
+        for unknown in [
+            CallerPane::Unset,
+            CallerPane::OtherServer,
+            CallerPane::Remote,
+        ] {
+            assert_eq!(unknown.id(), None);
+            assert!(unknown.require().is_err());
+        }
     }
 
     #[test]

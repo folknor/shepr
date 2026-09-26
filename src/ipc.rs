@@ -80,8 +80,39 @@ fn stale_socket_connect_error(kind: io::ErrorKind) -> bool {
     )
 }
 
-pub(crate) fn local_stream_peer_closed(stream: &mut LocalStream) -> io::Result<bool> {
-    probe_stream_closed(stream)
+/// Reports whether the peer has closed or shut down its write side.
+///
+/// Pure readiness check: it neither reads (unread bytes stay in the socket, so
+/// a framed stream keeps its alignment and a trailing newline after a request
+/// is not mistaken for a hang-up) nor touches the blocking mode. `POLLRDHUP`
+/// fires even when unread data is still queued ahead of the EOF, so a client
+/// that wrote something and then disconnected is still seen as closed.
+pub(crate) fn local_stream_peer_closed(stream: &LocalStream) -> io::Result<bool> {
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+
+    let fd = match stream {
+        LocalStream::UdSocket(inner) => inner.as_fd().as_raw_fd(),
+    };
+    let mut pollfd = libc::pollfd {
+        fd,
+        events: libc::POLLRDHUP,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: `pollfd` is a valid, exclusively borrowed array of length 1
+        // for the duration of the call, and `fd` stays open because `stream`
+        // is borrowed. A zero timeout makes the call non-blocking.
+        let ready = unsafe { libc::poll(&raw mut pollfd, 1, 0) };
+        if ready < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        let hangup = libc::POLLRDHUP | libc::POLLHUP | libc::POLLERR | libc::POLLNVAL;
+        return Ok(ready > 0 && pollfd.revents & hangup != 0);
+    }
 }
 
 pub(crate) fn set_local_stream_polling(stream: &mut LocalStream, enabled: bool) -> io::Result<()> {
@@ -180,27 +211,6 @@ pub(crate) fn poll_local_stream_read_count(
     }
 }
 
-fn probe_stream_closed(stream: &mut LocalStream) -> io::Result<bool> {
-    stream.set_nonblocking(true)?;
-    let mut probe = [0u8; 1];
-    let status = match stream.read(&mut probe) {
-        Ok(0) => Ok(true),
-        Ok(_) => Ok(true),
-        Err(err)
-            if matches!(
-                err.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-            ) =>
-        {
-            Ok(false)
-        }
-        Err(err) if is_connection_closed_error(&err) => Ok(true),
-        Err(err) => Err(err),
-    };
-    stream.set_nonblocking(false)?;
-    status
-}
-
 pub(crate) fn is_connection_closed_error(err: &io::Error) -> bool {
     matches!(
         err.kind(),
@@ -279,6 +289,49 @@ mod tests {
         drop(listener);
         let _ = fs::remove_file(&path);
         assert_eq!(mode, PRIVATE_SOCKET_MODE);
+    }
+
+    fn connected_pair(name: &str) -> (LocalStream, LocalStream) {
+        use interprocess::local_socket::traits::Listener as _;
+
+        let path = test_socket_path(name);
+        let listener = bind_local_listener(&path).expect("test precondition");
+        let client = connect_local_stream(&path).expect("test precondition");
+        let server = listener.accept().expect("test precondition");
+        let _ = fs::remove_file(&path);
+        (client, server)
+    }
+
+    #[test]
+    fn peer_closed_probe_leaves_pending_data_unread() {
+        use std::io::Write as _;
+
+        let (mut client, mut server) = connected_pair("probe-data");
+        assert!(!local_stream_peer_closed(&server).expect("probe"));
+
+        client.write_all(b"\n{}").expect("test precondition");
+        // Pending input is not a hang-up, and the probe must not eat it.
+        assert!(!local_stream_peer_closed(&server).expect("probe"));
+        assert!(!local_stream_peer_closed(&server).expect("probe"));
+
+        // Every byte the probe looked past is still there to read. The
+        // timeout only keeps a regression from hanging the test run.
+        server
+            .set_recv_timeout(Some(Duration::from_secs(2)))
+            .expect("test precondition");
+        let mut buf = [0u8; 3];
+        server.read_exact(&mut buf).expect("data still readable");
+        assert_eq!(&buf, b"\n{}");
+    }
+
+    #[test]
+    fn peer_closed_probe_sees_hangup_behind_unread_data() {
+        use std::io::Write as _;
+
+        let (mut client, server) = connected_pair("probe-close");
+        client.write_all(b"trailing\n").expect("test precondition");
+        drop(client);
+        assert!(local_stream_peer_closed(&server).expect("probe"));
     }
 
     #[test]

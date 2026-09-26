@@ -1,3 +1,100 @@
+//! Screen-detection manifests: the format, the loader and the matcher.
+//!
+//! # Where manifests come from
+//!
+//! Every agent in `Agent::SCREEN_MANIFEST_AGENTS` has a bundled manifest in
+//! `src/detect/manifests/`. A local override at
+//! `<config dir>/agent-detection/<agent label>.toml` replaces the bundled one
+//! wholesale when its `id` (or one of its `aliases`) names that agent. An
+//! override that does not parse, validate or compile is ignored with a warning
+//! and the bundled manifest stays active. Manifests are read once and cached;
+//! `shepr server reload-agent-manifests` rereads them.
+//!
+//! # Format
+//!
+//! ```toml
+//! id = "claude"                  # agent label; must match the file it overrides
+//! aliases = ["claude-code"]      # optional
+//!
+//! [[rules]]
+//! id = "osc_title_working"       # required, non-empty
+//! state = "working"              # idle | working | blocked | unknown
+//! priority = 1100                # default 0; highest matching rule wins
+//! region = "osc_title"           # default "whole_recent"
+//! visible_working = true         # optional evidence flags, see below
+//! regex = ['^\x{2810} ']
+//! not = [
+//!   { region = "bottom_non_empty_lines(12)", contains = ["esc to cancel"] },
+//! ]
+//! ```
+//!
+//! A rule matches when its own matchers and gates all hold against its
+//! region. Among matching rules the highest `priority` wins; equal priorities
+//! go to the rule listed first. No match gives the agent's fallback state
+//! (`Unknown` for Codex, `Idle` for every other agent).
+//!
+//! Matchers, usable on a rule and on any gate; every listed one must hold:
+//!
+//! - `contains = [..]`: every needle occurs in the region, case-insensitively.
+//! - `regex = [..]`: every pattern matches somewhere in the region text.
+//! - `line_regex = [..]`: every pattern matches at least one line.
+//!
+//! Gates, also usable on a rule and nested inside any gate:
+//!
+//! - `all = [gate, ..]`: every gate matches.
+//! - `any = [gate, ..]`: at least one gate matches.
+//! - `not = [gate, ..]`: no gate matches.
+//!
+//! Each gate is an inline table with the same matcher and gate keys plus an
+//! optional `region`. A gate without `region` reads the region of whatever
+//! encloses it (the rule, or the parent gate). A gate with `region` reads that
+//! region instead, and its nested gates inherit it. This lets one rule combine
+//! controls from different inputs, for example a rule on `osc_title` whose
+//! `not` gate reads `bottom_non_empty_lines(12)` so a title spinner stands
+//! down while a dialog's controls are on screen. Encode invariant controls as
+//! explicit AND (`all` / sibling matchers) and OR (`any`) gates rather than
+//! one loose needle.
+//!
+//! Evidence and skip flags on a rule:
+//!
+//! - `visible_idle`, `visible_working`, `visible_blocker`: the matched screen
+//!   visibly shows that state's live chrome. Each only counts when the rule's
+//!   `state` is the corresponding one.
+//! - `skip_state_update = true`: the screen is an agent-owned viewer (a
+//!   transcript, a picker) that says nothing about the live state; the pane
+//!   keeps its previous state. Requires `state = "unknown"` and no `visible_*`
+//!   flag.
+//!
+//! # Regions
+//!
+//! - `whole_recent`: the whole detection snapshot.
+//! - `osc_title`, `osc_progress`: the last OSC window title / OSC 9;4
+//!   progress string, not the screen.
+//! - `bottom_lines(N)`: the last N lines.
+//! - `bottom_non_empty_lines(N)`: from the Nth-last non-empty line to the end.
+//! - `top_non_empty_lines(N)`: from the start through the Nth non-empty line;
+//!   N is 1..=65535 written without a leading zero.
+//! - `after_last_horizontal_rule`: text after the last `─` rule line.
+//! - `prompt_box_body`: lines between the top border of the bottom-most
+//!   `─`-bordered box and the next rule.
+//! - `above_prompt_box`: everything above that box (the whole snapshot when
+//!   there is no box); `last_non_empty_above_prompt_box` is its last non-empty
+//!   line.
+//! - Codex prompt structure, where a prompt line is `›` or starts with `› `,
+//!   a block marker line starts with `•`, `■`, `[ ]` or `[x]`, and the current
+//!   prompt is the last prompt line with no block marker below it:
+//!   `after_last_prompt_marker`, `before_current_prompt_marker`,
+//!   `whole_recent_without_current_prompt_marker` (empty while a current
+//!   prompt exists), `current_prompt_block_marker` (the last block marker line
+//!   above the current prompt) and `after_current_prompt_block_marker`.
+//!
+//! # Limits
+//!
+//! Rule count, gate depth, gate count, matchers per gate, total matchers and
+//! matcher length are capped by the `MAX_*` constants below. Every gate needs a positive matcher (`contains`, `regex`, `line_regex`,
+//! `all` or `any`); a gate inside `not` may consist of nested `not` gates only.
+//! Unknown keys are rejected.
+
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, RwLock},
@@ -68,12 +165,7 @@ pub(crate) struct AgentManifestSummary {
 }
 
 pub(crate) fn manifest_summaries() -> Vec<AgentManifestSummary> {
-    let lock = manifest_cache();
-    let guard = match lock.read() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    manifest_summaries_from_cache(&guard)
+    registry().summaries()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,8 +451,11 @@ const BUNDLED_MANIFESTS: &[(&str, &str)] = &[
     ("copilot", include_str!("manifests/github-copilot.toml")),
 ];
 
-static MANIFEST_CACHE: OnceLock<RwLock<ManifestCache>> = OnceLock::new();
-static MANIFEST_RELOAD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+/// The process-wide registry. Production code reaches it only through
+/// `registry()`; tests build their own `ManifestRegistry` over a private
+/// override directory instead, so they never touch this, `XDG_CONFIG_HOME`,
+/// or anything else another test running in the same process could observe.
+static MANIFESTS: OnceLock<ManifestRegistry> = OnceLock::new();
 
 const MAX_RULES_PER_MANIFEST: usize = 128;
 const MAX_GATE_DEPTH: usize = 8;
@@ -369,30 +464,77 @@ const MAX_MATCHERS_PER_GATE: usize = 32;
 const MAX_TOTAL_MATCHERS: usize = 1024;
 const MAX_MATCHER_CHARS: usize = 512;
 
-pub(crate) fn reload_manifests() -> Vec<AgentManifestSummary> {
-    let _reload_guard = MANIFEST_RELOAD_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let cache = build_manifest_cache();
-    let summaries = manifest_summaries_from_cache(&cache);
-    let lock = MANIFEST_CACHE.get_or_init(|| RwLock::new(cache.clone()));
-    match lock.write() {
-        Ok(mut guard) => *guard = cache,
-        Err(poisoned) => *poisoned.into_inner() = cache,
+/// Loaded manifests for every screen-manifest agent, read from the bundled
+/// set plus local overrides in one directory, and swapped wholesale on reload.
+#[derive(Debug)]
+struct ManifestRegistry {
+    cache: RwLock<ManifestCache>,
+    /// Serialises reloads so two concurrent reloads cannot interleave their
+    /// directory reads and leave the older one installed last.
+    reload_lock: Mutex<()>,
+}
+
+impl ManifestRegistry {
+    fn new(override_dir: &Path) -> Self {
+        Self {
+            cache: RwLock::new(build_manifest_cache(override_dir)),
+            reload_lock: Mutex::new(()),
+        }
     }
-    summaries
+
+    fn reload(&self, override_dir: &Path) -> Vec<AgentManifestSummary> {
+        let _reload_guard = self
+            .reload_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cache = build_manifest_cache(override_dir);
+        let summaries = manifest_summaries_from_cache(&cache);
+        match self.cache.write() {
+            Ok(mut guard) => *guard = cache,
+            Err(poisoned) => *poisoned.into_inner() = cache,
+        }
+        summaries
+    }
+
+    fn get(&self, agent: Agent) -> Option<Arc<LoadedManifest>> {
+        let guard = match self.cache.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard
+            .manifests
+            .iter()
+            .find(|(cached_agent, _)| *cached_agent == agent)
+            .and_then(|(_, loaded)| loaded.clone())
+    }
+
+    fn summaries(&self) -> Vec<AgentManifestSummary> {
+        let guard = match self.cache.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        manifest_summaries_from_cache(&guard)
+    }
 }
 
-fn manifest_cache() -> &'static RwLock<ManifestCache> {
-    MANIFEST_CACHE.get_or_init(|| RwLock::new(build_manifest_cache()))
+pub(crate) fn reload_manifests() -> Vec<AgentManifestSummary> {
+    registry().reload(&override_dir())
 }
 
-fn build_manifest_cache() -> ManifestCache {
+fn registry() -> &'static ManifestRegistry {
+    MANIFESTS.get_or_init(|| ManifestRegistry::new(&override_dir()))
+}
+
+fn build_manifest_cache(override_dir: &Path) -> ManifestCache {
     ManifestCache {
         manifests: Agent::SCREEN_MANIFEST_AGENTS
             .into_iter()
-            .map(|agent| (agent, load_manifest_uncached(agent).map(Arc::new)))
+            .map(|agent| {
+                (
+                    agent,
+                    load_manifest_uncached(agent, override_dir).map(Arc::new),
+                )
+            })
             .collect(),
     }
 }
@@ -433,7 +575,15 @@ pub fn detect(agent: Agent, screen_content: &str) -> AgentDetection {
 /// tick, so it evaluates rules in priority order, stops at the first match,
 /// and builds none of the evidence `explain` reports.
 pub fn detect_with_osc(agent: Agent, input: DetectionInput<'_>) -> AgentDetection {
-    let Some(loaded) = load_manifest(agent) else {
+    detect_with_manifest(agent, input, registry().get(agent).as_deref())
+}
+
+fn detect_with_manifest(
+    agent: Agent,
+    input: DetectionInput<'_>,
+    loaded: Option<&LoadedManifest>,
+) -> AgentDetection {
+    let Some(loaded) = loaded else {
         return fallback_detection(agent);
     };
     let mut texts = RegionTexts::new(input, loaded.regions.len());
@@ -463,10 +613,18 @@ pub fn explain(agent: Agent, screen_content: &str) -> DetectionExplain {
 }
 
 pub fn explain_with_input(agent: Agent, input: DetectionInput<'_>) -> DetectionExplain {
-    let Some(loaded) = load_manifest(agent) else {
+    explain_with_manifest(agent, input, registry().get(agent).as_deref())
+}
+
+fn explain_with_manifest(
+    agent: Agent,
+    input: DetectionInput<'_>,
+    loaded: Option<&LoadedManifest>,
+) -> DetectionExplain {
+    let Some(loaded) = loaded else {
         return fallback_explain(Some(agent), None);
     };
-    explain_loaded_manifest(agent, input, &loaded)
+    explain_loaded_manifest(agent, input, loaded)
 }
 
 pub fn explain_for_label(agent_label: &str, screen_content: &str) -> DetectionExplain {
@@ -639,22 +797,9 @@ fn fallback_explain(
     }
 }
 
-fn load_manifest(agent: Agent) -> Option<Arc<LoadedManifest>> {
-    let lock = manifest_cache();
-    let guard = match lock.read() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    guard
-        .manifests
-        .iter()
-        .find(|(cached_agent, _)| *cached_agent == agent)
-        .and_then(|(_, loaded)| loaded.clone())
-}
-
-fn load_manifest_uncached(agent: Agent) -> Option<LoadedManifest> {
+fn load_manifest_uncached(agent: Agent, override_dir: &Path) -> Option<LoadedManifest> {
     let bundled = bundled_manifest(agent);
-    let path = override_path(agent);
+    let path = override_path(override_dir, agent);
     if !path.exists() {
         return bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest));
     }
@@ -996,10 +1141,14 @@ fn validate_region_name(spec: &str) -> Result<(), String> {
         .ok_or_else(|| spec.trim().to_string())
 }
 
-fn override_path(agent: Agent) -> PathBuf {
-    crate::config::config_dir()
-        .join("agent-detection")
-        .join(format!("{}.toml", agent_label(agent)))
+/// Directory holding local manifest overrides, resolved from the config
+/// directory each time the process-wide registry is (re)built.
+fn override_dir() -> PathBuf {
+    crate::config::config_dir().join("agent-detection")
+}
+
+fn override_path(override_dir: &Path, agent: Agent) -> PathBuf {
+    override_dir.join(format!("{}.toml", agent_label(agent)))
 }
 
 fn manifest_matches_agent(manifest: &AgentManifest, agent: Agent) -> bool {

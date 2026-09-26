@@ -1,7 +1,9 @@
 //! JSON handshake and named controls for client-owned shells.
 //!
 //! Client and server are always the same build; the handshake carries
-//! `PROTOCOL_VERSION` so an accidental mismatch fails with a clear error.
+//! `PROTOCOL_VERSION`, which is derived from the build's source fingerprint,
+//! so a different build fails with a clear error as long as it still decodes
+//! the `EndpointControl` envelope this JSON rides in.
 
 use serde::{Deserialize, Serialize};
 

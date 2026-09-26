@@ -503,7 +503,7 @@ fn close_confirmation_error_becomes_client_owned_overlay_and_stable_group_close(
                     message: "confirmation required".into(),
                 }),
             )
-            .0
+            .repaint
     );
     let frame = state.compose(106, 20).expect("confirmation overlay");
     let text = frame
@@ -526,6 +526,6 @@ fn close_confirmation_error_becomes_client_owned_overlay_and_stable_group_close(
     assert!(matches!(
         &request.method,
         crate::api::schema::Method::WorkspaceClose(params)
-            if params.workspace_id == "ws_1" && params.close_group
+            if params.workspace_id == "ws_1"
     ));
 }

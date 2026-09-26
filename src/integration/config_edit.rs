@@ -159,7 +159,6 @@ pub(crate) fn ensure_direct_command_hook(
         };
         entry_object.remove("command");
         entry_object.remove("bash");
-        entry_object.remove("powershell");
         entry_object.insert(command_field.to_string(), Value::String(command.clone()));
         entry_object.insert("timeoutSec".to_string(), Value::Number(timeout_sec.into()));
         match matcher {
@@ -191,7 +190,6 @@ pub(crate) fn direct_command_field() -> &'static str {
 pub(crate) fn is_matching_direct_command_entry(entry: &Value, command: &str) -> bool {
     entry.get("command").and_then(Value::as_str) == Some(command)
         || entry.get("bash").and_then(Value::as_str) == Some(command)
-        || entry.get("powershell").and_then(Value::as_str) == Some(command)
 }
 
 pub(crate) fn remove_command_hook(

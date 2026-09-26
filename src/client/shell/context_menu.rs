@@ -197,10 +197,7 @@ impl ClientShellState {
                 } else {
                     self.push_endpoint_method(
                         crate::api::schema::Method::WorkspaceClose(
-                            crate::api::schema::WorkspaceCloseParams {
-                                workspace_id,
-                                close_group: true,
-                            },
+                            crate::api::schema::WorkspaceCloseParams { workspace_id },
                         ),
                         outcome,
                     );

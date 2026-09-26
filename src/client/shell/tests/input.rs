@@ -56,6 +56,35 @@ fn host_theme_updates_are_forwarded_to_the_server() {
 }
 
 #[test]
+fn host_appearance_switch_requeries_the_host_theme() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    for appearance in [
+        crate::terminal_theme::HostAppearance::Dark,
+        crate::terminal_theme::HostAppearance::Light,
+    ] {
+        let outcome =
+            state.handle_raw_events(vec![RawInputEvent::HostColorSchemeChanged(appearance)]);
+        assert!(outcome.query_host_theme);
+    }
+    let unrelated = state.handle_raw_events(vec![RawInputEvent::OuterFocusLost]);
+    assert!(!unrelated.query_host_theme);
+}
+
+#[test]
+fn focus_gained_forces_a_full_redraw_only_when_configured() {
+    for redraw in [false, true] {
+        let mut config = Config::default();
+        config.ui.redraw_on_focus_gained = redraw;
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        let outcome = state.handle_raw_events(vec![RawInputEvent::OuterFocusGained]);
+        assert_eq!(outcome.full_redraw, redraw);
+        if redraw {
+            assert!(outcome.repaint);
+        }
+    }
+}
+
+#[test]
 fn full_host_palette_response_is_sent_as_one_theme_update() {
     use std::fmt::Write as _;
 
@@ -237,11 +266,13 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
     assert!(early_copy.actions.is_empty());
     assert_eq!(state.mode, ClientShellMode::Copy);
 
-    let (_, actions) = state.handle_endpoint_result(
-        "boot-1",
-        &repeat_id,
-        Ok(copy_search_result(matches, Some(1))),
-    );
+    let actions = state
+        .handle_endpoint_result(
+            "boot-1",
+            &repeat_id,
+            Ok(copy_search_result(matches, Some(1))),
+        )
+        .actions;
     assert_eq!(state.mode, ClientShellMode::Terminal);
     let selection_request_id = actions
         .iter()
@@ -257,14 +288,16 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
             _ => None,
         })
         .expect("deferred selection read");
-    let (_, clipboard) = state.handle_endpoint_result(
-        "boot-1",
-        &selection_request_id,
-        Ok(crate::api::schema::ResponseResult::PaneSelection {
-            pane_id: "pane_1".into(),
-            text: "needle".into(),
-        }),
-    );
+    let clipboard = state
+        .handle_endpoint_result(
+            "boot-1",
+            &selection_request_id,
+            Ok(crate::api::schema::ResponseResult::PaneSelection {
+                pane_id: "pane_1".into(),
+                text: "needle".into(),
+            }),
+        )
+        .actions;
     assert!(matches!(
         &clipboard[..],
         [ClientShellAction::ClipboardWrite(bytes)] if bytes == b"needle"

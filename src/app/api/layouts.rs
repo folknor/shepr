@@ -89,7 +89,7 @@ impl App {
         });
         let root_leaf = first_layout_leaf(&params.root);
         let first_cwd = self.layout_root_cwd(ws_idx, replace_target, root_leaf);
-        let (rows, cols) = self.state.estimate_pane_size();
+        let (rows, cols) = self.state.pane_geometry().sole_pane_size();
         let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
@@ -138,7 +138,6 @@ impl App {
         };
         let new_root_pane = self.state.workspaces[ws_idx].tabs[new_tab_idx].root_pane;
         self.terminal_runtimes.insert(terminal.id.clone(), runtime);
-        self.state.remove_alias_shadowed_by_new_pane(new_root_pane);
         self.state.terminals.insert(terminal.id.clone(), terminal);
         if let Some(label) = replacement_label {
             self.state.workspaces[ws_idx].tabs[new_tab_idx].set_custom_name(label);
@@ -384,7 +383,7 @@ impl App {
         ratio: f32,
         pane: &LayoutPane,
     ) -> Result<PaneId, String> {
-        let (rows, cols) = self.state.estimate_pane_size();
+        let geometry = self.state.pane_geometry();
         let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
@@ -410,8 +409,7 @@ impl App {
                     target_pane_id,
                     direction,
                     ratio,
-                    rows,
-                    cols,
+                    &geometry,
                     cwd,
                     argv,
                     extra_env,
@@ -425,8 +423,7 @@ impl App {
                     target_pane_id,
                     direction,
                     ratio,
-                    rows,
-                    cols,
+                    &geometry,
                     cwd,
                     scrollback_limit_bytes,
                     host_terminal_theme,
@@ -449,8 +446,6 @@ impl App {
     fn attach_new_layout_pane(&mut self, new_pane: NewPane) {
         self.terminal_runtimes
             .insert(new_pane.terminal.id.clone(), new_pane.runtime);
-        self.state
-            .remove_alias_shadowed_by_new_pane(new_pane.pane_id);
         self.state
             .terminals
             .insert(new_pane.terminal.id.clone(), new_pane.terminal);
@@ -597,7 +592,6 @@ mod tests {
         let mut app = App::new(
             &Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             api_rx,
             crate::api::EventHub::default(),
         );

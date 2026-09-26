@@ -1,5 +1,5 @@
 use std::fmt;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -52,7 +52,16 @@ impl ApiClient {
         parse_response_value(value)
     }
 
+    /// Sends one request and reads its single-line response.
+    ///
+    /// The response wait is bounded by [`response_timeout`]: ordinary requests
+    /// get a little longer than the server's own bound, and wait methods get
+    /// their own `timeout_ms` plus a grace period, or no bound when they were
+    /// sent without one. A timeout surfaces as `ErrorKind::TimedOut`.
     pub fn request_value(&self, request: &Request) -> Result<serde_json::Value, ApiClientError> {
+        if let Some(timeout) = response_timeout(request) {
+            return self.request_value_with_timeout(request, timeout);
+        }
         let mut stream = self.connect()?;
         write_request(&mut stream, request)?;
 
@@ -60,18 +69,22 @@ impl ApiClient {
         read_json_line(&mut reader)
     }
 
+    /// Like [`Self::request_value`] with an explicit bound. The bound is an
+    /// send timeout for writing and one overall deadline for reading. A timeout
+    /// surfaces as `ErrorKind::TimedOut`, even if the server trickles out a
+    /// partial response.
     pub fn request_value_with_timeout(
         &self,
         request: &Request,
         timeout: Duration,
     ) -> Result<serde_json::Value, ApiClientError> {
         let mut stream = self.connect()?;
-        set_timeout_best_effort(&stream, TimeoutKind::Send, timeout)?;
-        set_timeout_best_effort(&stream, TimeoutKind::Recv, timeout)?;
-        write_request(&mut stream, request)?;
+        stream.set_send_timeout(Some(timeout))?;
+        write_request(&mut stream, request).map_err(normalize_socket_timeout)?;
 
-        let mut reader = BufReader::new(stream);
-        read_json_line(&mut reader)
+        let deadline = deadline_after(timeout)?;
+        let mut reader = BufReader::new(crate::ipc::DeadlineReader::new(&mut stream, deadline));
+        read_json_line(&mut reader).map_err(normalize_socket_timeout)
     }
 
     pub fn status(&self) -> Result<crate::api::RuntimeStatus, ApiClientError> {
@@ -97,11 +110,9 @@ impl ApiClient {
             Some(timeout) => {
                 let mut stream = self.connect()?;
                 write_request(&mut stream, &request)?;
-                crate::ipc::set_local_stream_polling(&mut stream, true)?;
-                let mut reader = BufReader::new(DeadlineReader {
-                    stream: &mut stream,
-                    deadline: Instant::now() + timeout,
-                });
+                let deadline = deadline_after(timeout)?;
+                let mut reader =
+                    BufReader::new(crate::ipc::DeadlineReader::new(&mut stream, deadline));
                 parse_response_value(read_json_line(&mut reader)?)?
             }
             None => self.request(&request)?,
@@ -125,24 +136,64 @@ impl ApiClient {
     }
 }
 
-#[derive(Clone, Copy)]
-enum TimeoutKind {
-    Send,
-    Recv,
+/// Client-side bound for ordinary requests. It trails the server's own bound
+/// so that, when the app main loop is stalled, the server's more specific
+/// `server_unavailable` answer arrives before the client gives up.
+const ORDINARY_RESPONSE_TIMEOUT: Duration =
+    Duration::from_secs(crate::api::server::ORDINARY_REQUEST_TIMEOUT.as_secs() + 5);
+
+/// Slack past a wait's own `timeout_ms`. At its deadline a wait still makes a
+/// final app probe (bounded by the server's 5 s app-response timeout), and
+/// `agent.prompt --wait` chains a submission step and two status waits that
+/// can each overrun by one such probe. This only has to exceed those
+/// overruns; it is not what normally ends a wait.
+const WAIT_RESPONSE_GRACE: Duration = Duration::from_secs(30);
+
+fn deadline_after(timeout: Duration) -> io::Result<Instant> {
+    Instant::now().checked_add(timeout).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "api response timeout is too large",
+        )
+    })
 }
 
-fn set_timeout_best_effort(
-    stream: &LocalStream,
-    kind: TimeoutKind,
-    timeout: Duration,
-) -> io::Result<()> {
-    let result = match kind {
-        TimeoutKind::Send => stream.set_send_timeout(Some(timeout)),
-        TimeoutKind::Recv => stream.set_recv_timeout(Some(timeout)),
+/// How long [`ApiClient::request_value`] waits for a response, or `None` for
+/// no bound.
+///
+/// Wait methods run as long as the caller asked: their own `timeout_ms` plus
+/// [`WAIT_RESPONSE_GRACE`], or unbounded when sent without one. A plain
+/// `agent.prompt` is unbounded because the server answers only once the
+/// prompt is written to the agent, which a busy agent may delay for minutes
+/// (see `prompt_agent` in `src/api/wait.rs`). Everything else, including the
+/// acknowledgement of `events.subscribe`, is ordinary.
+pub(crate) fn response_timeout(request: &Request) -> Option<Duration> {
+    let wait_bound = |timeout_ms: Option<u64>| {
+        timeout_ms.map(|ms| Duration::from_millis(ms).saturating_add(WAIT_RESPONSE_GRACE))
     };
-    match result {
-        Ok(()) => Ok(()),
-        Err(err) => Err(err),
+    match &request.method {
+        Method::EventsWait(params) => wait_bound(params.timeout_ms),
+        Method::AgentWait(params) => wait_bound(params.timeout_ms),
+        Method::PaneWaitForOutput(params) => wait_bound(params.timeout_ms),
+        Method::AgentPrompt(params) => params
+            .wait
+            .as_ref()
+            .and_then(|wait| wait_bound(wait.timeout_ms)),
+        _ => Some(ORDINARY_RESPONSE_TIMEOUT),
+    }
+}
+
+/// `SO_RCVTIMEO`/`SO_SNDTIMEO` expiry is reported as `EAGAIN`, which std maps
+/// to `WouldBlock`; callers decide "stalled server" on `TimedOut` alone.
+fn normalize_socket_timeout(error: ApiClientError) -> ApiClientError {
+    match error {
+        ApiClientError::Io(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            ApiClientError::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "timed out waiting for the shepr server to respond",
+            ))
+        }
+        error => error,
     }
 }
 
@@ -186,36 +237,6 @@ fn write_request(stream: &mut LocalStream, request: &Request) -> Result<(), ApiC
     stream.write_all(b"\n")?;
     stream.flush()?;
     Ok(())
-}
-
-struct DeadlineReader<'a> {
-    stream: &'a mut LocalStream,
-    deadline: Instant,
-}
-
-impl Read for DeadlineReader<'_> {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if buffer.is_empty() {
-            return Ok(0);
-        }
-        loop {
-            if Instant::now() >= self.deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "server status probe timed out",
-                ));
-            }
-            // Peek-before-read keeps both idle and partial responses subject
-            // to the same deadline.
-            match crate::ipc::poll_local_stream_read_count(self.stream, buffer)? {
-                crate::ipc::LocalStreamReadCount::Data(count) => return Ok(count),
-                crate::ipc::LocalStreamReadCount::Closed => return Ok(0),
-                crate::ipc::LocalStreamReadCount::Pending => {
-                    std::thread::sleep(Duration::from_millis(2));
-                }
-            }
-        }
-    }
 }
 
 fn read_json_line<T: DeserializeOwned>(reader: &mut impl BufRead) -> Result<T, ApiClientError> {
@@ -279,6 +300,111 @@ mod tests {
         );
         server.join().expect("test precondition");
         std::fs::remove_file(path).expect("test precondition");
+    }
+
+    #[test]
+    fn request_timeout_on_a_stalled_server_is_reported_as_timed_out() {
+        use interprocess::local_socket::traits::Listener as _;
+        let path =
+            std::env::temp_dir().join(format!("shepr-request-timeout-{}.sock", std::process::id()));
+        let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let stream = listener.accept().expect("test precondition");
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("test precondition");
+            let _ = release_rx.recv_timeout(Duration::from_secs(5));
+        });
+        let client = ApiClient::for_target(ConnectionTarget::SocketPath(path.clone()));
+        let request = Request {
+            id: "stalled".into(),
+            method: Method::WorkspaceList(crate::api::schema::EmptyParams::default()),
+        };
+        let error = client
+            .request_value_with_timeout(&request, Duration::from_millis(100))
+            .expect_err("test precondition");
+        let _ = release_tx.send(());
+        server.join().expect("test precondition");
+        std::fs::remove_file(path).expect("test precondition");
+        assert!(
+            matches!(&error, ApiClientError::Io(error) if error.kind() == io::ErrorKind::TimedOut),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn partial_responses_cannot_extend_the_response_deadline() {
+        use interprocess::local_socket::traits::Listener as _;
+        let path = std::env::temp_dir().join(format!(
+            "shepr-partial-response-{}.sock",
+            std::process::id()
+        ));
+        let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
+        let server = std::thread::spawn(move || {
+            let stream = listener.accept().expect("test precondition");
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("test precondition");
+            let mut stream = reader.into_inner();
+            for _ in 0..4 {
+                if stream.write_all(b"{").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(70));
+            }
+        });
+        let client = ApiClient::for_target(ConnectionTarget::SocketPath(path.clone()));
+        let request = Request {
+            id: "partial".into(),
+            method: Method::WorkspaceList(crate::api::schema::EmptyParams::default()),
+        };
+        let error = client
+            .request_value_with_timeout(&request, Duration::from_millis(120))
+            .expect_err("partial JSON must time out");
+        server.join().expect("test precondition");
+        std::fs::remove_file(path).expect("test precondition");
+        assert!(
+            matches!(&error, ApiClientError::Io(error) if error.kind() == io::ErrorKind::TimedOut),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn response_timeout_bounds_ordinary_requests_and_follows_wait_timeouts() {
+        let request = |method| Request {
+            id: "timeout".into(),
+            method,
+        };
+        let ordinary = response_timeout(&request(Method::WorkspaceList(
+            crate::api::schema::EmptyParams::default(),
+        )))
+        .expect("ordinary requests are bounded");
+        assert!(ordinary > crate::api::server::ORDINARY_REQUEST_TIMEOUT);
+
+        let wait = |timeout_ms| {
+            request(Method::AgentWait(crate::api::schema::AgentWaitParams {
+                target: "reviewer".into(),
+                until: Vec::new(),
+                timeout_ms,
+            }))
+        };
+        assert_eq!(response_timeout(&wait(None)), None);
+        let bounded = response_timeout(&wait(Some(600_000))).expect("bounded wait");
+        assert!(bounded > Duration::from_secs(600));
+
+        let prompt = |wait| {
+            request(Method::AgentPrompt(crate::api::schema::AgentPromptParams {
+                target: "reviewer".into(),
+                text: "hi".into(),
+                wait,
+            }))
+        };
+        assert_eq!(response_timeout(&prompt(None)), None);
+        let prompt_wait: crate::api::schema::AgentPromptWaitOptions =
+            serde_json::from_value(serde_json::json!({ "timeout_ms": 1000 }))
+                .expect("test precondition");
+        assert!(response_timeout(&prompt(Some(prompt_wait))).is_some());
     }
 
     #[test]

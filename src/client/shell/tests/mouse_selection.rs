@@ -361,7 +361,7 @@ fn word_row_reply(state: &mut ClientShellState, id: &str, text: &str) -> Vec<Cli
                 text: text.into(),
             }),
         )
-        .1
+        .actions
 }
 
 fn start_word_drag(state: &mut ClientShellState) -> String {
@@ -510,6 +510,87 @@ fn double_click_drag_survives_focus_lag_after_anchor_reply() {
     );
     let released = word_drag_mouse(&mut state, MouseEventKind::Up(MouseButton::Left), 0, 14);
     assert_eq!(released.actions.len(), 1);
+}
+
+#[test]
+fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
+    let focused_on = |pane_id: &str| {
+        let mut projected = snapshot();
+        let mut other = projected.panes[0].clone();
+        other.pane_id = "pane_2".into();
+        projected.panes.push(other);
+        for pane in &mut projected.panes {
+            pane.focused = pane.pane_id == pane_id;
+        }
+        projected.focused_pane_id = Some(pane_id.into());
+        projected
+    };
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(focused_on("pane_2")));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("pane frame");
+    let pane = state.hits.panes[0].clone();
+    assert_eq!(pane.pane_id, "pane_1");
+    let mouse = |kind, column| {
+        RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column,
+            row: pane.inner_rect.y,
+            modifiers: KeyModifiers::empty(),
+        })
+    };
+
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        pane.inner_rect.x,
+    )]);
+    // Snapshots produced before the click's PaneFocus lands (a title spinner,
+    // say) still name the old pane; they must not cancel the drag.
+    state.set_snapshot(Box::new(focused_on("pane_2")));
+    assert!(state.selection.is_some(), "focus lag cancelled the drag");
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Drag(MouseButton::Left),
+        pane.inner_rect.x + 2,
+    )]);
+    assert_eq!(
+        state
+            .selection
+            .as_ref()
+            .expect("drag continues")
+            .ordered_cells(),
+        ((0, 0), (0, 2))
+    );
+
+    state.set_snapshot(Box::new(focused_on("pane_1")));
+    assert!(state.selection.is_some());
+    assert!(state.selection_focus_pending.is_none());
+    // Once focus has landed, moving it away again ends the selection.
+    state.set_snapshot(Box::new(focused_on("pane_2")));
+    assert!(state.selection.is_none());
+}
+
+#[test]
+fn selection_in_focused_pane_still_ends_when_focus_moves() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("pane frame");
+    let pane = state.hits.panes[0].clone();
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: pane.inner_rect.x,
+        row: pane.inner_rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(state.selection_focus_pending.is_none());
+    let mut moved = snapshot();
+    let mut other = moved.panes[0].clone();
+    other.pane_id = "pane_2".into();
+    moved.panes[0].focused = false;
+    moved.panes.push(other);
+    moved.focused_pane_id = Some("pane_2".into());
+    state.set_snapshot(Box::new(moved));
+    assert!(state.selection.is_none());
 }
 
 #[test]

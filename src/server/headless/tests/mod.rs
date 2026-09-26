@@ -49,13 +49,7 @@ fn test_headless_server() -> HeadlessServer {
 fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServer {
     let config = crate::config::Config::default();
     let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = crate::app::App::new(
-        &config,
-        crate::app::AppPolicy::TEST,
-        None,
-        api_rx,
-        event_hub,
-    );
+    let mut app = crate::app::App::new(&config, crate::app::AppPolicy::TEST, api_rx, event_hub);
 
     app.state.default_shell = crate::app::exiting_test_command().into();
     let dir = std::env::temp_dir().join(format!(
@@ -77,7 +71,6 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         .expect("set listener nonblocking");
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
     let should_quit = Arc::new(AtomicBool::new(false));
-    let server_keybindings = app_keybindings(&app);
     let headless_size = app.state.headless_size;
 
     HeadlessServer {
@@ -93,7 +86,6 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         client_shell_boot_id: "test-boot".into(),
         sent_window_title: None,
         api_window_title: None,
-        server_keybindings,
         server_config_diagnostic: None,
         server_config_diagnostic_without_keybindings: None,
         terminal_attach_owners: HashMap::new(),
@@ -140,6 +132,26 @@ fn read_server_shutdown_reason(bytes: Vec<u8>) -> Option<String> {
         ServerMessage::ServerShutdown { reason } => reason,
         other => panic!("expected shutdown, got {other:?}"),
     }
+}
+
+#[test]
+fn frame_server_message_refuses_payloads_over_the_frame_cap() {
+    let small = HeadlessServer::frame_server_message(&ServerMessage::ClientShellError {
+        message: "ok".into(),
+    })
+    .expect("small message frames");
+    assert!(matches!(
+        read_server_message(small),
+        ServerMessage::ClientShellError { message } if message == "ok"
+    ));
+
+    let oversized = HeadlessServer::frame_server_message(&ServerMessage::ClientShellError {
+        message: "x".repeat(MAX_FRAME_SIZE + 1),
+    });
+    assert!(matches!(
+        oversized,
+        Err(protocol::FramingError::Oversized { max, .. }) if max == MAX_FRAME_SIZE
+    ));
 }
 
 #[test]
@@ -2986,6 +2998,59 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
     shutdown_test_runtimes(&mut server);
 }
 
+#[tokio::test]
+async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_client() {
+    let mut server = test_headless_server();
+    // The focused test runtime's input queue holds four writes.
+    let mut input_rx = install_focused_test_runtime(&mut server, b"");
+    let pane_id = server
+        .app
+        .session_snapshot()
+        .focused_pane_id
+        .expect("test precondition");
+    let (writer, control_rx, _render_rx) = test_client_writer();
+    server.clients.insert(
+        11,
+        ClientConnection::new(
+            (80, 24),
+            crate::terminal_cell_size::HostCellSize::default(),
+            1,
+            RenderEncoding::SemanticFrame,
+            Some(writer),
+        ),
+    );
+    server.foreground_client_id = Some(11);
+
+    let events = ["a", "b", "c", "d", "e", "f"]
+        .into_iter()
+        .map(|text| crate::protocol::ClientPaneInputEvent::TextCommit(text.to_owned()))
+        .collect();
+    server.handle_server_event(ServerEvent::ClientShellPaneInput {
+        client_id: 11,
+        pane_id: pane_id.clone(),
+        events,
+    });
+
+    for expected in ["a", "b", "c", "d"] {
+        assert_eq!(
+            input_rx.try_recv().expect("queued input"),
+            Bytes::from(expected)
+        );
+    }
+    let message = loop {
+        if let ServerMessage::ClientShellError { message } = read_server_message(
+            control_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("dropped-input error"),
+        ) {
+            break message;
+        }
+    };
+    assert!(message.contains(&pane_id), "message: {message}");
+    assert!(message.contains("2 events"), "message: {message}");
+    shutdown_test_runtimes(&mut server);
+}
+
 fn install_focused_test_runtime(
     server: &mut HeadlessServer,
     terminal_bytes: &[u8],
@@ -4723,6 +4788,40 @@ fn pending_terminal_resize_does_not_take_shell_foreground_or_geometry() {
     assert_eq!(server.foreground_client_id, Some(1));
     assert_eq!(server.effective_size, shell_size);
     assert_eq!(server.clients[&2].terminal_size, (200, 60));
+}
+
+#[tokio::test]
+async fn direct_terminal_clients_never_become_foreground_or_claim_tab_geometry() {
+    let mut server = test_headless_server();
+    let _input_rx = install_focused_test_runtime(&mut server, b"");
+    for (client_id, mode) in [
+        (1, ClientConnectionMode::TerminalPending),
+        (
+            2,
+            ClientConnectionMode::TerminalAttach {
+                terminal_id: "t1".into(),
+            },
+        ),
+    ] {
+        server.clients.insert(
+            client_id,
+            ClientConnection::new_with_mode(
+                mode,
+                (80, 24),
+                crate::terminal_cell_size::HostCellSize::default(),
+                1,
+                RenderEncoding::TerminalAnsi,
+                None,
+            ),
+        );
+        assert!(!server.promote_client_to_foreground(client_id));
+        assert!(!server.claim_shell_tab_geometry(client_id, false));
+        assert!(!server.claim_unowned_shell_tab_geometry(client_id, false));
+        assert!(!server.resize_shell_tab_if_controller(client_id, false));
+    }
+    assert_eq!(server.foreground_client_id, None);
+    assert!(server.tab_geometry_controllers.is_empty());
+    shutdown_test_runtimes(&mut server);
 }
 
 #[test]

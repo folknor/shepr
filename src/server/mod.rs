@@ -7,7 +7,6 @@ pub(crate) mod client_shell;
 pub(crate) mod client_transport;
 pub(crate) mod clients;
 pub mod headless;
-pub(crate) mod keybindings;
 pub(crate) mod pane_input;
 pub(crate) mod render_stream;
 pub mod socket_paths;

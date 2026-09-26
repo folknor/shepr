@@ -2,6 +2,13 @@ use super::*;
 
 /// Run the headless server. This is the entry point called from main.rs.
 pub fn run_server() -> io::Result<()> {
+    // Consume the startup-cwd hint before anything below starts a thread: the
+    // API server thread, the tokio workers and session restore all run
+    // concurrently afterwards, and unsetting a variable while another thread
+    // may call getenv is undefined behaviour in glibc. `main` reaches this
+    // function without having spawned any thread; keep it that way.
+    let startup_cwd = take_startup_cwd();
+
     crate::logging::init_file_logging("shepr-server.log");
 
     let loaded_config = config::Config::load();
@@ -34,11 +41,10 @@ pub fn run_server() -> io::Result<()> {
         let mut app = app::App::new(
             &loaded_config.config,
             app::AppPolicy::PRODUCTION,
-            config::config_diagnostic_summary(&loaded_config.diagnostics),
             api_rx,
             event_hub,
         );
-        seed_startup_workspace_if_empty(&mut app);
+        seed_startup_workspace_if_empty(&mut app, startup_cwd);
 
         // Create the headless server.
         let mut server = match HeadlessServer::new(
@@ -71,8 +77,8 @@ pub fn run_server() -> io::Result<()> {
     result
 }
 
-fn seed_startup_workspace_if_empty(app: &mut app::App) {
-    let Some(cwd) = take_startup_cwd() else {
+fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathBuf>) {
+    let Some(cwd) = startup_cwd else {
         return;
     };
 
@@ -95,10 +101,22 @@ fn seed_startup_workspace_if_empty(app: &mut app::App) {
     }
 }
 
+/// Read and unset the startup-cwd hint the spawning client left in the
+/// environment, so pane shells do not inherit it.
+///
+/// Must run while the process is still single-threaded; see `run_server`.
 fn take_startup_cwd() -> Option<PathBuf> {
     let cwd = std::env::var_os(crate::server::autodetect::STARTUP_CWD_ENV_VAR)?;
+    // SAFETY: `run_server` calls this before it starts the API server thread,
+    // the tokio runtime or anything else that spawns threads, and `main` spawns
+    // none before calling `run_server`, so no other thread can be reading the
+    // environment concurrently.
     unsafe { std::env::remove_var(crate::server::autodetect::STARTUP_CWD_ENV_VAR) };
-    (!cwd.is_empty()).then(|| PathBuf::from(cwd))
+    startup_cwd_from_env_value(cwd)
+}
+
+fn startup_cwd_from_env_value(value: std::ffi::OsString) -> Option<PathBuf> {
+    (!value.is_empty()).then(|| PathBuf::from(value))
 }
 
 fn print_ready_message(api_socket: &Path, client_socket: &Path) {
@@ -112,4 +130,22 @@ fn print_ready_message(api_socket: &Path, client_socket: &Path) {
             .display()
     );
     eprintln!("did you mean to open the Shepr TUI? run `shepr`; you do not need `shepr server`.");
+}
+
+#[cfg(test)]
+mod startup_cwd_tests {
+    use super::*;
+
+    #[test]
+    fn empty_startup_cwd_is_ignored() {
+        assert_eq!(startup_cwd_from_env_value(std::ffi::OsString::new()), None);
+    }
+
+    #[test]
+    fn startup_cwd_value_becomes_path() {
+        assert_eq!(
+            startup_cwd_from_env_value(std::ffi::OsString::from("/srv/project")),
+            Some(PathBuf::from("/srv/project"))
+        );
+    }
 }

@@ -239,10 +239,10 @@ fn color_queries_report_child_overrides_and_palette_defaults() {
 }
 
 #[test]
-fn window_size_reports_need_pixel_geometry() {
+fn pixel_size_reports_need_pixel_geometry_but_character_size_does_not() {
     let mut terminal = Terminal::new(80, 24, 0).expect("test precondition");
     terminal.write(b"\x1b[14t\x1b[16t\x1b[18t");
-    assert!(core_replies(&mut terminal).is_empty());
+    assert_eq!(core_replies(&mut terminal), vec![b"\x1b[8;24;80t".to_vec()]);
 
     terminal.resize(80, 24, 9, 18).expect("test precondition");
     terminal.write(b"\x1b[14t\x1b[16t\x1b[18t");
@@ -253,6 +253,76 @@ fn window_size_reports_need_pixel_geometry() {
             b"\x1b[6;18;9t".to_vec(),
             b"\x1b[8;24;80t".to_vec(),
         ]
+    );
+}
+
+/// alacritty's own `CSI 14 t` reply multiplies u16 cell sizes, which wraps
+/// (or panics in debug builds) for large client-reported sizes.
+#[test]
+fn text_area_pixel_report_does_not_overflow_for_large_cells() {
+    let mut terminal = Terminal::new(80, 24, 0).expect("test precondition");
+    terminal
+        .resize(80, 24, 100_000, 100_000)
+        .expect("test precondition");
+    terminal.write(b"\x1b[14t");
+    assert_eq!(
+        core_replies(&mut terminal),
+        vec![b"\x1b[4;2400000;8000000t".to_vec()]
+    );
+}
+
+/// vte buffers a synchronized update and replays it at ESU; mode changes and
+/// replies the adapter handles must follow the replayed order, not arrival.
+#[test]
+fn adapter_modes_and_replies_keep_byte_order_inside_synchronized_updates() {
+    // X10 set after 1000 replaces it, even when both arrive inside a frame.
+    let mut terminal = Terminal::new(20, 3, 0).expect("test precondition");
+    terminal.write(b"\x1b[?2026h\x1b[?1000h\x1b[?9h\x1b[?2026l");
+    assert!(terminal.mode_get(9).expect("test precondition"));
+    assert!(!terminal.mode_get(1000).expect("test precondition"));
+
+    // DECRQM reports the state at its own position in the frame.
+    let mut terminal = Terminal::new(20, 3, 0).expect("test precondition");
+    terminal.write(b"\x1b[?2026h\x1b[?1016$p\x1b[?1016h\x1b[?1016$p\x1b[?2026l");
+    assert_eq!(
+        core_replies(&mut terminal),
+        vec![b"\x1b[?1016;2$y".to_vec(), b"\x1b[?1016;1$y".to_vec()]
+    );
+
+    // RIS inside a frame resets adapter modes set before it, not after it.
+    let mut terminal = Terminal::new(20, 3, 0).expect("test precondition");
+    terminal.write(b"\x1b[?2026h\x1b[?2031h\x1bc\x1b[?1016h\x1b[?2026l");
+    assert!(
+        !terminal
+            .mode_get(MODE_COLOR_SCHEME_REPORT)
+            .expect("test precondition")
+    );
+    assert!(
+        terminal
+            .mode_get(MODE_MOUSE_SGR_PIXELS)
+            .expect("test precondition")
+    );
+
+    // The in-band resize report follows a DSR requested earlier in the frame,
+    // and nothing is answered before ESU.
+    let mut terminal = Terminal::new(80, 24, 0).expect("test precondition");
+    terminal.resize(80, 24, 9, 18).expect("test precondition");
+    terminal.write(b"\x1b[?2026h\x1b[5n\x1b[?2048h");
+    assert!(core_replies(&mut terminal).is_empty());
+    terminal.write(b"\x1b[?2026l");
+    assert_eq!(
+        core_replies(&mut terminal),
+        vec![b"\x1b[0n".to_vec(), b"\x1b[48;24;80;432;720t".to_vec()]
+    );
+}
+
+#[test]
+fn modify_other_keys_level_is_reported() {
+    let mut terminal = Terminal::new(8, 2, 0).expect("test precondition");
+    terminal.write(b"\x1b[?4m\x1b[>4;2m\x1b[?4m");
+    assert_eq!(
+        core_replies(&mut terminal),
+        vec![b"\x1b[>4;0m".to_vec(), b"\x1b[>4;2m".to_vec()]
     );
 }
 
@@ -785,10 +855,16 @@ fn kitty_keyboard_depth_follows_screen_swaps_and_ris() {
 
 #[test]
 fn halfwidth_voiced_marks_take_their_own_cell() {
-    // Whole, split mid-character, and with the mark wrapping onto a new line.
+    // Whole, split mid-character, inside a synchronized update, and (below)
+    // with the mark wrapping onto a new line.
     for chunks in [
         vec!["\u{ff76}\u{ff9e}Z".as_bytes().to_vec()],
         vec![b"\xef\xbd\xb6\xef".to_vec(), b"\xbe\x9eZ".to_vec()],
+        vec![b"\xef\xbd\xb6\xef\xbe".to_vec(), b"\x9eZ".to_vec()],
+        vec![
+            b"\x1b[?2026h\xef\xbd\xb6\xef".to_vec(),
+            b"\xbe\x9eZ\x1b[?2026l".to_vec(),
+        ],
     ] {
         let mut terminal = Terminal::new(8, 2, 0).expect("test precondition");
         for chunk in &chunks {
@@ -992,6 +1068,64 @@ fn clear_screen_keeps_the_cursor_line_and_drops_history() {
             .read_text_viewport((0, 0), (9, 3), false)
             .expect("test precondition"),
         "$ prompt"
+    );
+}
+
+#[test]
+fn clear_screen_moves_the_saved_cursor_and_fills_with_default_colours() {
+    let mut terminal = Terminal::new(10, 4, 100_000).expect("test precondition");
+    // Save the cursor at the start of the prompt row (row 3), then leave a
+    // background colour active.
+    terminal.write(b"a\r\nb\r\nc\r\n\x1b7$ \x1b[44m");
+    assert!(terminal.clear_screen());
+
+    let grid = terminal.term.grid();
+    assert_eq!(grid.saved_cursor.point.line, Line(0));
+    for line in 1..4 {
+        for column in 0..10 {
+            let cell = &grid[Line(line)][Column(column)];
+            assert_eq!(
+                cell.bg,
+                Color::Named(NamedColor::Background),
+                "row {line} col {column}"
+            );
+        }
+    }
+    // The child's pen survives the host action.
+    assert_eq!(grid.cursor.template.bg, Color::Named(NamedColor::Blue));
+
+    // DECRC lands back on the prompt row.
+    terminal.write(b"\x1b8X");
+    assert_eq!(
+        terminal
+            .read_text_viewport((0, 0), (9, 0), false)
+            .expect("test precondition"),
+        "X"
+    );
+}
+
+/// Widening a pane lowers the byte budget's line count; history that already
+/// fit must survive a widen/narrow cycle (zoom, a wider client attaching).
+#[test]
+fn widening_resize_keeps_history_that_already_fit() {
+    let per_line_narrow = 40 * mem::size_of::<Cell>();
+    let mut terminal = Terminal::new(40, 3, per_line_narrow * 2_000).expect("test precondition");
+    write_numbered_lines(&mut terminal, 1_500);
+    let before = terminal.scrollback_rows().expect("test precondition");
+    assert!(before > 1_400);
+
+    terminal.resize(80, 3, 8, 16).expect("test precondition");
+    terminal.resize(40, 3, 8, 16).expect("test precondition");
+
+    assert_eq!(
+        terminal.scrollback_rows().expect("test precondition"),
+        before
+    );
+    assert_eq!(
+        terminal
+            .read_text_screen((0, 0), (39, 0), false)
+            .expect("test precondition"),
+        "000000"
     );
 }
 

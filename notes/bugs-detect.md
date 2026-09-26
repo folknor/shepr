@@ -25,49 +25,30 @@ The OSC tracker divergence from vte, raised in this scope, is filed as TERM-020.
 
 Surfaced in three scopes: detection, app core, pane/terminal state.
 
-- `stabilize_agent_detection` (`src/terminal/state.rs:2217`) is an identity function whose name promises stabilisation it does not do.
-- `AppEvent::StateChanged.visible_working` (`events.rs:34`) is carried but never read. `actions.rs:1171-1179` passes it (plus a hard-coded `false` for visible_idle) into `TerminalState::set_detected_state_with_screen_signals_at`, where both parameters are `_visible_idle` / `_visible_working` and ignored (`terminal/state.rs:309-317`). The detector computes them and ships them through `AppEvent::StateChanged`.
-- `AgentDetection::visible_working` is documented as "diagnostic metadata" (`detect/mod.rs:34-37`), but it drives publishing (`should_publish_detection_update`, the refresh timestamp).
+- `stabilize_agent_detection` (`src/terminal/state.rs`) is an identity function whose name promises stabilisation it does not do.
+- `AppEvent::StateChanged.visible_working` (`events.rs`) is carried but never read. `actions.rs` passes it (plus a hard-coded `false` for visible_idle) into `TerminalState::set_detected_state_with_screen_signals_at`, where both parameters are `_visible_idle` / `_visible_working` and ignored. The detector computes them and ships them through `AppEvent::StateChanged`.
+- `AgentDetection::visible_working` is documented as "diagnostic metadata" (`detect/mod.rs`), but it drives publishing (`should_publish_detection_update`, the refresh timestamp).
 - Either the detector's signal was lost in stripping, or the field and parameters should be removed.
-
-## DET-004 - Relative argv paths are resolved against the server's cwd, with blocking IO in the detection task
-
-- `resolved_agent_name_from_path_token` (`detect/mod.rs:665-674`) calls `std::fs::canonicalize` on argv tokens such as `./agent` or `bin/x` relative to the shepr server's cwd, not the target process's `/proc/<pid>/cwd`. That can misidentify or miss agents.
-- These blocking `canonicalize` calls, plus all the `/proc` reads (`probe_foreground_process`, `process_agent_hint` reading `environ`), run synchronously inside the per-pane tokio detection task. They block runtime workers, multiplied by the number of panes.
-
-## DET-006 - Manifest tests change process-global state
-
-- They mutate `XDG_CONFIG_HOME` and the global `MANIFEST_CACHE` (`manifest/tests.rs`). They are only safe under one-process-per-test (nextest); any other test in the same process that runs Codex detection concurrently would see synthetic manifests.
 
 ## DET-008 - Letta sits outside `IntegrationTarget`
 
-- Letta install/uninstall now go through the protected config writer. What remains is structural: Letta still has its own experimental path (types, registry, CLI) instead of being an `IntegrationTarget` variant. Folding it in touches `src/api/schema.rs`. The comments in `src/cli/integration.rs` and the `EXPERIMENTAL_INTEGRATION_TARGET_LABELS` doc in `src/integration/mod.rs` describe it as leftover structure awaiting the fold.
+- Letta install/uninstall go through the protected config writer. What remains is structural: Letta still has its own experimental path (types, registry, CLI) instead of being an `IntegrationTarget` variant. Folding it in touches `src/api/schema.rs`. The comments in `src/cli/integration.rs` and the `EXPERIMENTAL_INTEGRATION_TARGET_LABELS` doc in `src/integration/mod.rs` describe it as leftover structure awaiting the fold.
 
-## DET-009 - `integration status` can report "current" for an install that does nothing
+## DET-012 - Hook report ordering is decided by wall-clock seqs from separate processes
 
-- Status looks only at the hook file's version marker (`registry.rs:225-243`); only Grok and opencode also check registration.
-- Most installs (Claude, Codex, Qwen, Cursor and others) write the hook script before parsing or editing the agent's config (e.g. `install_claude`, `targets.rs`). A malformed `settings.json` leaves an orphan hook that status reports as current. Kimi and Letta now build the config first.
-- A user deleting the settings entry also leaves status at "current".
-
-## DET-012 - Hook ordering depends on interpreter startup time
-
-- Shell hooks (Kimi, Mastracode, all the Python ones) take `seq = time.time_ns()` after the interpreter has started, in a separate process per event.
-- Near-simultaneous events (for example PreToolUse followed by PermissionRequest) can arrive with inverted seqs, and the server drops the "older" one.
-- A wall-clock step backwards drops reports until the clock catches up.
-- Kimi, Kilo and Mastracode always send `session_start_source: "startup"`, even on resume.
-
-## DET-013 - Minor integration issues
-
-- Hook scripts are rewritten in place with `fs::write` (truncate then write) while agents may be running them through `bash`, which reads scripts incrementally.
-- `uninstall_target` logs only the "ok" outcome (errors return before logging).
-- The CLI usage line omits `antigravity-cli` (also in CMD-018).
-- The `version.rs` gate uses `expect`.
-- Windows leftovers in integration assets and helpers despite the Linux-only rule: `win32` pipe paths in the opencode JS/TS assets, `os.name == "nt"` in the Hermes plugin, `powershell`/`~\\` handling in `config_edit.rs`/`env.rs`. (The no-op platform stubs are in PLAT-006; the Rust-side Windows key path is PLAT-003.)
-
-## DET-015 - Gate-level `region` is undocumented
-
-- Manifest gates now take an optional `region` (for example a `not` gate reading `bottom_non_empty_lines(12)` inside an `osc_title` rule). Any manifest-format doc (`docs/`, `reference/`, or the brokkr man pages) should describe it.
+- Kimi and Mastracode now take their seq first thing in the shell (`date +%s%N`), which shrinks but doesn't close the window: separate hook processes still race, and a wall clock stepping backwards still drops reports until it catches up.
+- The real fix is server-side, in how `HookStateReported` / `AgentSessionReported` accept seqs (reached from `src/app/api/panes.rs`): tolerate small inversions or use a monotonic per-source clock.
+- Seq units differ by integration: Kilo, opencode, pi and omp seed from `Date.now()*1000` (microseconds); the shell/python hooks use nanoseconds. Harmless only while seqs are compared per source.
+- Kilo still sends `session_start_source: "startup"` always; its events carry no start source (commented in the asset).
 
 ## DET-016 - opencode/Kilo permission-dialog control labels are unconfirmed
 
-- The `permission_required` rules in the opencode and Kilo manifests now also require one of "allow once", "allow always", "reject" or "enter confirm". Those labels were written from memory of opencode's TUI. Confirm them against a live dialog with `shepr agent read <pane> --source detection --format text`.
+- The `permission_required` rules in the opencode and Kilo manifests also require one of "allow once", "allow always", "reject" or "enter confirm". Those labels were written from memory of opencode's TUI. Confirm them against a live dialog with `shepr agent read <pane> --source detection --format text`.
+
+## DET-017 - `expand_tilde_path` mis-expands `~user`
+
+- `expand_tilde_path` in `src/integration/env.rs` turns `~bob/x` into `$HOME/bob/x`. It should only expand a bare `~` or `~/`.
+
+## DET-018 - The Kimi hook assumes a JSON object payload
+
+- The Kimi hook script calls `payload.get` without checking the payload is a dict, so a non-object JSON body raises (and the report is silently lost).

@@ -3,9 +3,16 @@
 # managed by shepr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # SHEPR_INTEGRATION_ID=mastracode
-# SHEPR_INTEGRATION_VERSION=1
+# SHEPR_INTEGRATION_VERSION=2
 
 set -eu
+
+# Stamp the report the moment the hook starts. Every event runs this script in
+# a fresh process, and shepr drops a report whose seq is older than the last
+# one it accepted, so taking the timestamp after python3 has started would let
+# interpreter startup jitter reorder near-simultaneous events (a PreToolUse
+# followed at once by a PermissionRequest).
+hook_seq="$(date +%s%N 2>/dev/null || true)"
 
 action="${1:-}"
 hook_input_file="$(mktemp "${TMPDIR:-/tmp}/shepr-mastracode-hook.XXXXXX")" || exit 0
@@ -22,7 +29,7 @@ esac
 [ -n "${SHEPR_PANE_ID:-}" ] || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
-SHEPR_ACTION="$action" SHEPR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+SHEPR_ACTION="$action" SHEPR_HOOK_INPUT_FILE="$hook_input_file" SHEPR_HOOK_SEQ="$hook_seq" python3 - <<'PY'
 import json
 import os
 import random
@@ -49,7 +56,9 @@ if hook_input_file:
         hook_input = {}
 
 request_id = f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}"
-report_seq = time.time_ns()
+raw_seq = os.environ.get("SHEPR_HOOK_SEQ", "")
+# `date` without %N support prints a literal N; fall back to our own clock.
+report_seq = int(raw_seq) if raw_seq.isdigit() else time.time_ns()
 session_id = hook_input.get("session_id")
 if isinstance(session_id, str) and session_id:
     agent_session_id = session_id
@@ -58,6 +67,11 @@ else:
 if action == "session":
     if not agent_session_id:
         raise SystemExit(0)
+    # Pass MastraCode's own start source through when it sends one (shepr
+    # ignores values it does not know); a bare SessionStart is a fresh start.
+    session_start_source = hook_input.get("source")
+    if not isinstance(session_start_source, str) or not session_start_source:
+        session_start_source = "startup"
     request = {
         "id": request_id,
         "method": "pane.report_agent_session",
@@ -66,7 +80,7 @@ if action == "session":
             "source": source,
             "agent": "mastracode",
             "agent_session_id": agent_session_id,
-            "session_start_source": "startup",
+            "session_start_source": session_start_source,
             "seq": report_seq,
         },
     }

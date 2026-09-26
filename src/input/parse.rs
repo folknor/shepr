@@ -2,14 +2,12 @@ use crossterm::event::{KeyCode, KeyModifiers, MediaKeyCode, ModifierKeyCode};
 
 use super::TerminalKey;
 
-#[allow(dead_code)] // Next step: raw stdin parser will feed TerminalKey directly through this path.
 pub fn parse_terminal_key_sequence(data: &str) -> Option<TerminalKey> {
     parse_kitty_key_sequence(data)
         .or_else(|| parse_modify_other_keys_sequence(data))
         .or_else(|| parse_legacy_key_sequence(data))
 }
 
-#[allow(dead_code)] // Reserved for the upcoming raw stdin parser.
 fn parse_kitty_key_sequence(data: &str) -> Option<TerminalKey> {
     let body = data.strip_prefix("\x1b[")?.strip_suffix('u')?;
 
@@ -86,7 +84,6 @@ fn matching_control_associated_text(value: &str, code: KeyCode) -> bool {
     )
 }
 
-#[allow(dead_code)] // Reserved for the upcoming raw stdin parser.
 fn parse_modify_other_keys_sequence(data: &str) -> Option<TerminalKey> {
     let body = data.strip_prefix("\x1b[27;")?.strip_suffix('~')?;
     let (modifier_part, codepoint_part) = body.split_once(';')?;
@@ -99,7 +96,6 @@ fn parse_modify_other_keys_sequence(data: &str) -> Option<TerminalKey> {
     ))
 }
 
-#[allow(dead_code)] // Reserved for the upcoming raw stdin parser.
 fn parse_legacy_key_sequence(data: &str) -> Option<TerminalKey> {
     if let Some(key) = parse_legacy_special_sequence(data) {
         return Some(key);
@@ -292,7 +288,6 @@ fn split_modifier_and_event(input: &str) -> (&str, Option<&str>) {
     }
 }
 
-#[allow(dead_code)] // Reserved for the upcoming raw stdin parser.
 fn parse_kitty_event_type(value: Option<&str>) -> Option<crossterm::event::KeyEventKind> {
     match value.unwrap_or("1") {
         "1" => Some(crossterm::event::KeyEventKind::Press),
@@ -302,7 +297,6 @@ fn parse_kitty_event_type(value: Option<&str>) -> Option<crossterm::event::KeyEv
     }
 }
 
-#[allow(dead_code)] // Reserved for the upcoming raw stdin parser.
 fn kitty_codepoint_to_keycode(codepoint: u32) -> Option<KeyCode> {
     match codepoint {
         8 | 127 => Some(KeyCode::Backspace),
@@ -381,7 +375,6 @@ fn kitty_codepoint_to_keycode(codepoint: u32) -> Option<KeyCode> {
     }
 }
 
-#[allow(dead_code)] // Reserved for the upcoming raw stdin parser.
 fn key_modifiers_from_u8(modifier: u8) -> KeyModifiers {
     let mut mods = KeyModifiers::empty();
     if modifier & 0b0000_0001 != 0 {

@@ -11,20 +11,76 @@
 //!   `CSI > 1 u` would otherwise kill the pane's reader thread while it holds
 //!   the core locks. The handler mirrors the stack depths and never lets a push
 //!   reach alacritty's broken branch.
+//! * Private modes 9 (X10 mouse), 1016 (SGR-pixel mouse), 2031 (colour-scheme
+//!   reports) and 2048 (in-band resize), which alacritty ignores: set, reset
+//!   and DECRQM-reported here, plus the mouse modes that cancel 9 and 1016.
+//! * `reset_state` (RIS) also resets those adapter modes and modifyOtherKeys.
+//! * modifyOtherKeys (`CSI > 4 ; Pv m`, `CSI ? 4 m`), which alacritty does not
+//!   model.
+//! * `input` of U+FF9E/U+FF9F, printed in a cell of their own (see
+//!   [`CoreHandler::input_halfwidth_voiced_mark`]).
+//! * `CSI 14 t`, answered only with known pixel geometry and computed without
+//!   alacritty's u16 multiplication (which overflows for large cell sizes).
+//!
+//! Handling these here rather than in the byte scanner (`scan.rs`) matters
+//! because vte buffers everything inside a synchronized update (mode 2026) and
+//! replays it at ESU: only effects dispatched through the handler happen in
+//! byte order relative to alacritty's own, inside or outside such an update.
+//! Replies go into the same event queue alacritty's `PtyWrite`s use, so they
+//! interleave with DA/DSR/DECRQM answers in request order.
 //!
 //! Every `Handler` method is listed explicitly: the trait gives each one a
 //! no-op default, so a method left out here would be silently dropped rather
 //! than reach `Term`. When bumping `alacritty_terminal`, diff vte's `Handler`
 //! trait against this impl.
 
-use alacritty_terminal::event::EventListener;
+use std::sync::{Mutex, PoisonError};
+
+use alacritty_terminal::event::{Event, EventListener};
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::Column;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::cursor_icon::CursorIcon;
 use alacritty_terminal::vte::ansi::{
     Attr, CharsetIndex, ClearMode, CursorShape, CursorStyle, Handler, Hyperlink, KeyboardModes,
-    KeyboardModesApplyBehavior, LineClearMode, Mode, ModifyOtherKeys, PrivateMode, Rgb,
-    ScpCharPath, ScpUpdateMode, StandardCharset, TabulationClearMode,
+    KeyboardModesApplyBehavior, LineClearMode, Mode, ModifyOtherKeys, NamedPrivateMode,
+    PrivateMode, Rgb, ScpCharPath, ScpUpdateMode, StandardCharset, TabulationClearMode,
 };
+
+use super::ExtraModes;
+
+/// The in-band resize report (`CSI 48 ; rows ; cols ; height ; width t`),
+/// `None` while no pixel geometry is known.
+pub(super) fn in_band_size_report(
+    rows: usize,
+    cols: usize,
+    cell_width_px: u32,
+    cell_height_px: u32,
+) -> Option<String> {
+    if cell_width_px == 0 || cell_height_px == 0 {
+        return None;
+    }
+    let height = rows as u64 * u64::from(cell_height_px);
+    let width = cols as u64 * u64::from(cell_width_px);
+    Some(format!("\x1b[48;{rows};{cols};{height};{width}t"))
+}
+
+/// The `CSI 14 t` reply (`CSI 4 ; height ; width t`), `None` while no pixel
+/// geometry is known. Computed in u64: alacritty's own reply multiplies u16
+/// values, which wraps (or panics in debug builds) for large cell sizes.
+pub(super) fn text_area_pixels_report(
+    rows: usize,
+    cols: usize,
+    cell_width_px: u32,
+    cell_height_px: u32,
+) -> Option<String> {
+    if cell_width_px == 0 || cell_height_px == 0 {
+        return None;
+    }
+    let height = rows as u64 * u64::from(cell_height_px);
+    let width = cols as u64 * u64::from(cell_width_px);
+    Some(format!("\x1b[4;{height};{width}t"))
+}
 
 /// alacritty's keyboard-mode stack cap (`KEYBOARD_MODE_STACK_MAX_DEPTH`,
 /// private in the pinned release).
@@ -58,12 +114,56 @@ impl KeyboardStackDepth {
 pub(super) struct CoreHandler<'a, T: EventListener> {
     pub(super) term: &'a mut Term<T>,
     pub(super) keyboard_depth: &'a mut KeyboardStackDepth,
+    pub(super) modes: &'a mut ExtraModes,
+    pub(super) cell_width_px: u32,
+    pub(super) cell_height_px: u32,
+    /// The queue alacritty's listener fills; adapter replies go in as
+    /// `PtyWrite`s so they keep byte order with alacritty's.
+    pub(super) events: &'a Mutex<Vec<Event>>,
 }
 
 impl<T: EventListener> CoreHandler<'_, T> {
     fn active_keyboard_depth(&mut self) -> &mut usize {
         let alternate_screen = self.term.mode().contains(TermMode::ALT_SCREEN);
         self.keyboard_depth.active(alternate_screen)
+    }
+
+    fn reply(&self, text: String) {
+        self.events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Event::PtyWrite(text));
+    }
+
+    /// The adapter-modelled state of a private mode alacritty does not know,
+    /// `None` for every other mode.
+    fn adapter_private_mode(&self, mode: PrivateMode) -> Option<bool> {
+        match mode {
+            PrivateMode::Unknown(9) => Some(self.modes.x10_mouse),
+            PrivateMode::Unknown(1016) => Some(self.modes.sgr_pixels_mouse),
+            PrivateMode::Unknown(2031) => Some(self.modes.color_scheme_report),
+            PrivateMode::Unknown(2048) => Some(self.modes.in_band_resize),
+            _ => None,
+        }
+    }
+
+    /// Prints U+FF9E/U+FF9F in a cell of its own. unicode-width counts these
+    /// Grapheme_Extend marks as zero-width, so alacritty would fold them into
+    /// the previous cell, while wcwidth, xterm and the program writing them
+    /// advance the cursor one column; left alone, every later cell on the
+    /// line would sit one column left of where the program believes it is.
+    fn input_halfwidth_voiced_mark(&mut self, mark: char) {
+        // A plain width-1 print handles wrapping, insert mode and the SGR
+        // template; the cell it wrote then gets the mark as its character.
+        Handler::input(self.term, ' ');
+        let grid = self.term.grid_mut();
+        let point = grid.cursor.point;
+        let column = if grid.cursor.input_needs_wrap {
+            point.column
+        } else {
+            Column(point.column.0.saturating_sub(1))
+        };
+        grid[point.line][column].c = mark;
     }
 }
 
@@ -81,7 +181,11 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
     }
 
     fn input(&mut self, c: char) {
-        Handler::input(self.term, c);
+        if matches!(c, '\u{ff9e}' | '\u{ff9f}') {
+            self.input_halfwidth_voiced_mark(c);
+        } else {
+            Handler::input(self.term, c);
+        }
     }
 
     fn goto(&mut self, line: i32, col: usize) {
@@ -224,6 +328,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
         Handler::reset_state(self.term);
         // alacritty's RIS empties both keyboard-mode stacks.
         *self.keyboard_depth = KeyboardStackDepth::default();
+        *self.modes = ExtraModes::default();
     }
 
     fn reverse_index(&mut self) {
@@ -247,15 +352,71 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
     }
 
     fn set_private_mode(&mut self, mode: PrivateMode) {
+        match mode {
+            PrivateMode::Unknown(9) => {
+                // X10 mouse replaces the other tracking modes, as in xterm.
+                self.modes.x10_mouse = true;
+                for other in [
+                    NamedPrivateMode::ReportMouseClicks,
+                    NamedPrivateMode::ReportCellMouseMotion,
+                    NamedPrivateMode::ReportAllMouseMotion,
+                ] {
+                    Handler::unset_private_mode(self.term, other.into());
+                }
+                return;
+            }
+            PrivateMode::Unknown(1016) => {
+                self.modes.sgr_pixels_mouse = true;
+                return;
+            }
+            PrivateMode::Unknown(2031) => {
+                self.modes.color_scheme_report = true;
+                return;
+            }
+            PrivateMode::Unknown(2048) => {
+                self.modes.in_band_resize = true;
+                if let Some(report) = in_band_size_report(
+                    self.term.screen_lines(),
+                    self.term.columns(),
+                    self.cell_width_px,
+                    self.cell_height_px,
+                ) {
+                    self.reply(report);
+                }
+                return;
+            }
+            PrivateMode::Named(
+                NamedPrivateMode::ReportMouseClicks
+                | NamedPrivateMode::ReportCellMouseMotion
+                | NamedPrivateMode::ReportAllMouseMotion,
+            ) => self.modes.x10_mouse = false,
+            // Re-asserting 1006 deliberately does not cancel 1016: apps resend
+            // it after 1016 and still expect pixel coordinates.
+            PrivateMode::Named(NamedPrivateMode::Utf8Mouse) => self.modes.sgr_pixels_mouse = false,
+            _ => {}
+        }
         Handler::set_private_mode(self.term, mode);
     }
 
     fn unset_private_mode(&mut self, mode: PrivateMode) {
-        Handler::unset_private_mode(self.term, mode);
+        match mode {
+            PrivateMode::Unknown(9) => self.modes.x10_mouse = false,
+            PrivateMode::Unknown(1016) => self.modes.sgr_pixels_mouse = false,
+            PrivateMode::Unknown(2031) => self.modes.color_scheme_report = false,
+            PrivateMode::Unknown(2048) => self.modes.in_band_resize = false,
+            _ => Handler::unset_private_mode(self.term, mode),
+        }
     }
 
+    /// alacritty answers "not recognised" for the adapter-modelled modes.
     fn report_private_mode(&mut self, mode: PrivateMode) {
-        Handler::report_private_mode(self.term, mode);
+        match self.adapter_private_mode(mode) {
+            Some(enabled) => {
+                let state = if enabled { 1 } else { 2 };
+                self.reply(format!("\x1b[?{};{state}$y", mode.raw()));
+            }
+            None => Handler::report_private_mode(self.term, mode),
+        }
     }
 
     fn set_scrolling_region(&mut self, top: usize, bottom: Option<usize>) {
@@ -310,10 +471,20 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
         Handler::pop_title(self.term);
     }
 
+    /// Not forwarded: alacritty's reply closure multiplies u16 cell sizes.
     fn text_area_size_pixels(&mut self) {
-        Handler::text_area_size_pixels(self.term);
+        if let Some(report) = text_area_pixels_report(
+            self.term.screen_lines(),
+            self.term.columns(),
+            self.cell_width_px,
+            self.cell_height_px,
+        ) {
+            self.reply(report);
+        }
     }
 
+    /// `CSI 18 t` reports characters, so it is answered with or without pixel
+    /// geometry.
     fn text_area_size_chars(&mut self) {
         Handler::text_area_size_chars(self.term);
     }
@@ -356,12 +527,22 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
         Handler::set_keyboard_mode(self.term, mode, behavior);
     }
 
+    /// vte dispatches `CSI > 4 ; Pv m` for Pv 0..=2 (missing means 0). The
+    /// spellings it drops (`CSI > m`, `CSI > 4 n`, Pv above 2) are still
+    /// picked up by the byte scanner.
     fn set_modify_other_keys(&mut self, mode: ModifyOtherKeys) {
+        self.modes.modify_other_keys = match mode {
+            ModifyOtherKeys::Reset => 0,
+            ModifyOtherKeys::EnableExceptWellDefined => 1,
+            ModifyOtherKeys::EnableAll => 2,
+        };
         Handler::set_modify_other_keys(self.term, mode);
     }
 
+    /// Answered here; the pinned alacritty leaves it a no-op.
     fn report_modify_other_keys(&mut self) {
-        Handler::report_modify_other_keys(self.term);
+        let level = self.modes.modify_other_keys;
+        self.reply(format!("\x1b[>4;{level}m"));
     }
 
     fn set_scp(&mut self, char_path: ScpCharPath, update_mode: ScpUpdateMode) {

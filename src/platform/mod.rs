@@ -90,10 +90,6 @@ pub fn detach_server_daemon_command(command: &mut std::process::Command) {
     }
 }
 
-pub fn current_process_is_detached_server_daemon() -> bool {
-    unsafe { libc::getsid(0) == libc::getpid() }
-}
-
 /// Raised by the SIGWINCH handler, consumed by the host resize watcher.
 static TERMINAL_RESIZE_SIGNALLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);

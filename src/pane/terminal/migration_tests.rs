@@ -4,7 +4,6 @@ use super::*;
 
 struct Harness {
     pane: PaneTerminal,
-    tx: mpsc::Sender<Bytes>,
     width: u16,
     height: u16,
     effects: Effects,
@@ -14,7 +13,6 @@ struct Harness {
 struct Effects {
     replies: Vec<u8>,
     clipboard: Vec<Vec<u8>>,
-    bells: u32,
     cwd: Vec<std::path::PathBuf>,
 }
 
@@ -34,14 +32,10 @@ struct Observation {
 
 impl Harness {
     fn new(width: u16, height: u16) -> Self {
-        let (tx, _rx) = mpsc::channel(16);
         let terminal =
             crate::ghostty::Terminal::new(width, height, 256).expect("test precondition");
         Self {
-            pane: PaneTerminal::new(
-                GhosttyPaneTerminal::new(terminal, tx.clone()).expect("test precondition"),
-            ),
-            tx,
+            pane: PaneTerminal::new(GhosttyPaneTerminal::new(terminal).expect("test precondition")),
             width,
             height,
             effects: Effects::default(),
@@ -55,12 +49,11 @@ impl Harness {
     fn write_from_process(&mut self, shell_pid: u32, bytes: &[u8]) {
         let result = self
             .pane
-            .process_pty_bytes(PaneId::from_raw(1), shell_pid, bytes, &self.tx);
+            .process_pty_bytes(PaneId::from_raw(1), shell_pid, bytes);
         for reply in result.terminal_responses {
             self.effects.replies.extend_from_slice(&reply);
         }
         self.effects.clipboard.extend(result.clipboard_writes);
-        self.effects.bells += u32::from(result.terminal_bells);
         self.effects.cwd.extend(result.reported_cwd);
     }
 
@@ -94,7 +87,6 @@ impl Harness {
     }
 
     fn cursor(&self) -> Option<TerminalCursorState> {
-        // Compare terminal semantics, not Windows' time-based cursor settling policy.
         current_cursor_state(&mut self.pane.ghostty.core.lock().expect("test precondition"))
     }
 
@@ -442,9 +434,12 @@ fn complete_history_replay_supports_plain_append() {
     );
     // Establish the documented live-output boundary explicitly instead of
     // requiring history formatting to restore arbitrary cursor/SGR state.
-    for terminal in [&mut source, &mut restored] {
-        terminal.write(b"\x1b[0m\r\nappended");
-    }
+    // `source` still sits at the end of the unterminated "plain" line, so it
+    // needs its own line break before the live write; `restored` was already
+    // seeded with a trailing CRLF, so writing another one here would produce
+    // an extra blank line that never existed in `source`.
+    source.write(b"\x1b[0m\r\nappended");
+    restored.write(b"\x1b[0mappended");
     assert_eq!(
         restored.pane.recent_text_snapshot(32),
         source.pane.recent_text_snapshot(32)

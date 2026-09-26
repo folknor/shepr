@@ -1,18 +1,25 @@
-//! Byte-level scanner for the few control sequences alacritty_terminal does not
-//! model but shepr must answer or track: OSC 7 / OSC 9;9 / OSC 1337 CurrentDir
-//! working-directory reports, DECSET/DECRST for modes 9, 1016, 2031 and 2048
-//! (plus the mouse modes that cancel them), CSI ? 996 n, CSI 16 t, XTGETTCAP
-//! (7-bit `ESC P + q` and raw C1 `0x90 + q`), xterm modifyOtherKeys
-//! (`CSI > 4 ; Pv m`, `CSI > 4 n`), RIS, `CSI ? 3 J`, and the halfwidth katakana voiced
-//! sound marks U+FF9E/U+FF9F in ground state (see [`ScanEvent::HalfwidthVoicedMark`]).
+//! Byte-level scanner for the few control sequences vte never hands to a
+//! `Handler`, but shepr must answer or track: OSC 7 / OSC 9;9 / OSC 1337
+//! CurrentDir working-directory reports, CSI ? 996 n, CSI 16 t, XTGETTCAP
+//! (`ESC P + q`), `CSI ? 3 J`, and the modifyOtherKeys spellings vte drops
+//! (`CSI > m`, `CSI > 4 n`, `CSI > 4 ; Pv m` with Pv above 2).
 //!
-//! The scanner mirrors vte's framing rules closely enough that it agrees with
-//! the core about where each sequence ends: OSC ends on BEL, ESC, CAN or SUB;
-//! DCS passthrough ends on ESC, C1 ST, CAN or SUB; SOS/PM/APC strings end on
-//! ESC, CAN or SUB. Raw C1 bytes are only recognised outside UTF-8 sequences.
-//! Events carry the offset just past the byte that completed them, relative to
-//! the slice handed to [`Scanner::scan`], so callers can interleave the core's
-//! own replies with ours in byte order.
+//! Everything vte does dispatch (private modes, DECRQM, RIS, the vte-parsed
+//! modifyOtherKeys forms, printed characters) is handled by the parser's
+//! `Handler` wrapper in `handler.rs` instead, where it stays in byte order
+//! inside synchronized updates too. Do not add sequences here that vte
+//! dispatches.
+//!
+//! The scanner mirrors vte's framing so it agrees with the core about where
+//! each sequence starts and ends. vte only understands 7-bit controls: in
+//! ground state every byte other than ESC is text or a no-op control (raw C1
+//! bytes such as 0x90 are executed as no-ops, never open a sequence), so the
+//! scanner only leaves ground on ESC. Inside sequences: OSC ends on BEL, ESC,
+//! CAN or SUB; a DCS body ends on ESC, CAN, SUB or a raw 0x9C (vte's only
+//! 8-bit control, and only in DCS passthrough); SOS/PM/APC strings end on ESC,
+//! CAN or SUB. Events carry the offset just past the byte that completed them,
+//! relative to the slice handed to [`Scanner::scan`], so callers can
+//! interleave the core's own replies with ours in byte order.
 
 const MAX_CSI_BYTES: usize = 64;
 const MAX_OSC_BYTES: usize = 4096;
@@ -21,8 +28,6 @@ const MAX_XTGETTCAP_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ScanEvent {
-    /// DECSET (`enabled`) or DECRST of a private mode shepr tracks itself.
-    PrivateMode { mode: u16, enabled: bool },
     /// CSI ? 996 n (color scheme DSR).
     ColorSchemeQuery,
     /// CSI 16 t (cell size in pixels).
@@ -31,18 +36,12 @@ pub(super) enum ScanEvent {
     Xtgettcap(Vec<Vec<u8>>),
     /// Working-directory report payload (URI or path, exactly as sent).
     WorkingDirectory(Vec<u8>),
-    /// RIS (ESC c).
-    FullReset,
     /// CSI ? 3 J: the DECSED spelling of ED3 (erase scrollback). vte only
     /// dispatches `CSI 3 J`, but programs (Droid among them) emit this form.
     EraseScrollback,
-    /// xterm modifyOtherKeys level (0, 1 or 2) set by `CSI > 4 ; Pv m`,
-    /// `CSI > m` or `CSI > 4 n`.
+    /// xterm modifyOtherKeys level (0, 1 or 2) set by a spelling vte does not
+    /// dispatch: `CSI > m`, `CSI > 4 n`, or `CSI > 4 ; Pv m` with Pv > 2.
     ModifyOtherKeys(u8),
-    /// U+FF9E or U+FF9F printed in ground state; `end` is just past its last
-    /// UTF-8 byte. unicode-width gives these Grapheme_Extend marks width 0, but
-    /// wcwidth (and so the programs in the pane) gives them a column of their own.
-    HalfwidthVoicedMark(char),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +57,6 @@ enum State {
     Escape,
     EscapeIntermediate,
     Csi,
-    CsiIgnore,
     Osc,
     DcsIntro,
     XtgettcapBody,
@@ -69,29 +67,18 @@ enum State {
 #[derive(Debug, Default)]
 pub(super) struct Scanner {
     state: State,
-    utf8_remaining: u8,
-    utf8_codepoint: u32,
     buffer: Vec<u8>,
     overflow: bool,
 }
-
-/// Private modes whose DECSET/DECRST the adapter must observe. 9, 1016, 2031
-/// and 2048 are modelled by the adapter; 1000/1002/1003 cancel X10 (9), and
-/// 1005 cancels SGR-pixels (1016). Re-asserting 1006 deliberately does not:
-/// apps resend it after 1016 and still expect pixel coordinates.
-const TRACKED_PRIVATE_MODES: &[u16] = &[9, 1000, 1002, 1003, 1005, 1016, 2031, 2048];
 
 impl Scanner {
     pub(super) fn scan(&mut self, bytes: &[u8]) -> Vec<ScannedEvent> {
         let mut events = Vec::new();
         let mut index = 0;
         while index < bytes.len() {
-            if self.state == State::Ground && self.utf8_remaining == 0 {
-                // Fast path: plain ASCII text cannot start anything we track.
-                match bytes[index..]
-                    .iter()
-                    .position(|&byte| byte == 0x1b || byte >= 0x80)
-                {
+            if self.state == State::Ground {
+                // Fast path: only ESC leaves ground state.
+                match bytes[index..].iter().position(|&byte| byte == 0x1b) {
                     Some(offset) => index += offset,
                     None => break,
                 }
@@ -103,23 +90,14 @@ impl Scanner {
         events
     }
 
-    /// How many trailing bytes of the input scanned so far are the start of a
-    /// U+FF9E/U+FF9F (`EF` or `EF BE`) still waiting for its final byte.
-    pub(super) fn voiced_mark_prefix_len(&self) -> usize {
-        if self.state != State::Ground {
-            return 0;
-        }
-        match (self.utf8_remaining, self.utf8_codepoint) {
-            (2, 0x0f) => 1,
-            (1, 0x3fe) => 2,
-            _ => 0,
-        }
-    }
-
     fn step(&mut self, byte: u8, index: usize, events: &mut Vec<ScannedEvent>) {
         match self.state {
-            State::Ground => self.ground(byte, index, events),
-            State::Escape => self.escape(byte, index, events),
+            State::Ground => {
+                if byte == 0x1b {
+                    self.enter(State::Escape);
+                }
+            }
+            State::Escape => self.escape(byte),
             State::EscapeIntermediate => match byte {
                 0x1b => self.enter(State::Escape),
                 0x18 | 0x1a => self.enter(State::Ground),
@@ -143,13 +121,7 @@ impl Scanner {
                     }
                 }
                 // C0 controls inside CSI are executed by the core and do not
-                // change the sequence; everything else is ignored.
-                _ => {}
-            },
-            State::CsiIgnore => match byte {
-                0x1b => self.enter(State::Escape),
-                0x18 | 0x1a => self.enter(State::Ground),
-                0x40..=0x7e => self.enter(State::Ground),
+                // change the sequence; DEL and high bytes are ignored.
                 _ => {}
             },
             State::Osc => match byte {
@@ -174,9 +146,11 @@ impl Scanner {
                     }
                 }
             },
+            // vte's DCS entry/param/intermediate states: only ESC, CAN and
+            // SUB leave them early (a raw 0x9C is ignored here).
             State::DcsIntro => match byte {
                 0x1b => self.enter(State::Escape),
-                0x18 | 0x1a | 0x9c => self.enter(State::Ground),
+                0x18 | 0x1a => self.enter(State::Ground),
                 0x40..=0x7e => {
                     let is_xtgettcap = byte == b'q' && self.buffer.as_slice() == b"+";
                     if is_xtgettcap {
@@ -212,6 +186,7 @@ impl Scanner {
                     }
                 }
             },
+            // vte's DCS passthrough for every other DCS.
             State::DcsIgnore => match byte {
                 0x1b => self.enter(State::Escape),
                 0x18 | 0x1a | 0x9c => self.enter(State::Ground),
@@ -225,41 +200,7 @@ impl Scanner {
         }
     }
 
-    fn ground(&mut self, byte: u8, index: usize, events: &mut Vec<ScannedEvent>) {
-        if byte < 0x80 {
-            self.utf8_remaining = 0;
-            if byte == 0x1b {
-                self.enter(State::Escape);
-            }
-            return;
-        }
-        if self.utf8_remaining > 0 && (0x80..=0xbf).contains(&byte) {
-            self.utf8_remaining -= 1;
-            self.utf8_codepoint = (self.utf8_codepoint << 6) | u32::from(byte & 0x3f);
-            if self.utf8_remaining == 0
-                && let Some(mark) = halfwidth_voiced_mark(self.utf8_codepoint)
-            {
-                events.push(ScannedEvent {
-                    end: index + 1,
-                    event: ScanEvent::HalfwidthVoicedMark(mark),
-                });
-            }
-            return;
-        }
-        (self.utf8_remaining, self.utf8_codepoint) = match byte {
-            0xc2..=0xdf => (1, u32::from(byte & 0x1f)),
-            0xe0..=0xef => (2, u32::from(byte & 0x0f)),
-            0xf0..=0xf4 => (3, u32::from(byte & 0x07)),
-            _ => (0, 0),
-        };
-        if byte == 0x90 {
-            // Legacy raw C1 DCS. The core ignores it, but XTGETTCAP clients
-            // using 8-bit controls still expect a reply.
-            self.enter(State::DcsIntro);
-        }
-    }
-
-    fn escape(&mut self, byte: u8, index: usize, events: &mut Vec<ScannedEvent>) {
+    fn escape(&mut self, byte: u8) {
         match byte {
             0x18 | 0x1a => self.enter(State::Ground),
             // ESC ESC restarts the escape; other C0 controls execute in place.
@@ -269,13 +210,6 @@ impl Scanner {
             b']' => self.enter(State::Osc),
             b'P' => self.enter(State::DcsIntro),
             b'X' | b'^' | b'_' => self.enter(State::StringIgnore),
-            b'c' => {
-                events.push(ScannedEvent {
-                    end: index + 1,
-                    event: ScanEvent::FullReset,
-                });
-                self.enter(State::Ground);
-            }
             0x30..=0x7e => self.enter(State::Ground),
             // vte ignores DEL and high bytes while an escape is pending.
             _ => {}
@@ -286,78 +220,39 @@ impl Scanner {
         self.state = state;
         self.buffer.clear();
         self.overflow = false;
-        if state != State::Ground {
-            self.utf8_remaining = 0;
-        }
     }
 
     fn dispatch_csi(&mut self, final_byte: u8, index: usize, events: &mut Vec<ScannedEvent>) {
         let params = self.buffer.as_slice();
-        match final_byte {
-            b'h' | b'l' => {
-                let Some(modes) = params.strip_prefix(b"?") else {
-                    return;
-                };
-                if modes
-                    .iter()
-                    .any(|byte| !byte.is_ascii_digit() && *byte != b';')
-                {
-                    return;
-                }
-                for mode in modes.split(|byte| *byte == b';') {
-                    let Some(mode) = parse_decimal(mode) else {
-                        continue;
-                    };
-                    if TRACKED_PRIVATE_MODES.contains(&mode) {
-                        events.push(ScannedEvent {
-                            end: index + 1,
-                            event: ScanEvent::PrivateMode {
-                                mode,
-                                enabled: final_byte == b'h',
-                            },
-                        });
-                    }
-                }
-            }
-            b'n' if params == b"?996" => events.push(ScannedEvent {
-                end: index + 1,
-                event: ScanEvent::ColorSchemeQuery,
-            }),
-            b'J' if params == b"?3" => events.push(ScannedEvent {
-                end: index + 1,
-                event: ScanEvent::EraseScrollback,
-            }),
+        let event = match final_byte {
+            b'n' if params == b"?996" => Some(ScanEvent::ColorSchemeQuery),
+            b'J' if params == b"?3" => Some(ScanEvent::EraseScrollback),
             // CSI > 4 n: modifyOtherKeys back to its default (off).
             b'n' if params
                 .strip_prefix(b">")
                 .is_some_and(|resource| parse_decimal(resource) == Some(4)) =>
             {
-                events.push(ScannedEvent {
-                    end: index + 1,
-                    event: ScanEvent::ModifyOtherKeys(0),
-                });
+                Some(ScanEvent::ModifyOtherKeys(0))
             }
-            b'm' => {
-                if let Some(level) = params.strip_prefix(b">").and_then(modify_other_keys_level) {
-                    events.push(ScannedEvent {
-                        end: index + 1,
-                        event: ScanEvent::ModifyOtherKeys(level),
-                    });
-                }
-            }
+            b'm' => params
+                .strip_prefix(b">")
+                .and_then(undispatched_modify_other_keys_level)
+                .map(ScanEvent::ModifyOtherKeys),
             b't' => {
                 let first = params
                     .split(|byte| *byte == b';')
                     .next()
                     .unwrap_or_default();
-                if first.iter().all(u8::is_ascii_digit) && parse_decimal(first) == Some(16) {
-                    events.push(ScannedEvent {
-                        end: index + 1,
-                        event: ScanEvent::CellSizeQuery,
-                    });
-                }
+                (first.iter().all(u8::is_ascii_digit) && parse_decimal(first) == Some(16))
+                    .then_some(ScanEvent::CellSizeQuery)
             }
-            _ => {}
+            _ => None,
+        };
+        if let Some(event) = event {
+            events.push(ScannedEvent {
+                end: index + 1,
+                event,
+            });
         }
     }
 
@@ -396,9 +291,12 @@ impl Scanner {
     }
 }
 
-/// The modifyOtherKeys level set by `CSI > params m` (XTMODKEYS); `None` when
-/// the sequence addresses another resource. A bare `CSI > m` resets it.
-fn modify_other_keys_level(params: &[u8]) -> Option<u8> {
+/// The modifyOtherKeys level set by `CSI > params m` (XTMODKEYS), for the
+/// spellings vte does not dispatch to its `Handler`: a bare `CSI > m` (resets
+/// every resource) and `CSI > 4 ; Pv m` with Pv above 2 (clamped to 2). vte
+/// dispatches `CSI > 4 ; Pv m` for Pv 0..=2 itself (a missing or empty Pv is
+/// 0); reporting those here too would apply them twice and out of order.
+fn undispatched_modify_other_keys_level(params: &[u8]) -> Option<u8> {
     if params.is_empty() {
         return Some(0);
     }
@@ -408,14 +306,8 @@ fn modify_other_keys_level(params: &[u8]) -> Option<u8> {
     if parts.next().is_some() || parse_decimal(resource) != Some(4) {
         return None;
     }
-    let level = value.and_then(parse_decimal).unwrap_or(0).min(2);
-    Some(u8::try_from(level).unwrap_or(2))
-}
-
-fn halfwidth_voiced_mark(codepoint: u32) -> Option<char> {
-    matches!(codepoint, 0xff9e | 0xff9f)
-        .then(|| char::from_u32(codepoint))
-        .flatten()
+    let level = value.and_then(parse_decimal)?;
+    (level > 2).then_some(2)
 }
 
 fn parse_decimal(bytes: &[u8]) -> Option<u16> {
@@ -529,45 +421,27 @@ mod tests {
         }
     }
 
-    #[test]
-    fn tracked_private_modes_are_reported_at_their_final_byte() {
-        let bytes: &[u8] = b"x\x1b[?1016;2031h\x1b[?25l\x1b[?9l";
-        let events = scan_chunks(&[bytes]);
-        assert_eq!(
-            events,
-            vec![
-                ScannedEvent {
-                    end: 14,
-                    event: ScanEvent::PrivateMode {
-                        mode: 1016,
-                        enabled: true
-                    }
-                },
-                ScannedEvent {
-                    end: 14,
-                    event: ScanEvent::PrivateMode {
-                        mode: 2031,
-                        enabled: true
-                    }
-                },
-                ScannedEvent {
-                    end: bytes.len(),
-                    event: ScanEvent::PrivateMode {
-                        mode: 9,
-                        enabled: false
-                    }
-                },
-            ]
-        );
-        assert_chunk_equivalence(bytes);
+    fn scanned_events(bytes: &[u8]) -> Vec<ScanEvent> {
+        scan_chunks(&[bytes])
+            .into_iter()
+            .map(|event| event.event)
+            .collect()
     }
 
     #[test]
-    fn xtgettcap_replies_for_7bit_and_c1_intros() {
+    fn modes_and_reset_are_left_to_the_parser_handler() {
+        // vte dispatches all of these to the `Handler`; the scanner must not
+        // report them a second time, out of sync-update order.
+        let bytes: &[u8] =
+            b"\x1b[?9h\x1b[?1016;2031h\x1b[?2048l\x1b[?1016$p\x1bc\x1b[>4;2m\x1b[?4m";
+        assert!(scan_chunks(&[bytes]).is_empty());
+    }
+
+    #[test]
+    fn xtgettcap_replies_for_7bit_intro_with_either_terminator() {
         for bytes in [
             b"\x1bP+q5463;524742\x1b\\".as_slice(),
-            b"\x90+q5463;524742\x9c".as_slice(),
-            b"\x90+q5463;524742\x1b\\".as_slice(),
+            b"\x1bP+q5463;524742\x9c".as_slice(),
         ] {
             let events = scan_chunks(&[bytes]);
             assert_eq!(events.len(), 1, "{bytes:?}");
@@ -578,6 +452,16 @@ mod tests {
             assert_eq!(replies[0], b"\x1bP1+r5463\x1b\\");
             assert_chunk_equivalence(bytes);
         }
+    }
+
+    /// vte only understands 7-bit controls: a raw C1 DCS (0x90) is executed as
+    /// a no-op and its payload printed as text, so the scanner must neither
+    /// answer it nor sit in DCS state until the next ESC.
+    #[test]
+    fn raw_c1_dcs_is_text_like_the_core() {
+        let bytes: &[u8] = b"\x90+q5463\x9c\x90+q5463\x1b[?996n";
+        assert_eq!(scanned_events(bytes), vec![ScanEvent::ColorSchemeQuery]);
+        assert_chunk_equivalence(bytes);
     }
 
     #[test]
@@ -597,16 +481,13 @@ mod tests {
     fn c1_bytes_inside_utf8_are_text() {
         // U+00D0 is C3 90 and U+00DC is C3 9C: neither may open or close a DCS.
         let mut bytes = "\u{d0}+q5463\u{dc}".as_bytes().to_vec();
-        bytes.extend_from_slice(b"\x1b[?2031h");
+        bytes.extend_from_slice(b"\x1b[?996n");
         let events = scan_chunks(&[bytes.as_slice()]);
         assert_eq!(
             events,
             vec![ScannedEvent {
                 end: bytes.len(),
-                event: ScanEvent::PrivateMode {
-                    mode: 2031,
-                    enabled: true
-                }
+                event: ScanEvent::ColorSchemeQuery,
             }]
         );
         assert_chunk_equivalence(&bytes);
@@ -636,34 +517,26 @@ mod tests {
     }
 
     #[test]
-    fn queries_and_reset_are_recognised() {
-        let bytes: &[u8] = b"\x1b[?996n\x1b[16t\x1b[14t\x1bc";
-        let events: Vec<_> = scan_chunks(&[bytes])
-            .into_iter()
-            .map(|event| event.event)
-            .collect();
+    fn queries_are_recognised() {
+        let bytes: &[u8] = b"\x1b[?996n\x1b[16t\x1b[14t\x1b[18t\x1b[?3J";
         assert_eq!(
-            events,
+            scanned_events(bytes),
             vec![
                 ScanEvent::ColorSchemeQuery,
                 ScanEvent::CellSizeQuery,
-                ScanEvent::FullReset
+                ScanEvent::EraseScrollback
             ]
         );
         assert_chunk_equivalence(bytes);
     }
 
     #[test]
-    fn modify_other_keys_levels_are_reported() {
+    fn only_modify_other_keys_spellings_vte_drops_are_reported() {
         let bytes: &[u8] =
-            b"\x1b[>4;1m\x1b[>4;02m\x1b[>4;9m\x1b[>4m\x1b[>4;2m\x1b[>m\x1b[>4;2m\x1b[>04n";
-        let levels: Vec<_> = scan_chunks(&[bytes])
-            .into_iter()
-            .map(|event| event.event)
-            .collect();
+            b"\x1b[>4;1m\x1b[>4;02m\x1b[>4;9m\x1b[>4m\x1b[>4;m\x1b[>m\x1b[>4;2m\x1b[>04n";
         assert_eq!(
-            levels,
-            [1, 2, 2, 0, 2, 0, 2, 0]
+            scanned_events(bytes),
+            [2, 0, 0]
                 .into_iter()
                 .map(ScanEvent::ModifyOtherKeys)
                 .collect::<Vec<_>>()
@@ -679,31 +552,8 @@ mod tests {
     }
 
     #[test]
-    fn halfwidth_voiced_marks_are_reported_only_in_ground_text() {
-        let text = "\u{ff76}\u{ff9e}\u{ff8a}\u{ff9f}\u{ff9d}";
-        let mut bytes = text.as_bytes().to_vec();
-        // Inside an OSC the mark is payload, not text.
-        bytes.extend_from_slice("\x1b]0;\u{ff9e}\x07".as_bytes());
-        let events = scan_chunks(&[bytes.as_slice()]);
-        assert_eq!(
-            events,
-            vec![
-                ScannedEvent {
-                    end: 6,
-                    event: ScanEvent::HalfwidthVoicedMark('\u{ff9e}')
-                },
-                ScannedEvent {
-                    end: 12,
-                    event: ScanEvent::HalfwidthVoicedMark('\u{ff9f}')
-                },
-            ]
-        );
-        assert_chunk_equivalence(&bytes);
-    }
-
-    #[test]
     fn ignored_strings_do_not_leak_sequences() {
-        let mut bytes = b"\x1b_Gpayload \x1b[?2031h".to_vec();
+        let mut bytes = b"\x1b_Gpayload \x1b[?996n".to_vec();
         // The APC ends at ESC, so the CSI after it is still seen.
         let events = scan_chunks(&[bytes.as_slice()]);
         assert_eq!(events.len(), 1);

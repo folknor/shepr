@@ -114,8 +114,7 @@ pub(super) fn do_handshake(
             pixel_mouse: exact_cell_size,
         }
     };
-    protocol::write_message(stream, &hello)
-        .map_err(|e| ClientError::ConnectionFailed(io::Error::other(e.to_string())))?;
+    protocol::write_message(stream, &hello).map_err(hello_write_error)?;
 
     let read_timeout = if endpoint_shell && !surface_active {
         REMOTE_HANDSHAKE_READ_TIMEOUT
@@ -132,6 +131,15 @@ pub(super) fn do_handshake(
         None,
         "failed to clear client handshake read timeout",
     )?;
+
+    // A server that is going down answers the hello with its shutdown notice. That is
+    // a transient condition to report as such, not a malformed welcome.
+    let welcome = match welcome {
+        ServerMessage::ServerShutdown { reason } => {
+            return Err(ClientError::ServerShutdown { reason });
+        }
+        welcome => welcome,
+    };
 
     if endpoint_shell {
         let ServerMessage::EndpointControl { kind, data } = welcome else {
@@ -189,5 +197,101 @@ pub(super) fn do_handshake(
         _ => Err(ClientError::Protocol(protocol::FramingError::Io(
             io::Error::new(io::ErrorKind::InvalidData, "expected Welcome message"),
         ))),
+    }
+}
+
+/// Keeps the socket error itself, kind included: the endpoint supervisor decides
+/// between retrying and asking for attention by that kind, and a broken pipe or a
+/// reset must stay a transient failure.
+fn hello_write_error(error: protocol::FramingError) -> ClientError {
+    match error {
+        protocol::FramingError::Io(error) => ClientError::ConnectionFailed(error),
+        // Encoding the hello failed: a local defect, not a connection problem.
+        error => ClientError::Protocol(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use interprocess::local_socket::traits::Listener as _;
+
+    fn socket_pair(name: &str) -> (LocalStream, LocalStream, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "shepr-handshake-{name}-{}.sock",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
+        let client = crate::ipc::connect_local_stream(&path).expect("test precondition");
+        let server = listener.accept().expect("test precondition");
+        (client, server, path)
+    }
+
+    fn handshake_against_shutdown(endpoint_shell: bool) -> ClientError {
+        let (mut client, mut server, path) = socket_pair(if endpoint_shell {
+            "shutdown-endpoint"
+        } else {
+            "shutdown-terminal"
+        });
+        let peer = std::thread::spawn(move || {
+            let _hello: ClientMessage =
+                protocol::read_message(&mut server, MAX_FRAME_SIZE).expect("test precondition");
+            protocol::write_message(
+                &mut server,
+                &ServerMessage::ServerShutdown {
+                    reason: Some("restarting".into()),
+                },
+            )
+            .expect("test precondition");
+        });
+        let surface =
+            endpoint_shell.then_some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 });
+        let error = do_handshake(
+            &mut client,
+            80,
+            24,
+            8,
+            16,
+            false,
+            surface,
+            false,
+            false,
+            true,
+        )
+        .expect_err("a shutdown notice is not a welcome");
+        peer.join().expect("test precondition");
+        let _ = std::fs::remove_file(path);
+        error
+    }
+
+    #[test]
+    fn shutdown_in_place_of_welcome_is_reported_as_a_shutdown() {
+        for endpoint_shell in [true, false] {
+            match handshake_against_shutdown(endpoint_shell) {
+                ClientError::ServerShutdown { reason } => {
+                    assert_eq!(reason.as_deref(), Some("restarting"));
+                }
+                other => panic!("endpoint_shell={endpoint_shell}: {other}"),
+            }
+        }
+    }
+
+    #[test]
+    fn hello_write_failures_keep_their_error_kind() {
+        for kind in [
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::TimedOut,
+        ] {
+            match hello_write_error(protocol::FramingError::Io(io::Error::new(kind, "write"))) {
+                ClientError::ConnectionFailed(error) => assert_eq!(error.kind(), kind),
+                other => panic!("{other}"),
+            }
+        }
+        assert!(matches!(
+            hello_write_error(protocol::FramingError::Oversized { claimed: 2, max: 1 }),
+            ClientError::Protocol(_)
+        ));
     }
 }

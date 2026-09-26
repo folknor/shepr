@@ -41,10 +41,13 @@ def _send_session(session_id: str, start_source: str) -> None:
         start_source,
     ]
     try:
-        kwargs = {"timeout": 1, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-        if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-        subprocess.run(command, check=False, **kwargs)
+        subprocess.run(
+            command,
+            check=False,
+            timeout=1,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     except Exception:
         pass
 

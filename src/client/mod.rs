@@ -291,6 +291,7 @@ fn run_client_with_mode(
     if let Err(err) = result {
         let _ = writeln!(io::stderr(), "shepr: {err}");
         rt.shutdown_timeout(Duration::from_millis(100));
+        crate::remote::release_ssh_resources_before_exit(Duration::from_secs(1));
         crate::logging::shutdown("client");
 
         let detached = matches!(
@@ -309,6 +310,7 @@ fn run_client_with_mode(
     }
 
     rt.shutdown_timeout(Duration::from_millis(100));
+    crate::remote::release_ssh_resources_before_exit(Duration::from_secs(1));
     crate::logging::shutdown("client");
     Ok(())
 }
@@ -358,6 +360,7 @@ async fn run_client_loop(
         presentation_frozen: false,
         deferred_local_activation: None,
         draw_host_cursor,
+        window_title_written: false,
         shell: config.shell_config.map(shell::ClientShellState::new),
     };
     let federated = endpoint_catalog.has_enabled_ssh();
@@ -1064,10 +1067,13 @@ async fn run_client_loop(
                         let Some(completed) = completed else {
                             continue;
                         };
-                        let (repaint, actions) = state.shell.as_mut().map_or_else(
-                            || (false, Vec::new()),
-                            |shell| {
-                                if completed.generation == generation
+                        // The whole outcome goes through `finish_client_shell_input`: a
+                        // copy-mode response replays keys queued while it was in flight,
+                        // and those can carry pane input, a resize or a detach. It also
+                        // releases the next queued command in this endpoint's lane.
+                        let (outcome, frame) = match state.shell.as_mut() {
+                            Some(shell) => {
+                                let outcome = if completed.generation == generation
                                     && shell.endpoint_is_active(&completed.endpoint_id)
                                 {
                                     shell.handle_endpoint_result(
@@ -1076,26 +1082,32 @@ async fn run_client_loop(
                                         completed.result,
                                     )
                                 } else {
-                                    (
-                                        shell.cancel_endpoint_request(&completed.request_id),
-                                        Vec::new(),
-                                    )
-                                }
-                            },
-                        );
-                        let dispatch_repaint = dispatch_client_shell_actions(
-                            actions,
-                            &mut endpoint_commands,
+                                    shell::ClientShellInput {
+                                        repaint: shell
+                                            .cancel_endpoint_request(&completed.request_id),
+                                        ..Default::default()
+                                    }
+                                };
+                                let frame = outcome
+                                    .repaint
+                                    .then(|| {
+                                        shell.compose(state.reported_size.0, state.reported_size.1)
+                                    })
+                                    .flatten();
+                                (outcome, frame)
+                            }
+                            None => (shell::ClientShellInput::default(), None),
+                        };
+                        if finish_client_shell_input(
+                            &mut state,
+                            outcome,
+                            frame,
                             &mut write_stream,
-                            state.shell.as_mut(),
+                            &mut pending_activation,
+                            &mut endpoint_commands,
                             &mut scheduled_activation,
-                        );
-                        if (repaint || dispatch_repaint)
-                            && let Some(frame) = state.shell.as_mut().and_then(|shell| {
-                                shell.compose(state.reported_size.0, state.reported_size.1)
-                            })
-                        {
-                            state.present_frame(frame);
+                        )? {
+                            return Ok(());
                         }
                     }
                     ServerMessage::Clipboard { data } => {
@@ -1103,6 +1115,11 @@ async fn run_client_loop(
                         let _ = io::stdout().flush();
                     }
                     ServerMessage::WindowTitle { title } => {
+                        // `None` is deliberate from the server (an API title was
+                        // cleared, or every template token resolved empty) and
+                        // resets to Shepr's default. A disabled `ui.window_title`
+                        // never reaches here: the server sends nothing at all.
+                        state.window_title_written = true;
                         let _ = crate::terminal_effects::write_window_title(
                             &mut io::stdout(),
                             title.as_deref(),
@@ -1380,13 +1397,12 @@ async fn run_client_loop(
                             if !shell.endpoint_is_active(&expired.endpoint_id) {
                                 continue;
                             }
-                            let (repaint, actions) = shell.handle_endpoint_result(
+                            let expired_outcome = shell.handle_endpoint_result(
                                 &expired.boot_id,
                                 &expired.request_id,
                                 expired.result,
                             );
-                            outcome.repaint |= repaint;
-                            outcome.actions.extend(actions);
+                            outcome.merge(expired_outcome);
                         }
                         outcome.repaint |= shell.tick_selection_highlight(now)
                             | shell.tick_workspace_highlight(now)

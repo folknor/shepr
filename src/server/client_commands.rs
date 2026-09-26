@@ -22,8 +22,6 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "pane.focus",
     "pane.focus_direction",
     "pane.input.set",
-    "pane.link.activate",
-    "pane.link.resolve",
     "pane.rename",
     "pane.resize",
     "pane.scroll",
@@ -182,6 +180,23 @@ mod tests {
                 .windows(2)
                 .all(|pair| pair[0] < pair[1])
         );
+    }
+
+    #[test]
+    fn advertised_client_shell_methods_all_exist() {
+        // Every advertised name must be a real `Method`; a stripped feature
+        // must not leave names behind that the lane would claim to support.
+        for name in CLIENT_SHELL_METHODS {
+            // Params may be rejected (they are empty here); only the method
+            // tag itself has to be known.
+            let method = serde_json::json!({ "method": name, "params": {} });
+            if let Err(error) = serde_json::from_value::<Method>(method) {
+                assert!(
+                    !error.to_string().contains("unknown variant"),
+                    "{name} is advertised but is not an API method: {error}"
+                );
+            }
+        }
     }
 
     #[test]

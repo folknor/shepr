@@ -124,9 +124,6 @@ impl ActiveSubscription {
             Subscription::WorkspaceCreated {} => {
                 Ok(event_subscription(EventKind::WorkspaceCreated))
             }
-            Subscription::WorkspaceUpdated {} => {
-                Ok(event_subscription(EventKind::WorkspaceUpdated))
-            }
             Subscription::WorkspaceMetadataUpdated {} => {
                 Ok(event_subscription(EventKind::WorkspaceMetadataUpdated))
             }

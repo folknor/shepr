@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::detect::AgentState;
 use crate::terminal::{TerminalId, TerminalState};
 
-use super::Workspace;
+use super::{Tab, Workspace};
 
 fn pane_attention_priority(state: AgentState, seen: bool) -> u8 {
     match (state, seen) {
@@ -15,25 +15,47 @@ fn pane_attention_priority(state: AgentState, seen: bool) -> u8 {
     }
 }
 
-impl Workspace {
+/// The `(state, seen)` of the pane most in need of attention among `panes`,
+/// or `(Unknown, true)` when there are none.
+fn aggregate_attention(panes: impl Iterator<Item = (AgentState, bool)>) -> (AgentState, bool) {
+    panes
+        // Panes iterate in `HashMap` order, so every tie must be broken
+        // inside the key: among equal priorities prefer the unseen pane.
+        // With that, two panes only tie when (state, seen) are identical
+        // and the result no longer depends on iteration order.
+        .max_by_key(|(state, seen)| (pane_attention_priority(*state, *seen), !*seen))
+        .unwrap_or((AgentState::Unknown, true))
+}
+
+fn pane_states<'a>(
+    tab: &'a Tab,
+    terminals: &'a HashMap<TerminalId, TerminalState>,
+) -> impl Iterator<Item = (AgentState, bool)> + 'a {
+    tab.panes.values().filter_map(|pane| {
+        terminals
+            .get(&pane.attached_terminal_id)
+            .map(|terminal| (terminal.state, pane.seen))
+    })
+}
+
+impl Tab {
+    /// Aggregate agent state of this tab's panes; see `Workspace::aggregate_state`.
     pub fn aggregate_state(
         &self,
         terminals: &HashMap<TerminalId, TerminalState>,
     ) -> (AgentState, bool) {
-        self.tabs
-            .iter()
-            .flat_map(|tab| tab.panes.values())
-            .filter_map(|pane| {
-                terminals
-                    .get(&pane.attached_terminal_id)
-                    .map(|terminal| (terminal.state, pane.seen))
-            })
-            // Panes iterate in `HashMap` order, so every tie must be broken
-            // inside the key: among equal priorities prefer the unseen pane.
-            // With that, two panes only tie when (state, seen) are identical
-            // and the result no longer depends on iteration order.
-            .max_by_key(|(state, seen)| (pane_attention_priority(*state, *seen), !*seen))
-            .unwrap_or((AgentState::Unknown, true))
+        aggregate_attention(pane_states(self, terminals))
+    }
+}
+
+impl Workspace {
+    /// Aggregate agent state over every pane in every tab: the most urgent
+    /// state, and whether the pane carrying it has been seen.
+    pub fn aggregate_state(
+        &self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+    ) -> (AgentState, bool) {
+        aggregate_attention(self.tabs.iter().flat_map(|tab| pane_states(tab, terminals)))
     }
 }
 
@@ -143,7 +165,29 @@ mod tests {
                     .seen = false;
 
                 assert_eq!(ws.aggregate_state(&terminals), (state, false));
+                assert_eq!(ws.tabs[0].aggregate_state(&terminals), (state, false));
             }
         }
+    }
+
+    #[test]
+    fn tab_aggregate_state_covers_only_its_own_panes() {
+        let mut ws = Workspace::test_new("test");
+        let first_root = ws.tabs[0].root_pane;
+        let second_tab = ws.test_add_tab(None);
+        let second_root = ws.tabs[second_tab].root_pane;
+        let mut terminals = HashMap::new();
+        let mut blocked = terminal_for_pane(&ws, first_root);
+        blocked.state = AgentState::Blocked;
+        terminals.insert(blocked.id.clone(), blocked);
+        let mut working = terminal_for_pane(&ws, second_root);
+        working.state = AgentState::Working;
+        terminals.insert(working.id.clone(), working);
+
+        assert_eq!(
+            ws.tabs[second_tab].aggregate_state(&terminals),
+            (AgentState::Working, true)
+        );
+        assert_eq!(ws.aggregate_state(&terminals), (AgentState::Blocked, true));
     }
 }

@@ -127,7 +127,6 @@ mod tests {
         let mut app = super::App::new(
             &crate::config::Config::default(),
             crate::app::AppPolicy::TEST,
-            None,
             tokio::sync::mpsc::unbounded_channel().1,
             crate::api::EventHub::default(),
         );

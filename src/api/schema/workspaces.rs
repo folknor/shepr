@@ -22,8 +22,6 @@ pub struct WorkspaceCreateParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceCloseParams {
     pub workspace_id: String,
-    #[serde(default, skip_serializing_if = "super::is_false")]
-    pub close_group: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
