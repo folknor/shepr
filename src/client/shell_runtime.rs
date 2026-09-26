@@ -87,27 +87,11 @@ pub(super) fn sync_client_shell_keyboard_report_all(
     Ok(())
 }
 
-pub(super) fn clear_endpoint_host_effects(
-    state: &mut ClientState,
-    host_mouse_capture_active: &std::sync::atomic::AtomicBool,
-    host_sgr_pixels_active: &std::sync::atomic::AtomicBool,
-) {
-    state.endpoint_mouse_capture_requested = false;
-    state.endpoint_sgr_pixels_requested = false;
-    let enabled = if state.shell.is_some() {
-        state.shell_mouse_capture_preference
-    } else {
-        state.direct_mouse_capture_preference
-    };
-    let sgr_pixels = super::effective_sgr_pixel_mouse(enabled, false, state.pixel_geometry_exact);
-    if enabled != state.mouse_capture_active
-        || sgr_pixels != host_sgr_pixels_active.load(std::sync::atomic::Ordering::Acquire)
-    {
-        let _ = super::set_mouse_capture(enabled, sgr_pixels);
-    }
-    state.mouse_capture_active = enabled;
-    host_mouse_capture_active.store(enabled, std::sync::atomic::Ordering::Release);
-    host_sgr_pixels_active.store(sgr_pixels, std::sync::atomic::Ordering::Release);
+pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) {
+    state.host_mouse_mode.clear_endpoint_request();
+    let _ = state
+        .host_mouse_mode
+        .apply(state.shell.is_some(), state.pixel_geometry_exact, false);
 
     state.pane_keyboard_report_all = false;
     let _ = sync_client_shell_keyboard_report_all(state);

@@ -82,6 +82,7 @@ pub struct WorkspaceSnapshot {
     #[serde(default)]
     pub custom_name: Option<String>,
     pub identity_cwd: PathBuf,
+    /// Captured from the public numbers in each tab's pane records.
     #[serde(default)]
     pub public_pane_numbers: HashMap<u32, usize>,
     #[serde(default)]
@@ -207,9 +208,13 @@ fn capture_workspace(
         custom_name: ws.custom_name.clone(),
         identity_cwd,
         public_pane_numbers: ws
-            .public_pane_numbers
+            .tabs
             .iter()
-            .map(|(pane_id, number)| (pane_id.raw(), *number))
+            .flat_map(|tab| {
+                tab.panes
+                    .iter()
+                    .map(|(pane_id, pane)| (pane_id.raw(), pane.public_number))
+            })
             .collect(),
         next_public_pane_number: ws.next_public_pane_number,
         public_tab_numbers: ws.tabs.iter().map(|tab| tab.number).collect(),

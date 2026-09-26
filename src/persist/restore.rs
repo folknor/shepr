@@ -274,7 +274,6 @@ fn restore_workspace(
             )
         })
         .collect();
-    let mut public_pane_numbers = HashMap::new();
     let mut next_public_tab_number = snap
         .public_tab_numbers
         .iter()
@@ -307,11 +306,11 @@ fn restore_workspace(
             tab.number = public_tab_number;
         }
         next_public_tab_number = next_public_tab_number.max(tab.number + 1);
-        for pane_id in tab.layout.pane_ids() {
+        for (pane_id, pane) in &mut tab.panes {
             let public_number = public_pane_numbers_by_old_raw
                 .get(
                     &reverse_id_map
-                        .get(&pane_id)
+                        .get(pane_id)
                         .copied()
                         .unwrap_or(pane_id.raw()),
                 )
@@ -321,7 +320,7 @@ fn restore_workspace(
                     next_public_pane_number += 1;
                     number
                 });
-            public_pane_numbers.insert(pane_id, public_number);
+            pane.public_number = public_number;
             next_public_pane_number = next_public_pane_number.max(public_number + 1);
         }
         terminals.extend(restored_terminals);
@@ -344,7 +343,6 @@ fn restore_workspace(
         cached_git_space: None,
         metadata_tokens: crate::terminal::metadata_tokens::MetadataTokens::default(),
         metadata_token_sequences: HashMap::new(),
-        public_pane_numbers,
         next_public_pane_number,
         next_public_tab_number,
         active_tab,
@@ -490,7 +488,10 @@ fn restore_tab(
             runtime_context
                 .history_carry
                 .carry_restored(&terminal.id, saved_history);
-            panes.insert(*id, PaneState::new(terminal.id.clone()));
+            panes.insert(
+                *id,
+                crate::workspace::TabPane::new(PaneState::new(terminal.id.clone())),
+            );
             terminals.push(terminal);
             continue;
         }
@@ -535,7 +536,10 @@ fn restore_tab(
             runtime_context
                 .history_carry
                 .carry_restored(&terminal.id, saved_history);
-            panes.insert(*id, PaneState::new(terminal.id.clone()));
+            panes.insert(
+                *id,
+                crate::workspace::TabPane::new(PaneState::new(terminal.id.clone())),
+            );
             terminals.push(terminal);
             continue;
         }
@@ -567,7 +571,10 @@ fn restore_tab(
                         duplicate_agent_session,
                     },
                 );
-                panes.insert(*id, PaneState::new(terminal.id.clone()));
+                panes.insert(
+                    *id,
+                    crate::workspace::TabPane::new(PaneState::new(terminal.id.clone())),
+                );
                 terminal_runtimes.insert(terminal.id.clone(), runtime);
                 terminals.push(terminal);
             }
@@ -590,7 +597,10 @@ fn restore_tab(
                 runtime_context
                     .history_carry
                     .carry_restored(&terminal.id, saved_history);
-                panes.insert(*id, PaneState::new(terminal.id.clone()));
+                panes.insert(
+                    *id,
+                    crate::workspace::TabPane::new(PaneState::new(terminal.id.clone())),
+                );
                 terminals.push(terminal);
             }
         }
@@ -1873,7 +1883,11 @@ mod tests {
         );
 
         let workspace = workspaces.first().expect("workspace should restore");
-        let mut public_numbers: Vec<_> = workspace.public_pane_numbers.values().copied().collect();
+        let mut public_numbers: Vec<_> = workspace
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.panes.values().map(|pane| pane.public_number))
+            .collect();
         public_numbers.sort_unstable();
         assert_eq!(public_numbers, vec![1, 3]);
         assert_eq!(workspace.next_public_pane_number, 4);

@@ -58,6 +58,26 @@ fn unpack_cell_size(packed: u64) -> Option<(u32, u32)> {
 
 type TerminalGeometry = (u16, u16, u32, u32, bool);
 
+/// Host grid size as reported by the client. A client-owned shell must keep
+/// its full grid within one surface frame; a direct terminal client reports
+/// the host grid unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ClientHostSize {
+    pub(super) cols: u16,
+    pub(super) rows: u16,
+}
+
+impl ClientHostSize {
+    pub(super) fn new(cols: u16, rows: u16, client_shell: bool) -> Self {
+        let size = crate::protocol::ClientSurfaceSize { cols, rows };
+        let size = if client_shell { size.clamped() } else { size };
+        Self {
+            cols: size.cols,
+            rows: size.rows,
+        }
+    }
+}
+
 pub(super) fn bounded_cell_geometry(
     cell_width_px: u32,
     cell_height_px: u32,

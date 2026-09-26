@@ -15,87 +15,12 @@ use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 
-use crate::api::schema::{Method, Request};
+use crate::api::schema::Request;
 
 pub const SOCKET_PATH_ENV_VAR: &str = "SHEPR_SOCKET_PATH";
 
 pub(crate) fn request_changes_ui(request: &Request) -> bool {
-    // Keep this exhaustive: adding an API method must make its render impact
-    // an explicit decision instead of silently defaulting to no UI change.
-    match &request.method {
-        Method::ServerReloadAgentManifests(_)
-        | Method::ClientWindowTitleSet(_)
-        | Method::ClientWindowTitleClear(_)
-        | Method::ClientShellSurfaceSet(_)
-        | Method::WorkspaceCreate(_)
-        | Method::WorkspaceFocus(_)
-        | Method::WorkspaceRename(_)
-        | Method::WorkspaceMove(_)
-        | Method::WorkspaceMoveBlock(_)
-        | Method::WorkspaceReportMetadata(_)
-        | Method::WorkspaceClose(_)
-        | Method::TabCreate(_)
-        | Method::TabFocus(_)
-        | Method::TabRename(_)
-        | Method::TabMove(_)
-        | Method::TabClose(_)
-        | Method::LayoutApply(_)
-        | Method::LayoutSetSplitRatio(_)
-        | Method::AgentRename(_)
-        | Method::AgentFocus(_)
-        | Method::AgentStart(_)
-        | Method::AgentPrompt(_)
-        | Method::AgentSendKeys(_)
-        | Method::PaneSplit(_)
-        | Method::PaneSwap(_)
-        | Method::PaneMove(_)
-        | Method::PaneZoom(_)
-        | Method::PaneFocusDirection(_)
-        | Method::PaneResize(_)
-        | Method::PaneScroll(_)
-        | Method::PaneClear(_)
-        | Method::PaneFocus(_)
-        | Method::PaneInputSet(_)
-        | Method::PaneRename(_)
-        | Method::PaneReportAgent(_)
-        | Method::PaneReportAgentSession(_)
-        | Method::PaneReportMetadata(_)
-        | Method::PaneClearAgentAuthority(_)
-        | Method::PaneReleaseAgent(_)
-        | Method::PaneClose(_) => true,
-        Method::Ping(_)
-        | Method::ServerStop(_)
-        | Method::ServerSshAgentRegister(_)
-        | Method::ServerAgentManifests(_)
-        | Method::SessionSnapshot(_)
-        | Method::WorkspaceList(_)
-        | Method::WorkspaceGet(_)
-        | Method::TabList(_)
-        | Method::TabGet(_)
-        | Method::AgentList(_)
-        | Method::AgentGet(_)
-        | Method::AgentRead(_)
-        | Method::AgentExplain(_)
-        | Method::AgentWait(_)
-        | Method::PaneLayout(_)
-        | Method::PaneProcessInfo(_)
-        | Method::LayoutExport(_)
-        | Method::PaneNeighbor(_)
-        | Method::PaneEdges(_)
-        | Method::PaneSelectionRead(_)
-        | Method::PaneCopyMotion(_)
-        | Method::PaneCopySearch(_)
-        | Method::PaneList(_)
-        | Method::PaneCurrent(_)
-        | Method::PaneGet(_)
-        | Method::PaneSendText(_)
-        | Method::PaneSendKeys(_)
-        | Method::PaneSendInput(_)
-        | Method::PaneRead(_)
-        | Method::EventsSubscribe(_)
-        | Method::EventsWait(_)
-        | Method::PaneWaitForOutput(_) => false,
-    }
+    request.method.traits().mutates_ui
 }
 
 pub(crate) fn serialize_response_or_error<T: serde::Serialize>(
@@ -141,6 +66,7 @@ pub fn socket_path(paths: &crate::config::AppPaths) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::schema::Method;
 
     struct FailingResponse;
 
@@ -192,6 +118,31 @@ mod tests {
                 intent: crate::api::schema::ReadIntent::Passive,
             },
         ))));
+    }
+
+    #[test]
+    fn method_traits_carry_routing_and_log_facts() {
+        let ping = Method::Ping(crate::api::schema::PingParams::default()).traits();
+        assert_eq!(ping.name, "ping");
+        assert!(ping.runs_on_socket_thread);
+        assert!(!ping.mutates_ui);
+        assert!(!ping.routine);
+
+        let pane_get = Method::PaneGet(crate::api::schema::PaneTarget {
+            pane_id: "pane_1".into(),
+        })
+        .traits();
+        assert_eq!(pane_get.name, "pane.get");
+        assert!(!pane_get.runs_on_socket_thread);
+        assert!(!pane_get.mutates_ui);
+        assert!(pane_get.routine);
+
+        let title_clear =
+            Method::ClientWindowTitleClear(crate::api::schema::EmptyParams::default()).traits();
+        assert_eq!(title_clear.name, "client.window_title.clear");
+        assert!(!title_clear.runs_on_socket_thread);
+        assert!(title_clear.mutates_ui);
+        assert!(!title_clear.routine);
     }
 
     #[test]

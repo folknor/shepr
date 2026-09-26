@@ -406,13 +406,19 @@ fn attribute(file: &std::fs::File, name: &std::ffi::CStr) -> Option<Vec<u8>> {
 fn config_metadata_preserves_ownership_and_acl_without_inheriting_extra_access() {
     use std::os::unix::fs::MetadataExt;
 
-    let dir = crate::test_support::ScratchDir::new("config-acl");
+    // Keep this ACL-specific probe on the repository filesystem so it can
+    // exercise POSIX ACL xattrs independently of the system temp mount.
+    let target = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dir = crate::test_support::ScratchDir::new_in(target, "config-acl");
     // Linux UAPI posix_acl_xattr_header/entry, version 2, little-endian fields.
-    // Owner rw, named user 65534 read, group none, mask read, other none.
+    // The test runner maps only its current uid, so use that id for the named
+    // entry instead of an unmapped uid that the kernel rejects with EINVAL.
+    // Owner rw, named user read, group none, mask read, other none.
+    let named_user = effective_uid();
     let mut acl = 2_u32.to_le_bytes().to_vec();
     for (tag, permissions, id) in [
         (1_u16, 6_u16, u32::MAX),
-        (2, 4, 65534),
+        (2, 4, named_user),
         (4, 0, u32::MAX),
         (16, 4, u32::MAX),
         (32, 0, u32::MAX),

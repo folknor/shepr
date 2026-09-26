@@ -22,6 +22,7 @@ use crate::render_signal::RenderSignal;
 
 mod agent_detection;
 mod cursor;
+mod cwd;
 mod osc;
 mod state;
 mod terminal;
@@ -38,6 +39,7 @@ use self::agent_detection::{
     detection_update_for_publish_with_osc, mark_detection_content_changed,
     observe_detection_content_change, withhold_agent_absence,
 };
+use self::cwd::UsableCwd;
 use self::terminal::{GhosttyPaneTerminal, PaneTerminal};
 pub(crate) use self::terminal::{
     TerminalDirtyPatch, TerminalDirtyPatchOutcome, TerminalReadSnapshot, TerminalSearchDirection,
@@ -346,7 +348,9 @@ fn absolute_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
 }
 
 fn usable_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
-    absolute_process_cwd(pid).filter(|cwd| cwd.is_dir())
+    absolute_process_cwd(pid)
+        .and_then(UsableCwd::new)
+        .map(UsableCwd::into_path_buf)
 }
 
 fn foreground_member_cwd_different_from_shell(
@@ -826,14 +830,9 @@ pub struct PaneRuntime {
     terminal: Arc<PaneTerminal>,
     io: PaneRuntimeIo,
     current_size: Cell<(u16, u16, u32, u32)>,
-    child_pid: Arc<AtomicU32>,
+    child_liveness: Arc<ChildLiveness>,
     reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
     persistence_cwd: Mutex<Option<std::path::PathBuf>>,
-    child_wait_completed: Arc<AtomicBool>,
-    /// A pidfd on the child, the leader of the pane's session, opened before
-    /// anything could reap it. Teardown signals through it so a reused pid is
-    /// never hit. `None` in test runtimes and on kernels without pidfds.
-    session_leader: Option<crate::platform::ProcessHandle>,
     content_seq: Arc<AtomicU64>,
     content_write_lock: Arc<Mutex<()>>,
     detection_content_seq: Arc<AtomicU64>,
@@ -843,6 +842,59 @@ pub struct PaneRuntime {
     preserve_processes_on_drop: bool,
     // Task handles for deterministic shutdown
     detect_handle: Option<tokio::task::AbortHandle>,
+}
+
+/// The pane's child identity and the observations used to decide whether it
+/// has exited or has been reaped. Keeping the process handle with the pid and
+/// wait result prevents each lifecycle path from choosing its own authority.
+struct ChildLiveness {
+    pid: AtomicU32,
+    wait_completed: AtomicBool,
+    /// A pidfd or start-time handle opened before the child watcher starts.
+    /// Teardown signals through it so a reused pid is never hit.
+    leader: Option<crate::platform::ProcessHandle>,
+}
+
+impl ChildLiveness {
+    fn new(pid: u32, leader: Option<crate::platform::ProcessHandle>) -> Self {
+        Self {
+            pid: AtomicU32::new(pid),
+            wait_completed: AtomicBool::new(false),
+            leader,
+        }
+    }
+
+    fn pid(&self) -> u32 {
+        self.pid.load(Ordering::Acquire)
+    }
+
+    fn mark_wait_completed(&self) {
+        self.wait_completed.store(true, Ordering::Release);
+    }
+
+    fn wait_completed(&self) -> bool {
+        self.wait_completed.load(Ordering::Acquire)
+    }
+
+    /// Whether the child has exited; a zombie counts as exited.
+    fn has_exited(&self) -> bool {
+        self.leader
+            .as_ref()
+            .map(crate::platform::ProcessHandle::has_exited)
+            .unwrap_or_else(|| self.wait_completed())
+    }
+
+    /// Whether the child has been reaped and its pid can be reused.
+    fn is_reaped(&self) -> bool {
+        self.leader
+            .as_ref()
+            .map(|leader| !leader.is_unreaped())
+            .unwrap_or_else(|| self.wait_completed())
+    }
+
+    fn leader(&self) -> Option<&crate::platform::ProcessHandle> {
+        self.leader.as_ref()
+    }
 }
 
 enum PaneRuntimeIo {
@@ -955,12 +1007,7 @@ impl Drop for PaneRuntime {
         }
         self.io.shutdown();
         if !self.preserve_processes_on_drop {
-            shutdown_pane_processes(
-                self.pane_id,
-                self.child_pid.load(Ordering::Acquire),
-                self.session_leader.take(),
-                Arc::clone(&self.child_wait_completed),
-            );
+            shutdown_pane_processes(self.pane_id, Arc::clone(&self.child_liveness));
         }
     }
 }
@@ -1022,17 +1069,13 @@ impl Drop for PaneTeardownInFlight {
 /// on kernels without pidfds a pid checked against its start time right
 /// before the kill), so a pid the kernel has handed to an unrelated process
 /// is not signalled.
-fn shutdown_pane_processes(
-    pane_id: PaneId,
-    session_id: u32,
-    leader: Option<crate::platform::ProcessHandle>,
-    child_wait_completed: Arc<AtomicBool>,
-) {
+fn shutdown_pane_processes(pane_id: PaneId, child_liveness: Arc<ChildLiveness>) {
+    let session_id = child_liveness.pid();
     if session_id == 0 {
         return;
     }
-    if let Some(leader) = &leader
-        && !leader.has_exited()
+    if let Some(leader) = child_liveness.leader()
+        && !child_liveness.has_exited()
     {
         leader.signal(crate::platform::Signal::Hangup);
     }
@@ -1040,38 +1083,31 @@ fn shutdown_pane_processes(
     // parked in a shared slot that the inline fallback can still take back.
     let work = Arc::new(Mutex::new(Some((
         PaneTeardownInFlight::start(),
-        leader,
-        child_wait_completed,
+        child_liveness,
     ))));
     let thread_work = Arc::clone(&work);
     let spawned = std::thread::Builder::new()
         .name(format!("shepr-pane-{}-teardown", pane_id.raw()))
-        .spawn(move || run_pane_teardown(pane_id, session_id, &thread_work));
+        .spawn(move || run_pane_teardown(pane_id, &thread_work));
     if let Err(err) = spawned {
         warn!(
             pane = pane_id.raw(),
             %err,
             "could not start pane teardown thread; tearing down inline"
         );
-        run_pane_teardown(pane_id, session_id, &work);
+        run_pane_teardown(pane_id, &work);
     }
 }
 
-type PaneTeardownWork = Mutex<
-    Option<(
-        PaneTeardownInFlight,
-        Option<crate::platform::ProcessHandle>,
-        Arc<AtomicBool>,
-    )>,
->;
+type PaneTeardownWork = Mutex<Option<(PaneTeardownInFlight, Arc<ChildLiveness>)>>;
 
-fn run_pane_teardown(pane_id: PaneId, session_id: u32, work: &PaneTeardownWork) {
+fn run_pane_teardown(pane_id: PaneId, work: &PaneTeardownWork) {
     let taken = work
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
-    if let Some((_in_flight, leader, child_wait_completed)) = taken {
-        terminate_pane_session(pane_id, session_id, leader.as_ref(), &child_wait_completed);
+    if let Some((_in_flight, child_liveness)) = taken {
+        terminate_pane_session(pane_id, &child_liveness);
     }
 }
 
@@ -1090,23 +1126,19 @@ const PANE_TEARDOWN_STEPS: [(crate::platform::Signal, std::time::Duration); 3] =
     ),
 ];
 
-fn terminate_pane_session(
-    pane_id: PaneId,
-    session_id: u32,
-    leader: Option<&crate::platform::ProcessHandle>,
-    child_wait_completed: &AtomicBool,
-) {
-    let leader_reaped = || match leader {
-        Some(leader) => !leader.is_unreaped(),
-        None => child_wait_completed.load(Ordering::Acquire),
-    };
+fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
+    let session_id = child_liveness.pid();
+    let leader_reaped = || child_liveness.is_reaped();
     let mut members = Vec::new();
     for (signal, grace) in PANE_TEARDOWN_STEPS {
         // Rescan every round: a process that forked while being hung up is
         // still in the session and must not escape the next signal.
         members = crate::platform::session_member_handles(session_id, leader_reaped);
-        let handles: Vec<&crate::platform::ProcessHandle> =
-            leader.into_iter().chain(members.iter()).collect();
+        let handles: Vec<&crate::platform::ProcessHandle> = child_liveness
+            .leader()
+            .into_iter()
+            .chain(members.iter())
+            .collect();
         for handle in &handles {
             if !handle.has_exited() {
                 handle.signal(signal);
@@ -1128,7 +1160,8 @@ fn terminate_pane_session(
         }
     }
 
-    let survivors: Vec<u32> = leader
+    let survivors: Vec<u32> = child_liveness
+        .leader()
         .into_iter()
         .chain(members.iter())
         .filter(|handle| !handle.has_exited())
@@ -1164,7 +1197,7 @@ fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> PtyCommand {
 }
 
 fn usable_reported_cwd(cwd: std::path::PathBuf) -> Option<std::path::PathBuf> {
-    (cwd.is_absolute() && cwd.is_dir()).then_some(cwd)
+    UsableCwd::new(cwd).map(UsableCwd::into_path_buf)
 }
 
 fn publish_reported_cwd(
@@ -1207,17 +1240,9 @@ fn publish_reported_cwd(
 
 impl PaneRuntime {
     pub fn shutdown(mut self) {
-        if let Some(handle) = self.detect_handle.take() {
-            handle.abort();
-        }
-        self.io.shutdown();
-        shutdown_pane_processes(
-            self.pane_id,
-            self.child_pid.load(Ordering::Acquire),
-            self.session_leader.take(),
-            Arc::clone(&self.child_wait_completed),
-        );
-        self.preserve_processes_on_drop = true;
+        // Drop owns the ordered shutdown sequence for both explicit and
+        // implicit closure; this only selects the process-session policy.
+        self.preserve_processes_on_drop = false;
     }
 
     pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
@@ -1381,29 +1406,27 @@ impl PaneRuntime {
             .inspect_err(|err| error!(pane = pane_id.raw(), err = %err, "{spawn_error_message}"))?;
 
         // --- Child watcher task ---
-        let child_pid = Arc::new(AtomicU32::new(0));
-        let reported_cwd = Arc::new(Mutex::new(None));
-        let child_wait_completed = Arc::new(AtomicBool::new(false));
-        let content_seq = Arc::new(AtomicU64::new(0));
-        let detection_content_seq = Arc::new(AtomicU64::new(0));
-        let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
+        let pid = spawned.child.id();
         // Opened before the watcher below exists, so nothing can have reaped
         // the child yet and the pid is certainly still this child's.
-        let session_leader = crate::platform::ProcessHandle::open(spawned.child.id());
-        if session_leader.is_none() {
+        let leader = crate::platform::ProcessHandle::open(pid);
+        if leader.is_none() {
             warn!(
                 pane = pane_id.raw(),
                 "no process handle for the pane's child; closing the pane cannot signal it directly"
             );
         }
+        let child_liveness = Arc::new(ChildLiveness::new(pid, leader));
+        let reported_cwd = Arc::new(Mutex::new(None));
+        let content_seq = Arc::new(AtomicU64::new(0));
+        let detection_content_seq = Arc::new(AtomicU64::new(0));
+        let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
         {
-            let child_pid = Arc::clone(&child_pid);
-            let child_wait_completed = Arc::clone(&child_wait_completed);
+            let child_liveness = Arc::clone(&child_liveness);
             let events = events.clone();
             let rt = tokio::runtime::Handle::current();
             let mut child = spawned.child;
             let pid = child.id();
-            child_pid.store(pid, Ordering::Release);
             crate::logging::pane_spawned(pane_id.raw(), pid);
             tokio::task::spawn_blocking(move || {
                 // Blocking waitpid on this child only; no process-wide SIGCHLD
@@ -1420,7 +1443,7 @@ impl PaneRuntime {
                         crate::platform::ChildExitReason::WaitFailed
                     }
                 };
-                child_wait_completed.store(true, Ordering::Release);
+                child_liveness.mark_wait_completed();
                 // Use blocking send - PaneDied is critical, must not be dropped
                 if let Err(e) = rt.block_on(events.send(AppEvent::PaneDied {
                     pane_id,
@@ -1440,7 +1463,7 @@ impl PaneRuntime {
             let content_seq = Arc::clone(&content_seq);
             let content_write_lock = Arc::clone(&content_write_lock);
             let detection_content_seq = Arc::clone(&detection_content_seq);
-            let child_pid = Arc::clone(&child_pid);
+            let child_liveness = Arc::clone(&child_liveness);
             let events = events.clone();
             let reader_exit_events = events.clone();
             let reported_cwd = Arc::clone(&reported_cwd);
@@ -1453,7 +1476,7 @@ impl PaneRuntime {
                     Err(poisoned) => poisoned.into_inner(),
                 };
                 content_seq.fetch_add(1, Ordering::AcqRel);
-                let shell_pid = child_pid.load(Ordering::Acquire);
+                let shell_pid = child_liveness.pid();
                 let result = terminal.process_pty_bytes(pane_id, shell_pid, bytes);
                 content_seq.fetch_add(1, Ordering::Release);
                 drop(_content_write_guard);
@@ -1489,7 +1512,7 @@ impl PaneRuntime {
                     let content_write_lock = Arc::clone(&content_write_lock);
                     let content_seq = Arc::clone(&content_seq);
                     let detection_content_seq = Arc::clone(&detection_content_seq);
-                    let child_pid = Arc::clone(&child_pid);
+                    let child_liveness = Arc::clone(&child_liveness);
                     let reported_cwd = Arc::clone(&reported_cwd);
                     let events = events.clone();
                     let timer_writer = Arc::clone(&timer_writer_for_read);
@@ -1513,14 +1536,14 @@ impl PaneRuntime {
                             content_seq.fetch_add(1, Ordering::AcqRel);
                             let result = terminal.flush_expired_synchronized_output(
                                 pane_id,
-                                child_pid.load(Ordering::Acquire),
+                                child_liveness.pid(),
                             );
                             content_seq.fetch_add(1, Ordering::Release);
                             drop(_content_write_guard);
                             if result.default_color_owner_pending {
                                 terminal.resolve_default_color_owner(
                                     pane_id,
-                                    child_pid.load(Ordering::Acquire),
+                                    child_liveness.pid(),
                                     result.default_color_generation,
                                 );
                             }
@@ -1619,7 +1642,7 @@ impl PaneRuntime {
             const TICK_IDENTIFIED: Duration = Duration::from_millis(300);
             const TICK_PENDING_RELEASE: Duration = Duration::from_millis(50);
 
-            let child_pid = Arc::clone(&child_pid);
+            let child_liveness = Arc::clone(&child_liveness);
             let terminal = Arc::clone(&terminal);
             let state_events = events.clone();
             let detection_content_seq = Arc::clone(&detection_content_seq);
@@ -1709,7 +1732,7 @@ impl PaneRuntime {
                         last_content_change_at = None;
                     }
                     release_was_active = suppressed_agent.is_some();
-                    let pid = child_pid.load(Ordering::Acquire);
+                    let pid = child_liveness.pid();
                     let mut agent = agent_presence.current_agent();
                     let lifecycle_authority_active =
                         full_lifecycle_authority_active_for_task.load(Ordering::Acquire);
@@ -1873,7 +1896,7 @@ impl PaneRuntime {
                         }
                     }
 
-                    let pid = child_pid.load(Ordering::Acquire);
+                    let pid = child_liveness.pid();
                     // The restore check reads /proc only while an override is
                     // active; keep that rare probe off the runtime worker too.
                     if pid > 0 && terminal.has_transient_default_color_override() {
@@ -2050,11 +2073,9 @@ impl PaneRuntime {
             terminal,
             io,
             current_size: Cell::new((rows, cols, 0, 0)),
-            child_pid,
+            child_liveness,
             reported_cwd,
             persistence_cwd: Mutex::new(None),
-            child_wait_completed,
-            session_leader,
             content_seq,
             content_write_lock,
             detection_content_seq,
@@ -2477,14 +2498,13 @@ impl PaneRuntime {
             return Some(cwd);
         }
 
-        let pid = self.child_pid.load(Ordering::Relaxed);
+        let pid = self.child_liveness.pid();
         crate::platform::process_cwd(pid)
     }
 
     pub fn cwd_for_persistence(&self) -> Option<std::path::PathBuf> {
-        let pid = self.child_pid.load(Ordering::Acquire);
-        let exited = self.child_wait_completed.load(Ordering::Acquire);
-        if let Some(cwd) = (!exited)
+        let pid = self.child_liveness.pid();
+        if let Some(cwd) = (!self.child_liveness.wait_completed())
             .then(|| crate::platform::process_cwd(pid))
             .flatten()
             .filter(|cwd| cwd.is_absolute())
@@ -2503,7 +2523,7 @@ impl PaneRuntime {
     }
 
     pub fn child_pid(&self) -> Option<u32> {
-        let pid = self.child_pid.load(Ordering::Acquire);
+        let pid = self.child_liveness.pid();
         (pid > 0).then_some(pid)
     }
 
@@ -2517,7 +2537,7 @@ impl PaneRuntime {
 
     /// Get the current working directory of the process group controlling the pane PTY.
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
-        let pid = self.child_pid.load(Ordering::Acquire);
+        let pid = self.child_liveness.pid();
         let foreground_pgid = crate::platform::foreground_process_group_id(pid);
         let leader_cwd = foreground_pgid.and_then(absolute_process_cwd);
 
@@ -2647,11 +2667,9 @@ impl PaneRuntime {
                     resize_tx,
                 },
                 current_size: Cell::new((rows, cols, 0, 0)),
-                child_pid: Arc::new(AtomicU32::new(0)),
+                child_liveness: Arc::new(ChildLiveness::new(0, None)),
                 reported_cwd: Arc::new(Mutex::new(None)),
                 persistence_cwd: Mutex::new(None),
-                child_wait_completed: Arc::new(AtomicBool::new(false)),
-                session_leader: None,
                 content_seq: Arc::new(AtomicU64::new(0)),
                 content_write_lock: Arc::new(Mutex::new(())),
                 detection_content_seq: Arc::new(AtomicU64::new(0)),
@@ -3015,19 +3033,17 @@ mod tests {
         let mut spawned = crate::pty::backend::spawn_pty(24, 80, &cmd).expect("spawn session");
         let leader_pid = spawned.child.id();
         let leader = crate::platform::ProcessHandle::open(leader_pid).expect("leader pidfd");
+        let child_liveness = Arc::new(ChildLiveness::new(leader_pid, Some(leader)));
         spawned.child.wait().expect("reap the leader");
-        let child_wait_completed = Arc::new(AtomicBool::new(true));
+        assert!(child_liveness.has_exited());
+        assert!(child_liveness.is_reaped());
+        child_liveness.mark_wait_completed();
 
         let members = crate::platform::session_member_handles(leader_pid, || true);
         assert_eq!(members.len(), 1, "the background job survives its leader");
 
         let started = std::time::Instant::now();
-        shutdown_pane_processes(
-            PaneId::from_raw(0),
-            leader_pid,
-            Some(leader),
-            child_wait_completed,
-        );
+        shutdown_pane_processes(PaneId::from_raw(0), child_liveness);
         assert!(
             started.elapsed() < std::time::Duration::from_millis(200),
             "teardown must not block its caller through the grace periods"
@@ -3067,12 +3083,7 @@ mod tests {
 
     #[test]
     fn pane_teardown_without_a_session_does_nothing() {
-        shutdown_pane_processes(
-            PaneId::from_raw(0),
-            0,
-            None,
-            Arc::new(AtomicBool::new(false)),
-        );
+        shutdown_pane_processes(PaneId::from_raw(0), Arc::new(ChildLiveness::new(0, None)));
     }
 
     fn capture_shell_output(command: &str, extra_env: &[(&str, &str)]) -> String {
@@ -3178,9 +3189,10 @@ mod tests {
         *runtime.persistence_cwd.lock().expect("test precondition") = Some(saved.clone());
         // A different live process now owns the exited shell's numeric PID.
         runtime
-            .child_pid
+            .child_liveness
+            .pid
             .store(std::process::id(), Ordering::Release);
-        runtime.child_wait_completed.store(true, Ordering::Release);
+        runtime.child_liveness.mark_wait_completed();
         assert_eq!(runtime.cwd_for_persistence(), Some(saved));
         *runtime.persistence_cwd.lock().expect("test precondition") = None;
         assert_eq!(runtime.cwd_for_persistence(), None);
@@ -3235,10 +3247,8 @@ mod tests {
                 resize_tx,
             },
             current_size: Cell::new((80, 24, 0, 0)),
-            child_pid: Arc::new(AtomicU32::new(0)),
+            child_liveness: Arc::new(ChildLiveness::new(0, None)),
             reported_cwd: Arc::new(Mutex::new(None)),
-            child_wait_completed: Arc::new(AtomicBool::new(false)),
-            session_leader: None,
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),
             detection_content_seq: Arc::new(AtomicU64::new(0)),
@@ -3272,10 +3282,8 @@ mod tests {
                 resize_tx,
             },
             current_size: Cell::new((80, 24, 0, 0)),
-            child_pid: Arc::new(AtomicU32::new(0)),
+            child_liveness: Arc::new(ChildLiveness::new(0, None)),
             reported_cwd: Arc::new(Mutex::new(None)),
-            child_wait_completed: Arc::new(AtomicBool::new(false)),
-            session_leader: None,
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),
             detection_content_seq: Arc::new(AtomicU64::new(0)),

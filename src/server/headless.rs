@@ -222,6 +222,8 @@ pub struct HeadlessServer {
     host_shutdown_requested: Arc<AtomicBool>,
     /// Present from the host shutdown warning until the shutdown completes
     /// (the process exits) or is found to be cancelled.
+    /// This cancellable session-save freeze stays separate from terminal
+    /// server shutdown, which cannot return to a running phase.
     host_shutdown_freeze: Option<HostShutdownFreeze>,
     /// Watches logind for shutdown warnings; `None` before `run` and while the
     /// server has dropped it to release its delay lock (see
@@ -2096,7 +2098,7 @@ impl HeadlessServer {
 
     fn reject_api_request_for_shutdown(msg: &api::ApiRequestMessage) {
         let request_id = msg.request.id.clone();
-        let method = api::api_method_name(&msg.request.method);
+        let method = msg.request.method.traits().name;
         let response = api::serialize_response_or_error(
             &request_id,
             &api::schema::ErrorResponse {
@@ -2119,7 +2121,7 @@ impl HeadlessServer {
             return false;
         }
         let request_id = msg.request.id.clone();
-        let method = api::api_method_name(&msg.request.method);
+        let method = msg.request.method.traits().name;
         self.immediate_pty_sources_dirty = true;
 
         let frozen_alt_screen_read = match self.alt_screen_read_conflict(&msg.request) {

@@ -12,9 +12,9 @@ pub struct ServerSshAgentRegisterParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerCapabilities {
     pub detached_server_daemon: bool,
-    /// Whether this server supports explicit client-shell surface interest.
+    /// Kept because `cli/status.rs` still forwards it into `shepr status --json`.
     pub surface_interest: bool,
-    /// Whether this server supports endpoint health probes.
+    /// Kept because `cli/status.rs` still forwards it into `shepr status --json`.
     pub health_check: bool,
     /// Supports connection-scoped `server.ssh_agent.register` on the local JSON API.
     pub ssh_agent_registration: bool,

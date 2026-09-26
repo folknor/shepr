@@ -42,6 +42,23 @@ fn missing_pixel_geometry_keeps_a_valid_terminal_grid() {
 }
 
 #[test]
+fn client_host_size_clamps_only_client_shell_grids() {
+    let shell = terminal_geometry::ClientHostSize::new(0, u16::MAX, true);
+    assert_eq!(shell.cols, 1);
+    assert!((1..=crate::protocol::MAX_SURFACE_DIMENSION).contains(&shell.rows));
+    assert!(
+        usize::from(shell.cols) * usize::from(shell.rows) <= crate::protocol::MAX_SURFACE_CELLS
+    );
+    assert_eq!(
+        terminal_geometry::ClientHostSize::new(0, u16::MAX, false),
+        terminal_geometry::ClientHostSize {
+            cols: 0,
+            rows: u16::MAX,
+        },
+    );
+}
+
+#[test]
 fn cell_geometry_is_bounded_before_wire_use_and_disables_inexact_pixel_mouse() {
     let (width, height, exact) = super::terminal_geometry::bounded_cell_geometry(
         crate::protocol::MAX_CELL_SIZE_PX + 1,

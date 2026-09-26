@@ -4,14 +4,10 @@ use super::*;
 pub(super) struct ClientState {
     /// Stateful semantic-frame encoder used when the server sends FrameData.
     pub(super) blit_encoder: render_ansi::BlitEncoder,
-    pub(super) mouse_capture_active: bool,
-    pub(super) endpoint_mouse_capture_requested: bool,
-    pub(super) endpoint_sgr_pixels_requested: bool,
+    pub(super) host_mouse_mode: terminal_setup::HostMouseMode,
     /// Latest physical host theme observations, retained so an endpoint selected after the
     /// observation receives the same client-owned baseline.
     pub(super) host_theme_updates: Vec<crate::protocol::ClientHostThemeUpdate>,
-    pub(super) direct_mouse_capture_preference: bool,
-    pub(super) shell_mouse_capture_preference: bool,
     pub(super) direct_keyboard_protocol: crate::terminal_modes::DirectHostKeyboardState,
     pub(super) pane_keyboard_report_all: bool,
     pub(super) keyboard_report_all_active: bool,
@@ -54,12 +50,8 @@ impl ClientState {
     pub(super) fn test_new() -> Self {
         Self {
             blit_encoder: render_ansi::BlitEncoder::new(),
-            mouse_capture_active: false,
-            endpoint_mouse_capture_requested: false,
-            endpoint_sgr_pixels_requested: false,
+            host_mouse_mode: terminal_setup::HostMouseMode::new(false, false, false),
             host_theme_updates: Vec::new(),
-            direct_mouse_capture_preference: false,
-            shell_mouse_capture_preference: false,
             direct_keyboard_protocol: Default::default(),
             pane_keyboard_report_all: false,
             keyboard_report_all_active: false,
@@ -83,6 +75,11 @@ impl ClientState {
 
     pub(super) fn request_repaint(&mut self) {
         self.repaint_pending = true;
+    }
+
+    pub(super) fn set_host_size(&mut self, cols: u16, rows: u16) {
+        let size = terminal_geometry::ClientHostSize::new(cols, rows, self.shell.is_some());
+        self.reported_size = (size.cols, size.rows);
     }
 
     pub(super) fn freeze_presentation(&mut self) {

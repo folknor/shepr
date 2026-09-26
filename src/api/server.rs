@@ -11,11 +11,12 @@ use tracing::{debug, error, info, warn};
 use std::fs;
 
 use crate::api::schema::{
-    ErrorBody, ErrorResponse, Method, Request, ResponseResult, ServerCapabilities, SuccessResponse,
+    ErrorBody, ErrorResponse, Method, MethodTraits, Request, ResponseResult, ServerCapabilities,
+    SuccessResponse,
 };
 use crate::api::subscriptions::{ActiveSubscription, SubscriptionStream};
 use crate::api::wait::{prompt_agent, wait_for_agent, wait_for_event, wait_for_output};
-use crate::api::{ApiRequestMessage, ApiRequestSender, EventHub, request_changes_ui, socket_path};
+use crate::api::{ApiRequestMessage, ApiRequestSender, EventHub, socket_path};
 use crate::ipc::{
     LocalStream, LocalStreamRead, SocketFileIdentity, bind_private_local_listener,
     is_connection_closed_error, local_stream_peer_closed, peer_is_same_user,
@@ -364,9 +365,16 @@ fn handle_connection_with_stop(
     };
 
     let request_id = request.id.clone();
-    let method = api_method_name(&request.method);
-    let changes_ui = request_changes_ui(&request);
-    crate::logging::api_request_started(&request_id, method, changes_ui);
+    let method_traits = request.method.traits();
+    crate::logging::api_request_started(&request_id, method_traits);
+
+    // Requests sent to the app loop are handled there. The method facts are
+    // the single routing classification; this thread only handles methods
+    // whose response or connection lifetime belongs here.
+    if !method_traits.runs_on_socket_thread {
+        let response = handle_request(request, api_tx, capabilities, server_stop);
+        return finish_api_response(&mut stream, &request_id, method_traits, &response);
+    }
 
     match request.method {
         Method::ServerSshAgentRegister(params) => {
@@ -423,12 +431,15 @@ fn handle_connection_with_stop(
             match &result {
                 Ok(()) => crate::logging::api_request_completed(
                     &request_id,
-                    method,
+                    method_traits,
                     "stream_closed",
-                    changes_ui,
                 ),
                 Err(err) => {
-                    crate::logging::api_request_failed(&request_id, method, &err.to_string());
+                    crate::logging::api_request_failed(
+                        &request_id,
+                        method_traits,
+                        &err.to_string(),
+                    );
                 }
             }
             result
@@ -442,7 +453,7 @@ fn handle_connection_with_stop(
                 event_hub,
                 running,
             )?;
-            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+            finish_wait_response(&mut stream, response, &request_id, method_traits)
         }
         Method::AgentPrompt(params) => {
             let response = prompt_agent(
@@ -453,7 +464,7 @@ fn handle_connection_with_stop(
                 event_hub,
                 running,
             )?;
-            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+            finish_wait_response(&mut stream, response, &request_id, method_traits)
         }
         Method::AgentWait(params) => {
             let response = wait_for_agent(
@@ -464,12 +475,12 @@ fn handle_connection_with_stop(
                 event_hub,
                 running,
             )?;
-            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+            finish_wait_response(&mut stream, response, &request_id, method_traits)
         }
         Method::PaneWaitForOutput(params) => {
             let response =
                 wait_for_output(request_id.clone(), &params, &mut stream, api_tx, running)?;
-            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+            finish_wait_response(&mut stream, response, &request_id, method_traits)
         }
         method_body => {
             let response = handle_request(
@@ -481,19 +492,7 @@ fn handle_connection_with_stop(
                 capabilities,
                 server_stop,
             );
-            let result = write_text_line_allow_disconnect(&mut stream, &response);
-            match &result {
-                Ok(()) => crate::logging::api_request_completed(
-                    &request_id,
-                    method,
-                    api_response_outcome(&response),
-                    changes_ui,
-                ),
-                Err(err) => {
-                    crate::logging::api_request_failed(&request_id, method, &err.to_string());
-                }
-            }
-            result
+            finish_api_response(&mut stream, &request_id, method_traits, &response)
         }
     }
 }
@@ -502,25 +501,27 @@ fn finish_wait_response(
     stream: &mut LocalStream,
     response: Option<String>,
     request_id: &str,
-    method: &'static str,
-    changes_ui: bool,
+    method: MethodTraits,
 ) -> std::io::Result<()> {
     let Some(response) = response else {
-        crate::logging::api_request_completed(
-            request_id,
-            method,
-            "client_disconnected",
-            changes_ui,
-        );
+        crate::logging::api_request_completed(request_id, method, "client_disconnected");
         return Ok(());
     };
-    let result = write_text_line_allow_disconnect(stream, &response);
+    finish_api_response(stream, request_id, method, &response)
+}
+
+fn finish_api_response(
+    stream: &mut LocalStream,
+    request_id: &str,
+    method: MethodTraits,
+    response: &str,
+) -> std::io::Result<()> {
+    let result = write_text_line_allow_disconnect(stream, response);
     match &result {
         Ok(()) => crate::logging::api_request_completed(
             request_id,
             method,
-            api_response_outcome(&response),
-            changes_ui,
+            api_response_outcome(response),
         ),
         Err(err) => crate::logging::api_request_failed(request_id, method, &err.to_string()),
     }
@@ -574,80 +575,7 @@ fn handle_request(
 }
 
 pub(crate) fn api_method_name(method: &Method) -> &'static str {
-    match method {
-        Method::Ping(_) => "ping",
-        Method::ServerStop(_) => "server.stop",
-        Method::ServerSshAgentRegister(_) => "server.ssh_agent.register",
-        Method::ServerAgentManifests(_) => "server.agent_manifests",
-        Method::ServerReloadAgentManifests(_) => "server.reload_agent_manifests",
-        Method::ClientWindowTitleSet(_) => "client.window_title.set",
-        Method::ClientWindowTitleClear(_) => "client.window_title.clear",
-        Method::ClientShellSurfaceSet(_) => "client_shell.surface.set",
-        Method::SessionSnapshot(_) => "session.snapshot",
-        Method::WorkspaceCreate(_) => "workspace.create",
-        Method::WorkspaceList(_) => "workspace.list",
-        Method::WorkspaceGet(_) => "workspace.get",
-        Method::WorkspaceFocus(_) => "workspace.focus",
-        Method::WorkspaceRename(_) => "workspace.rename",
-        Method::WorkspaceMove(_) => "workspace.move",
-        Method::WorkspaceMoveBlock(_) => "workspace.move_block",
-        Method::WorkspaceReportMetadata(_) => "workspace.report_metadata",
-        Method::WorkspaceClose(_) => "workspace.close",
-        Method::TabCreate(_) => "tab.create",
-        Method::TabList(_) => "tab.list",
-        Method::TabGet(_) => "tab.get",
-        Method::TabFocus(_) => "tab.focus",
-        Method::TabRename(_) => "tab.rename",
-        Method::TabMove(_) => "tab.move",
-        Method::TabClose(_) => "tab.close",
-        Method::AgentList(_) => "agent.list",
-        Method::AgentGet(_) => "agent.get",
-        Method::AgentRead(_) => "agent.read",
-        Method::AgentExplain(_) => "agent.explain",
-        Method::AgentSendKeys(_) => "agent.send_keys",
-        Method::AgentRename(_) => "agent.rename",
-        Method::AgentFocus(_) => "agent.focus",
-        Method::AgentStart(_) => "agent.start",
-        Method::AgentPrompt(_) => "agent.prompt",
-        Method::AgentWait(_) => "agent.wait",
-        Method::PaneSplit(_) => "pane.split",
-        Method::PaneSwap(_) => "pane.swap",
-        Method::PaneMove(_) => "pane.move",
-        Method::PaneZoom(_) => "pane.zoom",
-        Method::PaneLayout(_) => "pane.layout",
-        Method::PaneProcessInfo(_) => "pane.process_info",
-        Method::LayoutExport(_) => "layout.export",
-        Method::LayoutApply(_) => "layout.apply",
-        Method::LayoutSetSplitRatio(_) => "layout.set_split_ratio",
-        Method::PaneNeighbor(_) => "pane.neighbor",
-        Method::PaneEdges(_) => "pane.edges",
-        Method::PaneFocusDirection(_) => "pane.focus_direction",
-        Method::PaneResize(_) => "pane.resize",
-        Method::PaneScroll(_) => "pane.scroll",
-        Method::PaneClear(_) => "pane.clear",
-        Method::PaneSelectionRead(_) => "pane.selection.read",
-        Method::PaneCopyMotion(_) => "pane.copy_motion",
-        Method::PaneCopySearch(_) => "pane.copy_search",
-        Method::PaneList(_) => "pane.list",
-        Method::PaneCurrent(_) => "pane.current",
-        Method::PaneGet(_) => "pane.get",
-        Method::PaneFocus(_) => "pane.focus",
-        Method::PaneInputSet(_) => "pane.input.set",
-        Method::PaneRename(_) => "pane.rename",
-        Method::PaneSendText(_) => "pane.send_text",
-        Method::PaneSendKeys(_) => "pane.send_keys",
-        Method::PaneSendInput(_) => "pane.send_input",
-        Method::PaneRead(_) => "pane.read",
-        Method::PaneReportAgent(_) => "pane.report_agent",
-        Method::PaneReportAgentSession(_) => "pane.report_agent_session",
-        Method::PaneReportMetadata(_) => "pane.report_metadata",
-        Method::PaneClearAgentAuthority(_) => "pane.clear_agent_authority",
-        Method::PaneReleaseAgent(_) => "pane.release_agent",
-        Method::PaneClose(_) => "pane.close",
-        Method::EventsSubscribe(_) => "events.subscribe",
-        Method::EventsWait(_) => "events.wait",
-        Method::PaneWaitForOutput(_) => "pane.wait_for_output",
-    }
+    method.traits().name
 }
 
 fn api_response_outcome(response: &str) -> &'static str {

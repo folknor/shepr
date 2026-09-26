@@ -51,30 +51,11 @@ Proposed owner: a `CellPx` that can only be built non-zero, a
 
 Reported by: terminal-core, client, protocol.
 
-## CON-005 - What surface size does the client report?
-
-Sites: `ClientSurfaceSize{..}.clamped()` when a shell exists, raw otherwise, at
-`client/mod.rs:189-192`, `351-356` and `764-773`. Agree today.
-
-Proposed owner: one `ClientState::set_host_size(geometry)` or a method on the
-geometry type.
-
-Reported by: client.
-
-## CON-006 - What mouse mode should the host terminal be in?
-
-Sites: the `MouseCapture` handler (`client/mod.rs:1200-1222`),
-`clear_endpoint_host_effects` (`shell_runtime.rs:90-111`) and the `Resize`
-handler (`client/mod.rs:754-763`), each diffing against state split across
-`state.mouse_capture_active`, `state.endpoint_*_requested`, two `*_preference`
-bools and two `Arc<AtomicBool>` mirrors. See BUG-019 for the resulting gap.
-
-Proposed owner: a `HostMouseMode` holding requests and preferences with one
-`desired()` / `apply()` that also publishes to the atomics.
-
-Reported by: client.
-
 ## CON-007 - What is this host input chunk, and where does a control string end?
+
+Decision (owner): extend the client shell input API to accept parsed mouse events
+with pixel hit-test metadata, then classify all host input once on the reader
+thread with one control-string grammar; no raw-byte exception.
 
 Sites:
 - Classification: `RawInputByteFramer`; `send_unix_input_chunks` (palette/default-colour replies via `terminal_theme` string parsers, `client/input.rs:222-237`); `classify_unix_input` (SGR pixel mouse via `input::mouse::parse_report`); `parse_raw_input_bytes_sync` in the main loop, which builds a fresh framer and reparses. The shell path at `client/mod.rs:586` and `592` parses the same data twice back to back on the per-keystroke path.
@@ -101,16 +82,6 @@ Proposed owner: the vt module owns one set of types; protocol conversions are
 
 Reported by: terminal-core, server.
 
-## CON-016 - Is the pane's child gone?
-
-Sites: `child_wait_completed: AtomicBool`, `session_leader.has_exited()` /
-`is_unreaped()`, and `child_pid == 0` in `shutdown_pane_processes`;
-`terminate_pane_session` picks between them with `leader_reaped`.
-
-Proposed owner: one `ChildLiveness` on the runtime.
-
-Reported by: pane-detection.
-
 ## CON-017 - When to probe processes
 
 Sites: `should_probe_foreground_job`,
@@ -119,23 +90,6 @@ Sites: `should_probe_foreground_job`,
 foreground-group change.
 
 Proposed owner: one scheduler state machine.
-
-Reported by: pane-detection.
-
-## CON-018 - Pane teardown sequence
-
-Sites: `Drop` and `shutdown()` both run abort-io-shutdown-teardown, kept in step
-by `preserve_processes_on_drop`.
-
-Proposed owner: `shutdown()` sets policy, `Drop` owns the work.
-
-Reported by: pane-detection.
-
-## CON-019 - Is this cwd absolute and usable?
-
-Sites: `usable_process_cwd` and `usable_reported_cwd` in `pane.rs`. Agree today.
-
-Proposed owner: one `UsableCwd` constructor.
 
 Reported by: pane-detection.
 
@@ -168,22 +122,6 @@ paths; events are a separate call the caller must remember
 
 Proposed owner: an `AppState`/`Workspace` command returning a typed outcome from
 which `App` applies side effects (see STR-031).
-
-Reported by: app-state.
-
-## CON-022 - Which panes exist in a tab?
-
-Decision (owner): each pane's public number moves into its record in
-`Tab.panes`; the snapshot map is derived from those records and
-`Workspace.public_pane_numbers` goes. The layout tree keeps geometry and order
-only. Touches persistence.
-
-Sites: the `layout` tree (`pane_ids()`, `pane_count()`), `Tab.panes: HashMap`,
-`Workspace.public_pane_numbers`. `tab_info.pane_count` uses `tab.panes.len()`,
-`terminal_targets` uses `layout.pane_ids()`, `parse_pane_id` scans
-`public_pane_numbers`. Only test-only `assert_invariants_for_test` checks them.
-
-Proposed owner: the tree, with the others derived, or one map keyed by `PaneId`.
 
 Reported by: app-state.
 
@@ -220,24 +158,6 @@ impact, over one `RenderDemand` lattice (None < Partial < Full) with join.
 
 Reported by: app-state, server.
 
-## CON-026 - Per-API-method facts live in separate tables
-
-Question: a method's name, whether it mutates UI, where it is routed, whether it
-is routine for logging.
-
-Sites: `api::request_changes_ui` (see CON-025); `api_method_name`
-(`api/server.rs:571`); routing split three ways between `api/server.rs` (socket
-thread: `ServerSshAgentRegister`, probably wait/subscriptions),
-`headless.rs:2213` (window-title methods, `AgentPrompt`, agent-read idle checks)
-and `app/api/*`; `logging::is_routine_api_method` string-matches method names;
-`session::stop_socket_with_timeout` builds `{"method":"server.stop"}` by hand,
-and its test copies the literal.
-
-Proposed owner: exhaustive `Method::traits() -> MethodTraits { name, mutates_ui,
-runs_on_socket_thread, routine }` with no `_` arm, and one routing match.
-
-Reported by: server, config-cli.
-
 ## CON-028 - AppState copies config field by field
 
 Sites: `App::new` builds `PaneGeometry` from `config.ui.*` directly while
@@ -254,6 +174,10 @@ Proposed owner: a `UiSettings` (server) / `ClientSettings` (client) built once f
 Reported by: app-state, client.
 
 ## CON-029 - Server is shutting down
+
+Decision (owner): one server lifecycle state machine covering running, host
+shutdown warning, freeze, cancellation back to running, and terminal stopping;
+every quit source and shutdown rejection reads it.
 
 Sites: rejection built in `headless.rs:2177`, `api/subscriptions.rs:453`,
 `wait.rs:875` (`server_unavailable`); quit sources polled separately:
@@ -288,40 +212,6 @@ Proposed owner: typed `ConfigDiagnostic { key, kind, message }`; the per-client
 choice becomes a function of `(diagnostics, KeybindingSource)`.
 
 Reported by: config-cli, server.
-
-## CON-034 - Surface size and frame size limits
-
-Sites: `wire.rs` `MAX_SURFACE_DIMENSION = 4096`, `MAX_SURFACE_CELLS =
-MAX_FRAME_SIZE/16 = 131072`; `decode.rs` `MAX_GRID_DIMENSION = 4096`,
-`MAX_GRID_CELLS = 1_000_000` (BUG-014). `decode::metadata_fits` mirrors decoder
-limits on the sender side ("Mirrors all decoder-side metadata limits"), held by
-the pairwise test `sender_eligibility_matches_grid_and_metadata_limits`.
-"Too big to send" is checked in `encode_frame`, three times in
-`surface_delta::message`, in `surface_reuse::message`, and in decode.rs against
-base64 length (BUG-016).
-
-Proposed owner: one set of constants in `wire.rs` and one size decision.
-
-Reported by: protocol.
-
-## CON-035 - Wire layout of surface frames restated in a hand decoder
-
-Sites: `PaneSurfaceFrame`, `FrameData`, `PaneSurfaceSplit` layout restated in
-`surface_delta/decode.rs`, held by struct literals and one layout test.
-
-Proposed owner: bounded collection decoding in the codec (e.g. `BoundedVec<T,
-const MAX>`), deleting the hand decoder.
-
-Obstacle (wave A fixer): delta metadata reuses the frame type with an empty cell
-list while full frames need a bounded one, so one field occurrence needs two
-limits; noted at `decode_frame` in `surface_delta/decode.rs`.
-
-Decision (owner): do it properly, not as a delta-only patch. The codec itself
-enforces logical item limits on every wire collection, for all messages, and
-the wire types are shaped so each field has one rule; then the hand decoder
-goes. A single-agent wave of its own.
-
-Reported by: protocol.
 
 ## CON-038 - Wire colour and modifier layout
 

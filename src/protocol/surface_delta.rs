@@ -3,31 +3,91 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
 use serde::{Deserialize, Serialize};
 
-use super::{CellData, PaneSurfaceFrame, PaneSurfacePatchRow, ServerMessage};
-
-mod decode;
+use super::wire::PaneSurfaceDeltaMetadata;
+use super::{
+    CellData, MAX_FRAME_SIZE, MAX_SURFACE_HYPERLINKS, MAX_SURFACE_PANES, MAX_SURFACE_PATCH_SPANS,
+    MAX_SURFACE_SPLIT_PATH, MAX_SURFACE_SPLITS, PaneSurfaceFrame, PaneSurfacePatchRow,
+    ServerMessage,
+};
 
 pub(crate) const MESSAGE_KIND: &str = "endpoint.surface-delta.v1";
-pub(crate) const MAX_SPANS: usize = 4096;
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct SurfaceDelta<S, R = Vec<PaneSurfacePatchRow>> {
+#[serde(bound(
+    serialize = "S: Serialize, R: Serialize",
+    deserialize = "S: Deserialize<'de>, R: Deserialize<'de>"
+))]
+pub(crate) struct SurfaceDelta<S, R = PaneSurfacePatchRow> {
     pub(crate) base_projection_revision: u64,
     pub(crate) base_surface_revision: u64,
     pub(crate) surface: S,
-    pub(crate) rows: R,
+    #[serde(
+        serialize_with = "super::codec::serialize_bounded_vec::<MAX_SURFACE_PATCH_SPANS, _, _>",
+        deserialize_with = "super::codec::deserialize_bounded_vec::<MAX_SURFACE_PATCH_SPANS, _, _>"
+    )]
+    pub(crate) rows: Vec<R>,
 }
 
 #[cfg(test)]
-pub(crate) fn decode(data: &str) -> Result<SurfaceDelta<PaneSurfaceFrame>, String> {
-    decode::decode(data, None)
+pub(crate) fn decode(data: &str) -> Result<SurfaceDelta<PaneSurfaceDeltaMetadata>, String> {
+    decode_delta(data, None)
 }
 
 pub(crate) fn decode_for(
     data: &str,
     expected: (u16, u16),
-) -> Result<SurfaceDelta<PaneSurfaceFrame>, String> {
-    decode::decode(data, Some(expected))
+) -> Result<SurfaceDelta<PaneSurfaceDeltaMetadata>, String> {
+    decode_delta(data, Some(expected))
+}
+
+fn decode_delta(
+    data: &str,
+    expected: Option<(u16, u16)>,
+) -> Result<SurfaceDelta<PaneSurfaceDeltaMetadata>, String> {
+    let max_encoded_len =
+        base64::encoded_len(MAX_FRAME_SIZE, false).ok_or("surface delta frame limit overflow")?;
+    if data.len() > max_encoded_len {
+        return Err("surface delta exceeds the frame limit".into());
+    }
+    let bytes = STANDARD_NO_PAD
+        .decode(data)
+        .map_err(|error| error.to_string())?;
+    let delta: SurfaceDelta<PaneSurfaceDeltaMetadata> =
+        super::codec::from_slice_exact(&bytes).map_err(|error| error.to_string())?;
+    let width = delta.surface.frame.width;
+    let height = delta.surface.frame.height;
+    let cell_budget = super::surface_grid_size(width, height)
+        .ok_or("surface dimensions or cell count exceed the limit")?;
+    if expected.is_some_and(|dimensions| dimensions != (width, height)) {
+        return Err("surface dimensions do not match the baseline".into());
+    }
+    let mut span_check = super::PatchSpanCheck::new(width, height);
+    let mut total_cells = 0usize;
+    for row in &delta.rows {
+        span_check
+            .push(row.x, row.y, row.cells.len())
+            .map_err(str::to_owned)?;
+        total_cells = total_cells
+            .checked_add(row.cells.len())
+            .ok_or("surface delta cell budget overflow")?;
+        if total_cells > cell_budget {
+            return Err("surface delta cell budget exceeded".into());
+        }
+    }
+    Ok(delta)
+}
+
+/// Whether a full surface can safely be represented as delta metadata.
+fn metadata_fits(surface: &PaneSurfaceFrame) -> bool {
+    super::surface_grid_size(surface.frame.width, surface.frame.height)
+        .is_some_and(|cells| cells == surface.frame.cells.len())
+        && surface.frame.hyperlinks.len() <= MAX_SURFACE_HYPERLINKS
+        && surface.panes.len() <= MAX_SURFACE_PANES
+        && surface.splits.len() <= MAX_SURFACE_SPLITS
+        && surface
+            .splits
+            .iter()
+            .all(|split| split.path.len() <= MAX_SURFACE_SPLIT_PATH)
 }
 
 /// Copies each span into a row-major grid of `width` x `height` cells.
@@ -40,7 +100,7 @@ pub(crate) fn apply_rows(
     height: u16,
     rows: &[PaneSurfacePatchRow],
 ) -> Result<(), String> {
-    if cells.len() != usize::from(width) * usize::from(height) {
+    if super::surface_grid_size(width, height) != Some(cells.len()) {
         return Err("cell grid does not match its dimensions".into());
     }
     crate::protocol::validate_patch_rows(width, height, rows)?;
@@ -96,7 +156,7 @@ fn changed_rows<'a>(
             };
             size += encoded_size(&span)?;
             // This lower bound excludes metadata, so aborting cannot discard a smaller delta.
-            if rows.len() == MAX_SPANS
+            if rows.len() == MAX_SURFACE_PATCH_SPANS
                 || base64::encoded_len(size, false).is_none_or(|size| size >= full_size)
             {
                 return Ok(None);
@@ -118,7 +178,10 @@ pub(crate) fn message(
     let ServerMessage::PaneSurface(surface) = &*full else {
         return Ok(None);
     };
-    let expected_cells = usize::from(surface.frame.width) * usize::from(surface.frame.height);
+    let Some(expected_cells) = super::surface_grid_size(surface.frame.width, surface.frame.height)
+    else {
+        return Ok(None);
+    };
     let baseline = super::surface_reuse::Baseline::new(
         &last.boot_id,
         last.projection_revision,
@@ -135,7 +198,7 @@ pub(crate) fn message(
     ) || last.frame.width != surface.frame.width
         || last.frame.height != surface.frame.height
         || last.frame.cells.len() != expected_cells
-        || !decode::metadata_fits(surface)
+        || !metadata_fits(surface)
     {
         return Ok(None);
     }
@@ -143,16 +206,20 @@ pub(crate) fn message(
     let ServerMessage::PaneSurface(surface) = full else {
         return Ok(None);
     };
-    let cells = std::mem::take(&mut surface.frame.cells);
     let encoded = (|| {
-        let Some(rows) = changed_rows(&last.frame.cells, &cells, surface.frame.width, full_size)?
+        let Some(rows) = changed_rows(
+            &last.frame.cells,
+            &surface.frame.cells,
+            surface.frame.width,
+            full_size,
+        )?
         else {
             return Ok(None);
         };
         let delta = SurfaceDelta {
             base_projection_revision: last.projection_revision,
             base_surface_revision: last.surface_revision,
-            surface: &*surface,
+            surface: PaneSurfaceDeltaMetadata::from(&*surface),
             rows,
         };
         let size = encoded_size(&delta)?;
@@ -164,7 +231,6 @@ pub(crate) fn message(
             .map(Some)
             .map_err(|error| error.to_string())
     })();
-    surface.frame.cells = cells;
     let Some(bytes) = encoded? else {
         return Ok(None);
     };
@@ -180,6 +246,7 @@ pub(crate) fn message(
 mod tests {
     use super::*;
     use crate::protocol::FrameData;
+    use crate::protocol::{MAX_SURFACE_CELLS, MAX_SURFACE_DIMENSION};
     use ratatui::{buffer::Buffer, layout::Rect};
 
     fn surface() -> PaneSurfaceFrame {
@@ -327,11 +394,7 @@ mod tests {
                 2 => corrupt.surface.surface_revision += 1,
                 3 => corrupt.surface.boot_id = "different boot".into(),
                 4 => corrupt.surface.frame.width += 1,
-                5 => corrupt
-                    .surface
-                    .frame
-                    .cells
-                    .push(next.frame.cells[0].clone()),
+                5 => corrupt.surface.frame.height += 1,
                 6 => corrupt.rows[0].cells[0].hyperlink = Some(0),
                 7 => corrupt.rows.push(corrupt.rows[0].clone()),
                 8 => corrupt.surface.projection_revision = 0,
@@ -484,5 +547,42 @@ mod tests {
         let mut trailing = STANDARD_NO_PAD.decode(data).expect("test precondition");
         trailing.push(0);
         assert!(decode(&STANDARD_NO_PAD.encode(trailing)).is_err());
+    }
+
+    #[test]
+    fn sender_eligibility_uses_the_shared_surface_limits() {
+        let mut exact = surface();
+        exact.frame.width = 1024;
+        exact.frame.height = 128;
+        exact.frame.cells = vec![exact.frame.cells[0].clone(); MAX_SURFACE_CELLS];
+        assert!(metadata_fits(&exact));
+        exact.frame.cells.pop();
+        assert!(!metadata_fits(&exact));
+
+        let mut candidate = surface();
+        candidate.frame.width = MAX_SURFACE_DIMENSION + 1;
+        candidate.frame.height = 1;
+        candidate.frame.cells = vec![candidate.frame.cells[0].clone()];
+        assert!(!metadata_fits(&candidate));
+        candidate.frame.width = 1;
+        candidate.frame.hyperlinks = vec![String::new(); MAX_SURFACE_HYPERLINKS + 1];
+        assert!(!metadata_fits(&candidate));
+    }
+
+    #[test]
+    fn base64_input_limit_uses_the_encoded_frame_budget() {
+        let between_raw_and_encoded_limit = "!".repeat(MAX_FRAME_SIZE + 1);
+        let error = decode(&between_raw_and_encoded_limit)
+            .err()
+            .expect("base64 validation should run before the encoded-size cap");
+        assert!(!error.contains("exceeds the frame limit"), "{error}");
+
+        let max_encoded_len = base64::encoded_len(MAX_FRAME_SIZE, false)
+            .expect("the frame size has a representable base64 length");
+        let over_encoded_limit = "!".repeat(max_encoded_len + 1);
+        let error = decode(&over_encoded_limit)
+            .err()
+            .expect("input beyond the encoded frame budget is rejected");
+        assert!(error.contains("exceeds the frame limit"), "{error}");
     }
 }

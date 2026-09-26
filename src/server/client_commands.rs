@@ -47,7 +47,7 @@ pub(crate) fn supports_client_shell_method_name(method: &str) -> bool {
 }
 
 pub(crate) fn supports_client_shell_method(method: &Method) -> bool {
-    supports_client_shell_method_name(crate::api::api_method_name(method))
+    supports_client_shell_method_name(method.traits().name)
 }
 
 pub(crate) fn error_response(id: &str, code: &str, message: impl Into<String>) -> String {

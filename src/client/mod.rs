@@ -57,20 +57,14 @@ use terminal_geometry::{
 };
 use terminal_geometry::{reported_cell_size_from_events, store_reported_cell_size};
 use terminal_setup::{
-    TerminalGuard, effective_mouse_capture, effective_sgr_pixel_mouse, host_mouse_capture_update,
-    set_mouse_capture, setup_direct_attach_terminal, setup_terminal, should_draw_host_cursor,
+    HostMouseMode, TerminalGuard, setup_direct_attach_terminal, setup_terminal,
+    should_draw_host_cursor,
 };
-
-fn refresh_host_mouse_capture(enabled: bool, sgr_pixels: bool) {
-    if let Err(err) = set_mouse_capture(enabled, sgr_pixels) {
-        warn!(err = %err, "failed to re-assert host mouse capture");
-    }
-}
 
 #[cfg(test)]
 use terminal_setup::{
-    should_enable_host_color_scheme_reports, write_host_color_scheme_report_mode,
-    write_terminal_restore_postlude,
+    effective_mouse_capture, effective_sgr_pixel_mouse, should_enable_host_color_scheme_reports,
+    write_host_color_scheme_report_mode, write_terminal_restore_postlude,
 };
 
 use attach::AttachEscapeState;
@@ -175,8 +169,8 @@ fn run_client_with_mode(
         initial_terminal_geometry(pixel_geometry_enabled, pixel_geometry_fallback)?;
 
     let shell_surface_size = loop_config.shell_config.as_ref().map(|shell| {
-        let bounded = protocol::ClientSurfaceSize { cols, rows }.clamped();
-        shell.initial_surface_size(bounded.cols, bounded.rows)
+        let host_size = terminal_geometry::ClientHostSize::new(cols, rows, true);
+        shell.initial_surface_size(host_size.cols, host_size.rows)
     });
     // Healthy Local attaches directly; only an actual failure enters background recovery.
     let initial = initial_stream
@@ -336,13 +330,6 @@ async fn run_client_loop(
 ) -> Result<(), ClientError> {
     let draw_host_cursor = attach_escape.is_none() && should_draw_host_cursor(config.host_cursor);
     let local_unavailable = initial.is_none();
-    let client_shell_size = config.shell_config.is_some();
-    let displayed_size = if client_shell_size {
-        let bounded = protocol::ClientSurfaceSize { cols, rows }.clamped();
-        (bounded.cols, bounded.rows)
-    } else {
-        (cols, rows)
-    };
     let (initial_cell_width_px, initial_cell_height_px, initial_pixel_geometry_exact) =
         terminal_geometry::bounded_cell_geometry(
             initial_cell_width_px,
@@ -352,16 +339,16 @@ async fn run_client_loop(
 
     let mut state = ClientState {
         blit_encoder: render_ansi::BlitEncoder::new(),
-        mouse_capture_active: config.mouse_capture_active,
-        endpoint_mouse_capture_requested: false,
-        endpoint_sgr_pixels_requested: false,
+        host_mouse_mode: HostMouseMode::new(
+            attach_escape.is_some() && config.mouse_capture_active,
+            config.mouse_capture_active,
+            config.mouse_capture_active,
+        ),
         host_theme_updates: Vec::new(),
-        direct_mouse_capture_preference: attach_escape.is_some() && config.mouse_capture_active,
-        shell_mouse_capture_preference: config.mouse_capture_active,
         direct_keyboard_protocol: crate::terminal_modes::DirectHostKeyboardState::default(),
         pane_keyboard_report_all: false,
         keyboard_report_all_active: false,
-        reported_size: displayed_size,
+        reported_size: (cols, rows),
         reported_cell_size: (initial_cell_width_px, initial_cell_height_px),
         pixel_geometry_enabled: config.pixel_geometry_enabled,
         pixel_geometry_exact: initial_pixel_geometry_exact,
@@ -375,6 +362,7 @@ async fn run_client_loop(
         window_title_written: false,
         shell: config.shell_config.map(shell::ClientShellState::new),
     };
+    state.set_host_size(cols, rows);
     // Whether this client keeps running without Local. It follows the live catalog: a client
     // that gains a saved machine survives losing Local from then on.
     let mut federated = endpoint_catalog.has_ssh();
@@ -392,11 +380,11 @@ async fn run_client_loop(
             );
         }
     }
-    let host_mouse_capture_active = Arc::new(AtomicBool::new(state.mouse_capture_active));
     // Cell size reported by the host terminal, packed as width<<32 | height.
     // Zero means the host has not reported one.
     let reported_cell_size = Arc::new(AtomicU64::new(0));
-    let host_sgr_pixels_active = Arc::new(AtomicBool::new(false));
+    let (stdin_mouse_capture_active, stdin_sgr_pixels_active) =
+        state.host_mouse_mode.input_mirrors();
 
     // Channel for events from the resize and server reader threads.
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ClientLoopEvent>(256);
@@ -414,8 +402,6 @@ async fn run_client_loop(
     let will_query_host_cell_size = state.attach_escape.is_none()
         && host_cell_size_query_required(state.pixel_geometry_enabled);
     let stdin_quit = Arc::clone(&should_quit);
-    let stdin_mouse_capture_active = Arc::clone(&host_mouse_capture_active);
-    let stdin_sgr_pixels_active = Arc::clone(&host_sgr_pixels_active);
     let stdin_escape_disambiguation_active = config.host_escape_disambiguation_active;
     let stdin_initial_host_input = std::mem::take(&mut config.initial_host_input);
     std::thread::spawn(move || {
@@ -549,7 +535,7 @@ async fn run_client_loop(
                         && state.reported_cell_size.0 <= protocol::MAX_CELL_SIZE_PX
                         && state.reported_cell_size.1 <= protocol::MAX_CELL_SIZE_PX,
                     surface_size: shell.surface_size(state.reported_size.0, state.reported_size.1),
-                    mouse_capture: state.shell_mouse_capture_preference,
+                    mouse_capture: state.host_mouse_mode.shell_preference(),
                 },
                 &supervisor_tx,
             );
@@ -585,11 +571,14 @@ async fn run_client_loop(
                         }
                     }
                     let events = crate::raw_input::parse_raw_input_bytes_sync(&data);
-                    if crate::raw_input::events_require_host_mode_refresh(&events) {
-                        refresh_host_mouse_capture(
-                            state.mouse_capture_active,
-                            host_sgr_pixels_active.load(Ordering::Acquire),
-                        );
+                    if crate::raw_input::events_require_host_mode_refresh(&events)
+                        && let Err(err) = state.host_mouse_mode.apply(
+                            state.shell.is_some(),
+                            state.pixel_geometry_exact,
+                            true,
+                        )
+                    {
+                        warn!(err = %err, "failed to re-assert host mouse capture");
                     }
                     let Some(shell) = state.shell.as_mut() else {
                         continue;
@@ -689,6 +678,9 @@ async fn run_client_loop(
             }
             ClientLoopEvent::PixelMouse(data, geometry) => {
                 if let Some(shell) = state.shell.as_mut() {
+                    // Pixel reports still enter the shell as raw bytes because its handler
+                    // brackets cell conversion with transient host-pixel hit-test metadata.
+                    // A reader-side typed event needs that shell API to accept the metadata.
                     let outcome = shell.handle_pixel_mouse(&data, geometry);
                     let frame = outcome
                         .repaint
@@ -752,29 +744,13 @@ async fn run_client_loop(
                         cell_height_px,
                         pixel_geometry_exact,
                     );
-                if let Some((enabled, sgr_pixels)) = host_mouse_capture_update(
-                    host_mouse_capture_active.load(Ordering::Acquire),
-                    host_sgr_pixels_active.load(Ordering::Acquire),
-                    state.mouse_capture_active,
-                    state.endpoint_sgr_pixels_requested,
-                    pixel_geometry_exact,
-                ) {
-                    set_mouse_capture(enabled, sgr_pixels).map_err(ClientError::HostTerminal)?;
-                    host_mouse_capture_active.store(enabled, Ordering::Release);
-                    host_sgr_pixels_active.store(sgr_pixels, Ordering::Release);
-                }
-                state.reported_size = if client_shell_size {
-                    let bounded = protocol::ClientSurfaceSize {
-                        cols: new_cols,
-                        rows: new_rows,
-                    }
-                    .clamped();
-                    (bounded.cols, bounded.rows)
-                } else {
-                    (new_cols, new_rows)
-                };
-                state.reported_cell_size = (cell_width_px, cell_height_px);
                 state.pixel_geometry_exact = pixel_geometry_exact;
+                state
+                    .host_mouse_mode
+                    .apply(state.shell.is_some(), pixel_geometry_exact, false)
+                    .map_err(ClientError::HostTerminal)?;
+                state.set_host_size(new_cols, new_rows);
+                state.reported_cell_size = (cell_width_px, cell_height_px);
                 // Resizing invalidates the host-side blit baseline. The retained pane surface
                 // stays: until the resized one arrives, `compose` draws it clipped to the new
                 // pane area (with pane hits clipped to match) instead of dropping to the
@@ -1203,29 +1179,13 @@ async fn run_client_loop(
                         enabled,
                         sgr_pixels,
                     } => {
-                        state.endpoint_mouse_capture_requested = enabled;
-                        state.endpoint_sgr_pixels_requested = sgr_pixels;
-                        let enabled =
-                            effective_mouse_capture(enabled, state.direct_mouse_capture_preference);
-                        let update = host_mouse_capture_update(
-                            host_mouse_capture_active.load(Ordering::Acquire),
-                            host_sgr_pixels_active.load(Ordering::Acquire),
-                            enabled,
-                            sgr_pixels,
-                            state.pixel_geometry_exact,
-                        );
-                        let next_sgr_pixels = effective_sgr_pixel_mouse(
-                            enabled,
-                            sgr_pixels,
-                            state.pixel_geometry_exact,
-                        );
-                        if let Some((enabled, sgr_pixels)) = update {
-                            set_mouse_capture(enabled, sgr_pixels)
-                                .map_err(ClientError::HostTerminal)?;
-                        }
-                        state.mouse_capture_active = enabled;
-                        host_mouse_capture_active.store(enabled, Ordering::Release);
-                        host_sgr_pixels_active.store(next_sgr_pixels, Ordering::Release);
+                        state
+                            .host_mouse_mode
+                            .set_endpoint_request(enabled, sgr_pixels);
+                        state
+                            .host_mouse_mode
+                            .apply(state.shell.is_some(), state.pixel_geometry_exact, false)
+                            .map_err(ClientError::HostTerminal)?;
                     }
                     ServerMessage::DirectTerminalKeyboardProtocol {
                         flags,
@@ -1290,11 +1250,7 @@ async fn run_client_loop(
                                     now,
                                     &message,
                                 ) {
-                                    clear_endpoint_host_effects(
-                                        &mut state,
-                                        &host_mouse_capture_active,
-                                        &host_sgr_pixels_active,
-                                    );
+                                    clear_endpoint_host_effects(&mut state);
                                 }
                                 continue;
                             }
@@ -1414,11 +1370,7 @@ async fn run_client_loop(
                         now,
                         &format!("{}; reconnecting", failure.message),
                     ) {
-                        clear_endpoint_host_effects(
-                            &mut state,
-                            &host_mouse_capture_active,
-                            &host_sgr_pixels_active,
-                        );
+                        clear_endpoint_host_effects(&mut state);
                     }
                 }
                 // A revoked transport changes the safe rollback destination. Handle those
@@ -1456,11 +1408,7 @@ async fn run_client_loop(
                         );
                         selection.catalog_changed(&endpoint_catalog);
                         if active_retired {
-                            clear_endpoint_host_effects(
-                                &mut state,
-                                &host_mouse_capture_active,
-                                &host_sgr_pixels_active,
-                            );
+                            clear_endpoint_host_effects(&mut state);
                             if scheduled_activation.is_none() {
                                 scheduled_activation = Some(ClientLoopEvent::ActivateEndpoint {
                                     endpoint_id: endpoint::ClientEndpointId::Local,

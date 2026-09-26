@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
 use ratatui::layout::Direction;
@@ -12,7 +13,37 @@ pub(crate) type DetachedPane = (PaneId, TerminalId);
 
 pub(crate) struct MovedPane {
     pub pane_id: PaneId,
+    pub pane: TabPane,
+}
+
+/// One pane's state and stable public number. Keeping both in the tab record
+/// makes the tab's pane map the source of pane identity metadata.
+pub struct TabPane {
     pub pane_state: PaneState,
+    pub public_number: usize,
+}
+
+impl Deref for TabPane {
+    type Target = PaneState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.pane_state
+    }
+}
+
+impl DerefMut for TabPane {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.pane_state
+    }
+}
+
+impl TabPane {
+    pub(crate) fn new(pane_state: PaneState) -> Self {
+        Self {
+            pane_state,
+            public_number: 0,
+        }
+    }
 }
 
 pub struct NewPane {
@@ -27,8 +58,8 @@ pub struct Tab {
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
     pub layout: TileLayout,
-    /// Pane viewport state - always present, testable without PTYs.
-    pub panes: HashMap<PaneId, PaneState>,
+    /// Runtime-independent pane records, keyed by internal ID.
+    pub panes: HashMap<PaneId, TabPane>,
     pub zoomed: bool,
 }
 
@@ -146,7 +177,7 @@ impl Tab {
             None => TerminalState::new(terminal_id.clone(), initial_cwd),
         };
         let mut panes = HashMap::new();
-        panes.insert(root_id, PaneState::new(terminal_id));
+        panes.insert(root_id, TabPane::new(PaneState::new(terminal_id)));
 
         Ok((
             Self {
@@ -327,7 +358,8 @@ impl Tab {
         if focus_new_pane {
             self.layout.focus_pane(new_id);
         }
-        self.panes.insert(new_id, PaneState::new(terminal_id));
+        self.panes
+            .insert(new_id, TabPane::new(PaneState::new(terminal_id)));
         self.zoomed = false;
         Ok(NewPane {
             pane_id: new_id,
@@ -346,7 +378,7 @@ impl Tab {
     /// The runtime is left to the caller. `None` when the pane is the tab's
     /// last one (the tab itself must go) or is not in this tab.
     pub fn close_pane(&mut self, pane_id: PaneId) -> Option<DetachedPane> {
-        if self.layout.pane_count() <= 1 {
+        if self.panes.len() <= 1 {
             return None;
         }
 
@@ -355,7 +387,7 @@ impl Tab {
         self.layout.close_pane(pane_id);
 
         let pane = self.panes.remove(&pane_id)?;
-        let terminal_id = pane.attached_terminal_id;
+        let terminal_id = pane.pane_state.attached_terminal_id;
         self.zoomed = false;
         if let Some(next_root) = next_root {
             self.root_pane = next_root;
@@ -370,7 +402,7 @@ impl Tab {
     ) -> Self {
         let mut panes = HashMap::new();
         let pane_id = moved.pane_id;
-        panes.insert(pane_id, moved.pane_state);
+        panes.insert(pane_id, moved.pane);
         Self {
             custom_name,
             number,
@@ -386,7 +418,7 @@ impl Tab {
             return None;
         }
 
-        if self.layout.pane_count() > 1 {
+        if self.panes.len() > 1 {
             let next_root = self.promoted_root_if_needed(pane_id);
             self.layout.close_pane(pane_id);
             if let Some(next_root) = next_root {
@@ -394,12 +426,9 @@ impl Tab {
             }
         }
 
-        let pane_state = self.panes.remove(&pane_id)?;
+        let pane = self.panes.remove(&pane_id)?;
         self.zoomed = false;
-        Some(MovedPane {
-            pane_id,
-            pane_state,
-        })
+        Some(MovedPane { pane_id, pane })
     }
 
     pub(crate) fn insert_existing_pane(
@@ -417,7 +446,7 @@ impl Tab {
             return Err(moved);
         }
         let pane_id = moved.pane_id;
-        self.panes.insert(pane_id, moved.pane_state);
+        self.panes.insert(pane_id, moved.pane);
         self.zoomed = false;
         Ok(pane_id)
     }

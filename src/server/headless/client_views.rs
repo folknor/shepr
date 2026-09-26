@@ -741,7 +741,7 @@ impl HeadlessServer {
         mut msg: api::ApiRequestMessage,
     ) -> bool {
         let request_id = msg.request.id.clone();
-        let method = api::api_method_name(&msg.request.method);
+        let method = msg.request.method.traits().name;
         let target_before = self.default_shell_target();
         let method_claims_geometry = Self::public_request_may_change_geometry(&msg.request.method);
         let explicit_public_focus_target = match &msg.request.method {

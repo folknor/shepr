@@ -16,7 +16,8 @@
 //! - `Option`: tag byte `0` (None) or `1` (Some, followed by the value).
 //! - unit, unit struct: nothing. Newtype struct: the inner value.
 //! - seq/map: varint element count, then the elements (map: key, value pairs).
-//!   The serializer must know the length up front.
+//!   The serializer must know the length up front; counts use the codec's
+//!   logical item cap, with tighter wire-field caps where specified.
 //! - tuple, tuple struct, struct: the fields in order, no count, no names.
 //! - enum: variant index as varint, then the payload for that variant kind.
 //!
@@ -26,10 +27,10 @@
 //! The serializer rejects skipped fields and the decoder rejects those calls.
 //!
 //! Hardening against hostile or corrupt input: every length prefix is checked
-//! against the remaining input before anything is allocated (a sequence of `n`
-//! elements needs at least `n` bytes, so zero-sized sequence elements are not
-//! supported), nesting depth is bounded, and `from_slice_exact` rejects
-//! trailing bytes.
+//! against the remaining input before allocation (so variable sequences of
+//! zero-byte elements are not decodable), sequence and map counts have a
+//! logical item cap before allocation, nesting depth is bounded, and
+//! `from_slice_exact` rejects trailing bytes.
 
 use std::fmt;
 use std::io::Write;
@@ -40,6 +41,12 @@ use serde::ser::{self, Serialize};
 
 /// Default maximum nesting depth of compound values accepted by the decoder.
 pub const DEFAULT_MAX_DEPTH: usize = 128;
+
+/// Maximum number of items in any sequence or map encoded by this codec.
+///
+/// Wire fields with a tighter protocol-specific cap apply it through
+/// `serialize_bounded_vec` / `deserialize_bounded_vec` as well.
+pub const MAX_COLLECTION_ITEMS: usize = 131_072;
 
 const MAX_VARINT_U64_BYTES: usize = 10;
 const MAX_VARINT_U128_BYTES: usize = 19;
@@ -65,6 +72,8 @@ pub enum CodecError {
     InvalidUtf8,
     /// A length prefix claims more items or bytes than the input can hold.
     LengthExceedsInput { len: u64, remaining: usize },
+    /// A sequence or map exceeds the codec's logical item limit.
+    CollectionLimitExceeded { len: u64, max: usize },
     /// A sequence or map was serialized without a known length.
     UnknownLength,
     /// A struct field was skipped (`skip_serializing_if`), which a positional
@@ -108,6 +117,9 @@ impl fmt::Display for CodecError {
                     f,
                     "length prefix {len} exceeds the {remaining} remaining input bytes"
                 )
+            }
+            Self::CollectionLimitExceeded { len, max } => {
+                write!(f, "collection length {len} exceeds the item limit {max}")
             }
             Self::UnknownLength => f.write_str("sequence or map length must be known"),
             Self::SkippedField => f.write_str("skipped struct fields are not supported"),
@@ -195,54 +207,152 @@ pub fn from_slice_exact<'de, T: Deserialize<'de>>(input: &'de [u8]) -> Result<T,
     }
 }
 
-/// Serde adapter for `Vec<u8>` wire fields: `#[serde(with = "codec::byte_buf")]`.
-///
-/// A plain `Vec<u8>` goes through serde's sequence path, so decoding visits
-/// one element per byte. This adapter routes the field through
-/// `serialize_bytes` / `deserialize_byte_buf` instead. The encoded bytes are
-/// identical (varint length, then the raw bytes), but decoding is one copy.
-/// Self-describing formats keep working: JSON still writes a number array, and
-/// the visitor accepts that form back.
-pub mod byte_buf {
-    use std::fmt;
-
-    use serde::de::{self, Deserializer, SeqAccess, Visitor};
-    use serde::ser::Serializer;
-
-    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_bytes(bytes)
+/// Serializes a byte vector after checking its field-specific byte limit.
+pub fn serialize_bounded_bytes<const MAX: usize, S>(
+    bytes: &[u8],
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: ser::Serializer,
+{
+    if bytes.len() > MAX {
+        return Err(<S::Error as ser::Error>::custom(format!(
+            "byte buffer length {} exceeds the limit {MAX}",
+            bytes.len()
+        )));
     }
+    serializer.serialize_bytes(bytes)
+}
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-        deserializer.deserialize_byte_buf(ByteBufVisitor)
-    }
+/// Deserializes a byte vector after checking its field-specific byte limit
+/// before copying or reserving the announced bytes.
+pub fn deserialize_bounded_bytes<'de, const MAX: usize, D>(
+    deserializer: D,
+) -> Result<Vec<u8>, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    struct BoundedByteBufVisitor<const MAX: usize>;
 
-    struct ByteBufVisitor;
-
-    impl<'de> Visitor<'de> for ByteBufVisitor {
+    impl<'de, const MAX: usize> Visitor<'de> for BoundedByteBufVisitor<MAX> {
         type Value = Vec<u8>;
 
         fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("a byte buffer")
+            write!(formatter, "a byte buffer with at most {MAX} bytes")
         }
 
         fn visit_bytes<E: de::Error>(self, bytes: &[u8]) -> Result<Vec<u8>, E> {
+            if bytes.len() > MAX {
+                return Err(E::custom(format!(
+                    "byte buffer length {} exceeds the limit {MAX}",
+                    bytes.len()
+                )));
+            }
             Ok(bytes.to_vec())
         }
 
         fn visit_byte_buf<E: de::Error>(self, bytes: Vec<u8>) -> Result<Vec<u8>, E> {
+            if bytes.len() > MAX {
+                return Err(E::custom(format!(
+                    "byte buffer length {} exceeds the limit {MAX}",
+                    bytes.len()
+                )));
+            }
             Ok(bytes)
         }
 
-        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
-            // The hint comes from untrusted input; cap the preallocation.
-            let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(4096));
-            while let Some(byte) = seq.next_element::<u8>()? {
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut sequence: A) -> Result<Vec<u8>, A::Error> {
+            if let Some(len) = sequence.size_hint()
+                && len > MAX
+            {
+                return Err(<A::Error as de::Error>::custom(format!(
+                    "byte buffer length {len} exceeds the limit {MAX}"
+                )));
+            }
+            let mut bytes = Vec::with_capacity(sequence.size_hint().unwrap_or(0).min(MAX));
+            while let Some(byte) = sequence.next_element::<u8>()? {
+                if bytes.len() == MAX {
+                    return Err(<A::Error as de::Error>::custom(format!(
+                        "byte buffer length exceeds the limit {MAX}"
+                    )));
+                }
                 bytes.push(byte);
             }
             Ok(bytes)
         }
     }
+
+    deserializer.deserialize_byte_buf(BoundedByteBufVisitor::<MAX>)
+}
+
+/// Serializes a vector after checking its field-specific logical item limit.
+///
+/// The codec applies its own general collection limit too; this adapter lets
+/// wire fields state a tighter rule without changing their in-memory `Vec`
+/// type.
+pub fn serialize_bounded_vec<const MAX: usize, T, S>(
+    values: &Vec<T>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    T: Serialize,
+    S: ser::Serializer,
+{
+    use ser::SerializeSeq as _;
+
+    if values.len() > MAX {
+        return Err(<S::Error as ser::Error>::custom(format!(
+            "collection length {} exceeds the item limit {MAX}",
+            values.len()
+        )));
+    }
+    let mut sequence = serializer.serialize_seq(Some(values.len()))?;
+    for value in values {
+        sequence.serialize_element(value)?;
+    }
+    sequence.end()
+}
+
+/// Deserializes a vector after checking its field-specific logical item limit
+/// before reserving or decoding the announced items.
+pub fn deserialize_bounded_vec<'de, const MAX: usize, T, D>(
+    deserializer: D,
+) -> Result<Vec<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: de::Deserializer<'de>,
+{
+    struct BoundedVecVisitor<T, const MAX: usize>(std::marker::PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>, const MAX: usize> Visitor<'de> for BoundedVecVisitor<T, MAX> {
+        type Value = Vec<T>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(formatter, "a sequence with at most {MAX} items")
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut sequence: A) -> Result<Vec<T>, A::Error> {
+            if let Some(len) = sequence.size_hint()
+                && len > MAX
+            {
+                return Err(<A::Error as de::Error>::custom(format!(
+                    "collection length {len} exceeds the item limit {MAX}"
+                )));
+            }
+            let mut values = Vec::with_capacity(sequence.size_hint().unwrap_or(0).min(MAX));
+            while let Some(value) = sequence.next_element()? {
+                if values.len() == MAX {
+                    return Err(<A::Error as de::Error>::custom(format!(
+                        "collection length exceeds the item limit {MAX}"
+                    )));
+                }
+                values.push(value);
+            }
+            Ok(values)
+        }
+    }
+
+    deserializer.deserialize_seq(BoundedVecVisitor::<T, MAX>(std::marker::PhantomData))
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +474,16 @@ impl<S: Sink> Encoder<S> {
 
     fn put_len(&mut self, len: usize) -> Result<(), CodecError> {
         self.put_varint(len_to_u64(len)?)
+    }
+
+    fn put_collection_len(&mut self, len: usize) -> Result<(), CodecError> {
+        if len > MAX_COLLECTION_ITEMS {
+            return Err(CodecError::CollectionLimitExceeded {
+                len: len_to_u64(len)?,
+                max: MAX_COLLECTION_ITEMS,
+            });
+        }
+        self.put_len(len)
     }
 }
 
@@ -490,7 +610,7 @@ impl<S: Sink> ser::Serializer for &mut Encoder<S> {
     }
 
     fn serialize_seq(self, len: Option<usize>) -> Result<Self, CodecError> {
-        self.put_len(len.ok_or(CodecError::UnknownLength)?)?;
+        self.put_collection_len(len.ok_or(CodecError::UnknownLength)?)?;
         Ok(self)
     }
 
@@ -514,7 +634,7 @@ impl<S: Sink> ser::Serializer for &mut Encoder<S> {
     }
 
     fn serialize_map(self, len: Option<usize>) -> Result<Self, CodecError> {
-        self.put_len(len.ok_or(CodecError::UnknownLength)?)?;
+        self.put_collection_len(len.ok_or(CodecError::UnknownLength)?)?;
         Ok(self)
     }
 
@@ -655,9 +775,8 @@ impl<S: Sink> ser::SerializeStructVariant for &mut Encoder<S> {
 
 /// Positional decoder over a borrowed input buffer.
 ///
-/// Besides implementing `serde::Deserializer`, it exposes a few primitives so
-/// hand-written decoders (see `surface_delta::decode`) can check protocol
-/// limits between reading a count and decoding the items it announces.
+/// Besides implementing `serde::Deserializer`, it exposes position and finish
+/// checks for framed values.
 pub struct Decoder<'de> {
     input: &'de [u8],
     pos: usize,
@@ -709,16 +828,25 @@ impl<'de> Decoder<'de> {
         T::deserialize(&mut *self)
     }
 
-    /// Reads a sequence, map, string or byte length prefix. The length is
-    /// checked against the remaining input (every item or byte needs at least
-    /// one input byte), so callers may allocate up to the returned count.
-    pub fn read_len(&mut self) -> Result<usize, CodecError> {
+    /// Reads a raw length prefix and verifies it fits in the remaining input.
+    fn read_len(&mut self) -> Result<usize, CodecError> {
         let len = self.read_varint()?;
         let remaining = self.remaining();
         match usize::try_from(len) {
             Ok(len) if len <= remaining => Ok(len),
             _ => Err(CodecError::LengthExceedsInput { len, remaining }),
         }
+    }
+
+    fn read_collection_len(&mut self) -> Result<usize, CodecError> {
+        let len = self.read_len()?;
+        if len > MAX_COLLECTION_ITEMS {
+            return Err(CodecError::CollectionLimitExceeded {
+                len: u64::try_from(len).map_err(|_| CodecError::SizeOverflow)?,
+                max: MAX_COLLECTION_ITEMS,
+            });
+        }
+        Ok(len)
     }
 
     fn take(&mut self, len: usize) -> Result<&'de [u8], CodecError> {
@@ -954,7 +1082,7 @@ impl<'de> de::Deserializer<'de> for &mut Decoder<'de> {
     }
 
     fn deserialize_seq<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, CodecError> {
-        let len = self.read_len()?;
+        let len = self.read_collection_len()?;
         self.nested(|decoder| {
             visitor.visit_seq(Access {
                 decoder,
@@ -991,7 +1119,7 @@ impl<'de> de::Deserializer<'de> for &mut Decoder<'de> {
     }
 
     fn deserialize_map<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, CodecError> {
-        let len = self.read_len()?;
+        let len = self.read_collection_len()?;
         self.nested(|decoder| {
             visitor.visit_map(Access {
                 decoder,
@@ -1445,6 +1573,74 @@ mod tests {
         assert!(matches!(
             decode_err::<Vec<u32>>(&[2, 0x80, 0x80])?,
             CodecError::UnexpectedEof { .. }
+        ));
+        Ok(())
+    }
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct FieldBounded {
+        #[serde(
+            serialize_with = "super::serialize_bounded_vec::<2, _, _>",
+            deserialize_with = "super::deserialize_bounded_vec::<2, _, _>"
+        )]
+        values: Vec<u8>,
+    }
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct FieldBoundedBytes {
+        #[serde(
+            serialize_with = "super::serialize_bounded_bytes::<2, _>",
+            deserialize_with = "super::deserialize_bounded_bytes::<2, _>"
+        )]
+        values: Vec<u8>,
+    }
+
+    #[test]
+    fn codec_logical_item_limits_apply_before_sequence_and_map_allocation() -> TestResult {
+        let over_limit = MAX_COLLECTION_ITEMS + 1;
+        let mut encoded_vec = to_vec(&u64::try_from(over_limit)?)?;
+        encoded_vec.resize(encoded_vec.len() + over_limit, 0);
+        assert!(matches!(
+            from_slice_exact::<Vec<()>>(&encoded_vec),
+            Err(CodecError::CollectionLimitExceeded { max, .. })
+                if max == MAX_COLLECTION_ITEMS
+        ));
+        assert!(matches!(
+            to_vec(&vec![(); over_limit]),
+            Err(CodecError::CollectionLimitExceeded { max, .. })
+                if max == MAX_COLLECTION_ITEMS
+        ));
+
+        let mut encoded_map = to_vec(&u64::try_from(over_limit)?)?;
+        encoded_map.resize(encoded_map.len() + over_limit * 2, 0);
+        assert!(matches!(
+            from_slice_exact::<BTreeMap<u8, u8>>(&encoded_map),
+            Err(CodecError::CollectionLimitExceeded { max, .. })
+                if max == MAX_COLLECTION_ITEMS
+        ));
+
+        let oversized_field = FieldBounded {
+            values: vec![1, 2, 3],
+        };
+        assert!(matches!(
+            to_vec(&oversized_field),
+            Err(CodecError::Message(message)) if message.contains("item limit 2")
+        ));
+        assert!(matches!(
+            from_slice_exact::<FieldBounded>(&[3, 1, 2, 3]),
+            Err(CodecError::Message(message)) if message.contains("item limit 2")
+        ));
+
+        let oversized_bytes = FieldBoundedBytes {
+            values: vec![1, 2, 3],
+        };
+        assert!(matches!(
+            to_vec(&oversized_bytes),
+            Err(CodecError::Message(message)) if message.contains("limit 2")
+        ));
+        assert!(matches!(
+            from_slice_exact::<FieldBoundedBytes>(&[3, 1, 2, 3]),
+            Err(CodecError::Message(message)) if message.contains("limit 2")
         ));
         Ok(())
     }

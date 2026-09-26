@@ -390,7 +390,7 @@ impl App {
             number: index + 1,
             label: ws.display_name(),
             focused: self.state.active == Some(index),
-            pane_count: ws.public_pane_numbers.len(),
+            pane_count: ws.pane_count(),
             tab_count: ws.tabs.len(),
             active_tab_id: self.public_tab_id(index, ws.active_tab).unwrap_or_else(|| {
                 crate::workspace::public_tab_id_for_number(&ws.id, ws.active_tab + 1)

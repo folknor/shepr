@@ -168,7 +168,11 @@ impl Decoder {
         // decode error as the end of the connection.
         match &message {
             ServerMessage::PaneSurface(surface) => {
-                let expected = usize::from(surface.frame.width) * usize::from(surface.frame.height);
+                let Some(expected) =
+                    super::surface_grid_size(surface.frame.width, surface.frame.height)
+                else {
+                    return Err("pane surface dimensions exceed the limit".into());
+                };
                 if surface.frame.cells.len() != expected {
                     return Err("pane surface cell count does not match its size".into());
                 }
@@ -218,20 +222,20 @@ impl Decoder {
             return Err("surface delta without a baseline".into());
         };
         let delta = surface_delta::decode_for(data, (base.width, base.height))?;
-        let mut surface = delta.surface;
+        let metadata = delta.surface;
         if !base.revisions().accepts(
-            &surface.boot_id,
+            &metadata.boot_id,
             delta.base_surface_revision,
-            surface.surface_revision,
+            metadata.surface_revision,
             &ProjectionUpdate::Delta {
                 base: delta.base_projection_revision,
-                next: surface.projection_revision,
+                next: metadata.projection_revision,
             },
-        ) || base.cells.len() != usize::from(base.width) * usize::from(base.height)
+        ) || super::surface_grid_size(base.width, base.height) != Some(base.cells.len())
         {
             return Err("surface delta does not match its baseline".into());
         }
-        surface.frame.cells.clone_from(&base.cells);
+        let mut surface = metadata.into_surface(base.cells.clone());
         surface_delta::apply_rows(
             &mut surface.frame.cells,
             base.width,

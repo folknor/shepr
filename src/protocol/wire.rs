@@ -108,6 +108,28 @@ pub const MAX_SURFACE_CELLS: usize = MAX_FRAME_SIZE / SURFACE_BYTES_PER_CELL;
 /// Largest width or height, in cells, a client may request.
 pub const MAX_SURFACE_DIMENSION: u16 = 4096;
 
+/// Maximum hyperlinks carried by one pane surface.
+pub const MAX_SURFACE_HYPERLINKS: usize = 65_536;
+
+/// Maximum pane and split metadata entries carried by a pane surface.
+pub const MAX_SURFACE_PANES: usize = 4096;
+pub const MAX_SURFACE_SPLITS: usize = 4096;
+
+/// Maximum path components in a serialized surface split.
+pub const MAX_SURFACE_SPLIT_PATH: usize = 4096;
+
+/// Maximum changed spans carried by a patch or delta.
+pub const MAX_SURFACE_PATCH_SPANS: usize = 4096;
+
+/// Returns the checked number of cells in a permitted surface grid.
+pub(crate) fn surface_grid_size(width: u16, height: u16) -> Option<usize> {
+    if width > MAX_SURFACE_DIMENSION || height > MAX_SURFACE_DIMENSION {
+        return None;
+    }
+    let cells = usize::from(width) * usize::from(height);
+    (cells <= MAX_SURFACE_CELLS).then_some(cells)
+}
+
 /// Largest reported cell width or height in pixels.
 pub const MAX_CELL_SIZE_PX: u32 = 4096;
 
@@ -460,7 +482,12 @@ pub enum ClientMessage {
     /// Raw input bytes read from the client's stdin.
     Input {
         /// Raw terminal input (possibly multi-byte escape sequences).
-        #[serde(with = "codec::byte_buf")]
+        /// The server enforces `MAX_INPUT_PAYLOAD` after decoding so it can
+        /// distinguish a recoverable oversized paste from invalid input.
+        #[serde(
+            serialize_with = "codec::serialize_bounded_bytes::<MAX_FRAME_SIZE, _>",
+            deserialize_with = "codec::deserialize_bounded_bytes::<MAX_FRAME_SIZE, _>"
+        )]
         data: Vec<u8>,
     },
 
@@ -517,6 +544,10 @@ pub enum ClientMessage {
     /// Deliver client-classified semantic input directly to a stable pane target.
     ClientShellPaneInput {
         pane_id: String,
+        #[serde(
+            serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
+            deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
+        )]
         events: Vec<ClientPaneInputEvent>,
     },
 
@@ -587,7 +618,13 @@ pub enum ClientHostThemeUpdate {
         kind: ClientHostDefaultColorKind,
         color: ClientHostColor,
     },
-    PaletteColors(Vec<(u8, ClientHostColor)>),
+    PaletteColors(
+        #[serde(
+            serialize_with = "codec::serialize_bounded_vec::<256, _, _>",
+            deserialize_with = "codec::deserialize_bounded_vec::<256, _, _>"
+        )]
+        Vec<(u8, ClientHostColor)>,
+    ),
     Appearance(ClientHostAppearance),
 }
 
@@ -602,7 +639,10 @@ pub enum AttachScrollSource {
     Wheel,
     PageKey {
         /// Original key bytes to forward when the child application owns page keys.
-        #[serde(with = "codec::byte_buf")]
+        #[serde(
+            serialize_with = "codec::serialize_bounded_bytes::<MAX_INPUT_PAYLOAD, _>",
+            deserialize_with = "codec::deserialize_bounded_bytes::<MAX_INPUT_PAYLOAD, _>"
+        )]
         input: Vec<u8>,
     },
 }
@@ -688,6 +728,10 @@ pub struct CursorState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FrameData {
     /// Cells in row-major order. Length must equal `width * height`.
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_CELLS, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_CELLS, _, _>"
+    )]
     pub cells: Vec<CellData>,
     /// Frame width in columns.
     pub width: u16,
@@ -696,6 +740,10 @@ pub struct FrameData {
     /// Cursor state for this frame, if applicable.
     pub cursor: Option<CursorState>,
     /// OSC 8 hyperlink URIs referenced by cells.
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_HYPERLINKS, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_HYPERLINKS, _, _>"
+    )]
     pub hyperlinks: Vec<String>,
 }
 
@@ -834,11 +882,31 @@ pub struct ClientShellSnapshot {
     pub focused_workspace_id: Option<String>,
     pub focused_tab_id: Option<String>,
     pub focused_pane_id: Option<String>,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
+    )]
     pub tab_bar_right: Vec<ClientShellTabStatusSegment>,
     pub tab_bar_right_separator: String,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
+    )]
     pub workspaces: Vec<ClientShellWorkspace>,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
+    )]
     pub tabs: Vec<ClientShellTab>,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
+    )]
     pub panes: Vec<ClientShellPane>,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
+    )]
     pub agents: Vec<ClientShellAgent>,
 }
 
@@ -858,6 +926,10 @@ pub struct ClientShellWorkspace {
     pub custom_label: bool,
     pub branch: Option<String>,
     pub git_ahead_behind: Option<(usize, usize)>,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
+    )]
     pub tokens: Vec<(String, String)>,
     pub focused: bool,
     pub agent_status: crate::api::schema::AgentStatus,
@@ -900,7 +972,15 @@ pub struct ClientShellAgent {
     pub terminal_title_stripped: Option<String>,
     pub agent_status: crate::api::schema::AgentStatus,
     pub state_change_seq: u64,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
+    )]
     pub state_labels: Vec<(String, String)>,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
+    )]
     pub tokens: Vec<(String, String)>,
     pub focused: bool,
 }
@@ -936,6 +1016,10 @@ pub struct PaneSurfaceSplit {
     pub pos: u16,
     pub area: SurfaceRect,
     pub hit_rect: SurfaceRect,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_SPLIT_PATH, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_SPLIT_PATH, _, _>"
+    )]
     pub path: Vec<bool>,
 }
 
@@ -975,8 +1059,86 @@ pub struct PaneSurfaceFrame {
     /// Monotonic revision for full surfaces and incremental patches on one connection.
     pub surface_revision: u64,
     pub frame: FrameData,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_PANES, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_PANES, _, _>"
+    )]
     pub panes: Vec<PaneSurfacePane>,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_SPLITS, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_SPLITS, _, _>"
+    )]
     pub splits: Vec<PaneSurfaceSplit>,
+}
+
+/// Surface metadata carried by a sparse delta. It has no cell collection:
+/// full frames and deltas give their main cell data different rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PaneSurfaceDeltaMetadata {
+    pub(crate) boot_id: String,
+    pub(crate) projection_revision: u64,
+    pub(crate) surface_revision: u64,
+    pub(crate) frame: PaneSurfaceFrameMetadata,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_PANES, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_PANES, _, _>"
+    )]
+    pub(crate) panes: Vec<PaneSurfacePane>,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_SPLITS, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_SPLITS, _, _>"
+    )]
+    pub(crate) splits: Vec<PaneSurfaceSplit>,
+}
+
+/// The non-cell fields shared by a full frame and delta metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PaneSurfaceFrameMetadata {
+    pub(crate) width: u16,
+    pub(crate) height: u16,
+    pub(crate) cursor: Option<CursorState>,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_HYPERLINKS, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_HYPERLINKS, _, _>"
+    )]
+    pub(crate) hyperlinks: Vec<String>,
+}
+
+impl From<&PaneSurfaceFrame> for PaneSurfaceDeltaMetadata {
+    fn from(surface: &PaneSurfaceFrame) -> Self {
+        Self {
+            boot_id: surface.boot_id.clone(),
+            projection_revision: surface.projection_revision,
+            surface_revision: surface.surface_revision,
+            frame: PaneSurfaceFrameMetadata {
+                width: surface.frame.width,
+                height: surface.frame.height,
+                cursor: surface.frame.cursor.clone(),
+                hyperlinks: surface.frame.hyperlinks.clone(),
+            },
+            panes: surface.panes.clone(),
+            splits: surface.splits.clone(),
+        }
+    }
+}
+
+impl PaneSurfaceDeltaMetadata {
+    pub(crate) fn into_surface(self, cells: Vec<CellData>) -> PaneSurfaceFrame {
+        PaneSurfaceFrame {
+            boot_id: self.boot_id,
+            projection_revision: self.projection_revision,
+            surface_revision: self.surface_revision,
+            frame: FrameData {
+                cells,
+                width: self.frame.width,
+                height: self.frame.height,
+                cursor: self.frame.cursor,
+                hyperlinks: self.frame.hyperlinks,
+            },
+            panes: self.panes,
+            splits: self.splits,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -985,6 +1147,10 @@ pub struct PaneSurfacePatchRow {
     pub x: u16,
     /// Origin-relative surface row.
     pub y: u16,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<{ MAX_SURFACE_DIMENSION as usize }, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<{ MAX_SURFACE_DIMENSION as usize }, _, _>"
+    )]
     pub cells: Vec<CellData>,
 }
 
@@ -1051,8 +1217,16 @@ pub struct PaneSurfacePatch {
     pub projection_revision: u64,
     pub base_surface_revision: u64,
     pub surface_revision: u64,
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_PATCH_SPANS, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_PATCH_SPANS, _, _>"
+    )]
     pub rows: Vec<PaneSurfacePatchRow>,
     /// Updated metadata for panes whose terminal content changed.
+    #[serde(
+        serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_PANES, _, _>",
+        deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_PANES, _, _>"
+    )]
     pub panes: Vec<PaneSurfacePane>,
     /// Final cursor relative to the pane surface.
     pub cursor: Option<CursorState>,
@@ -1065,7 +1239,10 @@ pub struct PaneSurfacePatch {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalFrame {
     /// Terminal escape bytes ready to write directly to stdout.
-    #[serde(with = "codec::byte_buf")]
+    #[serde(
+        serialize_with = "codec::serialize_bounded_bytes::<MAX_FRAME_SIZE, _>",
+        deserialize_with = "codec::deserialize_bounded_bytes::<MAX_FRAME_SIZE, _>"
+    )]
     pub bytes: Vec<u8>,
 }
 
@@ -1130,7 +1307,10 @@ pub enum ServerMessage {
         boot_id: String,
         request_id: String,
         final_chunk: bool,
-        #[serde(with = "codec::byte_buf")]
+        #[serde(
+            serialize_with = "codec::serialize_bounded_bytes::<MAX_FRAME_SIZE, _>",
+            deserialize_with = "codec::deserialize_bounded_bytes::<MAX_FRAME_SIZE, _>"
+        )]
         data: Vec<u8>,
     },
 

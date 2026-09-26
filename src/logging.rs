@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriter;
 
+use crate::api::schema::MethodTraits;
+
 const DEFAULT_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 /// One previous generation (`<name>.1`) survives a rotation, so the lines
 /// leading up to it are not lost the moment the limit is hit.
@@ -69,19 +71,19 @@ pub(crate) fn shutdown(role: &'static str) {
     );
 }
 
-pub(crate) fn api_request_started(request_id: &str, method: &'static str, changes_ui: bool) {
+pub(crate) fn api_request_started(request_id: &str, method: MethodTraits) {
     let event = "api.request.start";
     let subsystem = "api";
     let outcome = "started";
     let message = "api request received";
-    if changes_ui && !is_routine_api_method(method) {
+    if method.mutates_ui && !method.routine {
         tracing::info!(
             event,
             subsystem,
             outcome,
             request_id,
-            method,
-            changes_ui,
+            method = method.name,
+            changes_ui = method.mutates_ui,
             "{message}"
         );
     } else {
@@ -90,50 +92,45 @@ pub(crate) fn api_request_started(request_id: &str, method: &'static str, change
             subsystem,
             outcome,
             request_id,
-            method,
-            changes_ui,
+            method = method.name,
+            changes_ui = method.mutates_ui,
             "{message}"
         );
     }
 }
 
-pub(crate) fn api_request_completed(
-    request_id: &str,
-    method: &'static str,
-    outcome: &'static str,
-    changes_ui: bool,
-) {
+pub(crate) fn api_request_completed(request_id: &str, method: MethodTraits, outcome: &'static str) {
     let event = "api.request.complete";
     let subsystem = "api";
     let message = "api request completed";
-    if outcome != "ok" || (changes_ui && !is_routine_api_method(method)) {
-        tracing::info!(event, subsystem, outcome, request_id, method, "{message}");
+    if outcome != "ok" || (method.mutates_ui && !method.routine) {
+        tracing::info!(
+            event,
+            subsystem,
+            outcome,
+            request_id,
+            method = method.name,
+            "{message}"
+        );
     } else {
-        tracing::debug!(event, subsystem, outcome, request_id, method, "{message}");
+        tracing::debug!(
+            event,
+            subsystem,
+            outcome,
+            request_id,
+            method = method.name,
+            "{message}"
+        );
     }
 }
 
-fn is_routine_api_method(method: &str) -> bool {
-    matches!(
-        method,
-        "pane.get"
-            | "pane.read"
-            | "pane.list"
-            | "workspace.list"
-            | "tab.list"
-            | "pane.report_agent"
-            | "pane.report_agent_session"
-            | "pane.report_metadata"
-    )
-}
-
-pub(crate) fn api_request_failed(request_id: &str, method: &'static str, err: &str) {
+pub(crate) fn api_request_failed(request_id: &str, method: MethodTraits, err: &str) {
     tracing::warn!(
         event = "api.request.fail",
         subsystem = "api",
         outcome = "error",
         request_id,
-        method,
+        method = method.name,
         err,
         "api request failed"
     );

@@ -32,7 +32,7 @@ pub use self::{
         GitSpaceMetadata, GitStatusCacheEntry, GitStatusRefreshDemand, derive_label_from_cwd,
         fallback_label_from_cwd, git_status_cache_key,
     },
-    tab::{NewPane, Tab},
+    tab::{NewPane, Tab, TabPane},
 };
 
 /// The channels a pane runtime reports through once it is spawned: the app
@@ -174,12 +174,7 @@ impl FromStr for PublicTabId {
     type Err = PublicIdParseError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (workspace_id, tab_number) = value.rsplit_once(':').ok_or(PublicIdParseError)?;
-        let encoded = tab_number.strip_prefix('t').ok_or(PublicIdParseError)?;
-        let number = parse_public_number(encoded)?;
-        if workspace_id.is_empty() {
-            return Err(PublicIdParseError);
-        }
+        let (workspace_id, number) = parse_public_child_id(value, 't')?;
         Ok(Self::new(workspace_id, number))
     }
 }
@@ -222,11 +217,7 @@ impl FromStr for PublicPaneId {
     type Err = PublicIdParseError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (workspace_id, pane_number) = value.rsplit_once(":p").ok_or(PublicIdParseError)?;
-        let number = parse_public_number(pane_number)?;
-        if workspace_id.is_empty() {
-            return Err(PublicIdParseError);
-        }
+        let (workspace_id, number) = parse_public_child_id(value, 'p')?;
         Ok(Self::new(workspace_id, number))
     }
 }
@@ -241,6 +232,15 @@ fn parse_public_number(encoded: &str) -> Result<usize, PublicIdParseError> {
     decode_public_number(encoded)
         .filter(|number| *number > 0)
         .ok_or(PublicIdParseError)
+}
+
+fn parse_public_child_id(value: &str, kind: char) -> Result<(&str, usize), PublicIdParseError> {
+    let (workspace_id, encoded_id) = value.rsplit_once(':').ok_or(PublicIdParseError)?;
+    let encoded_number = encoded_id.strip_prefix(kind).ok_or(PublicIdParseError)?;
+    if workspace_id.is_empty() {
+        return Err(PublicIdParseError);
+    }
+    Ok((workspace_id, parse_public_number(encoded_number)?))
 }
 
 /// Canonical public pane ID renderer; parsing uses `PublicPaneId::from_str`.
@@ -299,17 +299,6 @@ pub struct Workspace {
     pub(crate) cached_git_space: Option<GitSpaceMetadata>,
     pub(crate) metadata_tokens: crate::terminal::metadata_tokens::MetadataTokens,
     pub(crate) metadata_token_sequences: crate::terminal::metadata_tokens::SequenceMarks,
-    /// Stable public numbers assigned to live panes in this workspace.
-    ///
-    /// This is identity metadata, not the authoritative pane set: the layout
-    /// owns pane order and geometry, while each tab's `panes` map owns pane
-    /// state. Its keys mirror the live pane set to map internal `PaneId`s to
-    /// stable public numbers; those values cannot be derived from either
-    /// store. Snapshot save/restore also persists these assignments directly
-    /// in `src/persist/snapshot.rs` and `src/persist/restore.rs`. Removing the
-    /// map means moving number ownership into pane state or changing the
-    /// snapshot model; neither choice is a derivation from the current stores.
-    pub public_pane_numbers: HashMap<PaneId, usize>,
     pub(crate) next_public_pane_number: usize,
     pub(crate) next_public_tab_number: usize,
     pub tabs: Vec<Tab>,
@@ -371,11 +360,12 @@ impl Workspace {
         id: String,
         custom_name: Option<String>,
         identity_cwd: &Path,
-        tab: Tab,
+        mut tab: Tab,
         root_pane: PaneId,
     ) -> Self {
-        let mut public_pane_numbers = HashMap::new();
-        public_pane_numbers.insert(root_pane, 1);
+        if let Some(pane) = tab.panes.get_mut(&root_pane) {
+            pane.public_number = 1;
+        }
         let mut workspace = Self {
             id,
             custom_name,
@@ -388,7 +378,6 @@ impl Workspace {
             cached_git_space: None,
             metadata_tokens: crate::terminal::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
-            public_pane_numbers,
             next_public_pane_number: 2,
             next_public_tab_number: 2,
             tabs: vec![tab],
@@ -624,8 +613,9 @@ impl Workspace {
                 spawn,
             )?
         };
-        self.register_new_pane_with_number(tab.root_pane, pane_number);
+        let root_pane = tab.root_pane;
         self.tabs.push(tab);
+        self.register_new_pane_with_number(root_pane, pane_number);
         Ok((self.tabs.len() - 1, terminal, runtime))
     }
 
@@ -633,10 +623,7 @@ impl Workspace {
         if self.tabs.len() <= 1 || idx >= self.tabs.len() {
             return false;
         }
-        let tab = self.tabs.remove(idx);
-        for pane_id in tab.panes.keys() {
-            self.unregister_pane(*pane_id);
-        }
+        self.tabs.remove(idx);
         self.adjust_active_tab_after_removal(idx);
         true
     }
@@ -842,24 +829,19 @@ impl Workspace {
     /// Close the focused pane. Returns true if the workspace should close.
     #[cfg(test)]
     pub fn close_focused(&mut self) -> bool {
-        let pane_count = self
-            .active_tab()
-            .map(|tab| tab.layout.pane_count())
-            .unwrap_or(0);
+        let pane_count = self.active_tab().map(|tab| tab.panes.len()).unwrap_or(0);
         let tab_count = self.tabs.len();
         if pane_count <= 1 {
             return tab_count <= 1 || self.close_active_tab_and_report();
         }
 
-        if let Some((removed, _terminal_id)) = self.active_tab_mut().and_then(Tab::close_focused) {
-            self.unregister_pane(removed);
-        }
+        let _closed_pane = self.active_tab_mut().and_then(Tab::close_focused);
         false
     }
 
     pub(crate) fn take_pane_for_move(&mut self, pane_id: PaneId) -> Option<TakenPane> {
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
-        let pane_count = self.tabs[tab_idx].layout.pane_count();
+        let pane_count = self.tabs[tab_idx].panes.len();
         if pane_count <= 1 {
             let mut tab = self.tabs.remove(tab_idx);
             let moved = tab.take_pane_for_move(pane_id)?;
@@ -888,14 +870,14 @@ impl Workspace {
         ratio: f32,
         focus: bool,
     ) -> Result<PaneId, MovedPane> {
-        let pane_id = moved.pane_id;
-        let Some(tab) = self.tabs.get_mut(tab_idx) else {
-            return Err(moved);
+        let inserted = {
+            let Some(tab) = self.tabs.get_mut(tab_idx) else {
+                return Err(moved);
+            };
+            tab.insert_existing_pane(target_pane_id, moved, direction, ratio, focus)
         };
-        tab.insert_existing_pane(target_pane_id, moved, direction, ratio, focus)?;
-        if !self.public_pane_numbers.contains_key(&pane_id) {
-            self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
-        }
+        let pane_id = inserted?;
+        self.ensure_inserted_pane_number(pane_id);
         Ok(pane_id)
     }
 
@@ -908,19 +890,33 @@ impl Workspace {
         self.next_public_tab_number += 1;
         let pane_id = moved.pane_id;
         let tab = Tab::from_existing_pane(number, label, moved);
-        if !self.public_pane_numbers.contains_key(&pane_id) {
-            self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
-        }
         self.tabs.push(tab);
+        self.ensure_inserted_pane_number(pane_id);
         self.tabs.len() - 1
     }
 
-    pub(crate) fn unregister_moved_pane(&mut self, pane_id: PaneId) {
-        self.unregister_pane(pane_id);
+    pub(crate) fn unregister_moved_pane(&mut self, _pane_id: PaneId) {
+        // `take_pane_for_move` removes the pane record and its public number
+        // together; the API still calls this to acknowledge that removal.
+        debug_assert!(self.pane_state(_pane_id).is_none());
     }
 
     pub fn public_pane_number(&self, pane_id: PaneId) -> Option<usize> {
-        self.public_pane_numbers.get(&pane_id).copied()
+        self.tabs
+            .iter()
+            .find_map(|tab| tab.panes.get(&pane_id).map(|pane| pane.public_number))
+    }
+
+    pub fn pane_id_for_public_number(&self, number: usize) -> Option<PaneId> {
+        self.tabs.iter().find_map(|tab| {
+            tab.panes
+                .iter()
+                .find_map(|(pane_id, pane)| (pane.public_number == number).then_some(*pane_id))
+        })
+    }
+
+    pub fn pane_count(&self) -> usize {
+        self.tabs.iter().map(|tab| tab.panes.len()).sum()
     }
 
     fn launch_env_for_new_pane(
@@ -993,13 +989,15 @@ impl Workspace {
     }
 
     pub fn pane_state(&self, pane_id: PaneId) -> Option<&PaneState> {
-        self.tabs.iter().find_map(|tab| tab.panes.get(&pane_id))
+        self.tabs
+            .iter()
+            .find_map(|tab| tab.panes.get(&pane_id).map(|pane| &pane.pane_state))
     }
 
     pub fn pane_state_mut(&mut self, pane_id: PaneId) -> Option<&mut PaneState> {
         self.tabs
             .iter_mut()
-            .find_map(|tab| tab.panes.get_mut(&pane_id))
+            .find_map(|tab| tab.panes.get_mut(&pane_id).map(|pane| &mut pane.pane_state))
     }
 
     pub fn terminal_id(&self, pane_id: PaneId) -> Option<&TerminalId> {
@@ -1018,19 +1016,16 @@ impl Workspace {
         let Some(tab_idx) = self.find_tab_index_for_pane(pane_id) else {
             return false;
         };
-        if self.tabs[tab_idx].layout.pane_count() <= 1 {
+        if self.tabs[tab_idx].panes.len() <= 1 {
             if self.tabs.len() <= 1 {
                 return true;
             }
             self.tabs.remove(tab_idx);
-            self.unregister_pane(pane_id);
             self.adjust_active_tab_after_removal(tab_idx);
             return false;
         }
 
-        if let Some((removed, _terminal_id)) = self.tabs[tab_idx].close_pane(pane_id) {
-            self.unregister_pane(removed);
-        }
+        self.tabs[tab_idx].close_pane(pane_id);
         false
     }
 
@@ -1040,12 +1035,41 @@ impl Workspace {
     }
 
     fn register_new_pane_with_number(&mut self, pane_id: PaneId, number: usize) {
-        self.public_pane_numbers.insert(pane_id, number);
+        let Some(pane) = self
+            .tabs
+            .iter_mut()
+            .find_map(|tab| tab.panes.get_mut(&pane_id))
+        else {
+            tracing::error!(?pane_id, "cannot number a pane missing from its tab");
+            return;
+        };
+        pane.public_number = number;
         self.next_public_pane_number = self.next_public_pane_number.max(number + 1);
     }
 
-    fn unregister_pane(&mut self, pane_id: PaneId) {
-        self.public_pane_numbers.remove(&pane_id);
+    fn ensure_inserted_pane_number(&mut self, pane_id: PaneId) {
+        let Some(number) = self.public_pane_number(pane_id) else {
+            tracing::error!(?pane_id, "inserted pane is missing from its tab");
+            return;
+        };
+        let duplicate = self.tabs.iter().any(|tab| {
+            tab.panes
+                .iter()
+                .any(|(other_id, pane)| *other_id != pane_id && pane.public_number == number)
+        });
+        let number = if number == 0 || duplicate {
+            self.next_public_pane_number
+        } else {
+            number
+        };
+        if let Some(pane) = self
+            .tabs
+            .iter_mut()
+            .find_map(|tab| tab.panes.get_mut(&pane_id))
+        {
+            pane.public_number = number;
+        }
+        self.next_public_pane_number = self.next_public_pane_number.max(number + 1);
     }
 
     #[cfg(test)]
@@ -1071,8 +1095,8 @@ impl Workspace {
         let (layout, root_id) = TileLayout::new();
         let terminal_id = TerminalId::alloc();
         let mut panes = HashMap::new();
-        panes.insert(root_id, PaneState::new(terminal_id));
-        let tab = Tab {
+        panes.insert(root_id, TabPane::new(PaneState::new(terminal_id)));
+        let mut tab = Tab {
             custom_name: None,
             number: 1,
             root_pane: root_id,
@@ -1080,8 +1104,10 @@ impl Workspace {
             panes,
             zoomed: false,
         };
-        let mut public_pane_numbers = HashMap::new();
-        public_pane_numbers.insert(tab.root_pane, 1);
+        tab.panes
+            .get_mut(&tab.root_pane)
+            .expect("test pane exists")
+            .public_number = 1;
         let mut workspace = Self {
             id: generate_workspace_id(),
             custom_name: Some(name.to_string()),
@@ -1094,7 +1120,6 @@ impl Workspace {
             cached_git_space: None,
             metadata_tokens: crate::terminal::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
-            public_pane_numbers,
             next_public_pane_number: 2,
             next_public_tab_number: 2,
             tabs: vec![tab],
@@ -1108,7 +1133,7 @@ impl Workspace {
         let tab = self.active_tab_mut().expect("workspace must have tab");
         let new_id = tab.layout.split_focused(direction);
         tab.panes
-            .insert(new_id, PaneState::new(TerminalId::alloc()));
+            .insert(new_id, TabPane::new(PaneState::new(TerminalId::alloc())));
         self.register_new_pane(new_id);
         new_id
     }
@@ -1116,7 +1141,7 @@ impl Workspace {
     pub(crate) fn test_add_tab(&mut self, name: Option<&str>) -> usize {
         let (layout, root_id) = TileLayout::new();
         let mut panes = HashMap::new();
-        panes.insert(root_id, PaneState::new(TerminalId::alloc()));
+        panes.insert(root_id, TabPane::new(PaneState::new(TerminalId::alloc())));
         let tab = Tab {
             custom_name: name.map(str::to_string),
             number: self.next_public_tab_number,
@@ -1126,8 +1151,8 @@ impl Workspace {
             zoomed: false,
         };
         self.next_public_tab_number += 1;
-        self.register_new_pane(root_id);
         self.tabs.push(tab);
+        self.register_new_pane(root_id);
         self.tabs.len() - 1
     }
 
@@ -1184,6 +1209,8 @@ impl Workspace {
         let mut max_tab_number = 0usize;
         let mut live_panes = std::collections::HashSet::new();
         let mut terminal_ids = std::collections::HashSet::new();
+        let mut pane_numbers = std::collections::HashSet::new();
+        let mut max_pane_number = 0usize;
 
         for (tab_idx, tab) in self.tabs.iter().enumerate() {
             assert!(
@@ -1226,7 +1253,7 @@ impl Workspace {
             let pane_set: std::collections::HashSet<_> = tab.panes.keys().copied().collect();
             assert_eq!(
                 layout_set, pane_set,
-                "workspace {} tab {} layout panes must exactly match pane states",
+                "workspace {} tab {} layout panes must exactly match pane records",
                 self.id, tab_idx
             );
 
@@ -1238,11 +1265,19 @@ impl Workspace {
                     pane_id
                 );
                 assert!(
-                    self.public_pane_numbers.contains_key(pane_id),
-                    "workspace {} live pane {:?} has no public pane number",
+                    pane.public_number > 0,
+                    "workspace {} pane {:?} has invalid public pane number 0",
                     self.id,
                     pane_id
                 );
+                assert!(
+                    pane_numbers.insert(pane.public_number),
+                    "workspace {} duplicate public pane number {} for pane {:?}",
+                    self.id,
+                    pane.public_number,
+                    pane_id
+                );
+                max_pane_number = max_pane_number.max(pane.public_number);
                 assert!(
                     terminal_ids.insert(pane.attached_terminal_id.clone()),
                     "workspace {} terminal {} is attached to multiple panes",
@@ -1265,32 +1300,6 @@ impl Workspace {
             max_tab_number
         );
 
-        let public_pane_keys: std::collections::HashSet<_> =
-            self.public_pane_numbers.keys().copied().collect();
-        assert_eq!(
-            public_pane_keys, live_panes,
-            "workspace {} public pane map must exactly match live panes",
-            self.id
-        );
-
-        let mut pane_numbers = std::collections::HashSet::new();
-        let mut max_pane_number = 0usize;
-        for (pane_id, pane_number) in &self.public_pane_numbers {
-            assert!(
-                *pane_number > 0,
-                "workspace {} pane {:?} has invalid public pane number 0",
-                self.id,
-                pane_id
-            );
-            assert!(
-                pane_numbers.insert(*pane_number),
-                "workspace {} duplicate public pane number {} for pane {:?}",
-                self.id,
-                pane_number,
-                pane_id
-            );
-            max_pane_number = max_pane_number.max(*pane_number);
-        }
         assert!(
             self.next_public_pane_number > 0,
             "workspace {} next_public_pane_number must be greater than 0",
@@ -1322,6 +1331,8 @@ mod tests {
         assert!("wA:t".parse::<PublicTabId>().is_err());
         assert!("wA:p".parse::<PublicPaneId>().is_err());
         assert!("wA:1".parse::<PublicTabId>().is_err());
+        assert!("wA:p1".parse::<PublicTabId>().is_err());
+        assert!("wA:t1".parse::<PublicPaneId>().is_err());
     }
 
     #[test]
@@ -1431,10 +1442,11 @@ mod tests {
         let active_public = ws.tabs[ws.active_tab].number;
         assert_ne!(ws.active_tab + 1, active_public);
         let divergent_pane = ws
-            .public_pane_numbers
+            .tabs
             .iter()
-            .find_map(|(pane_id, public_number)| {
-                (pane_id.raw() as usize != *public_number).then_some(*pane_id)
+            .flat_map(|tab| tab.panes.iter())
+            .find_map(|(pane_id, pane)| {
+                (pane_id.raw() as usize != pane.public_number).then_some(*pane_id)
             })
             .expect("adversarial state should contain raw/public pane divergence");
         assert_ne!(

@@ -726,24 +726,37 @@ pub(crate) fn shared_ssh_control_path(namespace: &Path, target: &str) -> std::io
         fs::{DirBuilderExt, MetadataExt},
     };
 
-    // Validate the resolved system temp directory, but retain the short /tmp
-    // spelling for sockets so OpenSSH keeps room for its staging suffix.
+    // Prefer the system shared temp directory, but only when root owns its
+    // sticky bit. Some Linux containers expose /tmp through an untrusted uid;
+    // in that case the current user's private runtime directory is the safe
+    // fallback and already provides the per-user namespace.
     let base = Path::new("/tmp");
-    let resolved_base = std::fs::canonicalize(base)?;
-    let metadata = std::fs::symlink_metadata(&resolved_base)?;
-    if !metadata.is_dir() || metadata.uid() != 0 || metadata.mode() & 0o1000 == 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "unsafe SSH control directory parent",
-        ));
-    }
-    let dir = base.join(format!("hssh-{}", effective_uid()));
-    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error),
-    }
-    validate_shared_ssh_dir(&dir)?;
+    let trusted_shared_tmp = std::fs::canonicalize(base)
+        .and_then(std::fs::symlink_metadata)
+        .is_ok_and(|metadata| {
+            metadata.is_dir() && metadata.uid() == 0 && metadata.mode() & 0o1000 != 0
+        });
+    let dir = if trusted_shared_tmp {
+        let dir = base.join(format!("hssh-{}", effective_uid()));
+        match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+        validate_shared_ssh_dir(&dir)?;
+        dir
+    } else {
+        // This is XDG_RUNTIME_DIR's standard Linux location. Keep sockets
+        // directly in it so the maximum-width uid still fits sun_path.
+        let runtime = PathBuf::from(format!("/run/user/{}", effective_uid()));
+        validate_shared_ssh_dir(&runtime).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "no safe SSH control directory parent",
+            )
+        })?;
+        runtime
+    };
     if !namespace.is_absolute() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

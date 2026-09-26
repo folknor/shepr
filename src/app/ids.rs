@@ -124,10 +124,7 @@ impl App {
                 let ws_idx = self.parse_workspace_id(public_id.workspace_id())?;
                 let pane_number = public_id.number();
                 let ws = self.state.workspaces.get(ws_idx)?;
-                let pane_id = ws
-                    .public_pane_numbers
-                    .iter()
-                    .find_map(|(pane_id, number)| (*number == pane_number).then_some(*pane_id))?;
+                let pane_id = ws.pane_id_for_public_number(pane_number)?;
                 Some((ws_idx, pane_id))
             });
         current_id.or_else(|| {

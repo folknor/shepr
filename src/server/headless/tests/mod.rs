@@ -3737,14 +3737,26 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
 #[tokio::test]
 async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("oversized")];
+    let workspace = crate::workspace::Workspace::test_new("oversized");
+    let pane_id = workspace.tabs[0].root_pane;
+    server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
-    // Even blank cells cost several bytes each on the wire, so 600k of them
-    // cannot fit in one frame.
-    let (control, render_rx) = connect_test_shell(&mut server, 91, 2000, 300);
+    // Keep the surface within the protocol's cell-count limit, but make one
+    // displayed grapheme large enough that its encoded frame exceeds the byte
+    // limit. This exercises the oversized-frame path with valid geometry.
+    let mut screen = String::with_capacity(2_200_001);
+    screen.push('x');
+    for _ in 0..1_100_000 {
+        screen.push('\u{0301}');
+    }
+    server.app.insert_test_runtime(
+        pane_id,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, screen.as_bytes()),
+    );
+    let (control, render_rx) = connect_test_shell(&mut server, 91, 80, 24);
     // The test writer forwards queued control messages from a background
     // thread (see `ClientWriter::test_channel`), so a message queued by this
     // render is not necessarily visible to a bare `try_recv` yet. Wait a
@@ -3779,6 +3791,10 @@ async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
     assert!(reported(&server));
     assert_eq!(drain_notices(), 0, "the report is not repeated per render");
 
+    server.app.insert_test_runtime(
+        pane_id,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+    );
     assert!(server.handle_server_event(ServerEvent::ClientShellResize {
         client_id: 91,
         surface_cols: 80,

@@ -330,6 +330,116 @@ pub(super) fn effective_sgr_pixel_mouse(
     enabled && requested && exact_geometry
 }
 
+#[derive(Clone, Copy)]
+struct EndpointMouseRequest {
+    enabled: bool,
+    sgr_pixels: bool,
+}
+
+/// Owns endpoint mouse requests, the local preferences used before an endpoint
+/// takes control and after it releases control, and the mirrors read by stdin.
+pub(super) struct HostMouseMode {
+    direct_preference: bool,
+    shell_preference: bool,
+    endpoint_request: Option<EndpointMouseRequest>,
+    use_preference: bool,
+    capture_active: Arc<AtomicBool>,
+    sgr_pixels_active: Arc<AtomicBool>,
+}
+
+impl HostMouseMode {
+    pub(super) fn new(
+        direct_preference: bool,
+        shell_preference: bool,
+        initially_active: bool,
+    ) -> Self {
+        Self {
+            direct_preference,
+            shell_preference,
+            endpoint_request: None,
+            use_preference: false,
+            capture_active: Arc::new(AtomicBool::new(initially_active)),
+            sgr_pixels_active: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(super) fn input_mirrors(&self) -> (Arc<AtomicBool>, Arc<AtomicBool>) {
+        (
+            Arc::clone(&self.capture_active),
+            Arc::clone(&self.sgr_pixels_active),
+        )
+    }
+
+    pub(super) fn shell_preference(&self) -> bool {
+        self.shell_preference
+    }
+
+    pub(super) fn capture_active(&self) -> bool {
+        self.capture_active.load(Ordering::Acquire)
+    }
+
+    pub(super) fn sgr_pixels_active(&self) -> bool {
+        self.sgr_pixels_active.load(Ordering::Acquire)
+    }
+
+    pub(super) fn set_endpoint_request(&mut self, enabled: bool, sgr_pixels: bool) {
+        self.endpoint_request = Some(EndpointMouseRequest {
+            enabled,
+            sgr_pixels,
+        });
+        self.use_preference = false;
+    }
+
+    pub(super) fn clear_endpoint_request(&mut self) {
+        self.endpoint_request = None;
+        self.use_preference = true;
+    }
+
+    pub(super) fn desired(&self, client_shell: bool) -> (bool, bool) {
+        let (enabled, sgr_pixels_requested) = if let Some(request) = self.endpoint_request {
+            (
+                effective_mouse_capture(request.enabled, self.direct_preference),
+                request.sgr_pixels,
+            )
+        } else if self.use_preference {
+            (
+                if client_shell {
+                    self.shell_preference
+                } else {
+                    self.direct_preference
+                },
+                false,
+            )
+        } else {
+            (self.capture_active(), self.sgr_pixels_active())
+        };
+        (enabled, sgr_pixels_requested)
+    }
+
+    pub(super) fn apply(
+        &self,
+        client_shell: bool,
+        exact_geometry: bool,
+        reassert: bool,
+    ) -> io::Result<()> {
+        let (enabled, sgr_pixels_requested) = self.desired(client_shell);
+        let sgr_pixels = effective_sgr_pixel_mouse(enabled, sgr_pixels_requested, exact_geometry);
+        let changed = host_mouse_capture_update(
+            self.capture_active(),
+            self.sgr_pixels_active(),
+            enabled,
+            sgr_pixels_requested,
+            exact_geometry,
+        );
+        if changed.is_some() || reassert {
+            set_mouse_capture(enabled, sgr_pixels)?;
+        }
+        self.capture_active.store(enabled, Ordering::Release);
+        self.sgr_pixels_active.store(sgr_pixels, Ordering::Release);
+        Ok(())
+    }
+}
+
 pub(super) fn host_mouse_capture_update(
     current_enabled: bool,
     current_sgr_pixels: bool,
@@ -561,5 +671,17 @@ mod tests {
             host_mouse_capture_update(true, true, true, true, true),
             None
         );
+    }
+
+    #[test]
+    fn host_mouse_mode_owns_request_and_preference_resolution() {
+        let mut mode = HostMouseMode::new(false, true, true);
+
+        assert_eq!(mode.desired(true), (true, false));
+        mode.set_endpoint_request(false, true);
+        assert_eq!(mode.desired(true), (false, true));
+        mode.clear_endpoint_request();
+        assert_eq!(mode.desired(true), (true, false));
+        assert_eq!(mode.desired(false), (false, false));
     }
 }

@@ -298,11 +298,7 @@ fn stop_socket_with_timeout(
     label: &str,
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
-    let request = serde_json::json!({
-        "id": "cli:session:stop",
-        "method": "server.stop",
-        "params": {}
-    });
+    let request = server_stop_request("cli:session:stop");
     let stream = crate::ipc::connect_local_stream(socket_path).map_err(|err| {
         let state = if socket_error_means_not_running(&err) {
             "is not running"
@@ -400,7 +396,7 @@ fn exact_session_dir_for_delete(
 
 fn send_stop_request(
     mut stream: LocalStream,
-    request: &serde_json::Value,
+    request: &crate::api::schema::Request,
     deadline: Instant,
 ) -> Result<Option<serde_json::Value>, String> {
     let Some(write_timeout) = socket_timeout_until(deadline) else {
@@ -412,7 +408,8 @@ fn send_stop_request(
         return Err(err.to_string());
     }
 
-    let response = send_stop_request_inner(&mut stream, request, deadline);
+    let request = serde_json::to_vec(request).map_err(|err| err.to_string())?;
+    let response = send_stop_request_inner(&mut stream, &request, deadline);
     match response {
         Ok(Some(line)) => serde_json::from_str(&line)
             .map(Some)
@@ -425,10 +422,10 @@ fn send_stop_request(
 
 fn send_stop_request_inner(
     stream: &mut LocalStream,
-    request: &serde_json::Value,
+    request: &[u8],
     deadline: Instant,
 ) -> std::io::Result<Option<String>> {
-    stream.write_all(request.to_string().as_bytes())?;
+    stream.write_all(request)?;
     stream.write_all(b"\n")?;
     stream.flush()?;
 
@@ -448,6 +445,13 @@ fn send_stop_request_inner(
         return Ok(None);
     }
     Ok(Some(line))
+}
+
+fn server_stop_request(id: &str) -> crate::api::schema::Request {
+    crate::api::schema::Request {
+        id: id.into(),
+        method: crate::api::schema::Method::ServerStop(crate::api::schema::EmptyParams::default()),
+    }
 }
 
 fn stop_timeout_error_allows_wait(err: &std::io::Error) -> bool {
@@ -626,11 +630,7 @@ mod tests {
             let _ = BufReader::new(server).read_line(&mut request);
             request
         });
-        let request = serde_json::json!({
-            "id": "cli:session:stop",
-            "method": "server.stop",
-            "params": {}
-        });
+        let request = server_stop_request("cli:session:stop");
 
         assert_eq!(
             send_stop_request(
@@ -641,12 +641,11 @@ mod tests {
             .expect("test precondition"),
             None
         );
-        assert!(
-            handle
-                .join()
-                .expect("test precondition")
-                .contains("server.stop")
-        );
+        let received = handle.join().expect("test precondition");
+        let received: crate::api::schema::Request =
+            serde_json::from_str(&received).expect("stop request is valid API JSON");
+        assert_eq!(received, server_stop_request("cli:session:stop"));
+        assert_eq!(received.method.traits().name, "server.stop");
     }
 
     #[test]

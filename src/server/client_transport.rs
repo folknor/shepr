@@ -2197,14 +2197,36 @@ mod tests {
             }
         ));
 
-        let colors = vec![(0, crate::protocol::ClientHostColor { r: 0, g: 0, b: 0 },); 257];
-        protocol::write_message(
-            &mut client_stream,
-            &ClientMessage::ClientShellHostTheme {
-                update: crate::protocol::ClientHostThemeUpdate::PaletteColors(colors),
-            },
-        )
-        .expect("write oversized palette update");
+        let colors = (0..=u8::MAX)
+            .map(|index| {
+                (
+                    index,
+                    crate::protocol::ClientHostColor {
+                        r: index,
+                        g: 0,
+                        b: 0,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut payload = protocol::codec::to_vec(&ClientMessage::ClientShellHostTheme {
+            update: crate::protocol::ClientHostThemeUpdate::PaletteColors(colors.clone()),
+        })
+        .expect("encode the largest valid palette");
+        // Raise the positional collection count and append one valid entry to
+        // make a malformed frame the bounded serializer correctly refuses.
+        let count_offset = payload.len() - 2 - colors.len() * 4;
+        assert_eq!(&payload[count_offset..count_offset + 2], &[0x80, 0x02]);
+        payload[count_offset..count_offset + 2].copy_from_slice(&[0x81, 0x02]);
+        payload.extend_from_slice(&[0, 0, 0, 0]);
+        use std::io::Write as _;
+        let payload_len = u32::try_from(payload.len()).expect("palette frame fits u32");
+        client_stream
+            .write_all(&payload_len.to_le_bytes())
+            .expect("write oversized palette frame length");
+        client_stream
+            .write_all(&payload)
+            .expect("write oversized palette frame");
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "oversized palette disconnect"),
             ServerEvent::ClientDisconnected { client_id: 7 }

@@ -70,7 +70,8 @@ pub enum NavDirection {
     Down,
 }
 
-/// A node in the BSP tree. Public for serialization.
+/// A node in the BSP tree. Pane leaves connect layout order to `Tab.panes`;
+/// pane state and public numbers live in those tab records.
 pub enum Node {
     Pane(PaneId),
     Split {
@@ -326,6 +327,7 @@ impl TileLayout {
         split_ratios(&self.root) != before
     }
 
+    /// Pane record keys in layout order. `Tab.panes` owns the live records.
     pub fn pane_ids(&self) -> Vec<PaneId> {
         let mut ids = Vec::new();
         collect_ids(&self.root, &mut ids);

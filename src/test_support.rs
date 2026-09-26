@@ -98,6 +98,15 @@ impl ScratchDir {
         Self { path }
     }
 
+    /// Makes private scratch under a chosen filesystem for tests that need to
+    /// exercise a particular mount's filesystem features.
+    pub(crate) fn new_in(base: &Path, label: &str) -> Self {
+        let index = NEXT_SCRATCH.fetch_add(1, Ordering::Relaxed);
+        let path = base.join(format!("shepr-test-{}-{index}-{label}", std::process::id()));
+        create_private_dir(&path).expect("create a test scratch directory");
+        Self { path }
+    }
+
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
