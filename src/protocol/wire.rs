@@ -20,9 +20,21 @@ use super::codec::{self, CodecError};
 /// Current protocol version. Bumped when wire format changes incompatibly.
 pub const PROTOCOL_VERSION: u32 = 1;
 
-/// Maximum allowed frame payload size (2 MB) in either direction. Frames larger
-/// than this are rejected to prevent denial-of-service via oversized length prefixes.
+/// Maximum allowed frame payload size (2 MB) in either direction. Readers
+/// reject larger length prefixes to prevent denial-of-service, and
+/// `write_message` refuses to produce them, so an oversized message fails at
+/// the sender instead of making the peer tear the connection down.
 pub const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
+
+/// Maximum text payload (bytes) the server accepts in one input message: the
+/// data of one `ClientMessage::Input`, or the summed paste, committed text and
+/// generated key text of one `ClientShellPaneInput` batch.
+///
+/// Kept well below `MAX_FRAME_SIZE` so an input message at the limit still fits
+/// in one frame with its envelope. The server answers an oversized paste with a
+/// rejection notice rather than a disconnect; clients check the same limit
+/// before sending so an oversized paste never has to cross the wire.
+pub const MAX_INPUT_PAYLOAD: usize = 1024 * 1024;
 
 /// Length of the u32 little-endian length prefix in bytes.
 const LENGTH_PREFIX_BYTES: usize = 4;
@@ -263,6 +275,24 @@ impl ClientMouseKind {
 }
 
 impl ClientPaneInputEvent {
+    /// Text bytes this event delivers to the pane, as charged against
+    /// `MAX_INPUT_PAYLOAD`: paste or committed text, or a key's generated text
+    /// times its repeat count. Mouse events carry no text.
+    pub(crate) fn text_bytes(&self) -> usize {
+        match self {
+            Self::Key {
+                repeat_count,
+                generated_text,
+                ..
+            } => generated_text.as_ref().map_or(0, |text| {
+                text.len()
+                    .saturating_mul(usize::from((*repeat_count).max(1)))
+            }),
+            Self::TextCommit(text) | Self::Paste(text) => text.len(),
+            Self::Mouse { .. } => 0,
+        }
+    }
+
     pub(crate) fn from_terminal_key(key: crate::input::TerminalKey) -> Option<Self> {
         let tracks_release = key.generated_text.is_none() || key.has_physical_identity();
         let physical_key_id = key.physical_key_id();
@@ -361,6 +391,7 @@ pub enum ClientMessage {
     /// Raw input bytes read from the client's stdin.
     Input {
         /// Raw terminal input (possibly multi-byte escape sequences).
+        #[serde(with = "codec::byte_buf")]
         data: Vec<u8>,
     },
 
@@ -502,6 +533,7 @@ pub enum AttachScrollSource {
     Wheel,
     PageKey {
         /// Original key bytes to forward when the child application owns page keys.
+        #[serde(with = "codec::byte_buf")]
         input: Vec<u8>,
     },
 }
@@ -622,25 +654,32 @@ impl FrameData {
             hyperlink_by_position.insert((*x, *y), (symbol.as_str(), uri.as_str()));
         }
         let mut cells = Vec::with_capacity((width as usize) * (height as usize));
-        for row in 0..height {
-            for col in 0..width {
-                let cell = buffer.cell((col, row)).expect("cell within bounds");
-                let hyperlink = hyperlink_by_position
-                    .get(&(col, row))
-                    .and_then(|(symbol, uri)| {
-                        if *symbol != cell.symbol() {
-                            return None;
-                        }
-                        Some(*hyperlink_indices.entry(*uri).or_insert_with(|| {
-                            let index = u32::try_from(hyperlink_uris.len()).unwrap_or(u32::MAX);
-                            hyperlink_uris.push((*uri).to_owned());
-                            index
-                        }))
-                    });
-                let mut cell = CellData::from_ratatui_cell(cell);
-                cell.hyperlink = hyperlink;
-                cells.push(cell);
-            }
+        // Walk the buffer's row-major content directly with origin-relative
+        // coordinates. `Buffer::cell` takes absolute positions and would miss
+        // for a buffer whose area does not start at (0, 0).
+        let row_len = usize::from(width).max(1);
+        for (position, cell) in buffer.content.iter().enumerate() {
+            let (Ok(col), Ok(row)) = (
+                u16::try_from(position % row_len),
+                u16::try_from(position / row_len),
+            ) else {
+                break;
+            };
+            let hyperlink = hyperlink_by_position
+                .get(&(col, row))
+                .and_then(|(symbol, uri)| {
+                    if *symbol != cell.symbol() {
+                        return None;
+                    }
+                    Some(*hyperlink_indices.entry(*uri).or_insert_with(|| {
+                        let index = u32::try_from(hyperlink_uris.len()).unwrap_or(u32::MAX);
+                        hyperlink_uris.push((*uri).to_owned());
+                        index
+                    }))
+                });
+            let mut cell = CellData::from_ratatui_cell(cell);
+            cell.hyperlink = hyperlink;
+            cells.push(cell);
         }
 
         FrameData {
@@ -890,18 +929,14 @@ pub struct PaneSurfacePatch {
     pub cursor: Option<CursorState>,
 }
 
-/// Terminal ANSI bytes encoded by the server for network-efficient clients.
+/// Terminal ANSI bytes encoded by the server for direct terminal-attach clients.
+///
+/// The client writes `bytes` straight to stdout and needs nothing else, so the
+/// frame carries no sequence number, size or full-redraw flag.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TerminalFrame {
-    /// Monotonic per-client frame sequence.
-    pub seq: u64,
-    /// Frame width in columns.
-    pub width: u16,
-    /// Frame height in rows.
-    pub height: u16,
-    /// Whether bytes contain a full redraw rather than an incremental diff.
-    pub full: bool,
     /// Terminal escape bytes ready to write directly to stdout.
+    #[serde(with = "codec::byte_buf")]
     pub bytes: Vec<u8>,
 }
 
@@ -969,6 +1004,7 @@ pub enum ServerMessage {
         boot_id: String,
         request_id: String,
         final_chunk: bool,
+        #[serde(with = "codec::byte_buf")]
         data: Vec<u8>,
     },
 
@@ -1134,15 +1170,23 @@ impl From<CodecError> for FramingError {
 ///
 /// # Errors
 ///
-/// Returns `FramingError::Oversized` if the payload length exceeds `u32::MAX`
-/// (it could not be represented by the length prefix).
+/// Returns `FramingError::Oversized`, without writing anything, if the payload
+/// exceeds `MAX_FRAME_SIZE`. Every reader enforces that cap and drops the
+/// connection on a larger frame, so refusing here keeps the failure local to
+/// the one message instead of tearing down the peer connection.
 pub fn write_message<W: Write, M: Serialize>(writer: &mut W, msg: &M) -> Result<(), FramingError> {
     // Encode behind a placeholder prefix so the frame goes out in one write.
     let mut frame = vec![0u8; LENGTH_PREFIX_BYTES];
     let len = codec::encode_into(&mut frame, msg)?;
+    if len > MAX_FRAME_SIZE {
+        return Err(FramingError::Oversized {
+            claimed: len,
+            max: MAX_FRAME_SIZE,
+        });
+    }
     let prefix = u32::try_from(len).map_err(|_| FramingError::Oversized {
         claimed: len,
-        max: usize::try_from(u32::MAX).unwrap_or(usize::MAX),
+        max: MAX_FRAME_SIZE,
     })?;
     frame[..LENGTH_PREFIX_BYTES].copy_from_slice(&prefix.to_le_bytes());
 
@@ -1738,13 +1782,44 @@ mod tests {
     #[test]
     fn server_terminal_frame_roundtrip() -> TestResult {
         let msg = ServerMessage::Terminal(TerminalFrame {
-            seq: 7,
-            width: 120,
-            height: 40,
-            full: false,
             bytes: b"\x1b[1;1Hhello".to_vec(),
         });
         assert_eq!(roundtrip(&msg)?, msg);
+        Ok(())
+    }
+
+    #[test]
+    fn byte_fields_encode_as_length_then_raw_bytes() -> TestResult {
+        // The byte-buffer fields must keep the plain `Vec<u8>` wire layout
+        // (varint length, raw bytes) while decoding in one copy.
+        let data = vec![0u8, 1, 0x7f, 0x80, 0xff];
+        let encoded = codec::to_vec(&ClientMessage::Input { data: data.clone() })?;
+        assert_eq!(encoded.first(), Some(&1), "Input is variant 1");
+        assert_eq!(encoded.get(1), Some(&5), "length prefix");
+        assert_eq!(encoded.get(2..), Some(data.as_slice()));
+        assert_eq!(codec::to_vec(&data)?, encoded.get(1..).unwrap_or_default());
+
+        let large = ClientMessage::Input {
+            data: (0..=255u8).cycle().take(300_000).collect(),
+        };
+        assert_eq!(roundtrip(&large)?, large);
+
+        let page_key = ClientMessage::AttachScroll {
+            source: AttachScrollSource::PageKey {
+                input: b"\x1b[5~".to_vec(),
+            },
+            direction: AttachScrollDirection::Up,
+            lines: 1,
+            column: None,
+            row: None,
+            modifiers: 0,
+        };
+        assert_eq!(roundtrip(&page_key)?, page_key);
+
+        // JSON keeps accepting the number-array form serde uses for `Vec<u8>`.
+        let json = serde_json::to_string(&ClientMessage::Input { data: data.clone() })?;
+        let decoded: ClientMessage = serde_json::from_str(&json)?;
+        assert_eq!(decoded, ClientMessage::Input { data });
         Ok(())
     }
 
@@ -2297,12 +2372,35 @@ mod tests {
 
     #[test]
     fn write_message_rejects_oversized_payload() {
-        // We can't easily create a message that exceeds u32::MAX in a test,
-        // but we can verify the check exists by testing that normal messages
-        // have lengths well within the limit and the function doesn't fail.
-        let msg = ClientMessage::Detach;
+        // Input is variant 1 (one byte) followed by a 3-byte varint length for
+        // payloads this size, so `data` of MAX_FRAME_SIZE - 4 bytes encodes to
+        // exactly MAX_FRAME_SIZE.
+        let envelope = 4;
+        let at_limit = ClientMessage::Input {
+            data: vec![b'x'; MAX_FRAME_SIZE - envelope],
+        };
+        assert_eq!(
+            codec::encoded_len(&at_limit).expect("test precondition"),
+            MAX_FRAME_SIZE
+        );
         let mut buf = Vec::new();
-        assert!(write_message(&mut buf, &msg).is_ok());
+        write_message(&mut buf, &at_limit).expect("a frame at the cap is accepted");
+        let decoded: ClientMessage =
+            read_message(&mut buf.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
+        assert_eq!(decoded, at_limit);
+
+        let over_limit = ClientMessage::Input {
+            data: vec![b'x'; MAX_FRAME_SIZE - envelope + 1],
+        };
+        let mut buf = Vec::new();
+        match write_message(&mut buf, &over_limit) {
+            Err(FramingError::Oversized { claimed, max }) => {
+                assert_eq!(claimed, MAX_FRAME_SIZE + 1);
+                assert_eq!(max, MAX_FRAME_SIZE);
+            }
+            other => panic!("expected Oversized, got {other:?}"),
+        }
+        assert!(buf.is_empty(), "nothing is written for a rejected frame");
     }
 
     // ---- Unix socketpair integration test ----

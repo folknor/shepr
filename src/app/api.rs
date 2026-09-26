@@ -126,6 +126,11 @@ impl App {
         } else {
             None
         };
+        let pane_exit_container_events = if let AppEvent::PaneDied { pane_id, .. } = &ev {
+            self.pane_exit_container_events(*pane_id)
+        } else {
+            Vec::new()
+        };
 
         let released_agent = if let AppEvent::HookAgentReleased {
             pane_id,
@@ -165,9 +170,44 @@ impl App {
         if let Some((ws_idx, tab_idx)) = pane_exit_layout_target {
             self.emit_layout_updated_event(ws_idx, tab_idx);
         }
+        self.emit_events(pane_exit_container_events);
 
         self.shutdown_detached_terminal_runtimes();
         pane_updates
+    }
+
+    /// Close events for the tab, and the workspace, that disappear when the
+    /// exited `pane_id` was their last pane (see `AppState::handle_pane_died`).
+    /// The pane itself is announced by `pane.exited`.
+    fn pane_exit_container_events(
+        &self,
+        pane_id: crate::layout::PaneId,
+    ) -> Vec<crate::api::schema::EventEnvelope> {
+        let Some((ws_idx, _)) = self.find_pane(pane_id) else {
+            return Vec::new();
+        };
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return Vec::new();
+        };
+        let Some(tab_idx) = ws.find_tab_index_for_pane(pane_id) else {
+            return Vec::new();
+        };
+        if ws
+            .tabs
+            .get(tab_idx)
+            .is_none_or(|tab| tab.layout.pane_count() > 1)
+        {
+            return Vec::new();
+        }
+        let events = if ws.tabs.len() <= 1 {
+            self.workspace_close_events(ws_idx)
+        } else {
+            self.tab_close_events(ws_idx, tab_idx)
+        };
+        events
+            .into_iter()
+            .filter(|event| event.event != crate::api::schema::EventKind::PaneClosed)
+            .collect()
     }
 
     fn reset_all_agent_detection_runtimes(&self) {
@@ -249,6 +289,82 @@ impl App {
 
     pub(super) fn emit_event(&mut self, event: crate::api::schema::EventEnvelope) {
         self.event_hub.push(event);
+    }
+
+    pub(super) fn emit_events(&mut self, events: Vec<crate::api::schema::EventEnvelope>) {
+        for event in events {
+            self.emit_event(event);
+        }
+    }
+
+    /// Close events for a tab and every pane in it, panes first. Removing a
+    /// container has to announce each child it takes along: `agent.wait` and
+    /// `agent.prompt --wait` end on their pane's `pane.closed`, and subscribers
+    /// rebuild the model from these events. Public ids stop resolving once
+    /// the tab is gone, so build these before removing it and emit them after.
+    pub(super) fn tab_close_events(
+        &self,
+        ws_idx: usize,
+        tab_idx: usize,
+    ) -> Vec<crate::api::schema::EventEnvelope> {
+        use crate::api::schema::{EventData, EventEnvelope, EventKind};
+
+        let Some(tab) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.tabs.get(tab_idx))
+        else {
+            return Vec::new();
+        };
+        let workspace_id = self.public_workspace_id(ws_idx);
+        let mut events: Vec<_> = tab
+            .layout
+            .pane_ids()
+            .into_iter()
+            .filter_map(|pane_id| self.public_pane_id(ws_idx, pane_id))
+            .map(|pane_id| EventEnvelope {
+                event: EventKind::PaneClosed,
+                data: EventData::PaneClosed {
+                    pane_id,
+                    workspace_id: workspace_id.clone(),
+                },
+            })
+            .collect();
+        if let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) {
+            events.push(EventEnvelope {
+                event: EventKind::TabClosed,
+                data: EventData::TabClosed {
+                    tab_id,
+                    workspace_id,
+                },
+            });
+        }
+        events
+    }
+
+    /// Close events for a workspace and everything in it, children first; see
+    /// `tab_close_events`.
+    pub(super) fn workspace_close_events(
+        &self,
+        ws_idx: usize,
+    ) -> Vec<crate::api::schema::EventEnvelope> {
+        use crate::api::schema::{EventData, EventEnvelope, EventKind};
+
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return Vec::new();
+        };
+        let mut events: Vec<_> = (0..ws.tabs.len())
+            .flat_map(|tab_idx| self.tab_close_events(ws_idx, tab_idx))
+            .collect();
+        events.push(EventEnvelope {
+            event: EventKind::WorkspaceClosed,
+            data: EventData::WorkspaceClosed {
+                workspace_id: self.public_workspace_id(ws_idx),
+                workspace: Some(self.workspace_info(ws_idx)),
+            },
+        });
+        events
     }
 
     pub(crate) fn emit_pane_updated(&mut self, ws_idx: usize, pane_id: crate::layout::PaneId) {
@@ -882,6 +998,86 @@ mod tests {
             crate::api::schema::EventData::LayoutUpdated { layout }
                 if layout.tab_id == tab_id && layout.panes.len() == 1
         ));
+    }
+
+    #[test]
+    fn pane_exit_announces_the_tab_and_workspace_it_empties() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            event_hub.clone(),
+        );
+        let mut workspace = crate::workspace::Workspace::test_new("pane-exit-tab");
+        workspace.test_add_tab(Some("second"));
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let first_root = app.state.workspaces[0].tabs[0].root_pane;
+        let second_root = app.state.workspaces[0].tabs[1].root_pane;
+        let first_tab = app.public_tab_id(0, 0).expect("test precondition");
+        let second_tab = app.public_tab_id(0, 1).expect("test precondition");
+        let workspace_id = app.public_workspace_id(0);
+
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id: first_root,
+            exit_reason: crate::platform::ChildExitReason::Exited,
+        });
+        // Only the removal events are this test's subject.
+        let removals = |hub: &crate::api::EventHub, after: u64| {
+            hub.events_after(after)
+                .into_iter()
+                .map(|(_, event)| event)
+                .filter(|event| {
+                    matches!(
+                        event.event,
+                        crate::api::schema::EventKind::PaneExited
+                            | crate::api::schema::EventKind::PaneClosed
+                            | crate::api::schema::EventKind::TabClosed
+                            | crate::api::schema::EventKind::WorkspaceClosed
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let events = removals(&event_hub, 0);
+        assert_eq!(
+            events.iter().map(|event| event.event).collect::<Vec<_>>(),
+            [
+                crate::api::schema::EventKind::PaneExited,
+                crate::api::schema::EventKind::TabClosed
+            ]
+        );
+        assert!(matches!(
+            &events[1].data,
+            crate::api::schema::EventData::TabClosed { tab_id, .. } if tab_id == &first_tab
+        ));
+
+        let before = event_hub.current_sequence();
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id: second_root,
+            exit_reason: crate::platform::ChildExitReason::Exited,
+        });
+        let events = removals(&event_hub, before);
+        assert_eq!(
+            events.iter().map(|event| event.event).collect::<Vec<_>>(),
+            [
+                crate::api::schema::EventKind::PaneExited,
+                crate::api::schema::EventKind::TabClosed,
+                crate::api::schema::EventKind::WorkspaceClosed
+            ]
+        );
+        assert!(matches!(
+            &events[1].data,
+            crate::api::schema::EventData::TabClosed { tab_id, .. } if tab_id == &second_tab
+        ));
+        assert!(matches!(
+            &events[2].data,
+            crate::api::schema::EventData::WorkspaceClosed { workspace_id: closed, .. }
+                if closed == &workspace_id
+        ));
+        assert!(app.state.workspaces.is_empty());
     }
 
     #[test]

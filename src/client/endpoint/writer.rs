@@ -128,6 +128,11 @@ impl EndpointTransport for NativeEndpointTransport {
                 "endpoint writer stopped",
             ));
         }
+        // `write_message` refuses frames over `MAX_FRAME_SIZE`, so an oversized
+        // message fails here with a size error before anything is queued, rather
+        // than reaching the server, which would drop the connection without a
+        // word. Pastes are checked against the server's input limit even earlier,
+        // in the shell's input handling, and never get this far.
         let mut frame = Vec::new();
         crate::protocol::write_message(&mut frame, message)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
@@ -407,7 +412,8 @@ mod tests {
             .expect("test precondition");
         transport
             .send(&ClientMessage::Input {
-                data: vec![b'x'; 2 * 1024 * 1024],
+                // Large enough to overrun the socket buffer, small enough to fit one frame.
+                data: vec![b'x'; crate::protocol::MAX_FRAME_SIZE - 64],
             })
             .expect("test precondition");
         drop(transport);
@@ -576,6 +582,19 @@ mod tests {
         crate::protocol::write_message(&mut expected, &last).expect("test precondition");
         assert_eq!(received, expected);
         assert_eq!(transport.queued_bytes.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn an_oversized_frame_is_refused_before_it_is_queued() {
+        let (mut transport, receiver) = queued_transport(MAX_QUEUED_BATCHES);
+        let error = transport
+            .send(&ClientMessage::Input {
+                data: vec![b'x'; crate::protocol::MAX_FRAME_SIZE],
+            })
+            .expect_err("a frame over the cap must not be sent");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(transport.queued_bytes.load(Ordering::Acquire), 0);
+        assert!(receiver.try_recv().is_err(), "nothing reached the writer");
     }
 
     #[test]

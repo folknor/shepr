@@ -105,8 +105,19 @@ fn start_server_inner(
 
     let running = Arc::new(AtomicBool::new(true));
     let listener_running = Arc::clone(&running);
+    // The listener thread must outlive any single accept or spawn failure.
+    // Nothing restarts it, and while the client socket stays up the server
+    // looks alive to autodetection, so a dead API listener leaves a server
+    // that refuses attaches (its status probe fails) and every CLI call and
+    // agent hook fails until someone kills it by hand. Transient errors such
+    // as EMFILE/ENFILE (one fd and thread per subscription, plus PTYs) or
+    // ECONNABORTED are therefore logged and retried with a bounded backoff.
     let thread = std::thread::spawn(move || {
+        let mut backoff = AcceptBackoff::default();
         for stream in listener.incoming() {
+            if !listener_running.load(Ordering::Relaxed) {
+                break;
+            }
             match stream {
                 Ok(stream) => {
                     let api_tx = api_tx.clone();
@@ -115,24 +126,34 @@ fn start_server_inner(
                     let server_stop = server_stop.clone();
                     let connection_running = Arc::clone(&listener_running);
                     let ssh_agents = ssh_agents.clone();
-                    std::thread::spawn(move || {
-                        if let Err(err) = handle_connection_with_stop(
-                            stream,
-                            &api_tx,
-                            &event_hub,
-                            &connection_running,
-                            capabilities,
-                            server_stop.as_ref(),
-                            ssh_agents.as_ref(),
-                        ) {
-                            warn!(err = %err, "api connection failed");
+                    // `std::thread::spawn` panics when the OS refuses a new
+                    // thread, which would take the listener down with it. On
+                    // failure the closure (and the accepted stream) is
+                    // dropped, which closes that one connection; the client
+                    // sees EOF and the listener keeps serving.
+                    let spawned = std::thread::Builder::new()
+                        .name("shepr-api-conn".into())
+                        .spawn(move || {
+                            if let Err(err) = handle_connection_with_stop(
+                                stream,
+                                &api_tx,
+                                &event_hub,
+                                &connection_running,
+                                capabilities,
+                                server_stop.as_ref(),
+                                ssh_agents.as_ref(),
+                            ) {
+                                warn!(err = %err, "api connection failed");
+                            }
+                        });
+                    match spawned {
+                        Ok(_) => backoff.recovered(),
+                        Err(err) => {
+                            backoff.failed("api connection thread spawn failed", &err);
                         }
-                    });
+                    }
                 }
-                Err(err) => {
-                    error!(err = %err, "api listener accept failed");
-                    break;
-                }
+                Err(err) => backoff.failed("api listener accept failed", &err),
             }
         }
         debug!("api server thread exiting");
@@ -144,6 +165,50 @@ fn start_server_inner(
         identity,
         running,
     })
+}
+
+const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(10);
+const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
+
+/// Retry pacing for the API listener after an accept or spawn failure.
+///
+/// Errors like EMFILE persist until some fd is released, and a blocking
+/// `accept` returns them immediately, so retrying without a pause would spin
+/// a core. The delay doubles per consecutive failure up to a cap and resets on
+/// the next successful accept. Only the first failure of a streak is logged at
+/// error level, so a long outage does not flood the log.
+#[derive(Default)]
+struct AcceptBackoff {
+    delay: Option<Duration>,
+    failures: u64,
+}
+
+impl AcceptBackoff {
+    fn failed(&mut self, what: &'static str, err: &io::Error) {
+        self.failures = self.failures.saturating_add(1);
+        if self.failures == 1 {
+            error!(err = %err, "{what}; retrying");
+        } else {
+            debug!(err = %err, failures = self.failures, "{what}; retrying");
+        }
+        let delay = self
+            .delay
+            .map_or(ACCEPT_BACKOFF_MIN, |delay| delay.saturating_mul(2))
+            .min(ACCEPT_BACKOFF_MAX);
+        self.delay = Some(delay);
+        std::thread::sleep(delay);
+    }
+
+    fn recovered(&mut self) {
+        if self.failures > 0 {
+            info!(
+                failures = self.failures,
+                "api listener recovered after accept failures"
+            );
+        }
+        self.delay = None;
+        self.failures = 0;
+    }
 }
 
 fn prepare_socket_path(path: &Path) -> std::io::Result<()> {

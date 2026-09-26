@@ -542,7 +542,6 @@ impl App {
                     pane_id: public_pane_id,
                     shell_pid,
                     foreground_process_group_id,
-                    tty: None,
                     foreground_processes,
                 },
             },
@@ -1480,9 +1479,15 @@ impl App {
             _ => terminal.clear_manual_label(),
         }
         self.state.mark_session_dirty();
-        let pane = self
-            .pane_info(ws_idx, pane_id)
-            .expect("pane info exists for pane just renamed");
+        let Some(pane) = self.pane_info(ws_idx, pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        // The label is part of `PaneInfo`, so subscribers see the rename the
+        // same way they see agent renames and metadata changes.
+        self.emit_event(EventEnvelope {
+            event: EventKind::PaneUpdated,
+            data: EventData::PaneUpdated { pane: pane.clone() },
+        });
 
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
@@ -1505,12 +1510,21 @@ impl App {
         else {
             return pane_not_found(id, &params.pane_id);
         };
-        let snapshot = crate::app::api_helpers::read_terminal_snapshot(
+        let format =
+            crate::app::api_helpers::effective_read_format(params.format, params.strip_ansi);
+        // Capture the revision before reading. A PTY write racing with the
+        // snapshot may advance it; reporting the later value would claim that
+        // the returned text included output it never observed.
+        let revision = pane.content_seq();
+        let snapshot = match crate::app::api_helpers::read_terminal_snapshot(
             pane,
             params.source,
-            params.format,
+            format,
             params.lines,
-        );
+        ) {
+            Ok(snapshot) => snapshot,
+            Err((code, message)) => return encode_error(id, code, message),
+        };
         let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
             crate::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
         });
@@ -1523,9 +1537,9 @@ impl App {
                     workspace_id,
                     tab_id,
                     source: params.source,
-                    format: params.format,
+                    format,
                     text: snapshot.text,
-                    revision: 0,
+                    revision,
                     truncated: snapshot.truncated,
                 },
             },
@@ -1862,7 +1876,15 @@ impl App {
         };
         let workspace_id = self.public_workspace_id(ws_idx);
         let layout_update_target = self.layout_update_target_after_pane_removal(ws_idx, pane_id);
-        let workspace_snapshot = self.workspace_info(ws_idx);
+        // The pane's own tab goes with it when it is the tab's last pane
+        // (`Workspace::close_pane`), and the workspace when that tab is its
+        // last; both need their close events, captured while the ids resolve.
+        let emptied_tab_events = self.state.workspaces.get(ws_idx).and_then(|ws| {
+            let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
+            (ws.tabs.get(tab_idx)?.layout.pane_count() <= 1)
+                .then(|| self.tab_close_events(ws_idx, tab_idx))
+        });
+        let workspace_close_events = self.workspace_close_events(ws_idx);
         let terminal_id = self.state.terminal_id_for_pane(ws_idx, pane_id);
         let should_close_workspace = {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
@@ -1870,25 +1892,18 @@ impl App {
             };
             ws.close_pane(pane_id)
         };
+        self.state.remove_pane_aliases(&[pane_id]);
         self.state.clear_stale_previous_pane_focus([pane_id]);
         if should_close_workspace {
-            self.state.selected = ws_idx;
-            self.state.close_selected_workspace();
+            self.state.close_workspace_at(ws_idx);
+            self.state.remove_unattached_terminal_ids(terminal_id);
             self.shutdown_detached_terminal_runtimes();
-            self.emit_event(EventEnvelope {
-                event: EventKind::PaneClosed,
-                data: EventData::PaneClosed {
-                    pane_id: public_pane_id,
-                    workspace_id: workspace_id.clone(),
-                },
-            });
-            self.emit_event(EventEnvelope {
-                event: EventKind::WorkspaceClosed,
-                data: EventData::WorkspaceClosed {
-                    workspace_id,
-                    workspace: Some(workspace_snapshot),
-                },
-            });
+            self.emit_events(workspace_close_events);
+        } else if let Some(emptied_tab_events) = emptied_tab_events {
+            self.state.remove_unattached_terminal_ids(terminal_id);
+            self.shutdown_detached_terminal_runtimes();
+            self.schedule_session_save();
+            self.emit_events(emptied_tab_events);
         } else {
             self.state.remove_unattached_terminal_ids(terminal_id);
             self.shutdown_detached_terminal_runtimes();
@@ -1923,10 +1938,12 @@ impl App {
             Ok(encoded_keys) => encoded_keys,
             Err(key) => return encode_error(id, "invalid_key", format!("unsupported key {key}")),
         };
-        for bytes in encoded_keys {
-            if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
-                return encode_error(id, "pane_send_failed", err.to_string());
-            }
+        // One write for the whole sequence: per-key writes let backpressure
+        // reject a later key after earlier ones went out, leaving a partial
+        // chord sequence in the pane.
+        let bytes: Vec<u8> = encoded_keys.into_iter().flatten().collect();
+        if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
+            return encode_error(id, "pane_send_failed", err.to_string());
         }
 
         encode_success(id, ResponseResult::Ok {})
@@ -2319,19 +2336,30 @@ mod tests {
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(
             rx.try_recv().expect("test precondition"),
-            bytes::Bytes::from(vec![0x08])
+            bytes::Bytes::from(vec![0x08, 0x0a, 0x0b, 0x0c])
         );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn api_pane_send_keys_writes_the_sequence_as_one_write() {
+        // A one-slot queue: per-key writes would fill it with the first key and
+        // reject the second after the first already reached the pane.
+        let (mut app, pane_id, mut rx) = app_with_send_key_runtime(1);
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req".into(),
+            method: crate::api::schema::Method::PaneSendKeys(PaneSendKeysParams {
+                pane_id,
+                keys: vec!["up".into(), "enter".into()],
+            }),
+        });
+
+        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(
             rx.try_recv().expect("test precondition"),
-            bytes::Bytes::from(vec![0x0a])
-        );
-        assert_eq!(
-            rx.try_recv().expect("test precondition"),
-            bytes::Bytes::from(vec![0x0b])
-        );
-        assert_eq!(
-            rx.try_recv().expect("test precondition"),
-            bytes::Bytes::from(vec![0x0c])
+            bytes::Bytes::from_static(b"\x1b[A\r")
         );
         assert!(rx.try_recv().is_err());
     }
@@ -2695,6 +2723,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn api_pane_read_honours_strip_ansi_and_reports_content_revision() {
+        let (mut app, public_pane_id, pane_id) = app_with_scrollback_runtime();
+        let read = |app: &mut App, strip_ansi: bool, lines: Option<u32>| {
+            app.handle_pane_read(
+                "req".into(),
+                &PaneReadParams {
+                    pane_id: public_pane_id.clone(),
+                    source: crate::api::schema::ReadSource::Recent,
+                    lines,
+                    format: crate::api::schema::ReadFormat::Text,
+                    strip_ansi,
+                    intent: crate::api::schema::ReadIntent::Interactive,
+                },
+            )
+        };
+
+        let kept = read(&mut app, false, Some(2));
+        let success: SuccessResponse = serde_json::from_str(&kept).expect("test precondition");
+        let ResponseResult::PaneRead { read: kept } = success.result else {
+            panic!("expected pane read response");
+        };
+        assert_eq!(kept.format, crate::api::schema::ReadFormat::Ansi);
+        assert_eq!(
+            kept.revision,
+            app.lookup_runtime_sender(0, pane_id)
+                .expect("test precondition")
+                .content_seq()
+        );
+
+        let stripped = read(&mut app, true, Some(2));
+        let success: SuccessResponse = serde_json::from_str(&stripped).expect("test precondition");
+        let ResponseResult::PaneRead { read: stripped } = success.result else {
+            panic!("expected pane read response");
+        };
+        assert_eq!(stripped.format, crate::api::schema::ReadFormat::Text);
+
+        let oversized = read(
+            &mut app,
+            true,
+            Some(crate::app::api_helpers::MAX_READ_LINES + 1),
+        );
+        let error: ErrorResponse = serde_json::from_str(&oversized).expect("test precondition");
+        assert_eq!(error.error.code, "invalid_lines");
+    }
+
+    #[test]
+    fn api_pane_rename_emits_pane_updated() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+
+        let response = app.handle_pane_rename(
+            "req".into(),
+            PaneRenameParams {
+                pane_id: public_pane_id.clone(),
+                label: Some("build".into()),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        assert!(matches!(success.result, ResponseResult::PaneInfo { .. }));
+        assert!(
+            app.event_hub
+                .events_after(0)
+                .iter()
+                .any(|(_, event)| matches!(
+                    &event.data,
+                    EventData::PaneUpdated { pane }
+                        if pane.pane_id == public_pane_id && pane.label.as_deref() == Some("build")
+                ))
+        );
+    }
+
+    #[tokio::test]
     async fn api_pane_send_keys_preserves_legacy_control_c_aliases() {
         let (mut app, pane_id, mut rx) = app_with_send_key_runtime(3);
 
@@ -2711,15 +2811,7 @@ mod tests {
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(
             rx.try_recv().expect("test precondition"),
-            bytes::Bytes::from(vec![0x03])
-        );
-        assert_eq!(
-            rx.try_recv().expect("test precondition"),
-            bytes::Bytes::from(vec![0x03])
-        );
-        assert_eq!(
-            rx.try_recv().expect("test precondition"),
-            bytes::Bytes::from(vec![0x03])
+            bytes::Bytes::from(vec![0x03, 0x03, 0x03])
         );
         assert!(rx.try_recv().is_err());
     }
@@ -2930,6 +3022,9 @@ mod tests {
     fn api_pane_close_of_last_pane_closes_workspace() {
         let mut app = app_with_workspace();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        app.state
+            .public_pane_id_aliases
+            .insert("old-pane".into(), pane_id);
         let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
 
         let response = app.handle_pane_close(
@@ -2942,6 +3037,49 @@ mod tests {
         let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
         assert_eq!(success.id, "req");
         assert!(app.state.workspaces.is_empty());
+        assert!(!app.state.public_pane_id_aliases.contains_key("old-pane"));
+        assert_eq!(
+            app.event_hub
+                .events_after(0)
+                .iter()
+                .map(|(_, event)| event.event)
+                .collect::<Vec<_>>(),
+            [
+                EventKind::PaneClosed,
+                EventKind::TabClosed,
+                EventKind::WorkspaceClosed
+            ]
+        );
+    }
+
+    #[test]
+    fn api_pane_close_of_a_tabs_last_pane_announces_the_tab() {
+        let mut app = app_with_workspace();
+        app.state.workspaces[0].test_add_tab(Some("survivor"));
+        app.state.ensure_test_terminals();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
+        let tab_id = app.public_tab_id(0, 0).expect("test precondition");
+
+        let response = app.handle_pane_close(
+            "req".into(),
+            &PaneTarget {
+                pane_id: public_pane_id.clone(),
+            },
+        );
+
+        let _: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        let events = app.event_hub.events_after(0);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0].1.data,
+            EventData::PaneClosed { pane_id, .. } if pane_id == &public_pane_id
+        ));
+        assert!(matches!(
+            &events[1].1.data,
+            EventData::TabClosed { tab_id: closed, .. } if closed == &tab_id
+        ));
     }
 
     #[test]
@@ -3314,7 +3452,7 @@ mod tests {
     }
 
     #[test]
-    fn api_pane_move_legacy_target_tab_id_survives_source_workspace_removal() {
+    fn api_pane_move_target_tab_id_survives_source_workspace_removal() {
         let mut app = app_with_workspace();
         app.state.workspaces.push(Workspace::test_new("other"));
         let source = app.state.workspaces[0].tabs[0].root_pane;
@@ -3335,7 +3473,7 @@ mod tests {
             PaneMoveParams {
                 pane_id: source_public,
                 destination: PaneMoveDestination::Tab {
-                    tab_id: "t_2_1".into(),
+                    tab_id: target_tab_id.clone(),
                     target_pane_id: Some(target_public),
                     split: SplitDirection::Right,
                     ratio: None,

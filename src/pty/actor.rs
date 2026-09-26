@@ -331,6 +331,15 @@ enum SubmissionBoundary {
     Enter,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadOutcome {
+    Data,
+    WouldBlock,
+    Interrupted,
+    /// EOF or a hard read error: the child side is gone.
+    Closed,
+}
+
 enum SubmissionPhase {
     WritingText,
     WaitingUntil(Instant),
@@ -371,7 +380,7 @@ impl PtyIoActorRunner {
                     Ok(Some(boundary)) => self.complete_submission_boundary(boundary),
                     Ok(None) => {}
                     Err(err) => {
-                        self.fail_active_submission(err);
+                        self.handle_write_failure(err);
                         break;
                     }
                 }
@@ -404,7 +413,7 @@ impl PtyIoActorRunner {
                             Ok(Some(boundary)) => self.complete_submission_boundary(boundary),
                             Ok(None) => {}
                             Err(err) => {
-                                self.fail_active_submission(err);
+                                self.handle_write_failure(err);
                                 break;
                             }
                         }
@@ -530,14 +539,37 @@ impl PtyIoActorRunner {
     }
 
     fn read_once(&mut self) -> bool {
+        self.read_chunk() != ReadOutcome::Closed
+    }
+
+    /// A write failure usually means the child has gone (the master reports EIO
+    /// once the slave side is closed), but whatever it printed before exiting is
+    /// still buffered on the master. Read that out before the loop ends so the
+    /// child's last output reaches the terminal. Bounded so a peer that keeps
+    /// producing output cannot hold the actor here.
+    fn handle_write_failure(&mut self, err: std::io::Error) {
+        self.fail_active_submission(err);
+        const MAX_DRAIN_CHUNKS: usize = 1024;
+        for _ in 0..MAX_DRAIN_CHUNKS {
+            match self.read_chunk() {
+                ReadOutcome::Data | ReadOutcome::Interrupted => {}
+                ReadOutcome::WouldBlock | ReadOutcome::Closed => break,
+            }
+        }
+        // Replies generated while draining have nowhere to go.
+        self.pending_writes.clear();
+        self.current_write_offset = 0;
+    }
+
+    fn read_chunk(&mut self) -> ReadOutcome {
         let mut buf = [0u8; 8192];
         match self.file.read(&mut buf) {
-            Ok(0) => false,
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => true,
-            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => true,
+            Ok(0) => ReadOutcome::Closed,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => ReadOutcome::WouldBlock,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => ReadOutcome::Interrupted,
             Err(err) => {
                 debug!(pane = self.pane_id, err = %err, "PTY actor read failed");
-                false
+                ReadOutcome::Closed
             }
             Ok(n) => {
                 let response_order = Arc::clone(&self.response_order);
@@ -559,7 +591,7 @@ impl PtyIoActorRunner {
                         .terminal_responses,
                 );
                 self.enqueue_terminal_responses(terminal_responses);
-                true
+                ReadOutcome::Data
             }
         }
     }
@@ -778,6 +810,50 @@ mod tests {
             poll_observer: None,
         };
         (runner, peer)
+    }
+
+    #[test]
+    fn write_failure_still_delivers_the_childs_last_output() {
+        let (actor_socket, mut peer) = UnixStream::pair().expect("socket pair");
+        actor_socket
+            .set_nonblocking(true)
+            .expect("actor socket nonblocking");
+        let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
+        // Keep the senders alive so the loop does not exit on a closed queue
+        // before it reaches the pending write.
+        let (_data_tx, data_rx) = mpsc::channel(ACTOR_COMMAND_BUFFER);
+        let (_control_tx, control_rx) = std_mpsc::channel();
+        let wake_pipe = fd::create_wake_pipe().expect("wake pipe");
+        let (read_tx, read_rx) = std_mpsc::channel();
+        let mut runner = PtyIoActorRunner {
+            pane_id: 1,
+            file: std::fs::File::from(owned),
+            data_rx,
+            control_rx,
+            pending_writes: VecDeque::new(),
+            current_write_offset: 0,
+            active_submission: None,
+            wake_read_fd: wake_pipe.read_fd,
+            controls: Arc::new(Mutex::new(SharedPtyControls::default())),
+            response_order: Arc::new(Mutex::new(())),
+            on_read: Box::new(move |bytes| {
+                let _ = read_tx.send(Bytes::copy_from_slice(bytes));
+                PtyReadResult::empty()
+            }),
+            on_reader_exit: None,
+            poll_observer: None,
+        };
+        // The child prints its last words and exits with a reply still queued.
+        peer.write_all(b"last-output").expect("peer write");
+        drop(peer);
+        runner.enqueue_write(Bytes::from_static(b"queued-reply"));
+
+        runner.run();
+
+        let read = read_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("buffered output is read after the write fails");
+        assert_eq!(read, Bytes::from_static(b"last-output"));
     }
 
     #[test]

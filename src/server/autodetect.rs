@@ -290,12 +290,7 @@ mod tests {
         unsafe { std::env::set_var("SHEPR_CLIENT_SOCKET_PATH", "/tmp/inherited-client.sock") };
         unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
         crate::session::clear_explicit_session_for_test();
-        let args = vec![
-            "shepr".to_string(),
-            "--session".to_string(),
-            "work".to_string(),
-        ];
-        crate::session::configure_from_args(&args).expect("test precondition");
+        crate::session::configure(Some("work")).expect("test precondition");
 
         let command = build_server_daemon_command(&PathBuf::from("/tmp/shepr-test"));
         let envs: Vec<_> = command.get_envs().collect();

@@ -67,16 +67,24 @@ impl App {
         let crate::api::schema::Method::AgentPrompt(params) = request.method else {
             return false;
         };
+        // `agent.prompt --wait --timeout` sets this; a plain prompt has no bound.
+        let submission_deadline = params
+            .wait
+            .as_ref()
+            .and_then(|wait| wait.submission_deadline);
         match self.queue_agent_prompt(request.id, &params) {
             Ok((id, agent, completion)) => {
                 std::thread::spawn(move || {
-                    let response = match completion.recv() {
-                        Ok(Ok(())) => encode_success(id, ResponseResult::AgentPrompted { agent }),
-                        Ok(Err(err)) if err.kind() == std::io::ErrorKind::TimedOut => {
-                            encode_error(id, "timeout", err.to_string())
+                    let response = match await_prompt_submission(&completion, submission_deadline) {
+                        Ok(()) => encode_success(id, ResponseResult::AgentPrompted { agent }),
+                        Err(PromptSubmissionError::TimedOut) => encode_error(
+                            id,
+                            "timeout",
+                            "timed out submitting the agent prompt; the pane is not reading input",
+                        ),
+                        Err(PromptSubmissionError::Failed(message)) => {
+                            encode_error(id, "agent_prompt_failed", message)
                         }
-                        Ok(Err(err)) => encode_error(id, "agent_prompt_failed", err.to_string()),
-                        Err(_) => encode_error(id, "agent_prompt_failed", "pty actor closed"),
                     };
                     let _ = respond_to.send(response);
                 });
@@ -192,12 +200,20 @@ impl App {
         else {
             return agent_not_found(id, &params.target);
         };
-        let snapshot = crate::app::api_helpers::read_terminal_snapshot(
+        let format =
+            crate::app::api_helpers::effective_read_format(params.format, params.strip_ansi);
+        // A write can land while the snapshot is built. Keep the revision at
+        // the start so it never claims to cover output absent from the text.
+        let revision = pane.content_seq();
+        let snapshot = match crate::app::api_helpers::read_terminal_snapshot(
             pane,
             params.source,
-            params.format,
+            format,
             params.lines,
-        );
+        ) {
+            Ok(snapshot) => snapshot,
+            Err((code, message)) => return encode_error(id, code, message),
+        };
         let tab_id = self
             .public_tab_id(resolved.ws_idx, resolved.tab_idx)
             .unwrap_or_else(|| {
@@ -214,9 +230,9 @@ impl App {
                     workspace_id,
                     tab_id,
                     source: params.source,
-                    format: params.format,
+                    format,
                     text: snapshot.text,
-                    revision: 0,
+                    revision,
                     truncated: snapshot.truncated,
                 },
             },
@@ -333,6 +349,36 @@ impl App {
 
         encode_success(id, ResponseResult::Ok {})
     }
+}
+
+enum PromptSubmissionError {
+    TimedOut,
+    Failed(String),
+}
+
+/// Wait for the PTY actor to finish writing a queued prompt. The actor never
+/// gives up on its own: an agent that stops reading stdin leaves the write
+/// pending forever, so a caller's timeout has to be enforced here. A prompt
+/// abandoned at the deadline stays queued in the actor and may still be typed
+/// later if the pane starts reading again.
+fn await_prompt_submission(
+    completion: &std::sync::mpsc::Receiver<std::io::Result<()>>,
+    deadline: Option<std::time::Instant>,
+) -> Result<(), PromptSubmissionError> {
+    let received = match deadline {
+        Some(deadline) => completion
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .map_err(|err| match err {
+                std::sync::mpsc::RecvTimeoutError::Timeout => PromptSubmissionError::TimedOut,
+                std::sync::mpsc::RecvTimeoutError::Disconnected => {
+                    PromptSubmissionError::Failed("pty actor closed".into())
+                }
+            })?,
+        None => completion
+            .recv()
+            .map_err(|_| PromptSubmissionError::Failed("pty actor closed".into()))?,
+    };
+    received.map_err(|err| PromptSubmissionError::Failed(err.to_string()))
 }
 
 fn agent_not_ready(id: String, target: &str) -> String {
@@ -556,6 +602,30 @@ mod tests {
             serde_json::from_str(&rejected).expect("test precondition");
         assert_eq!(error.error.code, "agent_not_found");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn prompt_submission_wait_honours_the_callers_deadline() {
+        // A sender that never replies stands in for a pane that stopped
+        // reading stdin.
+        let (_stalled_tx, stalled) = std::sync::mpsc::channel::<std::io::Result<()>>();
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            await_prompt_submission(&stalled, Some(started + Duration::from_millis(20))),
+            Err(PromptSubmissionError::TimedOut)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        let (done_tx, done) = std::sync::mpsc::channel();
+        done_tx.send(Ok(())).expect("test precondition");
+        assert!(await_prompt_submission(&done, Some(started)).is_ok());
+
+        let (closed_tx, closed) = std::sync::mpsc::channel::<std::io::Result<()>>();
+        drop(closed_tx);
+        assert!(matches!(
+            await_prompt_submission(&closed, None),
+            Err(PromptSubmissionError::Failed(_))
+        ));
     }
 
     #[tokio::test]

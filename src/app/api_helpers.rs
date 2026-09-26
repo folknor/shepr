@@ -106,7 +106,66 @@ pub(super) fn pane_agent_status(
     }
 }
 
+/// Largest `lines` a read accepts. Larger requests are rejected rather than
+/// quietly shortened, so a caller never mistakes a capped read for the whole
+/// history it asked for.
+pub(super) const MAX_READ_LINES: u32 = 1000;
+
+/// The format a read produces. `strip_ansi: false` asks to keep escape
+/// sequences, which only the ANSI renderer has, so it selects that renderer
+/// whatever `format` says; `strip_ansi: true` (the default) leaves `format` in
+/// charge. There is no raw PTY byte history to return instead.
+pub(super) fn effective_read_format(
+    format: crate::api::schema::ReadFormat,
+    strip_ansi: bool,
+) -> crate::api::schema::ReadFormat {
+    if strip_ansi {
+        format
+    } else {
+        crate::api::schema::ReadFormat::Ansi
+    }
+}
+
+/// A rejected read: `(error code, message)`.
+pub(super) type ReadRejection = (&'static str, String);
+
 pub(super) fn read_terminal_snapshot(
+    terminal: &crate::terminal::TerminalRuntime,
+    source: crate::api::schema::ReadSource,
+    format: crate::api::schema::ReadFormat,
+    lines: Option<u32>,
+) -> Result<crate::pane::TerminalReadSnapshot, ReadRejection> {
+    validate_read_request(source, format, lines)?;
+    Ok(read_validated_terminal_snapshot(
+        terminal, source, format, lines,
+    ))
+}
+
+fn validate_read_request(
+    source: crate::api::schema::ReadSource,
+    format: crate::api::schema::ReadFormat,
+    lines: Option<u32>,
+) -> Result<(), ReadRejection> {
+    use crate::api::schema::{ReadFormat, ReadSource};
+
+    if let Some(lines) = lines
+        && lines > MAX_READ_LINES
+    {
+        return Err((
+            "invalid_lines",
+            format!("lines must be at most {MAX_READ_LINES}, got {lines}"),
+        ));
+    }
+    if format == ReadFormat::Ansi && source == ReadSource::Detection {
+        return Err((
+            "unsupported_read_format",
+            "the detection source is plain text; read it with format text".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn read_validated_terminal_snapshot(
     terminal: &crate::terminal::TerminalRuntime,
     source: crate::api::schema::ReadSource,
     format: crate::api::schema::ReadFormat,
@@ -114,7 +173,7 @@ pub(super) fn read_terminal_snapshot(
 ) -> crate::pane::TerminalReadSnapshot {
     use crate::api::schema::{ReadFormat, ReadSource};
 
-    let line_limit = lines.map(|lines| lines.min(1000) as usize);
+    let line_limit = lines.map(|lines| lines as usize);
     let recent_lines = line_limit.unwrap_or(80);
     match (format, source) {
         (ReadFormat::Text, ReadSource::Visible) => {
@@ -134,6 +193,8 @@ pub(super) fn read_terminal_snapshot(
         (ReadFormat::Ansi, ReadSource::RecentUnwrapped) => {
             terminal.recent_unwrapped_ansi_snapshot(recent_lines)
         }
+        // Rejected by `validate_read_request`; kept total so the match needs
+        // no panic arm.
         (ReadFormat::Ansi, ReadSource::Detection) => {
             limit_snapshot_lines(terminal.detection_text(), line_limit)
         }
@@ -159,7 +220,54 @@ pub(crate) fn limit_snapshot_lines(
 
 #[cfg(test)]
 mod read_snapshot_tests {
-    use super::limit_snapshot_lines;
+    use super::{
+        MAX_READ_LINES, effective_read_format, limit_snapshot_lines, validate_read_request,
+    };
+    use crate::api::schema::{ReadFormat, ReadSource};
+
+    #[test]
+    fn keeping_escapes_selects_the_ansi_renderer() {
+        assert_eq!(
+            effective_read_format(ReadFormat::Text, true),
+            ReadFormat::Text
+        );
+        assert_eq!(
+            effective_read_format(ReadFormat::Ansi, true),
+            ReadFormat::Ansi
+        );
+        assert_eq!(
+            effective_read_format(ReadFormat::Text, false),
+            ReadFormat::Ansi
+        );
+        assert_eq!(
+            effective_read_format(ReadFormat::Ansi, false),
+            ReadFormat::Ansi
+        );
+    }
+
+    #[test]
+    fn oversized_line_requests_are_rejected_instead_of_capped() {
+        assert!(
+            validate_read_request(ReadSource::Recent, ReadFormat::Text, Some(MAX_READ_LINES))
+                .is_ok()
+        );
+        let (code, _) = validate_read_request(
+            ReadSource::Recent,
+            ReadFormat::Text,
+            Some(MAX_READ_LINES + 1),
+        )
+        .expect_err("test precondition");
+        assert_eq!(code, "invalid_lines");
+    }
+
+    #[test]
+    fn ansi_detection_reads_are_rejected_instead_of_returning_plain_text() {
+        let (code, _) = validate_read_request(ReadSource::Detection, ReadFormat::Ansi, None)
+            .expect_err("test precondition");
+        assert_eq!(code, "unsupported_read_format");
+        assert!(validate_read_request(ReadSource::Detection, ReadFormat::Text, None).is_ok());
+        assert!(validate_read_request(ReadSource::Visible, ReadFormat::Ansi, None).is_ok());
+    }
 
     #[test]
     fn line_limit_preserves_endings_and_reports_omitted_lines() {

@@ -153,7 +153,7 @@ impl Decoder {
             return Err("surface delta does not match its baseline".into());
         }
         surface.frame.cells.clone_from(&base.cells);
-        surface_delta::apply_rows(&mut surface.frame.cells, base.width, &delta.rows);
+        surface_delta::apply_rows(&mut surface.frame.cells, base.width, &delta.rows)?;
         if surface.frame.cells.iter().any(|cell| {
             cell.hyperlink
                 .is_some_and(|index| index as usize >= surface.frame.hyperlinks.len())
@@ -161,7 +161,9 @@ impl Decoder {
             return Err("surface delta has an invalid hyperlink index".into());
         }
         // Validate the entire update before advancing either grid or revision.
-        surface_delta::apply_rows(&mut base.cells, base.width, &delta.rows);
+        // The same spans already applied to an identically sized copy above,
+        // so this cannot fail partway through the baseline.
+        surface_delta::apply_rows(&mut base.cells, base.width, &delta.rows)?;
         base.projection_revision = surface.projection_revision;
         base.surface_revision = surface.surface_revision;
         Ok(surface)

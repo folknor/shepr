@@ -186,36 +186,15 @@ fn preserve_existing_in(path: &Path, directory_name: &str, keep: usize) -> io::R
 }
 
 fn copy_recovery(source: &mut impl io::Read, backup: &Path) -> io::Result<()> {
-    let directory = backup.parent().unwrap_or_else(|| Path::new("."));
-    let pending = backup.with_extension("pending");
-    let mut output = crate::platform::create_config_temporary(&pending, true)?;
-    let mut published = false;
-    let result = (|| {
-        match std::fs::symlink_metadata(backup) {
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err),
-            Ok(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "recovery copy already exists",
-                ));
-            }
-        }
-        io::copy(source, &mut output)?;
-        output.sync_all()?;
-        drop(output);
-        std::fs::rename(&pending, backup)?;
-        published = true;
-        crate::platform::sync_parent_directory(directory)?;
-        crate::platform::sync_parent_directory(directory.parent().unwrap_or_else(|| Path::new(".")))
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(pending);
-        if published {
-            let _ = std::fs::remove_file(backup);
-        }
+    super::io::publish_private_file(source, &backup.with_extension("pending"), backup, false)?;
+    // The recovery directory may have just been created; its own entry must be
+    // durable too, or the copy is not a recovery copy at all.
+    let directory = super::io::containing_directory(backup);
+    if let Err(err) = crate::platform::sync_directory(super::io::containing_directory(directory)) {
+        let _ = std::fs::remove_file(backup);
+        return Err(err);
     }
-    result
+    Ok(())
 }
 
 fn recovery_files(directory: &Path) -> io::Result<Vec<(u128, PathBuf)>> {
@@ -733,7 +712,23 @@ mod tests {
             } else {
                 assert!(backups(&writer).is_empty());
             }
+            // A clear removes the session behind the link and keeps the link,
+            // so the next save writes through it again.
             writer.clear();
+            assert!(
+                std::fs::symlink_metadata(&writer.path)
+                    .expect("test precondition")
+                    .file_type()
+                    .is_symlink()
+            );
+            assert!(!target.exists());
+            writer.save(&snapshot(), None);
+            assert!(
+                std::fs::symlink_metadata(&writer.path)
+                    .expect("test precondition")
+                    .file_type()
+                    .is_symlink()
+            );
             assert!(target.exists());
             std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
                 .expect("test precondition");

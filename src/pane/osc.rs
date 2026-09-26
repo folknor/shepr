@@ -637,12 +637,26 @@ fn sanitized_osc_debug_payload(payload: &[u8]) -> String {
 }
 
 fn parse_file_uri_cwd(uri: &str) -> Option<PathBuf> {
+    // Standard shell integrations (vte.sh for bash/zsh, fish) report
+    // `file://$HOSTNAME/path`, so the machine's own name must be accepted.
+    // Looked up per report rather than cached: OSC 7 arrives about once per
+    // prompt, and a renamed host keeps matching.
+    parse_file_uri_cwd_for_host(uri, crate::platform::hostname().as_deref())
+}
+
+/// Parse a `file://` cwd report, accepting an empty host, `localhost`, or
+/// `local_host`. Any other host is a different machine (for example a shell
+/// reached over SSH inside the pane), whose path means nothing here.
+fn parse_file_uri_cwd_for_host(uri: &str, local_host: Option<&str>) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     let path = if rest.starts_with('/') {
         rest
     } else if let Some(slash) = rest.find('/') {
         let host = &rest[..slash];
-        if !(host.is_empty() || host.eq_ignore_ascii_case("localhost")) {
+        if !(host.is_empty()
+            || host.eq_ignore_ascii_case("localhost")
+            || local_host.is_some_and(|local| is_same_host(host, local)))
+        {
             return None;
         }
         &rest[slash..]
@@ -651,6 +665,17 @@ fn parse_file_uri_cwd(uri: &str) -> Option<PathBuf> {
     };
     let path = percent_decode_utf8(path)?;
     Some(PathBuf::from(path))
+}
+
+/// Host names compare case-insensitively. A reported short name may match a
+/// locally known qualified name. A reported qualified name cannot be checked
+/// against only a local short name: its domain could name another machine.
+fn is_same_host(reported: &str, local: &str) -> bool {
+    fn short(name: &str) -> &str {
+        name.split('.').next().unwrap_or(name)
+    }
+    reported.eq_ignore_ascii_case(local)
+        || (!reported.contains('.') && reported.eq_ignore_ascii_case(short(local)))
 }
 
 fn percent_decode_utf8(input: &str) -> Option<String> {
@@ -941,7 +966,58 @@ mod tests {
     fn reported_cwd_rejects_invalid_or_empty_values() {
         assert_eq!(parse_reported_cwd(b""), None);
         assert_eq!(parse_reported_cwd(b"\xff"), None);
-        assert_eq!(parse_reported_cwd(b"file://remote/tmp"), None);
+        assert_eq!(
+            parse_file_uri_cwd_for_host("file://remote/tmp", Some("workstation")),
+            None
+        );
+        assert_eq!(parse_file_uri_cwd_for_host("file://remote/tmp", None), None);
+    }
+
+    #[test]
+    fn reported_cwd_accepts_the_machines_own_hostname() {
+        let expected = Some(std::path::PathBuf::from("/home/me/src"));
+        for (uri, local) in [
+            ("file://workstation/home/me/src", "workstation"),
+            ("file://WorkStation/home/me/src", "workstation"),
+            ("file://workstation/home/me/src", "workstation.lan"),
+            ("file://localhost/home/me/src", "workstation"),
+        ] {
+            assert_eq!(
+                parse_file_uri_cwd_for_host(uri, Some(local)),
+                expected,
+                "{uri} on {local}"
+            );
+        }
+        assert_eq!(
+            parse_file_uri_cwd_for_host(
+                "file://workstation.other/home/me/src",
+                Some("workstation.lan")
+            ),
+            None
+        );
+        assert_eq!(
+            parse_file_uri_cwd_for_host(
+                "file://workstation.other/home/me/src",
+                Some("workstation")
+            ),
+            None
+        );
+        assert_eq!(
+            parse_file_uri_cwd_for_host("file://workstation.lan/home/me/src", Some("workstation")),
+            None
+        );
+    }
+
+    #[test]
+    fn reported_cwd_uses_the_live_hostname() {
+        let Some(hostname) = crate::platform::hostname() else {
+            return;
+        };
+        let uri = format!("file://{hostname}/tmp/shepr%20repo");
+        assert_eq!(
+            parse_reported_cwd(uri.as_bytes()),
+            Some(std::path::PathBuf::from("/tmp/shepr repo"))
+        );
     }
 
     // -----------------------------------------------------------------------

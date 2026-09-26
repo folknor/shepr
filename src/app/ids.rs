@@ -57,83 +57,51 @@ impl App {
         )
     }
 
+    /// Resolves a public workspace id (`w<n>`) to its current index.
+    ///
+    /// Only the exact stable id is accepted. Positional forms (`w_N`, bare
+    /// `N`) are deliberately rejected: a mistyped or index-style id must fail
+    /// rather than silently target whichever workspace sits at that position.
     pub(crate) fn parse_workspace_id(&self, id: &str) -> Option<usize> {
         self.state
             .workspaces
             .iter()
             .position(|workspace| workspace.id == id)
-            .or_else(|| id.strip_prefix("w_")?.parse::<usize>().ok()?.checked_sub(1))
-            .or_else(|| id.parse::<usize>().ok()?.checked_sub(1))
     }
 
+    /// Resolves a public tab id (`<workspace_id>:t<n>`) to (workspace, tab)
+    /// indexes. Positional forms (`<workspace_id>:N`, `t_…`) are rejected for
+    /// the same reason as in `parse_workspace_id`: tab numbers are stable and
+    /// independent of tab order, positions are not.
     pub(crate) fn parse_tab_id(&self, id: &str) -> Option<(usize, usize)> {
-        if let Some(rest) = id.strip_prefix("t_") {
-            let (ws_raw, tab_raw) = rest.rsplit_once('_')?;
-            let ws_idx = self.parse_workspace_id(ws_raw)?;
-            let tab_idx = tab_raw.parse::<usize>().ok()?.checked_sub(1)?;
-            self.state.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
-            return Some((ws_idx, tab_idx));
-        }
-
         let (ws_raw, tab_raw) = id.rsplit_once(':')?;
         let ws_idx = self.parse_workspace_id(ws_raw)?;
-        let tab_idx = if let Some(encoded) = tab_raw.strip_prefix('t') {
-            let tab_number = crate::workspace::decode_public_number(encoded)?;
-            self.state
-                .workspaces
-                .get(ws_idx)?
-                .tabs
-                .iter()
-                .position(|tab| tab.number == tab_number)?
-        } else {
-            tab_raw.parse::<usize>().ok()?.checked_sub(1)?
-        };
-        self.state.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
+        let encoded = tab_raw.strip_prefix('t')?;
+        let tab_number = crate::workspace::decode_public_number(encoded)?;
+        let tab_idx = self
+            .state
+            .workspaces
+            .get(ws_idx)?
+            .tabs
+            .iter()
+            .position(|tab| tab.number == tab_number)?;
         Some((ws_idx, tab_idx))
     }
 
-    fn resolve_raw_pane_id(&self, raw: u32) -> Option<crate::layout::PaneId> {
-        if let Some(alias) = self.state.pane_id_aliases.get(&raw).copied() {
-            return self.find_pane(alias).map(|_| alias);
-        }
-        let pane_id = crate::layout::PaneId::from_raw(raw);
-        if self.find_pane(pane_id).is_some() {
-            return Some(pane_id);
-        }
-        None
-    }
-
+    /// Resolves a public pane id (`<workspace_id>:p<n>`, or the pre-move id of
+    /// a pane that moved to another workspace) to (workspace index, pane).
+    ///
+    /// Raw internal pane ids (`p_<raw>`) are not accepted: they restart every
+    /// process, so after a server restart they name a different pane. The
+    /// `<workspace>-N` form is gone too; nothing emits it.
     pub(crate) fn parse_pane_id(&self, id: &str) -> Option<(usize, crate::layout::PaneId)> {
         if let Some(alias) = self.state.public_pane_id_aliases.get(id).copied() {
             return self.find_pane(alias).map(|(ws_idx, _)| (ws_idx, alias));
         }
 
-        if let Some(rest) = id.strip_prefix("p_") {
-            if let Some((ws_raw, pane_raw)) = rest.rsplit_once('_') {
-                let ws_idx = self.parse_workspace_id(ws_raw)?;
-                let pane_id = self.resolve_raw_pane_id(pane_raw.parse::<u32>().ok()?)?;
-                self.state.workspaces.get(ws_idx)?.pane_state(pane_id)?;
-                return Some((ws_idx, pane_id));
-            }
-
-            let pane_id = self.resolve_raw_pane_id(rest.parse::<u32>().ok()?)?;
-            return self.find_pane(pane_id).map(|(ws_idx, _)| (ws_idx, pane_id));
-        }
-
-        if let Some((ws_raw, pane_number_raw)) = id.rsplit_once(":p") {
-            let ws_idx = self.parse_workspace_id(ws_raw)?;
-            let pane_number = crate::workspace::decode_public_number(pane_number_raw)?;
-            let ws = self.state.workspaces.get(ws_idx)?;
-            let pane_id = ws
-                .public_pane_numbers
-                .iter()
-                .find_map(|(pane_id, number)| (*number == pane_number).then_some(*pane_id))?;
-            return Some((ws_idx, pane_id));
-        }
-
-        let (ws_raw, pane_number_raw) = id.rsplit_once('-')?;
+        let (ws_raw, pane_number_raw) = id.rsplit_once(":p")?;
         let ws_idx = self.parse_workspace_id(ws_raw)?;
-        let pane_number = pane_number_raw.parse::<usize>().ok()?;
+        let pane_number = crate::workspace::decode_public_number(pane_number_raw)?;
         let ws = self.state.workspaces.get(ws_idx)?;
         let pane_id = ws
             .public_pane_numbers
@@ -148,5 +116,64 @@ impl App {
     ) -> Option<(usize, crate::layout::PaneId)> {
         let (ws_idx, pane_id) = self.parse_pane_id(id)?;
         (self.public_pane_id(ws_idx, pane_id).as_deref() == Some(id)).then_some((ws_idx, pane_id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::workspace::Workspace;
+
+    fn test_app_with_workspaces(names: &[&str]) -> super::App {
+        let mut app = super::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            tokio::sync::mpsc::unbounded_channel().1,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app
+    }
+
+    #[test]
+    fn public_ids_resolve() {
+        let mut app = test_app_with_workspaces(&["a", "b"]);
+        let second = app.state.workspaces[1].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        let ws_id = app.state.workspaces[1].id.clone();
+
+        assert_eq!(app.parse_workspace_id(&ws_id), Some(1));
+        let tab_id = app.public_tab_id(1, 0).expect("public tab id");
+        assert_eq!(app.parse_tab_id(&tab_id), Some((1, 0)));
+        let pane_id = app.public_pane_id(1, second).expect("public pane id");
+        assert_eq!(app.parse_pane_id(&pane_id), Some((1, second)));
+    }
+
+    #[test]
+    fn positional_and_raw_ids_are_rejected() {
+        let app = test_app_with_workspaces(&["a", "b"]);
+        let ws_id = app.state.workspaces[0].id.clone();
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+
+        for id in ["1", "2", "w_1", "w_2"] {
+            assert_eq!(app.parse_workspace_id(id), None, "workspace id {id:?}");
+        }
+        for id in [
+            format!("{ws_id}:1"),
+            "t_1_1".to_string(),
+            "1:t1".to_string(),
+        ] {
+            assert_eq!(app.parse_tab_id(&id), None, "tab id {id:?}");
+        }
+        for id in [
+            format!("p_{}", root.raw()),
+            format!("p_1_{}", root.raw()),
+            format!("{ws_id}-1"),
+            "1:p1".to_string(),
+        ] {
+            assert_eq!(app.parse_pane_id(&id), None, "pane id {id:?}");
+        }
     }
 }

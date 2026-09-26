@@ -103,11 +103,11 @@ pub(crate) fn generate_workspace_id() -> String {
     )
 }
 
+/// Encodes a public number in bijective base 32 (digits 1..=32, no zero
+/// digit), so `"0"` is the digit for 32, not zero. Public numbers start at 1;
+/// zero has no digits and encodes to the empty string, which is what
+/// `decode_public_number` maps back to zero.
 pub(crate) fn encode_public_number(mut value: usize) -> String {
-    if value == 0 {
-        return "0".to_string();
-    }
-
     let mut encoded = Vec::new();
     while value > 0 {
         let digit = (value - 1) % PUBLIC_ID_ALPHABET.len();
@@ -1326,6 +1326,18 @@ mod tests {
         for value in [1, 9, 10, 31, 32, 33, 1024, 1025] {
             let encoded = encode_public_number(value);
             assert_eq!(decode_public_number(&encoded), Some(value));
+        }
+    }
+
+    #[test]
+    fn every_public_number_round_trips_including_zero() {
+        for value in (0..=2048).chain([usize::MAX]) {
+            let encoded = encode_public_number(value);
+            assert_eq!(
+                decode_public_number(&encoded),
+                Some(value),
+                "{value} encoded as {encoded:?}"
+            );
         }
     }
 

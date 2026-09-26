@@ -685,7 +685,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_bare_tab_id_uses_tab_position_not_public_tab_number() {
+    fn bare_tab_position_is_rejected_even_when_public_numbers_differ() {
         let mut app = test_app();
         let mut workspace = Workspace::test_new("legacy-tab-id");
         let removed_tab = workspace.test_add_tab(None);
@@ -712,7 +712,7 @@ mod tests {
         );
         assert_eq!(
             app.parse_tab_id(&format!("{}:4", app.state.workspaces[0].id)),
-            Some((0, fourth_position_idx))
+            None
         );
     }
 

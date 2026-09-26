@@ -178,6 +178,10 @@ pub enum LayoutNode {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct LayoutPane {
+    /// Output only: `layout.export` names the live pane behind each leaf.
+    /// `layout.apply` always spawns fresh panes and ignores it, so an exported
+    /// layout can be applied back unchanged; moving an existing pane into a
+    /// layout is `pane.move`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -336,6 +340,8 @@ pub struct PaneReadParams {
     pub lines: Option<u32>,
     #[serde(default)]
     pub format: ReadFormat,
+    /// `false` keeps escape sequences: the read uses the ANSI renderer
+    /// whatever `format` says, and the result reports `format: ansi`.
     #[serde(default = "super::default_true")]
     pub strip_ansi: bool,
     #[serde(skip)]
@@ -470,8 +476,6 @@ pub struct PaneProcessInfo {
     pub shell_pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_process_group_id: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tty: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub foreground_processes: Vec<PaneProcessInfoProcess>,
 }
@@ -654,8 +658,13 @@ pub struct PaneReadResult {
     pub workspace_id: String,
     pub tab_id: String,
     pub source: ReadSource,
+    /// The format `text` is in, after `strip_ansi` has been applied.
     pub format: ReadFormat,
     pub text: String,
+    /// The pane's content revision, taken after the read: `text` holds
+    /// nothing newer. It is the counter `pane.copy_search` takes as
+    /// `content_revision` (odd while a write is in progress), and it differs
+    /// from `PaneInfo.revision`, which tracks pane metadata rather than output.
     pub revision: u64,
     pub truncated: bool,
 }

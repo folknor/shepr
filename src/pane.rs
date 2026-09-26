@@ -128,7 +128,11 @@ fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunchEnv) {
     crate::platform::ssh_agent::apply_pane_env(cmd);
     // A new pane is not a child agent of the process that started the server.
     // Explicit launch env below can opt back into an intentional child session.
+    // `SHEPR_AGENT` is the detector's per-process agent hint, checked before
+    // name-based identification; inherited from the server it would label every
+    // plain shell in every pane as that agent.
     for key in [
+        "SHEPR_AGENT",
         "CODEX_THREAD_ID",
         "OMPCODE",
         "CLAUDECODE",
@@ -1038,6 +1042,10 @@ fn resolve_shell_for_login_mode(shell: &str) -> io::Result<String> {
 
 /// Login shells use `PtyCommand::login_shell` so they receive the login argv0
 /// convention (`-zsh`). `Auto` means non-login.
+///
+/// In every mode the pane's `SHELL` names the shell the pane actually runs, so
+/// anything inside it that spawns `$SHELL` (agents' shell tools included) gets
+/// the same shell rather than the one the server inherited.
 fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> io::Result<PtyCommand> {
     let shell = pane_shell(shell_config.default_shell);
     if shell_config.mode == crate::config::ShellModeConfig::Login {
@@ -1045,7 +1053,13 @@ fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> io::Result<P
         cmd.env("SHELL", resolve_shell_for_login_mode(&shell)?);
         return Ok(cmd);
     }
-    Ok(PtyCommand::new(shell))
+    let mut cmd = PtyCommand::new(&shell);
+    // A shell that does not resolve here is left to `PtyCommand` to reject at
+    // spawn with its own PATH search error; the inherited `SHELL` stays.
+    if let Ok(resolved) = resolve_shell_for_login_mode(&shell) {
+        cmd.env("SHELL", resolved);
+    }
+    Ok(cmd)
 }
 
 fn usable_reported_cwd(cwd: std::path::PathBuf) -> Option<std::path::PathBuf> {
@@ -1061,18 +1075,32 @@ fn publish_reported_cwd(
     let Some(cwd) = usable_reported_cwd(cwd) else {
         return;
     };
-    if let Ok(mut current) = reported_cwd.lock() {
-        if current.as_ref() == Some(&cwd) {
-            return;
-        }
-        *current = Some(cwd.clone());
+    if reported_cwd
+        .lock()
+        .is_ok_and(|current| current.as_ref() == Some(&cwd))
+    {
+        return;
     }
-    if let Err(err) = events.try_send(AppEvent::TerminalCwdReported { pane_id, cwd }) {
-        warn!(
-            pane = pane_id.raw(),
-            err = %err,
-            "failed to send terminal cwd report"
-        );
+    // The dedupe slot is updated only once the event is queued: if the shared
+    // channel is full, the next identical OSC 7 must retry instead of being
+    // swallowed as a duplicate of a report AppState never saw. Only the PTY
+    // reader thread publishes for a pane, so check-then-store does not race.
+    match events.try_send(AppEvent::TerminalCwdReported {
+        pane_id,
+        cwd: cwd.clone(),
+    }) {
+        Ok(()) => {
+            if let Ok(mut current) = reported_cwd.lock() {
+                *current = Some(cwd);
+            }
+        }
+        Err(err) => {
+            warn!(
+                pane = pane_id.raw(),
+                err = %err,
+                "failed to send terminal cwd report"
+            );
+        }
     }
 }
 
@@ -2488,6 +2516,7 @@ mod tests {
     #[test]
     fn pane_launch_env_removes_outer_agent_identity() {
         let keys = [
+            "SHEPR_AGENT",
             "CODEX_THREAD_ID",
             "OMPCODE",
             "CLAUDECODE",
@@ -2594,6 +2623,46 @@ mod tests {
         std::fs::remove_dir(&cwd).expect("remove reported cwd after admission");
 
         assert_eq!(runtime.cwd(), Some(cwd));
+    }
+
+    #[tokio::test]
+    async fn dropped_cwd_report_is_resent_on_the_next_identical_report() {
+        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        let (events, mut event_rx) = mpsc::channel(1);
+        let cwd = std::env::temp_dir();
+        let other = std::path::PathBuf::from("/");
+        // Fill the channel so the first cwd report cannot be queued.
+        events
+            .try_send(AppEvent::TerminalCwdReported {
+                pane_id: runtime.pane_id,
+                cwd: other,
+            })
+            .expect("test precondition");
+
+        publish_reported_cwd(runtime.pane_id, cwd.clone(), &runtime.reported_cwd, &events);
+        assert!(
+            runtime
+                .reported_cwd
+                .lock()
+                .expect("test precondition")
+                .is_none(),
+            "an unsent report must not occupy the dedupe slot"
+        );
+
+        let _ = event_rx.recv().await.expect("drain filler event");
+        publish_reported_cwd(runtime.pane_id, cwd.clone(), &runtime.reported_cwd, &events);
+        let Ok(AppEvent::TerminalCwdReported { cwd: sent, .. }) = event_rx.try_recv() else {
+            panic!("expected the retried cwd report");
+        };
+        assert_eq!(sent, cwd);
+        assert_eq!(
+            runtime
+                .reported_cwd
+                .lock()
+                .expect("test precondition")
+                .as_ref(),
+            Some(&cwd)
+        );
     }
 
     #[test]
@@ -2816,6 +2885,21 @@ mod tests {
         .expect("test precondition");
         assert!(!cmd.is_login_shell());
         assert_eq!(cmd.argv(), &[std::ffi::OsString::from("/bin/sh")]);
+    }
+
+    #[test]
+    fn non_login_shell_builder_exports_the_configured_shell() {
+        for mode in [
+            crate::config::ShellModeConfig::Auto,
+            crate::config::ShellModeConfig::NonLogin,
+        ] {
+            let cmd = pane_shell_command_builder(PaneShellConfig::new("/bin/sh", mode))
+                .expect("test precondition");
+            assert_eq!(
+                cmd.get_env("SHELL").and_then(std::ffi::OsStr::to_str),
+                Some("/bin/sh")
+            );
+        }
     }
 
     #[test]

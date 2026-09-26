@@ -15,6 +15,7 @@ mod attach;
 mod clipboard_forwarding;
 pub(crate) mod endpoint;
 mod endpoint_commands;
+mod endpoint_selection;
 mod errors;
 mod events;
 mod frame_output;
@@ -74,7 +75,7 @@ use terminal_setup::{
 
 use attach::AttachEscapeState;
 use attach::direct_attach_pixel_mouse;
-use attach::{AttachInputAction, write_attach_semantic_action};
+use attach::{AttachInputAction, attach_semantic_message};
 pub use errors::ClientError;
 #[cfg(test)]
 use handshake::{REMOTE_HANDSHAKE_READ_TIMEOUT, handshake_read_timeout};
@@ -495,10 +496,23 @@ async fn run_client_loop(
     let mut next_surface_serial = 1_u64;
     let mut pending_activation: Option<endpoint::PendingEndpointActivation> = None;
     let mut scheduled_activation = None;
+    let mut selection = endpoint_selection::EndpointSelectionTracker::new(&endpoint_catalog);
 
     // Main event loop.
     let mut client_timer = timer::ClientLoopTimer::new();
     while !should_quit.load(Ordering::Acquire) {
+        // Handoffs finish or roll back in many places; judge the requested selection once
+        // nothing is in flight, so a rolled-back target neither stays selected nor persists.
+        selection.settle_and_persist(
+            &mut endpoint_catalog,
+            pending_activation.is_some()
+                || state.deferred_local_activation.is_some()
+                || scheduled_activation.is_some(),
+            write_stream.active_id(),
+            write_stream
+                .connection(write_stream.active_id())
+                .is_some_and(|connection| connection.surface_active),
+        );
         if let Some(shell) = state.shell.as_ref() {
             supervisors.spawn_due(
                 std::time::Instant::now(),
@@ -581,34 +595,25 @@ async fn run_client_loop(
                         state.mouse_scroll_lines,
                     ) {
                         AttachInputAction::Forward(data) => data,
+                        // Registry sends cannot fail here: a failed write is recorded against
+                        // its endpoint and the timer's `take_failures` pass ends a
+                        // non-federated client whose Local connection broke.
                         AttachInputAction::ForwardPair(first, second) => {
                             for data in [first, second] {
-                                if let Err(e) = write_to_server(
-                                    &mut write_stream,
-                                    &ClientMessage::Input { data },
-                                ) {
-                                    return Err(ClientError::ConnectionLost(e));
-                                }
+                                attach::forward_input(&mut write_stream, &data);
                             }
                             continue;
                         }
                         AttachInputAction::Semantic(action) => {
-                            if let Err(e) = write_attach_semantic_action(&mut write_stream, action)
-                            {
-                                return Err(ClientError::ConnectionLost(e));
+                            if let Some(message) = attach_semantic_message(action) {
+                                write_stream.send(&message);
                             }
                             continue;
                         }
                         AttachInputAction::ForwardThenSemantic(prefix, action) => {
-                            if let Err(e) = write_to_server(
-                                &mut write_stream,
-                                &ClientMessage::Input { data: prefix },
-                            ) {
-                                return Err(ClientError::ConnectionLost(e));
-                            }
-                            if let Err(e) = write_attach_semantic_action(&mut write_stream, action)
-                            {
-                                return Err(ClientError::ConnectionLost(e));
+                            attach::forward_input(&mut write_stream, &prefix);
+                            if let Some(message) = attach_semantic_message(action) {
+                                write_stream.send(&message);
                             }
                             continue;
                         }
@@ -637,10 +642,7 @@ async fn run_client_loop(
                     }
                     data
                 };
-                let msg = ClientMessage::Input { data };
-                if let Err(e) = write_to_server(&mut write_stream, &msg) {
-                    return Err(ClientError::ConnectionLost(e));
-                }
+                attach::forward_input(&mut write_stream, &data);
             }
             ClientLoopEvent::PixelMouse(data, geometry) => {
                 if state.shell.is_some() {
@@ -667,13 +669,8 @@ async fn run_client_loop(
                     continue;
                 }
                 if let Some(attach_escape) = state.attach_escape.as_mut() {
-                    if let Some(prefix) = attach_escape.take_pending_prefix()
-                        && let Err(err) = write_to_server(
-                            &mut write_stream,
-                            &ClientMessage::Input { data: prefix },
-                        )
-                    {
-                        return Err(ClientError::ConnectionLost(err));
+                    if let Some(prefix) = attach_escape.take_pending_prefix() {
+                        attach::forward_input(&mut write_stream, &prefix);
                     }
                     if let Some((kind, position, modifiers)) =
                         direct_attach_pixel_mouse(&data, geometry)
@@ -691,9 +688,7 @@ async fn run_client_loop(
                             lines: u16::try_from(state.mouse_scroll_lines.max(1))
                                 .unwrap_or(u16::MAX),
                         };
-                        if let Err(err) = write_to_server(&mut write_stream, &message) {
-                            return Err(ClientError::ConnectionLost(err));
-                        }
+                        write_stream.send(&message);
                     }
                 }
             }
@@ -755,8 +750,9 @@ async fn run_client_loop(
                             false,
                         );
                     }
-                } else if let Err(e) = write_to_server(&mut write_stream, &msg) {
-                    return Err(ClientError::ConnectionLost(e));
+                } else {
+                    // A failed send surfaces through the registry's failure list.
+                    write_stream.send(&msg);
                 }
             }
             ClientLoopEvent::EndpointSupervisor(event) => match event {
@@ -842,11 +838,12 @@ async fn run_client_loop(
                 target,
                 force,
             } => {
-                if !endpoint_catalog.select_endpoint(&endpoint_id) {
+                let generation = write_stream
+                    .connection(&endpoint_id)
+                    .map(|connection| connection.generation);
+                // Persisting waits for the handoff to commit; see `endpoint_selection`.
+                if !selection.begin(&mut endpoint_catalog, &endpoint_id, generation) {
                     continue;
-                }
-                if let Err(error) = endpoint_catalog.store_selection() {
-                    warn!(%error, "failed to persist desired endpoint selection");
                 }
                 begin_endpoint_activation(
                     &mut state,
@@ -1056,16 +1053,14 @@ async fn run_client_loop(
                         if request_id.starts_with("client-shell-surface:") {
                             continue;
                         }
-                        let completed = endpoint_commands
-                            .receive_chunk(
-                                &endpoint_id,
-                                generation,
-                                &boot_id,
-                                &request_id,
-                                final_chunk,
-                                data,
-                            )
-                            .map_err(ClientError::ConnectionLost)?;
+                        let completed = endpoint_commands.receive_chunk(
+                            &endpoint_id,
+                            generation,
+                            &boot_id,
+                            &request_id,
+                            final_chunk,
+                            data,
+                        );
                         let Some(completed) = completed else {
                             continue;
                         };
@@ -1270,11 +1265,18 @@ async fn run_client_loop(
                                     .is_some_and(|connection| connection.surface_active)
                                     || shell.endpoint_boot_id(write_stream.active_id()).is_some())
                         });
-                        let needs_surface = write_stream
-                            .connection(&selected_endpoint)
+                        let selected_connection = write_stream.connection(&selected_endpoint);
+                        let needs_surface = selected_connection
                             .is_some_and(|connection| !connection.surface_active);
+                        // A handoff to this connection already failed; retrying it on every
+                        // snapshot would freeze input and roll back again each time.
+                        let retry_suppressed = selection.suppresses(
+                            &selected_endpoint,
+                            selected_connection.map(|connection| connection.generation),
+                        );
                         if activation_ready
                             && needs_surface
+                            && !retry_suppressed
                             && pending_activation.is_none()
                             && state.deferred_local_activation.is_none()
                         {

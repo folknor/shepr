@@ -4,7 +4,16 @@ use std::path::PathBuf;
 use super::attach::{RemoteSsh, SshStdioBridge, find_installed_remote_shepr};
 
 pub(crate) struct SavedSshBridge {
-    _bridge: SshStdioBridge,
+    bridge: SshStdioBridge,
+}
+
+impl SavedSshBridge {
+    /// The SSH failure behind a connection that closed early, if the bridge reported one
+    /// (waits briefly for the bridge thread). SSH stderr otherwise only reaches the log,
+    /// and the caller would see a bare end of stream.
+    pub(crate) fn reported_failure(&self) -> Option<io::Error> {
+        self.bridge.reported_failure()
+    }
 }
 
 pub(crate) struct SavedSshStream {
@@ -36,7 +45,7 @@ pub(crate) fn connect_saved_ssh(
     }
     Ok(SavedSshStream {
         stream,
-        bridge: SavedSshBridge { _bridge: bridge },
+        bridge: SavedSshBridge { bridge },
     })
 }
 
@@ -139,7 +148,9 @@ pub(crate) fn saved_ssh_failure_needs_attention(error: &io::Error) -> bool {
         "not ready",
         "install or update",
         "protocol",
-        "handshake",
+        // Only a rejection is a compatibility problem; a bare "handshake" also matched
+        // transient shutdowns that happened to occur mid-handshake.
+        "handshake rejected",
     ]
     .iter()
     .any(|needle| message.contains(needle))
@@ -210,6 +221,10 @@ mod tests {
         assert!(!saved_ssh_failure_needs_attention(&io::Error::new(
             io::ErrorKind::TimedOut,
             "network timed out"
+        )));
+        assert!(!saved_ssh_failure_needs_attention(&io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "server shut down during handshake"
         )));
     }
 }

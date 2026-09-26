@@ -175,7 +175,7 @@ pub(crate) fn install_codex() -> io::Result<CodexInstallPaths> {
     } else {
         String::new()
     };
-    let new_config = build_codex_config_with_hooks(&existing_config);
+    let new_config = build_codex_config_with_hooks(&existing_config)?;
     if new_config != existing_config {
         write_config(&config_path, new_config)?;
     }
@@ -201,16 +201,19 @@ pub(crate) fn install_kimi() -> io::Result<KimiInstallPaths> {
     fs::create_dir_all(&hooks_dir)?;
 
     let hook_path = hooks_dir.join(KIMI_HOOK_INSTALL_NAME);
-    fs::write(&hook_path, KIMI_HOOK_ASSET)?;
-    make_executable(&hook_path)?;
-
     let config_path = dir.join("config.toml");
     let existing_config = if config_path.is_file() {
         fs::read_to_string(&config_path)?
     } else {
         String::new()
     };
-    let new_config = build_kimi_config_with_hooks(&existing_config, &hook_path);
+    // Build the new config before touching the hook so a config that cannot
+    // be edited safely leaves nothing installed.
+    let new_config = build_kimi_config_with_hooks(&existing_config, &hook_path)?;
+
+    fs::write(&hook_path, KIMI_HOOK_ASSET)?;
+    make_executable(&hook_path)?;
+
     if new_config != existing_config {
         write_config(&config_path, new_config)?;
     }
@@ -569,7 +572,7 @@ pub(crate) fn uninstall_kimi() -> io::Result<KimiUninstallResult> {
 
     if config_path.is_file() {
         let existing_config = fs::read_to_string(&config_path)?;
-        let new_config = remove_kimi_config_block(&existing_config);
+        let new_config = remove_kimi_config_block(&existing_config)?;
         if new_config != existing_config {
             write_config(&config_path, new_config)?;
             updated_config = true;
@@ -905,102 +908,12 @@ pub(crate) fn install_qwen() -> io::Result<QwenInstallPaths> {
     })
 }
 
-fn letta_install_artifact_path(path: &Path, role: &str) -> io::Result<PathBuf> {
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| io::Error::other(format!("invalid install path: {}", path.display())))?;
-    let mut artifact_name = file_name.to_os_string();
-    artifact_name.push(format!(".shepr-install-{}-{role}", std::process::id()));
-    Ok(path.with_file_name(artifact_name))
-}
-
-pub(super) fn prepare_letta_install_file(
-    target: &Path,
-    contents: &[u8],
-    executable: bool,
-    preserve_permissions: bool,
-) -> io::Result<(PathBuf, PathBuf)> {
-    if target.try_exists()? && !target.is_file() {
-        return Err(io::Error::other(format!(
-            "install target is not a file: {}",
-            target.display()
-        )));
-    }
-
-    let staged = letta_install_artifact_path(target, "staged")?;
-    let backup = letta_install_artifact_path(target, "backup")?;
-    if staged.try_exists()? || backup.try_exists()? {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("stale install artifact exists for {}", target.display()),
-        ));
-    }
-
-    let prepare_result = (|| {
-        fs::write(&staged, contents)?;
-        if preserve_permissions && target.is_file() {
-            fs::set_permissions(&staged, fs::metadata(target)?.permissions())?;
-        }
-        if executable {
-            make_executable(&staged)?;
-        }
-        Ok(())
-    })();
-    if let Err(err) = prepare_result {
-        let _ = remove_file_if_exists(&staged);
-        return Err(err);
-    }
-
-    Ok((staged, backup))
-}
-
-fn combine_letta_install_errors(primary: io::Error, rollback: io::Result<()>) -> io::Error {
-    match rollback {
-        Ok(()) => primary,
-        Err(rollback_err) => io::Error::new(
-            primary.kind(),
-            format!("{primary}; rollback failed: {rollback_err}"),
-        ),
-    }
-}
-
-pub(super) fn publish_letta_install_file(
-    target: &Path,
-    staged: &Path,
-    backup: &Path,
-) -> io::Result<bool> {
-    let had_original = target.try_exists()?;
-    if had_original {
-        fs::rename(target, backup)?;
-    }
-
-    if let Err(err) = fs::rename(staged, target) {
-        let rollback = if had_original {
-            fs::rename(backup, target)
-        } else {
-            Ok(())
-        };
-        return Err(combine_letta_install_errors(err, rollback));
-    }
-
-    Ok(had_original)
-}
-
-pub(super) fn rollback_letta_install_file(
-    target: &Path,
-    backup: &Path,
-    had_original: bool,
-) -> io::Result<()> {
-    remove_file_if_exists(target)?;
-    if had_original {
-        fs::rename(backup, target)?;
-    }
-    Ok(())
-}
-
-fn cleanup_letta_install_artifact(path: &Path) {
-    if let Err(err) = remove_file_if_exists(path) {
-        tracing::warn!(path = %path.display(), %err, "failed to remove Letta install artifact");
+/// Put a managed hook script back the way it was before a failed install:
+/// rewrite its previous contents, or remove it if the install created it.
+fn restore_letta_hook(hook_path: &Path, previous: Option<&[u8]>) -> io::Result<()> {
+    match previous {
+        Some(contents) => fs::write(hook_path, contents),
+        None => remove_file_if_exists(hook_path).map(|_| ()),
     }
 }
 
@@ -1024,6 +937,7 @@ fn ensure_letta_session_hook(hooks: &mut Map<String, Value>, command: &str) -> i
 
 pub(crate) fn install_letta() -> io::Result<LettaInstallPaths> {
     let dir = letta_dir()?;
+    check_config_targets(&dir, &["settings.json"])?;
     if !dir.is_dir() {
         return Err(io::Error::other(format!(
             "letta code config directory not found at {}. install letta code first",
@@ -1057,47 +971,33 @@ pub(crate) fn install_letta() -> io::Result<LettaInstallPaths> {
     remove_hook_commands(hooks, "SessionStart", &hook_path, Some("session"))?;
     ensure_letta_session_hook(hooks, &hook_command(&hook_path, Some("session")))?;
 
+    // Settings are parsed and edited before anything is written, so a
+    // malformed settings file leaves no hook behind. The settings file is
+    // user-owned config and goes through the protected writer (hard-link
+    // rejection, symlink targets kept, permissions preserved, atomic replace);
+    // the hook script is a managed asset and is written like every other one.
     let settings_contents = serde_json::to_string_pretty(&settings)?;
-    let (hook_staged, hook_backup) =
-        prepare_letta_install_file(&hook_path, LETTA_HOOK_ASSET.as_bytes(), true, false)?;
-    let (settings_staged, settings_backup) =
-        match prepare_letta_install_file(&settings_path, settings_contents.as_bytes(), false, true)
-        {
-            Ok(paths) => paths,
-            Err(err) => {
-                cleanup_letta_install_artifact(&hook_staged);
-                return Err(err);
-            }
-        };
-
-    let hook_had_original = match publish_letta_install_file(&hook_path, &hook_staged, &hook_backup)
-    {
-        Ok(had_original) => had_original,
-        Err(err) => {
-            cleanup_letta_install_artifact(&hook_staged);
-            cleanup_letta_install_artifact(&settings_staged);
-            return Err(err);
-        }
+    let previous_hook = match fs::read(&hook_path) {
+        Ok(contents) => Some(contents),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err),
     };
-
-    let settings_had_original =
-        match publish_letta_install_file(&settings_path, &settings_staged, &settings_backup) {
-            Ok(had_original) => had_original,
-            Err(err) => {
-                let err = combine_letta_install_errors(
-                    err,
-                    rollback_letta_install_file(&hook_path, &hook_backup, hook_had_original),
-                );
-                cleanup_letta_install_artifact(&settings_staged);
-                return Err(err);
-            }
-        };
-
-    if hook_had_original {
-        cleanup_letta_install_artifact(&hook_backup);
-    }
-    if settings_had_original {
-        cleanup_letta_install_artifact(&settings_backup);
+    let write_hook =
+        fs::write(&hook_path, LETTA_HOOK_ASSET).and_then(|()| make_executable(&hook_path));
+    let result = write_hook.and_then(|()| write_config(&settings_path, &settings_contents));
+    if let Err(err) = result {
+        return Err(
+            match restore_letta_hook(&hook_path, previous_hook.as_deref()) {
+                Ok(()) => err,
+                Err(rollback_err) => io::Error::new(
+                    err.kind(),
+                    format!(
+                        "{err}; restoring {} failed: {rollback_err}",
+                        hook_path.display()
+                    ),
+                ),
+            },
+        );
     }
 
     Ok(LettaInstallPaths {
@@ -1244,6 +1144,7 @@ pub(crate) fn uninstall_qwen() -> io::Result<QwenUninstallResult> {
 
 pub(crate) fn uninstall_letta() -> io::Result<LettaUninstallResult> {
     let dir = letta_dir()?;
+    check_config_targets(&dir, &["settings.json"])?;
     let hook_path = dir.join("hooks").join(LETTA_HOOK_INSTALL_NAME);
     let settings_path = dir.join("settings.json");
     let mut updated_settings = false;
@@ -1268,7 +1169,7 @@ pub(crate) fn uninstall_letta() -> io::Result<LettaUninstallResult> {
         }
 
         if updated_settings {
-            fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+            write_config(&settings_path, serde_json::to_string_pretty(&settings)?)?;
         }
     }
 

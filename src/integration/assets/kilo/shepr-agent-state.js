@@ -2,13 +2,29 @@
 // managed by shepr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // SHEPR_INTEGRATION_ID=kilo
-// SHEPR_INTEGRATION_VERSION=1
+// SHEPR_INTEGRATION_VERSION=2
 
 import net from "node:net";
 
 const SOURCE = "shepr:kilo";
 const AGENT = "kilo";
 let reportSeq = Date.now() * 1000;
+let requestChain = Promise.resolve();
+
+// Kilo is a full-lifecycle authority for its pane, so subagent (child)
+// sessions must not speak for the pane: their created/updated reports would
+// replace the resumable root session, and their idle would mark the pane idle
+// while the root is still working. Only a child's prompts for the user
+// (blocked) and the replies to them (working) are forwarded, attributed to
+// the root session.
+const childSessions = new Map();
+const CHILD_EVENT_STATES = new Map([
+  ["permission.asked", "blocked"],
+  ["question.asked", "blocked"],
+  ["permission.replied", "working"],
+  ["question.replied", "working"],
+  ["question.rejected", "working"],
+]);
 
 function nextReportSeq() {
   reportSeq += 1;
@@ -21,35 +37,50 @@ function sessionIDFromProperties(properties) {
     : undefined;
 }
 
-function stateFromSessionStatus(status) {
-  if (typeof status !== "string") {
-    return undefined;
+function rootSessionOf(sessionID) {
+  let rootSessionID = sessionID;
+  const seen = new Set();
+  while (childSessions.has(rootSessionID) && !seen.has(rootSessionID)) {
+    seen.add(rootSessionID);
+    rootSessionID = childSessions.get(rootSessionID);
   }
-  switch (status.toLowerCase()) {
-    case "idle":
-      return "idle";
-    case "active":
-    case "busy":
-    case "pending":
-    case "running":
-    case "streaming":
-    case "working":
-      return "working";
-    default:
-      return undefined;
-  }
+  return rootSessionID;
 }
 
+const SESSION_STATE_BY_STATUS = new Map([
+  ["idle", "idle"],
+  ["active", "working"],
+  ["busy", "working"],
+  ["pending", "working"],
+  ["retry", "working"],
+  ["running", "working"],
+  ["streaming", "working"],
+  ["working", "working"],
+]);
+
+// Status arrives either as a bare string or as an object such as
+// `{ type: "busy" }` / `{ type: "retry", ... }`.
+function stateFromSessionStatus(status) {
+  const kind = typeof status === "string" ? status : status?.type;
+  return typeof kind === "string"
+    ? SESSION_STATE_BY_STATUS.get(kind.toLowerCase())
+    : undefined;
+}
+
+// Reports go out one at a time so they reach shepr in sequence order.
 function request(method, params) {
+  const pending = requestChain.then(() => requestOnce(method, params));
+  requestChain = pending.catch(() => {});
+  return pending;
+}
+
+function requestOnce(method, params) {
   const paneId = process.env.SHEPR_PANE_ID;
   const socketPath = process.env.SHEPR_SOCKET_PATH;
 
   if (!paneId || !socketPath) {
     return Promise.resolve();
   }
-
-  const socketEndpoint =
-    process.platform === "win32" ? `\\\\.\\pipe\\${socketPath}` : socketPath;
 
   const requestId = `${SOURCE}:${Date.now()}:${Math.floor(Math.random() * 1_000_000)
     .toString()
@@ -67,7 +98,7 @@ function request(method, params) {
   };
 
   return new Promise((resolve) => {
-    const client = net.createConnection(socketEndpoint, () => {
+    const client = net.createConnection(socketPath, () => {
       client.write(`${JSON.stringify(request)}\n`);
     });
 
@@ -113,12 +144,27 @@ export const SheprAgentStatePlugin = async () => {
 
   return {
     "chat.message": async ({ sessionID }) => {
+      if (sessionID && childSessions.has(sessionID)) {
+        return;
+      }
       await reportState("working", sessionID);
     },
     event: async ({ event }) => {
       const type = event?.type;
       const properties = event?.properties ?? {};
       const sessionID = sessionIDFromProperties(properties);
+
+      const info = properties.info;
+      if (typeof info?.id === "string" && info.id && typeof info.parentID === "string" && info.parentID) {
+        childSessions.set(info.id, info.parentID);
+      }
+      if (sessionID && childSessions.has(sessionID)) {
+        const state = CHILD_EVENT_STATES.get(type);
+        if (state) {
+          await reportState(state, rootSessionOf(sessionID));
+        }
+        return;
+      }
 
       switch (type) {
         case "session.created":

@@ -22,32 +22,31 @@ impl Drop for TargetScope {
     }
 }
 
-pub(super) fn maybe_run(args: &[String]) -> Option<io::Result<super::CommandOutcome>> {
-    let (selector, args) = match parse_machine_prefix(args) {
-        Ok(Some(target)) => target,
-        Ok(None) => return None,
-        Err(error) => return Some(usage_error(&error)),
+/// Runs `command` (the subcommand parsed after `--machine <selector>`) against
+/// the saved machine. The spec already rejects `--machine` combined with other
+/// launch options.
+pub(super) fn run_on_machine(
+    selector: &str,
+    command: Option<(&str, &clap::ArgMatches)>,
+) -> io::Result<super::CommandOutcome> {
+    let Some((name, matches)) = command else {
+        return usage_error("usage: shepr --machine <label-or-id> <command>");
     };
-    Some((|| {
-        if let Err(error) = validate_machine_command(&args) {
-            return usage_error(&error);
-        }
-        if super::spec::print_requested_help(&args)? {
-            return Ok(super::CommandOutcome::Handled(0));
-        }
-        let profiles = EndpointCatalog::load_profiles().map_err(io::Error::other)?;
-        let profile = match resolve_machine(&profiles, &selector) {
-            Ok(profile) => profile.clone(),
-            Err(error) => return usage_error(&error),
-        };
-        let _scope = TARGET.with(|target| {
-            TargetScope(target.replace(Some(MachineTarget {
-                profile,
-                bridge: None,
-            })))
-        });
-        super::maybe_run(&args)
-    })())
+    if let Err(error) = validate_machine_command(name, matches) {
+        return usage_error(&error);
+    }
+    let profiles = EndpointCatalog::load_profiles().map_err(io::Error::other)?;
+    let profile = match resolve_machine(&profiles, selector) {
+        Ok(profile) => profile.clone(),
+        Err(error) => return usage_error(&error),
+    };
+    let _scope = TARGET.with(|target| {
+        TargetScope(target.replace(Some(MachineTarget {
+            profile,
+            bridge: None,
+        })))
+    });
+    super::dispatch(name, matches)
 }
 
 fn usage_error(error: &str) -> io::Result<super::CommandOutcome> {
@@ -191,54 +190,6 @@ pub(super) fn caller_pane_id() -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
-fn parse_machine_prefix(args: &[String]) -> Result<Option<(String, Vec<String>)>, String> {
-    let mut index = 1;
-    let mut machine = None;
-    let mut other_prefix = false;
-    while let Some(arg) = args.get(index) {
-        if arg == "--machine" || arg.starts_with("--machine=") {
-            if machine.is_some() {
-                return Err("--machine can only be specified once".into());
-            }
-            let value = if let Some(value) = arg.strip_prefix("--machine=") {
-                value.to_owned()
-            } else {
-                index += 1;
-                args.get(index)
-                    .cloned()
-                    .ok_or("missing value for --machine")?
-            };
-            if value.trim().is_empty() || value.starts_with('-') {
-                return Err("--machine requires a saved machine label or profile ID".into());
-            }
-            machine = Some(value);
-        } else if arg.starts_with('-') && arg != "--" {
-            other_prefix = true;
-            if matches!(
-                arg.as_str(),
-                "--session" | "--remote" | "--remote-keybindings"
-            ) {
-                index += 1;
-            }
-        } else {
-            break;
-        }
-        index += 1;
-    }
-    let Some(machine) = machine else {
-        return Ok(None);
-    };
-    if other_prefix {
-        return Err("--machine cannot be combined with other launch options; it uses the saved machine's session".into());
-    }
-    if index >= args.len() || args[index] == "--" {
-        return Err("usage: shepr --machine <label-or-id> <command>".into());
-    }
-    let mut cleaned = vec![args[0].clone()];
-    cleaned.extend_from_slice(&args[index..]);
-    Ok(Some((machine, cleaned)))
-}
-
 pub(super) fn resolve_machine<'a>(
     profiles: &'a [SavedSshEndpoint],
     selector: &str,
@@ -266,19 +217,17 @@ pub(super) fn resolve_machine<'a>(
     Ok(profile)
 }
 
-fn validate_machine_command(args: &[String]) -> Result<(), String> {
-    let command = args.get(1).map(String::as_str).unwrap_or_default();
-    let subcommand = args.get(2).map(String::as_str).unwrap_or_default();
+/// Only commands that are pure API requests may run against a saved machine:
+/// no local side effects (config, sessions, integrations, machine catalog), no
+/// TUI or terminal attach, and no local file evaluation (`agent explain --file`).
+fn validate_machine_command(command: &str, matches: &clap::ArgMatches) -> Result<(), String> {
+    let (subcommand, local_file) = match matches.subcommand() {
+        Some((name, sub_matches)) => (name, super::matches::string(sub_matches, "file").is_some()),
+        None => ("", false),
+    };
     let supported = match command {
         "workspace" | "tab" | "pane" => true,
-        "agent" => {
-            subcommand != "attach"
-                && !(subcommand == "explain"
-                    && args[3..]
-                        .iter()
-                        .any(|arg| arg == "--file" || arg.starts_with("--file=")))
-        }
-        "api" => subcommand == "snapshot",
+        "agent" => subcommand != "attach" && !(subcommand == "explain" && local_file),
         "status" => subcommand == "server",
         "server" => matches!(
             subcommand,
@@ -299,83 +248,55 @@ fn validate_machine_command(args: &[String]) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn args(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).into()).collect()
+    fn parse(values: &[&str]) -> Result<clap::ArgMatches, clap::Error> {
+        let mut argv = vec!["shepr"];
+        argv.extend_from_slice(values);
+        super::super::spec::command().try_get_matches_from(argv)
     }
 
     #[test]
     fn machine_prefix_routes_without_consuming_command_payload() {
-        for prefix in [args(&["--machine", "mac"]), args(&["--machine=mac"])] {
-            let mut input = args(&["shepr"]);
-            input.extend(prefix);
-            input.extend(args(&["agent", "prompt", "w4:p1", "--machine"]));
+        for prefix in [&["--machine", "mac"][..], &["--machine=mac"]] {
+            let mut input = prefix.to_vec();
+            input.extend_from_slice(&["agent", "prompt", "w4:p1", "--machine"]);
+            let matches = parse(&input).expect("test precondition");
             assert_eq!(
-                parse_machine_prefix(&input).expect("test precondition"),
-                Some((
-                    "mac".into(),
-                    args(&["shepr", "agent", "prompt", "w4:p1", "--machine"])
-                ))
+                super::super::matches::string(&matches, "machine").as_deref(),
+                Some("mac")
             );
+            let Some(("agent", agent)) = matches.subcommand() else {
+                panic!("agent command did not parse");
+            };
+            let Some(("prompt", prompt)) = agent.subcommand() else {
+                panic!("agent prompt did not parse");
+            };
+            assert_eq!(super::super::matches::required(prompt, "text"), "--machine");
         }
-        assert_eq!(
-            parse_machine_prefix(&args(&[
-                "shepr",
-                "agent",
-                "prompt",
-                "w4:p1",
-                "--machine=mac"
-            ]))
-            .expect("test precondition"),
-            None
-        );
+
+        let matches =
+            parse(&["agent", "prompt", "w4:p1", "--machine=mac"]).expect("test precondition");
+        assert_eq!(super::super::matches::string(&matches, "machine"), None);
     }
 
     #[test]
     fn machine_prefix_rejects_missing_target_and_conflicting_global_options() {
         for input in [
-            args(&["shepr", "--machine"]),
-            args(&["shepr", "--machine="]),
-            args(&["shepr", "--machine", "--help"]),
-            args(&["shepr", "--machine", "mac"]),
-            args(&[
-                "shepr",
-                "--machine",
-                "mac",
-                "--machine",
-                "other",
-                "agent",
-                "list",
-            ]),
-            args(&[
-                "shepr",
-                "--machine",
-                "mac",
-                "--session",
-                "other",
-                "agent",
-                "list",
-            ]),
-            args(&[
-                "shepr",
-                "--session",
-                "other",
-                "--machine",
-                "mac",
-                "agent",
-                "list",
-            ]),
-            args(&[
-                "shepr",
-                "--remote",
-                "other",
-                "--machine",
-                "mac",
-                "agent",
-                "list",
-            ]),
+            &["--machine"][..],
+            &["--machine="],
+            &["--machine", "--help"],
+            &["--machine", "mac", "--machine", "other", "agent", "list"],
+            &["--machine", "mac", "--session", "other", "agent", "list"],
+            &["--session", "other", "--machine", "mac", "agent", "list"],
+            &["--remote", "other", "--machine", "mac", "agent", "list"],
+            &["--machine", "mac", "--version"],
         ] {
-            assert!(parse_machine_prefix(&input).is_err(), "{input:?}");
+            assert!(parse(input).is_err(), "{input:?}");
         }
+
+        // A machine with no command to run is a usage error before any
+        // catalog or network access.
+        let outcome = run_on_machine("mac", None).expect("test precondition");
+        assert!(matches!(outcome, super::super::CommandOutcome::Handled(2)));
     }
 
     #[test]
@@ -408,36 +329,64 @@ mod tests {
         assert!(resolve_machine(&[disabled], "mac").is_err());
     }
 
+    /// Whether `shepr --machine mac <command>` would reach the network: it
+    /// must parse, and then pass the API-only check.
+    fn machine_command_allowed(command: &[&str]) -> bool {
+        let mut input = vec!["--machine", "mac"];
+        input.extend_from_slice(command);
+        let Ok(matches) = parse(&input) else {
+            return false;
+        };
+        let Some((name, matches)) = matches.subcommand() else {
+            return false;
+        };
+        validate_machine_command(name, matches).is_ok()
+    }
+
     #[test]
     fn machine_commands_reject_local_side_effects_and_tui_attach() {
         for command in [
             &["update"][..],
             &["machine", "remove", "mac"],
             &["session", "delete", "default"],
+            &["session", "attach", "work"],
             &["agent", "attach", "w4:p1"],
+            &[
+                "agent",
+                "explain",
+                "--file",
+                "screen.txt",
+                "--agent",
+                "claude",
+            ],
             &["terminal", "attach", "w4:p1"],
             &["terminal", "session", "control", "w4:p1"],
             &["plugin", "install", "./plugin"],
             &["integration", "install", "pi"],
+            &["config", "check"],
             &["api", "schema", "--output", "schema.json"],
+            // There is no `api` command; this used to pass the check and then
+            // exit 0 without doing anything.
+            &["api", "snapshot"],
             &["status", "client"],
+            &["status"],
+            &["server"],
+            &["client"],
+            &["remote-api-bridge"],
         ] {
-            let mut input = args(&["shepr"]);
-            input.extend(args(command));
-            assert!(validate_machine_command(&input).is_err(), "{input:?}");
+            assert!(!machine_command_allowed(command), "{command:?}");
         }
         for command in [
             &["agent", "list"][..],
             &["agent", "wait", "w4:p1"],
+            &["agent", "explain", "w4:p1"],
             &["pane", "split", "w4:p1", "--direction", "right"],
             &["workspace", "list"],
             &["tab", "list"],
-            &["api", "snapshot"],
+            &["status", "server"],
             &["server", "stop"],
         ] {
-            let mut input = args(&["shepr"]);
-            input.extend(args(command));
-            assert!(validate_machine_command(&input).is_ok(), "{input:?}");
+            assert!(machine_command_allowed(command), "{command:?}");
         }
     }
 }

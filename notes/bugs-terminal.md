@@ -11,19 +11,6 @@
 4. Once all findings are resolved, the file gets deleted.
 ```
 
-## TERM-001 - A child's output can panic the pane's reader thread (pinned alacritty bug, reachable because kitty keyboard is on)
-
-- `research/alacritty/alacritty_terminal/src/term/mod.rs:1295-1301`, in `push_keyboard_mode`:
-  ```rust
-  if self.keyboard_mode_stack.len() >= KEYBOARD_MODE_STACK_MAX_DEPTH {
-      let removed = self.title_stack.remove(0);
-  ```
-- It removes from the **title** stack, not the keyboard stack.
-- `term_config` sets `kitty_keyboard: true` (`src/ghostty/mod.rs:426`).
-- So 4096 × `CSI > 1 u` with no title pushed (about 20 KB, e.g. `cat` of a file or a buggy app) panics with "removal index 0 < len 0". If titles were pushed, the keyboard stack grows without bound instead.
-- The panic happens inside `on_read` on the actor thread while it holds the core, `content_write_lock` and `response_order` mutexes. The thread dies, the master fd drops (the child gets SIGHUP) and every lock is poisoned. The pane goes silently dead; `on_reader_exit` is `None` in `src/pane.rs:1354`, so nothing reports it.
-- Suggested fix: intercept `push_keyboard_mode` in the adapter (see TERM-003).
-
 ## TERM-002 - Host-side state is injected through the child's parser mid-stream
 
 Surfaced in two scopes: terminal core, pane/terminal state.
@@ -50,14 +37,14 @@ Surfaced in two scopes: terminal core, pane/terminal state.
 - During a 2026 update, `Processor::advance` only buffers (`research/vte/src/ansi.rs:298-387`). The scanner's events are still applied immediately (`mod.rs:582-593`), so:
   - **Reply order:** XTGETTCAP, `CSI 16 t`, `?996n` and 2048 reports go out before DA/DSR/DECRQM replies that came earlier in the frame.
   - **Mode order:** RIS resets `ExtraModes` before alacritty's RIS runs. Example: `BSU ?1000h ?9h ESU` leaves X10 on and 1000 set, so `encode_mouse_event` picks PressRelease.
-- Structural fix suggested: wrap `Term` in a `Handler` that delegates everything and intercepts what vte already dispatches in byte order and sync-aware:
+- Structural fix: the wrapper now exists. `CoreHandler` (`src/ghostty/handler.rs`) sits between vte and `Term`, delegates every `Handler` method, and already intercepts `push_keyboard_mode` / `pop_keyboard_modes` / `reset_state` to bound the keyboard-mode stack. Still to move into it from the scanner, so they are dispatched in byte order and sync-aware:
   - `set_private_mode` / `unset_private_mode` for `Unknown(9|1016|2031|2048)`;
   - `report_private_mode`, which replaces the string-parsing `filter_core_reply`;
-  - `reset_state`;
+  - RIS handling of `ExtraModes` in `reset_state`;
   - `set_modify_other_keys` / `report_modify_other_keys`;
-  - `push_keyboard_mode` (fixes TERM-001);
   - `input(c)` for U+FF9E/U+FF9F. This removes `held_utf8`, `voiced_mark_prefix_len` and `input_halfwidth_voiced_mark`, and fixes the documented "mark folds inside sync" gap.
 - After that, the scanner is only needed for OSC 7/9;9/1337, `CSI ?996n`, `CSI 16 t`, XTGETTCAP and `CSI ?3J`.
+- `input_halfwidth_voiced_mark` and `apply_private_mode` still call `self.term` directly, bypassing `CoreHandler`. Harmless today, but any future direct `reset_state` or `push_keyboard_mode` on `self.term` would desync the tracked keyboard depth; moving them into the handler removes the trap.
 
 ## TERM-004 - Effects of a timed-out sync flush on non-read paths are stranded or dropped
 
@@ -89,14 +76,6 @@ Surfaced in three scopes: terminal core, CLI/config, platform.
 - Any stray `0x90` (binary or Latin-1 output) puts the scanner into DCS state until the next ESC.
 - Both the scan.rs module-doc claim that the scanner agrees with the core about framing and the comment "the core ignores it" are false.
 
-## TERM-008 - Panes get the wrong `$SHELL`
-
-Surfaced in two scopes: terminal core, pane/terminal state.
-
-- `PtyCommand::to_std_command` overwrites the resolved `SHELL` (`pty/command.rs:143-145`): `cmd.env("SHELL", shell)` is followed by `cmd.envs(&self.envs)`, and `envs` always contains the seeded `SHELL`. The child never sees the executable/passwd fallback that `shell()` computes.
-- `pane_shell_command_builder` (pane.rs:1041) sets `SHELL` only in Login mode. In Auto/NonLogin mode the configured `default_shell` runs, but `to_std_command` exports the server's `SHELL` (`pty/command.rs:144`).
-- Anything in the pane that spawns `$SHELL`, including agents' shell tools, gets a different shell than the pane.
-
 ## TERM-009 - Possible u16 overflow in the `CSI 14 t` reply
 
 - `TextAreaSizeRequest` saturates the cell sizes to u16 separately, but alacritty's closure then multiplies `num_lines * cell_height` in u16 (`term/mod.rs:2261`).
@@ -112,11 +91,6 @@ Surfaced in two scopes: terminal core, pane/terminal state.
 
 - `terminal_effects.rs`: it strips only ESC, BEL and U+009C.
 - CAN/SUB, CR/LF and other UTF-8-encoded C1s (e.g. U+009B, U+0090) pass through to the host. Titles can include cwd/branch text.
-
-## TERM-012 - Actor write errors lose the child's last output
-
-- `pty/actor.rs:369-376`: pending writes are flushed before poll/read, and a write error breaks the loop immediately.
-- If the child exits while replies or keystrokes are queued, its last buffered output is never read.
 
 ## TERM-013 - Per-cell allocation and whole-scrollback copies under the terminal lock
 
@@ -154,19 +128,6 @@ Surfaced in two scopes: pane/terminal state, client UI.
   - This hits exactly the long-running, busy agent panes the tool is for.
 - Suggested fix: have the adapter expose a monotonic count of evicted lines (total lines ever scrolled plus the viewport row), so row ids are absolute and never shift.
 
-## TERM-016 - The OSC 7 cwd from standard shell integrations is always rejected
-
-- `parse_file_uri_cwd` (`pane/osc.rs:639`) accepts only an empty host or `localhost`.
-- bash, zsh and fish integrations (vte.sh and similar) send `file://$HOSTNAME/path`, and that is rejected.
-- So the reported cwd only ever comes from hand-written `file:///…`, and "follow cwd" / workspace identity fall back to `/proc` guessing.
-- The test at osc.rs:944 only covers a foreign host. Nothing tests the machine's own hostname.
-
-## TERM-017 - A dropped cwd report is never re-sent
-
-- `publish_reported_cwd` (pane.rs:1055) stores the new cwd in its dedupe slot and then calls `events.try_send`.
-- If the shared bounded AppEvent channel is full, the event is lost. Every later identical OSC 7 then hits `current == Some(&cwd)` and returns early.
-- AppState keeps the old cwd until the directory changes again. Fix: update the dedupe state only after a successful send.
-
 ## TERM-018 - After a session restore, the first new prompt is glued onto the last restored line
 
 - `snapshot_history` goes through `format_range` with `trim = true` (`ghostty/format.rs:170`), so the saved ANSI has no trailing CRLF.
@@ -198,12 +159,6 @@ Surfaced in two scopes: pane/terminal state, detection/integrations.
 - After ED2 or Ctrl-L, or an agent redrawing from the top, alacritty's `clear_viewport` has pushed the old screen into history. The detector then gets mostly the pre-clear frame, for example a stale "proceed?" blocker.
 - This breaks the AGENTS.md claim that the detector reads a screen snapshot.
 - Related: `finish_recent_snapshot` reports `truncated: total_rows > lines` even when nothing was cut, because trailing blank rows are counted. The correct test is `start > 0`.
-
-## TERM-022 - `unwrapped_text` drops spaces at wrap boundaries
-
-- `terminal/history_read.rs:193` trims soft-wrapped rows, so "hello world" wrapped at the space becomes "helloworld".
-- The test at history_read.rs:541 asserts this result. It also disagrees with `format.rs`, which joins wrapped rows correctly.
-- Fix suggested: don't trim soft-wrapped rows, and skip SpacerHead cells instead.
 
 ## TERM-023 - Pane hot-path costs
 
@@ -239,3 +194,12 @@ Surfaced in two scopes: pane/terminal state, detection/integrations.
 ## TERM-029 - The dirty-row patch path can drift
 
 - `collect_dirty_patch` sets the global dirty state to Clean but leaves rows at or below `area_height` flagged dirty, and both `render()` and patch collection consume the same `RenderState` dirty set.
+
+## TERM-030 - A panic on a pane's reader thread kills the pane silently
+
+- Any panic inside the terminal core runs on the PTY actor thread while it holds the core, `content_write_lock` and `response_order` mutexes. The thread dies, the master fd drops (the child gets SIGHUP) and every lock is poisoned.
+- `on_reader_exit` is `None` in `src/pane.rs`, so nothing reports the dead pane. The keyboard-stack overflow in the pinned alacritty is now bounded in the adapter, but other core panics take the same path.
+
+## TERM-031 - `resolve_shell_for_login_mode` is now used for non-login shells
+
+- `pane_shell_command_builder` (`src/pane.rs`) resolves the configured shell through `resolve_shell_for_login_mode` in Auto/NonLogin mode too, so the name no longer describes it.

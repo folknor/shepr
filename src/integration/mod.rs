@@ -26,7 +26,8 @@ pub(crate) use registry::{
 pub(crate) use types::{ExperimentalIntegrationStatus, IntegrationStatus, IntegrationStatusKind};
 
 /// CLI labels for experimental integrations that are not part of the
-/// `IntegrationTarget` enum.
+/// `IntegrationTarget` enum. Nothing on the wire keeps them out of it; they
+/// are separate only until they are folded in.
 pub(crate) const EXPERIMENTAL_INTEGRATION_TARGET_LABELS: &[&str] = &["letta"];
 
 const PI_EXTENSION_INSTALL_NAME: &str = "shepr-agent-state.ts";
@@ -105,7 +106,7 @@ const OPENCODE_V2_TUI_PLUGIN_ASSET: &str = include_str!("assets/opencode/tui.js"
 const OPENCODE_INTEGRATION_VERSION: u32 = 1;
 const KILO_PLUGIN_INSTALL_NAME: &str = "shepr-agent-state.js";
 const KILO_PLUGIN_ASSET: &str = include_str!("assets/kilo/shepr-agent-state.js");
-const KILO_INTEGRATION_VERSION: u32 = 1;
+const KILO_INTEGRATION_VERSION: u32 = 2;
 const HERMES_PLUGIN_INSTALL_NAME: &str = "shepr-agent-state";
 const HERMES_PLUGIN_MANIFEST_INSTALL_NAME: &str = "plugin.yaml";
 const HERMES_PLUGIN_INIT_INSTALL_NAME: &str = "__init__.py";

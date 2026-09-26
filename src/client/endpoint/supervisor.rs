@@ -12,6 +12,7 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(120);
 const MAX_LOCAL_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
+const ATTENTION_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy)]
 pub(crate) struct EndpointConnectOptions {
@@ -181,9 +182,11 @@ impl EndpointSupervisors {
             }
             ClientEndpointStatus::Attention => {
                 state.online_since = None;
-                // Authentication or configuration may be repaired outside this client.
-                state.next_attempt =
-                    (!endpoint_id.is_local()).then_some(now + Duration::from_secs(30));
+                // Authentication, configuration or a server version may be repaired outside
+                // this client, and the client UI has no manual reconnect. Local is included:
+                // restarting or upgrading its server is exactly such a repair, and with no
+                // retry a Local in attention stayed dead until the client restarted.
+                state.next_attempt = Some(now + ATTENTION_RETRY_DELAY);
             }
             ClientEndpointStatus::Disabled => {
                 state.online_since = None;
@@ -237,7 +240,7 @@ fn connect_once(
     endpoint_id: ClientEndpointId,
     generation: u64,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
-    let (mut stream, lifetime): (_, Box<dyn Send>) = match target {
+    let (mut stream, ssh_bridge) = match target {
         ConnectTarget::Local(path) => {
             let stream = crate::ipc::connect_local_stream(path).map_err(|error| {
                 // An absent Local socket is transient, unlike a missing SSH install.
@@ -250,7 +253,7 @@ fn connect_once(
                     error
                 }
             })?;
-            (stream, Box::new(()))
+            (stream, None)
         }
         ConnectTarget::Ssh(profile) => {
             let connected = crate::remote::connect_saved_ssh(
@@ -258,7 +261,7 @@ fn connect_once(
                 &profile.target,
                 &profile.session,
             )?;
-            (connected.stream, Box::new(connected.bridge))
+            (connected.stream, Some(connected.bridge))
         }
     };
     let handshake = super::super::do_handshake(
@@ -273,7 +276,25 @@ fn connect_once(
         options.mouse_capture,
         false,
     )
-    .map_err(handshake_error)?;
+    .map_err(|error| {
+        let error = handshake_error(error);
+        // An SSH endpoint that closes before Welcome usually means ssh itself failed
+        // (network drop, auth, remote server launch). The bridge holds the real stderr;
+        // prefer it so both the diagnostic and the attention classification see it.
+        if error.kind() == std::io::ErrorKind::UnexpectedEof
+            && let Some(failure) = ssh_bridge
+                .as_ref()
+                .and_then(crate::remote::SavedSshBridge::reported_failure)
+        {
+            failure
+        } else {
+            error
+        }
+    })?;
+    let lifetime: Box<dyn Send> = match ssh_bridge {
+        Some(bridge) => Box::new(bridge),
+        None => Box::new(()),
+    };
     if handshake.encoding != RenderEncoding::SemanticFrame {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -316,12 +337,19 @@ fn handshake_error(error: crate::client::ClientError) -> std::io::Error {
             std::io::Error::new(std::io::ErrorKind::Unsupported, error)
         }
         ClientError::Protocol(FramingError::Io(error)) => error,
+        // A peer that closes before Welcome is a server restarting, a dropped SSH link or a
+        // remote launch that failed: all transient, so this must stay out of InvalidData,
+        // which the attention classifier treats as a compatibility problem.
+        ClientError::Protocol(FramingError::UnexpectedEof) => std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "connection closed before the endpoint finished connecting",
+        ),
         ClientError::Protocol(error) => {
             std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
         }
         ClientError::ServerShutdown { reason } => std::io::Error::new(
             std::io::ErrorKind::ConnectionAborted,
-            reason.unwrap_or_else(|| "server shut down during handshake".into()),
+            reason.unwrap_or_else(|| "server shut down while connecting".into()),
         ),
     }
 }
@@ -400,6 +428,38 @@ mod tests {
         });
         assert_eq!(rejected.kind(), std::io::ErrorKind::Unsupported);
         assert!(failure_needs_attention(&rejected));
+    }
+
+    #[test]
+    fn early_end_of_stream_and_shutdown_during_handshake_are_transient() {
+        let eof = handshake_error(crate::client::ClientError::Protocol(
+            crate::protocol::FramingError::UnexpectedEof,
+        ));
+        assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(!failure_needs_attention(&eof));
+        let shutdown = handshake_error(crate::client::ClientError::ServerShutdown { reason: None });
+        assert!(!failure_needs_attention(&shutdown));
+        let malformed = handshake_error(crate::client::ClientError::Protocol(
+            crate::protocol::FramingError::Oversized { claimed: 2, max: 1 },
+        ));
+        assert!(failure_needs_attention(&malformed));
+    }
+
+    #[test]
+    fn local_in_attention_is_retried() {
+        let now = Instant::now();
+        let mut supervisors = EndpointSupervisors::new(&[], now);
+        supervisors.add_local(PathBuf::from("local.sock"), Some(1), now);
+        assert!(supervisors.record_status(
+            &ClientEndpointId::Local,
+            1,
+            ClientEndpointStatus::Attention,
+            now
+        ));
+        assert_eq!(
+            supervisors.endpoints[&ClientEndpointId::Local].next_attempt,
+            Some(now + ATTENTION_RETRY_DELAY)
+        );
     }
 
     #[test]

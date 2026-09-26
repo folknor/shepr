@@ -14,7 +14,8 @@ use crate::protocol::{
 
 use super::{ClientError, shell};
 
-/// Time to wait for the server's Welcome reply during the handshake.
+/// Time to wait for the server's complete Welcome reply during the handshake.
+/// This is an overall deadline for the frame, not a per-read idle timeout.
 ///
 /// A local client talks to an already-connected server, so 5s is plenty. The
 /// remote bridge client (`shepr --remote`) sits behind a fresh per-attach ssh
@@ -121,12 +122,11 @@ pub(super) fn do_handshake(
     } else {
         handshake_read_timeout()
     };
-    set_handshake_recv_timeout(
-        stream,
-        Some(read_timeout),
-        "client handshake read timeout unavailable",
+    // One deadline for the whole Welcome frame, not a per-read idle timeout.
+    let welcome = protocol::read_message::<_, ServerMessage>(
+        &mut crate::ipc::DeadlineReader::new(stream, std::time::Instant::now() + read_timeout),
+        MAX_FRAME_SIZE,
     )?;
-    let welcome: ServerMessage = protocol::read_message(stream, MAX_FRAME_SIZE)?;
     set_handshake_recv_timeout(
         stream,
         None,

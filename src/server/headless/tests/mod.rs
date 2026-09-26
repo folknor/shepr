@@ -104,6 +104,7 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         effective_size: headless_size,
         shutting_down: false,
         host_shutdown_requested: Arc::new(AtomicBool::new(false)),
+        signal_quit_requested: Arc::new(AtomicBool::new(false)),
         should_quit,
         server_event_rx,
         server_event_tx,
@@ -248,6 +249,63 @@ fn server_stop_interrupts_server_event_backlog() {
     assert!(!server.drain_server_events());
     assert!(server.server_event_rx.try_recv().is_ok());
     shutdown_test_runtimes(&mut server);
+}
+
+fn shutdown_test_request(id: &str) -> (api::ApiRequestMessage, std::sync::mpsc::Receiver<String>) {
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    (
+        api::ApiRequestMessage {
+            request: api::schema::Request {
+                id: id.into(),
+                method: api::schema::Method::ServerStop(api::schema::EmptyParams::default()),
+            },
+            respond_to,
+        },
+        response_rx,
+    )
+}
+
+fn assert_server_unavailable(response_rx: &std::sync::mpsc::Receiver<String>, id: &str) {
+    let response = response_rx
+        .try_recv()
+        .expect("shutdown must answer the request, not drop it");
+    let response: serde_json::Value = serde_json::from_str(&response).expect("json response");
+    assert_eq!(response["id"], id);
+    assert_eq!(response["error"]["code"], "server_unavailable");
+}
+
+#[tokio::test]
+async fn complete_shutdown_answers_queued_and_deferred_requests_and_closes_the_channel() {
+    let mut server = test_headless_server();
+    let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+    server.app.api_rx = api_rx;
+
+    let (queued, queued_rx) = shutdown_test_request("queued");
+    api_tx.send(queued).expect("test precondition");
+    let (deferred, deferred_rx) = shutdown_test_request("deferred");
+    server.deferred_alt_screen_reads.push(deferred);
+
+    server.initiate_shutdown();
+    server
+        .complete_shutdown()
+        .await
+        .expect("shutdown completes");
+
+    assert_server_unavailable(&queued_rx, "queued");
+    assert_server_unavailable(&deferred_rx, "deferred");
+    assert!(server.deferred_alt_screen_reads.is_empty());
+    // A request dispatched after cleanup fails at the sender, which the API
+    // thread turns into `server_unavailable` at once.
+    let (late, _late_rx) = shutdown_test_request("late");
+    assert!(api_tx.send(late).is_err());
+    shutdown_test_runtimes(&mut server);
+}
+
+#[test]
+fn api_request_selected_during_shutdown_is_answered() {
+    let (request, response_rx) = shutdown_test_request("selected");
+    HeadlessServer::reject_api_request_for_shutdown(request);
+    assert_server_unavailable(&response_rx, "selected");
 }
 
 #[test]
@@ -471,11 +529,17 @@ fn a_foreground_client_without_a_writer_does_not_cache_the_window_title() {
     let (mut server, _control_rx) = window_title_test_server();
     server.app.configure_window_title("{workspace}");
 
-    // A detached client keeps its entry but loses its writer, so nothing
-    // reaches a terminal even though the targeted send reports success.
+    // Production never keeps a writer-less client (a detach removes it), but
+    // the targeted send must still report a writer-less entry as undelivered.
     if let Some(client) = server.clients.get_mut(&1) {
         client.writer = None;
     }
+    assert!(!server.send_to_client(
+        1,
+        &ServerMessage::WindowTitle {
+            title: Some("probe".into()),
+        }
+    ));
     server.sync_window_title();
     assert!(server.sent_window_title.is_none());
 
@@ -3607,6 +3671,35 @@ async fn host_shutdown_preserves_panes_from_queued_and_selected_death_events() {
 }
 
 #[tokio::test]
+async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
+    let mut server = test_headless_server();
+    let workspace = crate::workspace::Workspace::test_new("signal-quit");
+    let pane_id = workspace.tabs[0].root_pane;
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server
+        .app
+        .event_tx
+        .try_send(AppEvent::PaneDied {
+            pane_id,
+            exit_reason: crate::platform::ChildExitReason::Exited,
+        })
+        .expect("test precondition");
+    server.signal_quit_requested.store(true, Ordering::Release);
+    server.should_quit.store(true, Ordering::Release);
+
+    // The quit-path drain still consumes the queue ...
+    let (had_event, _) =
+        server.drain_internal_events_with_forwarding_up_to(crate::app::APP_EVENT_CHANNEL_CAPACITY);
+    assert!(had_event);
+    assert!(server.app.event_rx.try_recv().is_err());
+    // ... but the pane stays in the layout the final save captures.
+    assert!(server.app.find_pane(pane_id).is_some());
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn pane_death_reconciles_each_client_view_and_focus() {
     let mut server = test_headless_server();
     let mut workspace = crate::workspace::Workspace::test_new("pane-death-views");
@@ -4397,7 +4490,7 @@ fn headless_scheduled_tasks_expire_agent_metadata() {
         Some("short lived")
     );
 
-    assert!(server.handle_scheduled_tasks_headless(deadline + Duration::from_millis(1), false));
+    assert!(server.handle_scheduled_tasks_headless(deadline + Duration::from_millis(1)));
 
     assert_eq!(server.app.agent_metadata_deadline, None);
     assert_eq!(
@@ -4457,14 +4550,14 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
     assert_ne!(server.app.state.view.terminal_area, Rect::default());
 
     let now = Instant::now();
-    assert!(!server.handle_scheduled_tasks_headless(now, false));
+    assert!(!server.handle_scheduled_tasks_headless(now));
     assert!(server.app.terminal_runtimes.get(&terminal_id).is_none());
     let deadline = server
         .app
         .pending_agent_resume_deadline
         .expect("clientless resume should wait briefly for a host theme");
 
-    assert!(server.handle_scheduled_tasks_headless(deadline, false));
+    assert!(server.handle_scheduled_tasks_headless(deadline));
     assert!(server.app.terminal_runtimes.get(&terminal_id).is_some());
     assert!(
         server
@@ -4476,6 +4569,55 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
             .pending_agent_resume_plan
             .is_none()
     );
+    shutdown_test_runtimes(&mut server);
+}
+
+/// Busy loop iterations (any pane printing keeps a render pending) must not
+/// re-arm the theme wait: the first restored agent still launches once the
+/// deadline armed on the first tick passes.
+#[tokio::test]
+async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_ticks() {
+    let mut server = test_headless_server();
+    let workspace = crate::workspace::Workspace::test_new("restored");
+    let pane_id = workspace.tabs[0].root_pane;
+    let terminal_id = workspace
+        .terminal_id(pane_id)
+        .cloned()
+        .expect("test precondition");
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.ensure_test_terminals();
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .expect("test terminal should exist")
+        .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
+        agent: "codex".into(),
+        argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+        dedupe_key: "shepr:codex\0codex\0Id\0codex-session".into(),
+    });
+    server.render_and_stream();
+
+    let now = Instant::now();
+    assert!(!server.handle_scheduled_tasks_headless(now));
+    let deadline = server
+        .app
+        .pending_agent_resume_deadline
+        .expect("clientless resume should arm the theme wait");
+    for step in 1..5 {
+        let tick = now + Duration::from_millis(step * 100);
+        assert!(
+            tick < deadline,
+            "test ticks must stay inside the theme wait"
+        );
+        assert!(!server.handle_scheduled_tasks_headless(tick));
+        assert_eq!(server.app.pending_agent_resume_deadline, Some(deadline));
+    }
+
+    assert!(server.handle_scheduled_tasks_headless(deadline));
+    assert!(server.app.terminal_runtimes.get(&terminal_id).is_some());
     shutdown_test_runtimes(&mut server);
 }
 

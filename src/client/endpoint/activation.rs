@@ -744,14 +744,31 @@ impl PendingEndpointActivation {
         self.rollback_error = Some(error.clone());
         if self.target.endpoint_id == *endpoint_id && self.source.endpoint_id != *endpoint_id {
             let resize = self.resize.clone();
-            return match self.phase {
-                ActivationPhase::RestoringSource { .. } => ActivationRollback::Pending,
-                _ => match self.start_source_restore(endpoints, &resize) {
-                    Ok(()) => ActivationRollback::Pending,
-                    Err(restore_error) => ActivationRollback::Unavailable(format!(
-                        "{error}; source endpoint could not be restored safely: {restore_error}"
-                    )),
-                },
+            let restoring_source = match &self.phase {
+                ActivationPhase::RestoringSource { .. } => true,
+                ActivationPhase::SynchronizingPresentation { lease, .. }
+                | ActivationPhase::AwaitingPresentationEffects { lease, .. } => {
+                    lease.endpoint_id == self.source.endpoint_id
+                }
+                _ => false,
+            };
+            if restoring_source {
+                return ActivationRollback::Pending;
+            }
+            // A source prepared as disconnected carries a placeholder lease (generation 0):
+            // restoring through it would turn on the surface of whatever connection now holds
+            // that id, whose acknowledgement can never match, leaving a live surface and focus
+            // the client never releases. Same check as the target-release rollback path.
+            if !self.source_available {
+                return ActivationRollback::Unavailable(format!(
+                    "{error}; the previous endpoint is no longer connected"
+                ));
+            }
+            return match self.start_source_restore(endpoints, &resize) {
+                Ok(()) => ActivationRollback::Pending,
+                Err(restore_error) => ActivationRollback::Unavailable(format!(
+                    "{error}; source endpoint could not be restored safely: {restore_error}"
+                )),
             };
         }
         if self.source.endpoint_id != *endpoint_id {

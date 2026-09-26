@@ -26,59 +26,13 @@ pub struct SessionInfo {
     pub session_dir: String,
 }
 
-pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
-    let mut cleaned = Vec::with_capacity(args.len());
-    if let Some(program) = args.first() {
-        cleaned.push(program.clone());
-    }
-
-    if args.get(1).map(String::as_str) == Some("session")
-        && args.get(2).map(String::as_str) == Some("attach")
-    {
-        if matches!(
-            args.get(3).map(String::as_str),
-            Some("help" | "--help" | "-h")
-        ) {
-            return Ok(args.to_vec());
-        }
-        let Some(name) = args.get(3) else {
-            return Err("usage: shepr session attach <name>".to_string());
-        };
-        if args.len() != 4 {
-            return Err("usage: shepr session attach <name>".to_string());
-        }
-        apply_explicit_name(name)?;
-        return Ok(cleaned);
-    }
-
-    let mut requested_session = None;
-    let mut index = 1;
-    while index < args.len() {
-        let arg = &args[index];
-        if arg == "--" {
-            cleaned.extend_from_slice(&args[index..]);
-            break;
-        }
-        if arg == "--session" {
-            let Some(value) = args.get(index + 1) else {
-                return Err("missing value for --session".to_string());
-            };
-            requested_session = Some(value.clone());
-            index += 2;
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--session=") {
-            requested_session = Some(value.to_string());
-            index += 1;
-            continue;
-        }
-
-        cleaned.push(arg.clone());
-        index += 1;
-    }
-
-    if let Some(session) = requested_session {
-        apply_explicit_name(&session)?;
+/// Selects the session for this process. `requested` is the session named on
+/// the command line (`--session NAME` before the subcommand, or
+/// `session attach NAME`); without one, an inherited socket override or
+/// `SHEPR_SESSION` decides, and neither counts as an explicit request.
+pub fn configure(requested: Option<&str>) -> Result<(), String> {
+    if let Some(session) = requested {
+        apply_explicit_name(session)?;
     } else if std::env::var_os(crate::api::SOCKET_PATH_ENV_VAR).is_some() {
         EXPLICIT_SESSION_REQUESTED.store(false, Ordering::Relaxed);
     } else if let Ok(session) = std::env::var(SESSION_ENV_VAR) {
@@ -90,7 +44,7 @@ pub fn configure_from_args(args: &[String]) -> Result<Vec<String>, String> {
         EXPLICIT_SESSION_REQUESTED.store(false, Ordering::Relaxed);
     }
 
-    Ok(cleaned)
+    Ok(())
 }
 
 pub fn active_name() -> Option<String> {
@@ -638,137 +592,53 @@ mod tests {
         unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
     }
 
+    // Which argv words name the session is the parser's job (tests in
+    // `cli.rs`); these cover what a requested session does to the process.
+
     #[test]
-    fn configure_from_args_removes_global_session_option() {
+    fn configure_applies_requested_session() {
         let _guard = env_lock().lock().expect("test precondition");
         unsafe { std::env::remove_var(SESSION_ENV_VAR) };
         clear_explicit_session_for_test();
-        let args = vec![
-            "shepr".to_string(),
-            "--session".to_string(),
-            "work".to_string(),
-            "workspace".to_string(),
-            "list".to_string(),
-        ];
 
-        let cleaned = configure_from_args(&args).expect("test precondition");
+        configure(Some("work")).expect("test precondition");
 
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("work"));
         assert!(explicit_session_requested());
-        assert_eq!(cleaned, vec!["shepr", "workspace", "list"]);
         unsafe { std::env::remove_var(SESSION_ENV_VAR) };
         clear_explicit_session_for_test();
     }
 
     #[test]
-    fn configure_from_args_accepts_equals_form() {
+    fn configure_rejects_invalid_requested_session() {
         let _guard = env_lock().lock().expect("test precondition");
         unsafe { std::env::remove_var(SESSION_ENV_VAR) };
         clear_explicit_session_for_test();
-        let args = vec![
-            "shepr".to_string(),
-            "server".to_string(),
-            "stop".to_string(),
-            "--session=api".to_string(),
-        ];
 
-        let cleaned = configure_from_args(&args).expect("test precondition");
-
-        assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("api"));
-        assert!(explicit_session_requested());
-        assert_eq!(cleaned, vec!["shepr", "server", "stop"]);
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        clear_explicit_session_for_test();
-    }
-
-    #[test]
-    fn configure_from_args_preserves_child_session_option_after_separator() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        clear_explicit_session_for_test();
-        let args = vec![
-            "shepr".to_string(),
-            "agent".to_string(),
-            "start".to_string(),
-            "repro".to_string(),
-            "--".to_string(),
-            "/bin/echo".to_string(),
-            "--session".to_string(),
-            "child-session".to_string(),
-        ];
-
-        let cleaned = configure_from_args(&args).expect("test precondition");
-
-        assert_eq!(cleaned, args);
+        assert!(configure(Some("../prod")).is_err());
+        assert!(configure(Some("")).is_err());
         assert!(std::env::var(SESSION_ENV_VAR).is_err());
         assert!(!explicit_session_requested());
     }
 
     #[test]
-    fn configure_from_args_preserves_child_session_equals_option_after_separator() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        clear_explicit_session_for_test();
-        let args = vec![
-            "shepr".to_string(),
-            "agent".to_string(),
-            "start".to_string(),
-            "repro".to_string(),
-            "--".to_string(),
-            "/bin/echo".to_string(),
-            "--session=child-session".to_string(),
-        ];
-
-        let cleaned = configure_from_args(&args).expect("test precondition");
-
-        assert_eq!(cleaned, args);
-        assert!(std::env::var(SESSION_ENV_VAR).is_err());
-        assert!(!explicit_session_requested());
-    }
-
-    #[test]
-    fn configure_from_args_rewrites_session_attach_to_default_launch() {
+    fn configure_requested_session_overrides_inherited_env_and_socket() {
         let _guard = env_lock().lock().expect("test precondition");
         unsafe { std::env::set_var(SESSION_ENV_VAR, "bad/name") };
         unsafe { std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock") };
         clear_explicit_session_for_test();
-        let args = vec![
-            "shepr".to_string(),
-            "session".to_string(),
-            "attach".to_string(),
-            "work".to_string(),
-        ];
 
-        let cleaned = configure_from_args(&args).expect("test precondition");
+        configure(Some("work")).expect("test precondition");
 
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("work"));
         assert!(explicit_session_requested());
-        assert_eq!(cleaned, vec!["shepr"]);
         unsafe { std::env::remove_var(SESSION_ENV_VAR) };
         unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
         clear_explicit_session_for_test();
     }
 
     #[test]
-    fn configure_from_args_leaves_session_attach_help_for_cli_dispatch() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        clear_explicit_session_for_test();
-        let args = vec![
-            "shepr".to_string(),
-            "session".to_string(),
-            "attach".to_string(),
-            "-h".to_string(),
-        ];
-
-        let cleaned = configure_from_args(&args).expect("test precondition");
-
-        assert_eq!(cleaned, args);
-        assert!(!explicit_session_requested());
-    }
-
-    #[test]
-    fn configure_from_args_maps_default_session_name_to_default_path() {
+    fn configure_maps_default_session_name_to_default_path() {
         let _guard = env_lock().lock().expect("test precondition");
         let config_home =
             std::env::temp_dir().join(format!("shepr-session-default-{}", std::process::id()));
@@ -776,17 +646,9 @@ mod tests {
         unsafe { std::env::set_var(SESSION_ENV_VAR, "work") };
         clear_explicit_session_for_test();
         unsafe { std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock") };
-        let args = vec![
-            "shepr".to_string(),
-            "--session".to_string(),
-            DEFAULT_SESSION_NAME.to_string(),
-            "workspace".to_string(),
-            "list".to_string(),
-        ];
 
-        let cleaned = configure_from_args(&args).expect("test precondition");
+        configure(Some(DEFAULT_SESSION_NAME)).expect("test precondition");
 
-        assert_eq!(cleaned, vec!["shepr", "workspace", "list"]);
         assert!(std::env::var(SESSION_ENV_VAR).is_err());
         assert!(explicit_session_requested());
         assert_eq!(
@@ -806,15 +668,9 @@ mod tests {
         let _guard = env_lock().lock().expect("test precondition");
         unsafe { std::env::set_var(SESSION_ENV_VAR, "env-session") };
         EXPLICIT_SESSION_REQUESTED.store(true, Ordering::Relaxed);
-        let args = vec![
-            "shepr".to_string(),
-            "workspace".to_string(),
-            "list".to_string(),
-        ];
 
-        let cleaned = configure_from_args(&args).expect("test precondition");
+        configure(None).expect("test precondition");
 
-        assert_eq!(cleaned, vec!["shepr", "workspace", "list"]);
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("env-session"));
         assert!(!explicit_session_requested());
         unsafe { std::env::remove_var(SESSION_ENV_VAR) };
@@ -829,15 +685,9 @@ mod tests {
         unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
         unsafe { std::env::set_var(SESSION_ENV_VAR, DEFAULT_SESSION_NAME) };
         EXPLICIT_SESSION_REQUESTED.store(true, Ordering::Relaxed);
-        let args = vec![
-            "shepr".to_string(),
-            "workspace".to_string(),
-            "list".to_string(),
-        ];
 
-        let cleaned = configure_from_args(&args).expect("test precondition");
+        configure(None).expect("test precondition");
 
-        assert_eq!(cleaned, vec!["shepr", "workspace", "list"]);
         assert!(std::env::var(SESSION_ENV_VAR).is_err());
         assert!(!explicit_session_requested());
         assert_eq!(
@@ -965,15 +815,9 @@ mod tests {
         unsafe { std::env::set_var(SESSION_ENV_VAR, "bad/name") };
         clear_explicit_session_for_test();
         unsafe { std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/shepr.sock") };
-        let args = vec![
-            "shepr".to_string(),
-            "workspace".to_string(),
-            "list".to_string(),
-        ];
 
-        let cleaned = configure_from_args(&args).expect("test precondition");
+        configure(None).expect("test precondition");
 
-        assert_eq!(cleaned, vec!["shepr", "workspace", "list"]);
         assert!(!explicit_session_requested());
         assert_eq!(active_api_socket_path(), PathBuf::from("/tmp/shepr.sock"));
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("bad/name"));

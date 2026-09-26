@@ -693,6 +693,96 @@ fn modify_other_keys_level_is_terminal_state() {
     assert_eq!(terminal.modify_other_keys_level(), 0);
 }
 
+/// The pinned alacritty evicts from the title stack when the keyboard-mode
+/// stack is full: with no title pushed that panics the reader thread, with one
+/// pushed the keyboard stack grows without bound. The adapter caps it first.
+#[test]
+fn kitty_keyboard_push_flood_is_bounded_without_panicking() {
+    let max = handler::KEYBOARD_MODE_STACK_MAX_DEPTH;
+    let flood = b"\x1b[>1u".repeat(max + 10);
+    // No title pushed, one title pushed, and inside a synchronized update
+    // (whose buffered bytes reach the core only at ESU).
+    let cases: [(&[u8], &[u8]); 3] = [
+        (b"", b""),
+        (b"\x1b[22t", b""),
+        (b"\x1b[?2026h", b"\x1b[?2026l"),
+    ];
+    for (prefix, suffix) in cases {
+        let mut terminal = Terminal::new(20, 3, 0).expect("test precondition");
+        terminal.write(prefix);
+        terminal.write(&flood);
+        terminal.write(suffix);
+        assert_eq!(terminal.keyboard_depth.primary, max, "{prefix:?}");
+        assert_eq!(
+            terminal.kitty_keyboard_flags().expect("test precondition"),
+            1
+        );
+
+        // At the cap a push replaces the top entry, so the new mode is active
+        // and one pop returns to the entry beneath it.
+        terminal.write(b"\x1b[>3u");
+        assert_eq!(terminal.keyboard_depth.primary, max);
+        assert_eq!(
+            terminal.kitty_keyboard_flags().expect("test precondition"),
+            3
+        );
+        terminal.write(b"\x1b[<u");
+        assert_eq!(
+            terminal.kitty_keyboard_flags().expect("test precondition"),
+            1
+        );
+
+        // alacritty's real stack is bounded too: popping the mirrored depth
+        // empties it.
+        terminal.write(format!("\x1b[<{}u", max - 2).as_bytes());
+        assert_eq!(
+            terminal.kitty_keyboard_flags().expect("test precondition"),
+            1
+        );
+        terminal.write(b"\x1b[<u");
+        assert_eq!(terminal.keyboard_depth.primary, 0);
+        assert_eq!(
+            terminal.kitty_keyboard_flags().expect("test precondition"),
+            0
+        );
+    }
+}
+
+#[test]
+fn kitty_keyboard_depth_follows_screen_swaps_and_ris() {
+    let mut terminal = Terminal::new(20, 3, 0).expect("test precondition");
+    terminal.write(&b"\x1b[>1u".repeat(5));
+    terminal.write(b"\x1b[?1049h");
+    terminal.write(&b"\x1b[>2u".repeat(7));
+    assert_eq!(
+        (
+            terminal.keyboard_depth.primary,
+            terminal.keyboard_depth.alternate
+        ),
+        (5, 7)
+    );
+    terminal.write(b"\x1b[?1049l\x1b[<2u");
+    assert_eq!(
+        (
+            terminal.keyboard_depth.primary,
+            terminal.keyboard_depth.alternate
+        ),
+        (3, 7)
+    );
+    assert_eq!(
+        terminal.kitty_keyboard_flags().expect("test precondition"),
+        1
+    );
+    terminal.write(b"\x1b[<9u");
+    assert_eq!(terminal.keyboard_depth.primary, 0);
+    terminal.write(b"\x1b[?1049h\x1bc");
+    assert_eq!(terminal.keyboard_depth, KeyboardStackDepth::default());
+    assert_eq!(
+        terminal.kitty_keyboard_flags().expect("test precondition"),
+        0
+    );
+}
+
 #[test]
 fn halfwidth_voiced_marks_take_their_own_cell() {
     // Whole, split mid-character, and with the mark wrapping onto a new line.

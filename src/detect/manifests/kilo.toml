@@ -7,8 +7,15 @@ state = "blocked"
 priority = 300
 region = "whole_recent"
 visible_blocker = true
+# The header alone can linger in the transcript; require it AND one of the
+# dialog's own reply controls.
 any = [
-  { contains = ["△ Permission required"] },
+  { contains = ["△ Permission required"], any = [
+    { contains = ["allow once"] },
+    { contains = ["allow always"] },
+    { contains = ["reject"] },
+    { contains = ["enter confirm"] },
+  ] },
   { contains = ["esc dismiss"], any = [{ contains = ["enter confirm"] }, { contains = ["enter submit"] }, { contains = ["enter toggle"] }], all = [{ any = [{ contains = ["↑↓ select"] }, { contains = ["⇆ tab"] }] }] },
 ]
 

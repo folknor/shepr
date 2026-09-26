@@ -12,6 +12,8 @@ pub struct AgentReadParams {
     pub lines: Option<u32>,
     #[serde(default)]
     pub format: ReadFormat,
+    /// `false` keeps escape sequences: the read uses the ANSI renderer
+    /// whatever `format` says, and the result reports `format: ansi`.
     #[serde(default = "super::common::default_true")]
     pub strip_ansi: bool,
 }

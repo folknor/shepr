@@ -21,35 +21,21 @@
   - It restores the same layout.
   - It resumes the same native agent sessions, so two `claude --resume <id>` processes run on one conversation.
   - Both servers autosave to the same file. Each overwrites the other's layout, so "layout survives a restart" becomes last-writer-wins.
-  - The temp file name is fixed (`with_extension("json.tmp")`). With two writers, `std::fs::write` (truncate + write) can race with the other server's `rename`, which can publish a truncated or mixed file.
-- **Suggested fix:** take a lock (flock) on the data directory, or derive the data directory from the socket, and use unique temp names.
-
-## PER-002 - The main session file is written less carefully than its backups
-
-- **Where:** `save_json_to_path`, `src/persist/io.rs:47`.
-- Recovery copies get careful handling in `copy_recovery`: mode 0600 via `create_config_temporary`, `sync_all`, and a sync of the parent directory. A test even asserts 0600.
-- The live `session.json` and `session-history.json` go through `std::fs::write` with no fsync of the file or directory before `rename`, and default permissions (umask, usually 0644).
-- **Durability:** `Cargo.toml` says the logind inhibitor exists "so the server saves before host shutdown kills panes". That save can still be lost, or leave a zero-length file, on power loss. On the next start that file hits `parse_error`, and restore silently yields nothing.
-- **Privacy:** `session-history.json` holds full pane scrollback (up to `scrollback_limit_bytes`, default 10 MB per pane, which can include tokens and secrets). It ends up group- and world-readable while the backups are 0600.
-- Related: PLAT-006 notes that `sync_parent_directory(path)` syncs `path` itself, not its parent.
+  - The temp file name is fixed (`json.tmp`). It is now created exclusively, so two writers can no longer publish a mixed file, but one of them gets a failed save (logged) whenever they overlap. A comment in `io.rs` records the one-writer assumption.
+- **Suggested fix:** take a lock (flock) on the data directory, or derive the data directory from the socket.
 
 ## PER-003 - The history save runs on the server event loop while holding every pane's terminal lock
 
 Surfaced in three scopes: persistence, terminal core, pane/terminal state.
 
 - **Claim:** the save is called a "background writer"; AGENTS.md says keep terminal-core locks short and treat these paths as hot.
-- **Where:** `src/app/session.rs:39-59` into `PaneRuntime::snapshot_history` (`pane.rs:1987`) into `ghostty_recent_ansi_snapshot`.
+- **Where:** `src/app/session.rs:39-59` into `PaneRuntime::snapshot_history` (`pane.rs`) into `ghostty_recent_ansi_snapshot`.
 - Only file IO runs on the thread. `capture_session_save_job` runs synchronously on the event loop.
 - With `experimental.pane_history` on, it calls `recent_unwrapped_ansi(usize::MAX)` for every pane. Each call formats that pane's entire scrollback (up to 1M lines) as VT while holding the terminal-core mutex, which blocks the PTY reader.
 - This happens on every debounced save (5 s after any dirty change) and on every pane-exit checkpoint (`save_session_now`).
 - It stalls PTY readers, rendering and client fanout.
-- Small related bug: on thread-spawn failure, `start_background_session_save` captures a second time (line 84).
-
-## PER-004 - `clear()` deletes the user's stow symlink instead of the file it points to
-
-- `save` resolves symlinks on purpose (`resolve_write_target`; the comment names stow users).
-- `clear_path` (used by `SessionWriter::clear` for both files) calls `remove_file` on the link itself. The test `dangling_symlink_allows_first_save_and_late_target_is_preserved` even asserts that the target survives the clear.
-- After the last workspace closes, the symlink is gone and the stale target still holds the old session. The next save writes a plain file where the link was.
+- The background write now also fsyncs `session-history.json` (can be many MB) on every debounced save; off the loop, but disk traffic every 5 s while things change.
+- Small related bug: on thread-spawn failure, `start_background_session_save` captures a second time.
 
 ## PER-005 - A pane's `launch_argv` is dropped on the normal restore path
 
@@ -77,12 +63,6 @@ Surfaced in two scopes: persistence, app core.
 - `valid_session_id` accepts IDs starting with `-`, and `plan` puts them as a separate argument after `--resume`, `--session` and similar flags. They are also typed into an interactive shell.
 - So a hook report or API call can turn an "ID" into agent flags. The test `ids_are_data_not_shell_text` claims IDs are data.
 - `persisted_session_from_launch_args` already rejects a leading `-`; the report and snapshot paths don't.
-
-## PER-009 - The pending-resume deadline can make the server loop spin
-
-- If `start_pending_agent_resume` keeps returning `false` (`pane_launch_env` is `None`, or `try_send_bytes` fails), candidates stay pending.
-- `pending_agent_resume_deadline` then stays in the past, `next_headless_loop_deadline_with_git_refresh` returns it, and the headless loop wakes immediately, forever.
-- Related: SRV-001 (the same deadline being reset by render activity).
 
 ## PER-010 - Restored layouts are not validated
 
@@ -112,8 +92,12 @@ Surfaced in two scopes: persistence, app core.
 
 ## PER-015 - Structural recommendation from the persistence hunter
 
-- Persistence is spread out: capture, writing, the history pairing and the resume schedule sit in separate places with no owner, no lock and no durability policy. The hunter suggests one persistence actor that:
+- Persistence is spread out: capture, writing, the history pairing and the resume schedule sit in separate places with no owner and no lock. The hunter suggests one persistence actor that:
   - owns a data-directory lock (PER-001);
   - takes cheap state snapshots on the loop and formats history off the loop, in bounded chunks under short locks (PER-003);
-  - writes one atomic, fsynced, 0600 bundle (layout plus history, plus a symlink-aware clear) through the same helper the backups already use (PER-002, PER-004, PER-006).
+  - writes layout plus history as one bundle, so pending-resume panes can't lose history between them (PER-006). Durable 0600 writes and the symlink-aware clear already go through `publish_private_file` / `clear_path` in `src/persist/io.rs`.
 - Restore should carry every saved `PaneSnapshot` field forward whether it succeeds or fails, instead of rebuilding it per branch (PER-005, PER-011).
+
+## PER-016 - A directory-fsync failure skips the history save
+
+- In `SessionWriter::save`, if the directory fsync fails after `session.json` has already been replaced, `save` returns early. `session-history.json` is skipped for that round and `protect_unloaded` is not cleared. Rare (needs EIO on a directory fsync).

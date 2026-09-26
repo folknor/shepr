@@ -183,7 +183,7 @@ mod unix_common;
 pub(crate) use unix_common::{RemoteBridgeWake, begin_cli_output, forward_remote_bridge_stdio};
 
 mod client_state;
-pub(crate) use client_state::{create_private_state_file, replace_file, sync_parent_directory};
+pub(crate) use client_state::{create_private_state_file, replace_file, sync_directory};
 
 mod linux;
 pub use linux::*;

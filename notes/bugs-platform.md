@@ -35,6 +35,7 @@ Surfaced in five scopes: platform, wire protocol, CLI/config, headless server, d
 - Under test the Windows branch is compiled in and exercised, so key-identity, release-tracking and lease tests (`src/input/lease.rs`), `client_shell_pane_input_roundtrips_semantic_and_windows_keys` and the dead-key tests pass on logic the shipped binary does not have. The "Windows dead key" guard at the top of `encode_terminal_key` can never fire on Linux.
 - Smaller cfg leftovers: `#[cfg(unix)]` in the integration tests, `pane/terminal.rs:4024,4070` and `client/endpoint/ssh_metadata.rs:160,201`, plus `#[cfg(target_os = "linux")]` in `pane/terminal/migration_tests.rs:121`.
 - Integration assets carry their own Windows leftovers (DET-013).
+- `reported_cwd_parses_file_uri_and_bare_paths` (`src/pane/osc.rs`) still checks Windows `C:\...` paths as bare cwd reports.
 - **Recommendation:** delete the whole Windows key-record path, including its wire fields.
 
 ## PLAT-004 - Process environment is changed after threads exist
@@ -66,7 +67,6 @@ Surfaced in two scopes: platform, headless server.
   - `monitor_host_shutdown` returns an `Option` that is always `Some`.
   - `noninteractive_process::command` is just `Command::new`.
   - `create_private_state_file` forwards to `create_remote_ssh_config_file`.
-  - `sync_parent_directory(path)` syncs `path` itself, not its parent.
 - `fits_unix_socket_path` uses 103 bytes, which is macOS's limit (Linux allows 107), so it rejects SSH control paths that would work (`unix_common.rs:345`, duplicated in `remote/attach.rs:1654`).
 - **Recommendation:** collapse everything into one flat `platform` module with no re-export layering.
 
@@ -89,3 +89,7 @@ Surfaced in two scopes: platform, headless server.
 ## PLAT-011 - Release-profile tests may touch the real config directory
 
 - `config/io.rs:20` picks the directory name with `cfg!(debug_assertions)`, and `brokkr test` defaults to release. Any test that does not override `XDG_CONFIG_HOME` touches the real `~/.config/shepr`. The hunter did not audit which tests do.
+
+## PLAT-012 - Tests write under `/tmp`
+
+- `test_headless_server` (`src/server/headless/tests/`) uses `std::env::temp_dir()`, and the `src/server/autodetect.rs` tests hard-code `/tmp/ha-*` paths. Test scratch data should live under a per-test temp dir the harness owns, not fixed shared paths.

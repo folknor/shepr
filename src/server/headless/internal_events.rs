@@ -14,6 +14,17 @@ impl HeadlessServer {
         if self.host_shutdown_requested.load(Ordering::Acquire) {
             return false;
         }
+        // After a termination signal, the panes are most likely dying from the
+        // same teardown. Removing them would save a session with panes missing.
+        // The checkpoint taken before a signal-killed pane is removed does not
+        // help with shells that catch the signal and exit with a status code.
+        // Leave the layout as it is for the final save; the process is about
+        // to exit anyway.
+        if matches!(ev, AppEvent::PaneDied { .. })
+            && self.signal_quit_requested.load(Ordering::Acquire)
+        {
+            return false;
+        }
         match &ev {
             AppEvent::ClipboardWrite { content } => {
                 // Clipboard writes are client-local side effects. Forward them only to

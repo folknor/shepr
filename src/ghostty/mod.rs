@@ -16,13 +16,17 @@
 //! * ordered query replies, with OSC colour queries surfaced as structured
 //!   [`ColorQuery`] values so the pane can answer from the host theme;
 //! * byte-denominated scrollback limits converted to line counts;
-//! * synchronized-output (mode 2026) timeout flushing.
+//! * synchronized-output (mode 2026) timeout flushing;
+//! * a `Handler` wrapper the parser drives in place of `Term` (`handler.rs`),
+//!   which caps the kitty keyboard-mode stack before alacritty's broken
+//!   overflow branch can panic.
 
 // The adapter keeps a complete surface (mode constants, colour/scheme types,
 // query helpers) even where the current tree uses only part of it.
 #![allow(dead_code)]
 
 mod format;
+mod handler;
 mod scan;
 
 use std::fmt;
@@ -44,6 +48,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use self::format::Format;
+use self::handler::{CoreHandler, KeyboardStackDepth};
 use self::scan::{ScanEvent, Scanner};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -493,6 +498,9 @@ enum Coordinates {
 pub struct Terminal {
     term: Term<Listener>,
     parser: Processor,
+    /// Mirror of alacritty's keyboard-mode stack depths; the parser must only
+    /// ever drive `term` through a [`CoreHandler`] so it stays exact.
+    keyboard_depth: KeyboardStackDepth,
     events: Arc<Mutex<Vec<Event>>>,
     scanner: Scanner,
     /// Start of a U+FF9E/U+FF9F split across writes, not yet given to the parser.
@@ -536,6 +544,7 @@ impl Terminal {
         Ok(Self {
             term,
             parser: Processor::new(),
+            keyboard_depth: KeyboardStackDepth::default(),
             events,
             scanner: Scanner::default(),
             held_utf8: Vec::new(),
@@ -599,7 +608,11 @@ impl Terminal {
     }
 
     fn advance(&mut self, bytes: &[u8]) {
-        self.parser.advance(&mut self.term, bytes);
+        let mut handler = CoreHandler {
+            term: &mut self.term,
+            keyboard_depth: &mut self.keyboard_depth,
+        };
+        self.parser.advance(&mut handler, bytes);
         self.drain_events();
     }
 
@@ -662,7 +675,11 @@ impl Terminal {
             .sync_timeout()
             .is_some_and(|deadline| Instant::now() >= deadline);
         if expired {
-            self.parser.stop_sync(&mut self.term);
+            let mut handler = CoreHandler {
+                term: &mut self.term,
+                keyboard_depth: &mut self.keyboard_depth,
+            };
+            self.parser.stop_sync(&mut handler);
             self.drain_events();
             self.collect_damage();
         }

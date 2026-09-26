@@ -75,7 +75,10 @@ impl SavedSshEndpoint {
 #[serde(deny_unknown_fields)]
 pub(crate) struct EndpointCatalog {
     version: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The in-memory selection. It lives in `endpoint-selection.json`, never in the
+    /// profile file: it is not written here, and a value left in an older profile file
+    /// is accepted but discarded on load.
+    #[serde(default, skip_serializing)]
     pub(crate) selected_profile: Option<ProfileId>,
     #[serde(default)]
     pub(crate) ssh: Vec<SavedSshEndpoint>,
@@ -104,7 +107,9 @@ impl EndpointCatalog {
     }
 
     pub(crate) fn load_profiles() -> Result<Vec<SavedSshEndpoint>, String> {
-        // Live clients keep their own selection, independent of other attached clients.
+        // Profiles only: each running client holds its selection in memory, and the
+        // selection file only seeds the next launch (the last client to commit a
+        // handoff wins).
         Self::load_from_path(&catalog_path()).map(|catalog| catalog.ssh)
     }
 
@@ -297,8 +302,9 @@ impl EndpointCatalog {
         if content.len() as u64 > MAX_CATALOG_BYTES {
             return Err("endpoint catalog exceeds the storage limit".into());
         }
-        let catalog: Self = serde_json::from_str(&content)
+        let mut catalog: Self = serde_json::from_str(&content)
             .map_err(|error| format!("stored endpoint catalog is invalid: {error}"))?;
+        catalog.selected_profile = None;
         catalog.validate()?;
         Ok(catalog)
     }
@@ -366,7 +372,7 @@ pub(super) fn store_private_json(
         let _ = std::fs::remove_file(&temp_path);
         return Err(format!("failed to activate {description}: {error}"));
     }
-    crate::platform::sync_parent_directory(parent)
+    crate::platform::sync_directory(parent)
         .map_err(|error| format!("failed to persist {description} directory: {error}"))
 }
 
@@ -410,8 +416,11 @@ mod tests {
         assert!(!encoded.contains("password"));
         assert!(!encoded.contains("private_key"));
         assert!(!encoded.contains("control_socket"));
+        // The selection belongs to the selection file, not the shared profile list.
+        assert!(!encoded.contains("selected_profile"));
         let loaded = EndpointCatalog::load_from_path(&path).expect("test precondition");
-        assert_eq!(loaded, catalog);
+        assert_eq!(loaded.ssh, catalog.ssh);
+        assert_eq!(loaded.selected_profile, None);
         assert_eq!(loaded.ssh[0].id, id);
         std::fs::remove_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -610,6 +619,37 @@ mod tests {
         let loaded = EndpointCatalog::load_from_paths(&catalog_path, &selection_path)
             .expect("test precondition");
         assert_eq!(loaded.ssh[0].id, saved);
+        assert_eq!(loaded.selected_profile, None);
+        std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"))
+            .expect("test precondition");
+    }
+
+    #[test]
+    fn selection_left_in_an_older_profile_file_is_not_a_fallback() {
+        let catalog_path = path("legacy-selection");
+        let selection_path = catalog_path.with_file_name("selection.json");
+        let _ = std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"));
+        std::fs::create_dir_all(catalog_path.parent().expect("test precondition"))
+            .expect("test precondition");
+        std::fs::write(
+            &catalog_path,
+            r#"{
+              "version": 1,
+              "selected_profile": "0123456789abcdef0123456789abcdef",
+              "ssh": [{
+                "id": "0123456789abcdef0123456789abcdef",
+                "label": "Build",
+                "target": "build",
+                "session": "default",
+                "enabled": true
+              }]
+            }"#,
+        )
+        .expect("test precondition");
+
+        let loaded = EndpointCatalog::load_from_paths(&catalog_path, &selection_path)
+            .expect("test precondition");
+        assert_eq!(loaded.ssh.len(), 1);
         assert_eq!(loaded.selected_profile, None);
         std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"))
             .expect("test precondition");

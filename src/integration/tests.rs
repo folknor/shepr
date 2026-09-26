@@ -2351,6 +2351,29 @@ fn process_owned_integration_assets_do_not_report_release() {
 }
 
 #[test]
+fn opencode_family_plugins_keep_child_sessions_off_the_pane() {
+    // Both are full-lifecycle authorities: a subagent session must neither
+    // replace the pane's resumable session nor mark the pane idle, and a
+    // `{ type: ... }` status object must be understood.
+    for (name, asset) in [
+        ("opencode", OPENCODE_PLUGIN_ASSET),
+        ("kilo", KILO_PLUGIN_ASSET),
+    ] {
+        for needle in [
+            "childSessions.set(info.id, info.parentID)",
+            "if (sessionID && childSessions.has(sessionID))",
+            "CHILD_EVENT_STATES.get(type)",
+            "status?.type",
+        ] {
+            assert!(
+                asset.contains(needle),
+                "{name} plugin is missing `{needle}`"
+            );
+        }
+    }
+}
+
+#[test]
 fn pi_extension_refreshes_session_ref_before_agent_start_state() {
     let agent_start = PI_EXTENSION_ASSET
         .find("pi.on(\"agent_start\", (_event, ctx)")
@@ -2978,29 +3001,66 @@ fn install_letta_does_not_publish_hook_when_settings_are_invalid() {
 }
 
 #[test]
-fn letta_staged_install_can_restore_the_prior_file() {
+fn letta_install_and_uninstall_keep_symlinked_settings_and_reject_hard_links() {
+    let _lock = integration_env_lock();
     let base = unique_base();
-    fs::create_dir_all(&base).expect("test precondition");
-    let target = base.join("settings.json");
-    fs::write(&target, "old").expect("test precondition");
+    let home = base.join("home");
+    let letta_dir = home.join(".letta");
+    let dotfiles = base.join("dotfiles");
+    fs::create_dir_all(&letta_dir).expect("test precondition");
+    fs::create_dir_all(&dotfiles).expect("test precondition");
+    let real_settings = dotfiles.join("letta-settings.json");
+    fs::write(&real_settings, r#"{"theme":"dark"}"#).expect("test precondition");
+    let settings_path = letta_dir.join("settings.json");
+    std::os::unix::fs::symlink(&real_settings, &settings_path).expect("test precondition");
+    let previous_home = std::env::var_os("HOME");
+    unsafe { std::env::set_var("HOME", &home) };
 
-    let (staged, backup) =
-        prepare_letta_install_file(&target, b"new", false, true).expect("test precondition");
-    let had_original =
-        publish_letta_install_file(&target, &staged, &backup).expect("test precondition");
-    assert!(had_original);
-    assert_eq!(
-        fs::read_to_string(&target).expect("test precondition"),
-        "new"
+    install_letta().expect("test precondition");
+    assert!(
+        fs::symlink_metadata(&settings_path)
+            .expect("test precondition")
+            .file_type()
+            .is_symlink(),
+        "install must write through the symlink, not replace it"
     );
+    let installed: Value =
+        serde_json::from_str(&fs::read_to_string(&real_settings).expect("test precondition"))
+            .expect("test precondition");
+    assert_eq!(installed["theme"], "dark");
+    assert!(installed["hooks"]["SessionStart"].is_array());
 
-    rollback_letta_install_file(&target, &backup, had_original).expect("test precondition");
-    assert_eq!(
-        fs::read_to_string(&target).expect("test precondition"),
-        "old"
+    let result = uninstall_letta().expect("test precondition");
+    assert!(result.updated_settings);
+    assert!(
+        fs::symlink_metadata(&settings_path)
+            .expect("test precondition")
+            .file_type()
+            .is_symlink(),
+        "uninstall must write through the symlink, not replace it"
     );
-    assert!(!backup.exists());
+    let uninstalled: Value =
+        serde_json::from_str(&fs::read_to_string(&real_settings).expect("test precondition"))
+            .expect("test precondition");
+    assert_eq!(uninstalled["theme"], "dark");
 
+    fs::remove_file(&settings_path).expect("test precondition");
+    fs::hard_link(&real_settings, &settings_path).expect("test precondition");
+    assert!(install_letta().is_err());
+    assert!(
+        !letta_dir
+            .join("hooks")
+            .join(LETTA_HOOK_INSTALL_NAME)
+            .exists(),
+        "a rejected settings target must not leave a hook behind"
+    );
+    assert!(uninstall_letta().is_err());
+
+    if let Some(home) = previous_home {
+        unsafe { std::env::set_var("HOME", home) };
+    } else {
+        unsafe { std::env::remove_var("HOME") };
+    }
     let _ = fs::remove_dir_all(base);
 }
 
@@ -3891,4 +3951,94 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
     unsafe { std::env::remove_var(GROK_HOME_ENV_VAR) };
     clear_integration_path_env();
     let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn kimi_block_without_end_marker_is_refused_instead_of_truncating_the_file() {
+    let damaged = format!(
+        "model = \"k2\"\n\n{KIMI_CONFIG_BLOCK_BEGIN}\n[[hooks]]\nevent = \"Stop\"\n\n[user]\nkeep = true\n"
+    );
+    assert!(remove_kimi_config_block(&damaged).is_err());
+    assert!(build_kimi_config_with_hooks(&damaged, Path::new("/hooks/x.sh")).is_err());
+
+    let doubled = format!(
+        "{KIMI_CONFIG_BLOCK_BEGIN}\na = 1\n{KIMI_CONFIG_BLOCK_BEGIN}\nb = 2\n{KIMI_CONFIG_BLOCK_END}\n"
+    );
+    assert!(remove_kimi_config_block(&doubled).is_err());
+
+    let intact = format!(
+        "model = \"k2\"\n\n{KIMI_CONFIG_BLOCK_BEGIN}\nx = 1\n{KIMI_CONFIG_BLOCK_END}\n\n[user]\nkeep = true\n"
+    );
+    let removed = remove_kimi_config_block(&intact).expect("test precondition");
+    assert!(removed.contains("model = \"k2\""));
+    assert!(removed.contains("[user]\nkeep = true"));
+    assert!(!removed.contains("x = 1"));
+}
+
+#[test]
+fn install_kimi_leaves_a_damaged_config_and_no_hook() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let kimi_dir = base.join("kimi");
+    fs::create_dir_all(&kimi_dir).expect("test precondition");
+    let damaged = format!("{KIMI_CONFIG_BLOCK_BEGIN}\n[user]\nkeep = true\n");
+    fs::write(kimi_dir.join("config.toml"), &damaged).expect("test precondition");
+    unsafe { std::env::set_var(KIMI_CODE_HOME_ENV_VAR, &kimi_dir) };
+
+    assert!(install_kimi().is_err());
+    assert_eq!(
+        fs::read_to_string(kimi_dir.join("config.toml")).expect("test precondition"),
+        damaged
+    );
+    assert!(!kimi_dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME).exists());
+
+    clear_integration_path_env();
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn codex_features_hooks_follow_the_users_features_shape() {
+    fn parses(config: &str) -> toml::Value {
+        toml::from_str(config).unwrap_or_else(|err| panic!("invalid toml {config:?}: {err}"))
+    }
+    fn hooks_enabled(config: &str) -> bool {
+        parses(config)
+            .get("features")
+            .and_then(|features| features.get("hooks"))
+            .and_then(toml::Value::as_bool)
+            == Some(true)
+    }
+
+    // No features at all: a table is appended.
+    let built = build_codex_config_with_hooks("model = \"o3\"\n").expect("test precondition");
+    assert!(hooks_enabled(&built), "{built}");
+
+    // Existing [features] table: key inserted under it, deprecated key dropped.
+    let built = build_codex_config_with_hooks(
+        "model = \"o3\"\n\n[features]\ncodex_hooks = true\nother = 1\n\n[tui]\nx = 1\n",
+    )
+    .expect("test precondition");
+    assert!(hooks_enabled(&built), "{built}");
+    assert!(!built.contains("codex_hooks"));
+
+    // Root-level dotted keys: no second [features] table.
+    for config in [
+        "features.web_search = true\nmodel = \"o3\"\n",
+        "features.hooks = false\n",
+        "features . hooks=false\nfeatures.codex_hooks = true\n",
+        "features.codex_hooks = true\n[tui]\nx = 1\n",
+    ] {
+        let built = build_codex_config_with_hooks(config).expect("test precondition");
+        assert!(hooks_enabled(&built), "{config:?} -> {built}");
+        assert!(!built.contains("[features]"), "{config:?} -> {built}");
+        assert!(!built.contains("codex_hooks"), "{config:?} -> {built}");
+    }
+
+    // A dotted `features.*` key inside another table is not the root table.
+    let built = build_codex_config_with_hooks("[profiles.x]\nfeatures.hooks = false\n")
+        .expect("test precondition");
+    assert!(hooks_enabled(&built), "{built}");
+
+    // Inline tables are refused rather than broken.
+    assert!(build_codex_config_with_hooks("features = { web_search = true }\n").is_err());
 }

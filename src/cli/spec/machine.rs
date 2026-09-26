@@ -1,10 +1,19 @@
 use clap::{Arg, Command};
 
-use super::{json_flag, option};
+use super::{group, json_flag, option};
 
 pub(super) fn command() -> Command {
-    Command::new("machine")
+    group("machine")
         .about("Manage saved SSH machines")
+        .after_help(
+            "Add connects to a manually installed remote Shepr and starts its server before saving.
+A missing or incompatible remote Shepr binary fails with an error; install Shepr on
+the remote host yourself and retry.
+Changes apply automatically to open local Shepr clients.
+Removing or disabling a machine leaves its remote sessions running.
+Saved machines contain only a label, SSH target, explicit Shepr session, and enabled state.
+SSH credentials and key material remain owned by OpenSSH.",
+        )
         .subcommand(
             Command::new("list")
                 .about("List saved SSH machines")

@@ -25,8 +25,14 @@ impl HeadlessServer {
         self.app.state.should_quit = true;
     }
 
-    /// Completes the shutdown sequence: send ServerShutdown to clients,
-    /// close client connections, remove socket files, and clean up.
+    /// Completes the shutdown sequence: send ServerShutdown to clients, answer
+    /// every outstanding API request, and close client connections.
+    ///
+    /// Socket files are not removed here but in `release_sockets_after_save`,
+    /// once the session is on disk: while either socket file exists a new
+    /// `shepr` sees this server and does not start a daemon that would restore
+    /// the previous save, or exit on the still-bound API socket and leave the
+    /// user waiting out the startup timeout.
     pub(super) async fn complete_shutdown(&mut self) -> io::Result<()> {
         info!("completing server shutdown");
         self.reject_late_client_connections().await;
@@ -42,16 +48,23 @@ impl HeadlessServer {
             std::thread::sleep(Duration::from_millis(50));
         }
 
-        // Reject only the requests already queued when shutdown reached cleanup.
+        // Close the request channel and answer what is left in it, then the
+        // reads parked on alternate-screen traversals that no loop will drive.
         self.reject_queued_api_requests_for_shutdown();
+        self.finish_alt_screen_reads_for_shutdown();
 
         // Close all client connections.
         self.clients.clear();
 
-        // Remove socket files.
-        self.cleanup_sockets()?;
-
         Ok(())
+    }
+
+    /// Removes the API socket and then the client socket, after the final
+    /// session save.
+    pub(super) fn release_sockets_after_save(&mut self) -> io::Result<()> {
+        // Dropping the handle removes the API socket file.
+        drop(self._api_server.take());
+        self.cleanup_sockets()
     }
 
     /// Removes socket files created by the server.

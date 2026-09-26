@@ -94,6 +94,7 @@ impl Config {
             .into_iter()
             .chain(keybind_diags)
             .chain(self.theme.diagnostics())
+            .chain(theme::color_diagnostic("ui.accent", &self.ui.accent))
             .chain(tab_bar_right_diagnostics(&self.ui.tab_bar_right))
             .chain(window_title_diagnostics(&self.ui.window_title))
             .chain(self.invalid_sidebar_bounds_diagnostic())

@@ -1590,6 +1590,55 @@ fn losing_local_during_handoff_does_not_revoke_the_healthy_target() {
 }
 
 #[test]
+fn target_loss_without_a_connected_source_does_not_restore_a_placeholder_lease() {
+    let (_shell, mut endpoints, local_sent, _) = shell_and_registry();
+    let mut activation = PendingEndpointActivation {
+        // A source prepared while disconnected: placeholder generation, no live surface.
+        source: lease(ClientEndpointId::Local, 0, "local-boot"),
+        source_available: false,
+        ..machine()
+    };
+    endpoints.fail(&endpoint(), &std::io::ErrorKind::UnexpectedEof.into());
+    let outcome = activation.endpoint_disconnected(&mut endpoints, &endpoint(), "lost".into());
+    assert!(matches!(
+        outcome,
+        ActivationRollback::Unavailable(message) if message.contains("no longer connected")
+    ));
+    assert!(
+        local_sent.lock().expect("test precondition").is_empty(),
+        "the reconnected Local must not receive a surface or focus it will never release"
+    );
+}
+
+#[test]
+fn target_loss_while_synchronizing_the_restored_source_keeps_that_restore() {
+    let (_shell, mut endpoints, local_sent, _) = shell_and_registry();
+    let source = lease(ClientEndpointId::Local, 1, "local-boot");
+    let mut activation = PendingEndpointActivation {
+        phase: ActivationPhase::SynchronizingPresentation {
+            lease: source.clone(),
+            request_id: "client-shell-surface:3:presentation-sync".into(),
+            acknowledged_revision: None,
+            evidence: ActivationEvidence::default(),
+            completion: Box::new(ActivationCompletion::RestoredSource {
+                error: "rolled back".into(),
+                successor: None,
+            }),
+        },
+        ..machine()
+    };
+    assert_eq!(
+        activation.endpoint_disconnected(&mut endpoints, &endpoint(), "lost".into()),
+        ActivationRollback::Pending
+    );
+    assert!(matches!(
+        activation.phase,
+        ActivationPhase::SynchronizingPresentation { .. }
+    ));
+    assert!(local_sent.lock().expect("test precondition").is_empty());
+}
+
+#[test]
 fn resize_message_preserves_the_latest_surface_dimensions() {
     assert_eq!(
         resize_geometry(&resize()),

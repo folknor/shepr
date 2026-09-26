@@ -377,204 +377,100 @@ fn finish_cli(outcome: io::Result<cli::CommandOutcome>) -> io::Result<()> {
             }
             std::process::exit(1);
         }
-        Err(err) => Err(err),
+        Err(err) => {
+            // Transport and I/O failures of a CLI command: report them like
+            // every other CLI error instead of letting `main` print the
+            // error's Debug form.
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
     }
+}
+
+fn usage_exit(message: &str) -> ! {
+    eprintln!("error: {message}");
+    eprintln!("run 'shepr --help' for usage");
+    std::process::exit(2);
 }
 
 fn main() -> io::Result<()> {
     let raw_args: Vec<String> = match args_as_utf8(std::env::args_os()) {
         Ok(args) => args,
-        Err(err) => {
-            eprintln!("error: {err}");
-            eprintln!("run 'shepr --help' for usage");
-            std::process::exit(2);
-        }
+        Err(err) => usage_exit(&err),
     };
-    if let Some(outcome) = cli::maybe_run_machine(&raw_args) {
-        return finish_cli(outcome);
+    // The one command-line parser: the clap spec in `cli/spec.rs`. It prints
+    // its own usage errors and subcommand help.
+    let invocation = match cli::parse_invocation(&raw_args) {
+        Ok(invocation) => invocation,
+        Err(exit_code) => std::process::exit(exit_code),
+    };
+
+    if let Some(machine) = invocation.machine() {
+        return finish_cli(cli::run_on_machine(&invocation, &machine));
     }
-    let args = match session::configure_from_args(&raw_args) {
-        Ok(args) => args,
-        Err(err) => {
-            eprintln!("error: {err}");
-            eprintln!("run 'shepr --help' for usage");
-            std::process::exit(2);
-        }
+    let requested_session = match invocation.requested_session() {
+        Ok(session) => session,
+        Err(err) => usage_exit(&err),
     };
-    let (args, remote_launch) = match remote::extract_remote_args(&args) {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            eprintln!("error: {err}");
-            eprintln!("run 'shepr --help' for usage");
-            std::process::exit(2);
-        }
+    if let Err(err) = session::configure(requested_session.as_deref()) {
+        usage_exit(&err);
+    }
+    let remote_launch = match remote::remote_launch(
+        invocation.remote().as_deref(),
+        invocation.remote_keybindings().as_deref(),
+    ) {
+        Ok(remote_launch) => remote_launch,
+        Err(err) => usage_exit(&err),
     };
 
     if remote_launch.is_some()
-        && args.get(1).is_some()
-        && !args.iter().any(|a| {
-            matches!(
-                a.as_str(),
-                "--help" | "-h" | "--version" | "-V" | "--default-config"
-            )
-        })
+        && invocation.command_name().is_some()
+        && !(invocation.help_requested()
+            || invocation.version_requested()
+            || invocation.default_config_requested())
     {
-        eprintln!("error: --remote can only be used with the default launch command");
-        eprintln!("run 'shepr --help' for usage");
-        std::process::exit(2);
+        usage_exit("--remote can only be used with the default launch command");
     }
 
-    finish_cli(cli::maybe_run(&args))?;
-
-    if args.get(1).map(String::as_str) == Some("remote-api-bridge") {
-        return remote::run_remote_api_bridge(&args[2..]);
-    }
-
-    // Subcommands and flags (no TUI, no logging needed)
-    if args.get(1).map(String::as_str) == Some("remote-client-bridge") {
-        return remote::run_remote_client_bridge(&args[2..]);
-    }
-
-    if args.get(1).map(String::as_str) == Some("server") {
-        return server::headless::run_server();
-    }
-
-    // Hidden client mode: connect to an existing server's client socket.
-    if args.get(1).map(String::as_str) == Some("client") {
-        let loaded_config = config::Config::load();
-        exit_if_nested_disabled(&loaded_config.config);
-        return client::run_client();
-    }
-
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        platform::begin_cli_output();
-        println!("shepr \u{2014} terminal workspace manager for AI coding agents");
-        println!();
-        println!("Usage: shepr [options]");
-        println!("       shepr --session <name> [options]");
-        println!("       shepr --machine <label-or-id> <command>");
-        println!("       shepr --remote <ssh-target> [--session <name>]");
-        println!("       shepr session attach <name>");
-        println!("       shepr machine <subcommand> ...");
-        println!("       shepr server stop");
-        println!("       shepr config <subcommand> ...");
-        println!("       shepr workspace <subcommand> ...");
-        println!("       shepr tab <subcommand> ...");
-        println!("       shepr agent <subcommand> ...");
-        println!("       shepr pane <subcommand> ...");
-        println!("       shepr session <subcommand> ...");
-        println!("       shepr integration <subcommand> ...");
-        println!();
-        println!("Common commands:");
-        for (command, description) in [
-            ("shepr", "Launch or attach to the persistent session"),
-            (
-                "shepr status [server|client]",
-                "Show local client and running server status",
-            ),
-            (
-                "shepr server stop",
-                "Stop the running server via the API socket",
-            ),
-            (
-                "shepr config reset-keys",
-                "Back up config.toml and remove custom keybindings",
-            ),
-            ("shepr machine <subcommand>", "Manage saved SSH machines"),
-            (
-                "shepr workspace <subcommand>",
-                "Workspace helpers over the socket API",
-            ),
-            ("shepr tab <subcommand>", "Tab helpers over the socket API"),
-            (
-                "shepr agent <subcommand>",
-                "Agent/terminal helpers over the socket API",
-            ),
-            (
-                "shepr pane <subcommand>",
-                "Pane control helpers over the socket API",
-            ),
-            (
-                "shepr session <subcommand>",
-                "Manage named persistent sessions",
-            ),
-            (
-                "shepr integration <subcommand>",
-                "Manage built-in agent integrations",
-            ),
-        ] {
-            println!("  {command:<32} {description}");
-        }
-        println!();
-        println!("Advanced commands:");
-        println!("  {:<32} Run as headless server", "shepr server");
-        println!();
-        println!("Options:");
-        println!("  --session <name>    Use or create a named persistent session");
-        println!("  --machine <label-or-id>  Run an API command on a saved SSH machine");
-        println!("  --remote <target>   Attach through SSH to a remote Shepr server");
-        println!("  --remote-keybindings <local|server>");
-        println!("                      Keybindings for --remote app attach (default: local)");
-        println!("  --default-config    Print default configuration and exit");
-        println!("  --version, -V       Print version and exit");
-        println!("  --help, -h          Show this help");
-        println!();
-        println!("Config: {}", config::config_path().display());
-        println!("Logs:   {}", logging::help_log_paths_summary());
-        println!("Env:    SHEPR_CONFIG_PATH overrides config file path");
+    // Root-level `--help`, `--version` and `--default-config` win over any
+    // subcommand given with them.
+    if invocation.help_requested() {
+        print_help();
         return Ok(());
     }
 
-    if args.iter().any(|a| a == "--version" || a == "-V") {
+    if invocation.version_requested() {
         platform::begin_cli_output();
         println!("shepr {}", crate::build_info::version());
         return Ok(());
     }
 
-    if args.iter().any(|a| a == "--default-config") {
+    if invocation.default_config_requested() {
         platform::begin_cli_output();
         print!("{DEFAULT_CONFIG}");
         return Ok(());
     }
 
-    // Reject unknown flags
-    let known_flags = [
-        "--session",
-        "--machine",
-        "--remote",
-        "--remote-keybindings",
-        "--version",
-        "-V",
-        "--default-config",
-        "--help",
-        "-h",
-    ];
-    for arg in &args[1..] {
-        let arg_name = arg.split_once('=').map(|(name, _)| name).unwrap_or(arg);
-        if arg.starts_with('-') && !known_flags.contains(&arg_name) {
-            eprintln!("unknown option: {arg}");
-            eprintln!("run 'shepr --help' for usage");
-            std::process::exit(2);
+    finish_cli(cli::run(&invocation))?;
+
+    // Whatever `cli::run` did not handle launches something: a hidden mode,
+    // the headless server, or (below) the TUI.
+    match invocation.command_name() {
+        Some("remote-api-bridge") => {
+            return remote::run_remote_api_bridge(&invocation.bridge_args());
         }
-        if !arg.starts_with('-')
-            && ![
-                "server",
-                "client",
-                "remote-client-bridge",
-                "status",
-                "config",
-                "machine",
-                "workspace",
-                "pane",
-                "session",
-                "integration",
-            ]
-            .contains(&arg.as_str())
-        {
-            eprintln!("unknown command: {arg}");
-            eprintln!("run 'shepr --help' for usage");
-            std::process::exit(2);
+        Some("remote-client-bridge") => {
+            return remote::run_remote_client_bridge(&invocation.bridge_args());
         }
+        // `server` with a subcommand was handled by `cli::run`.
+        Some("server") => return server::headless::run_server(),
+        // Hidden client mode: connect to an existing server's client socket.
+        Some("client") => {
+            let loaded_config = config::Config::load();
+            exit_if_nested_disabled(&loaded_config.config);
+            return client::run_client();
+        }
+        _ => {}
     }
 
     if let Some(remote_launch) = remote_launch {
@@ -597,6 +493,84 @@ fn main() -> io::Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn print_help() {
+    platform::begin_cli_output();
+    println!("shepr \u{2014} terminal workspace manager for AI coding agents");
+    println!();
+    println!("Usage: shepr [options]");
+    println!("       shepr --session <name> [options]");
+    println!("       shepr --machine <label-or-id> <command>");
+    println!("       shepr --remote <ssh-target> [--session <name>]");
+    println!("       shepr session attach <name>");
+    println!("       shepr machine <subcommand> ...");
+    println!("       shepr server stop");
+    println!("       shepr config <subcommand> ...");
+    println!("       shepr workspace <subcommand> ...");
+    println!("       shepr tab <subcommand> ...");
+    println!("       shepr agent <subcommand> ...");
+    println!("       shepr pane <subcommand> ...");
+    println!("       shepr session <subcommand> ...");
+    println!("       shepr integration <subcommand> ...");
+    println!();
+    println!("Common commands:");
+    for (command, description) in [
+        ("shepr", "Launch or attach to the persistent session"),
+        (
+            "shepr status [server|client]",
+            "Show local client and running server status",
+        ),
+        (
+            "shepr server stop",
+            "Stop the running server via the API socket",
+        ),
+        (
+            "shepr config reset-keys",
+            "Back up config.toml and remove custom keybindings",
+        ),
+        ("shepr machine <subcommand>", "Manage saved SSH machines"),
+        (
+            "shepr workspace <subcommand>",
+            "Workspace helpers over the socket API",
+        ),
+        ("shepr tab <subcommand>", "Tab helpers over the socket API"),
+        (
+            "shepr agent <subcommand>",
+            "Agent/terminal helpers over the socket API",
+        ),
+        (
+            "shepr pane <subcommand>",
+            "Pane control helpers over the socket API",
+        ),
+        (
+            "shepr session <subcommand>",
+            "Manage named persistent sessions",
+        ),
+        (
+            "shepr integration <subcommand>",
+            "Manage built-in agent integrations",
+        ),
+    ] {
+        println!("  {command:<32} {description}");
+    }
+    println!();
+    println!("Advanced commands:");
+    println!("  {:<32} Run as headless server", "shepr server");
+    println!();
+    println!("Options:");
+    println!("  --session <name>    Use or create a named persistent session");
+    println!("  --machine <label-or-id>  Run an API command on a saved SSH machine");
+    println!("  --remote <target>   Attach through SSH to a remote Shepr server");
+    println!("  --remote-keybindings <local|server>");
+    println!("                      Keybindings for --remote app attach (default: local)");
+    println!("  --default-config    Print default configuration and exit");
+    println!("  --version, -V       Print version and exit");
+    println!("  --help, -h          Show this help");
+    println!();
+    println!("Config: {}", config::config_path().display());
+    println!("Logs:   {}", logging::help_log_paths_summary());
+    println!("Env:    SHEPR_CONFIG_PATH overrides config file path");
 }
 
 #[cfg(test)]

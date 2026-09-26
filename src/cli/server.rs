@@ -1,31 +1,21 @@
+use clap::ArgMatches;
+
 use crate::api::schema::{EmptyParams, Method, Request};
 
-pub(super) fn run_server_command(args: &[String]) -> std::io::Result<Option<i32>> {
-    let Some(subcommand) = args.first().map(String::as_str) else {
-        return Ok(None);
-    };
-
-    match subcommand {
-        "stop" => server_stop(&args[1..]).map(Some),
-        "agent-manifests" => server_agent_manifests(&args[1..]).map(Some),
-        "reload-agent-manifests" => server_reload_agent_manifests(&args[1..]).map(Some),
-        "help" | "--help" | "-h" => {
-            print_server_help();
-            Ok(Some(0))
+/// `None` for bare `shepr server`, which runs the headless server.
+pub(super) fn run_server_command(matches: &ArgMatches) -> std::io::Result<Option<i32>> {
+    match matches.subcommand() {
+        None => Ok(None),
+        Some(("stop", _)) => server_stop().map(Some),
+        Some(("agent-manifests", matches)) => {
+            server_agent_manifests(super::matches::flag(matches, "json")).map(Some)
         }
-        _ => {
-            print_server_help();
-            Ok(Some(2))
-        }
+        Some(("reload-agent-manifests", _)) => server_reload_agent_manifests().map(Some),
+        Some(_) => Ok(Some(super::missing_subcommand())),
     }
 }
 
-fn server_stop(args: &[String]) -> std::io::Result<i32> {
-    if !args.is_empty() {
-        eprintln!("usage: shepr server stop");
-        return Ok(2);
-    }
-
+fn server_stop() -> std::io::Result<i32> {
     if super::target::is_remote() {
         return super::send_ok_request(Method::ServerStop(EmptyParams::default()));
     }
@@ -39,16 +29,7 @@ fn server_stop(args: &[String]) -> std::io::Result<i32> {
     }
 }
 
-fn server_agent_manifests(args: &[String]) -> std::io::Result<i32> {
-    let json = match args {
-        [] => false,
-        [flag] if flag == "--json" => true,
-        _ => {
-            eprintln!("usage: shepr server agent-manifests [--json]");
-            return Ok(2);
-        }
-    };
-
+fn server_agent_manifests(json: bool) -> std::io::Result<i32> {
     let response = super::send_request(&Request {
         id: "cli:server:agent-manifests".into(),
         method: Method::ServerAgentManifests(EmptyParams::default()),
@@ -61,12 +42,7 @@ fn server_agent_manifests(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn server_reload_agent_manifests(args: &[String]) -> std::io::Result<i32> {
-    if !args.is_empty() {
-        eprintln!("usage: shepr server reload-agent-manifests");
-        return Ok(2);
-    }
-
+fn server_reload_agent_manifests() -> std::io::Result<i32> {
     super::print_response(&super::send_request(&Request {
         id: "cli:server:reload-agent-manifests".into(),
         method: Method::ServerReloadAgentManifests(EmptyParams::default()),
@@ -85,14 +61,4 @@ fn print_agent_manifest_status(response: &serde_json::Value) {
             println!("  {warning}");
         }
     }
-}
-
-fn print_server_help() {
-    eprintln!("shepr server commands:");
-    eprintln!("  shepr server                run as headless server");
-    eprintln!("  shepr server stop           stop the running server via the API socket");
-    eprintln!("  shepr server agent-manifests [--json]  show agent detection manifest status");
-    eprintln!(
-        "  shepr server reload-agent-manifests  reload agent detection manifests in the running server"
-    );
 }

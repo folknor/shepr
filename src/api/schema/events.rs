@@ -62,6 +62,7 @@ pub enum Subscription {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lines: Option<u32>,
         r#match: OutputMatch,
+        /// `false` matches against the ANSI rendering, escape sequences included.
         #[serde(default = "super::common::default_true")]
         strip_ansi: bool,
     },
@@ -93,6 +94,7 @@ pub struct PaneWaitForOutputParams {
     pub r#match: OutputMatch,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// `false` matches against the ANSI rendering, escape sequences included.
     #[serde(default = "super::common::default_true")]
     pub strip_ansi: bool,
 }

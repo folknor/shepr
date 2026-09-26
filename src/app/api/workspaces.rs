@@ -323,19 +323,10 @@ impl App {
         if self.state.workspaces.get(index).is_none() {
             return workspace_not_found(id, &params.workspace_id);
         }
-        let closed_workspaces = vec![(self.public_workspace_id(index), self.workspace_info(index))];
-        self.state.selected = index;
-        self.state.close_selected_workspace();
+        let close_events = self.workspace_close_events(index);
+        self.state.close_workspace_at(index);
         self.shutdown_detached_terminal_runtimes();
-        for (workspace_id, workspace) in closed_workspaces {
-            self.emit_event(EventEnvelope {
-                event: EventKind::WorkspaceClosed,
-                data: EventData::WorkspaceClosed {
-                    workspace_id,
-                    workspace: Some(workspace),
-                },
-            });
-        }
+        self.emit_events(close_events);
 
         encode_success(id, ResponseResult::Ok {})
     }
@@ -760,6 +751,69 @@ mod tests {
                 && workspace_ids.len() == 2
                 && before_workspace_id.as_deref() == Some(tail_id.as_str())
                 && workspaces[1].workspace_id == parent_id
+        ));
+    }
+
+    #[test]
+    fn api_workspace_close_announces_panes_and_tabs_before_the_workspace() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            event_hub.clone(),
+        );
+        let mut closing = Workspace::test_new("closing");
+        closing.test_add_tab(Some("second"));
+        app.state.workspaces = vec![closing, Workspace::test_new("survivor")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let workspace_id = app.public_workspace_id(0);
+        let pane_ids = app.state.workspaces[0]
+            .tabs
+            .iter()
+            .map(|tab| {
+                app.public_pane_id(0, tab.root_pane)
+                    .expect("test precondition")
+            })
+            .collect::<Vec<_>>();
+        let tab_ids = [
+            app.public_tab_id(0, 0).expect("test precondition"),
+            app.public_tab_id(0, 1).expect("test precondition"),
+        ];
+
+        let response = app.handle_workspace_close(
+            "req".into(),
+            &WorkspaceCloseParams {
+                workspace_id: workspace_id.clone(),
+                close_group: false,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        assert_eq!(success.result, ResponseResult::Ok {});
+        let events = event_hub
+            .events_after(0)
+            .into_iter()
+            .map(|(_, event)| event.data)
+            .collect::<Vec<_>>();
+        assert_eq!(events.len(), 5);
+        for (index, tab_id) in tab_ids.iter().enumerate() {
+            assert!(matches!(
+                &events[index * 2],
+                EventData::PaneClosed { pane_id, .. } if pane_id == &pane_ids[index]
+            ));
+            assert!(matches!(
+                &events[index * 2 + 1],
+                EventData::TabClosed { tab_id: closed, .. } if closed == tab_id
+            ));
+        }
+        assert!(matches!(
+            &events[4],
+            EventData::WorkspaceClosed { workspace_id: closed, .. } if closed == &workspace_id
         ));
     }
 

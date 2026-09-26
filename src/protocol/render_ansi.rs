@@ -41,8 +41,6 @@ const REVERSED_MODIFIER: u16 = 1 << 6;
 pub(crate) struct EncodedBlit {
     /// Terminal escape bytes ready to write to the host terminal.
     pub(crate) bytes: Vec<u8>,
-    /// Whether this frame was encoded as a full redraw.
-    pub(crate) full: bool,
     next_last_visible_cursor: Option<(u16, u16)>,
     next_last_cursor_shape: u8,
 }
@@ -80,9 +78,6 @@ impl BlitEncoder {
     ) -> EncodedBlit {
         let previous_frame = self.last_frame.as_ref();
         let prev = if repaint { None } else { previous_frame };
-        let full = repaint
-            || prev.is_none()
-            || prev.is_some_and(|p| p.width != frame.width || p.height != frame.height);
         let clear_before_full_redraw = previous_frame.is_none();
         let mut bytes = Vec::new();
         let mut next_last_visible_cursor = self.last_visible_cursor;
@@ -99,7 +94,6 @@ impl BlitEncoder {
         );
         EncodedBlit {
             bytes,
-            full,
             next_last_visible_cursor,
             next_last_cursor_shape,
         }
@@ -133,7 +127,6 @@ impl BlitEncoder {
         {
             return Some(EncodedBlit {
                 bytes: Vec::new(),
-                full: false,
                 next_last_visible_cursor: self.last_visible_cursor,
                 next_last_cursor_shape: self.last_cursor_shape,
             });
@@ -153,7 +146,6 @@ impl BlitEncoder {
         );
         Some(EncodedBlit {
             bytes,
-            full: false,
             next_last_visible_cursor,
             next_last_cursor_shape,
         })
@@ -1665,7 +1657,6 @@ mod tests {
         encoder.commit(prev, &initial);
 
         let encoded = encoder.encode(&curr, false);
-        assert!(encoded.full);
         let output = String::from_utf8(encoded.bytes).expect("test precondition");
 
         assert!(!output.contains("\x1b[2J"));
@@ -1680,7 +1671,6 @@ mod tests {
         encoder.commit(frame.clone(), &initial);
 
         let encoded = encoder.encode(&frame, true);
-        assert!(encoded.full);
         let output = String::from_utf8(encoded.bytes).expect("test precondition");
 
         assert!(!output.contains("\x1b[2J"));

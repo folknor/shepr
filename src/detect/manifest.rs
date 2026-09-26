@@ -106,18 +106,29 @@ pub struct RuleEvidence {
     pub region_preview: String,
 }
 
-#[derive(Debug, Clone)]
+/// A manifest ready for evaluation. The cache hands these out behind an `Arc`,
+/// so a detection tick never clones the rule tree, and the compiled regexes
+/// keep their search caches warm across ticks and panes.
+#[derive(Debug)]
 struct LoadedManifest {
     manifest: AgentManifest,
-    // Keep Regex search caches warm across manifest loads and pane polling.
-    compiled_rules: Arc<[CompiledRule]>,
+    /// One entry per manifest rule, in manifest order.
+    compiled_rules: Vec<CompiledRule>,
+    /// Every distinct region any rule or gate reads; gates refer to regions by
+    /// index so each region is extracted (and lowercased) at most once per
+    /// detection input.
+    regions: Vec<CompiledRegion>,
+    /// Rule indices by descending priority, manifest order within a priority.
+    /// The first match in this order is the rule `explain` would select, so the
+    /// detection path can stop there.
+    priority_order: Vec<usize>,
     source: ManifestSource,
     warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct ManifestCache {
-    manifests: Vec<(Agent, Option<LoadedManifest>)>,
+    manifests: Vec<(Agent, Option<Arc<LoadedManifest>>)>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -164,6 +175,11 @@ struct ManifestRule {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct ManifestGate {
+    /// Region this gate (and its nested gates) reads instead of the enclosing
+    /// one. Lets a rule on one input AND/OR/NOT controls on another, e.g. a
+    /// title-spinner rule that stands down while a dialog is on screen.
+    #[serde(default)]
+    region: Option<String>,
     #[serde(default)]
     all: Vec<ManifestGate>,
     #[serde(default)]
@@ -178,19 +194,120 @@ struct ManifestGate {
     line_regex: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct CompiledRule {
     gate: CompiledGate,
+    /// Index of the rule's own region, used for `explain` evidence.
+    region: usize,
+    /// Distinct region indices the rule's gate tree reads.
+    regions_used: Vec<usize>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct CompiledGate {
+    region: usize,
     all: Vec<CompiledGate>,
     any: Vec<CompiledGate>,
     not_gate: Vec<CompiledGate>,
     contains: Vec<String>,
     regex: Vec<Regex>,
     line_regex: Vec<Regex>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CompiledRegion {
+    spec: RegionSpec,
+    /// Some gate on this region has `contains` needles, which match against
+    /// the lowercased text.
+    needs_lowercase: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegionSpec {
+    WholeRecent,
+    AfterLastPromptMarker,
+    BeforeCurrentPromptMarker,
+    WholeRecentWithoutCurrentPromptMarker,
+    CurrentPromptBlockMarker,
+    AfterCurrentPromptBlockMarker,
+    PromptBoxBody,
+    AbovePromptBox,
+    LastNonEmptyAbovePromptBox,
+    AfterLastHorizontalRule,
+    OscTitle,
+    OscProgress,
+    BottomLines(usize),
+    BottomNonEmptyLines(usize),
+    TopNonEmptyLines(usize),
+}
+
+impl RegionSpec {
+    fn parse(spec: &str) -> Option<Self> {
+        let trimmed = spec.trim();
+        Some(match trimmed {
+            "whole_recent" => Self::WholeRecent,
+            "after_last_prompt_marker" => Self::AfterLastPromptMarker,
+            "before_current_prompt_marker" => Self::BeforeCurrentPromptMarker,
+            "whole_recent_without_current_prompt_marker" => {
+                Self::WholeRecentWithoutCurrentPromptMarker
+            }
+            "current_prompt_block_marker" => Self::CurrentPromptBlockMarker,
+            "after_current_prompt_block_marker" => Self::AfterCurrentPromptBlockMarker,
+            "prompt_box_body" => Self::PromptBoxBody,
+            "above_prompt_box" => Self::AbovePromptBox,
+            "last_non_empty_above_prompt_box" => Self::LastNonEmptyAbovePromptBox,
+            "after_last_horizontal_rule" => Self::AfterLastHorizontalRule,
+            "osc_title" => Self::OscTitle,
+            "osc_progress" => Self::OscProgress,
+            _ => {
+                if let Some(count) = region_count(trimmed, "bottom_lines") {
+                    Self::BottomLines(count)
+                } else if let Some(count) = region_count(trimmed, "bottom_non_empty_lines") {
+                    Self::BottomNonEmptyLines(count)
+                } else {
+                    Self::TopNonEmptyLines(top_region_count(trimmed)?)
+                }
+            }
+        })
+    }
+
+    /// Extract this region from the input. `lines` caches the screen split
+    /// into lines so every screen region of one input shares a single split.
+    fn extract<'a>(self, input: DetectionInput<'a>, lines: &mut Option<Vec<&'a str>>) -> &'a str {
+        // OSC regions source from their dedicated fields, not the screen.
+        match self {
+            Self::OscTitle => return input.osc_title,
+            Self::OscProgress => return input.osc_progress,
+            Self::WholeRecent => return input.screen,
+            Self::AfterLastHorizontalRule => return after_last_horizontal_rule(input.screen),
+            _ => {}
+        }
+        let content = input.screen;
+        let lines: &[&'a str] = lines.get_or_insert_with(|| content.lines().collect());
+        match self {
+            Self::AfterLastPromptMarker => after_last_prompt_marker(content, lines),
+            Self::BeforeCurrentPromptMarker => before_current_prompt_marker(content, lines),
+            Self::WholeRecentWithoutCurrentPromptMarker => {
+                whole_recent_without_current_prompt_marker(content, lines)
+            }
+            Self::CurrentPromptBlockMarker => current_prompt_block_marker(lines).unwrap_or(""),
+            Self::AfterCurrentPromptBlockMarker => {
+                after_current_prompt_block_marker(content, lines).unwrap_or("")
+            }
+            Self::PromptBoxBody => prompt_box_body(content, lines).unwrap_or(""),
+            Self::AbovePromptBox => above_prompt_box(content, lines),
+            Self::LastNonEmptyAbovePromptBox => {
+                last_non_empty_line(above_prompt_box(content, lines))
+            }
+            Self::BottomLines(count) => bottom_lines(content, lines, count),
+            Self::BottomNonEmptyLines(count) => bottom_non_empty_lines(content, lines, count),
+            Self::TopNonEmptyLines(count) => top_non_empty_lines(content, lines, count),
+            Self::OscTitle
+            | Self::OscProgress
+            | Self::WholeRecent
+            | Self::AfterLastHorizontalRule => "",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -275,7 +392,7 @@ fn build_manifest_cache() -> ManifestCache {
     ManifestCache {
         manifests: Agent::SCREEN_MANIFEST_AGENTS
             .into_iter()
-            .map(|agent| (agent, load_manifest_uncached(agent)))
+            .map(|agent| (agent, load_manifest_uncached(agent).map(Arc::new)))
             .collect(),
     }
 }
@@ -286,17 +403,17 @@ fn manifest_summaries_from_cache(cache: &ManifestCache) -> Vec<AgentManifestSumm
         .iter()
         .filter_map(|(agent, loaded)| {
             loaded
-                .clone()
+                .as_deref()
                 .map(|loaded| manifest_summary_from_loaded(*agent, loaded))
         })
         .collect()
 }
 
-fn manifest_summary_from_loaded(agent: Agent, loaded: LoadedManifest) -> AgentManifestSummary {
+fn manifest_summary_from_loaded(agent: Agent, loaded: &LoadedManifest) -> AgentManifestSummary {
     AgentManifestSummary {
         agent,
-        active_source: loaded.source,
-        warning: loaded.warning,
+        active_source: loaded.source.clone(),
+        warning: loaded.warning.clone(),
     }
 }
 
@@ -312,11 +429,26 @@ pub fn detect(agent: Agent, screen_content: &str) -> AgentDetection {
     )
 }
 
+/// Production detection path. Runs per identified pane on every detection
+/// tick, so it evaluates rules in priority order, stops at the first match,
+/// and builds none of the evidence `explain` reports.
 pub fn detect_with_osc(agent: Agent, input: DetectionInput<'_>) -> AgentDetection {
     let Some(loaded) = load_manifest(agent) else {
-        return fallback_explain(Some(agent), None).into_detection();
+        return fallback_detection(agent);
     };
-    evaluate_loaded_manifest(agent, input, loaded).into_detection()
+    let mut texts = RegionTexts::new(input, loaded.regions.len());
+    for &index in &loaded.priority_order {
+        let (Some(rule), Some(compiled)) = (
+            loaded.manifest.rules.get(index),
+            loaded.compiled_rules.get(index),
+        ) else {
+            continue;
+        };
+        if compiled_rule_matches(compiled, &loaded.regions, &mut texts) {
+            return rule_detection(rule);
+        }
+    }
+    fallback_detection(agent)
 }
 
 pub fn explain(agent: Agent, screen_content: &str) -> DetectionExplain {
@@ -334,7 +466,7 @@ pub fn explain_with_input(agent: Agent, input: DetectionInput<'_>) -> DetectionE
     let Some(loaded) = load_manifest(agent) else {
         return fallback_explain(Some(agent), None);
     };
-    evaluate_loaded_manifest(agent, input, loaded)
+    explain_loaded_manifest(agent, input, &loaded)
 }
 
 pub fn explain_for_label(agent_label: &str, screen_content: &str) -> DetectionExplain {
@@ -358,25 +490,61 @@ pub fn explain_for_label(agent_label: &str, screen_content: &str) -> DetectionEx
     explain(agent, screen_content)
 }
 
-impl DetectionExplain {
-    fn into_detection(self) -> AgentDetection {
-        AgentDetection {
-            state: self.state,
-            skip_state_update: self.skip_state_update,
-            visible_idle: self.visible_idle,
-            visible_blocker: self.visible_blocker,
-            visible_working: self.visible_working,
-        }
+fn rule_state(rule: &ManifestRule) -> AgentState {
+    rule.state
+        .map(AgentState::from)
+        .unwrap_or(AgentState::Unknown)
+}
+
+fn rule_detection(rule: &ManifestRule) -> AgentDetection {
+    let state = rule_state(rule);
+    AgentDetection {
+        state,
+        skip_state_update: rule.skip_state_update,
+        visible_idle: rule.visible_idle && state == AgentState::Idle,
+        visible_blocker: rule.visible_blocker && state == AgentState::Blocked,
+        visible_working: rule.visible_working && state == AgentState::Working,
     }
 }
 
-fn evaluate_loaded_manifest(
+/// State reported when no rule matched, or the agent has no manifest at all.
+///
+/// Every known agent except Codex falls back to `Idle`, including the agents
+/// with no screen manifest (Omp, Mastracode). `Unknown` would be the more
+/// literal value for those, but `Idle` is load-bearing downstream: managed
+/// agent launches only become ready once the pane reports `Idle`
+/// (`TerminalState::reconcile_managed_agent_at`, which special-cases only
+/// Codex), and the idle screen-scan skip in `pane/agent_detection.rs` treats
+/// only `Idle` (or Codex `Unknown`) as stable. Reporting `Unknown` here alone
+/// would time out every managed Omp/Mastracode launch without their hook and
+/// re-read the screen on every tick. Those agents are full-lifecycle hook
+/// authorities; with the hook installed the hook state overrides this value.
+fn fallback_state(agent: Agent) -> AgentState {
+    if agent == Agent::Codex {
+        AgentState::Unknown
+    } else {
+        AgentState::Idle
+    }
+}
+
+fn fallback_detection(agent: Agent) -> AgentDetection {
+    AgentDetection {
+        state: fallback_state(agent),
+        skip_state_update: false,
+        visible_idle: false,
+        visible_blocker: false,
+        visible_working: false,
+    }
+}
+
+fn explain_loaded_manifest(
     agent: Agent,
     input: DetectionInput<'_>,
-    loaded: LoadedManifest,
+    loaded: &LoadedManifest,
 ) -> DetectionExplain {
-    let mut matched: Option<(&ManifestRule, String)> = None;
-    let mut evaluated_rules = Vec::new();
+    let mut texts = RegionTexts::new(input, loaded.regions.len());
+    let mut matched: Option<&ManifestRule> = None;
+    let mut evaluated_rules = Vec::with_capacity(loaded.manifest.rules.len());
 
     for (rule, compiled_rule) in loaded
         .manifest
@@ -384,17 +552,14 @@ fn evaluate_loaded_manifest(
         .iter()
         .zip(loaded.compiled_rules.iter())
     {
-        let region_text = region(input, &rule.region);
-        let matched_rule = compiled_rule_matches(compiled_rule, region_text);
+        let matched_rule = compiled_rule_matches(compiled_rule, &loaded.regions, &mut texts);
+        let region_text = texts.text(compiled_rule.region);
         evaluated_rules.push(EvaluatedRule {
             id: rule.id.clone(),
             priority: rule.priority,
             region: rule.region.clone(),
             evidence: rule_evidence(rule, region_text),
-            state: rule
-                .state
-                .map(AgentState::from)
-                .unwrap_or(AgentState::Unknown),
+            state: rule_state(rule),
             matched: matched_rule,
         });
 
@@ -403,61 +568,59 @@ fn evaluate_loaded_manifest(
         }
 
         match matched {
-            Some((previous, _)) if previous.priority >= rule.priority => {}
-            _ => matched = Some((rule, rule.region.clone())),
+            Some(previous) if previous.priority >= rule.priority => {}
+            _ => matched = Some(rule),
         }
     }
 
-    let Some((rule, region_name)) = matched else {
+    let Some(rule) = matched else {
         return fallback_explain(Some(agent), Some((loaded, evaluated_rules)));
     };
 
-    let state = rule
-        .state
-        .map(AgentState::from)
-        .unwrap_or(AgentState::Unknown);
+    let detection = rule_detection(rule);
     let skipped_update_reason = rule
         .skip_state_update
         .then(|| format!("matched_rule:{}", rule.id));
 
     DetectionExplain {
         agent: Some(agent_label(agent).to_string()),
-        state,
-        source: Some(loaded.source),
+        state: detection.state,
+        source: Some(loaded.source.clone()),
         matched_rule: Some(MatchedRule {
             id: rule.id.clone(),
             priority: rule.priority,
-            region: region_name,
-            state,
+            region: rule.region.clone(),
+            state: detection.state,
         }),
         screen_detection_skipped: false,
-        visible_idle: rule.visible_idle && state == AgentState::Idle,
-        visible_blocker: rule.visible_blocker && state == AgentState::Blocked,
-        visible_working: rule.visible_working && state == AgentState::Working,
-        skip_state_update: rule.skip_state_update,
+        visible_idle: detection.visible_idle,
+        visible_blocker: detection.visible_blocker,
+        visible_working: detection.visible_working,
+        skip_state_update: detection.skip_state_update,
         skipped_update_reason,
         fallback_reason: None,
         evaluated_rules,
-        warning: loaded.warning,
+        warning: loaded.warning.clone(),
     }
 }
 
 fn fallback_explain(
     agent: Option<Agent>,
-    context: Option<(LoadedManifest, Vec<EvaluatedRule>)>,
+    context: Option<(&LoadedManifest, Vec<EvaluatedRule>)>,
 ) -> DetectionExplain {
     let (source, evaluated_rules, warning) = context
-        .map(|(loaded, evaluated)| (Some(loaded.source), evaluated, loaded.warning))
+        .map(|(loaded, evaluated)| {
+            (
+                Some(loaded.source.clone()),
+                evaluated,
+                loaded.warning.clone(),
+            )
+        })
         .unwrap_or((None, Vec::new(), None));
-    let assume_idle = agent.is_some_and(|agent| agent != Agent::Codex);
 
     DetectionExplain {
         agent: agent.map(|agent| agent_label(agent).to_string()),
-        state: if assume_idle {
-            AgentState::Idle
-        } else {
-            AgentState::Unknown
-        },
+        state: agent.map_or(AgentState::Unknown, fallback_state),
         source,
         matched_rule: None,
         screen_detection_skipped: false,
@@ -476,7 +639,7 @@ fn fallback_explain(
     }
 }
 
-fn load_manifest(agent: Agent) -> Option<LoadedManifest> {
+fn load_manifest(agent: Agent) -> Option<Arc<LoadedManifest>> {
     let lock = manifest_cache();
     let guard = match lock.read() {
         Ok(guard) => guard,
@@ -490,10 +653,10 @@ fn load_manifest(agent: Agent) -> Option<LoadedManifest> {
 }
 
 fn load_manifest_uncached(agent: Agent) -> Option<LoadedManifest> {
-    let bundled = bundled_manifest(agent)?;
+    let bundled = bundled_manifest(agent);
     let path = override_path(agent);
     if !path.exists() {
-        return Some(bundled_loaded_manifest(agent, bundled));
+        return bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest));
     }
 
     let warning = match read_override_manifest(&path) {
@@ -517,7 +680,7 @@ fn load_manifest_uncached(agent: Agent) -> Option<LoadedManifest> {
             path.display()
         ),
     };
-    let mut loaded = bundled_loaded_manifest(agent, bundled);
+    let mut loaded = bundled.and_then(|manifest| bundled_loaded_manifest(agent, manifest))?;
     loaded.warning = Some(warning);
     Some(loaded)
 }
@@ -526,22 +689,29 @@ fn loaded_manifest(
     manifest: AgentManifest,
     source: ManifestSource,
 ) -> Result<LoadedManifest, String> {
-    let compiled_rules = compile_manifest(&manifest)?.into();
+    let (compiled_rules, regions) = compile_manifest(&manifest)?;
+    let mut priority_order: Vec<usize> = (0..manifest.rules.len()).collect();
+    // Stable sort: equal priorities keep manifest order, matching the
+    // first-wins tie break in `explain_loaded_manifest`.
+    priority_order.sort_by_key(|&index| std::cmp::Reverse(manifest.rules[index].priority));
     Ok(LoadedManifest {
         manifest,
         compiled_rules,
+        regions,
+        priority_order,
         source,
         warning: None,
     })
 }
 
-fn bundled_loaded_manifest(agent: Agent, manifest: AgentManifest) -> LoadedManifest {
-    loaded_manifest(manifest, ManifestSource::Bundled).unwrap_or_else(|err| {
-        panic!(
-            "bundled {} manifest could not be compiled: {err}",
-            agent_label(agent)
-        )
-    })
+fn bundled_loaded_manifest(agent: Agent, manifest: AgentManifest) -> Option<LoadedManifest> {
+    match loaded_manifest(manifest, ManifestSource::Bundled) {
+        Ok(loaded) => Some(loaded),
+        Err(err) => {
+            tracing::error!(agent = agent_label(agent), %err, "bundled manifest could not be compiled");
+            None
+        }
+    }
 }
 
 fn bundled_manifest(agent: Agent) -> Option<AgentManifest> {
@@ -549,10 +719,26 @@ fn bundled_manifest(agent: Agent) -> Option<AgentManifest> {
     BUNDLED_MANIFESTS
         .iter()
         .find(|(manifest_id, _)| *manifest_id == id)
-        .map(|(_, content)| {
-            parse_manifest(content)
-                .unwrap_or_else(|err| panic!("bundled {id} manifest is invalid: {err}"))
+        .and_then(|(_, content)| match parse_bundled_manifest(id, content) {
+            Ok(manifest) => Some(manifest),
+            Err(err) => {
+                tracing::error!(agent = id, %err, "bundled manifest is invalid");
+                None
+            }
         })
+}
+
+/// Parse a bundled manifest and hold it to the same identity check overrides
+/// get: the file's `id` must be the registry key it is filed under.
+fn parse_bundled_manifest(key: &str, content: &str) -> Result<AgentManifest, String> {
+    let manifest = parse_manifest(content)?;
+    if manifest.id != key {
+        return Err(format!(
+            "manifest id {} does not match registry key {key}",
+            manifest.id
+        ));
+    }
+    Ok(manifest)
 }
 
 fn read_override_manifest(path: &Path) -> Result<AgentManifest, String> {
@@ -677,6 +863,14 @@ fn validate_rule_gate(
     validate_gate(&manifest_gate_from_rule(rule), "rule", 0, complexity)
 }
 
+fn validate_gate_region(gate: &ManifestGate, context: &str) -> Result<(), String> {
+    match &gate.region {
+        Some(region) => validate_region_name(region)
+            .map_err(|err| format!("{context} uses invalid region: {err}")),
+        None => Ok(()),
+    }
+}
+
 fn validate_gate(
     gate: &ManifestGate,
     context: &str,
@@ -690,6 +884,7 @@ fn validate_gate(
     if complexity.total_gates > MAX_TOTAL_GATES {
         return Err(format!("manifest exceeds max gate count {MAX_TOTAL_GATES}"));
     }
+    validate_gate_region(gate, context)?;
     validate_matcher_limits(gate, context, complexity)?;
     if !gate_has_positive_matcher(gate) {
         return Err(format!("{context} must contain a positive matcher"));
@@ -723,6 +918,7 @@ fn validate_not_gate(
     if complexity.total_gates > MAX_TOTAL_GATES {
         return Err(format!("manifest exceeds max gate count {MAX_TOTAL_GATES}"));
     }
+    validate_gate_region(gate, "not gate")?;
     validate_matcher_limits(gate, "not gate", complexity)?;
     if !gate_has_any_matcher(gate) {
         return Err("not gate must contain a matcher".to_string());
@@ -795,28 +991,9 @@ fn gate_has_any_matcher(gate: &ManifestGate) -> bool {
 }
 
 fn validate_region_name(spec: &str) -> Result<(), String> {
-    let trimmed = spec.trim();
-    match trimmed {
-        "whole_recent"
-        | "after_last_prompt_marker"
-        | "before_current_prompt_marker"
-        | "whole_recent_without_current_prompt_marker"
-        | "current_prompt_block_marker"
-        | "after_current_prompt_block_marker"
-        | "prompt_box_body"
-        | "above_prompt_box"
-        | "last_non_empty_above_prompt_box"
-        | "after_last_horizontal_rule"
-        | "osc_title"
-        | "osc_progress" => Ok(()),
-        _ if region_count(trimmed, "bottom_lines").is_some()
-            || region_count(trimmed, "bottom_non_empty_lines").is_some()
-            || top_region_count(trimmed).is_some() =>
-        {
-            Ok(())
-        }
-        _ => Err(trimmed.to_string()),
-    }
+    RegionSpec::parse(spec)
+        .map(|_| ())
+        .ok_or_else(|| spec.trim().to_string())
 }
 
 fn override_path(agent: Agent) -> PathBuf {
@@ -838,6 +1015,8 @@ fn manifest_matches_agent(manifest: &AgentManifest, agent: Agent) -> bool {
 
 fn manifest_gate_from_rule(rule: &ManifestRule) -> ManifestGate {
     ManifestGate {
+        // The rule's own region is applied by the compiler as the root region.
+        region: None,
         all: rule.all.clone(),
         any: rule.any.clone(),
         not_gate: rule.not_gate.clone(),
@@ -847,35 +1026,79 @@ fn manifest_gate_from_rule(rule: &ManifestRule) -> ManifestGate {
     }
 }
 
-fn compile_manifest(manifest: &AgentManifest) -> Result<Vec<CompiledRule>, String> {
-    manifest
+#[derive(Default)]
+struct RegionTable {
+    regions: Vec<CompiledRegion>,
+}
+
+impl RegionTable {
+    fn intern(&mut self, spec: &str) -> Result<usize, String> {
+        let spec = RegionSpec::parse(spec).ok_or_else(|| format!("invalid region {spec:?}"))?;
+        if let Some(index) = self.regions.iter().position(|region| region.spec == spec) {
+            return Ok(index);
+        }
+        self.regions.push(CompiledRegion {
+            spec,
+            needs_lowercase: false,
+        });
+        Ok(self.regions.len() - 1)
+    }
+}
+
+fn compile_manifest(
+    manifest: &AgentManifest,
+) -> Result<(Vec<CompiledRule>, Vec<CompiledRegion>), String> {
+    let mut table = RegionTable::default();
+    let rules = manifest
         .rules
         .iter()
         .map(|rule| {
-            compile_gate(&manifest_gate_from_rule(rule))
-                .map(|gate| CompiledRule { gate })
+            let compile = |table: &mut RegionTable| {
+                let region = table.intern(&rule.region)?;
+                let gate = compile_gate(&manifest_gate_from_rule(rule), region, table)?;
+                let mut regions_used = Vec::new();
+                collect_gate_regions(&gate, &mut regions_used);
+                Ok::<_, String>(CompiledRule {
+                    gate,
+                    region,
+                    regions_used,
+                })
+            };
+            compile(&mut table)
                 .map_err(|err| format!("rule {} could not be compiled: {err}", rule.id))
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((rules, table.regions))
 }
 
-fn compile_gate(gate: &ManifestGate) -> Result<CompiledGate, String> {
+fn compile_gate(
+    gate: &ManifestGate,
+    inherited_region: usize,
+    table: &mut RegionTable,
+) -> Result<CompiledGate, String> {
+    let region = match &gate.region {
+        Some(spec) => table.intern(spec)?,
+        None => inherited_region,
+    };
+    if !gate.contains.is_empty()
+        && let Some(entry) = table.regions.get_mut(region)
+    {
+        entry.needs_lowercase = true;
+    }
+    let mut compile_all = |gates: &[ManifestGate]| {
+        gates
+            .iter()
+            .map(|nested| compile_gate(nested, region, table))
+            .collect::<Result<Vec<_>, _>>()
+    };
+    let all = compile_all(&gate.all)?;
+    let any = compile_all(&gate.any)?;
+    let not_gate = compile_all(&gate.not_gate)?;
     Ok(CompiledGate {
-        all: gate
-            .all
-            .iter()
-            .map(compile_gate)
-            .collect::<Result<_, _>>()?,
-        any: gate
-            .any
-            .iter()
-            .map(compile_gate)
-            .collect::<Result<_, _>>()?,
-        not_gate: gate
-            .not_gate
-            .iter()
-            .map(compile_gate)
-            .collect::<Result<_, _>>()?,
+        region,
+        all,
+        any,
+        not_gate,
         contains: gate
             .contains
             .iter()
@@ -894,9 +1117,78 @@ fn compile_gate(gate: &ManifestGate) -> Result<CompiledGate, String> {
     })
 }
 
-fn compiled_rule_matches(rule: &CompiledRule, text: &str) -> bool {
-    let lower_text = text.to_lowercase();
-    compiled_gate_matches(&rule.gate, text, &lower_text)
+fn collect_gate_regions(gate: &CompiledGate, regions: &mut Vec<usize>) {
+    if !regions.contains(&gate.region) {
+        regions.push(gate.region);
+    }
+    for nested in gate.all.iter().chain(&gate.any).chain(&gate.not_gate) {
+        collect_gate_regions(nested, regions);
+    }
+}
+
+/// Per-input region texts, extracted lazily and at most once each. Rules that
+/// share a region share its text, its lowercase form and the screen line split.
+struct RegionTexts<'a> {
+    input: DetectionInput<'a>,
+    lines: Option<Vec<&'a str>>,
+    texts: Vec<Option<RegionText<'a>>>,
+}
+
+struct RegionText<'a> {
+    text: &'a str,
+    lower: Option<String>,
+}
+
+impl<'a> RegionTexts<'a> {
+    fn new(input: DetectionInput<'a>, region_count: usize) -> Self {
+        let mut texts = Vec::with_capacity(region_count);
+        texts.resize_with(region_count, || None);
+        Self {
+            input,
+            lines: None,
+            texts,
+        }
+    }
+
+    fn prepare(&mut self, regions: &[CompiledRegion], indices: &[usize]) {
+        for &index in indices {
+            let (Some(slot), Some(region)) = (self.texts.get_mut(index), regions.get(index)) else {
+                continue;
+            };
+            if slot.is_some() {
+                continue;
+            }
+            let text = region.spec.extract(self.input, &mut self.lines);
+            let lower = region.needs_lowercase.then(|| text.to_lowercase());
+            *slot = Some(RegionText { text, lower });
+        }
+    }
+
+    fn text(&self, index: usize) -> &'a str {
+        self.texts
+            .get(index)
+            .and_then(Option::as_ref)
+            .map_or("", |region| region.text)
+    }
+
+    /// Lowercased text; empty unless some gate on the region uses `contains`,
+    /// which is the only reader.
+    fn lower(&self, index: usize) -> &str {
+        self.texts
+            .get(index)
+            .and_then(Option::as_ref)
+            .and_then(|region| region.lower.as_deref())
+            .unwrap_or("")
+    }
+}
+
+fn compiled_rule_matches(
+    rule: &CompiledRule,
+    regions: &[CompiledRegion],
+    texts: &mut RegionTexts<'_>,
+) -> bool {
+    texts.prepare(regions, &rule.regions_used);
+    compiled_gate_matches(&rule.gate, texts)
 }
 
 fn rule_evidence(rule: &ManifestRule, region_text: &str) -> RuleEvidence {
@@ -914,20 +1206,25 @@ fn rule_evidence(rule: &ManifestRule, region_text: &str) -> RuleEvidence {
 
 fn bounded_preview(text: &str) -> String {
     const MAX_CHARS: usize = 240;
-    let mut preview: String = text.chars().take(MAX_CHARS).collect();
-    if text.chars().count() > MAX_CHARS {
+    let mut chars = text.chars();
+    let mut preview: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
         preview.push_str("...");
     }
     preview
 }
 
-fn compiled_gate_matches(gate: &CompiledGate, text: &str, lower_text: &str) -> bool {
-    if !gate
-        .contains
-        .iter()
-        .all(|needle| lower_text.contains(needle))
-    {
-        return false;
+fn compiled_gate_matches(gate: &CompiledGate, texts: &RegionTexts<'_>) -> bool {
+    let text = texts.text(gate.region);
+    if !gate.contains.is_empty() {
+        let lower_text = texts.lower(gate.region);
+        if !gate
+            .contains
+            .iter()
+            .all(|needle| lower_text.contains(needle.as_str()))
+        {
+            return false;
+        }
     }
 
     if !gate.regex.iter().all(|regex| regex.is_match(text)) {
@@ -945,7 +1242,7 @@ fn compiled_gate_matches(gate: &CompiledGate, text: &str, lower_text: &str) -> b
     if !gate
         .all
         .iter()
-        .all(|nested| compiled_gate_matches(nested, text, lower_text))
+        .all(|nested| compiled_gate_matches(nested, texts))
     {
         return false;
     }
@@ -954,7 +1251,7 @@ fn compiled_gate_matches(gate: &CompiledGate, text: &str, lower_text: &str) -> b
         && !gate
             .any
             .iter()
-            .any(|nested| compiled_gate_matches(nested, text, lower_text))
+            .any(|nested| compiled_gate_matches(nested, texts))
     {
         return false;
     }
@@ -962,7 +1259,7 @@ fn compiled_gate_matches(gate: &CompiledGate, text: &str, lower_text: &str) -> b
     if gate
         .not_gate
         .iter()
-        .any(|nested| compiled_gate_matches(nested, text, lower_text))
+        .any(|nested| compiled_gate_matches(nested, texts))
     {
         return false;
     }
@@ -970,44 +1267,9 @@ fn compiled_gate_matches(gate: &CompiledGate, text: &str, lower_text: &str) -> b
     true
 }
 
+#[cfg(test)]
 fn region<'a>(input: DetectionInput<'a>, spec: &str) -> &'a str {
-    let trimmed = spec.trim();
-    // OSC regions source from their dedicated fields, not the screen.
-    match trimmed {
-        "osc_title" => return input.osc_title,
-        "osc_progress" => return input.osc_progress,
-        _ => {}
-    }
-    // All other regions operate on the screen content as before.
-    let content = input.screen;
-    match trimmed {
-        "whole_recent" => content,
-        "after_last_prompt_marker" => after_last_prompt_marker(content),
-        "before_current_prompt_marker" => before_current_prompt_marker(content),
-        "whole_recent_without_current_prompt_marker" => {
-            whole_recent_without_current_prompt_marker(content)
-        }
-        "current_prompt_block_marker" => current_prompt_block_marker(content).unwrap_or(""),
-        "after_current_prompt_block_marker" => {
-            after_current_prompt_block_marker(content).unwrap_or("")
-        }
-        "prompt_box_body" => prompt_box_body(content).unwrap_or(""),
-        "above_prompt_box" => above_prompt_box(content),
-        "last_non_empty_above_prompt_box" => last_non_empty_line(above_prompt_box(content)),
-        "after_last_horizontal_rule" => after_last_horizontal_rule(content),
-        _ => {
-            if let Some(count) = region_count(trimmed, "bottom_lines") {
-                return bottom_lines(content, count);
-            }
-            if let Some(count) = region_count(trimmed, "bottom_non_empty_lines") {
-                return bottom_non_empty_lines(content, count);
-            }
-            if let Some(count) = top_region_count(trimmed) {
-                return top_non_empty_lines(content, count);
-            }
-            ""
-        }
-    }
+    RegionSpec::parse(spec).map_or("", |spec| spec.extract(input, &mut None))
 }
 
 fn region_count(spec: &str, name: &str) -> Option<usize> {
@@ -1033,14 +1295,12 @@ fn top_region_count(spec: &str) -> Option<usize> {
         .filter(|count| *count <= MAX_TOP_REGION_LINE_COUNT)
 }
 
-fn bottom_lines(content: &str, count: usize) -> &str {
-    let lines: Vec<&str> = content.lines().collect();
+fn bottom_lines<'a>(content: &'a str, lines: &[&'a str], count: usize) -> &'a str {
     let start = lines.len().saturating_sub(count);
-    slice_from_line_index(content, &lines, start)
+    slice_from_line_index(content, lines, start)
 }
 
-fn bottom_non_empty_lines(content: &str, count: usize) -> &str {
-    let lines: Vec<&str> = content.lines().collect();
+fn bottom_non_empty_lines<'a>(content: &'a str, lines: &[&'a str], count: usize) -> &'a str {
     let Some(start_index) = lines
         .iter()
         .enumerate()
@@ -1052,11 +1312,10 @@ fn bottom_non_empty_lines(content: &str, count: usize) -> &str {
     else {
         return "";
     };
-    slice_from_line_index(content, &lines, start_index)
+    slice_from_line_index(content, lines, start_index)
 }
 
-fn top_non_empty_lines(content: &str, count: usize) -> &str {
-    let lines: Vec<&str> = content.lines().collect();
+fn top_non_empty_lines<'a>(content: &'a str, lines: &[&'a str], count: usize) -> &'a str {
     let Some(end_index) = lines
         .iter()
         .enumerate()
@@ -1067,21 +1326,19 @@ fn top_non_empty_lines(content: &str, count: usize) -> &str {
     else {
         return "";
     };
-    let byte_offset = line_start_offset(content, &lines, end_index + 1);
+    let byte_offset = line_start_offset(content, lines, end_index + 1);
     &content[..byte_offset]
 }
 
-fn after_last_prompt_marker(content: &str) -> &str {
-    let lines: Vec<&str> = content.lines().collect();
+fn after_last_prompt_marker<'a>(content: &'a str, lines: &[&'a str]) -> &'a str {
     let Some(index) = lines.iter().rposition(|line| codex_prompt_line(line)) else {
         return content;
     };
-    slice_from_line_index(content, &lines, index + 1)
+    slice_from_line_index(content, lines, index + 1)
 }
 
-fn before_current_prompt_marker(content: &str) -> &str {
-    let lines: Vec<&str> = content.lines().collect();
-    let Some(index) = current_codex_prompt_index(&lines) else {
+fn before_current_prompt_marker<'a>(content: &'a str, lines: &[&'a str]) -> &'a str {
+    let Some(index) = current_codex_prompt_index(lines) else {
         return content;
     };
     let byte_offset = lines[..index]
@@ -1091,18 +1348,16 @@ fn before_current_prompt_marker(content: &str) -> &str {
     &content[..byte_offset.min(content.len())]
 }
 
-fn whole_recent_without_current_prompt_marker(content: &str) -> &str {
-    let lines: Vec<&str> = content.lines().collect();
-    if current_codex_prompt_index(&lines).is_some() {
+fn whole_recent_without_current_prompt_marker<'a>(content: &'a str, lines: &[&'a str]) -> &'a str {
+    if current_codex_prompt_index(lines).is_some() {
         ""
     } else {
         content
     }
 }
 
-fn current_prompt_block_marker(content: &str) -> Option<&str> {
-    let lines: Vec<&str> = content.lines().collect();
-    let prompt_index = current_codex_prompt_index(&lines)?;
+fn current_prompt_block_marker<'a>(lines: &[&'a str]) -> Option<&'a str> {
+    let prompt_index = current_codex_prompt_index(lines)?;
     lines[..prompt_index]
         .iter()
         .rev()
@@ -1110,13 +1365,12 @@ fn current_prompt_block_marker(content: &str) -> Option<&str> {
         .copied()
 }
 
-fn after_current_prompt_block_marker(content: &str) -> Option<&str> {
-    let lines: Vec<&str> = content.lines().collect();
-    let prompt_index = current_codex_prompt_index(&lines)?;
+fn after_current_prompt_block_marker<'a>(content: &'a str, lines: &[&'a str]) -> Option<&'a str> {
+    let prompt_index = current_codex_prompt_index(lines)?;
     let block_index = lines[..prompt_index]
         .iter()
         .rposition(|line| codex_block_marker_line(line))?;
-    Some(slice_from_line_index(content, &lines, block_index))
+    Some(slice_from_line_index(content, lines, block_index))
 }
 
 fn current_codex_prompt_index(lines: &[&str]) -> Option<usize> {
@@ -1141,25 +1395,23 @@ fn codex_block_marker_line(line: &str) -> bool {
         || line.starts_with('\u{2713}')
 }
 
-fn prompt_box_body(content: &str) -> Option<&str> {
-    let lines: Vec<&str> = content.lines().collect();
-    let top = prompt_box_top_border_index(&lines)?;
-    let start = line_start_offset(content, &lines, top + 1);
+fn prompt_box_body<'a>(content: &'a str, lines: &[&'a str]) -> Option<&'a str> {
+    let top = prompt_box_top_border_index(lines)?;
+    let start = line_start_offset(content, lines, top + 1);
     let end_index = lines[top + 1..]
         .iter()
         .position(|line| is_horizontal_rule(line))
         .map(|relative| top + 1 + relative)
         .unwrap_or(lines.len());
-    let end = line_start_offset(content, &lines, end_index);
+    let end = line_start_offset(content, lines, end_index);
     Some(&content[start.min(content.len())..end.min(content.len())])
 }
 
-fn above_prompt_box(content: &str) -> &str {
-    let lines: Vec<&str> = content.lines().collect();
-    let Some(top) = prompt_box_top_border_index(&lines) else {
+fn above_prompt_box<'a>(content: &'a str, lines: &[&'a str]) -> &'a str {
+    let Some(top) = prompt_box_top_border_index(lines) else {
         return content;
     };
-    let end = line_start_offset(content, &lines, top);
+    let end = line_start_offset(content, lines, top);
     &content[..end.min(content.len())]
 }
 

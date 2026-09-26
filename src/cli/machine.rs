@@ -1,24 +1,9 @@
+use clap::ArgMatches;
 use serde::Serialize;
 
 use crate::client::endpoint::{EndpointCatalog, ProfileId};
 
-const HELP: &str = "Usage:
-  shepr machine list [--json]
-  shepr machine status [<label-or-id>] [--json]
-  shepr machine reconnect <label-or-id>
-  shepr machine add <ssh-target> --label <label> [--remote-session <name>]
-  shepr machine rename <profile-id> --label <label>
-  shepr machine remove <profile-id>
-  shepr machine enable <profile-id>
-  shepr machine disable <profile-id>
-
-Add connects to a manually installed remote Shepr and starts its server before saving.
-A missing or incompatible remote Shepr binary fails with an error; install Shepr on
-the remote host yourself and retry.
-Changes apply automatically to open local Shepr clients.
-Removing or disabling a machine leaves its remote sessions running.
-Saved machines contain only a label, SSH target, explicit Shepr session, and enabled state.
-SSH credentials and key material remain owned by OpenSSH.";
+use super::matches::{flag, required, string};
 
 #[derive(Serialize)]
 struct MachineListRow<'a> {
@@ -30,36 +15,26 @@ struct MachineListRow<'a> {
     selected: bool,
 }
 
-pub(super) fn run_machine_command(args: &[String]) -> std::io::Result<i32> {
-    match args.first().map(String::as_str) {
-        Some("list") => list(&args[1..]),
-        Some("status") => status(&args[1..]),
-        Some("reconnect") => reconnect(&args[1..]),
-        Some("add") => add(&args[1..]),
-        Some("rename") => rename(&args[1..]),
-        Some("remove") => remove(&args[1..]),
-        Some("enable") => set_enabled(&args[1..], true),
-        Some("disable") => set_enabled(&args[1..], false),
-        Some("help" | "--help" | "-h") => {
-            println!("{HELP}");
-            Ok(0)
+pub(super) fn run_machine_command(matches: &ArgMatches) -> std::io::Result<i32> {
+    match matches.subcommand() {
+        Some(("list", matches)) => list(flag(matches, "json")),
+        Some(("status", matches)) => {
+            status(string(matches, "machine").as_deref(), flag(matches, "json"))
         }
-        _ => {
-            eprintln!("{HELP}");
-            Ok(2)
-        }
+        Some(("reconnect", matches)) => reconnect(&required(matches, "machine")),
+        Some(("add", matches)) => add(add_args(matches)),
+        Some(("rename", matches)) => rename(
+            &required(matches, "profile-id"),
+            &required(matches, "label"),
+        ),
+        Some(("remove", matches)) => remove(&required(matches, "profile-id")),
+        Some(("enable", matches)) => set_enabled(&required(matches, "profile-id"), true),
+        Some(("disable", matches)) => set_enabled(&required(matches, "profile-id"), false),
+        _ => Ok(super::missing_subcommand()),
     }
 }
 
-fn list(args: &[String]) -> std::io::Result<i32> {
-    let json = match args {
-        [] => false,
-        [flag] if flag == "--json" => true,
-        _ => {
-            eprintln!("usage: shepr machine list [--json]");
-            return Ok(2);
-        }
-    };
+fn list(json: bool) -> std::io::Result<i32> {
     let catalog = load_catalog()?;
     let rows = catalog
         .ssh
@@ -102,19 +77,7 @@ struct MachineStatusRow<'a> {
     error: Option<String>,
 }
 
-fn status(args: &[String]) -> std::io::Result<i32> {
-    let mut json = false;
-    let mut selector = None;
-    for arg in args {
-        if arg == "--json" && !json {
-            json = true;
-        } else if !arg.starts_with('-') && selector.is_none() {
-            selector = Some(arg.as_str());
-        } else {
-            eprintln!("usage: shepr machine status [<label-or-id>] [--json]");
-            return Ok(2);
-        }
-    }
+fn status(selector: Option<&str>, json: bool) -> std::io::Result<i32> {
     let catalog = load_catalog()?;
     let profiles = match selector {
         Some(selector) => match super::target::resolve_machine(&catalog.ssh, selector) {
@@ -172,12 +135,8 @@ fn status(args: &[String]) -> std::io::Result<i32> {
     Ok(i32::from(rows.iter().any(|row| row.error.is_some())))
 }
 
-fn reconnect(args: &[String]) -> std::io::Result<i32> {
+fn reconnect(selector: &str) -> std::io::Result<i32> {
     use std::io::IsTerminal;
-    let [selector] = args else {
-        eprintln!("usage: shepr machine reconnect <label-or-id>");
-        return Ok(2);
-    };
     let catalog = load_catalog()?;
     let profile = match super::target::resolve_machine(&catalog.ssh, selector) {
         Ok(profile) => profile,
@@ -212,66 +171,21 @@ struct AddArgs {
     session: String,
 }
 
-fn parse_add_args(args: &[String]) -> Result<AddArgs, String> {
-    let args = super::expand_equals_args(args, &["--label", "--remote-session"]);
-    let mut target = None;
-    let mut label = None;
-    let mut session = None;
-    let mut index = 0;
-    while index < args.len() {
-        let (name, value) = match args[index].as_str() {
-            "--label" | "--remote-session" => {
-                let Some(value) = args.get(index + 1) else {
-                    return Err(format!("missing value for {}", args[index]));
-                };
-                index += 2;
-                (args[index - 2].as_str(), value.clone())
-            }
-            positional if !positional.starts_with('-') && target.is_none() => {
-                target = Some(positional.to_owned());
-                index += 1;
-                continue;
-            }
-            unknown => {
-                return Err(format!("unknown machine add option: {unknown}"));
-            }
-        };
-        match name {
-            "--label" if label.is_none() => label = Some(value),
-            "--remote-session" if session.is_none() => session = Some(value),
-            "--remote-session" => {
-                return Err("--remote-session can only be specified once".into());
-            }
-            "--label" => {
-                return Err("--label can only be specified once".into());
-            }
-            _ => unreachable!("validated machine add option"),
-        }
+fn add_args(matches: &ArgMatches) -> AddArgs {
+    AddArgs {
+        target: required(matches, "ssh-target"),
+        label: required(matches, "label"),
+        session: string(matches, "remote-session")
+            .unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_owned()),
     }
-    let target = target.ok_or_else(|| {
-        "usage: shepr machine add <ssh-target> --label <label> [--remote-session <name>]".to_owned()
-    })?;
-    let label = label.ok_or_else(|| "--label is required".to_owned())?;
-    let session = session.unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_owned());
-    Ok(AddArgs {
-        target,
-        label,
-        session,
-    })
 }
 
-fn add(args: &[String]) -> std::io::Result<i32> {
+fn add(args: AddArgs) -> std::io::Result<i32> {
     let AddArgs {
         target,
         label,
         session,
-    } = match parse_add_args(args) {
-        Ok(args) => args,
-        Err(error) => {
-            eprintln!("{error}");
-            return Ok(2);
-        }
-    };
+    } = args;
     let mut catalog = load_catalog()?;
     match catalog.add_ssh(label.clone(), &target, session.clone()) {
         Ok(_) => {}
@@ -315,17 +229,8 @@ fn add(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn rename(args: &[String]) -> std::io::Result<i32> {
-    let args = super::expand_equals_args(args, &["--label"]);
-    let [raw_id, flag, label] = args.as_slice() else {
-        eprintln!("usage: shepr machine rename <profile-id> --label <label>");
-        return Ok(2);
-    };
-    if flag != "--label" {
-        eprintln!("usage: shepr machine rename <profile-id> --label <label>");
-        return Ok(2);
-    }
-    let id = match ProfileId::parse(raw_id.clone()) {
+fn rename(raw_id: &str, label: &str) -> std::io::Result<i32> {
+    let id = match ProfileId::parse(raw_id.to_owned()) {
         Ok(id) => id,
         Err(error) => {
             eprintln!("error: {error}");
@@ -349,8 +254,8 @@ fn rename(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn remove(args: &[String]) -> std::io::Result<i32> {
-    let Some(id) = one_profile_id(args, "usage: shepr machine remove <profile-id>")? else {
+fn remove(raw_id: &str) -> std::io::Result<i32> {
+    let Some(id) = profile_id(raw_id) else {
         return Ok(2);
     };
     let mut catalog = load_catalog()?;
@@ -382,10 +287,8 @@ fn remove(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn set_enabled(args: &[String], enabled: bool) -> std::io::Result<i32> {
-    let action = if enabled { "enable" } else { "disable" };
-    let usage = format!("usage: shepr machine {action} <profile-id>");
-    let Some(id) = one_profile_id(args, &usage)? else {
+fn set_enabled(raw_id: &str, enabled: bool) -> std::io::Result<i32> {
+    let Some(id) = profile_id(raw_id) else {
         return Ok(2);
     };
     let mut catalog = load_catalog()?;
@@ -405,16 +308,12 @@ fn set_enabled(args: &[String], enabled: bool) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn one_profile_id(args: &[String], usage: &str) -> std::io::Result<Option<ProfileId>> {
-    let [raw] = args else {
-        eprintln!("{usage}");
-        return Ok(None);
-    };
-    match ProfileId::parse(raw.clone()) {
-        Ok(id) => Ok(Some(id)),
+fn profile_id(raw: &str) -> Option<ProfileId> {
+    match ProfileId::parse(raw.to_owned()) {
+        Ok(id) => Some(id),
         Err(error) => {
             eprintln!("error: {error}");
-            Ok(None)
+            None
         }
     }
 }
@@ -430,6 +329,23 @@ fn store_catalog(catalog: &EndpointCatalog) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_add_args(args: &[String]) -> Result<AddArgs, clap::Error> {
+        let mut argv = vec![
+            "shepr".to_string(),
+            "machine".to_string(),
+            "add".to_string(),
+        ];
+        argv.extend_from_slice(args);
+        let matches = super::super::spec::command().try_get_matches_from(&argv)?;
+        let Some(("machine", machine)) = matches.subcommand() else {
+            panic!("machine command did not parse");
+        };
+        let Some(("add", add)) = machine.subcommand() else {
+            panic!("machine add did not parse");
+        };
+        Ok(add_args(add))
+    }
 
     #[test]
     fn add_parser_preserves_values_across_argument_orders() {
@@ -496,12 +412,19 @@ mod tests {
     }
 
     #[test]
+    fn add_label_does_not_swallow_the_next_option() {
+        // `--label` needs a value; a following option is not taken as one, so
+        // the missing label is what gets reported.
+        let args = ["workstation.coder", "--label", "--remote-session", "agents"]
+            .map(str::to_owned)
+            .to_vec();
+        let error = parse_add_args(&args).expect_err("test precondition");
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+    }
+
+    #[test]
     fn profile_id_parser_rejects_target_text() {
-        assert!(
-            one_profile_id(&["build.example".into()], "usage")
-                .expect("test precondition")
-                .is_none()
-        );
+        assert!(profile_id("build.example").is_none());
     }
 
     #[test]

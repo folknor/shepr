@@ -221,10 +221,9 @@ impl App {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&target.tab_id) else {
             return tab_not_found(id, &target.tab_id);
         };
-        let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
+        if self.public_tab_id(ws_idx, tab_idx).is_none() {
             return tab_not_found(id, &target.tab_id);
-        };
-        let workspace_id = self.public_workspace_id(ws_idx);
+        }
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
             return tab_not_found(id, &target.tab_id);
         };
@@ -237,27 +236,14 @@ impl App {
             .unwrap_or_default();
 
         if closes_workspace {
-            let workspace = self.workspace_info(ws_idx);
-            self.state.selected = ws_idx;
-            self.state.close_selected_workspace();
+            let close_events = self.workspace_close_events(ws_idx);
+            self.state.close_workspace_at(ws_idx);
             self.state.clear_stale_previous_pane_focus(pane_ids);
             self.shutdown_detached_terminal_runtimes();
-            self.emit_event(EventEnvelope {
-                event: EventKind::TabClosed,
-                data: EventData::TabClosed {
-                    tab_id,
-                    workspace_id: workspace_id.clone(),
-                },
-            });
-            self.emit_event(EventEnvelope {
-                event: EventKind::WorkspaceClosed,
-                data: EventData::WorkspaceClosed {
-                    workspace_id,
-                    workspace: Some(workspace),
-                },
-            });
+            self.emit_events(close_events);
             return encode_success(id, ResponseResult::Ok {});
         }
+        let close_events = self.tab_close_events(ws_idx, tab_idx);
 
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return tab_not_found(id, &target.tab_id);
@@ -269,17 +255,12 @@ impl App {
                 format!("tab {} could not be closed", target.tab_id),
             );
         }
+        self.state.remove_pane_aliases(&pane_ids);
         self.state.clear_stale_previous_pane_focus(pane_ids);
         self.state.remove_unattached_terminal_ids(terminal_ids);
         self.shutdown_detached_terminal_runtimes();
         self.schedule_session_save();
-        self.emit_event(EventEnvelope {
-            event: EventKind::TabClosed,
-            data: EventData::TabClosed {
-                tab_id,
-                workspace_id,
-            },
-        });
+        self.emit_events(close_events);
 
         encode_success(id, ResponseResult::Ok {})
     }
@@ -335,6 +316,8 @@ mod tests {
         app.state.selected = 0;
         let tab_id = app.public_tab_id(0, 0).expect("test precondition");
         let workspace_id = app.public_workspace_id(0);
+        let root_pane = app.state.workspaces[0].tabs[0].root_pane;
+        let pane_id = app.public_pane_id(0, root_pane).expect("test precondition");
 
         let response = app.handle_tab_close(
             "req".into(),
@@ -353,22 +336,94 @@ mod tests {
                 .iter()
                 .map(|(_, event)| event.event)
                 .collect::<Vec<_>>(),
-            [EventKind::TabClosed, EventKind::WorkspaceClosed]
+            [
+                EventKind::PaneClosed,
+                EventKind::TabClosed,
+                EventKind::WorkspaceClosed
+            ]
         );
         assert!(matches!(
             &events[0].1.data,
+            EventData::PaneClosed {
+                pane_id: closed_pane_id,
+                workspace_id: closed_workspace_id,
+            } if closed_pane_id == &pane_id && closed_workspace_id == &workspace_id
+        ));
+        assert!(matches!(
+            &events[1].1.data,
             EventData::TabClosed {
                 tab_id: closed_tab_id,
                 workspace_id: closed_workspace_id,
             } if closed_tab_id == &tab_id && closed_workspace_id == &workspace_id
         ));
         assert!(matches!(
-            &events[1].1.data,
+            &events[2].1.data,
             EventData::WorkspaceClosed {
                 workspace_id: closed_workspace_id,
                 workspace: Some(workspace),
             } if closed_workspace_id == &workspace_id
                 && workspace.workspace_id == workspace_id
+        ));
+    }
+
+    #[test]
+    fn api_tab_close_announces_every_pane_it_removes() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            event_hub.clone(),
+        );
+        let mut workspace = Workspace::test_new("tabs");
+        let split = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        workspace.test_add_tab(Some("survivor"));
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+        app.state
+            .public_pane_id_aliases
+            .insert("old-root".into(), root);
+        app.state
+            .public_pane_id_aliases
+            .insert("old-split".into(), split);
+        let closed_panes = [
+            app.public_pane_id(0, root).expect("test precondition"),
+            app.public_pane_id(0, split).expect("test precondition"),
+        ];
+        let tab_id = app.public_tab_id(0, 0).expect("test precondition");
+
+        let response = app.handle_tab_close(
+            "req".into(),
+            &TabTarget {
+                tab_id: tab_id.clone(),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).expect("test precondition");
+        assert_eq!(success.result, ResponseResult::Ok {});
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        assert!(!app.state.public_pane_id_aliases.contains_key("old-root"));
+        assert!(!app.state.public_pane_id_aliases.contains_key("old-split"));
+        let events = event_hub.events_after(0);
+        let mut pane_closed = events
+            .iter()
+            .filter_map(|(_, event)| match &event.data {
+                EventData::PaneClosed { pane_id, .. } => Some(pane_id.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        pane_closed.sort();
+        let mut expected = closed_panes.to_vec();
+        expected.sort();
+        assert_eq!(pane_closed, expected);
+        assert!(matches!(
+            &events.last().expect("tab close event").1.data,
+            EventData::TabClosed { tab_id: closed, .. } if closed == &tab_id
         ));
     }
 

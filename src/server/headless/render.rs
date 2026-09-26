@@ -552,11 +552,18 @@ impl HeadlessServer {
             let mut surface_parts = None;
             let frame = match mode {
                 ClientConnectionMode::ClientShell => {
-                    let crate::server::client_shell::RenderedPaneSurface {
+                    // Rendered above for every active shell client, and
+                    // inactive ones were skipped just before this match, so
+                    // there is always a surface here; without one there is
+                    // nothing to send.
+                    let Some(crate::server::client_shell::RenderedPaneSurface {
                         frame,
                         panes,
                         splits,
-                    } = shell_render.expect("active shell surface");
+                    }) = shell_render
+                    else {
+                        continue;
+                    };
                     surface_parts = Some((panes, splits));
                     frame
                 }

@@ -189,11 +189,15 @@ fn unwrapped_text(rows: &[ScreenTextRow]) -> String {
     let mut lines = Vec::new();
     let mut current = String::new();
     for row in rows {
-        let text = row_text(row);
         if row.soft_wrapped {
-            current.push_str(text.trim_end());
+            // A soft wrap only happens once output reaches the last column, so
+            // every cell of the row is real content: trailing spaces are the
+            // text ("hello world" wrapped at the space), not padding. The one
+            // exception is the spacer a wide character leaves in the last
+            // column when it does not fit and moves to the next row.
+            push_row_text(&mut current, row, true);
         } else {
-            current.push_str(text.trim_end());
+            current.push_str(row_text(row).trim_end());
             lines.push(std::mem::take(&mut current));
         }
     }
@@ -217,8 +221,15 @@ fn lines_to_text(lines: &[String]) -> String {
 
 fn row_text(row: &ScreenTextRow) -> String {
     let mut text = String::new();
+    push_row_text(&mut text, row, false);
+    text
+}
+
+fn push_row_text(text: &mut String, row: &ScreenTextRow, skip_spacer_head: bool) {
     for cell in &row.cells {
-        if cell.wide == CellWide::SpacerTail {
+        if cell.wide == CellWide::SpacerTail
+            || (skip_spacer_head && cell.wide == CellWide::SpacerHead)
+        {
             continue;
         }
         if cell.graphemes.is_empty()
@@ -231,7 +242,6 @@ fn row_text(row: &ScreenTextRow) -> String {
             }));
         }
     }
-    text
 }
 
 #[cfg(test)]
@@ -539,9 +549,36 @@ mod tests {
         assert_eq!(
             snapshot_text(&rows, 2, true, true),
             TerminalReadSnapshot {
-                text: "helloworld\n".into(),
+                text: "hello world\n".into(),
                 truncated: true,
             }
         );
+    }
+
+    #[test]
+    fn unwrapping_skips_the_spacer_left_by_a_wrapped_wide_character() {
+        let mut first = row("abc");
+        first.cells.push(ScreenTextCell {
+            wide: CellWide::SpacerHead,
+            graphemes: vec![' ' as u32],
+        });
+        first.soft_wrapped = true;
+        let mut second = ScreenTextRow {
+            cells: vec![
+                ScreenTextCell {
+                    wide: CellWide::Wide,
+                    graphemes: vec!['漢' as u32],
+                },
+                ScreenTextCell {
+                    wide: CellWide::SpacerTail,
+                    graphemes: Vec::new(),
+                },
+            ],
+            soft_wrapped: false,
+            wrap_continuation: true,
+        };
+        second.cells.extend(row("d  ").cells);
+
+        assert_eq!(unwrapped_text(&[first, second]), "abc漢d\n");
     }
 }

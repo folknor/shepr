@@ -13,11 +13,14 @@ use crate::api::server::{
     dispatch_to_app_with_timeout, should_stop_connection,
 };
 use crate::api::subscriptions::ActiveSubscription;
-use crate::api::subscriptions::{match_output, output_match_read_source};
+use crate::api::subscriptions::{
+    match_output, output_match_read_source, subscription_events_after,
+};
 use crate::api::{ApiRequestSender, EventHub};
 use crate::ipc::LocalStream;
 
 const AGENT_PROMPT_EFFECT_TIMEOUT_MS: u64 = 5_000;
+const AGENT_PROMPT_RESPONSE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub(super) fn wait_for_output(
     request_id: String,
@@ -62,6 +65,7 @@ pub(super) fn wait_for_output(
                 pane_id: params.pane_id.clone(),
                 source: output_match_read_source(&params.source),
                 lines: params.lines,
+                // `strip_ansi: false` switches the read to the ANSI renderer.
                 format: crate::api::schema::ReadFormat::Text,
                 strip_ansi: params.strip_ansi,
                 intent: crate::api::schema::ReadIntent::Passive,
@@ -223,7 +227,18 @@ pub(super) fn prompt_agent(
         id: request_id.clone(),
         method: Method::AgentPrompt(params),
     };
-    let prompt_response = dispatch_to_app_with_timeout(prompt_request, api_tx, None);
+    // The app side stops waiting for the PTY write at `submission_deadline`
+    // and answers with its own timeout. This bound only catches an app that
+    // never answers, so it trails the deadline by a grace period to let the
+    // more specific app response win.
+    let prompt_response = match remaining_timeout_ms(wait.timeout_ms, wait_started) {
+        Some(timeout_ms) => dispatch_to_app_with_caller_timeout(
+            prompt_request,
+            api_tx,
+            Some(std::time::Duration::from_millis(timeout_ms) + AGENT_PROMPT_RESPONSE_GRACE),
+        ),
+        None => dispatch_to_app_with_timeout(prompt_request, api_tx, None),
+    };
     let Ok(prompted) = agent_from_response(&request_id, &prompt_response) else {
         return Ok(Some(prompt_response));
     };
@@ -385,7 +400,21 @@ fn wait_for_resolved_agent(
 
         let mut should_probe = false;
         let mut matched_event_status = None;
-        for (sequence, event) in event_hub.events_after(last_event_sequence) {
+        // Checked: if the retained history rolled past our cursor, the pane's
+        // close or exit event may be among the lost ones, and waiting on would
+        // never end.
+        let events = match subscription_events_after(event_hub, last_event_sequence) {
+            Ok(events) => events,
+            Err(error) => {
+                return serde_json::to_string(&ErrorResponse {
+                    id: request_id,
+                    error,
+                })
+                .map(|response| Some(AgentWaitOutcome::Response(response)))
+                .map_err(std::io::Error::other);
+            }
+        };
+        for (sequence, event) in events {
             last_event_sequence = sequence;
             match event.data {
                 EventData::PaneAgentDetected {
@@ -733,16 +762,19 @@ pub(super) fn wait_for_event(
             return Ok(None);
         }
 
+        // Every error is final (pane gone, history lost, app unavailable):
+        // retrying would spin until the deadline, or forever without one.
         match active.poll_for_wait(api_tx, event_hub) {
             Ok(Some(event)) => return Ok(Some(wait_matched_response(&request_id, event))),
             Ok(None) => {}
-            Err(mut response) if response.error.code == "pane_not_found" => {
-                response.id = request_id;
-                return serde_json::to_string(&response)
-                    .map(Some)
-                    .map_err(std::io::Error::other);
+            Err(error) => {
+                return serde_json::to_string(&ErrorResponse {
+                    id: request_id,
+                    error,
+                })
+                .map(Some)
+                .map_err(std::io::Error::other);
             }
-            Err(_) => {}
         }
 
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {

@@ -3,69 +3,19 @@ use serde::Serialize;
 use crate::api;
 use crate::api::client::ApiClientError;
 
-pub(super) fn run_status_command(args: &[String]) -> std::io::Result<i32> {
-    let Some((scope, json)) = parse_status_args(args) else {
-        return Ok(2);
+pub(super) fn run_status_command(matches: &clap::ArgMatches) -> std::io::Result<i32> {
+    // `--json` may be given on `status` itself or on its scope subcommand.
+    let json = |scope: &clap::ArgMatches| {
+        super::matches::flag(matches, "json") || super::matches::flag(scope, "json")
     };
-
-    match scope {
-        StatusScope::Full => print_full_status(json),
-        StatusScope::Server => print_server_status(json),
-        StatusScope::Client => {
-            print_client_status(json)?;
+    match matches.subcommand() {
+        None => print_full_status(json(matches)),
+        Some(("server", scope)) => print_server_status(json(scope)),
+        Some(("client", scope)) => {
+            print_client_status(json(scope))?;
             Ok(0)
         }
-        StatusScope::Help => {
-            print_status_help();
-            Ok(0)
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StatusScope {
-    Full,
-    Server,
-    Client,
-    Help,
-}
-
-fn parse_status_args(args: &[String]) -> Option<(StatusScope, bool)> {
-    match args.first().map(String::as_str) {
-        None => Some((StatusScope::Full, false)),
-        Some("--json") if args.len() == 1 => Some((StatusScope::Full, true)),
-        Some("server") => {
-            parse_status_scope_args(args, StatusScope::Server, "shepr status server [--json]")
-        }
-        Some("client") => {
-            parse_status_scope_args(args, StatusScope::Client, "shepr status client [--json]")
-        }
-        Some("help" | "--help" | "-h") => {
-            if args.len() > 1 {
-                print_status_help();
-                return None;
-            }
-            Some((StatusScope::Help, false))
-        }
-        Some(_) => {
-            print_status_help();
-            None
-        }
-    }
-}
-
-fn parse_status_scope_args(
-    args: &[String],
-    scope: StatusScope,
-    usage: &str,
-) -> Option<(StatusScope, bool)> {
-    match args.get(1).map(String::as_str) {
-        None => Some((scope, false)),
-        Some("--json") if args.len() == 2 => Some((scope, true)),
-        _ => {
-            eprintln!("usage: {usage}");
-            None
-        }
+        Some(_) => Ok(super::missing_subcommand()),
     }
 }
 
@@ -334,13 +284,6 @@ fn current_exe_label() -> String {
     std::env::current_exe()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|err| format!("unknown ({err})"))
-}
-
-fn print_status_help() {
-    eprintln!("shepr status commands:");
-    eprintln!("  shepr status [--json]         show local client and running server status");
-    eprintln!("  shepr status server [--json]  show running server status");
-    eprintln!("  shepr status client [--json]  show local client binary status");
 }
 
 #[cfg(test)]

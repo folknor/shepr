@@ -22,17 +22,6 @@
 - A queued `prefix+b` toggles the sidebar and invalidates the surface but never sends the resize.
 - **Suggested fix:** return the full `ClientShellInput` from `handle_endpoint_result` and route it through `finish_client_shell_input`.
 
-## UI-002 - The client can panic when a pane surface is larger than the current layout
-
-- `render_selection_highlight` (`src/ui/panes.rs:691`) and `render_client_copy_search_highlights` (`src/client/shell/composition.rs:599`) index `Buffer[(x,y)]` directly. In ratatui-core 0.1.2 that panics when out of bounds.
-- The index is `hit.inner_rect` (surface pane rect plus layout offset), which `compose` never clips to the buffer (`composition.rs:232-269`). Only `blit_pane_surface` clips.
-- Two ways a mismatched surface gets presented:
-  - **Resize race:** Resize, sidebar toggle and sidebar drag call `invalidate_pane_surface`. A surface already in flight at the old size is then accepted by `set_pane_surface`/`install_pane_surface` with no geometry check (`state.rs:1065-1206`).
-  - **`hide_tab_bar_when_single_tab`:** going from 1 tab to 2 changes `layout()` from the snapshot alone, with no invalidation (`install_client_shell_snapshot`, `shell_runtime.rs:572-597`). The surface for that revision is one row too tall. (Related: EP-006.)
-- The selection also survives: `install_pane_surface` only invalidates it when there is a previous surface to compare against.
-- **Result:** any visible selection or copy-search match on the pane's bottom row crashes the client.
-- **Suggested fix:** clip every hit to `layout.pane_surface`, or reject surfaces whose geometry does not match the requested surface size.
-
 ## UI-003 - `ui.redraw_on_focus_gained` does nothing in shell mode
 
 - The config docs promise to "Force a full host-terminal redraw".
@@ -106,3 +95,10 @@ Surfaced in two scopes: client UI, platform.
 - The `ClientShellKeybindingSource::Local` branch of `apply_snapshot_keybindings` and `local_keys` are unreachable.
 - Workspace grouping (`indented`, `last_child`, `suppress_git_details`) is always false.
 - The host parser never produces `RawInputEvent::Text`.
+
+## UI-016 - A mismatched pane surface is still presented, and the other renderers are unaudited for direct indexing
+
+- `compose` deliberately leaves pane hits unclipped; the selection, copy-search and copy-cursor draws now go through `cell_mut`. But a surface larger than the layout (in-flight surface after a resize or sidebar toggle, or the `hide_tab_bar_when_single_tab` 1→2 tab switch; see EP-006) is still accepted by `set_pane_surface`/`install_pane_surface` with no geometry check. For that frame, mouse hit-testing and copy-mode cursor placement use rows that aren't on screen.
+- A selection survives `install_pane_surface` when there is no previous surface to compare against, and can highlight stale coordinates for a frame.
+- The non-pane renderers `compose` calls (sidebar, tab bar, overlays, notices, config-diagnostic banner) take layout-derived rects and were not audited for direct `Buffer[(x,y)]` indexing.
+- `restore_mode_bar` and the `mode_bar_cells` slice index `frame.cells` directly; safe only while `render_mode_bar` returns a rect inside the frame.

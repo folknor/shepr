@@ -685,10 +685,22 @@ pub(crate) fn render_selection_highlight<P: PartialEq>(
         return;
     };
     let style = automatic_selection_style(p, host_theme);
-    for y in 0..inner.height {
-        for x in 0..inner.width {
-            if selection.contains(y, x, scroll_metrics) {
-                buffer[(inner.x + x, inner.y + y)].set_style(style);
+    // `inner` can extend past the buffer: the client composes pane surfaces whose
+    // geometry was produced for a different layout (a resize or sidebar toggle racing
+    // an in-flight surface, or the tab bar appearing when a second tab opens). Only
+    // the visible part of `inner` is painted; `Buffer` indexing would panic.
+    let visible = inner.intersection(buffer.area);
+    if visible.is_empty() {
+        return;
+    }
+    for screen_y in visible.top()..visible.bottom() {
+        let y = screen_y - inner.y;
+        for screen_x in visible.left()..visible.right() {
+            let x = screen_x - inner.x;
+            if selection.contains(y, x, scroll_metrics)
+                && let Some(cell) = buffer.cell_mut((screen_x, screen_y))
+            {
+                cell.set_style(style);
             }
         }
     }
@@ -1487,6 +1499,52 @@ mod tests {
         assert_eq!(second.add_modifier, expected_style.add_modifier);
         assert_eq!(third.add_modifier, expected_style.add_modifier);
         assert!(!second.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn selection_highlight_clips_pane_rect_larger_than_buffer() {
+        // The client can compose a pane surface produced for another layout, so the
+        // pane's inner rect may reach past the frame. Painting must clip, not panic.
+        let palette = Palette::catppuccin();
+        let host_theme = crate::terminal_theme::TerminalTheme::default();
+        let expected = automatic_selection_style(&palette, host_theme);
+        let selection = Some(Selection::absolute_range(
+            PaneId::from_raw(1),
+            (0, 0),
+            (2, 3),
+        ));
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 2));
+
+        render_selection_highlight(
+            selection.as_ref(),
+            &mut buffer,
+            &PaneId::from_raw(1),
+            Rect::new(1, 1, 4, 3),
+            None,
+            &palette,
+            host_theme,
+        );
+
+        // Pane-relative (0, 0)..(0, 2) lands on screen row 1, columns 1..=3; the
+        // rest of the pane is off-buffer and silently skipped.
+        for x in 1..4 {
+            assert_eq!(buffer[(x, 1)].style().bg, expected.bg, "column {x}");
+        }
+        assert_ne!(buffer[(0, 1)].style().bg, expected.bg);
+        for x in 0..4 {
+            assert_ne!(buffer[(x, 0)].style().bg, expected.bg, "row 0 column {x}");
+        }
+
+        // A rect entirely outside the buffer paints nothing and does not panic.
+        render_selection_highlight(
+            selection.as_ref(),
+            &mut buffer,
+            &PaneId::from_raw(1),
+            Rect::new(10, 10, 4, 3),
+            None,
+            &palette,
+            host_theme,
+        );
     }
 
     #[test]

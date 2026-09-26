@@ -171,6 +171,13 @@ pub(crate) struct ClientConnection {
     /// Whether this shell uses the endpoint-owned keymap rather than a client-owned keymap.
     pub(crate) shell_uses_endpoint_keybindings: bool,
     /// Channels for sending framed ServerMessage data to the client writer thread.
+    ///
+    /// Always `Some` in production: every accepted connection brings a writer,
+    /// and a detach removes the client outright rather than keeping a
+    /// writer-less entry. `None` exists for test fixtures that exercise
+    /// server state without a transport; the `writer.is_none()` checks in the
+    /// server serve those. Making the field non-optional would mean giving
+    /// every such fixture a channel pair.
     pub(crate) writer: Option<ClientWriter>,
 }
 

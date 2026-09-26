@@ -1,11 +1,38 @@
 //! Direct terminal attach input parsing and semantic actions.
 
-use std::io;
-
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
-use super::write_to_server;
 use crate::protocol::{AttachScrollDirection, AttachScrollSource, ClientMessage};
+
+pub(super) fn forward_input(write_stream: &mut super::endpoint::EndpointRegistry, data: &[u8]) {
+    use super::endpoint::EndpointSendOutcome;
+
+    let oversized = data.len() > crate::protocol::MAX_INPUT_PAYLOAD;
+    let flush = |stream: &mut super::endpoint::EndpointRegistry| {
+        stream.flush_active(std::time::Instant::now() + std::time::Duration::from_secs(5))
+    };
+    // The endpoint writer has a bounded queue. Stream a large paste through
+    // it one frame at a time so splitting the frame does not simply overflow
+    // that queue a few chunks later.
+    if oversized && flush(write_stream) == EndpointSendOutcome::NotSent {
+        return;
+    }
+    for message in input_messages(data) {
+        if write_stream.send(&message) == EndpointSendOutcome::NotSent {
+            break;
+        }
+        if oversized && flush(write_stream) == EndpointSendOutcome::NotSent {
+            break;
+        }
+    }
+}
+
+fn input_messages(data: &[u8]) -> impl Iterator<Item = ClientMessage> + '_ {
+    data.chunks(crate::protocol::MAX_INPUT_PAYLOAD)
+        .map(|chunk| ClientMessage::Input {
+            data: chunk.to_vec(),
+        })
+}
 
 #[derive(Debug, Default)]
 pub(super) struct AttachEscapeState {
@@ -240,10 +267,8 @@ fn attach_scroll_action(
     }
 }
 
-pub(super) fn write_attach_semantic_action(
-    stream: &mut impl super::ClientMessageSink,
-    action: AttachSemanticAction,
-) -> io::Result<()> {
+/// The server message for a semantic attach action, or `None` for one that sends nothing.
+pub(super) fn attach_semantic_message(action: AttachSemanticAction) -> Option<ClientMessage> {
     let message = match action {
         AttachSemanticAction::Scroll {
             source,
@@ -271,9 +296,9 @@ pub(super) fn write_attach_semantic_action(
             modifiers,
             lines: 1,
         },
-        AttachSemanticAction::Ignore => return Ok(()),
+        AttachSemanticAction::Ignore => return None,
     };
-    write_to_server(stream, &message)
+    Some(message)
 }
 
 #[cfg(test)]
@@ -281,6 +306,69 @@ mod tests {
     use super::*;
     use crate::protocol::{AttachScrollDirection, AttachScrollSource};
 
+    #[test]
+    fn oversized_attach_input_is_split_into_valid_frames() {
+        let data = vec![b'x'; crate::protocol::MAX_FRAME_SIZE + 17];
+        let mut reconstructed = Vec::new();
+        let mut frames = 0;
+        for message in input_messages(&data) {
+            let ClientMessage::Input { data: chunk } = &message else {
+                panic!("attach input must be sent as input");
+            };
+            assert!(chunk.len() <= crate::protocol::MAX_INPUT_PAYLOAD);
+            reconstructed.extend_from_slice(chunk);
+            let mut frame = Vec::new();
+            crate::protocol::write_message(&mut frame, &message).expect("chunk must fit a frame");
+            frames += 1;
+        }
+        assert!(frames > 1);
+        assert_eq!(reconstructed, data);
+    }
+
+    #[test]
+    fn oversized_attach_input_waits_for_each_chunk_to_drain() {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct Sent {
+            chunks: Vec<usize>,
+            flushes: usize,
+        }
+        struct Capture(Arc<Mutex<Sent>>);
+        impl super::super::endpoint::EndpointTransport for Capture {
+            fn send(&mut self, message: &ClientMessage) -> std::io::Result<()> {
+                if let ClientMessage::Input { data } = message
+                    && let Ok(mut sent) = self.0.lock()
+                {
+                    sent.chunks.push(data.len());
+                }
+                Ok(())
+            }
+            fn flush(&mut self, _deadline: std::time::Instant) -> std::io::Result<()> {
+                if let Ok(mut sent) = self.0.lock() {
+                    sent.flushes += 1;
+                }
+                Ok(())
+            }
+        }
+
+        let sent = Arc::new(Mutex::new(Sent::default()));
+        let mut registry = super::super::endpoint::EndpointRegistry::new(
+            Capture(Arc::clone(&sent)),
+            1,
+            super::super::endpoint::EndpointNegotiation::default(),
+        );
+        forward_input(
+            &mut registry,
+            &vec![b'x'; crate::protocol::MAX_FRAME_SIZE + 17],
+        );
+        let sent = sent.lock().expect("test precondition");
+        assert_eq!(
+            sent.chunks.iter().sum::<usize>(),
+            crate::protocol::MAX_FRAME_SIZE + 17
+        );
+        assert_eq!(sent.flushes, sent.chunks.len() + 1);
+    }
     #[test]
     fn attach_escape_detaches_on_prefix_q() {
         let mut escape = AttachEscapeState::default();
@@ -536,6 +624,21 @@ mod tests {
             }
             other => panic!("expected page-down scroll action, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn ignored_semantic_action_sends_nothing() {
+        assert!(attach_semantic_message(AttachSemanticAction::Ignore).is_none());
+        assert!(matches!(
+            attach_semantic_message(AttachSemanticAction::Mouse {
+                kind: crate::protocol::ClientMouseKind::Down(
+                    crate::protocol::ClientMouseButton::Left
+                ),
+                position: crate::protocol::ClientMousePosition::Cell { column: 1, row: 2 },
+                modifiers: 0,
+            }),
+            Some(ClientMessage::AttachMouse { lines: 1, .. })
+        ));
     }
 
     #[test]

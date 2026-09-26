@@ -1,187 +1,63 @@
 use std::collections::HashMap;
 
+use clap::ArgMatches;
+
 use crate::api::schema::{TabCreateParams, TabListParams, TabRenameParams};
 
-pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(String::as_str) else {
-        print_tab_help();
-        return Ok(2);
-    };
+use super::matches::{flag, required, string, values, words};
 
-    match subcommand {
-        "list" => tab_list(&args[1..]),
-        "create" => tab_create(&args[1..]),
-        "get" => tab_get(&args[1..]),
-        "focus" => tab_focus(&args[1..]),
-        "rename" => tab_rename(&args[1..]),
-        "close" => tab_close(&args[1..]),
-        "help" | "--help" | "-h" => {
-            print_tab_help();
-            Ok(0)
-        }
-        _ => {
-            print_tab_help();
-            Ok(2)
-        }
+pub(super) fn run_tab_command(matches: &ArgMatches) -> std::io::Result<i32> {
+    match matches.subcommand() {
+        Some(("list", matches)) => super::runtime::tab_list(TabListParams {
+            workspace_id: string(matches, "workspace"),
+        }),
+        Some(("create", matches)) => super::runtime::tab_create(create_params(matches)),
+        Some(("get", matches)) => super::runtime::tab_get(required(matches, "tab_id")),
+        Some(("focus", matches)) => super::runtime::tab_focus(required(matches, "tab_id")),
+        Some(("rename", matches)) => super::runtime::tab_rename(TabRenameParams {
+            tab_id: required(matches, "tab_id"),
+            label: words(matches, "label"),
+        }),
+        Some(("close", matches)) => super::runtime::tab_close(required(matches, "tab_id")),
+        _ => Ok(super::missing_subcommand()),
     }
 }
 
-fn tab_list(args: &[String]) -> std::io::Result<i32> {
-    let mut workspace_id = None;
-
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--workspace" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --workspace");
-                    return Ok(2);
-                };
-                workspace_id = Some(super::normalize_workspace_id(value));
-                index += 2;
-            }
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
-        }
+fn create_params(matches: &ArgMatches) -> TabCreateParams {
+    TabCreateParams {
+        workspace_id: string(matches, "workspace"),
+        cwd: string(matches, "cwd"),
+        focus: flag(matches, "focus"),
+        label: string(matches, "label"),
+        env: values::<(String, String)>(matches, "env")
+            .into_iter()
+            .collect::<HashMap<_, _>>(),
     }
-
-    super::runtime::tab_list(TabListParams { workspace_id })
 }
 
-fn tab_create(args: &[String]) -> std::io::Result<i32> {
-    let mut workspace_id = None;
-    let mut cwd = None;
-    let mut focus = false;
-    let mut label = None;
-    let mut env = HashMap::new();
+#[cfg(test)]
+mod tests {
+    use super::super::tests::command_matches;
 
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--workspace" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --workspace");
-                    return Ok(2);
-                };
-                workspace_id = Some(super::normalize_workspace_id(value));
-                index += 2;
-            }
-            "--cwd" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --cwd");
-                    return Ok(2);
-                };
-                cwd = Some(value.clone());
-                index += 2;
-            }
-            "--label" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --label");
-                    return Ok(2);
-                };
-                label = Some(value.clone());
-                index += 2;
-            }
-            "--focus" => {
-                focus = true;
-                index += 1;
-            }
-            "--no-focus" => {
-                focus = false;
-                index += 1;
-            }
-            "--env" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --env");
-                    return Ok(2);
-                };
-                let (key, value) = match super::parse_env_assignment(value) {
-                    Ok(pair) => pair,
-                    Err(err) => {
-                        eprintln!("{err}");
-                        return Ok(2);
-                    }
-                };
-                env.insert(key, value);
-                index += 2;
-            }
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
-        }
+    #[test]
+    fn create_reads_every_option() {
+        let params = super::create_params(&command_matches(&[
+            "tab",
+            "create",
+            "--workspace=w2",
+            "--cwd",
+            "/srv",
+            "--label",
+            "logs",
+            "--env",
+            "A=1",
+            "--no-focus",
+            "--focus",
+        ]));
+        assert_eq!(params.workspace_id.as_deref(), Some("w2"));
+        assert_eq!(params.cwd.as_deref(), Some("/srv"));
+        assert_eq!(params.label.as_deref(), Some("logs"));
+        assert!(params.focus);
+        assert_eq!(params.env.get("A").map(String::as_str), Some("1"));
     }
-
-    super::runtime::tab_create(TabCreateParams {
-        workspace_id,
-        cwd,
-        focus,
-        label,
-        env,
-    })
-}
-
-fn tab_get(args: &[String]) -> std::io::Result<i32> {
-    let Some(raw_tab_id) = args.first() else {
-        eprintln!("usage: shepr tab get <tab_id>");
-        return Ok(2);
-    };
-    if args.len() != 1 {
-        eprintln!("usage: shepr tab get <tab_id>");
-        return Ok(2);
-    }
-
-    super::runtime::tab_get(super::normalize_tab_id(raw_tab_id))
-}
-
-fn tab_focus(args: &[String]) -> std::io::Result<i32> {
-    let Some(raw_tab_id) = args.first() else {
-        eprintln!("usage: shepr tab focus <tab_id>");
-        return Ok(2);
-    };
-    if args.len() != 1 {
-        eprintln!("usage: shepr tab focus <tab_id>");
-        return Ok(2);
-    }
-
-    super::runtime::tab_focus(super::normalize_tab_id(raw_tab_id))
-}
-
-fn tab_rename(args: &[String]) -> std::io::Result<i32> {
-    if args.len() < 2 {
-        eprintln!("usage: shepr tab rename <tab_id> <label>");
-        return Ok(2);
-    }
-
-    super::runtime::tab_rename(TabRenameParams {
-        tab_id: super::normalize_tab_id(&args[0]),
-        label: args[1..].join(" "),
-    })
-}
-
-fn tab_close(args: &[String]) -> std::io::Result<i32> {
-    let Some(raw_tab_id) = args.first() else {
-        eprintln!("usage: shepr tab close <tab_id>");
-        return Ok(2);
-    };
-    if args.len() != 1 {
-        eprintln!("usage: shepr tab close <tab_id>");
-        return Ok(2);
-    }
-
-    super::runtime::tab_close(super::normalize_tab_id(raw_tab_id))
-}
-
-fn print_tab_help() {
-    eprintln!("shepr tab commands:");
-    eprintln!("  shepr tab list [--workspace <workspace_id>]");
-    eprintln!(
-        "  shepr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]"
-    );
-    eprintln!("  shepr tab get <tab_id>");
-    eprintln!("  shepr tab focus <tab_id>");
-    eprintln!("  shepr tab rename <tab_id> <label>");
-    eprintln!("  shepr tab close <tab_id>");
 }

@@ -151,14 +151,7 @@ impl App {
         }
 
         if let Some((target_ws_idx, target_tab_idx)) = replace_target {
-            let closed_tab_id = self
-                .public_tab_id(target_ws_idx, target_tab_idx)
-                .unwrap_or_else(|| {
-                    crate::workspace::public_tab_id_for_number(
-                        &self.public_workspace_id(target_ws_idx),
-                        target_tab_idx + 1,
-                    )
-                });
+            let close_events = self.tab_close_events(target_ws_idx, target_tab_idx);
             let terminal_ids = self
                 .state
                 .terminal_ids_for_tab(target_ws_idx, target_tab_idx);
@@ -168,17 +161,12 @@ impl App {
                 return encode_error(id, "tab_not_found", "tab not found");
             };
             if ws.close_tab(target_tab_idx) {
+                self.state.remove_pane_aliases(&pane_ids_for_focus_clear);
                 self.state
                     .clear_stale_previous_pane_focus(pane_ids_for_focus_clear);
                 self.state.remove_unattached_terminal_ids(terminal_ids);
                 self.shutdown_detached_terminal_runtimes();
-                self.emit_event(EventEnvelope {
-                    event: EventKind::TabClosed,
-                    data: EventData::TabClosed {
-                        tab_id: closed_tab_id,
-                        workspace_id: self.public_workspace_id(target_ws_idx),
-                    },
-                });
+                self.emit_events(close_events);
             }
         }
 
@@ -359,6 +347,9 @@ impl App {
         )
     }
 
+    // Every leaf becomes a freshly spawned pane. `LayoutPane::pane_id` is
+    // ignored on purpose: export fills it in, and ignoring it lets an exported
+    // layout be applied back unchanged. Reusing live panes is `pane.move`.
     fn apply_layout_node_to_pane(
         &mut self,
         ws_idx: usize,
@@ -505,6 +496,7 @@ impl App {
             .get_mut(ws_idx)
             .is_some_and(|ws| ws.close_tab(tab_idx))
         {
+            self.state.remove_pane_aliases(&pane_ids_for_focus_clear);
             self.state
                 .clear_stale_previous_pane_focus(pane_ids_for_focus_clear);
             self.state.remove_unattached_terminal_ids(terminal_ids);
@@ -729,12 +721,16 @@ mod tests {
     async fn layout_apply_replaces_tab_with_requested_tree() {
         let mut app = app_with_workspace();
         let original_tab_id = app.public_tab_id(0, 0).expect("test precondition");
+        let original_root = app.state.workspaces[0].tabs[0].root_pane;
+        let original_pane_id = app
+            .public_pane_id(0, original_root)
+            .expect("test precondition");
 
         let response = app.handle_layout_apply(
             "req".into(),
             &LayoutApplyParams {
                 workspace_id: None,
-                tab_id: Some(original_tab_id),
+                tab_id: Some(original_tab_id.clone()),
                 tab_label: Some("dev".into()),
                 focus: true,
                 root: LayoutNode::Split {
@@ -799,6 +795,20 @@ mod tests {
                 if layout.tab_id == app.public_tab_id(0, 0).expect("test precondition")
                     && layout.panes.len() == 2
         ));
+        let events = app.event_hub.events_after(0);
+        let pane_closed = events
+            .iter()
+            .position(|(_, event)| {
+                matches!(&event.data, EventData::PaneClosed { pane_id, .. } if pane_id == &original_pane_id)
+            })
+            .expect("the replaced tab's pane is announced closed");
+        let tab_closed = events
+            .iter()
+            .position(|(_, event)| {
+                matches!(&event.data, EventData::TabClosed { tab_id, .. } if tab_id == &original_tab_id)
+            })
+            .expect("the replaced tab is announced closed");
+        assert!(pane_closed < tab_closed);
         shutdown_test_runtimes(&mut app);
     }
 

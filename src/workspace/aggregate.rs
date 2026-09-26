@@ -28,7 +28,11 @@ impl Workspace {
                     .get(&pane.attached_terminal_id)
                     .map(|terminal| (terminal.state, pane.seen))
             })
-            .max_by_key(|(state, seen)| pane_attention_priority(*state, *seen))
+            // Panes iterate in `HashMap` order, so every tie must be broken
+            // inside the key: among equal priorities prefer the unseen pane.
+            // With that, two panes only tie when (state, seen) are identical
+            // and the result no longer depends on iteration order.
+            .max_by_key(|(state, seen)| (pane_attention_priority(*state, *seen), !*seen))
             .unwrap_or((AgentState::Unknown, true))
     }
 }
@@ -111,5 +115,35 @@ mod tests {
 
         assert_eq!(state, AgentState::Idle);
         assert!(!seen);
+    }
+
+    #[test]
+    fn aggregate_state_prefers_unseen_among_equal_priority_regardless_of_order() {
+        for state in [AgentState::Blocked, AgentState::Working] {
+            for unseen_first in [false, true] {
+                let mut ws = Workspace::test_new("test");
+                let id2 = ws.test_split(Direction::Horizontal);
+                let root_id = ws.tabs[0]
+                    .panes
+                    .keys()
+                    .find(|id| **id != id2)
+                    .copied()
+                    .expect("test precondition");
+                let mut terminals = HashMap::new();
+                for pane_id in [root_id, id2] {
+                    let mut terminal = terminal_for_pane(&ws, pane_id);
+                    terminal.state = state;
+                    terminals.insert(terminal.id.clone(), terminal);
+                }
+                let unseen = if unseen_first { root_id } else { id2 };
+                ws.tabs[0]
+                    .panes
+                    .get_mut(&unseen)
+                    .expect("test precondition")
+                    .seen = false;
+
+                assert_eq!(ws.aggregate_state(&terminals), (state, false));
+            }
+        }
     }
 }

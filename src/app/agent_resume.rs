@@ -5,6 +5,10 @@ use ratatui::layout::Rect;
 
 use super::App;
 
+/// Delay before retrying pending agent resumes whose due launch attempt failed
+/// without consuming the plan.
+const PENDING_AGENT_RESUME_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 struct PendingAgentResumeCandidate {
     pane_id: crate::layout::PaneId,
     terminal_id: crate::terminal::TerminalId,
@@ -50,6 +54,13 @@ impl App {
         now: Instant,
         allow_empty_theme: bool,
     ) -> bool {
+        // The headless loop calls this on every iteration; skip the per-tab
+        // layout walk entirely once nothing is waiting to resume.
+        if !self.has_pending_agent_resumes() {
+            self.pending_agent_resume_deadline = None;
+            self.next_agent_resume_at = None;
+            return false;
+        }
         // Geometry/theme events can also enter here; they must not bypass spacing.
         if self.next_agent_resume_at.is_some_and(|next| now < next) {
             return false;
@@ -89,6 +100,18 @@ impl App {
         }
         if !self.has_pending_agent_resumes() || self.pending_agent_resume_candidates().is_empty() {
             self.pending_agent_resume_deadline = None;
+        } else if self.pending_agent_resume_due(now) {
+            // Candidates remain although the wakeup that released them has
+            // passed: a launch failed without consuming its plan (no launch
+            // env, or the resume command could not be queued to the shell).
+            // Leaving the deadline in the past would make every loop deadline
+            // immediate and spin the server, respawning shells each time, so
+            // back off before retrying. Routing the backoff through
+            // `next_agent_resume_at` keeps `sync_pending_agent_resume_deadline`
+            // from restoring the stale deadline.
+            let retry_at = now + PENDING_AGENT_RESUME_RETRY_INTERVAL;
+            self.next_agent_resume_at = Some(retry_at);
+            self.pending_agent_resume_deadline = Some(retry_at);
         }
         if !self.has_pending_agent_resumes() {
             self.next_agent_resume_at = None;
@@ -452,6 +475,55 @@ mod tests {
                 4
             );
         }
+    }
+
+    /// A due launch that fails without consuming its plan must push the wakeup
+    /// forward; a deadline left in the past makes the server loop spin.
+    #[tokio::test]
+    async fn failed_due_resume_backs_off_instead_of_leaving_deadline_in_the_past() {
+        let mut app = test_app();
+        let workspace = crate::workspace::Workspace::test_new("restored");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace
+            .terminal_id(pane_id)
+            .cloned()
+            .expect("test precondition");
+        app.state.view.terminal_area = Rect::new(0, 0, 100, 30);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        // An empty argv cannot be turned into a shell command, so the launch
+        // fails and leaves the plan in place.
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test terminal should exist")
+            .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
+            agent: "codex".into(),
+            argv: Vec::new(),
+            dedupe_key: "shepr:codex\0codex\0Id\0failing-session".into(),
+        });
+
+        let now = Instant::now();
+        app.pending_agent_resume_deadline = Some(now - std::time::Duration::from_millis(1));
+        assert!(!app.start_pending_agent_resumes(now, app.pending_agent_resume_due(now)));
+        assert!(app.has_pending_agent_resumes());
+        let retry_at = now + PENDING_AGENT_RESUME_RETRY_INTERVAL;
+        assert_eq!(app.pending_agent_resume_deadline, Some(retry_at));
+        assert!(!app.pending_agent_resume_due(now));
+
+        // The scheduler's per-iteration sync must keep the backoff.
+        app.sync_pending_agent_resume_deadline(now);
+        assert_eq!(app.pending_agent_resume_deadline, Some(retry_at));
+        assert!(!app.start_pending_agent_resumes(now, false));
+        assert_eq!(app.pending_agent_resume_deadline, Some(retry_at));
+
+        // Once the backoff passes, the retry fails again and backs off again.
+        assert!(!app.start_pending_agent_resumes(retry_at, true));
+        assert_eq!(
+            app.pending_agent_resume_deadline,
+            Some(retry_at + PENDING_AGENT_RESUME_RETRY_INTERVAL)
+        );
     }
 
     fn long_running_test_argv() -> Vec<String> {

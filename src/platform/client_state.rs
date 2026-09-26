@@ -8,6 +8,9 @@ pub(crate) fn replace_file(source: &Path, destination: &Path) -> std::io::Result
     std::fs::rename(source, destination)
 }
 
-pub(crate) fn sync_parent_directory(path: &Path) -> std::io::Result<()> {
-    std::fs::File::open(path)?.sync_all()
+/// Fsyncs `directory` itself, making a rename or unlink inside it durable.
+/// Callers pass the directory that holds the entry they just changed, not the
+/// entry.
+pub(crate) fn sync_directory(directory: &Path) -> std::io::Result<()> {
+    std::fs::File::open(directory)?.sync_all()
 }

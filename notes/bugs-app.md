@@ -19,19 +19,6 @@
 - `AppState::runtime_for_pane_in_workspace` (`state.rs:724-746`) has `#[cfg(test)]` branches that look up `Workspace.test_runtimes` and `Tab.runtimes` before the real `TerminalRuntimeRegistry` lookup by terminal id. Any test that injects runtimes that way never exercises the production path, so a broken registry or terminal-id lookup would go unnoticed. Its doc comment ("Returns true when … focused pane") also describes a different function.
 - **Suggested fix:** move the spawn context (events, notify, render signal) into `App`, delete the test-only runtime maps, and have tests insert into `terminal_runtimes`.
 
-## APP-002 - `close_selected_workspace` leaves stale entries and doesn't do what `handle_pane_died` does
-
-- `actions.rs:536-576`, called in production from `api/workspaces.rs:327`.
-- It never prunes `pane_id_aliases` or `public_pane_id_aliases` for the closed workspace's panes. `handle_pane_died` does (`actions.rs:1508-1510`). This breaks the invariant stated in `assert_invariants_for_test` (aliases must reference live panes).
-- It never resets `mode` to Navigate when the last workspace goes; `handle_pane_died` does.
-- It never drops `direct_attach_resize_locks` for the removed terminals (`remove_unattached_terminal_ids` doesn't either), so those entries leak.
-- The handler also sets `state.selected = index` as a side channel just to reuse this function.
-
-## APP-003 - Metadata expiry skips the agent state-change sequence bookkeeping
-
-- `expire_agent_metadata_at` (`actions.rs:152-204`) applies an `EffectiveStateChange` but never bumps `next_agent_state_change_seq`, `last_agent_state_change_seq` or `last_agent_completion_seq`. `update_terminal_state_with_completion_policy` does all three.
-- So a state change caused by a TTL expiring is invisible in the API's `AgentInfo.state_change_seq` / `completion_seq`, and anything waiting on those sequences misses it. Both paths should go through one function.
-
 ## APP-004 - Initial PTY sizes ignore the documented `headless_size` and the real split geometry
 
 - `App::new` restores with hard-coded `24, 80` (`mod.rs:173-177`), although `AppState.headless_size` is documented as the size used when no client is attached.
@@ -43,7 +30,7 @@
 - `display_name_from` (API `workspace_info`) resolves the cwd through the runtime (`/proc`) first.
 - `display_name_from_terminals` (window title, `window_title.rs:89`) uses `terminal.cwd`, which is only updated by OSC 7.
 - `automatic_display_name_for_cwd` falls back to the basename whenever the cwd differs from `cached_identity_cwd`.
-- `git_refresh_deadline` returns `None` when the sidebar has no Branch/GitStatus token (a test asserts this), and identity refresh is only requested on `TerminalCwdReported`. So with such a sidebar config and a shell that doesn't emit OSC 7, `cd` into a repo subdirectory permanently shows the subdirectory name instead of the repo name. (Related: TERM-016, OSC 7 from standard shell integrations is rejected.)
+- `git_refresh_deadline` returns `None` when the sidebar has no Branch/GitStatus token (a test asserts this), and identity refresh is only requested on `TerminalCwdReported`. So with such a sidebar config and a shell that doesn't emit OSC 7, `cd` into a repo subdirectory permanently shows the subdirectory name instead of the repo name.
 
 ## APP-006 - Blocking work on the server's main loop
 
@@ -52,22 +39,15 @@
 - `TerminalCwdReported` does `cwd.is_dir()` on every OSC 7 (`actions.rs:1294`).
 - None of this belongs on the loop that fans frames out to every client.
 
-## APP-007 - The git refresh can wedge permanently
-
-- `start_git_status_refresh_if_due` spawns a bare `std::thread` (`git_refresh.rs:67`). If it panics, `GitStatusRefreshed` is never sent, `git_refresh_in_flight` stays true, and `git_refresh_deadline` returns `None` for the rest of the process.
-
 ## APP-008 - Leftover config-reload machinery
 
 - The tab-bar generation counter, the `Drop` that kills process groups "on the reconfiguring thread", and the tests `stale_command_result_does_not_replace_reloaded_status` / `reload_aborts_an_in_flight_command_task_and_its_descendants` all exist for reconfiguration.
 - `configure_tab_bar_status` is only called from `App::new`, and AGENTS.md says there is no reload. These tests cover a path that can't happen.
 
-## APP-009 - Leftover herdr-compat ID parsing can silently target the wrong thing
+## APP-009 - The raw pane-id alias map is dead
 
-Surfaced in two scopes: app core, JSON API.
-
-- In `src/app/ids.rs`: `parse_workspace_id` accepts `w_N` and bare `N` as positional indexes. `parse_tab_id` accepts `t_…` and `ws:N` positional forms. `parse_pane_id` accepts `p_<raw>` (raw ids restart every process, so after a restart this refers to a different pane) and `ws-N`.
-- A mistyped or index-style numeric id resolves to some workspace by position instead of failing. This contradicts the "stable public identity, independent of display order" comment on `Workspace.id` and the "no compatibility with upstream herdr installs" stance.
-- Unverified by the app-core hunter: whether anything still writes `pane_id_aliases`. If nothing does, the alias maps and `remove_alias_shadowed_by_new_pane` are dead.
+- The legacy positional/raw id forms are no longer parsed. Nothing ever inserts into `pane_id_aliases`, so the field and `remove_alias_shadowed_by_new_pane` are dead; `public_pane_id_aliases` is still written by the cross-workspace pane move and stays.
+- Remaining references to delete together: `App::new` (`mod.rs`), `api/panes.rs`, `api/tabs.rs`, `api/layouts.rs`, `creation.rs`. The field doc in `state.rs` says so.
 
 ## APP-010 - `seen` bookkeeping disagrees with itself
 
@@ -82,10 +62,6 @@ Surfaced in two scopes: app core, headless server.
 - `pane_exposes_host_cursor` (`state.rs:702-708`) ignores both arguments and always returns true, while `reveal_hidden_cursor_for_cjk_ime` / `cjk_ime_agents` are parsed into state.
 - The hunter could not confirm whether render reads them; if not, those config keys are parsed and ignored.
 
-## APP-012 - `encode_public_number(0)` round-trips to a different number
-
-- `encode_public_number(0)` returns `"0"`, which decodes to 32.
-
 ## APP-013 - Restored panes without a saved public pane number get no SHEPR identity env
 
 - Restored panes with no saved public pane number get `PaneLaunchEnv::default()`, meaning no SHEPR identity env, so their hooks can't report back (`persist/restore.rs:358-366`).
@@ -97,11 +73,12 @@ Surfaced in two scopes: app core, headless server.
 ## APP-015 - Duplicate code in workspace and tab removal
 
 - `Workspace::close_pane` vs `remove_pane`; `Tab::close_pane` vs `remove_pane`; three copies of the active-tab-after-removal adjustment; `tab_attention_priority` vs `pane_attention_priority`.
-
-## APP-016 - `aggregate_state` tie-break depends on `HashMap` order
-
-- The `aggregate_state` `max_by_key` tie-break depends on `HashMap` order. It's harmless today only because `pane_agent_status` ignores `seen` for Working and Blocked.
+- The workspace-removal branch in `handle_pane_died` (`actions.rs`) duplicates `close_workspace_at` and never calls `logging::workspace_closed`. Routing it through `close_workspace_at` needs the dead pane's terminal id kept in the removal list.
 
 ## APP-017 - `word_bounds_at_column` lives in the actions module
 
 - `word_bounds_at_column` (double-click text logic) lives in `actions.rs`, whose module doc says it holds state mutations.
+
+## APP-018 - `tab_attention_priority` callers may tie-break on `HashMap` order
+
+- `aggregate_state` now breaks ties on `(priority, !seen)`. `tab_attention_priority` in `src/app/api_helpers.rs` duplicates `pane_attention_priority`, and its callers probably have the same `HashMap`-order tie-break on `seen`. Not checked.

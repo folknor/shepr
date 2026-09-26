@@ -195,6 +195,56 @@ pub fn from_slice_exact<'de, T: Deserialize<'de>>(input: &'de [u8]) -> Result<T,
     }
 }
 
+/// Serde adapter for `Vec<u8>` wire fields: `#[serde(with = "codec::byte_buf")]`.
+///
+/// A plain `Vec<u8>` goes through serde's sequence path, so decoding visits
+/// one element per byte. This adapter routes the field through
+/// `serialize_bytes` / `deserialize_byte_buf` instead. The encoded bytes are
+/// identical (varint length, then the raw bytes), but decoding is one copy.
+/// Self-describing formats keep working: JSON still writes a number array, and
+/// the visitor accepts that form back.
+pub mod byte_buf {
+    use std::fmt;
+
+    use serde::de::{self, Deserializer, SeqAccess, Visitor};
+    use serde::ser::Serializer;
+
+    pub fn serialize<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(bytes)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        deserializer.deserialize_byte_buf(ByteBufVisitor)
+    }
+
+    struct ByteBufVisitor;
+
+    impl<'de> Visitor<'de> for ByteBufVisitor {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a byte buffer")
+        }
+
+        fn visit_bytes<E: de::Error>(self, bytes: &[u8]) -> Result<Vec<u8>, E> {
+            Ok(bytes.to_vec())
+        }
+
+        fn visit_byte_buf<E: de::Error>(self, bytes: Vec<u8>) -> Result<Vec<u8>, E> {
+            Ok(bytes)
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<u8>, A::Error> {
+            // The hint comes from untrusted input; cap the preallocation.
+            let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or(0).min(4096));
+            while let Some(byte) = seq.next_element::<u8>()? {
+                bytes.push(byte);
+            }
+            Ok(bytes)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Integer helpers
 // ---------------------------------------------------------------------------

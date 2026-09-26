@@ -141,8 +141,10 @@ impl PtyCommand {
 
         cmd.current_dir(dir);
         cmd.env_clear();
-        cmd.env("SHELL", shell);
         cmd.envs(&self.envs);
+        // After `envs`, so the resolved shell (with its passwd / `/bin/sh`
+        // fallback for a non-executable `SHELL`) is what the child sees.
+        cmd.env("SHELL", shell);
         Ok(cmd)
     }
 
@@ -369,6 +371,19 @@ mod tests {
         let std_cmd = cmd.to_std_command().expect("build std command");
         assert_eq!(std_cmd.get_program(), OsStr::new("/bin/sh"));
         assert_eq!(std_cmd.get_args().count(), 0);
+    }
+
+    #[test]
+    fn child_sees_resolved_shell_not_a_non_executable_shell_env() {
+        let mut cmd = PtyCommand::new("/bin/sh");
+        cmd.env("SHELL", "/__shepr_missing_shell__");
+        let std_cmd = cmd.to_std_command().expect("build std command");
+        let shell = std_cmd
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("SHELL"))
+            .and_then(|(_, value)| value.map(OsStr::to_owned));
+        assert_eq!(shell, Some(OsString::from(cmd.shell())));
+        assert_ne!(shell, Some(OsString::from("/__shepr_missing_shell__")));
     }
 
     #[test]

@@ -22,7 +22,7 @@ use crate::protocol::endpoint::{
 };
 use crate::protocol::{
     self, AttachScrollDirection, AttachScrollSource, ClientMessage, ClientPaneInputEvent,
-    MAX_FRAME_SIZE, PROTOCOL_VERSION, RenderEncoding, ServerMessage,
+    MAX_FRAME_SIZE, MAX_INPUT_PAYLOAD, PROTOCOL_VERSION, RenderEncoding, ServerMessage,
 };
 
 /// Minimum accepted attached client size.
@@ -33,14 +33,21 @@ use crate::protocol::{
 const MIN_CLIENT_COLS: u16 = 1;
 const MIN_CLIENT_ROWS: u16 = 1;
 
-/// How long to wait for a client handshake before closing the connection.
-/// Set to 4 seconds (rather than 5) to guarantee the connection is closed
-/// within the 5-second deadline, even with OS timer slack, thread scheduling,
-/// and cleanup overhead.
+/// Total time a client gets to deliver its complete handshake frame.
+///
+/// This is one deadline across every read of the hello, not a per-read idle
+/// timeout: `crate::ipc::DeadlineReader` re-arms the socket receive timeout
+/// with only the time left before each read, so a peer trickling bytes cannot
+/// hold the handshake thread open. Set to 4 seconds (rather than 5) so the
+/// connection is closed within 5 seconds even with OS timer slack, thread
+/// scheduling, and cleanup overhead.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
 
-/// Maximum input payload size (bytes) for a single `ClientMessage::Input`.
-const MAX_INPUT_PAYLOAD: usize = 1024 * 1024; // 1 MB
+/// Largest hello frame accepted. Both hello forms are a few hundred bytes; a
+/// small cap keeps an unauthenticated peer from making the handshake thread
+/// allocate a full `MAX_FRAME_SIZE` buffer.
+const MAX_HANDSHAKE_FRAME: usize = 64 * 1024;
+
 const MAX_CLIENT_SHELL_DIMENSION: u16 = 4096;
 const MAX_CLIENT_SHELL_CELLS: u32 = 1_000_000;
 const MAX_CLIENT_CELL_SIZE_PX: u32 = 4096;
@@ -241,7 +248,6 @@ struct ClientWriterQueue {
 #[derive(Debug, Default)]
 struct ClientWriterQueueState {
     control: VecDeque<Vec<u8>>,
-    ordered: VecDeque<Vec<u8>>,
     render: Option<Vec<u8>>,
     senders: usize,
     writer_alive: bool,
@@ -301,7 +307,6 @@ impl ClientWriterQueue {
     fn discard_pending_render(&self) {
         let mut state = self.lock_state();
         state.render = None;
-        state.ordered.clear();
         self.ready.notify_all();
     }
 
@@ -310,10 +315,6 @@ impl ClientWriterQueue {
         loop {
             if let Some(data) = state.control.pop_front() {
                 return Some(ClientWriteItem::Control(data));
-            }
-            if let Some(data) = state.ordered.pop_front() {
-                self.ready.notify_one();
-                return Some(ClientWriteItem::Render(data));
             }
             if let Some(data) = state.render.take() {
                 return Some(ClientWriteItem::Render(data));
@@ -332,7 +333,6 @@ impl ClientWriterQueue {
         let mut state = self.lock_state();
         state.writer_alive = false;
         state.render = None;
-        state.ordered.clear();
         self.ready.notify_all();
     }
 
@@ -502,26 +502,11 @@ fn pane_input_event_limit(events: &[ClientPaneInputEvent]) -> InputEventLimit {
             | ClientPaneInputEvent::Mouse { .. }
             | ClientPaneInputEvent::Paste(_) => 1,
         });
-        match event {
-            ClientPaneInputEvent::Key {
-                repeat_count,
-                generated_text,
-                ..
-            } => {
-                if let Some(text) = generated_text {
-                    input_bytes = input_bytes.saturating_add(
-                        text.len()
-                            .saturating_mul(usize::from((*repeat_count).max(1))),
-                    );
-                }
-            }
-            ClientPaneInputEvent::TextCommit(text) => {
-                input_bytes = input_bytes.saturating_add(text.len());
-            }
-            ClientPaneInputEvent::Mouse { .. } => {}
-            ClientPaneInputEvent::Paste(text) => {
-                paste_bytes = paste_bytes.saturating_add(text.len());
-            }
+        // Clients pre-check pastes with the same `text_bytes` accounting.
+        if matches!(event, ClientPaneInputEvent::Paste(_)) {
+            paste_bytes = paste_bytes.saturating_add(event.text_bytes());
+        } else {
+            input_bytes = input_bytes.saturating_add(event.text_bytes());
         }
     }
 
@@ -578,15 +563,15 @@ pub(crate) fn handle_client_handshake(
     // the handshake thread needs blocking I/O for read_message/write_message.
     stream.set_nonblocking(false)?;
 
-    set_client_recv_timeout(
-        &stream,
-        Some(HANDSHAKE_TIMEOUT),
-        "client handshake read timeout unavailable",
-        client_id,
-    )?;
-
-    // Read the handshake message.
-    let hello: ClientMessage = match protocol::read_message(&mut stream, MAX_FRAME_SIZE) {
+    // Read the handshake message against one overall deadline.
+    let hello = protocol::read_message::<_, ClientMessage>(
+        &mut crate::ipc::DeadlineReader::new(
+            &mut stream,
+            std::time::Instant::now() + HANDSHAKE_TIMEOUT,
+        ),
+        MAX_HANDSHAKE_FRAME,
+    );
+    let hello: ClientMessage = match hello {
         Ok(msg) => msg,
         Err(protocol::FramingError::UnexpectedEof) => {
             debug!(client_id, "client disconnected before handshake");

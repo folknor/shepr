@@ -40,21 +40,97 @@ fn resolve_write_target(path: &Path) -> std::io::Result<PathBuf> {
     Ok(current)
 }
 
+/// The directory holding `path`; a bare file name lives in `.`.
+pub(super) fn containing_directory(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
+/// Publishes `source` at `target` through a private (0600) temporary at
+/// `pending`: write, fsync the file, rename, fsync the directory. A crash
+/// leaves either the previous file or the complete new one, never a truncated
+/// one. `pending` must not exist yet.
+///
+/// With `replace` false an existing `target` is refused with `AlreadyExists`,
+/// and a published target is withdrawn again when the directory sync fails.
+/// With `replace` true the target is overwritten, and a completed rename is
+/// kept even when the directory sync then reports an error: the new content
+/// is still the best copy there is.
+///
+/// Both the live session files and the recovery copies go through here, so
+/// they share one durability and permission policy. Session history holds
+/// full pane scrollback, which can include tokens, so nothing here may be
+/// group- or world-readable.
+pub(super) fn publish_private_file(
+    source: &mut impl std::io::Read,
+    pending: &Path,
+    target: &Path,
+    replace: bool,
+) -> std::io::Result<()> {
+    let directory = containing_directory(target);
+    let mut output = crate::platform::create_config_temporary(pending, true)?;
+    let mut published = false;
+    let result = (|| {
+        if !replace {
+            match std::fs::symlink_metadata(target) {
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+                Ok(_) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        "publish target already exists",
+                    ));
+                }
+            }
+        }
+        std::io::copy(source, &mut output)?;
+        output.sync_all()?;
+        drop(output);
+        std::fs::rename(pending, target)?;
+        published = true;
+        crate::platform::sync_directory(directory)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(pending);
+        if published && !replace {
+            let _ = std::fs::remove_file(target);
+        }
+    }
+    result
+}
+
+// A crash between creating the temporary and renaming it leaves the file
+// behind, and the exclusive create in `publish_private_file` would then refuse
+// every later save. Unlinking a directory fails, so anything other than a
+// leftover file in the way still fails the save. This assumes one writer per
+// data directory; concurrent servers sharing it are not guarded against here.
+fn remove_stale_temporary(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
 pub(super) fn save_to_path(path: &Path, snapshot: &SessionSnapshot) -> std::io::Result<()> {
     save_json_to_path(path, snapshot)
 }
 
 fn save_json_to_path<T: serde::Serialize>(path: &Path, snapshot: &T) -> std::io::Result<()> {
     let target = resolve_write_target(path)?;
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let directory = containing_directory(&target);
+    let created = !directory.exists();
+    std::fs::create_dir_all(directory)?;
     let json = serde_json::to_string_pretty(snapshot)?;
-    let tmp_path = target.with_extension("json.tmp");
-    std::fs::write(&tmp_path, &json)?;
-    if let Err(err) = std::fs::rename(&tmp_path, &target) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(err);
+    let pending = target.with_extension("json.tmp");
+    remove_stale_temporary(&pending)?;
+    publish_private_file(&mut json.as_bytes(), &pending, &target, true)?;
+    if created {
+        // A freshly created data directory is itself only an unsynced entry
+        // in its parent until that parent is synced.
+        crate::platform::sync_directory(containing_directory(directory))?;
     }
     Ok(())
 }
@@ -69,9 +145,16 @@ pub(super) fn save_history_to_path(
     }
 }
 
+/// Removes what a save to `path` would have written. Saves write through
+/// symlinks (stow users keep the session file in a dotfiles tree), so a clear
+/// removes the file the link points at and leaves the link in place, dangling
+/// until the next save writes through it again. Removing the link instead
+/// would strand the stale target with the old session and turn the next save
+/// into a plain file where the link was.
 pub(super) fn clear_path(path: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
+    let target = resolve_write_target(path)?;
+    match std::fs::remove_file(&target) {
+        Ok(()) => crate::platform::sync_directory(containing_directory(&target)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
     }
@@ -268,6 +351,79 @@ mod tests {
                 .is_symlink()
         );
         assert!(target.exists());
+    }
+
+    #[test]
+    fn saved_session_and_history_files_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let (session_path, history_path) = temp_session_paths("private-mode");
+        std::fs::create_dir_all(session_path.parent().expect("test precondition"))
+            .expect("test precondition");
+        // A file left by an older build with default permissions is replaced,
+        // not reused, so it does not keep its broader mode.
+        std::fs::write(&history_path, b"old").expect("test precondition");
+        std::fs::set_permissions(&history_path, std::fs::Permissions::from_mode(0o644))
+            .expect("test precondition");
+
+        save_to_path(&session_path, &empty_snapshot()).expect("test precondition");
+        save_history_to_path(&history_path, Some(&history_snapshot("private-secret")))
+            .expect("test precondition");
+
+        for path in [&session_path, &history_path] {
+            let mode = std::fs::metadata(path)
+                .expect("test precondition")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{}", path.display());
+        }
+        assert!(!session_path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn leftover_temporary_from_a_crash_does_not_block_saves() {
+        let path = temp_session_path("stale-temporary");
+        std::fs::create_dir_all(path.parent().expect("test precondition"))
+            .expect("test precondition");
+        std::fs::write(path.with_extension("json.tmp"), b"{\"trunc").expect("test precondition");
+
+        let mut snap = empty_snapshot();
+        snap.selected = 3;
+        save_to_path(&path, &snap).expect("test precondition");
+
+        let parsed = parse_snapshot(&std::fs::read_to_string(&path).expect("test precondition"))
+            .expect("test precondition");
+        assert_eq!(parsed.selected, 3);
+        assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn clear_path_removes_symlink_target_and_keeps_the_link() {
+        let session = temp_session_path("clear-symlink");
+        let dir = session.parent().expect("test precondition");
+        std::fs::create_dir_all(dir).expect("test precondition");
+        let target = dir.join("real.json");
+        let link = dir.join("link.json");
+        std::os::unix::fs::symlink("real.json", &link).expect("test precondition");
+        save_to_path(&link, &empty_snapshot()).expect("test precondition");
+        assert!(target.exists());
+
+        clear_path(&link).expect("test precondition");
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("test precondition")
+                .file_type()
+                .is_symlink()
+        );
+        assert!(!target.exists());
+        // Clearing again with the link dangling is a no-op.
+        clear_path(&link).expect("test precondition");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("test precondition")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]

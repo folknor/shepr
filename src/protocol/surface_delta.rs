@@ -31,11 +31,30 @@ pub(crate) fn decode_for(
     decode::decode(data, Some(expected))
 }
 
-pub(crate) fn apply_rows(cells: &mut [CellData], width: u16, rows: &[PaneSurfacePatchRow]) {
+/// Copies each span into a row-major grid of `width` columns.
+///
+/// Fails on a span that crosses its row or the grid instead of panicking. The
+/// decoder validates spans against the baseline first, so this is a backstop;
+/// on failure the grid may hold the spans applied before the bad one, and the
+/// caller must discard it.
+pub(crate) fn apply_rows(
+    cells: &mut [CellData],
+    width: u16,
+    rows: &[PaneSurfacePatchRow],
+) -> Result<(), String> {
     for row in rows {
         let start = usize::from(row.y) * usize::from(width) + usize::from(row.x);
-        cells[start..start + row.cells.len()].clone_from_slice(&row.cells);
+        let end = start.saturating_add(row.cells.len());
+        let target = if usize::from(row.x) + row.cells.len() <= usize::from(width) {
+            cells.get_mut(start..end)
+        } else {
+            None
+        };
+        target
+            .ok_or("surface delta span exceeds the cell grid")?
+            .clone_from_slice(&row.cells);
     }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -190,6 +209,20 @@ mod tests {
         };
         assert_eq!(&decoded, next);
         update
+    }
+
+    #[test]
+    fn apply_rows_rejects_spans_outside_the_grid_instead_of_panicking() {
+        let mut cells = surface().frame.cells;
+        let cell = cells[0].clone();
+        let span = |x, y, len| PaneSurfacePatchRow {
+            x,
+            y,
+            cells: vec![cell.clone(); len],
+        };
+        assert!(apply_rows(&mut cells, 120, &[span(119, 0, 2)]).is_err());
+        assert!(apply_rows(&mut cells, 120, &[span(0, 40, 1)]).is_err());
+        assert!(apply_rows(&mut cells, 120, &[span(119, 39, 1)]).is_ok());
     }
 
     #[test]

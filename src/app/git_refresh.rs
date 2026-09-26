@@ -64,14 +64,27 @@ impl App {
         if refresh_repo_discovery {
             self.last_git_repo_discovery_refresh = now;
         }
-        std::thread::spawn(move || {
-            let output =
-                refresh_workspace_git_statuses_with_cache_and_demand(workspaces, &cache, demand);
-            let _ = event_tx.blocking_send(AppEvent::GitStatusRefreshed {
-                results: output.results,
-                cache_updates: output.cache_updates,
+        // `git_refresh_in_flight` is only cleared by `GitStatusRefreshed`, so
+        // the worker must send that event on every path. A panic inside the
+        // refresh is caught and reported as an empty refresh; a failed thread
+        // spawn clears the flag here. Otherwise one bad refresh would stop git
+        // status updates for the rest of the process.
+        let spawned = std::thread::Builder::new()
+            .name("shepr-git-refresh".into())
+            .spawn(move || {
+                let output = refresh_output_or_empty(|| {
+                    refresh_workspace_git_statuses_with_cache_and_demand(workspaces, &cache, demand)
+                });
+                let _ = event_tx.blocking_send(AppEvent::GitStatusRefreshed {
+                    results: output.results,
+                    cache_updates: output.cache_updates,
+                });
             });
-        });
+        if let Err(err) = spawned {
+            tracing::warn!(%err, "failed to spawn git status refresh thread");
+            self.git_refresh_in_flight = false;
+            self.last_git_remote_status_refresh = now;
+        }
     }
 
     pub(crate) fn request_git_identity_refresh(&mut self, now: Instant) {
@@ -166,6 +179,20 @@ fn deduplicate_git_refresh_items(
     }
 
     jobs
+}
+
+/// Runs a refresh, turning a panic into an empty result so the caller can
+/// still report completion.
+fn refresh_output_or_empty(
+    refresh: impl FnOnce() -> WorkspaceGitRefreshOutput,
+) -> WorkspaceGitRefreshOutput {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(refresh)).unwrap_or_else(|_| {
+        tracing::warn!("git status refresh panicked; reporting an empty refresh");
+        WorkspaceGitRefreshOutput {
+            results: Vec::new(),
+            cache_updates: Vec::new(),
+        }
+    })
 }
 
 fn refresh_workspace_git_statuses_with_cache_and_demand(
@@ -510,6 +537,31 @@ mod tests {
             .git_refresh_deadline()
             .expect("refresh should be due once a workspace exists");
         assert!(deadline <= Instant::now());
+    }
+
+    #[test]
+    fn panicking_git_refresh_still_reports_an_empty_result() {
+        let output = refresh_output_or_empty(|| panic!("simulated git refresh failure"));
+
+        assert!(output.results.is_empty());
+        assert!(output.cache_updates.is_empty());
+    }
+
+    #[test]
+    fn empty_refresh_after_a_panic_unwedges_the_refresh_deadline() {
+        let mut app = test_app(&crate::config::Config::default());
+        app.state.workspaces.push(Workspace::test_new("test"));
+        app.git_refresh_in_flight = true;
+        assert_eq!(app.git_refresh_deadline(), None);
+
+        let output = refresh_output_or_empty(|| panic!("simulated git refresh failure"));
+        app.handle_internal_event(AppEvent::GitStatusRefreshed {
+            results: output.results,
+            cache_updates: output.cache_updates,
+        });
+
+        assert!(!app.git_refresh_in_flight);
+        assert!(app.git_refresh_deadline().is_some());
     }
 
     fn test_app(config: &crate::config::Config) -> super::super::App {

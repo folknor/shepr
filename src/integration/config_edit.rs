@@ -690,19 +690,58 @@ pub(crate) fn join_yaml_lines(lines: &[String], trailing_newline: bool) -> Strin
     result
 }
 
-pub(crate) fn build_codex_config_with_hooks(content: &str) -> String {
-    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+/// Enable `features.hooks` in a Codex `config.toml`, in whichever shape the
+/// user already declared `features`: a `[features]` table, root-level dotted
+/// keys (`features.x = ...`), or not at all (a `[features]` table is appended).
+/// A root-level inline table (`features = { ... }`) is refused rather than
+/// rewritten; appending a `[features]` table next to either of the other
+/// shapes would define the table twice and make the file invalid TOML.
+pub(crate) fn build_codex_config_with_hooks(content: &str) -> io::Result<String> {
+    let mut lines: Vec<Option<String>> =
+        content.lines().map(|line| Some(line.to_string())).collect();
     let trailing_newline = content.ends_with('\n');
+    let mut in_root = true;
     let mut in_top_level_features = false;
     let mut features_header_index = None;
     let mut hooks_index = None;
+    let mut root_dotted_hooks_index = None;
+    let mut last_root_dotted_features_index = None;
     let mut deprecated_hooks_indexes = Vec::new();
 
-    for (index, line) in lines.iter().enumerate() {
+    for (index, line) in content.lines().enumerate() {
         if let Some(header) = toml_table_header(line) {
+            in_root = false;
             in_top_level_features = header == "[features]";
             if in_top_level_features && features_header_index.is_none() {
                 features_header_index = Some(index);
+            }
+            continue;
+        }
+
+        let Some(key) = toml_line_key(line) else {
+            continue;
+        };
+
+        if in_root {
+            match key.as_str() {
+                "features" => {
+                    return Err(io::Error::other(
+                        "codex config.toml declares `features` as an inline table; move it to a \
+                         [features] table (or `features.<key> = ...` lines) and retry",
+                    ));
+                }
+                "features.hooks" => {
+                    root_dotted_hooks_index = Some(index);
+                    last_root_dotted_features_index = Some(index);
+                }
+                "features.codex_hooks" => {
+                    deprecated_hooks_indexes.push(index);
+                    last_root_dotted_features_index = Some(index);
+                }
+                other if other.starts_with("features.") => {
+                    last_root_dotted_features_index = Some(index);
+                }
+                _ => {}
             }
             continue;
         }
@@ -711,41 +750,70 @@ pub(crate) fn build_codex_config_with_hooks(content: &str) -> String {
             continue;
         }
 
-        if is_toml_key(line, "codex_hooks") {
-            deprecated_hooks_indexes.push(index);
-        } else if is_toml_key(line, "hooks") {
-            hooks_index = Some(index);
+        match key.as_str() {
+            "codex_hooks" => deprecated_hooks_indexes.push(index),
+            "hooks" => hooks_index = Some(index),
+            _ => {}
         }
     }
 
     if let Some(index) = hooks_index {
-        lines[index] = "hooks = true".to_string();
+        lines[index] = Some("hooks = true".to_string());
+    }
+    if let Some(index) = root_dotted_hooks_index {
+        lines[index] = Some("features.hooks = true".to_string());
     }
 
-    for index in deprecated_hooks_indexes.into_iter().rev() {
-        lines.remove(index);
-    }
-
-    if hooks_index.is_none() {
-        if let Some(index) = features_header_index {
-            lines.insert(index + 1, "hooks = true".to_string());
-            return join_toml_lines(&lines, trailing_newline);
-        }
-
+    let insertion = if hooks_index.is_some() || root_dotted_hooks_index.is_some() {
+        None
+    } else if let Some(index) = features_header_index {
+        Some((index, "hooks = true"))
+    } else if let Some(index) = last_root_dotted_features_index {
+        Some((index, "features.hooks = true"))
+    } else {
         let mut result = content.trim_end_matches('\n').to_string();
         if !result.is_empty() {
             result.push('\n');
             result.push('\n');
         }
         result.push_str("[features]\nhooks = true\n");
-        return result;
+        return Ok(result);
+    };
+
+    for index in deprecated_hooks_indexes {
+        lines[index] = None;
     }
 
-    join_toml_lines(&lines, trailing_newline)
+    let mut output = Vec::with_capacity(lines.len() + 1);
+    for (index, line) in lines.into_iter().enumerate() {
+        if let Some(line) = line {
+            output.push(line);
+        }
+        if let Some((after, inserted)) = insertion
+            && after == index
+        {
+            output.push(inserted.to_string());
+        }
+    }
+
+    Ok(join_toml_lines(&output, trailing_newline))
 }
 
-pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> String {
-    let mut result = remove_kimi_config_block(content)
+/// Key path of a `key = value` line with whitespace around dots removed
+/// (`features . hooks = 1` gives `features.hooks`). `None` for comments,
+/// table headers and lines without an assignment.
+fn toml_line_key(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('[') {
+        return None;
+    }
+    let (key, _) = trimmed.split_once('=')?;
+    let key: String = key.chars().filter(|ch| !ch.is_whitespace()).collect();
+    (!key.is_empty()).then_some(key)
+}
+
+pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> io::Result<String> {
+    let mut result = remove_kimi_config_block(content)?
         .trim_end_matches('\n')
         .to_string();
     if !result.is_empty() {
@@ -760,7 +828,7 @@ pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> S
     }
     result.push_str(KIMI_CONFIG_BLOCK_END);
     result.push('\n');
-    result
+    Ok(result)
 }
 
 pub(crate) fn kimi_hook_table(
@@ -780,7 +848,10 @@ pub(crate) fn kimi_hook_table(
     )
 }
 
-pub(crate) fn remove_kimi_config_block(content: &str) -> String {
+/// Remove shepr's marked block from a Kimi `config.toml`. A BEGIN marker
+/// without a matching END marker is an error: guessing where the damaged
+/// block ends could delete the user's config that follows it.
+pub(crate) fn remove_kimi_config_block(content: &str) -> io::Result<String> {
     let trailing_newline = content.ends_with('\n');
     let mut lines = Vec::new();
     let mut in_block = false;
@@ -788,6 +859,9 @@ pub(crate) fn remove_kimi_config_block(content: &str) -> String {
 
     for line in content.lines() {
         if line.trim() == KIMI_CONFIG_BLOCK_BEGIN {
+            if in_block {
+                return Err(unterminated_kimi_block_error());
+            }
             in_block = true;
             removed_block = true;
             continue;
@@ -801,8 +875,12 @@ pub(crate) fn remove_kimi_config_block(content: &str) -> String {
         lines.push(line.to_string());
     }
 
+    if in_block {
+        return Err(unterminated_kimi_block_error());
+    }
+
     if !removed_block {
-        return content.to_string();
+        return Ok(content.to_string());
     }
 
     let mut result = join_toml_lines(&lines, trailing_newline);
@@ -810,10 +888,17 @@ pub(crate) fn remove_kimi_config_block(content: &str) -> String {
         result.pop();
     }
     if result == "\n" {
-        String::new()
+        Ok(String::new())
     } else {
-        result
+        Ok(result)
     }
+}
+
+fn unterminated_kimi_block_error() -> io::Error {
+    io::Error::other(format!(
+        "kimi config.toml has a `{KIMI_CONFIG_BLOCK_BEGIN}` line without a matching \
+         `{KIMI_CONFIG_BLOCK_END}` line; remove the damaged shepr block by hand and retry"
+    ))
 }
 
 pub(crate) fn toml_basic_string(value: &str) -> String {
@@ -864,13 +949,4 @@ pub(crate) fn toml_table_header(line: &str) -> Option<&str> {
     }
 
     Some(header)
-}
-
-pub(crate) fn is_toml_key(line: &str, key: &str) -> bool {
-    let trimmed = line.trim();
-    if trimmed.starts_with('#') || !trimmed.starts_with(key) {
-        return false;
-    }
-
-    trimmed[key.len()..].trim_start().starts_with('=')
 }

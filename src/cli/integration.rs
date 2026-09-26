@@ -133,9 +133,14 @@ fn print_integration_messages(messages: Vec<String>) {
     }
 }
 
-/// Integration target accepted by the CLI. Letta is deliberately kept out of
-/// the frozen client endpoint `IntegrationTarget` enum and is handled as an
-/// experimental CLI-only target until the agent registry replaces it.
+/// Integration target accepted by the CLI. Letta is not an `IntegrationTarget`
+/// variant only for historical reasons: nothing on the wire constrains that
+/// enum (client and server are always the same build), so the separate
+/// experimental path (this variant, the experimental install/uninstall/status
+/// functions in `crate::integration`) is leftover structure that can be folded
+/// into `IntegrationTarget` together with its registry and status handling.
+/// Letta's install and uninstall already go through the same protected config
+/// writer as the built-in targets.
 enum IntegrationCommandTarget {
     Builtin(IntegrationTarget),
     Letta,

@@ -627,7 +627,14 @@ pub struct AppState {
         std::collections::HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
     /// Terminal ids whose size is currently owned by a direct attach client.
     pub direct_attach_resize_locks: std::collections::HashSet<crate::terminal::TerminalId>,
+    /// Raw-pane-id aliases. Nothing inserts into this map any more and
+    /// `parse_pane_id` no longer reads it (raw ids are not accepted as public
+    /// targets), so it is always empty. It survives only because `App::new`
+    /// and several API handlers still call `remove_alias_shadowed_by_new_pane`;
+    /// delete it together with those call sites.
     pub(crate) pane_id_aliases: std::collections::HashMap<u32, PaneId>,
+    /// Keeps a pane's pre-move public id (`<old workspace>:p<n>`) resolving
+    /// after a cross-workspace pane move.
     pub(crate) public_pane_id_aliases: std::collections::HashMap<String, PaneId>,
     pub workspaces: Vec<Workspace>,
     pub active: Option<usize>,

@@ -1,10 +1,7 @@
-use serde::Serialize;
+use clap::ArgMatches;
 
 use crate::api::client::{ApiClient, ApiClientError};
-use crate::api::schema::{
-    AgentStatus, ClientWindowTitleSetParams, EmptyParams, Method, PaneAgentState, ReadFormat,
-    ReadSource, Request, SplitDirection,
-};
+use crate::api::schema::{ClientWindowTitleSetParams, EmptyParams, Method, Request};
 
 macro_rules! print {
     ($($arg:tt)*) => {{
@@ -23,6 +20,7 @@ macro_rules! println {
 mod agent;
 mod integration;
 mod machine;
+mod matches;
 mod pane;
 mod protocol_guard;
 mod runtime;
@@ -62,6 +60,101 @@ pub enum CommandOutcome {
     NotCli,
 }
 
+/// The command line, parsed once by the clap spec in `spec.rs`. Launch options
+/// (`--session`, `--machine`, `--remote`, ...) are only recognised before the
+/// subcommand; everything after it belongs to the subcommand.
+pub(crate) struct Invocation {
+    matches: ArgMatches,
+}
+
+/// Parses argv. On a usage error, or when `--help` for a subcommand was asked
+/// for, clap's message has already been printed and the exit code is returned.
+pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
+    match spec::command().try_get_matches_from(args) {
+        Ok(matches) => Ok(Invocation { matches }),
+        Err(error) => {
+            crate::platform::begin_cli_output();
+            if let Err(print_error) = error.print() {
+                std::eprintln!("error: {print_error}");
+            }
+            Err(error.exit_code())
+        }
+    }
+}
+
+impl Invocation {
+    pub(crate) fn session(&self) -> Option<String> {
+        matches::string(&self.matches, "session")
+    }
+
+    pub(crate) fn machine(&self) -> Option<String> {
+        matches::string(&self.matches, "machine")
+    }
+
+    pub(crate) fn remote(&self) -> Option<String> {
+        matches::string(&self.matches, "remote")
+    }
+
+    pub(crate) fn remote_keybindings(&self) -> Option<String> {
+        matches::string(&self.matches, "remote-keybindings")
+    }
+
+    pub(crate) fn help_requested(&self) -> bool {
+        matches::flag(&self.matches, "help")
+    }
+
+    pub(crate) fn version_requested(&self) -> bool {
+        matches::flag(&self.matches, "version")
+    }
+
+    pub(crate) fn default_config_requested(&self) -> bool {
+        matches::flag(&self.matches, "default-config")
+    }
+
+    pub(crate) fn command_name(&self) -> Option<&str> {
+        self.matches.subcommand_name()
+    }
+
+    /// The name given to `session attach NAME`. That command is the default
+    /// launch into the named session, the same as `--session NAME`.
+    pub(crate) fn session_attach_name(&self) -> Option<String> {
+        let ("session", session) = self.matches.subcommand()? else {
+            return None;
+        };
+        let ("attach", attach) = session.subcommand()? else {
+            return None;
+        };
+        Some(matches::required(attach, "name"))
+    }
+
+    /// The session this invocation explicitly targets, if any.
+    pub(crate) fn requested_session(&self) -> Result<Option<String>, String> {
+        match (self.session(), self.session_attach_name()) {
+            (Some(_), Some(_)) => Err(
+                "--session cannot be combined with `session attach`; name the session once".into(),
+            ),
+            (session, attach) => Ok(session.or(attach)),
+        }
+    }
+
+    /// Arguments for the hidden bridge commands, in the shape their runners take.
+    pub(crate) fn bridge_args(&self) -> Vec<String> {
+        let Some((name, matches)) = self.matches.subcommand() else {
+            return Vec::new();
+        };
+        let option = match name {
+            "remote-client-bridge" => "idle-timeout-v1",
+            "remote-api-bridge" => "check",
+            _ => return Vec::new(),
+        };
+        if matches::flag(matches, option) {
+            vec![format!("--{option}")]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
 pub(super) fn print_read_response(response: &serde_json::Value) -> std::io::Result<i32> {
     if response.get("error").is_some() {
         eprintln!("{response}");
@@ -73,74 +166,76 @@ pub(super) fn print_read_response(response: &serde_json::Value) -> std::io::Resu
     Ok(0)
 }
 
-pub(crate) fn maybe_run_machine(args: &[String]) -> Option<std::io::Result<CommandOutcome>> {
-    target::maybe_run(args)
+/// Runs the invocation's subcommand against the saved machine named by
+/// `--machine`.
+pub(crate) fn run_on_machine(
+    invocation: &Invocation,
+    selector: &str,
+) -> std::io::Result<CommandOutcome> {
+    target::run_on_machine(selector, invocation.matches.subcommand())
 }
 
-pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
-    let Some(command) = args.get(1).map(String::as_str) else {
-        return Ok(CommandOutcome::NotCli);
-    };
-
-    if spec::print_requested_help(args)? {
-        return Ok(CommandOutcome::Handled(0));
+/// Runs the invocation's subcommand. `NotCli` means the invocation launches
+/// something instead: the TUI (no subcommand, or `session attach`), the
+/// headless server (bare `server`), or one of the hidden client/bridge modes.
+pub(crate) fn run(invocation: &Invocation) -> std::io::Result<CommandOutcome> {
+    match invocation.matches.subcommand() {
+        Some((name, matches)) => dispatch(name, matches),
+        None => Ok(CommandOutcome::NotCli),
     }
+}
 
-    let exit_code = match command {
+fn dispatch(name: &str, matches: &ArgMatches) -> std::io::Result<CommandOutcome> {
+    let exit_code = match name {
         "server" => {
-            let Some(exit_code) = server::run_server_command(&args[2..])? else {
+            let Some(exit_code) = server::run_server_command(matches)? else {
                 return Ok(CommandOutcome::NotCli);
             };
             exit_code
         }
-        "status" => status::run_status_command(&args[2..])?,
-        "config" => run_config_command(&args[2..])?,
-        "machine" => machine::run_machine_command(&args[2..])?,
-        "workspace" => workspace::run_workspace_command(&args[2..])?,
-        "tab" => tab::run_tab_command(&args[2..])?,
-        "agent" => agent::run_agent_command(&args[2..])?,
-        "terminal" => run_terminal_command(&args[2..])?,
-        "pane" => pane::run_pane_command(&args[2..])?,
-        "integration" => integration::run_integration_command(&args[2..])?,
-        "session" => run_session_command(&args[2..])?,
+        "status" => status::run_status_command(matches)?,
+        "config" => run_config_command(matches),
+        "machine" => machine::run_machine_command(matches)?,
+        "workspace" => workspace::run_workspace_command(matches)?,
+        "tab" => tab::run_tab_command(matches)?,
+        "agent" => agent::run_agent_command(matches)?,
+        "terminal" => run_terminal_command(matches)?,
+        "pane" => pane::run_pane_command(matches)?,
+        "integration" => run_integration_command(matches)?,
+        "session" => {
+            let Some(exit_code) = run_session_command(matches)? else {
+                return Ok(CommandOutcome::NotCli);
+            };
+            exit_code
+        }
         _ => return Ok(CommandOutcome::NotCli),
     };
 
     Ok(CommandOutcome::Handled(exit_code))
 }
 
-fn run_config_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(String::as_str) else {
-        print_config_help();
-        return Ok(2);
-    };
+/// The spec makes every command group require a subcommand, so this only
+/// runs if a handler and the spec disagree about the subcommand names.
+pub(super) fn missing_subcommand() -> i32 {
+    eprintln!("error: missing or unknown subcommand; run with --help for usage");
+    2
+}
 
-    match subcommand {
-        "check" => config_check(&args[1..]),
-        "help" | "--help" | "-h" => {
-            print_config_help();
-            Ok(0)
-        }
-        _ => {
-            print_config_help();
-            Ok(2)
-        }
+/// A usage error found after clap accepted the arguments (a combination the
+/// spec cannot express). Same exit code as clap's own usage errors.
+pub(super) fn usage_error(message: &str) -> i32 {
+    eprintln!("{message}");
+    2
+}
+
+fn run_config_command(matches: &ArgMatches) -> i32 {
+    match matches.subcommand() {
+        Some(("check", _)) => config_check(),
+        _ => missing_subcommand(),
     }
 }
 
-fn config_check(args: &[String]) -> std::io::Result<i32> {
-    match args {
-        [] => {}
-        [flag] if matches!(flag.as_str(), "help" | "--help" | "-h") => {
-            eprintln!("usage: shepr config check");
-            return Ok(0);
-        }
-        _ => {
-            eprintln!("usage: shepr config check");
-            return Ok(2);
-        }
-    }
-
+fn config_check() -> i32 {
     let diagnostics = crate::config::Config::load().diagnostics;
     if diagnostics.is_empty() {
         println!("config: ok");
@@ -151,72 +246,75 @@ fn config_check(args: &[String]) -> std::io::Result<i32> {
         }
     }
 
-    Ok(i32::from(!diagnostics.is_empty()))
+    i32::from(!diagnostics.is_empty())
 }
 
-fn run_terminal_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(String::as_str) else {
-        print_terminal_help();
-        return Ok(2);
+fn run_integration_command(matches: &ArgMatches) -> std::io::Result<i32> {
+    // The integration handlers take argv-shaped arguments; hand them the
+    // values clap has already validated, in that shape.
+    let args: Vec<String> = match matches.subcommand() {
+        Some((action @ ("install" | "uninstall"), matches)) => {
+            vec![action.to_string(), matches::required(matches, "target")]
+        }
+        Some(("status", matches)) => {
+            let mut args = vec!["status".to_string()];
+            if matches::flag(matches, "outdated-only") {
+                args.push("--outdated-only".to_string());
+            }
+            args
+        }
+        _ => return Ok(missing_subcommand()),
     };
+    integration::run_integration_command(&args)
+}
 
-    match subcommand {
-        "attach" => terminal_attach(&args[1..]),
-        "title" => terminal_title(&args[1..]),
-        "help" | "--help" | "-h" => {
-            print_terminal_help();
+fn run_terminal_command(matches: &ArgMatches) -> std::io::Result<i32> {
+    match matches.subcommand() {
+        Some(("attach", matches)) => {
+            crate::client::run_terminal_attach(
+                matches::required(matches, "terminal_id"),
+                matches::flag(matches, "takeover"),
+            )?;
             Ok(0)
         }
-        _ => {
-            print_terminal_help();
-            Ok(2)
-        }
+        Some(("title", matches)) => match matches.subcommand() {
+            Some(("set", matches)) => print_response(&send_request(&Request {
+                id: "cli:terminal:title:set".into(),
+                method: Method::ClientWindowTitleSet(ClientWindowTitleSetParams {
+                    title: matches::required(matches, "title"),
+                }),
+            })?),
+            Some(("clear", _)) => print_response(&send_request(&Request {
+                id: "cli:terminal:title:clear".into(),
+                method: Method::ClientWindowTitleClear(EmptyParams::default()),
+            })?),
+            _ => Ok(missing_subcommand()),
+        },
+        _ => Ok(missing_subcommand()),
     }
 }
 
-fn run_session_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(String::as_str) else {
-        print_session_help();
-        return Ok(2);
-    };
-
-    match subcommand {
-        "list" => session_list(&args[1..]),
-        "attach" => session_attach_help(&args[1..]),
-        "stop" => session_stop(&args[1..]),
-        "delete" => session_delete(&args[1..]),
-        "help" | "--help" | "-h" => {
-            print_session_help();
-            Ok(0)
-        }
-        _ => {
-            print_session_help();
-            Ok(2)
-        }
+/// `None` for `session attach`, which is a TUI launch rather than a command.
+fn run_session_command(matches: &ArgMatches) -> std::io::Result<Option<i32>> {
+    match matches.subcommand() {
+        Some(("list", matches)) => session_list(matches::flag(matches, "json")).map(Some),
+        Some(("attach", _)) => Ok(None),
+        Some(("stop", matches)) => Ok(Some(session_stop(
+            &matches::required(matches, "name"),
+            matches::flag(matches, "json"),
+        ))),
+        Some(("delete", matches)) => Ok(Some(session_delete(
+            &matches::required(matches, "name"),
+            matches::flag(matches, "json"),
+        ))),
+        _ => Ok(Some(missing_subcommand())),
     }
 }
 
-fn session_attach_help(args: &[String]) -> std::io::Result<i32> {
-    if matches!(
-        args.first().map(String::as_str),
-        Some("help" | "--help" | "-h")
-    ) {
-        eprintln!("usage: shepr session attach <name>");
-        return Ok(0);
-    }
-    eprintln!("usage: shepr session attach <name>");
-    Ok(2)
-}
-
-fn session_list(args: &[String]) -> std::io::Result<i32> {
-    let json = match parse_session_json_only(args, "usage: shepr session list [--json]") {
-        Ok(json) => json,
-        Err(code) => return Ok(code),
-    };
-
+fn session_list(json: bool) -> std::io::Result<i32> {
     let sessions = crate::session::list_sessions()?;
     if json {
-        _print_json(&serde_json::json!({
+        print_json(&serde_json::json!({
             "sessions": sessions,
         }));
     } else {
@@ -225,134 +323,51 @@ fn session_list(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn session_stop(args: &[String]) -> std::io::Result<i32> {
-    let (name, json) =
-        match parse_session_name_and_json(args, "usage: shepr session stop <name> [--json]") {
-            Ok(parsed) => parsed,
-            Err(code) => return Ok(code),
-        };
-
-    let target = match crate::session::parse_target_name(&name) {
+fn session_stop(name: &str, json: bool) -> i32 {
+    let target = match crate::session::parse_target_name(name) {
         Ok(target) => target,
         Err(message) => {
             print_session_error("invalid_session_name", &message);
-            return Ok(1);
+            return 1;
         }
     };
     match crate::session::stop_session(target.as_deref()) {
         Ok(session) => {
             if json {
-                _print_json(&serde_json::json!({
+                print_json(&serde_json::json!({
                     "stopped": true,
                     "session": session,
                 }));
             } else {
                 println!("stopped session {}", session.name);
             }
-            Ok(0)
+            0
         }
         Err(message) => {
             print_session_error("session_stop_failed", &message);
-            Ok(1)
+            1
         }
     }
 }
 
-fn session_delete(args: &[String]) -> std::io::Result<i32> {
-    let (name, json) =
-        match parse_session_name_and_json(args, "usage: shepr session delete <name> [--json]") {
-            Ok(parsed) => parsed,
-            Err(code) => return Ok(code),
-        };
-
-    match crate::session::delete_session(&name) {
+fn session_delete(name: &str, json: bool) -> i32 {
+    match crate::session::delete_session(name) {
         Ok(session) => {
             if json {
-                _print_json(&serde_json::json!({
+                print_json(&serde_json::json!({
                     "deleted": true,
                     "session": session,
                 }));
             } else {
                 println!("deleted session {}", session.name);
             }
-            Ok(0)
+            0
         }
         Err(message) => {
             print_session_error("session_delete_failed", &message);
-            Ok(1)
+            1
         }
     }
-}
-
-fn terminal_attach(args: &[String]) -> std::io::Result<i32> {
-    let (terminal_id, takeover) = match parse_attach_target(
-        args,
-        "usage: shepr terminal attach <terminal_id> [--takeover]",
-    ) {
-        Ok(parsed) => parsed,
-        Err(code) => return Ok(code),
-    };
-    crate::client::run_terminal_attach(terminal_id, takeover)?;
-    Ok(0)
-}
-
-fn terminal_title(args: &[String]) -> std::io::Result<i32> {
-    match args.first().map(String::as_str) {
-        Some("set") => {
-            if args.len() != 2 {
-                eprintln!("usage: shepr terminal title set <title>");
-                return Ok(2);
-            }
-            print_response(&send_request(&Request {
-                id: "cli:terminal:title:set".into(),
-                method: Method::ClientWindowTitleSet(ClientWindowTitleSetParams {
-                    title: args[1].clone(),
-                }),
-            })?)
-        }
-        Some("clear") => {
-            if args.len() != 1 {
-                eprintln!("usage: shepr terminal title clear");
-                return Ok(2);
-            }
-            print_response(&send_request(&Request {
-                id: "cli:terminal:title:clear".into(),
-                method: Method::ClientWindowTitleClear(EmptyParams::default()),
-            })?)
-        }
-        Some("help" | "--help" | "-h") => {
-            eprintln!("usage: shepr terminal title set <title>");
-            eprintln!("       shepr terminal title clear");
-            Ok(0)
-        }
-        _ => {
-            eprintln!("usage: shepr terminal title set <title>");
-            eprintln!("       shepr terminal title clear");
-            Ok(2)
-        }
-    }
-}
-
-pub(super) fn parse_attach_target(args: &[String], usage: &str) -> Result<(String, bool), i32> {
-    let Some(target) = args.first() else {
-        eprintln!("{usage}");
-        return Err(2);
-    };
-    let mut takeover = false;
-    for arg in &args[1..] {
-        match arg.as_str() {
-            "--takeover" => takeover = true,
-            "help" | "--help" | "-h" => {
-                eprintln!("{usage}");
-                return Err(0);
-            }
-            other => {
-                eprintln!("unknown option: {other}");
-                return Err(2);
-            }
-        }
-    }
-    Ok((target.clone(), takeover))
 }
 
 pub(super) fn print_response(response: &serde_json::Value) -> std::io::Result<i32> {
@@ -476,141 +491,6 @@ fn api_client_error_to_io(err: ApiClientError) -> std::io::Error {
     }
 }
 
-pub(super) fn normalize_workspace_id(value: &str) -> String {
-    value.to_string()
-}
-
-pub(super) fn normalize_tab_id(value: &str) -> String {
-    value.to_string()
-}
-
-pub(super) fn normalize_pane_id(value: &str) -> String {
-    value.to_string()
-}
-
-pub(super) fn parse_split_direction(value: &str) -> std::io::Result<SplitDirection> {
-    match value {
-        "right" => Ok(SplitDirection::Right),
-        "down" => Ok(SplitDirection::Down),
-        _ => Err(std::io::Error::other(format!(
-            "invalid split direction: {value}"
-        ))),
-    }
-}
-
-pub(super) fn parse_read_source(value: &str) -> std::io::Result<ReadSource> {
-    match value {
-        "visible" => Ok(ReadSource::Visible),
-        "recent" => Ok(ReadSource::Recent),
-        "recent-unwrapped" | "recent_unwrapped" => Ok(ReadSource::RecentUnwrapped),
-        "detection" => Ok(ReadSource::Detection),
-        _ => Err(std::io::Error::other(format!(
-            "invalid read source: {value}"
-        ))),
-    }
-}
-
-pub(super) fn parse_read_format(value: &str) -> std::io::Result<ReadFormat> {
-    match value {
-        "text" => Ok(ReadFormat::Text),
-        "ansi" => Ok(ReadFormat::Ansi),
-        _ => Err(std::io::Error::other(format!(
-            "invalid read format: {value}"
-        ))),
-    }
-}
-
-fn parse_agent_status(value: &str) -> std::io::Result<AgentStatus> {
-    match value {
-        "idle" => Ok(AgentStatus::Idle),
-        "working" => Ok(AgentStatus::Working),
-        "blocked" => Ok(AgentStatus::Blocked),
-        "done" => Ok(AgentStatus::Done),
-        "unknown" => Ok(AgentStatus::Unknown),
-        _ => Err(std::io::Error::other(format!(
-            "invalid agent status: {value} (expected idle, working, blocked, done, or unknown)"
-        ))),
-    }
-}
-
-pub(super) fn parse_pane_agent_state(value: &str) -> std::io::Result<PaneAgentState> {
-    match value {
-        "idle" => Ok(PaneAgentState::Idle),
-        "working" => Ok(PaneAgentState::Working),
-        "blocked" => Ok(PaneAgentState::Blocked),
-        "unknown" => Ok(PaneAgentState::Unknown),
-        _ => Err(std::io::Error::other(format!(
-            "invalid pane agent state: {value} (expected idle, working, blocked, or unknown)"
-        ))),
-    }
-}
-
-pub(super) fn parse_u32_flag(flag: &str, value: &str) -> std::io::Result<u32> {
-    value
-        .parse::<u32>()
-        .map_err(|_| std::io::Error::other(format!("invalid value for {flag}: {value}")))
-}
-
-pub(super) fn parse_u64_flag(flag: &str, value: &str) -> std::io::Result<u64> {
-    value
-        .parse::<u64>()
-        .map_err(|_| std::io::Error::other(format!("invalid value for {flag}: {value}")))
-}
-
-/// Expand `--flag=value` tokens into separate `--flag` and `value` tokens so
-/// the hand-rolled subcommand parsers accept the same `--flag=value` form the
-/// clap-generated help and completions imply. Only `value_options` are split:
-/// boolean and unknown options keep their attached value so they still reach
-/// the parser's unknown-option branch.
-pub(super) fn expand_equals_args(args: &[String], value_options: &[&str]) -> Vec<String> {
-    let mut expanded = Vec::with_capacity(args.len());
-    for arg in args {
-        match arg.split_once('=') {
-            Some((flag, value)) if value_options.contains(&flag) => {
-                expanded.push(flag.to_string());
-                expanded.push(value.to_string());
-            }
-            _ => expanded.push(arg.clone()),
-        }
-    }
-    expanded
-}
-
-fn parse_session_json_only(args: &[String], usage: &str) -> Result<bool, i32> {
-    match args {
-        [] => Ok(false),
-        [flag] if flag == "--json" => Ok(true),
-        _ => {
-            eprintln!("{usage}");
-            Err(2)
-        }
-    }
-}
-
-fn parse_session_name_and_json(args: &[String], usage: &str) -> Result<(String, bool), i32> {
-    let mut name = None;
-    let mut json = false;
-    let mut options_ended = false;
-    for arg in args {
-        if !options_ended && arg == "--" {
-            options_ended = true;
-        } else if !options_ended && arg == "--json" {
-            json = true;
-        } else if name.is_none() {
-            name = Some(arg.clone());
-        } else {
-            eprintln!("{usage}");
-            return Err(2);
-        }
-    }
-
-    let Some(name) = name else {
-        eprintln!("{usage}");
-        return Err(2);
-    };
-    Ok((name, json))
-}
-
 fn print_session_table(sessions: &[crate::session::SessionInfo]) {
     println!("{:<20} {:<8} {:<48} socket", "name", "status", "directory");
     for session in sessions {
@@ -631,54 +511,194 @@ fn print_session_table(sessions: &[crate::session::SessionInfo]) {
 fn print_session_error(code: &str, message: &str) {
     eprintln!(
         "{}",
-        serde_json::to_string(&serde_json::json!({
+        serde_json::json!({
             "error": {
                 "code": code,
                 "message": message,
             }
-        }))
-        .expect("session error json serializes")
+        })
     );
 }
 
-fn print_config_help() {
-    eprintln!("shepr config commands:");
-    eprintln!("  shepr config check  validate config.toml and print diagnostics");
-}
-
-fn print_terminal_help() {
-    eprintln!("shepr terminal commands:");
-    eprintln!("  shepr terminal attach <terminal_id> [--takeover]");
-    eprintln!("  shepr terminal title set <title>");
-    eprintln!("  shepr terminal title clear");
-    eprintln!("  detach from direct attach with ctrl+b q; send literal ctrl+b with ctrl+b ctrl+b");
-}
-
-fn print_session_help() {
-    eprintln!("shepr session commands:");
-    eprintln!("  shepr session list [--json]");
-    eprintln!("  shepr session attach <name>");
-    eprintln!("  shepr session stop <name> [--json]");
-    eprintln!("  shepr session delete <name> [--json]");
-    eprintln!("  use 'default' as <name> to target the default session for stop");
-}
-
-fn _print_json<T: Serialize>(value: &T) {
-    println!(
-        "{}",
-        serde_json::to_string(value).expect("value serializes to JSON")
-    );
+fn print_json(value: &serde_json::Value) {
+    println!("{value}");
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{CommandOutcome, Invocation};
+
+    pub(super) fn parse(args: &[&str]) -> Invocation {
+        let mut argv = vec!["shepr".to_string()];
+        argv.extend(args.iter().map(ToString::to_string));
+        match super::spec::command().try_get_matches_from(&argv) {
+            Ok(matches) => Invocation { matches },
+            Err(error) => panic!("{args:?} should parse: {error}"),
+        }
+    }
+
+    fn parse_error(args: &[&str]) -> clap::Error {
+        let mut argv = vec!["shepr".to_string()];
+        argv.extend(args.iter().map(ToString::to_string));
+        match super::spec::command().try_get_matches_from(&argv) {
+            Ok(_) => panic!("{args:?} should be rejected"),
+            Err(error) => error,
+        }
+    }
+
+    /// The sub-matches of `shepr <group> <command> ...`.
+    pub(super) fn command_matches(args: &[&str]) -> clap::ArgMatches {
+        let invocation = parse(args);
+        let Some((_, group)) = invocation.matches.subcommand() else {
+            panic!("{args:?} has no command");
+        };
+        let Some((_, command)) = group.subcommand() else {
+            panic!("{args:?} has no subcommand");
+        };
+        command.clone()
+    }
+
     #[test]
-    fn session_name_parser_accepts_option_terminator() {
+    fn launch_options_are_read_before_the_subcommand() {
+        let invocation = parse(&["--session", "work", "workspace", "list"]);
+        assert_eq!(invocation.session().as_deref(), Some("work"));
+        assert_eq!(invocation.command_name(), Some("workspace"));
+
+        let invocation = parse(&["--session=api", "server", "stop"]);
+        assert_eq!(invocation.session().as_deref(), Some("api"));
+        assert_eq!(invocation.command_name(), Some("server"));
+    }
+
+    #[test]
+    fn launch_options_after_the_subcommand_are_not_launch_options() {
+        // Text for `pane run` passes through untouched, including words that
+        // look like launch options and a second `--`.
+        let invocation = parse(&["pane", "run", "p1", "foo", "--session", "work"]);
+        assert_eq!(invocation.session(), None);
+        let run = command_matches(&["pane", "run", "p1", "foo", "--remote", "x", "--", "y"]);
+        assert_eq!(
+            super::matches::words(&run, "command"),
+            "foo --remote x -- y"
+        );
+        let run = command_matches(&["pane", "run", "p1", "--", "--session", "work"]);
+        assert_eq!(super::matches::words(&run, "command"), "--session work");
+
+        // Arguments after `--` for `agent start` belong to the agent.
+        let invocation = parse(&[
+            "agent",
+            "start",
+            "repro",
+            "--kind",
+            "claude",
+            "--pane",
+            "p1",
+            "--",
+            "/bin/echo",
+            "--session",
+            "child-session",
+            "--session=child-session",
+        ]);
+        assert_eq!(invocation.session(), None);
+
+        // Elsewhere a trailing launch option is a usage error, not a silent
+        // retarget of the command.
+        for args in [
+            &["server", "stop", "--session=api"][..],
+            &["workspace", "list", "--session", "work"],
+            &["pane", "list", "--remote", "host"],
+            &["agent", "list", "--machine", "mac"],
+        ] {
+            assert_eq!(parse_error(args).exit_code(), 2, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn session_attach_is_a_launch_into_the_named_session() {
+        let invocation = parse(&["session", "attach", "work"]);
+        assert_eq!(invocation.session_attach_name().as_deref(), Some("work"));
+        assert_eq!(
+            invocation.requested_session().expect("test precondition"),
+            Some("work".to_string())
+        );
+        assert!(matches!(
+            super::run(&invocation).expect("test precondition"),
+            CommandOutcome::NotCli
+        ));
+
+        let invocation = parse(&["--session", "a", "session", "attach", "b"]);
+        assert!(invocation.requested_session().is_err());
+
+        assert_eq!(
+            parse_error(&["session", "attach", "-h"]).kind(),
+            clap::error::ErrorKind::DisplayHelp
+        );
+        assert_eq!(parse_error(&["session", "attach", "a", "b"]).exit_code(), 2);
+    }
+
+    #[test]
+    fn session_name_accepts_option_terminator() {
         for name in ["-h", "--json"] {
-            assert_eq!(
-                super::parse_session_name_and_json(&["--".to_string(), name.to_string()], "usage",),
-                Ok((name.to_string(), false))
-            );
+            let stop = command_matches(&["session", "stop", "--", name]);
+            assert_eq!(super::matches::required(&stop, "name"), name);
+            assert!(!super::matches::flag(&stop, "json"));
+        }
+    }
+
+    #[test]
+    fn equals_form_works_for_every_value_option() {
+        let split = command_matches(&[
+            "pane",
+            "split",
+            "--direction=right",
+            "--cwd=/var/tmp",
+            "--ratio=0.5",
+        ]);
+        assert_eq!(
+            super::matches::string(&split, "cwd").as_deref(),
+            Some("/var/tmp")
+        );
+        assert_eq!(super::matches::value::<f32>(&split, "ratio"), Some(0.5));
+
+        let create = command_matches(&["workspace", "create", "--label=dev", "--env=A=b"]);
+        assert_eq!(
+            super::matches::string(&create, "label").as_deref(),
+            Some("dev")
+        );
+        assert_eq!(
+            super::matches::values::<(String, String)>(&create, "env"),
+            vec![("A".to_string(), "b".to_string())]
+        );
+    }
+
+    #[test]
+    fn remote_bridge_options_round_trip() {
+        assert_eq!(
+            parse(&[
+                "--session",
+                "work",
+                "remote-client-bridge",
+                "--idle-timeout-v1"
+            ])
+            .bridge_args(),
+            vec!["--idle-timeout-v1"]
+        );
+        assert_eq!(
+            parse(&["remote-api-bridge", "--check"]).bridge_args(),
+            vec!["--check"]
+        );
+        assert!(parse(&["remote-api-bridge"]).bridge_args().is_empty());
+    }
+
+    #[test]
+    fn unknown_commands_and_launch_flags_are_rejected() {
+        for args in [
+            &["frobnicate"][..],
+            &["--bogus"],
+            &["api", "snapshot"],
+            &["pane"],
+            &["config", "reset-keys"],
+        ] {
+            assert_eq!(parse_error(args).exit_code(), 2, "{args:?}");
         }
     }
 
@@ -737,27 +757,24 @@ mod tests {
     }
 
     #[test]
-    fn expand_equals_args_splits_value_options_only() {
-        // Known value options split; values may contain `=`. Boolean and
-        // unknown options keep the attached form so parsers still reject them.
-        let args = vec![
-            "--match=a=b".to_string(),
-            "name=value".to_string(),
-            "--raw=value".to_string(),
-            "--bogus=value".to_string(),
-            "--timeout=5000".to_string(),
-        ];
-        assert_eq!(
-            super::expand_equals_args(&args, &["--match", "--timeout"]),
-            vec![
-                "--match",
-                "a=b",
-                "name=value",
-                "--raw=value",
-                "--bogus=value",
-                "--timeout",
-                "5000",
-            ]
-        );
+    fn metadata_tokens_apply_in_argument_order() {
+        let report = command_matches(&[
+            "workspace",
+            "report-metadata",
+            "w1",
+            "--source",
+            "s",
+            "--token",
+            "a=1",
+            "--clear-token",
+            "a",
+            "--clear-token",
+            "b",
+            "--token",
+            "b=2",
+        ]);
+        let tokens = super::matches::metadata_tokens(&report);
+        assert_eq!(tokens.get("a"), Some(&None));
+        assert_eq!(tokens.get("b"), Some(&Some("2".to_string())));
     }
 }

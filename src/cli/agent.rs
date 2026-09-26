@@ -1,123 +1,57 @@
 use std::time::{Duration, Instant};
 
+use clap::ArgMatches;
+
 use crate::api::schema::{
     AgentPromptParams, AgentPromptWaitOptions, AgentReadParams, AgentRenameParams,
-    AgentSendKeysParams, AgentStartParams, AgentTarget, AgentWaitParams, EmptyParams, ErrorBody,
-    ErrorResponse, Method, PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
+    AgentSendKeysParams, AgentStartParams, AgentStatus, AgentTarget, AgentWaitParams, EmptyParams,
+    ErrorBody, ErrorResponse, Method, PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource,
+    Request,
 };
+
+use super::matches::{flag, required, string, value, values};
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const PANE_SHELL_READINESS_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
+const DEFAULT_AGENT_START_TIMEOUT_MS: u64 = 30_000;
 
-pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(String::as_str) else {
-        print_agent_help();
-        return Ok(2);
-    };
-
-    match subcommand {
-        "list" => agent_list(&args[1..]),
-        "get" => agent_get(&args[1..]),
-        "read" => agent_read(&args[1..]),
-        "send-keys" => agent_send_keys(&args[1..]),
-        "prompt" => agent_prompt(&args[1..]),
-        "rename" => agent_rename(&args[1..]),
-        "focus" => agent_focus(&args[1..]),
-        "wait" => agent_wait(&args[1..]),
-        "attach" => agent_attach(&args[1..]),
-        "start" => agent_start(&args[1..]),
-        "explain" => agent_explain(&args[1..]),
-        "help" | "--help" | "-h" => {
-            print_agent_help();
-            Ok(0)
+pub(super) fn run_agent_command(matches: &ArgMatches) -> std::io::Result<i32> {
+    match matches.subcommand() {
+        Some(("list", _)) => agent_list(),
+        Some(("get", matches)) => agent_get(required(matches, "target")),
+        Some(("read", matches)) => agent_read(read_params(matches)),
+        Some(("send-keys", matches)) => agent_send_keys(AgentSendKeysParams {
+            target: required(matches, "target"),
+            keys: values::<String>(matches, "key"),
+        }),
+        Some(("prompt", matches)) => agent_prompt(prompt_params(matches)),
+        Some(("rename", matches)) => agent_rename(AgentRenameParams {
+            target: required(matches, "target"),
+            name: string(matches, "name"),
+        }),
+        Some(("focus", matches)) => agent_focus(required(matches, "target")),
+        Some(("wait", matches)) => agent_wait(AgentWaitParams {
+            target: required(matches, "target"),
+            until: values::<AgentStatus>(matches, "until"),
+            timeout_ms: value::<u64>(matches, "timeout"),
+        }),
+        Some(("attach", matches)) => {
+            agent_attach(&required(matches, "target"), flag(matches, "takeover"))
         }
-        _ => {
-            print_agent_help();
-            Ok(2)
-        }
+        Some(("start", matches)) => agent_start(matches),
+        Some(("explain", matches)) => agent_explain(matches),
+        _ => Ok(super::missing_subcommand()),
     }
 }
 
-fn agent_explain(args: &[String]) -> std::io::Result<i32> {
-    let mut file = None;
-    let mut agent = None;
-    let mut json = false;
-    let mut verbose = false;
-    let mut target = None;
+fn agent_explain(matches: &ArgMatches) -> std::io::Result<i32> {
+    // The spec enforces the two forms: `<TARGET>` alone, or `--file` together
+    // with `--agent`.
+    let json = flag(matches, "json") || string(matches, "format").as_deref() == Some("json");
+    let verbose = flag(matches, "verbose");
 
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--file" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --file");
-                    return Ok(2);
-                };
-                file = Some(value.clone());
-                index += 2;
-            }
-            "--agent" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --agent");
-                    return Ok(2);
-                };
-                agent = Some(value.clone());
-                index += 2;
-            }
-            "--json" => {
-                json = true;
-                index += 1;
-            }
-            "--format" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --format");
-                    return Ok(2);
-                };
-                match value.as_str() {
-                    "json" => json = true,
-                    "text" => json = false,
-                    other => {
-                        eprintln!("invalid --format: {other} (expected text or json)");
-                        return Ok(2);
-                    }
-                }
-                index += 2;
-            }
-            "--verbose" | "-v" => {
-                verbose = true;
-                index += 1;
-            }
-            "help" | "--help" | "-h" => {
-                eprintln!("usage: shepr agent explain <target> [--json|--verbose]");
-                eprintln!(
-                    "usage: shepr agent explain --file PATH --agent LABEL [--json|--verbose]"
-                );
-                return Ok(0);
-            }
-            value if value.starts_with('-') => {
-                eprintln!("unknown option: {value}");
-                return Ok(2);
-            }
-            value => {
-                if target.is_some() {
-                    eprintln!("usage: shepr agent explain <target> [--json]");
-                    return Ok(2);
-                }
-                target = Some(value.to_string());
-                index += 1;
-            }
-        }
-    }
-
-    let explain = if let Some(path) = file {
-        if target.is_some() {
-            eprintln!("usage: shepr agent explain --file PATH --agent LABEL [--json]");
-            return Ok(2);
-        }
-        let Some(agent_label) = agent else {
-            eprintln!("shepr agent explain --file requires --agent LABEL");
-            return Ok(2);
-        };
+    let explain = if let Some(path) = string(matches, "file") {
+        let agent_label = required(matches, "agent");
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(err) => {
@@ -138,20 +72,10 @@ fn agent_explain(args: &[String]) -> std::io::Result<i32> {
             &content,
         ))
     } else {
-        let Some(target) = target else {
-            eprintln!("usage: shepr agent explain <target> [--json]");
-            eprintln!("usage: shepr agent explain --file PATH --agent LABEL [--json]");
-            return Ok(2);
-        };
-        if agent.is_some() {
-            eprintln!("--agent is only valid with --file");
-            return Ok(2);
-        }
-
         let response = super::send_request(&Request {
             id: "cli:agent:explain".into(),
             method: Method::AgentExplain(AgentTarget {
-                target: target.clone(),
+                target: required(matches, "target"),
             }),
         })?;
         if response.get("error").is_some() {
@@ -272,75 +196,21 @@ fn matched_rule_region_preview<'a>(
         .filter(|preview| !preview.is_empty())
 }
 
-fn agent_start(args: &[String]) -> std::io::Result<i32> {
-    let Some(name) = args.first() else {
-        eprintln!(
-            "usage: shepr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]"
-        );
-        return Ok(2);
-    };
-    let separator = args
-        .iter()
-        .position(|arg| arg == "--")
-        .unwrap_or(args.len());
-    let mut kind = None;
-    let mut pane_id = None;
-    let mut timeout_ms = None;
-    let mut index = 1;
-    while index < separator {
-        match args[index].as_str() {
-            "--kind" => {
-                let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
-                    eprintln!("missing value for --kind");
-                    return Ok(2);
-                };
-                kind = Some(value.clone());
-                index += 2;
-            }
-            "--pane" => {
-                let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
-                    eprintln!("missing value for --pane");
-                    return Ok(2);
-                };
-                pane_id = Some(super::normalize_pane_id(value));
-                index += 2;
-            }
-            "--timeout" => {
-                let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
-                    eprintln!("missing value for --timeout");
-                    return Ok(2);
-                };
-                timeout_ms = match parse_timeout(value) {
-                    Ok(timeout_ms) => Some(timeout_ms),
-                    Err(exit_code) => return Ok(exit_code),
-                };
-                index += 2;
-            }
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
-        }
-    }
-    let Some(kind) = kind else {
-        eprintln!("missing required --kind");
-        return Ok(2);
-    };
-    let Some(pane_id) = pane_id else {
-        eprintln!("missing required --pane");
-        return Ok(2);
-    };
+fn agent_start(matches: &ArgMatches) -> std::io::Result<i32> {
+    let name = &required(matches, "name");
+    let kind = required(matches, "kind");
+    let pane_id = required(matches, "pane");
+    let timeout_ms = value::<u64>(matches, "timeout");
+    // `--kind` is limited to the agent labels by the spec; this maps the label
+    // to its canonical spelling for comparison with the detected agent.
     let Some(expected_kind) = crate::detect::parse_agent_label(&kind) else {
-        eprintln!("unsupported interactive agent kind: {kind}");
-        return Ok(2);
+        return Ok(super::usage_error(&format!(
+            "unsupported interactive agent kind: {kind}"
+        )));
     };
     let expected_kind = crate::detect::agent_label(expected_kind).to_string();
-    let agent_args = if separator < args.len() {
-        args[separator + 1..].to_vec()
-    } else {
-        Vec::new()
-    };
-    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
+    let agent_args = values::<String>(matches, "agent_args");
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_AGENT_START_TIMEOUT_MS));
     let retryable_timeout = timeout > crate::app::AGENT_START_SETTLE_DELAY
         && timeout <= crate::app::MAX_AGENT_START_TIMEOUT;
     let pinned_terminal_id = pane_terminal_id(&pane_id)?;
@@ -423,62 +293,29 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
     }
 }
 
-fn agent_list(args: &[String]) -> std::io::Result<i32> {
-    if !args.is_empty() {
-        eprintln!("usage: shepr agent list");
-        return Ok(2);
-    }
-
+fn agent_list() -> std::io::Result<i32> {
     super::print_response(&super::send_request(&Request {
         id: "cli:agent:list".into(),
         method: Method::AgentList(EmptyParams::default()),
     })?)
 }
 
-fn agent_get(args: &[String]) -> std::io::Result<i32> {
-    let Some(target) = args.first() else {
-        eprintln!("usage: shepr agent get <target>");
-        return Ok(2);
-    };
-    if args.len() != 1 {
-        eprintln!("usage: shepr agent get <target>");
-        return Ok(2);
-    }
-
+fn agent_get(target: String) -> std::io::Result<i32> {
     super::print_response(&super::send_request(&Request {
         id: "cli:agent:get".into(),
-        method: Method::AgentGet(AgentTarget {
-            target: target.clone(),
-        }),
+        method: Method::AgentGet(AgentTarget { target }),
     })?)
 }
 
-fn agent_focus(args: &[String]) -> std::io::Result<i32> {
-    let Some(target) = args.first() else {
-        eprintln!("usage: shepr agent focus <target>");
-        return Ok(2);
-    };
-    if args.len() != 1 {
-        eprintln!("usage: shepr agent focus <target>");
-        return Ok(2);
-    }
-
+fn agent_focus(target: String) -> std::io::Result<i32> {
     super::print_response(&super::send_request(&Request {
         id: "cli:agent:focus".into(),
-        method: Method::AgentFocus(AgentTarget {
-            target: target.clone(),
-        }),
+        method: Method::AgentFocus(AgentTarget { target }),
     })?)
 }
 
-fn agent_attach(args: &[String]) -> std::io::Result<i32> {
-    let (target, takeover) =
-        match super::parse_attach_target(args, "usage: shepr agent attach <target> [--takeover]") {
-            Ok(parsed) => parsed,
-            Err(code) => return Ok(code),
-        };
-
-    let response = resolve_agent_target(&target, "cli:agent:attach:resolve")?;
+fn agent_attach(target: &str, takeover: bool) -> std::io::Result<i32> {
+    let response = resolve_agent_target(target, "cli:agent:attach:resolve")?;
     if response.get("error").is_some() {
         eprintln!(
             "{}",
@@ -494,59 +331,10 @@ fn agent_attach(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn agent_wait(args: &[String]) -> std::io::Result<i32> {
-    let Some(target) = args.first() else {
-        eprintln!("usage: shepr agent wait <target> [--until STATUS]... [--timeout MS]");
-        return Ok(2);
-    };
-    let mut until = Vec::new();
-    let mut timeout_ms = None;
-    let mut index = 1;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--until" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("--until requires at least one status");
-                    return Ok(2);
-                };
-                let status = match super::parse_agent_status(value) {
-                    Ok(status) => status,
-                    Err(err) => {
-                        eprintln!("{err}");
-                        return Ok(2);
-                    }
-                };
-                until.push(status);
-                index += 2;
-            }
-            "--timeout" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --timeout");
-                    return Ok(2);
-                };
-                timeout_ms = match parse_timeout(value) {
-                    Ok(timeout_ms) => Some(timeout_ms),
-                    Err(exit_code) => return Ok(exit_code),
-                };
-                index += 2;
-            }
-            "help" | "--help" | "-h" => {
-                eprintln!("usage: shepr agent wait <target> [--until STATUS]... [--timeout MS]");
-                return Ok(0);
-            }
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
-        }
-    }
+fn agent_wait(params: AgentWaitParams) -> std::io::Result<i32> {
     super::print_response(&super::send_request(&Request {
         id: "cli:agent:wait".into(),
-        method: Method::AgentWait(AgentWaitParams {
-            target: target.clone(),
-            until,
-            timeout_ms,
-        }),
+        method: Method::AgentWait(params),
     })?)
 }
 
@@ -737,210 +525,140 @@ fn agent_get_request(target: &str, request_id: &str) -> Request {
     }
 }
 
-fn agent_rename(args: &[String]) -> std::io::Result<i32> {
-    let [target, value] = args else {
-        eprintln!("usage: shepr agent rename <target> <name>|--clear");
-        return Ok(2);
-    };
-    let name = if value == "--clear" {
-        None
-    } else {
-        Some(value.clone())
-    };
-
+fn agent_rename(params: AgentRenameParams) -> std::io::Result<i32> {
     super::print_response(&super::send_request(&Request {
         id: "cli:agent:rename".into(),
-        method: Method::AgentRename(AgentRenameParams {
-            target: target.clone(),
-            name,
-        }),
+        method: Method::AgentRename(params),
     })?)
 }
 
-fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
-    let Some(target) = args.first() else {
-        eprintln!(
-            "usage: shepr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]"
-        );
-        return Ok(2);
-    };
-    let Some(text) = args.get(1) else {
-        eprintln!("agent prompt requires text");
-        return Ok(2);
-    };
-    let mut wait = false;
-    let mut until = Vec::new();
-    let mut timeout_ms = None;
-    let mut index = 2;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--wait" => {
-                wait = true;
-                index += 1;
-            }
-            "--until" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("--until requires at least one status");
-                    return Ok(2);
-                };
-                let status = match super::parse_agent_status(value) {
-                    Ok(status) => status,
-                    Err(err) => {
-                        eprintln!("{err}");
-                        return Ok(2);
-                    }
-                };
-                until.push(status);
-                index += 2;
-            }
-            "--timeout" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --timeout");
-                    return Ok(2);
-                };
-                timeout_ms = match parse_timeout(value) {
-                    Ok(timeout_ms) => Some(timeout_ms),
-                    Err(exit_code) => return Ok(exit_code),
-                };
-                index += 2;
-            }
-            option => {
-                eprintln!("unknown option: {option}");
-                return Ok(2);
-            }
-        }
+fn prompt_params(matches: &ArgMatches) -> AgentPromptParams {
+    // `--until` and `--timeout` require `--wait` in the spec.
+    AgentPromptParams {
+        target: required(matches, "target"),
+        text: required(matches, "text"),
+        wait: flag(matches, "wait").then(|| AgentPromptWaitOptions {
+            until: values::<AgentStatus>(matches, "until"),
+            timeout_ms: value::<u64>(matches, "timeout"),
+            submission_deadline: None,
+        }),
     }
-    if !until.is_empty() && !wait {
-        eprintln!("--until requires --wait");
-        return Ok(2);
-    }
-    if timeout_ms.is_some() && !wait {
-        eprintln!("--timeout requires --wait");
-        return Ok(2);
-    }
+}
+
+fn agent_prompt(params: AgentPromptParams) -> std::io::Result<i32> {
     let response = super::send_request(&Request {
         id: "cli:agent:prompt".into(),
-        method: Method::AgentPrompt(AgentPromptParams {
-            target: target.clone(),
-            text: text.clone(),
-            wait: wait.then_some(AgentPromptWaitOptions {
-                until,
-                timeout_ms,
-                submission_deadline: None,
-            }),
-        }),
+        method: Method::AgentPrompt(params),
     })?;
     super::print_response(&response)
 }
 
-fn agent_send_keys(args: &[String]) -> std::io::Result<i32> {
-    if args.len() < 2 {
-        eprintln!("usage: shepr agent send-keys <target> <key> [key ...]");
-        return Ok(2);
-    }
-
+fn agent_send_keys(params: AgentSendKeysParams) -> std::io::Result<i32> {
     super::print_response(&super::send_request(&Request {
         id: "cli:agent:send-keys".into(),
-        method: Method::AgentSendKeys(AgentSendKeysParams {
-            target: args[0].clone(),
-            keys: args[1..].to_vec(),
-        }),
+        method: Method::AgentSendKeys(params),
     })?)
 }
 
-fn agent_read(args: &[String]) -> std::io::Result<i32> {
-    let Some(target) = args.first() else {
-        eprintln!(
-            "usage: shepr agent read <target> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]"
-        );
-        return Ok(2);
+fn read_params(matches: &ArgMatches) -> AgentReadParams {
+    // `--ansi` conflicts with `--format` in the spec; either selects ANSI, and
+    // an ANSI read of an agent keeps its escapes.
+    let format = if flag(matches, "ansi") {
+        ReadFormat::Ansi
+    } else {
+        value::<ReadFormat>(matches, "format").unwrap_or(ReadFormat::Text)
     };
-
-    let mut source = ReadSource::Recent;
-    let mut lines = None;
-    let mut format = ReadFormat::Text;
-    let mut strip_ansi = true;
-
-    let mut index = 1;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--source" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --source");
-                    return Ok(2);
-                };
-                source = super::parse_read_source(value)?;
-                index += 2;
-            }
-            "--lines" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --lines");
-                    return Ok(2);
-                };
-                lines = Some(super::parse_u32_flag("--lines", value)?);
-                index += 2;
-            }
-            "--format" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --format");
-                    return Ok(2);
-                };
-                format = super::parse_read_format(value)?;
-                strip_ansi = !matches!(format, ReadFormat::Ansi);
-                index += 2;
-            }
-            "--ansi" => {
-                format = ReadFormat::Ansi;
-                strip_ansi = false;
-                index += 1;
-            }
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
-        }
+    AgentReadParams {
+        target: required(matches, "target"),
+        source: value::<ReadSource>(matches, "source").unwrap_or(ReadSource::Recent),
+        lines: value::<u32>(matches, "lines"),
+        format,
+        strip_ansi: format != ReadFormat::Ansi,
     }
+}
 
+fn agent_read(params: AgentReadParams) -> std::io::Result<i32> {
     let response = super::send_request(&Request {
         id: "cli:agent:read".into(),
-        method: Method::AgentRead(AgentReadParams {
-            target: target.clone(),
-            source,
-            lines,
-            format,
-            strip_ansi,
-        }),
+        method: Method::AgentRead(params),
     })?;
     super::print_read_response(&response)
 }
 
-fn print_agent_help() {
-    eprintln!("shepr agent commands:");
-    eprintln!("  shepr agent list");
-    eprintln!("  shepr agent get <target>");
-    eprintln!(
-        "  shepr agent read <target> [--source visible|recent|recent-unwrapped|detection] [--lines N] [--format text|ansi] [--ansi]"
-    );
-    eprintln!("  shepr agent send-keys <target> <key> [key ...]");
-    eprintln!("  shepr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]");
-    eprintln!("  shepr agent rename <target> <name>|--clear");
-    eprintln!("  shepr agent focus <target>");
-    eprintln!("  shepr agent wait <target> [--until STATUS]... [--timeout MS]");
-    eprintln!("  shepr agent attach <target> [--takeover]");
-    eprintln!(
-        "  shepr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]"
-    );
-    eprintln!("  shepr agent explain <target> [--json|--format text|json] [--verbose]");
-    eprintln!(
-        "  shepr agent explain --file PATH --agent LABEL [--json|--format text|json] [--verbose]"
-    );
-    eprintln!("  targets accept unique agent names and pane ids that currently host agents");
-    eprintln!("  kinds: {}", super::spec::agent_kind_values().join("|"));
-}
+#[cfg(test)]
+mod parse_tests {
+    use super::super::tests::command_matches;
+    use crate::api::schema::{AgentStatus, ReadFormat, ReadSource};
 
-fn parse_timeout(value: &str) -> Result<u64, i32> {
-    super::parse_u64_flag("--timeout", value).map_err(|err| {
-        eprintln!("{err}");
-        2
-    })
+    #[test]
+    fn read_defaults_and_ansi_forms() {
+        let params = super::read_params(&command_matches(&["agent", "read", "worker"]));
+        assert_eq!(params.target, "worker");
+        assert_eq!(params.source, ReadSource::Recent);
+        assert_eq!(params.format, ReadFormat::Text);
+        assert!(params.strip_ansi);
+
+        for form in [&["--ansi"][..], &["--format", "ansi"], &["--format=ansi"]] {
+            let mut args = vec![
+                "agent",
+                "read",
+                "worker",
+                "--source=detection",
+                "--lines",
+                "7",
+            ];
+            args.extend_from_slice(form);
+            let params = super::read_params(&command_matches(&args));
+            assert_eq!(params.source, ReadSource::Detection);
+            assert_eq!(params.lines, Some(7));
+            assert_eq!(params.format, ReadFormat::Ansi);
+            assert!(!params.strip_ansi);
+        }
+    }
+
+    #[test]
+    fn prompt_wait_options_only_with_wait() {
+        let params = super::prompt_params(&command_matches(&[
+            "agent",
+            "prompt",
+            "worker",
+            "--help me",
+            "--wait",
+            "--until",
+            "idle",
+            "--until=done",
+            "--timeout",
+            "500",
+        ]));
+        assert_eq!(params.text, "--help me");
+        let wait = params.wait.expect("test precondition");
+        assert_eq!(wait.until, vec![AgentStatus::Idle, AgentStatus::Done]);
+        assert_eq!(wait.timeout_ms, Some(500));
+
+        let params = super::prompt_params(&command_matches(&["agent", "prompt", "w", "hi"]));
+        assert!(params.wait.is_none());
+    }
+
+    #[test]
+    fn start_collects_agent_args_after_separator() {
+        let start = command_matches(&[
+            "agent",
+            "start",
+            "repro",
+            "--pane",
+            "p1",
+            "--kind",
+            "claude",
+            "--",
+            "--resume",
+            "--session",
+            "x",
+        ]);
+        assert_eq!(super::required(&start, "name"), "repro");
+        assert_eq!(super::required(&start, "pane"), "p1");
+        assert_eq!(
+            super::values::<String>(&start, "agent_args"),
+            vec!["--resume", "--session", "x"]
+        );
+    }
 }

@@ -1,5 +1,4 @@
 use std::collections::{HashMap, VecDeque};
-use std::io;
 use std::time::{Duration, Instant};
 
 use crate::api::client::ApiClientError;
@@ -11,6 +10,9 @@ use super::shell::ClientShellEndpointError;
 
 const ENDPOINT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_RETIRED_REQUESTS_PER_ENDPOINT: usize = 128;
+/// Upper bound on one reassembled endpoint command response. Large pane selections and
+/// reads are the biggest legitimate responses and stay far below this.
+const MAX_ENDPOINT_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 struct QueuedCommand {
     generation: u64,
@@ -176,7 +178,7 @@ impl EndpointCommands {
                 if now.saturating_duration_since(command.sent_at) < ENDPOINT_COMMAND_TIMEOUT {
                     return None;
                 }
-                let command = lane.in_flight.take().expect("checked in-flight command");
+                let command = lane.in_flight.take()?;
                 lane.retire((
                     command.generation,
                     command.boot_id.clone(),
@@ -204,41 +206,62 @@ impl EndpointCommands {
         response_request_id: &str,
         final_chunk: bool,
         data: Vec<u8>,
-    ) -> io::Result<Option<EndpointCommandResult>> {
-        let Some(lane) = self.lanes.get_mut(endpoint_id) else {
-            return Ok(None);
-        };
+    ) -> Option<EndpointCommandResult> {
+        let lane = self.lanes.get_mut(endpoint_id)?;
         let retired = (
             response_generation,
             response_boot_id.to_owned(),
             response_request_id.to_owned(),
         );
         if lane.consume_retired(&retired, final_chunk) {
-            return Ok(None);
+            return None;
         }
-        let Some(in_flight) = lane.in_flight.as_mut() else {
-            return Ok(None);
-        };
+        let in_flight = lane.in_flight.as_mut()?;
         if response_generation != in_flight.generation
             || response_boot_id != in_flight.boot_id
             || response_request_id != in_flight.request_id
         {
-            return Ok(None);
+            return None;
+        }
+        // The command timeout alone would let an endpoint grow this buffer for a full minute.
+        if in_flight.response.len().saturating_add(data.len()) > MAX_ENDPOINT_RESPONSE_BYTES {
+            let in_flight = lane.in_flight.take()?;
+            if !final_chunk {
+                // Swallow the rest of this response instead of misreading it as unsolicited.
+                lane.retire((
+                    in_flight.generation,
+                    in_flight.boot_id.clone(),
+                    in_flight.request_id.clone(),
+                ));
+            }
+            return Some(EndpointCommandResult {
+                endpoint_id: endpoint_id.clone(),
+                generation: in_flight.generation,
+                boot_id: in_flight.boot_id,
+                request_id: in_flight.request_id,
+                result: Err(ClientShellEndpointError {
+                    code: Some("endpoint_response_too_large".into()),
+                    message: format!(
+                        "this server's response exceeded {} MiB",
+                        MAX_ENDPOINT_RESPONSE_BYTES / (1024 * 1024)
+                    ),
+                }),
+            });
         }
         in_flight.response.extend(data);
         if !final_chunk {
-            return Ok(None);
+            return None;
         }
 
-        let in_flight = lane.in_flight.take().expect("checked in-flight command");
+        let in_flight = lane.in_flight.take()?;
         let result = parse_response(&in_flight.request_id, &in_flight.response);
-        Ok(Some(EndpointCommandResult {
+        Some(EndpointCommandResult {
             endpoint_id: endpoint_id.clone(),
             generation: in_flight.generation,
             boot_id: in_flight.boot_id,
             request_id: in_flight.request_id,
             result,
-        }))
+        })
     }
 
     /// Disconnecting an endpoint also cancels its shell-pending requests. Connection generation
@@ -350,7 +373,6 @@ mod tests {
                     false,
                     response.as_bytes()[..split].to_vec(),
                 )
-                .expect("test precondition")
                 .is_none()
         );
         let completed = commands
@@ -362,7 +384,6 @@ mod tests {
                 true,
                 response.as_bytes()[split..].to_vec(),
             )
-            .expect("test precondition")
             .expect("test precondition");
 
         assert_eq!(completed.endpoint_id, endpoint());
@@ -388,16 +409,14 @@ mod tests {
         let chunk_count = response.len().div_ceil(128 * 1024);
         let mut completed = None;
         for (index, chunk) in response.chunks(128 * 1024).enumerate() {
-            completed = commands
-                .receive_chunk(
-                    &endpoint(),
-                    1,
-                    "boot-a",
-                    "request-a",
-                    index + 1 == chunk_count,
-                    chunk.to_vec(),
-                )
-                .expect("test precondition");
+            completed = commands.receive_chunk(
+                &endpoint(),
+                1,
+                "boot-a",
+                "request-a",
+                index + 1 == chunk_count,
+                chunk.to_vec(),
+            );
         }
 
         assert!(matches!(
@@ -438,7 +457,6 @@ mod tests {
         assert!(
             commands
                 .receive_chunk(&endpoint(), 1, "boot-a", "request-a", true, late_response)
-                .expect("late retired response is ignored")
                 .is_none()
         );
         assert!(!has_in_flight(&commands));
@@ -472,7 +490,6 @@ mod tests {
 
         let completed = commands
             .receive_chunk(&remote, 2, "boot-b", "request-b", true, response)
-            .expect("test precondition")
             .expect("remote response");
 
         assert_eq!(completed.endpoint_id, remote);
@@ -550,7 +567,6 @@ mod tests {
         assert!(
             commands
                 .receive_chunk(&endpoint(), 1, "boot-a", "request-a", true, late_response)
-                .expect("test precondition")
                 .is_none()
         );
     }
@@ -610,21 +626,48 @@ mod tests {
         assert!(
             commands
                 .receive_chunk(&endpoint(), 2, "boot-a", "request-a", true, b"{}".to_vec())
-                .expect("test precondition")
                 .is_none()
         );
         assert!(
             commands
                 .receive_chunk(&endpoint(), 1, "boot-b", "request-a", true, b"{}".to_vec())
-                .expect("test precondition")
                 .is_none()
         );
         assert!(
             commands
                 .receive_chunk(&unknown, 1, "boot-a", "request-a", true, b"{}".to_vec())
-                .expect("test precondition")
                 .is_none()
         );
         assert!(has_in_flight(&commands));
+    }
+
+    #[test]
+    fn oversized_response_fails_the_command_and_drops_its_remaining_chunks() {
+        let mut commands = commands_with_in_flight();
+        let chunk = vec![b' '; MAX_ENDPOINT_RESPONSE_BYTES / 2];
+        assert!(
+            commands
+                .receive_chunk(&endpoint(), 1, "boot-a", "request-a", false, chunk.clone())
+                .is_none()
+        );
+        assert!(
+            commands
+                .receive_chunk(&endpoint(), 1, "boot-a", "request-a", false, chunk.clone())
+                .is_none()
+        );
+        let failed = commands
+            .receive_chunk(&endpoint(), 1, "boot-a", "request-a", false, vec![b' '])
+            .expect("oversized response completes the command");
+        assert!(matches!(
+            failed.result,
+            Err(ClientShellEndpointError { code: Some(code), .. })
+                if code == "endpoint_response_too_large"
+        ));
+        assert!(!has_in_flight(&commands));
+        assert!(
+            commands
+                .receive_chunk(&endpoint(), 1, "boot-a", "request-a", true, b"}".to_vec())
+                .is_none()
+        );
     }
 }

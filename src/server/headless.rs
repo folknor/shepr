@@ -179,6 +179,13 @@ pub struct HeadlessServer {
     /// Flag set by Ctrl+C or `server stop` signal.
     should_quit: Arc<AtomicBool>,
     host_shutdown_requested: Arc<AtomicBool>,
+    /// Set by the SIGINT/SIGTERM/SIGHUP handler before it sets `should_quit`.
+    /// A signal usually arrives as part of an external teardown (logout,
+    /// `kill` of the session) that signals the panes at the same time, so pane
+    /// deaths seen from then on are not removed from the layout that the final
+    /// session save captures. `server stop` does not set it: a deliberate stop
+    /// with live panes still applies deaths the user caused just before.
+    signal_quit_requested: Arc<AtomicBool>,
     /// Channel for receiving server events from client connection threads.
     server_event_rx: mpsc::Receiver<ServerEvent>,
     /// Sender for server events (cloned for each client thread).
@@ -247,6 +254,7 @@ impl HeadlessServer {
             effective_size: headless_size,
             shutting_down: false,
             host_shutdown_requested: Arc::new(AtomicBool::new(false)),
+            signal_quit_requested: Arc::new(AtomicBool::new(false)),
             should_quit,
             server_event_rx,
             server_event_tx,
@@ -267,8 +275,9 @@ impl HeadlessServer {
 
         // Register SIGINT handler for graceful shutdown.
         let should_quit = Arc::clone(&self.should_quit);
+        let signal_quit = Arc::clone(&self.signal_quit_requested);
         let quit_notify = self.server_event_tx.clone();
-        ctrlc_handler(should_quit, quit_notify);
+        ctrlc_handler(should_quit, signal_quit, quit_notify);
         let quit_notify = self.server_event_tx.clone();
         let _host_shutdown = crate::platform::HostShutdownMonitor::start(
             Arc::clone(&self.host_shutdown_requested),
@@ -294,7 +303,10 @@ impl HeadlessServer {
                 continue;
             }
 
-            // Check if we should start shutting down.
+            // Check if we should start shutting down. The drain applies queued
+            // state and agent-session reports so the final save carries them;
+            // after a signal it leaves pane deaths out (see
+            // `signal_quit_requested`).
             if self.app.state.should_quit || self.should_quit.load(Ordering::Acquire) {
                 self.drain_internal_events_with_forwarding_up_to(
                     crate::app::APP_EVENT_CHANNEL_CAPACITY,
@@ -347,7 +359,7 @@ impl HeadlessServer {
 
             // 6. Handle scheduled tasks.
             let now = Instant::now();
-            if self.handle_scheduled_tasks_headless(now, needs_render) {
+            if self.handle_scheduled_tasks_headless(now) {
                 needs_render = true;
                 needs_full_render = true;
             }
@@ -471,6 +483,9 @@ impl HeadlessServer {
                             let _ = writer.control.send(message);
                         }
                     }
+                    // Already dequeued, so the shutdown drain would never see
+                    // it; answer it here.
+                    LoopEvent::Api(msg) => Self::reject_api_request_for_shutdown(*msg),
                     _ => {}
                 }
                 continue;
@@ -508,6 +523,7 @@ impl HeadlessServer {
         if self.app.policy.persist_session {
             self.app.save_session_on_shutdown();
         }
+        self.release_sockets_after_save()?;
 
         info!("headless server exiting");
         Ok(())
@@ -984,17 +1000,8 @@ impl HeadlessServer {
             self.sent_window_title = None;
             return false;
         };
-        // A detached client keeps its entry with no writer, and a targeted send
-        // to one reports success without queuing anything. Caching the title
-        // against that client would skip the send once it attaches again.
-        if self
-            .clients
-            .get(&client_id)
-            .is_none_or(|client| client.writer.is_none())
-        {
-            self.sent_window_title = None;
-            return false;
-        }
+        // `send_to_client` reports false for a missing or writer-less client,
+        // so nothing is cached against a client that never got the title.
         let sent = self.send_to_client(
             client_id,
             &ServerMessage::WindowTitle {
@@ -1110,21 +1117,23 @@ impl HeadlessServer {
             }
         };
 
-        if let Some(client) = self.clients.get(&client_id) {
-            if let Some(writer) = &client.writer
-                && writer.control.send(serialized).is_err()
-            {
-                debug!(
-                    client_id,
-                    "client writer channel closed during targeted send"
-                );
-                self.remove_client_and_resize_if_needed(client_id);
-                return false;
-            }
-            true
-        } else {
-            false
+        let Some(client) = self.clients.get(&client_id) else {
+            return false;
+        };
+        // Only test fixtures build a client without a writer; nothing was
+        // queued for it, so report the send as not delivered.
+        let Some(writer) = &client.writer else {
+            return false;
+        };
+        if writer.control.send(serialized).is_err() {
+            debug!(
+                client_id,
+                "client writer channel closed during targeted send"
+            );
+            self.remove_client_and_resize_if_needed(client_id);
+            return false;
         }
+        true
     }
 
     fn shutdown_terminal_stream_clients(&mut self, terminal_id: &str, reason: &str) {
@@ -1990,13 +1999,43 @@ impl HeadlessServer {
         changed
     }
 
+    /// Closes the API request channel and answers everything still in it.
+    ///
+    /// Closing first means a request the API thread dispatches from here on
+    /// fails to send and is answered `server_unavailable` by that thread at
+    /// once, instead of sitting in the channel until the server drops it
+    /// after the session save.
     fn reject_queued_api_requests_for_shutdown(&mut self) {
-        for _ in 0..self.app.api_rx.len() {
-            let Ok(msg) = self.app.api_rx.try_recv() else {
-                break;
-            };
-            self.handle_api_request_with_shutdown_check(msg);
+        self.app.api_rx.close();
+        while let Ok(msg) = self.app.api_rx.try_recv() {
+            Self::reject_api_request_for_shutdown(msg);
         }
+    }
+
+    /// Answers requests that were parked behind an alternate-screen traversal,
+    /// and the traversals themselves, before the loop that drives them exits.
+    fn finish_alt_screen_reads_for_shutdown(&mut self) {
+        for msg in std::mem::take(&mut self.deferred_alt_screen_reads) {
+            Self::reject_api_request_for_shutdown(msg);
+        }
+        for read in std::mem::take(&mut self.pending_alt_screen_reads) {
+            read.finish_for_shutdown();
+        }
+    }
+
+    fn reject_api_request_for_shutdown(msg: api::ApiRequestMessage) {
+        let response = serde_json::to_string(&api::schema::ErrorResponse {
+            id: msg.request.id,
+            error: api::schema::ErrorBody {
+                code: "server_unavailable".into(),
+                message: "server is shutting down".into(),
+            },
+        })
+        .unwrap_or_else(|_| {
+            r#"{"id":"","error":{"code":"server_unavailable","message":"server is shutting down"}}"#
+                .to_string()
+        });
+        let _ = msg.respond_to.send(response);
     }
 
     fn handle_api_request_with_shutdown_check_inner(
@@ -2006,19 +2045,7 @@ impl HeadlessServer {
         _client_local: bool,
     ) -> bool {
         if self.shutting_down {
-            // During shutdown, respond with server_unavailable.
-            let response = serde_json::to_string(&api::schema::ErrorResponse {
-                id: msg.request.id,
-                error: api::schema::ErrorBody {
-                    code: "server_unavailable".into(),
-                    message: "server is shutting down".into(),
-                },
-            })
-            .unwrap_or_else(|_| {
-                r#"{"id":"","error":{"code":"server_unavailable","message":"server is shutting down"}}"#
-                    .to_string()
-            });
-            let _ = msg.respond_to.send(response);
+            Self::reject_api_request_for_shutdown(msg);
             return false;
         }
 
@@ -2124,7 +2151,7 @@ impl HeadlessServer {
     /// Handle scheduled tasks for the headless server.
     ///
     /// Similar to the former App scheduler but without terminal resize polling.
-    fn handle_scheduled_tasks_headless(&mut self, now: Instant, geometry_dirty: bool) -> bool {
+    fn handle_scheduled_tasks_headless(&mut self, now: Instant) -> bool {
         let mut changed = false;
 
         // No resize polling needed - server has no terminal.
@@ -2163,14 +2190,16 @@ impl HeadlessServer {
 
         changed |= self.app.handle_tab_bar_status_tasks(now);
 
-        if geometry_dirty {
-            self.app.pending_agent_resume_deadline = None;
-        } else {
-            self.app.sync_pending_agent_resume_deadline(now);
-            changed |= self
-                .app
-                .start_pending_agent_resumes(now, self.app.pending_agent_resume_due(now));
-        }
+        // A pending render says nothing about geometry: PTY output from any pane,
+        // hidden ones included, sets it. Geometry changes run through the client
+        // resize/claim paths, which settle the resume deadline themselves. Gating
+        // on "render pending" here used to clear the theme-wait deadline, so a
+        // pane printing at least every theme-wait interval postponed the first
+        // restored agent indefinitely.
+        self.app.sync_pending_agent_resume_deadline(now);
+        changed |= self
+            .app
+            .start_pending_agent_resumes(now, self.app.pending_agent_resume_due(now));
         changed
     }
 }
@@ -2204,10 +2233,17 @@ impl Drop for HeadlessServer {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Installs a Ctrl+C handler that sets the should_quit flag and wakes up
-/// the event loop by sending a QuitSignal on the server event channel.
-fn ctrlc_handler(should_quit: Arc<AtomicBool>, server_event_tx: mpsc::Sender<ServerEvent>) {
+/// Installs the SIGINT/SIGTERM/SIGHUP handler (ctrlc's `termination`
+/// feature). It marks the quit as signal-driven, sets the should_quit flag, and
+/// wakes up the event loop by sending a QuitSignal on the server event channel.
+fn ctrlc_handler(
+    should_quit: Arc<AtomicBool>,
+    signal_quit: Arc<AtomicBool>,
+    server_event_tx: mpsc::Sender<ServerEvent>,
+) {
     let _ = ctrlc::set_handler(move || {
+        // Before `should_quit`, so the loop never sees the quit without it.
+        signal_quit.store(true, Ordering::Release);
         should_quit.store(true, Ordering::Release);
         // Wake up the event loop so the quit flag is checked promptly.
         let _ = server_event_tx.try_send(ServerEvent::QuitSignal);

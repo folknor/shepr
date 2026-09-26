@@ -179,6 +179,7 @@ impl AppState {
                     .get_mut(&terminal_id)?
                     .expire_agent_metadata_at(scheduled_deadline, now)?;
                 let change = mutation.effective_state_change?;
+                self.record_agent_state_change_seq(&terminal_id, &change, false);
                 let seen = self.apply_pane_state_change(ws_idx, pane_id, &change, false)?;
                 let update = PaneStateUpdate {
                     pane_id,
@@ -510,8 +511,14 @@ impl AppState {
                         .any(|pane| pane.attached_terminal_id == terminal_id)
                 })
             });
-            if !still_attached
-                && self.terminals.remove(&terminal_id).is_some()
+            if still_attached {
+                continue;
+            }
+            // A direct-attach client normally releases its resize lock on
+            // disconnect, but once the terminal is gone the lock guards
+            // nothing; drop it here so it cannot outlive the terminal.
+            self.direct_attach_resize_locks.remove(&terminal_id);
+            if self.terminals.remove(&terminal_id).is_some()
                 && !self.terminal_runtime_shutdowns.contains(&terminal_id)
             {
                 self.terminal_runtime_shutdowns.push(terminal_id);
@@ -533,46 +540,60 @@ impl AppState {
         }
     }
 
-    pub fn close_selected_workspace(&mut self) {
-        if self.workspaces.is_empty() {
-            return;
-        }
-        self.mark_session_dirty();
-        let close_indices = self.workspace_close_indices(self.selected);
+    /// Drops the raw and public pane-id aliases that point at any of `pane_ids`.
+    pub(crate) fn remove_pane_aliases(&mut self, pane_ids: &[PaneId]) {
+        self.pane_id_aliases
+            .retain(|_, alias| !pane_ids.contains(alias));
+        self.public_pane_id_aliases
+            .retain(|_, alias| !pane_ids.contains(alias));
+    }
 
-        let mut terminal_ids = Vec::new();
-        let mut pane_ids = Vec::new();
-        for idx in &close_indices {
-            terminal_ids.extend(self.terminal_ids_for_workspace(*idx));
-            pane_ids.extend(self.pane_ids_for_workspace(*idx));
-            if let Some(workspace_id) = self.workspaces.get(*idx).map(|ws| ws.id.clone()) {
-                crate::logging::workspace_closed(&workspace_id);
-            }
-        }
+    #[cfg(test)]
+    pub fn close_selected_workspace(&mut self) {
+        self.close_workspace_at(self.selected);
+    }
+
+    /// Closes the workspace at `ws_idx` and everything it owns.
+    ///
+    /// Focus stays on the previously active workspace and the sidebar cursor
+    /// on the previously selected one when they survive; otherwise both fall
+    /// back to the closed slot (clamped). Closing the last workspace leaves
+    /// terminal mode, since there is no pane left to type into.
+    pub(crate) fn close_workspace_at(&mut self, ws_idx: usize) {
+        let Some(workspace_id) = self.workspaces.get(ws_idx).map(|ws| ws.id.clone()) else {
+            return;
+        };
+        self.mark_session_dirty();
+        crate::logging::workspace_closed(&workspace_id);
+
+        let terminal_ids = self.terminal_ids_for_workspace(ws_idx);
+        let pane_ids = self.pane_ids_for_workspace(ws_idx);
         let active_workspace_id = self
             .active
             .and_then(|idx| self.workspaces.get(idx))
             .map(|ws| ws.id.clone());
+        let selected_workspace_id = self.workspaces.get(self.selected).map(|ws| ws.id.clone());
+
+        self.remove_pane_aliases(&pane_ids);
         self.clear_stale_previous_pane_focus(pane_ids);
-        for idx in close_indices.iter().rev() {
-            self.workspaces.remove(*idx);
-        }
+        self.workspaces.remove(ws_idx);
         self.remove_unattached_terminal_ids(terminal_ids);
+
         if self.workspaces.is_empty() {
             self.active = None;
             self.selected = 0;
-        } else {
-            // Keep focus on the previously focused workspace
-            if let Some(id) = active_workspace_id
-                && let Some(idx) = self.workspaces.iter().position(|ws| ws.id == id)
-            {
-                self.selected = idx;
+            if self.mode == Mode::Terminal {
+                self.mode = Mode::Navigate;
             }
-            if self.selected >= self.workspaces.len() {
-                self.selected = self.workspaces.len() - 1;
-            }
-            self.active = Some(self.selected);
+            return;
         }
+        let last = self.workspaces.len() - 1;
+        let position_of = |id: Option<String>, workspaces: &[crate::workspace::Workspace]| {
+            id.and_then(|id| workspaces.iter().position(|ws| ws.id == id))
+        };
+        let active = position_of(active_workspace_id, &self.workspaces).unwrap_or(ws_idx.min(last));
+        self.active = Some(active);
+        self.selected = position_of(selected_workspace_id, &self.workspaces).unwrap_or(active);
     }
 }
 
@@ -746,10 +767,6 @@ impl AppState {
             return;
         };
         self.apply_pane_zoom(ws_idx, pane_id, PaneZoomCommand::Toggle);
-    }
-
-    pub(crate) fn workspace_close_indices(&self, ws_idx: usize) -> Vec<usize> {
-        vec![ws_idx]
     }
 
     #[cfg(test)]
@@ -1393,15 +1410,7 @@ impl AppState {
         let change = mutation.effective_state_change.or(unchanged_change)?;
         let suppress_completion = force_suppress_completion
             || (change.state == AgentState::Idle && suppress_acquisition_completion);
-        if change.previous_state != change.state {
-            self.next_agent_state_change_seq += 1;
-            if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
-                terminal.last_agent_state_change_seq = Some(self.next_agent_state_change_seq);
-                terminal.last_agent_completion_seq = (!suppress_completion
-                    && is_completion_transition(&change))
-                .then_some(self.next_agent_state_change_seq);
-            }
-        }
+        self.record_agent_state_change_seq(&terminal_id, &change, suppress_completion);
         let seen = self.apply_pane_state_change(ws_idx, pane_id, &change, suppress_completion)?;
         let update = PaneStateUpdate {
             pane_id,
@@ -1430,6 +1439,28 @@ impl AppState {
             suppress_completion,
         };
         Some(update)
+    }
+
+    /// Stamps a state transition with the next global state-change sequence
+    /// and, for completions, the completion sequence. Every path that applies
+    /// an `EffectiveStateChange` must call this, or API consumers waiting on
+    /// `state_change_seq` / `completion_seq` never see the transition.
+    fn record_agent_state_change_seq(
+        &mut self,
+        terminal_id: &crate::terminal::TerminalId,
+        change: &EffectiveStateChange,
+        suppress_completion: bool,
+    ) {
+        if change.previous_state == change.state {
+            return;
+        }
+        self.next_agent_state_change_seq += 1;
+        if let Some(terminal) = self.terminals.get_mut(terminal_id) {
+            terminal.last_agent_state_change_seq = Some(self.next_agent_state_change_seq);
+            terminal.last_agent_completion_seq = (!suppress_completion
+                && is_completion_transition(change))
+            .then_some(self.next_agent_state_change_seq);
+        }
     }
 
     pub(crate) fn next_managed_agent_deadline(&self) -> Option<Instant> {
@@ -1505,9 +1536,7 @@ impl AppState {
 
         let pane_terminal_id = self.terminal_id_for_pane(ws_idx, pane_id);
         let workspace_terminal_ids = self.terminal_ids_for_workspace(ws_idx);
-        self.pane_id_aliases.retain(|_, alias| *alias != pane_id);
-        self.public_pane_id_aliases
-            .retain(|_, alias| *alias != pane_id);
+        self.remove_pane_aliases(&[pane_id]);
         let should_close_workspace = {
             let ws = &mut self.workspaces[ws_idx];
             ws.remove_pane(pane_id)
@@ -2944,6 +2973,60 @@ mod tests {
     }
 
     #[test]
+    fn metadata_expiry_state_change_bumps_state_and_completion_sequences() {
+        let mut state = app_with_workspaces(&["active", "background"]);
+        state.active = Some(0);
+        let pane_id = state.workspaces[1].tabs[0].root_pane;
+        let terminal_id = state
+            .terminal_id_for_pane(1, pane_id)
+            .expect("test precondition");
+        let before_report = Instant::now();
+        {
+            let terminal = state
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("test precondition");
+            terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+            terminal.set_agent_metadata(crate::terminal::AgentMetadataReport {
+                source: "custom:status".into(),
+                agent_label: None,
+                applies_to_source: None,
+                title: Some("temporary".into()),
+                display_agent: None,
+                state_labels: std::collections::HashMap::new(),
+                clear_title: false,
+                clear_display_agent: false,
+                clear_state_labels: false,
+                ttl: Some(std::time::Duration::from_millis(1)),
+                seq: None,
+            });
+            // Leave the effective state stale so the expiry's recompute is
+            // what moves it, the way a time-dependent authority change would.
+            terminal.state = AgentState::Working;
+        }
+        let seq_before = state.next_agent_state_change_seq;
+
+        let updates = state.expire_agent_metadata_at(
+            before_report,
+            Instant::now() + std::time::Duration::from_secs(1),
+        );
+
+        let update = updates.first().expect("expiry publishes a state update");
+        assert_eq!(update.previous_state, AgentState::Working);
+        assert_eq!(update.state, AgentState::Idle);
+        assert_eq!(state.next_agent_state_change_seq, seq_before + 1);
+        let terminal = &state.terminals[&terminal_id];
+        assert_eq!(
+            terminal.last_agent_state_change_seq,
+            Some(state.next_agent_state_change_seq)
+        );
+        assert_eq!(
+            terminal.last_agent_completion_seq,
+            Some(state.next_agent_state_change_seq)
+        );
+    }
+
+    #[test]
     fn active_tab_suppression_preserves_unknown_focus_behavior() {
         assert!(active_tab_is_seen(true, None));
         assert!(active_tab_is_seen(true, Some(true)));
@@ -3185,6 +3268,85 @@ mod tests {
 
         assert!(!state.terminals.contains_key(&terminal_id));
         state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn close_workspace_prunes_aliases_and_resize_locks_of_its_panes() {
+        let mut state = app_with_workspaces(&["closing", "kept"]);
+        let closing_pane = state.workspaces[0].tabs[0].root_pane;
+        let kept_pane = state.workspaces[1].tabs[0].root_pane;
+        let closing_terminal = state
+            .terminal_id_for_pane(0, closing_pane)
+            .expect("test precondition");
+        let kept_terminal = state
+            .terminal_id_for_pane(1, kept_pane)
+            .expect("test precondition");
+        state
+            .public_pane_id_aliases
+            .insert("wOLD:p1".into(), closing_pane);
+        state
+            .public_pane_id_aliases
+            .insert("wOLD:p2".into(), kept_pane);
+        state.pane_id_aliases.insert(7, closing_pane);
+        state
+            .direct_attach_resize_locks
+            .insert(closing_terminal.clone());
+        state
+            .direct_attach_resize_locks
+            .insert(kept_terminal.clone());
+
+        state.close_workspace_at(0);
+
+        assert!(!state.public_pane_id_aliases.contains_key("wOLD:p1"));
+        assert_eq!(
+            state.public_pane_id_aliases.get("wOLD:p2"),
+            Some(&kept_pane)
+        );
+        assert!(state.pane_id_aliases.is_empty());
+        assert!(!state.direct_attach_resize_locks.contains(&closing_terminal));
+        assert!(state.direct_attach_resize_locks.contains(&kept_terminal));
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn closing_the_last_workspace_leaves_terminal_mode() {
+        let mut state = app_with_workspaces(&["only"]);
+        assert_eq!(state.mode, Mode::Terminal);
+
+        state.close_workspace_at(0);
+
+        assert!(state.workspaces.is_empty());
+        assert_eq!(state.mode, Mode::Navigate);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn close_workspace_at_keeps_the_sidebar_selection_and_focus() {
+        let mut state = app_with_workspaces(&["a", "b", "c", "d"]);
+        let active_id = state.workspaces[3].id.clone();
+        let selected_id = state.workspaces[2].id.clone();
+        state.active = Some(3);
+        state.selected = 2;
+
+        state.close_workspace_at(0);
+
+        assert_eq!(
+            state.workspaces[state.active.expect("active")].id,
+            active_id
+        );
+        assert_eq!(state.workspaces[state.selected].id, selected_id);
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn close_workspace_at_out_of_range_is_a_noop() {
+        let mut state = app_with_workspaces(&["a"]);
+        state.session_dirty = false;
+
+        state.close_workspace_at(3);
+
+        assert_eq!(state.workspaces.len(), 1);
+        assert!(!state.session_dirty);
     }
 
     #[test]

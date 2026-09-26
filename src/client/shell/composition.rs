@@ -229,6 +229,12 @@ impl ClientShellState {
                 workspace_drop_indicator_row,
             },
         );
+        // Pane hits are the surface's own geometry offset into this layout, not clipped to
+        // `layout.pane_surface`. The surface may have been produced for another layout: a
+        // resize or sidebar toggle can race a surface already in flight, and the tab bar
+        // appears (shrinking the pane area by a row) when a second tab opens without the
+        // surface being invalidated. `blit_pane_surface` clips; every later draw that uses
+        // these rects must stay bounds-safe (`Buffer::cell_mut`, never `buffer[(x, y)]`).
         self.hits.panes = surface
             .panes
             .iter()
@@ -416,15 +422,17 @@ impl ClientShellState {
                     && y < frame.height
                 {
                     let mut composed = frame.to_ratatui_buffer()?;
-                    composed[(x, y)].set_style(
-                        Style::default()
-                            .fg(match self.config.palette.panel_bg {
-                                ratatui::style::Color::Reset => self.config.palette.surface_dim,
-                                color => color,
-                            })
-                            .bg(self.config.palette.accent)
-                            .add_modifier(Modifier::BOLD),
-                    );
+                    if let Some(cell) = composed.cell_mut((x, y)) {
+                        cell.set_style(
+                            Style::default()
+                                .fg(match self.config.palette.panel_bg {
+                                    ratatui::style::Color::Reset => self.config.palette.surface_dim,
+                                    color => color,
+                                })
+                                .bg(self.config.palette.accent)
+                                .add_modifier(Modifier::BOLD),
+                        );
+                    }
                     frame.replace_from_ratatui_buffer_preserving_effects(&composed, None);
                 } else {
                     frame.cursor = None;
@@ -595,13 +603,94 @@ fn render_client_copy_search_highlights(
                 hit.inner_rect.width.saturating_sub(1)
             };
             let end_col = end_col.min(hit.inner_rect.width.saturating_sub(1));
+            // The hit comes from the pane surface, whose geometry may have been produced for
+            // a different layout than this frame (see where `compose` builds pane hits).
+            // `cell_mut` skips cells outside the buffer where `Buffer` indexing would panic.
             for col in start_col..=end_col {
-                buffer[(
-                    hit.inner_rect.x.saturating_add(col),
-                    hit.inner_rect.y.saturating_add(viewport_row),
-                )]
-                    .set_style(style);
+                let (Some(x), Some(y)) = (
+                    hit.inner_rect.x.checked_add(col),
+                    hit.inner_rect.y.checked_add(viewport_row),
+                ) else {
+                    continue;
+                };
+                if let Some(cell) = buffer.cell_mut((x, y)) {
+                    cell.set_style(style);
+                }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::schema::{PaneTextPoint, PaneTextRange};
+
+    fn text_range(row: u32, start_col: u16, end_col: u16) -> PaneTextRange {
+        PaneTextRange {
+            start: PaneTextPoint {
+                row,
+                col: start_col,
+            },
+            end: PaneTextPoint { row, col: end_col },
+        }
+    }
+
+    #[test]
+    fn copy_search_highlights_clip_surface_taller_than_frame() {
+        // A pane surface produced for another layout (e.g. before the tab bar appeared)
+        // is one row taller than the frame. Matches on its bottom row are off-buffer
+        // and must be skipped instead of panicking on `Buffer` indexing.
+        let hit = PaneHit {
+            rect: Rect::new(0, 0, 6, 4),
+            inner_rect: Rect::new(0, 0, 6, 4),
+            scrollbar_rect: None,
+            scroll: Some(crate::pane::ScrollMetrics {
+                offset_from_bottom: 0,
+                max_offset_from_bottom: 0,
+                viewport_rows: 4,
+            }),
+            pane_id: "pane".to_string(),
+            mouse_reporting: false,
+            sgr_pixel_mouse: false,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let copy_mode = ClientCopyModeState {
+            pane_id: "pane".to_string(),
+            content_revision: 0,
+            geometry: (6, 4),
+            alternate_screen_active: false,
+            cursor: PaneTextPoint { row: 3, col: 0 },
+            offset_from_bottom: 0,
+            max_offset_from_bottom: 0,
+            entry_offset_from_bottom: 0,
+            selection: None,
+            search_prompt: None,
+            search_query: "x".to_string(),
+            search_direction: None,
+            search_matches: vec![text_range(2, 0, 1), text_range(3, 0, 5)],
+            search_total: 2,
+            search_current: Some(1),
+            search_current_global: Some(1),
+            search_generation: 0,
+            copy_after_search: false,
+        };
+        let palette = Palette::catppuccin();
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 6, 3));
+
+        for current_only in [false, true] {
+            render_client_copy_search_highlights(
+                &mut buffer,
+                Some(&copy_mode),
+                &hit,
+                &palette,
+                current_only,
+            );
+        }
+
+        assert_eq!(buffer[(0, 2)].style().bg, Some(palette.surface1));
+        assert_eq!(buffer[(1, 2)].style().bg, Some(palette.surface1));
+        assert_ne!(buffer[(2, 2)].style().bg, Some(palette.surface1));
     }
 }

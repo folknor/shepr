@@ -13,7 +13,7 @@ impl HeadlessServer {
     ) -> Option<(bool, u64)> {
         let focus_before = self.shell_focus_targets();
         let focused_tabs_before = self.focused_shell_tabs();
-        let (changed, projection_revision) = {
+        let (changed, projection_revision, held_inputs) = {
             let client = self.clients.get_mut(&client_id)?;
             if !client.is_shell_client() {
                 return None;
@@ -43,14 +43,9 @@ impl HeadlessServer {
             if !active && let Some(writer) = &client.writer {
                 writer.discard_pending_render();
             }
-            (changed, client.shell_projection_revision)
+            let held_inputs = (!active && changed).then(|| client.drain_shell_held_inputs());
+            (changed, client.shell_projection_revision, held_inputs)
         };
-        let held_inputs = (!active && changed).then(|| {
-            self.clients
-                .get_mut(&client_id)
-                .expect("checked client")
-                .drain_shell_held_inputs()
-        });
 
         if let Some(held_inputs) = held_inputs {
             self.release_client_shell_inputs(client_id, held_inputs);

@@ -30,78 +30,25 @@ pub(crate) struct RemoteLaunch {
     pub(crate) keybindings: RemoteKeybindings,
 }
 
-pub(crate) fn extract_remote_args(
-    args: &[String],
-) -> Result<(Vec<String>, Option<RemoteLaunch>), String> {
-    let mut cleaned = Vec::with_capacity(args.len());
-    if let Some(program) = args.first() {
-        cleaned.push(program.clone());
-    }
-
-    let mut remote_target = None;
-    let mut keybindings = RemoteKeybindings::Local;
-    let mut keybindings_seen = false;
-    let mut index = 1;
-    while index < args.len() {
-        let arg = &args[index];
-        if arg == "--" {
-            cleaned.extend_from_slice(&args[index..]);
-            break;
-        }
-        if arg == "--remote" {
-            if remote_target.is_some() {
-                return Err("--remote can only be specified once".to_string());
-            }
-            let Some(value) = args.get(index + 1) else {
-                return Err("missing value for --remote".to_string());
-            };
-            remote_target = Some(validate_remote_target(value)?.to_owned());
-            index += 2;
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--remote=") {
-            if remote_target.is_some() {
-                return Err("--remote can only be specified once".to_string());
-            }
-            remote_target = Some(validate_remote_target(value)?.to_owned());
-            index += 1;
-            continue;
-        }
-        if arg == "--remote-keybindings" {
-            if keybindings_seen {
-                return Err("--remote-keybindings can only be specified once".to_string());
-            }
-            let Some(value) = args.get(index + 1) else {
-                return Err("missing value for --remote-keybindings".to_string());
-            };
-            keybindings = RemoteKeybindings::parse(value)?;
-            keybindings_seen = true;
-            index += 2;
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--remote-keybindings=") {
-            if keybindings_seen {
-                return Err("--remote-keybindings can only be specified once".to_string());
-            }
-            keybindings = RemoteKeybindings::parse(value)?;
-            keybindings_seen = true;
-            index += 1;
-            continue;
-        }
-
-        cleaned.push(arg.clone());
-        index += 1;
-    }
-
-    let remote = remote_target.map(|target| RemoteLaunch {
-        target,
+/// Builds the remote launch from the parsed `--remote` and
+/// `--remote-keybindings` options. The command-line parser (`cli/spec.rs`)
+/// only accepts them before the subcommand, rejects repeats, and requires
+/// `--remote` for `--remote-keybindings`; the values are validated here.
+pub(crate) fn remote_launch(
+    target: Option<&str>,
+    keybindings: Option<&str>,
+) -> Result<Option<RemoteLaunch>, String> {
+    let keybindings = keybindings
+        .map(RemoteKeybindings::parse)
+        .transpose()?
+        .unwrap_or(RemoteKeybindings::Local);
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    Ok(Some(RemoteLaunch {
+        target: validate_remote_target(target)?.to_owned(),
         keybindings,
-    });
-    if remote.is_none() && keybindings_seen {
-        return Err("--remote-keybindings requires --remote".to_string());
-    }
-
-    Ok((cleaned, remote))
+    }))
 }
 
 pub(crate) fn validate_remote_target(target: &str) -> Result<&str, String> {
@@ -112,4 +59,34 @@ pub(crate) fn validate_remote_target(target: &str) -> Result<&str, String> {
         return Err("--remote target must not start with '-'".to_string());
     }
     Ok(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_launch_defaults_to_local_keybindings() {
+        assert_eq!(remote_launch(None, None), Ok(None));
+        assert_eq!(
+            remote_launch(Some("dev@box"), None),
+            Ok(Some(RemoteLaunch {
+                target: "dev@box".into(),
+                keybindings: RemoteKeybindings::Local,
+            }))
+        );
+        assert_eq!(
+            remote_launch(Some("dev@box"), Some("server"))
+                .expect("test precondition")
+                .map(|launch| launch.keybindings),
+            Some(RemoteKeybindings::Server)
+        );
+    }
+
+    #[test]
+    fn remote_launch_rejects_option_like_or_empty_targets() {
+        assert!(remote_launch(Some("-oProxyCommand=x"), None).is_err());
+        assert!(remote_launch(Some(""), None).is_err());
+        assert!(remote_launch(Some("dev@box"), Some("both")).is_err());
+    }
 }

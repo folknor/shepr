@@ -121,6 +121,14 @@ impl PendingAltScreenRead {
         }
     }
 
+    /// Answers the caller with the passive snapshot taken when the read began,
+    /// without driving the traversal further. Used when the server shuts down:
+    /// the loop that polls reads is exiting, and the pane processes go with it,
+    /// so there is no viewport left worth scrolling back.
+    pub(crate) fn finish_for_shutdown(self) {
+        let _ = self.complete_fallback();
+    }
+
     pub(crate) fn abort(mut self, runtime: Option<&TerminalRuntime>, now: Instant) -> PollOutcome {
         self.valid = false;
         match self.phase {
@@ -135,12 +143,18 @@ impl PendingAltScreenRead {
 
     pub(crate) fn poll(mut self, runtime: Option<&TerminalRuntime>, now: Instant) -> PollOutcome {
         let Some(runtime) = runtime else {
+            // The terminal is gone, and its viewport with it.
             return self.complete_fallback();
         };
         let restore_expired = self
             .restore_started_at
             .is_some_and(|started| now.duration_since(started) >= MAX_RESTORE_DURATION);
         if restore_expired {
+            // By now the restore phase has been re-sending downward batches on
+            // every step for the whole window (a busy input queue included).
+            // If the screen still does not match the pre-read snapshot, the
+            // agent redrew for its own reasons and there is no reference left
+            // to scroll toward; further wheel events would be guesses.
             return self.complete_fallback();
         }
         let traversal_expired = now.duration_since(self.started_at) >= MAX_DURATION
@@ -153,8 +167,9 @@ impl PendingAltScreenRead {
             match self.phase {
                 Phase::SettleInitial => return self.complete_fallback(),
                 Phase::Harvest => return self.start_restore(runtime, now, None),
-                Phase::ProbeBottom => {}
-                Phase::RestoreProbe | Phase::Restore => unreachable!(),
+                // The restore phases are excluded by `traversal_expired`
+                // itself; they carry on under their own restore deadline.
+                Phase::ProbeBottom | Phase::RestoreProbe | Phase::Restore => {}
             }
         }
 
@@ -254,15 +269,22 @@ impl PendingAltScreenRead {
                         self.complete_fallback()
                     }
                 } else {
-                    if send_wheel(
+                    match send_wheel(
                         runtime,
                         MouseEventKind::ScrollUp,
                         WHEEL_STEP_EVENTS,
                         &snapshot,
-                    )
-                    .is_err()
-                    {
-                        return self.complete_fallback();
+                    ) {
+                        Ok(()) => {}
+                        // The probe moved a viewport the user had scrolled up.
+                        // A full input queue is transient: stay in this phase
+                        // so the next step re-probes and retries the undo,
+                        // until the traversal deadline gives up.
+                        Err(WheelError::Busy) if !traversal_expired => {
+                            self.arm_step(snapshot_seq, now);
+                            return Some(self);
+                        }
+                        Err(_) => return self.complete_fallback(),
                     }
                     self.phase = Phase::RestoreProbe;
                     self.restore_started_at = Some(now);
@@ -327,13 +349,16 @@ impl PendingAltScreenRead {
                         self.complete_fallback()
                     }
                 } else if step_expired || !snapshot.similar_text(&self.previous) {
+                    // A full input queue only delays the restore: keep the
+                    // phase and retry on the next step, bounded by the restore
+                    // deadline, rather than answering and leaving the agent
+                    // scrolled into its history.
                     if send_wheel(
                         runtime,
                         MouseEventKind::ScrollDown,
                         restore_batch_size(&snapshot),
                         &snapshot,
-                    )
-                    .is_err()
+                    ) == Err(WheelError::Unroutable)
                     {
                         return self.complete_fallback();
                     }
@@ -356,7 +381,10 @@ impl PendingAltScreenRead {
     ) -> PollOutcome {
         let events = WHEEL_STEP_EVENTS;
         if send_wheel(runtime, MouseEventKind::ScrollUp, events, &self.previous).is_err() {
-            return self.complete_fallback();
+            // Earlier batches already scrolled the agent up; bring it back
+            // down before answering. The partial history is not trusted.
+            self.valid = false;
+            return self.start_restore(runtime, now, Some(baseline_seq));
         }
         self.upward_events = self.upward_events.saturating_add(events);
         self.phase = Phase::Harvest;
@@ -374,13 +402,16 @@ impl PendingAltScreenRead {
             return self.complete_fallback();
         }
         let baseline_seq = baseline_seq.unwrap_or_else(|| runtime.content_seq());
+        // On a full input queue, enter the restore phase anyway: its steps keep
+        // sending downward batches until the screen matches again or the
+        // restore deadline passes. Only an application that stopped taking
+        // wheel reports is beyond reach.
         if send_wheel(
             runtime,
             MouseEventKind::ScrollDown,
             self.upward_events,
             &self.previous,
-        )
-        .is_err()
+        ) == Err(WheelError::Unroutable)
         {
             return self.complete_fallback();
         }
@@ -441,14 +472,24 @@ fn restore_batch_size(snapshot: &ScreenSnapshot) -> usize {
     snapshot.rows.len().saturating_div(2).max(1)
 }
 
+/// Why a wheel batch could not be delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WheelError {
+    /// The application no longer accepts wheel reports, so nothing sent now
+    /// can move its viewport.
+    Unroutable,
+    /// The PTY input queue refused the batch; a later attempt may succeed.
+    Busy,
+}
+
 fn send_wheel(
     runtime: &TerminalRuntime,
     kind: MouseEventKind,
     events: usize,
     snapshot: &ScreenSnapshot,
-) -> Result<(), ()> {
+) -> Result<(), WheelError> {
     if runtime.wheel_routing() != Some(crate::pane::WheelRouting::MouseReport) {
-        return Err(());
+        return Err(WheelError::Unroutable);
     }
     let column = snapshot.cols.saturating_sub(1) / 2;
     let row = u16::try_from(snapshot.rows.len().saturating_sub(1) / 2).unwrap_or(0);
@@ -458,12 +499,14 @@ fn send_wheel(
             crate::input::mouse::Position::Cell { column, row },
             KeyModifiers::empty(),
         )
-        .ok_or(())?;
+        .ok_or(WheelError::Unroutable)?;
     let mut bytes = Vec::with_capacity(event.len().saturating_mul(events));
     for _ in 0..events {
         bytes.extend_from_slice(&event);
     }
-    runtime.try_send_bytes(Bytes::from(bytes)).map_err(|_| ())
+    runtime
+        .try_send_bytes(Bytes::from(bytes))
+        .map_err(|_| WheelError::Busy)
 }
 
 #[cfg(test)]
@@ -676,6 +719,77 @@ mod tests {
                 )
                 .is_none(),
             "restored redraw should complete after coalescing"
+        );
+        assert_eq!(
+            response_text(&response_rx),
+            "13\n14\n15\n16\n17\n18\n19\n20\n"
+        );
+
+        drop(runtime);
+        drop(_guard);
+        rt.shutdown_timeout(Duration::from_millis(100));
+    }
+
+    /// A full PTY input queue when the restore starts must not end the read
+    /// with the agent still scrolled into its history.
+    #[test]
+    fn busy_input_queue_delays_restore_instead_of_abandoning_it() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let _guard = rt.enter();
+        let (runtime, mut input_rx) = TerminalRuntime::test_with_channel_capacity(20, 5, 8);
+        runtime.test_process_pty_bytes(&draw(&["16", "17", "18", "19", "20"], true));
+        let started = Instant::now();
+        let (pending, response_rx) = pending_read(&runtime, started, 8);
+        let harvest_started = started + INITIAL_QUIET + STEP_TIMEOUT;
+
+        let pending = pending
+            .poll(Some(&runtime), started + INITIAL_QUIET)
+            .expect("bottom probe");
+        input_rx.try_recv().expect("bottom wheel probe");
+        let pending = pending
+            .poll(Some(&runtime), harvest_started)
+            .expect("history harvest");
+        input_rx.try_recv().expect("upward wheel batch");
+        runtime.test_process_pty_bytes(&draw(&["13", "14", "15", "16", "17"], false));
+        let pending = pending
+            .poll(Some(&runtime), harvest_started + Duration::from_millis(1))
+            .expect("redraw coalescing");
+
+        let mut filled = false;
+        for _ in 0..64 {
+            if runtime.try_send_bytes(Bytes::from_static(b"\x00")).is_err() {
+                filled = true;
+                break;
+            }
+        }
+        assert!(filled, "test input queue must be bounded");
+        let restore_started = harvest_started + Duration::from_millis(11);
+        let pending = pending
+            .poll(Some(&runtime), restore_started)
+            .expect("busy queue must keep the restore pending");
+        assert!(
+            response_rx.try_recv().is_err(),
+            "the read must not be answered while the agent is scrolled up"
+        );
+        while input_rx.try_recv().is_ok() {}
+
+        let retry_at = restore_started + STEP_TIMEOUT;
+        let pending = pending
+            .poll(Some(&runtime), retry_at)
+            .expect("restore retries once the queue drains");
+        input_rx.try_recv().expect("retry restore wheel batch");
+
+        runtime.test_process_pty_bytes(&draw(&["16", "17", "18", "19", "20"], false));
+        let pending = pending
+            .poll(Some(&runtime), retry_at + Duration::from_millis(1))
+            .expect("restore redraw coalescing");
+        assert!(
+            pending
+                .poll(Some(&runtime), retry_at + Duration::from_millis(11))
+                .is_none()
         );
         assert_eq!(
             response_text(&response_rx),

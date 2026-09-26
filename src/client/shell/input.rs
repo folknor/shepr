@@ -157,10 +157,7 @@ impl ClientShellState {
                     if self.insert_overlay_text(&text) {
                         outcome.repaint = true;
                     } else if self.overlay.is_none() && self.mode == ClientShellMode::Terminal {
-                        self.push_focused_pane_event(
-                            ClientPaneInputEvent::Paste(text),
-                            &mut outcome,
-                        );
+                        self.push_focused_paste(text, &mut outcome);
                     }
                 }
                 RawInputEvent::Mouse(mouse) => self.handle_mouse(mouse, &mut outcome),
@@ -832,5 +829,100 @@ impl ClientShellState {
         if let Some(pane_id) = self.focused_pane_id() {
             super::push_target_event(ClientInputTarget::Pane(pane_id), event, outcome);
         }
+    }
+
+    /// Sends a paste to the focused pane, or rejects it locally when the
+    /// server would.
+    ///
+    /// The server caps the text of one input message at `MAX_INPUT_PAYLOAD`.
+    /// Checking here means an oversized paste never goes out: a paste past the
+    /// frame cap would otherwise make the server drop the connection, and
+    /// anything over the limit would only come back as a rejection anyway. A
+    /// paste that fits on its own but would push an already batched message
+    /// past the limit starts a message of its own instead of joining the batch.
+    fn push_focused_paste(&mut self, text: String, outcome: &mut ClientShellInput) {
+        let size = text.len();
+        if size > crate::protocol::MAX_INPUT_PAYLOAD {
+            outcome.repaint |= self.receive_endpoint_error(format!(
+                "Paste is {size} bytes; Shepr's limit is {} bytes",
+                crate::protocol::MAX_INPUT_PAYLOAD
+            ));
+            return;
+        }
+        let Some(pane_id) = self.focused_pane_id() else {
+            return;
+        };
+        let batched = match outcome.requests.last() {
+            Some(ClientMessage::ClientShellPaneInput {
+                pane_id: pending,
+                events,
+            }) if *pending == pane_id => events
+                .iter()
+                .map(ClientPaneInputEvent::text_bytes)
+                .fold(0usize, usize::saturating_add),
+            _ => 0,
+        };
+        let event = ClientPaneInputEvent::Paste(text);
+        if batched.saturating_add(size) > crate::protocol::MAX_INPUT_PAYLOAD {
+            outcome.requests.push(super::target_event_message(
+                ClientInputTarget::Pane(pane_id),
+                event,
+            ));
+        } else {
+            super::push_target_event(ClientInputTarget::Pane(pane_id), event, outcome);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::MAX_INPUT_PAYLOAD;
+
+    fn shell() -> ClientShellState {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(super::super::tests::snapshot()));
+        state
+    }
+
+    fn message_text_bytes(message: &ClientMessage) -> usize {
+        let ClientMessage::ClientShellPaneInput { events, .. } = message else {
+            panic!("expected targeted pane input, got {message:?}");
+        };
+        events.iter().map(ClientPaneInputEvent::text_bytes).sum()
+    }
+
+    #[test]
+    fn paste_over_the_input_limit_is_rejected_locally_and_never_sent() {
+        let mut state = shell();
+        let outcome = state.handle_raw_events(vec![RawInputEvent::Paste(
+            "x".repeat(MAX_INPUT_PAYLOAD + 1),
+        )]);
+        assert!(outcome.requests.is_empty());
+
+        let at_limit =
+            state.handle_raw_events(vec![RawInputEvent::Paste("x".repeat(MAX_INPUT_PAYLOAD))]);
+        assert_eq!(at_limit.requests.len(), 1);
+        assert_eq!(message_text_bytes(&at_limit.requests[0]), MAX_INPUT_PAYLOAD);
+    }
+
+    #[test]
+    fn pastes_that_would_overflow_one_message_go_out_separately() {
+        let mut state = shell();
+        let half = MAX_INPUT_PAYLOAD / 2 + 1;
+        let outcome = state.handle_raw_events(vec![
+            RawInputEvent::Paste("a".repeat(half)),
+            RawInputEvent::Paste("b".repeat(half)),
+        ]);
+        assert_eq!(outcome.requests.len(), 2);
+        for request in &outcome.requests {
+            assert!(message_text_bytes(request) <= MAX_INPUT_PAYLOAD);
+        }
+
+        let small = state.handle_raw_events(vec![
+            RawInputEvent::Paste("a".into()),
+            RawInputEvent::Paste("b".into()),
+        ]);
+        assert_eq!(small.requests.len(), 1, "small pastes still batch");
     }
 }

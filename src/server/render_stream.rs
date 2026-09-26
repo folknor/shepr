@@ -21,10 +21,9 @@ pub(crate) enum ClientRenderState {
         surface_delta: bool,
         recompute_pending: bool,
     },
-    /// Terminal-ANSI clients keep a terminal diff encoder and sequence number.
+    /// Terminal-ANSI clients keep a terminal diff encoder.
     TerminalAnsi {
         blit_encoder: BlitEncoder,
-        seq: u64,
         repaint_pending: bool,
     },
 }
@@ -41,7 +40,6 @@ impl ClientRenderState {
             },
             RenderEncoding::TerminalAnsi => Self::TerminalAnsi {
                 blit_encoder: BlitEncoder::new(),
-                seq: 0,
                 repaint_pending: false,
             },
         }
@@ -110,7 +108,6 @@ impl ClientRenderState {
             Self::Semantic { .. } => None,
             Self::TerminalAnsi {
                 blit_encoder,
-                seq,
                 repaint_pending,
             } => {
                 if !*repaint_pending && blit_encoder.is_current(&frame) {
@@ -119,10 +116,6 @@ impl ClientRenderState {
                 let encoded = blit_encoder.encode(&frame, *repaint_pending);
                 Some(PreparedRender::TerminalAnsi {
                     message: ServerMessage::Terminal(TerminalFrame {
-                        seq: *seq + 1,
-                        width: frame.width,
-                        height: frame.height,
-                        full: encoded.full,
                         bytes: encoded.bytes.clone(),
                     }),
                     frame,
@@ -251,16 +244,24 @@ impl ClientRenderState {
                     message: ServerMessage::PaneSurfacePatch(patch),
                 },
             ) => {
-                let surface = last_surface
-                    .as_deref_mut()
-                    .expect("prepared patch baseline");
-                apply_pane_surface_patch(surface, &patch);
+                // Planning checked the baseline and the server does not yield
+                // between planning and commit, so neither branch below should
+                // run. If one does, the client holds a surface this side can no
+                // longer reproduce: drop the baseline so the next render sends a
+                // full surface rather than diffing against a wrong grid.
+                let applied = match last_surface.as_deref_mut() {
+                    Some(surface) => apply_pane_surface_patch(surface, &patch),
+                    None => Err("no committed surface"),
+                };
+                if let Err(reason) = applied {
+                    tracing::warn!(reason, "sent surface patch did not apply to its baseline");
+                    *last_surface = None;
+                }
                 *surface_revision = patch.surface_revision;
             }
             (
                 Self::TerminalAnsi {
                     blit_encoder,
-                    seq,
                     repaint_pending,
                 },
                 PreparedRender::TerminalAnsi {
@@ -270,7 +271,6 @@ impl ClientRenderState {
                 },
             ) => {
                 blit_encoder.commit(frame, &encoded);
-                *seq += 1;
                 *repaint_pending = false;
             }
             _ => {}
@@ -278,26 +278,59 @@ impl ClientRenderState {
     }
 }
 
-// Planning validates all rows and pane IDs before any send. The server does not yield
-// between planning and commit, so applying the accepted patch cannot fail partway through.
-pub(super) fn apply_pane_surface_patch(surface: &mut PaneSurfaceFrame, patch: &PaneSurfacePatch) {
-    debug_assert_eq!(surface.boot_id, patch.boot_id);
-    debug_assert_eq!(surface.projection_revision, patch.projection_revision);
-    debug_assert_eq!(surface.surface_revision, patch.base_surface_revision);
+// Planning validates all rows and pane IDs before any send, so this is expected to succeed.
+// It still checks every row and pane first and changes nothing on a mismatch, so a planning
+// bug surfaces as an error (and a full resend) instead of a panic or a half-applied patch.
+pub(super) fn apply_pane_surface_patch(
+    surface: &mut PaneSurfaceFrame,
+    patch: &PaneSurfacePatch,
+) -> Result<(), &'static str> {
+    if surface.boot_id != patch.boot_id
+        || surface.projection_revision != patch.projection_revision
+        || surface.surface_revision != patch.base_surface_revision
+    {
+        return Err("patch revision does not match the surface baseline");
+    }
+    let width = usize::from(surface.frame.width);
+    let cell_count = surface.frame.cells.len();
+    let row_fits = |row: &crate::protocol::PaneSurfacePatchRow| {
+        let start = usize::from(row.y) * width + usize::from(row.x);
+        usize::from(row.x) + row.cells.len() <= width
+            && start.saturating_add(row.cells.len()) <= cell_count
+    };
+    if !patch.rows.iter().all(row_fits) {
+        return Err("patch row exceeds the surface grid");
+    }
+    if !patch.panes.iter().all(|updated| {
+        surface
+            .panes
+            .iter()
+            .any(|pane| pane.pane_id == updated.pane_id)
+    }) {
+        return Err("patch names a pane missing from the surface");
+    }
     for row in &patch.rows {
-        let start = usize::from(row.y) * usize::from(surface.frame.width) + usize::from(row.x);
-        surface.frame.cells[start..start + row.cells.len()].clone_from_slice(&row.cells);
+        let start = usize::from(row.y) * width + usize::from(row.x);
+        if let Some(cells) = surface
+            .frame
+            .cells
+            .get_mut(start..start.saturating_add(row.cells.len()))
+        {
+            cells.clone_from_slice(&row.cells);
+        }
     }
     for updated in &patch.panes {
-        let pane = surface
+        if let Some(pane) = surface
             .panes
             .iter_mut()
             .find(|pane| pane.pane_id == updated.pane_id)
-            .expect("planned patch pane");
-        pane.clone_from(updated);
+        {
+            pane.clone_from(updated);
+        }
     }
     surface.frame.cursor.clone_from(&patch.cursor);
     surface.surface_revision = patch.surface_revision;
+    Ok(())
 }
 
 /// A prepared client render message plus any baseline state needed after send.
@@ -432,12 +465,11 @@ pub(crate) fn render_tab_surface_virtual(
     let hyperlinks = crate::ui::tab_surface_hyperlinks(app_state, terminal_runtimes, surface);
 
     let backend = CursorTrackingBackend::new(area.width, area.height);
-    let mut terminal = ratatui::Terminal::new(backend).expect("TestBackend::new should never fail");
-    terminal
-        .draw(|frame| {
-            crate::ui::render_tab_surface(app_state, terminal_runtimes, surface, frame);
-        })
-        .expect("render to TestBackend should never fail");
+    // The backend's error type is `Infallible`, so these patterns are irrefutable.
+    let Ok(mut terminal) = ratatui::Terminal::new(backend);
+    let Ok(_) = terminal.draw(|frame| {
+        crate::ui::render_tab_surface(app_state, terminal_runtimes, surface, frame);
+    });
 
     (
         terminal.backend().buffer().clone(),
@@ -454,13 +486,11 @@ pub(crate) fn render_terminal_virtual(
 ) -> (ratatui::buffer::Buffer, Option<CursorState>) {
     let suppress_cursor = runtime.synchronized_output_active();
     let backend = CursorTrackingBackend::new(area.width, area.height);
-    let mut terminal = ratatui::Terminal::new(backend).expect("TestBackend::new should never fail");
-
-    terminal
-        .draw(|frame| {
-            runtime.render(frame, area, true);
-        })
-        .expect("render to TestBackend should never fail");
+    // The backend's error type is `Infallible`, so these patterns are irrefutable.
+    let Ok(mut terminal) = ratatui::Terminal::new(backend);
+    let Ok(_) = terminal.draw(|frame| {
+        runtime.render(frame, area, true);
+    });
 
     let buffer = terminal.backend().buffer().clone();
     let cursor = (!suppress_cursor)
@@ -677,6 +707,47 @@ mod tests {
         let mut bytes = Vec::new();
         crate::protocol::write_message(&mut bytes, update.message()).expect("test precondition");
         assert!(bytes.len() < crate::protocol::MAX_FRAME_SIZE);
+    }
+
+    #[test]
+    fn mismatched_patch_is_rejected_and_drops_the_baseline_without_panicking() {
+        let mut surface = test_surface("abc");
+        let before = surface.clone();
+        let patch = PaneSurfacePatch {
+            boot_id: surface.boot_id.clone(),
+            projection_revision: 1,
+            base_surface_revision: 1,
+            surface_revision: 2,
+            rows: vec![crate::protocol::PaneSurfacePatchRow {
+                x: 2,
+                y: 0,
+                cells: vec![surface.frame.cells[0].clone(); 2],
+            }],
+            panes: Vec::new(),
+            cursor: None,
+        };
+        assert!(apply_pane_surface_patch(&mut surface, &patch).is_err());
+        assert_eq!(surface, before, "a rejected patch changes nothing");
+        let mut stale_patch = patch.clone();
+        stale_patch.base_surface_revision += 1;
+        assert!(apply_pane_surface_patch(&mut surface, &stale_patch).is_err());
+        assert_eq!(surface, before, "a stale patch changes nothing");
+
+        let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+        let initial = state
+            .prepare_pane_surface(test_surface("abc"))
+            .expect("test precondition");
+        state.commit_sent_frame(initial);
+        state.commit_sent_frame(PreparedRender::SemanticPatch {
+            message: ServerMessage::PaneSurfacePatch(patch.clone()),
+        });
+        assert!(state.last_pane_surface().is_none());
+
+        // Committing with no baseline at all is also survivable.
+        state.commit_sent_frame(PreparedRender::SemanticPatch {
+            message: ServerMessage::PaneSurfacePatch(patch),
+        });
+        assert!(state.last_pane_surface().is_none());
     }
 
     #[test]

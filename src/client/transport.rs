@@ -86,9 +86,7 @@ pub(super) fn server_reader_thread(
                 });
                 break;
             }
-            Err(protocol::FramingError::Io(err)) if err.kind() == io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(1));
-            }
+            // `EndpointReader` waits out WouldBlock itself, so any error here is final.
             Err(err) => {
                 warn!(err = %err, "server read error");
                 let _ = event_tx.blocking_send(ClientLoopEvent::ServerDisconnected {
@@ -174,7 +172,7 @@ mod tests {
                 .expect("test precondition")
                 .as_nanos()
         ));
-        let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
+        let listener = crate::ipc::bind_local_listener(&path).expect("test precondition");
         let client = crate::ipc::connect_local_stream(&path).expect("test precondition");
         let mut bridge = listener.accept().expect("test precondition");
         std::fs::remove_file(path).expect("test precondition");
