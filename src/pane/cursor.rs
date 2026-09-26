@@ -7,15 +7,16 @@
 pub(crate) fn decscusr_cursor_shape(
     style: crate::ghostty::CursorVisualStyle,
     blinking: bool,
-) -> u8 {
+) -> crate::protocol::CursorShapeParam {
+    use crate::protocol::CursorShapeParam;
     match (style, blinking) {
         (crate::ghostty::CursorVisualStyle::Block, true)
-        | (crate::ghostty::CursorVisualStyle::BlockHollow, true) => 1,
+        | (crate::ghostty::CursorVisualStyle::BlockHollow, true) => CursorShapeParam::BlinkingBlock,
         (crate::ghostty::CursorVisualStyle::Block, false)
-        | (crate::ghostty::CursorVisualStyle::BlockHollow, false) => 2,
-        (crate::ghostty::CursorVisualStyle::Underline, true) => 3,
-        (crate::ghostty::CursorVisualStyle::Underline, false) => 4,
-        (crate::ghostty::CursorVisualStyle::Bar, true) => 5,
-        (crate::ghostty::CursorVisualStyle::Bar, false) => 6,
+        | (crate::ghostty::CursorVisualStyle::BlockHollow, false) => CursorShapeParam::SteadyBlock,
+        (crate::ghostty::CursorVisualStyle::Underline, true) => CursorShapeParam::BlinkingUnderline,
+        (crate::ghostty::CursorVisualStyle::Underline, false) => CursorShapeParam::SteadyUnderline,
+        (crate::ghostty::CursorVisualStyle::Bar, true) => CursorShapeParam::BlinkingBar,
+        (crate::ghostty::CursorVisualStyle::Bar, false) => CursorShapeParam::SteadyBar,
     }
 }

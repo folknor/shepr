@@ -15,6 +15,39 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::theme::Palette;
 
+/// Workspace share of the expanded sidebar, constrained before rendering.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(transparent)]
+pub(super) struct SectionSplit(f32);
+
+impl SectionSplit {
+    pub(super) const DEFAULT: Self = Self(0.5);
+
+    pub(super) fn new(value: f32) -> Option<Self> {
+        (value.is_finite() && (0.1..=0.9).contains(&value)).then_some(Self(value))
+    }
+
+    pub(super) fn from_drag(value: f32) -> Self {
+        Self(if value.is_finite() {
+            value.clamp(0.1, 0.9)
+        } else {
+            0.5
+        })
+    }
+
+    pub(super) fn get(self) -> f32 {
+        self.0
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SectionSplit {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(value)
+            .ok_or_else(|| serde::de::Error::custom("sidebar split must be between 0.1 and 0.9"))
+    }
+}
+
 pub(super) fn display_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
@@ -43,7 +76,7 @@ fn truncate_end(text: &str, max_width: usize) -> String {
     format!("{prefix}…")
 }
 
-fn sidebar_section_heights(total_height: u16, split_ratio: f32) -> (u16, u16) {
+fn sidebar_section_heights(total_height: u16, split_ratio: SectionSplit) -> (u16, u16) {
     if total_height == 0 {
         return (0, 0);
     }
@@ -58,7 +91,7 @@ fn sidebar_section_heights(total_height: u16, split_ratio: f32) -> (u16, u16) {
     // split_ratio is clamped to [0.1, 0.9], so the scaled height stays
     // within the source u16 range; truncation/sign-loss cannot occur.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let workspace_height = ((total_height as f32) * split_ratio.clamp(0.1, 0.9)).round() as u16;
+    let workspace_height = ((total_height as f32) * split_ratio.get()).round() as u16;
     let workspace_height = workspace_height.clamp(3, total_height.saturating_sub(3));
     (
         workspace_height,
@@ -66,7 +99,7 @@ fn sidebar_section_heights(total_height: u16, split_ratio: f32) -> (u16, u16) {
     )
 }
 
-pub(super) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, Rect) {
+pub(super) fn expanded_sidebar_sections(area: Rect, split_ratio: SectionSplit) -> (Rect, Rect) {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.is_empty() {
         return (Rect::default(), Rect::default());
@@ -84,7 +117,7 @@ pub(super) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, 
     )
 }
 
-pub(super) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect {
+pub(super) fn sidebar_section_divider_rect(area: Rect, split_ratio: SectionSplit) -> Rect {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.width == 0 || content.height < 6 {
         return Rect::default();
@@ -92,6 +125,20 @@ pub(super) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect
 
     let (workspace_height, _) = sidebar_section_heights(content.height, split_ratio);
     Rect::new(content.x, content.y + workspace_height, content.width, 1)
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::SectionSplit;
+
+    #[test]
+    fn section_split_validates_saved_values_and_drag_bounds() {
+        assert!(SectionSplit::new(0.09).is_none());
+        assert!(SectionSplit::new(f32::INFINITY).is_none());
+        assert!(serde_json::from_str::<SectionSplit>("0.95").is_err());
+        assert_eq!(SectionSplit::from_drag(1.0).get(), 0.9);
+        assert_eq!(SectionSplit::from_drag(f32::NAN).get(), 0.5);
+    }
 }
 
 #[derive(Clone, Copy)]

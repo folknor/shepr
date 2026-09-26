@@ -220,7 +220,7 @@ impl ClientShellState {
         endpoint
             .snapshot
             .as_deref()
-            .map(|snapshot| (snapshot.boot_id.as_str(), snapshot.revision))
+            .map(|snapshot| (snapshot.boot_id.as_str(), snapshot.revision.get()))
     }
 
     /// A terminal normally starts focused. `None` means this host cannot report focus events,

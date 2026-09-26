@@ -18,6 +18,7 @@ mod errors;
 mod events;
 mod frame_output;
 mod handshake;
+pub(crate) mod host_replies;
 mod input;
 mod input_wire;
 mod loop_config;
@@ -45,6 +46,7 @@ pub(crate) use shell::{ClientShellConfig, ClientShellState};
 pub use startup::{run_client, run_terminal_attach};
 
 use terminal_geometry::query_host_terminal_appearance;
+use terminal_geometry::{AtomicCellSize, reported_cell_size_from_events, store_reported_cell_size};
 #[cfg(test)]
 use terminal_geometry::{
     cell_size_fallback, current_terminal_geometry_with, ioctl_cell_size, pack_cell_size,
@@ -55,7 +57,6 @@ use terminal_geometry::{
     host_cell_size_query_required, initial_terminal_geometry, query_host_cell_size,
     query_host_terminal_theme, resize_poll_loop,
 };
-use terminal_geometry::{reported_cell_size_from_events, store_reported_cell_size};
 use terminal_setup::{
     HostMouseMode, TerminalGuard, setup_direct_attach_terminal, setup_terminal,
     should_draw_host_cursor,
@@ -79,7 +80,7 @@ use handshake::{ClientProcessRole, do_handshake};
 use std::collections::VecDeque;
 use std::io::{self, Write as _};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use interprocess::TryClone as _;
@@ -99,13 +100,29 @@ fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
     notices.push_back(message);
 }
 
+enum ClientLaunchMode {
+    Shell,
+    Attach {
+        terminal_id: String,
+        takeover: bool,
+        escape: AttachEscapeState,
+    },
+}
+
 fn run_client_with_mode(
     config: &crate::config::ValidatedConfig,
     paths: &crate::config::AppPaths,
-    attach_request: Option<(String, bool)>,
-    attach_escape: Option<AttachEscapeState>,
+    mode: ClientLaunchMode,
     log_message: &'static str,
 ) -> io::Result<()> {
+    let (attach_request, attach_escape) = match mode {
+        ClientLaunchMode::Shell => (None, None),
+        ClientLaunchMode::Attach {
+            terminal_id,
+            takeover,
+            escape,
+        } => (Some((terminal_id, takeover)), Some(escape)),
+    };
     crate::logging::init_file_logging(paths, crate::logging::CLIENT_LOG_FILE);
 
     crate::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
@@ -175,7 +192,7 @@ fn run_client_with_mode(
     // Healthy Local attaches directly; only an actual failure enters background recovery.
     let initial = initial_stream
         .map(|mut stream| {
-            let handshake = do_handshake(
+            do_handshake(
                 &mut stream,
                 role,
                 cols,
@@ -198,7 +215,7 @@ fn run_client_with_mode(
                     },
                 )?;
             }
-            Ok((stream, handshake))
+            Ok(stream)
         })
         .transpose();
     let initial = match initial {
@@ -315,7 +332,7 @@ fn run_client_with_mode(
 // The startup handshake consumes these launch values once before building ClientLoop.
 #[allow(clippy::too_many_arguments)]
 async fn run_client_loop(
-    initial: Option<(LocalStream, handshake::HandshakeResult)>,
+    initial: Option<LocalStream>,
     endpoint_catalog: endpoint::EndpointCatalog,
     local_failure_policy: endpoint::LocalFailurePolicy,
     cols: u16,
@@ -383,7 +400,7 @@ async fn run_client_loop(
     }
     // Cell size reported by the host terminal, packed as width<<32 | height.
     // Zero means the host has not reported one.
-    let reported_cell_size = Arc::new(AtomicU64::new(0));
+    let reported_cell_size = Arc::new(AtomicCellSize::new());
     let (stdin_mouse_capture_active, stdin_sgr_pixels_active) =
         state.host_mouse_mode.input_mirrors();
 
@@ -449,7 +466,7 @@ async fn run_client_loop(
         );
     });
 
-    let write_stream = if let Some((stream, _handshake)) = initial {
+    let write_stream = if let Some(stream) = initial {
         let max_frame_size = crate::protocol::MAX_FRAME_SIZE;
         let surface_decoder = protocol::surface_reuse::Decoder::default();
         let transport = start_endpoint_transport(
@@ -482,7 +499,7 @@ async fn run_client_loop(
             client_socket_path(&config.paths),
             write_stream
                 .connection(&endpoint::ClientEndpointId::Local)
-                .map(|connection| connection.generation),
+                .map(|connection| connection.generation.get()),
             std::time::Instant::now(),
         );
     }
@@ -550,7 +567,7 @@ struct ClientLoop<'a> {
     client_timer: timer::ClientLoopTimer,
     catalog_watch: Option<endpoint::EndpointCatalogWatch>,
     freeze_recovery_attempted: Option<(endpoint::ClientEndpointId, u64)>,
-    reported_cell_size: Arc<AtomicU64>,
+    reported_cell_size: Arc<AtomicCellSize>,
     event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
     event_rx: tokio::sync::mpsc::Receiver<ClientLoopEvent>,
     supervisor_tx: tokio::sync::mpsc::Sender<endpoint::EndpointSupervisorEvent>,
@@ -760,9 +777,8 @@ impl ClientLoop<'_> {
                             width_px: geometry.width_px,
                             height_px: geometry.height_px,
                         }),
-                        modifiers,
-                        lines: u16::try_from(state.settings.mouse_scroll_lines.max(1))
-                            .unwrap_or(u16::MAX),
+                        modifiers: crate::protocol::WireModifiers::from_bits_retain(modifiers),
+                        lines: state.settings.mouse_scroll_lines,
                     };
                     write_stream.send(&message);
                 }
@@ -1046,7 +1062,7 @@ impl ClientLoop<'_> {
         } = self;
         let generation = write_stream
             .connection(&endpoint_id)
-            .map(|connection| connection.generation);
+            .map(|connection| connection.generation.get());
         // Persisting waits for the handoff to commit; see `endpoint::selection`.
         if !selection.begin(endpoint_catalog, &endpoint_id, generation) {
             return Ok(ClientLoopAction::NextEvent);
@@ -1252,7 +1268,9 @@ impl ClientLoop<'_> {
                     }
                     return Ok(ClientLoopAction::NextEvent);
                 }
-                if request_id.starts_with("client-shell-surface:") {
+                if endpoint_commands.response_kind(endpoint_id, generation, &boot_id, &request_id)
+                    == endpoint::commands::CommandResponseKind::Untracked
+                {
                     return Ok(ClientLoopAction::NextEvent);
                 }
                 let completed = endpoint_commands.receive_chunk(
@@ -1425,7 +1443,7 @@ impl ClientLoop<'_> {
                 // snapshot would freeze input and roll back again each time.
                 let retry_suppressed = selection.suppresses(
                     &selected_endpoint,
-                    selected_connection.map(|connection| connection.generation),
+                    selected_connection.map(|connection| connection.generation.get()),
                 );
                 if activation_ready
                     && needs_surface

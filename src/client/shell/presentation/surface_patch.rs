@@ -133,7 +133,7 @@ impl ClientShellState {
             || patch.boot_id != current.boot_id
             || patch.projection_revision != current.projection_revision
             || patch.base_surface_revision != current.surface_revision
-            || patch.surface_revision != current.surface_revision.saturating_add(1)
+            || patch.surface_revision != current.surface_revision.next()
         {
             return ClientPaneSurfacePatchOutcome::Rejected;
         }

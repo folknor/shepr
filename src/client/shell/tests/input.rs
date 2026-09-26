@@ -352,7 +352,7 @@ fn shell_targets_unconsumed_input_and_keeps_prefix_local() {
             modifiers,
             kind: crate::protocol::ClientKeyKind::Press,
             ..
-        }] if *modifiers == KeyModifiers::CONTROL.bits()
+        }] if *modifiers == crate::protocol::WireModifiers::CONTROL
     ));
 
     let alt = state.handle_input_bytes(b"\x1b[120;3u");
@@ -365,7 +365,7 @@ fn shell_targets_unconsumed_input_and_keeps_prefix_local() {
             code: crate::protocol::ClientKeyCode::Char('x'),
             modifiers,
             ..
-        }] if *modifiers == KeyModifiers::ALT.bits()
+        }] if *modifiers == crate::protocol::WireModifiers::ALT
     ));
     assert!(!state.handle_input_bytes(&[0x02]).detach);
     let detach = state.handle_input_bytes(b"q");
@@ -584,7 +584,7 @@ fn hit_maps_stay_live_until_the_matching_surface_is_composed() {
 
     // Parking the next revision's surface leaves the visible pair, and its hits, alone.
     let mut parked = surface();
-    parked.projection_revision = 3;
+    parked.projection_revision = crate::protocol::ProjectionRevision::new(3);
     state.set_pane_surface(parked);
     assert!(state.pending_pane_surface.is_some());
     assert!(!state.hits.panes.is_empty());

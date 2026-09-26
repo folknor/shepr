@@ -7,7 +7,7 @@ use crate::app::state::AppState;
 use crate::blit::{BlitEncoder, EncodedBlit};
 use crate::protocol::{
     CursorState, FrameData, PaneSurfaceFrame, PaneSurfacePatch, RenderEncoding, ServerMessage,
-    TerminalFrame,
+    SurfaceRevision, TerminalFrame,
 };
 use crate::terminal::TerminalRuntimeRegistry;
 
@@ -16,7 +16,7 @@ pub(crate) enum ClientRenderState {
     /// Semantic clients compare full frame data and skip identical frames.
     Semantic {
         last_surface: Option<Box<PaneSurfaceFrame>>,
-        surface_revision: u64,
+        surface_revision: SurfaceRevision,
         recompute_pending: bool,
     },
     /// Terminal-ANSI clients keep a terminal diff encoder.
@@ -31,7 +31,7 @@ impl ClientRenderState {
         match render_encoding {
             RenderEncoding::SemanticFrame => Self::Semantic {
                 last_surface: None,
-                surface_revision: 0,
+                surface_revision: SurfaceRevision::ZERO,
                 recompute_pending: false,
             },
             RenderEncoding::TerminalAnsi => Self::TerminalAnsi {
@@ -134,7 +134,7 @@ impl ClientRenderState {
         {
             return None;
         }
-        surface.surface_revision = surface_revision.saturating_add(1);
+        surface.surface_revision = surface_revision.next();
         let committed_surface = surface.clone();
         let mut message = ServerMessage::PaneSurface(surface);
         let delta = last_surface.as_deref().and_then(|last| {
@@ -175,7 +175,7 @@ impl ClientRenderState {
             return None;
         }
         let last = last_surface.as_deref()?;
-        let next_revision = surface_revision.checked_add(1)?;
+        let next_revision = surface_revision.checked_next()?;
         let baseline = crate::protocol::surface_reuse::Baseline::new(
             &last.boot_id,
             last.projection_revision,
@@ -388,7 +388,7 @@ impl CursorTrackingBackend {
             x: pos.x,
             y: pos.y,
             visible: true,
-            shape: 0,
+            shape: crate::protocol::CursorShapeParam::Default,
         })
     }
 }
@@ -526,8 +526,8 @@ mod tests {
         let pane = ratatui::buffer::Buffer::with_lines([content]);
         PaneSurfaceFrame {
             boot_id: "boot-1".into(),
-            projection_revision: 1,
-            surface_revision: 1,
+            projection_revision: crate::protocol::ProjectionRevision::new(1),
+            surface_revision: crate::protocol::SurfaceRevision::new(1),
             frame: FrameData::from_ratatui_buffer_with_hyperlinks(&pane, None, &[]),
             panes: Vec::new(),
             splits: Vec::new(),
@@ -620,8 +620,8 @@ mod tests {
             .prepare_pane_surface_patch(PaneSurfacePatch {
                 boot_id: surface.boot_id.clone(),
                 projection_revision: surface.projection_revision,
-                base_surface_revision: 2,
-                surface_revision: 0,
+                base_surface_revision: crate::protocol::SurfaceRevision::new(2),
+                surface_revision: crate::protocol::SurfaceRevision::new(0),
                 rows: vec![crate::protocol::PaneSurfacePatchRow {
                     x: 0,
                     y: 0,
@@ -701,9 +701,9 @@ mod tests {
         let before = surface.clone();
         let patch = PaneSurfacePatch {
             boot_id: surface.boot_id.clone(),
-            projection_revision: 1,
-            base_surface_revision: 1,
-            surface_revision: 2,
+            projection_revision: crate::protocol::ProjectionRevision::new(1),
+            base_surface_revision: crate::protocol::SurfaceRevision::new(1),
+            surface_revision: crate::protocol::SurfaceRevision::new(2),
             rows: vec![crate::protocol::PaneSurfacePatchRow {
                 x: 2,
                 y: 0,

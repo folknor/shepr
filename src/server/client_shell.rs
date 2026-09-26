@@ -93,7 +93,9 @@ pub(super) fn snapshot_from_session(
                 label: workspace.label,
                 custom_label: state.is_some_and(|state| state.custom_name.is_some()),
                 branch: state.and_then(crate::workspace::Workspace::branch),
-                git_ahead_behind: state.and_then(crate::workspace::Workspace::git_ahead_behind),
+                git_ahead_behind: state
+                    .and_then(crate::workspace::Workspace::git_ahead_behind)
+                    .map(|counts| (counts.ahead, counts.behind)),
                 tokens,
                 agent_status: workspace.agent_status,
             }
@@ -216,7 +218,7 @@ pub(super) fn snapshot_from_session(
 
     protocol::ClientShellSnapshot {
         boot_id: boot_id.to_owned(),
-        revision,
+        revision: revision.into(),
         resolved_config: app.resolved_config().clone(),
         focused_workspace_id,
         focused_tab_id,
@@ -505,7 +507,7 @@ mod tests {
             direction: ratatui::layout::Direction::Horizontal,
             ratio: 0.5,
             area: Rect::new(2, 3, 40, 12),
-            path: vec![false],
+            path: vec![crate::protocol::SplitBranch::First],
         };
         assert_eq!(
             split_hit_rect(&horizontal, true, false, &[]),
@@ -526,7 +528,7 @@ mod tests {
             direction: ratatui::layout::Direction::Vertical,
             ratio: 0.5,
             area: Rect::new(2, 3, 40, 12),
-            path: vec![true],
+            path: vec![crate::protocol::SplitBranch::Second],
         };
         assert_eq!(
             split_hit_rect(&vertical, true, true, &[]),

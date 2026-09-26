@@ -73,11 +73,6 @@ fn set_handshake_recv_timeout(
         .map_err(ClientError::ConnectionFailed)
 }
 
-/// Outcome of a successful handshake.
-///
-#[derive(Debug)]
-pub(super) struct HandshakeResult;
-
 /// Maps a failed preamble exchange onto the client's error kinds: an early
 /// close or read failure stays a transient connection problem, while a peer
 /// that is not this build is a rejection the user has to act on.
@@ -116,7 +111,7 @@ pub(super) fn do_handshake(
     mouse_capture: bool,
     surface_active: bool,
     deadline: Option<std::time::Instant>,
-) -> Result<HandshakeResult, ClientError> {
+) -> Result<(), ClientError> {
     let (cell_width_px, cell_height_px, exact_cell_size) =
         super::terminal_geometry::bounded_cell_geometry(
             cell_width_px,
@@ -195,7 +190,7 @@ pub(super) fn do_handshake(
             return Err(ClientError::HandshakeRejected { error });
         }
         info!("endpoint handshake succeeded");
-        return Ok(HandshakeResult);
+        return Ok(());
     }
 
     match welcome {
@@ -204,7 +199,7 @@ pub(super) fn do_handshake(
                 return Err(ClientError::HandshakeRejected { error });
             }
             info!("terminal handshake succeeded");
-            Ok(HandshakeResult)
+            Ok(())
         }
         _ => Err(ClientError::UnexpectedWelcome { endpoint: false }),
     }

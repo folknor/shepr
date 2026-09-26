@@ -111,6 +111,102 @@ pub struct ClientMouseGeometry {
     pub height_px: u32,
 }
 
+/// Crossterm-compatible modifier bits carried by semantic input messages.
+/// The representation is one byte, just like `KeyModifiers` on the host.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct WireModifiers(u8);
+
+impl WireModifiers {
+    #[cfg(test)]
+    pub const NONE: Self = Self(0);
+    #[cfg(test)]
+    pub const SHIFT: Self = Self(crossterm::event::KeyModifiers::SHIFT.bits());
+    #[cfg(test)]
+    pub const CONTROL: Self = Self(crossterm::event::KeyModifiers::CONTROL.bits());
+    #[cfg(test)]
+    pub const ALT: Self = Self(crossterm::event::KeyModifiers::ALT.bits());
+    #[cfg(test)]
+    pub const SUPER: Self = Self(crossterm::event::KeyModifiers::SUPER.bits());
+    #[cfg(test)]
+    pub const HYPER: Self = Self(crossterm::event::KeyModifiers::HYPER.bits());
+    #[cfg(test)]
+    pub const META: Self = Self(crossterm::event::KeyModifiers::META.bits());
+
+    pub const fn from_bits_retain(bits: u8) -> Self {
+        Self(bits)
+    }
+
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    pub fn to_crossterm(self) -> crossterm::event::KeyModifiers {
+        crossterm::event::KeyModifiers::from_bits_truncate(self.0)
+    }
+}
+
+impl std::ops::BitOr for WireModifiers {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for WireModifiers {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl From<crossterm::event::KeyModifiers> for WireModifiers {
+    fn from(value: crossterm::event::KeyModifiers) -> Self {
+        Self(value.bits())
+    }
+}
+
+/// Kitty keyboard protocol flags. The terminal core only reports the low five
+/// defined bits, while the wire and host stack use the protocol's integer form.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct KittyKeyboardFlags(u16);
+
+impl KittyKeyboardFlags {
+    pub const NONE: Self = Self(0);
+    pub const DISAMBIGUATE: Self = Self(1);
+    pub const REPORT_EVENT_TYPES: Self = Self(2);
+    pub const REPORT_ALTERNATE_KEYS: Self = Self(4);
+    pub const REPORT_ALL_KEYS: Self = Self(8);
+    pub const REPORT_ASSOCIATED_TEXT: Self = Self(16);
+
+    pub const fn from_bits_retain(bits: u16) -> Self {
+        Self(bits)
+    }
+
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl std::ops::BitOr for KittyKeyboardFlags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for KittyKeyboardFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
 /// Pane-domain input after the client has classified and consumed shell actions.
 ///
 /// Keys are semantic rather than outer-terminal VT bytes so the target pane can
@@ -122,7 +218,7 @@ pub struct ClientMouseGeometry {
 pub enum ClientPaneInputEvent {
     Key {
         code: ClientKeyCode,
-        modifiers: u8,
+        modifiers: WireModifiers,
         kind: ClientKeyKind,
         repeat_count: u16,
         shifted_codepoint: Option<u32>,
@@ -133,7 +229,7 @@ pub enum ClientPaneInputEvent {
         kind: ClientMouseKind,
         position: ClientMousePosition,
         geometry: Option<ClientMouseGeometry>,
-        modifiers: u8,
+        modifiers: WireModifiers,
         lines: u16,
     },
     Paste(String),
@@ -201,7 +297,7 @@ pub enum ClientMessage {
         /// Mouse row relative to the attached terminal, when available.
         row: Option<u16>,
         /// Crossterm-compatible modifier bits for forwarded mouse wheel events.
-        modifiers: u8,
+        modifiers: WireModifiers,
     },
 
     /// Resize the pane viewport of a client-owned shell.
@@ -231,7 +327,7 @@ pub enum ClientMessage {
         kind: ClientMouseKind,
         position: ClientMousePosition,
         geometry: Option<ClientMouseGeometry>,
-        modifiers: u8,
+        modifiers: WireModifiers,
         lines: u16,
     },
 

@@ -139,16 +139,22 @@ impl AgentOscStateTracker {
         terminal: &mut crate::ghostty::Terminal,
     ) -> bool {
         let mut terminal_title_changed = false;
-        if let Some(title) = terminal.take_title_update() {
-            let title = title
-                .map(|title| sanitize_agent_osc_string(title.as_bytes(), AGENT_OSC_MAX_CHARS))
-                .filter(|title| !title.is_empty());
+        if let Some(update) = terminal.take_title_update() {
+            let title = match update {
+                crate::ghostty::TitleUpdate::Set(title) => Some(sanitize_agent_osc_string(
+                    title.as_bytes(),
+                    AGENT_OSC_MAX_CHARS,
+                ))
+                .filter(|title| !title.is_empty()),
+                crate::ghostty::TitleUpdate::Reset => None,
+            };
             terminal_title_changed = self.terminal_title != title;
             self.terminal_title.clone_from(&title);
             self.latest_title = title;
         }
         if let Some(progress) = terminal.take_progress_update() {
-            self.latest_progress = Some(sanitize_agent_osc_string(&progress, AGENT_OSC_MAX_CHARS));
+            self.latest_progress =
+                Some(sanitize_agent_osc_string(&progress.0, AGENT_OSC_MAX_CHARS));
         }
         terminal_title_changed
     }

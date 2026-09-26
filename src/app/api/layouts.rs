@@ -271,12 +271,18 @@ impl App {
             return failure(id, ApiErrorCode::LayoutNotFound, "layout target not found");
         };
 
+        let path = params
+            .path
+            .iter()
+            .copied()
+            .map(Into::into)
+            .collect::<Vec<_>>();
         let changed = self
             .state
             .workspaces
             .get_mut(ws_idx)
             .and_then(|ws| ws.tabs.get_mut(tab_idx))
-            .is_some_and(|tab| tab.layout.set_ratio_at(&params.path, params.ratio));
+            .is_some_and(|tab| tab.layout.set_ratio_at(&path, params.ratio));
         if !changed {
             return failure(id, ApiErrorCode::SplitNotFound, "split path not found");
         }
@@ -342,7 +348,7 @@ impl App {
                     Direction::Horizontal => SplitDirection::Right,
                     Direction::Vertical => SplitDirection::Down,
                 },
-                ratio: *ratio,
+                ratio: ratio.get(),
                 first: Box::new(self.layout_node_description(ws_idx, tab_idx, first)?),
                 second: Box::new(self.layout_node_description(ws_idx, tab_idx, second)?),
             }),

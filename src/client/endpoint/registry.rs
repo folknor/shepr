@@ -22,7 +22,7 @@ pub(crate) trait EndpointTransport: Send {
 
 pub(crate) struct EndpointConnection {
     transport: Box<dyn EndpointTransport>,
-    pub(crate) generation: u64,
+    pub(crate) generation: crate::protocol::ConnectionGeneration,
     pub(crate) surface_active: bool,
     health: Option<EndpointHealth>,
 }
@@ -101,7 +101,7 @@ impl EndpointRegistry {
             endpoint_id,
             EndpointConnection {
                 transport: Box::new(transport),
-                generation,
+                generation: generation.into(),
                 surface_active,
                 health,
             },
@@ -281,7 +281,7 @@ impl EndpointRegistry {
         };
         let failure = EndpointTransportFailure {
             endpoint_id: endpoint_id.clone(),
-            generation,
+            generation: generation.get(),
             kind: error.kind(),
             message: error.to_string(),
         };

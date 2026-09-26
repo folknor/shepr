@@ -328,7 +328,7 @@ fn apply_client_pane_input_event(
     } = event
     {
         let kind = kind.to_crossterm();
-        let modifiers = KeyModifiers::from_bits_truncate(*modifiers);
+        let modifiers = modifiers.to_crossterm();
         let position = match position {
             crate::protocol::ClientMousePosition::Cell { column, row } => {
                 crate::input::mouse::Position::Cell {
@@ -492,7 +492,7 @@ mod tests {
             ClientPaneInputEvent::Paste(secret.to_owned()),
             ClientPaneInputEvent::Key {
                 code: crate::protocol::ClientKeyCode::Char('h'),
-                modifiers: 0,
+                modifiers: crate::protocol::WireModifiers::NONE,
                 kind: crate::protocol::ClientKeyKind::Press,
                 repeat_count: 1,
                 shifted_codepoint: None,
@@ -593,7 +593,7 @@ mod tests {
                 width_px: 200,
                 height_px: 100,
             }),
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
             lines: 1,
         }];
 
@@ -625,7 +625,7 @@ mod tests {
                 width_px: 200,
                 height_px: 100,
             }),
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
             lines: 1,
         }];
 
@@ -656,7 +656,7 @@ mod tests {
                 width_px: 200,
                 height_px: 100,
             }),
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
             lines: 1,
         }];
 

@@ -139,8 +139,29 @@ pub struct TerminalCursorState {
     pub x: u16,
     pub y: u16,
     pub visible: bool,
-    /// DECSCUSR parameter (0-6). 0 means terminal default.
-    pub shape: u8,
+    /// DECSCUSR cursor shape, or the terminal default.
+    pub shape: crate::protocol::CursorShapeParam,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneClearError {
+    TerminalLockPoisoned,
+}
+
+impl std::fmt::Display for PaneClearError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TerminalLockPoisoned => f.write_str("terminal lock poisoned"),
+        }
+    }
+}
+
+impl std::error::Error for PaneClearError {}
+
+impl From<PaneClearError> for String {
+    fn from(value: PaneClearError) -> Self {
+        value.to_string()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -306,7 +327,7 @@ impl PaneTerminal {
         self.ghostty.scroll_reset();
     }
 
-    pub fn clear_screen(&self) -> Result<(), String> {
+    pub fn clear_screen(&self) -> Result<(), PaneClearError> {
         self.ghostty.clear_screen()
     }
 
@@ -1786,9 +1807,9 @@ impl GhosttyPaneTerminal {
         }
     }
 
-    pub fn clear_screen(&self) -> Result<(), String> {
+    pub fn clear_screen(&self) -> Result<(), PaneClearError> {
         let mut core = crate::ghostty::lock_terminal_core(&self.core)
-            .map_err(|_| "terminal lock poisoned".to_owned())?;
+            .map_err(|_| PaneClearError::TerminalLockPoisoned)?;
         let _ = core.terminal.clear_screen();
         Ok(())
     }
@@ -1898,7 +1919,7 @@ impl GhosttyPaneTerminal {
             return None;
         };
         Some(crate::input::KeyboardProtocol::from_kitty_flags(
-            core.terminal.kitty_keyboard_flags() as u16,
+            core.terminal.kitty_keyboard_flags().bits(),
         ))
     }
 
@@ -1917,7 +1938,7 @@ impl GhosttyPaneTerminal {
 
     pub fn modify_other_keys_level(&self) -> u8 {
         crate::ghostty::lock_terminal_core(&self.core)
-            .map_or(0, |core| core.terminal.modify_other_keys_level())
+            .map_or(0, |core| core.terminal.modify_other_keys_level().as_u8())
     }
 
     pub fn sgr_pixel_mouse_enabled(&self) -> bool {
@@ -1997,7 +2018,8 @@ impl GhosttyPaneTerminal {
             mouse_protocol_mode,
             mouse_protocol_encoding,
             mouse_alternate_scroll,
-            modify_other_keys: core.terminal.modify_other_keys_level() == 2,
+            modify_other_keys: core.terminal.modify_other_keys_level()
+                == crate::ghostty::ModifyOtherKeysLevel::All,
             color_scheme_reporting: core
                 .terminal
                 .mode_get(crate::ghostty::MODE_COLOR_SCHEME_REPORT),
@@ -2085,8 +2107,8 @@ impl GhosttyPaneTerminal {
         let Some(modes) = crate::ghostty::lock_terminal_core(&self.core)
             .ok()
             .map(|core| crate::input::KeyEncodeModes {
-                kitty_flags: u16::from(core.terminal.kitty_keyboard_flags()),
-                modify_other_keys: core.terminal.modify_other_keys_level(),
+                kitty_flags: core.terminal.kitty_keyboard_flags().bits(),
+                modify_other_keys: core.terminal.modify_other_keys_level().as_u8(),
                 application_cursor: core
                     .terminal
                     .mode_get(crate::ghostty::MODE_APPLICATION_CURSOR_KEYS),
@@ -2479,7 +2501,7 @@ fn collect_core_effects(core: &mut GhosttyPaneCore) -> CoreEffects {
         .terminal
         .take_pwd_changes()
         .into_iter()
-        .filter_map(|value| parse_reported_cwd(&value))
+        .filter_map(|value| parse_reported_cwd(&value.0))
         .next_back();
     let default_color_owner_pending = note_default_color_change(core);
     CoreEffects {
@@ -2589,7 +2611,7 @@ fn cursor_state_from_render_state(
     let shape = if cursor_shape_overridden {
         decscusr_cursor_shape(cursor.visual_style, cursor.blinking)
     } else {
-        0
+        crate::protocol::CursorShapeParam::Default
     };
     Some(TerminalCursorState {
         x: viewport.x,
@@ -3998,31 +4020,31 @@ mod tests {
     fn decscusr_cursor_shape_preserves_blinking_variants() {
         assert_eq!(
             decscusr_cursor_shape(crate::ghostty::CursorVisualStyle::Block, true),
-            1
+            crate::protocol::CursorShapeParam::BlinkingBlock
         );
         assert_eq!(
             decscusr_cursor_shape(crate::ghostty::CursorVisualStyle::Block, false),
-            2
+            crate::protocol::CursorShapeParam::SteadyBlock
         );
         assert_eq!(
             decscusr_cursor_shape(crate::ghostty::CursorVisualStyle::Underline, true),
-            3
+            crate::protocol::CursorShapeParam::BlinkingUnderline
         );
         assert_eq!(
             decscusr_cursor_shape(crate::ghostty::CursorVisualStyle::Underline, false),
-            4
+            crate::protocol::CursorShapeParam::SteadyUnderline
         );
         assert_eq!(
             decscusr_cursor_shape(crate::ghostty::CursorVisualStyle::Bar, true),
-            5
+            crate::protocol::CursorShapeParam::BlinkingBar
         );
         assert_eq!(
             decscusr_cursor_shape(crate::ghostty::CursorVisualStyle::Bar, false),
-            6
+            crate::protocol::CursorShapeParam::SteadyBar
         );
         assert_eq!(
             decscusr_cursor_shape(crate::ghostty::CursorVisualStyle::BlockHollow, false),
-            2
+            crate::protocol::CursorShapeParam::SteadyBlock
         );
     }
 
@@ -4032,11 +4054,17 @@ mod tests {
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
 
-        assert_eq!(pane.cursor_state().expect("test precondition").shape, 0);
+        assert_eq!(
+            pane.cursor_state().expect("test precondition").shape,
+            crate::protocol::CursorShapeParam::Default
+        );
 
         pane.process_pty_bytes(pane_id, 0, b"\x1b[6 q");
 
-        assert_eq!(pane.cursor_state().expect("test precondition").shape, 6);
+        assert_eq!(
+            pane.cursor_state().expect("test precondition").shape,
+            crate::protocol::CursorShapeParam::SteadyBar
+        );
     }
 
     #[test]
@@ -4046,11 +4074,17 @@ mod tests {
         let pane_id = PaneId::from_raw(1);
 
         pane.process_pty_bytes(pane_id, 0, b"\x1b[2 q");
-        assert_eq!(pane.cursor_state().expect("test precondition").shape, 2);
+        assert_eq!(
+            pane.cursor_state().expect("test precondition").shape,
+            crate::protocol::CursorShapeParam::SteadyBlock
+        );
 
         pane.process_pty_bytes(pane_id, 0, b"\x1b[0 q");
 
-        assert_eq!(pane.cursor_state().expect("test precondition").shape, 0);
+        assert_eq!(
+            pane.cursor_state().expect("test precondition").shape,
+            crate::protocol::CursorShapeParam::Default
+        );
     }
 
     #[test]
@@ -4063,7 +4097,10 @@ mod tests {
         pane.process_pty_bytes(pane_id, 0, b"5 ");
         pane.process_pty_bytes(pane_id, 0, b"q");
 
-        assert_eq!(pane.cursor_state().expect("test precondition").shape, 5);
+        assert_eq!(
+            pane.cursor_state().expect("test precondition").shape,
+            crate::protocol::CursorShapeParam::BlinkingBar
+        );
     }
 
     #[test]
@@ -4090,10 +4127,16 @@ mod tests {
         let pane_id = PaneId::from_raw(1);
 
         pane.process_pty_bytes(pane_id, 0, b"\x1b[4 q");
-        assert_eq!(pane.cursor_state().expect("test precondition").shape, 4);
+        assert_eq!(
+            pane.cursor_state().expect("test precondition").shape,
+            crate::protocol::CursorShapeParam::SteadyUnderline
+        );
         pane.process_pty_bytes(pane_id, 0, b"\x1bc");
 
-        assert_eq!(pane.cursor_state().expect("test precondition").shape, 0);
+        assert_eq!(
+            pane.cursor_state().expect("test precondition").shape,
+            crate::protocol::CursorShapeParam::Default
+        );
     }
 
     /// The host theme is applied to the core directly, never written through

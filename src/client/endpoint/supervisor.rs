@@ -94,7 +94,7 @@ struct ReconnectState {
     in_flight: bool,
     /// When the attempt in flight started; its failure schedules the retry from here.
     attempt_started: Option<Instant>,
-    generation: Option<u64>,
+    generation: Option<crate::protocol::ConnectionGeneration>,
     online_since: Option<Instant>,
 }
 
@@ -121,8 +121,8 @@ pub(crate) struct EndpointSupervisors {
     /// Attempts still running for endpoints that were retired mid-attempt, by generation.
     /// A saved machine's bridge socket path is derived from its profile id, so a restarted
     /// supervisor for the same id must not start its own attempt until this one reports.
-    retired_attempts: HashMap<ClientEndpointId, u64>,
-    next_generation: u64,
+    retired_attempts: HashMap<ClientEndpointId, crate::protocol::ConnectionGeneration>,
+    next_generation: crate::protocol::ConnectionGeneration,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -138,7 +138,7 @@ impl EndpointSupervisors {
             ssh_settings: settings,
             paths: paths.clone(),
             retired_attempts: HashMap::new(),
-            next_generation: 2,
+            next_generation: crate::protocol::ConnectionGeneration::new(2),
             shutdown: Arc::new(AtomicBool::new(false)),
         };
         for profile in profiles {
@@ -186,7 +186,7 @@ impl EndpointSupervisors {
 
     pub(crate) fn add_local(&mut self, path: PathBuf, generation: Option<u64>, now: Instant) {
         let mut state = ReconnectState::new(ConnectTarget::Local(path), now);
-        state.generation = generation;
+        state.generation = generation.map(Into::into);
         if generation.is_some() {
             state.next_attempt = None;
         }
@@ -206,9 +206,9 @@ impl EndpointSupervisors {
             state.in_flight = true;
             state.attempt_started = Some(now);
             state.next_attempt = None;
-            let generation = self.next_generation;
-            state.generation = Some(generation);
-            self.next_generation = self.next_generation.saturating_add(1);
+            let generation = self.next_generation.get();
+            state.generation = Some(generation.into());
+            self.next_generation = self.next_generation.next();
             let endpoint_id = endpoint_id.clone();
             let target = state.target.clone();
             let event_tx = event_tx.clone();
@@ -261,7 +261,7 @@ impl EndpointSupervisors {
         status: ClientEndpointStatus,
         now: Instant,
     ) -> bool {
-        if self.retired_attempts.get(endpoint_id) == Some(&generation) {
+        if self.retired_attempts.get(endpoint_id) == Some(&generation.into()) {
             // The retired attempt has finished, so its bridge socket is free again. Its
             // outcome belongs to the retired connector and is not recorded.
             self.retired_attempts.remove(endpoint_id);
@@ -277,7 +277,7 @@ impl EndpointSupervisors {
         let Some(state) = self.endpoints.get_mut(endpoint_id) else {
             return false;
         };
-        if state.generation != Some(generation) {
+        if state.generation != Some(generation.into()) {
             return false;
         }
         // An attempt's own outcome counts its retry delay from when it started, so time
@@ -543,7 +543,7 @@ mod tests {
             .endpoints
             .get_mut(&id)
             .expect("test precondition")
-            .generation = Some(2);
+            .generation = Some(crate::protocol::ConnectionGeneration::new(2));
         for attempt in 1..=5 {
             let connected = now + Duration::from_secs(attempt * 20);
             assert!(supervisors.record_status(&id, 2, ClientEndpointStatus::Online, connected));
@@ -581,7 +581,7 @@ mod tests {
             .endpoints
             .get_mut(&id)
             .expect("test precondition")
-            .generation = Some(2);
+            .generation = Some(crate::protocol::ConnectionGeneration::new(2));
         for _ in 0..20 {
             assert!(supervisors.disconnected(&id, 2, now));
             assert!(
@@ -602,7 +602,7 @@ mod tests {
             .endpoints
             .get_mut(&id)
             .expect("test precondition")
-            .generation = Some(9);
+            .generation = Some(crate::protocol::ConnectionGeneration::new(9));
 
         assert!(supervisors.record_status(&id, 9, ClientEndpointStatus::Attention, now));
         assert_eq!(
@@ -643,7 +643,7 @@ mod tests {
                 state.in_flight = true;
                 state.attempt_started = Some(started);
                 state.next_attempt = None;
-                state.generation = Some(7);
+                state.generation = Some(crate::protocol::ConnectionGeneration::new(7));
             }
             let promised_at = started + Duration::from_millis(10);
             let gave_up = started + ATTEMPT_BUDGET;
@@ -694,7 +694,7 @@ mod tests {
                 .expect("test precondition");
             state.in_flight = true;
             state.next_attempt = None;
-            state.generation = Some(5);
+            state.generation = Some(crate::protocol::ConnectionGeneration::new(5));
         }
 
         // Removed and re-added (or re-pointed) while that attempt still runs: the new
@@ -793,7 +793,7 @@ mod tests {
             .endpoints
             .get_mut(&endpoint_id)
             .expect("test precondition")
-            .generation = Some(4);
+            .generation = Some(crate::protocol::ConnectionGeneration::new(4));
         assert!(supervisors.record_status(&endpoint_id, 4, ClientEndpointStatus::Online, now));
         assert!(!supervisors.disconnected(&endpoint_id, 3, now));
         assert!(supervisors.endpoints[&endpoint_id].next_attempt.is_none());

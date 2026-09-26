@@ -173,13 +173,13 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
     );
 
     let mut update = state.snapshot.as_deref().expect("snapshot").clone();
-    update.revision = 2;
+    update.revision = crate::protocol::ProjectionRevision::new(2);
     update.focused_workspace_id = Some("ws_12".into());
     for workspace in &mut update.workspaces {
         workspace.focused = workspace.workspace_id == "ws_12";
     }
     let mut updated_surface = surface();
-    updated_surface.projection_revision = 2;
+    updated_surface.projection_revision = crate::protocol::ProjectionRevision::new(2);
     state.set_snapshot(Box::new(update));
     state.set_pane_surface(updated_surface);
     state.compose(106, 2).expect("zero-height workspace body");
@@ -295,7 +295,7 @@ fn client_owned_sidebar_dividers_resize_live() {
         row: 20,
         modifiers: KeyModifiers::empty(),
     })]);
-    assert!(state.sidebar_section_split > 0.6);
+    assert!(state.sidebar_section_split.get() > 0.6);
     assert!(split.repaint);
     assert!(!split.resize);
 }

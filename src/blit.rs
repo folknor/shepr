@@ -635,7 +635,7 @@ fn resolve_host_cursor_state(
             return HostCursorState {
                 position,
                 visible: true,
-                shape: normalize_cursor_shape(cursor.shape),
+                shape: cursor.shape as u8,
             };
         }
 
@@ -643,7 +643,7 @@ fn resolve_host_cursor_state(
         return HostCursorState {
             position,
             visible: false,
-            shape: normalize_cursor_shape(cursor.shape),
+            shape: cursor.shape as u8,
         };
     }
 
@@ -655,10 +655,6 @@ fn resolve_host_cursor_state(
         visible: false,
         shape: 0,
     }
-}
-
-fn normalize_cursor_shape(shape: u8) -> u8 {
-    if shape <= 6 { shape } else { 0 }
 }
 
 fn default_hidden_cursor_position(frame: &FrameData) -> (u16, u16) {
@@ -1194,7 +1190,7 @@ mod tests {
                 x: 2,
                 y: 1,
                 visible: true,
-                shape: 0,
+                shape: crate::protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1260,7 +1256,7 @@ mod tests {
                 x: 2,
                 y: 1,
                 visible: true,
-                shape: 0,
+                shape: crate::protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1299,7 +1295,7 @@ mod tests {
                 x: 2,
                 y: 1,
                 visible: true,
-                shape: 0,
+                shape: crate::protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1338,7 +1334,7 @@ mod tests {
                 x: 2,
                 y: 1,
                 visible: true,
-                shape: 6,
+                shape: crate::protocol::CursorShapeParam::SteadyBar,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1384,7 +1380,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: false,
-                shape: 0,
+                shape: crate::protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1402,7 +1398,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
-                shape: 6,
+                shape: crate::protocol::CursorShapeParam::SteadyBar,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1448,7 +1444,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
-                shape: 0,
+                shape: crate::protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1460,7 +1456,7 @@ mod tests {
                 x: 2,
                 y: 1,
                 visible: false,
-                shape: 0,
+                shape: crate::protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1714,7 +1710,7 @@ mod tests {
             x: 3,
             y: 1,
             visible: true,
-            shape: 2,
+            shape: crate::protocol::CursorShapeParam::SteadyBlock,
         });
         let mut expected = previous;
         expected.cells[4..8].clone_from_slice(&rows[0].cells);
@@ -1813,7 +1809,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: false,
-                shape: 2,
+                shape: crate::protocol::CursorShapeParam::SteadyBlock,
             }),
         ] {
             frame.cursor = cursor.clone();
@@ -1831,13 +1827,13 @@ mod tests {
                 x: 2,
                 y: 0,
                 visible: false,
-                shape: 2,
+                shape: crate::protocol::CursorShapeParam::SteadyBlock,
             },
             CursorState {
                 x: 2,
                 y: 0,
                 visible: true,
-                shape: 2,
+                shape: crate::protocol::CursorShapeParam::SteadyBlock,
             },
         ] {
             let encoded = encoder
@@ -1873,7 +1869,7 @@ mod tests {
             x: 0,
             y: 0,
             visible: true,
-            shape: 0,
+            shape: crate::protocol::CursorShapeParam::Default,
         });
         let previous_drawn = frame_with_drawn_cursor(previous.clone());
         let mut encoder = BlitEncoder::new();
@@ -1889,7 +1885,7 @@ mod tests {
             x: 1,
             y: 0,
             visible: true,
-            shape: 0,
+            shape: crate::protocol::CursorShapeParam::Default,
         });
         let drawn_rows = encoder
             .patch_rows_with_drawn_cursor(&rows, cursor.as_ref())
@@ -1918,7 +1914,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
-                shape: 0,
+                shape: crate::protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1943,7 +1939,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: false,
-                shape: 0,
+                shape: crate::protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -1989,7 +1985,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: false,
-                shape: 0,
+                shape: crate::protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -2012,7 +2008,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
-                shape: 0,
+                shape: crate::protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -2040,7 +2036,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
-                shape: 0,
+                shape: crate::protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -2050,7 +2046,7 @@ mod tests {
             x: 2,
             y: 2,
             visible: true,
-            shape: 0,
+            shape: crate::protocol::CursorShapeParam::Default,
         });
 
         let mut output = Vec::new();
@@ -2079,7 +2075,7 @@ mod tests {
                 x: 1,
                 y: 1,
                 visible: true,
-                shape: 0,
+                shape: crate::protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
@@ -2161,7 +2157,7 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
-                shape: 0,
+                shape: crate::protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };

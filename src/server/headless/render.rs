@@ -194,8 +194,10 @@ impl HeadlessServer {
             };
             let serialized =
                 match Self::frame_server_message(&ServerMessage::DirectTerminalKeyboardProtocol {
-                    flags,
-                    modify_other_keys_level,
+                    flags: crate::protocol::KittyKeyboardFlags::from_bits_retain(flags),
+                    modify_other_keys_level: crate::ghostty::ModifyOtherKeysLevel::from_parameter(
+                        u16::from(modify_other_keys_level),
+                    ),
                 }) {
                     Ok(framed) => framed,
                     Err(err) => {
@@ -512,7 +514,7 @@ impl HeadlessServer {
             } else {
                 None
             };
-            let mut shell_projection_revision = 0;
+            let mut shell_projection_revision = crate::protocol::ProjectionRevision::ZERO;
             if is_shell {
                 let session = if last_shell_client {
                     shared_session_snapshot
@@ -532,7 +534,7 @@ impl HeadlessServer {
                     &self.client_shell_boot_id,
                     client
                         .shell_state()
-                        .map_or(0, |shell| shell.projection_revision),
+                        .map_or(0, |shell| shell.projection_revision.get()),
                     client
                         .shell_state()
                         .and_then(|shell| shell.location.as_ref()),
@@ -544,7 +546,7 @@ impl HeadlessServer {
                     let Some(shell) = client.shell_state_mut() else {
                         continue;
                     };
-                    shell.projection_revision = shell.projection_revision.saturating_add(1);
+                    shell.projection_revision = shell.projection_revision.next();
                     candidate.revision = shell.projection_revision;
                     let snapshot_message = crate::protocol::endpoint::snapshot_message(&candidate);
                     let snapshot_framed = match Self::frame_server_message(&snapshot_message) {
@@ -643,7 +645,7 @@ impl HeadlessServer {
                     .prepare_pane_surface(protocol::PaneSurfaceFrame {
                         boot_id: self.client_shell_boot_id.clone(),
                         projection_revision: shell_projection_revision,
-                        surface_revision: 0,
+                        surface_revision: crate::protocol::SurfaceRevision::new(0),
                         frame,
                         panes,
                         splits,

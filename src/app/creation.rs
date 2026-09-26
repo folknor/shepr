@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use super::{App, api_helpers::pane_agent_status};
+use crate::api::error::{ApiError, ApiErrorCode};
 use crate::api::schema::{EventData, EventEnvelope};
 use crate::{config::NewTerminalCwdConfig, workspace::Workspace};
 
@@ -143,17 +144,17 @@ impl App {
     pub(super) fn collect_panes_for_workspace(
         &self,
         workspace_id: Option<&str>,
-    ) -> Result<Vec<crate::api::schema::PaneInfo>, (String, String)> {
+    ) -> Result<Vec<crate::api::schema::PaneInfo>, ApiError> {
         if let Some(workspace_id) = workspace_id {
             let Some(ws_idx) = self.parse_workspace_id(workspace_id) else {
-                return Err((
-                    "workspace_not_found".into(),
+                return Err(ApiError::new(
+                    ApiErrorCode::WorkspaceNotFound,
                     format!("workspace {workspace_id} not found"),
                 ));
             };
             let Some(ws) = self.state.workspaces.get(ws_idx) else {
-                return Err((
-                    "workspace_not_found".into(),
+                return Err(ApiError::new(
+                    ApiErrorCode::WorkspaceNotFound,
                     format!("workspace {workspace_id} not found"),
                 ));
             };

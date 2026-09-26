@@ -1,3 +1,4 @@
+use crate::api::error::{ApiError, ApiErrorCode};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -64,6 +65,14 @@ impl App {
     pub(super) fn agent_info_for_target(
         &self,
         target: &str,
+    ) -> Result<crate::api::schema::AgentInfo, ApiError> {
+        self.agent_info_for_target_impl(target)
+            .map_err(|err| self.agent_target_error(err))
+    }
+
+    fn agent_info_for_target_impl(
+        &self,
+        target: &str,
     ) -> Result<crate::api::schema::AgentInfo, TerminalTargetError> {
         let resolved = self.resolve_agent_target(target)?;
         self.agent_info(resolved.ws_idx, resolved.pane_id)
@@ -73,6 +82,14 @@ impl App {
     }
 
     pub(super) fn focus_agent_target(
+        &mut self,
+        target: &str,
+    ) -> Result<crate::api::schema::AgentInfo, ApiError> {
+        self.focus_agent_target_impl(target)
+            .map_err(|err| self.agent_target_error(err))
+    }
+
+    fn focus_agent_target_impl(
         &mut self,
         target: &str,
     ) -> Result<crate::api::schema::AgentInfo, TerminalTargetError> {
@@ -87,6 +104,15 @@ impl App {
     }
 
     pub(super) fn rename_agent_target(
+        &mut self,
+        target: &str,
+        name: Option<String>,
+    ) -> Result<crate::api::schema::AgentInfo, ApiError> {
+        self.rename_agent_target_impl(target, name)
+            .map_err(|err| self.agent_rename_error(err))
+    }
+
+    fn rename_agent_target_impl(
         &mut self,
         target: &str,
         name: Option<String>,
@@ -137,6 +163,14 @@ impl App {
     }
 
     pub(super) fn start_agent(
+        &mut self,
+        params: AgentStartParams,
+    ) -> Result<(crate::api::schema::AgentInfo, Vec<String>), ApiError> {
+        self.start_agent_impl(params)
+            .map_err(|err| self.agent_start_error(err))
+    }
+
+    fn start_agent_impl(
         &mut self,
         params: AgentStartParams,
     ) -> Result<(crate::api::schema::AgentInfo, Vec<String>), AgentStartError> {
@@ -234,46 +268,43 @@ impl App {
         Ok((agent, argv))
     }
 
-    pub(super) fn agent_start_error_body(
-        &self,
-        err: AgentStartError,
-    ) -> crate::api::schema::ErrorBody {
+    pub(super) fn agent_start_error(&self, err: AgentStartError) -> ApiError {
         match err {
-            AgentStartError::InvalidName => crate::api::schema::ErrorBody {
-                code: "invalid_agent_name".into(),
-                message: INVALID_AGENT_NAME_MESSAGE.into(),
-            },
-            AgentStartError::UnsupportedKind(kind) => crate::api::schema::ErrorBody {
-                code: "unsupported_agent_kind".into(),
-                message: format!("unsupported interactive agent kind {kind}"),
-            },
-            AgentStartError::InvalidArgument => crate::api::schema::ErrorBody {
-                code: "invalid_agent_argument".into(),
-                message: "agent arguments cannot be encoded safely for the target shell".into(),
-            },
-            AgentStartError::InvalidTimeout => crate::api::schema::ErrorBody {
-                code: "invalid_agent_timeout".into(),
-                message: INVALID_AGENT_TIMEOUT_MESSAGE.into(),
-            },
-            AgentStartError::TargetNotFound(target) => crate::api::schema::ErrorBody {
-                code: "agent_pane_not_found".into(),
-                message: format!("agent target pane {target} not found"),
-            },
-            AgentStartError::TargetBusy(target) => crate::api::schema::ErrorBody {
-                code: "agent_pane_busy".into(),
-                message: format!("agent target pane {target} is not an available shell"),
-            },
-            AgentStartError::TargetUnavailable(target) => crate::api::schema::ErrorBody {
-                code: "agent_pane_unavailable".into(),
-                message: format!("agent target pane {target} has no live terminal"),
-            },
-            AgentStartError::InputFailed(message) => crate::api::schema::ErrorBody {
-                code: "agent_start_input_failed".into(),
+            AgentStartError::InvalidName => ApiError::new(
+                ApiErrorCode::InvalidAgentName,
+                INVALID_AGENT_NAME_MESSAGE,
+            ),
+            AgentStartError::UnsupportedKind(kind) => ApiError::new(
+                ApiErrorCode::UnsupportedAgentKind,
+                format!("unsupported interactive agent kind {kind}"),
+            ),
+            AgentStartError::InvalidArgument => ApiError::new(
+                ApiErrorCode::InvalidAgentArgument,
+                "agent arguments cannot be encoded safely for the target shell",
+            ),
+            AgentStartError::InvalidTimeout => ApiError::new(
+                ApiErrorCode::InvalidAgentTimeout,
+                INVALID_AGENT_TIMEOUT_MESSAGE,
+            ),
+            AgentStartError::TargetNotFound(target) => ApiError::new(
+                ApiErrorCode::AgentPaneNotFound,
+                format!("agent target pane {target} not found"),
+            ),
+            AgentStartError::TargetBusy(target) => ApiError::new(
+                ApiErrorCode::AgentPaneBusy,
+                format!("agent target pane {target} is not an available shell"),
+            ),
+            AgentStartError::TargetUnavailable(target) => ApiError::new(
+                ApiErrorCode::AgentPaneUnavailable,
+                format!("agent target pane {target} has no live terminal"),
+            ),
+            AgentStartError::InputFailed(message) => ApiError::new(
+                ApiErrorCode::AgentStartInputFailed,
                 message,
-            },
-            AgentStartError::DuplicateName { name, candidates } => crate::api::schema::ErrorBody {
-                code: "agent_name_taken".into(),
-                message: format!(
+            ),
+            AgentStartError::DuplicateName { name, candidates } => ApiError::new(
+                ApiErrorCode::AgentNameTaken,
+                format!(
                     "agent name {name} is already used; candidates: {}",
                     candidates
                         .into_iter()
@@ -289,23 +320,20 @@ impl App {
                         .collect::<Vec<_>>()
                         .join("; ")
                 ),
-            },
+            ),
         }
     }
 
-    pub(super) fn agent_target_error_body(
-        &self,
-        err: TerminalTargetError,
-    ) -> crate::api::schema::ErrorBody {
+    pub(super) fn agent_target_error(&self, err: TerminalTargetError) -> ApiError {
         match err {
-            TerminalTargetError::NotFound { target } => crate::api::schema::ErrorBody {
-                code: "agent_not_found".into(),
-                message: format!("agent target {target} not found"),
-            },
+            TerminalTargetError::NotFound { target } => ApiError::new(
+                ApiErrorCode::AgentNotFound,
+                format!("agent target {target} not found"),
+            ),
             TerminalTargetError::Ambiguous { target, candidates } => {
-                crate::api::schema::ErrorBody {
-                    code: "agent_target_ambiguous".into(),
-                    message: format!(
+                ApiError::new(
+                    ApiErrorCode::AgentTargetAmbiguous,
+                    format!(
                         "agent target {target} is ambiguous; candidates: {}",
                         candidates
                             .into_iter()
@@ -321,32 +349,29 @@ impl App {
                             .collect::<Vec<_>>()
                             .join("; ")
                     ),
-                }
+                )
             }
         }
     }
 
-    pub(super) fn agent_rename_error_body(
-        &self,
-        err: AgentRenameError,
-    ) -> crate::api::schema::ErrorBody {
+    pub(super) fn agent_rename_error(&self, err: AgentRenameError) -> ApiError {
         match err {
-            AgentRenameError::Target(err) => self.agent_target_error_body(err),
-            AgentRenameError::InvalidName => crate::api::schema::ErrorBody {
-                code: "invalid_agent_name".into(),
-                message: INVALID_AGENT_NAME_MESSAGE.into(),
-            },
-            AgentRenameError::NotAgent => crate::api::schema::ErrorBody {
-                code: "agent_not_found".into(),
-                message: "agent target does not currently host an agent".into(),
-            },
-            AgentRenameError::PendingLaunch => crate::api::schema::ErrorBody {
-                code: "agent_launch_pending".into(),
-                message: "agent name cannot change while startup is pending".into(),
-            },
-            AgentRenameError::DuplicateName { name, candidates } => crate::api::schema::ErrorBody {
-                code: "agent_name_taken".into(),
-                message: format!(
+            AgentRenameError::Target(err) => self.agent_target_error(err),
+            AgentRenameError::InvalidName => ApiError::new(
+                ApiErrorCode::InvalidAgentName,
+                INVALID_AGENT_NAME_MESSAGE,
+            ),
+            AgentRenameError::NotAgent => ApiError::new(
+                ApiErrorCode::AgentNotFound,
+                "agent target does not currently host an agent",
+            ),
+            AgentRenameError::PendingLaunch => ApiError::new(
+                ApiErrorCode::AgentLaunchPending,
+                "agent name cannot change while startup is pending",
+            ),
+            AgentRenameError::DuplicateName { name, candidates } => ApiError::new(
+                ApiErrorCode::AgentNameTaken,
+                format!(
                     "agent name {name} is already used; candidates: {}",
                     candidates
                         .into_iter()
@@ -362,7 +387,7 @@ impl App {
                         .collect::<Vec<_>>()
                         .join("; ")
                 ),
-            },
+            ),
         }
     }
 

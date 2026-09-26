@@ -21,16 +21,7 @@ impl App {
         results: Vec<crate::workspace::WorkspaceGitStatus>,
         cache_updates: Vec<(std::path::PathBuf, crate::workspace::GitStatusCacheEntry)>,
     ) -> bool {
-        self.git_refresh_in_flight = false;
-        for (key, entry) in cache_updates {
-            self.git_status_cache.insert(key, entry);
-        }
-        if self.git_refresh_due_after_in_flight {
-            self.mark_git_status_refresh_due(Instant::now());
-            self.git_refresh_due_after_in_flight = false;
-        } else {
-            self.last_git_remote_status_refresh = Instant::now();
-        }
+        self.git_refresh.finish(Instant::now(), cache_updates);
         let changed = self
             .state
             .apply_workspace_git_statuses(&self.terminal_runtimes, results);
@@ -234,37 +225,38 @@ impl App {
         };
         let workspace_id = update.workspace_id.clone();
 
-        if update.agent_name_changed {
+        if update.cause.name_changed() {
             self.emit_pane_updated(ws_idx, update.pane_id);
         }
 
-        if update.previous_agent_label != update.agent_label || update.agent_released {
+        if update.previous.agent_label != update.current.agent_label || update.cause.released() {
             self.emit_event(crate::api::schema::EventEnvelope {
                 data: crate::api::schema::EventData::PaneAgentDetected {
                     pane_id: pane_id.clone(),
                     workspace_id: workspace_id.clone(),
-                    agent: update.agent_label.clone(),
-                    released: update.agent_released,
+                    agent: update.current.agent_label.clone(),
+                    released: update.cause.released(),
                     final_status: update
-                        .agent_released
-                        .then(|| pane_agent_status(update.state)),
+                        .cause
+                        .released()
+                        .then(|| pane_agent_status(update.current.state)),
                 },
             });
         }
 
-        let previous_agent_status = pane_agent_status(update.previous_state);
-        let agent_status = pane_agent_status(update.state);
+        let previous_agent_status = pane_agent_status(update.previous.state);
+        let agent_status = pane_agent_status(update.current.state);
 
         if previous_agent_status != agent_status
-            || update.previous_presentation != update.presentation
+            || update.previous.presentation != update.current.presentation
         {
-            let presentation = update.presentation.clone();
+            let presentation = update.current.presentation.clone();
             self.emit_event(crate::api::schema::EventEnvelope {
                 data: crate::api::schema::EventData::PaneAgentStatusChanged {
                     pane_id,
                     workspace_id,
                     agent_status,
-                    agent: update.agent_label.clone(),
+                    agent: update.current.agent_label.clone(),
                     title: presentation.title,
                     display_agent: presentation.display_agent,
                     state_labels: presentation.state_labels,

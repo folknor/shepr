@@ -16,7 +16,7 @@ pub use state::PaneState;
 pub(crate) use teardown::wait_for_pane_session_teardowns;
 #[cfg(test)]
 use terminal::GhosttyPaneTerminal;
-pub use terminal::{ScrollMetrics, TerminalCursorState};
+pub use terminal::{PaneClearError, ScrollMetrics, TerminalCursorState};
 pub(crate) use terminal::{
     TerminalDirtyPatch, TerminalDirtyPatchOutcome, TerminalReadSnapshot, TerminalSearchDirection,
     TerminalSearchWindow, TerminalTextPoint, TerminalWordMotion,

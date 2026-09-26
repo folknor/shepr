@@ -19,13 +19,13 @@ impl HeadlessServer {
                 let shell = client.shell_state_mut()?;
                 let changed = shell.surface_active != active;
                 if active {
-                    shell.projection_revision = shell.projection_revision.saturating_add(1);
+                    shell.projection_revision = shell.projection_revision.next();
                     // Force the next control snapshot to carry this new floor instead of reusing a
                     // same-boot cached snapshot from the prior surface epoch.
                     shell.snapshot = None;
                 }
                 if !changed && !active {
-                    return Some((false, shell.projection_revision));
+                    return Some((false, shell.projection_revision.get()));
                 }
                 shell.surface_active = active;
                 (changed, shell.projection_revision)
@@ -88,6 +88,6 @@ impl HeadlessServer {
             }
             self.reapply_controlled_shell_tab_geometry(true);
         }
-        Some((changed || active, projection_revision))
+        Some((changed || active, projection_revision.get()))
     }
 }

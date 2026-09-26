@@ -1107,7 +1107,7 @@ mod tests {
                 direction: ratatui::layout::Direction::Vertical,
                 ratio: 0.5,
                 area: Rect::new(0, 0, 4, 4),
-                path: vec![false],
+                path: vec![crate::protocol::SplitBranch::First],
             },
         ];
         let ws = Workspace::test_new("test");

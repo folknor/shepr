@@ -26,19 +26,38 @@ fn public_tab_id_for_index(ws: &crate::workspace::Workspace, tab_idx: usize) -> 
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaneStateUpdate {
-    pub pane_id: PaneId,
-    pub workspace_id: String,
-    pub previous_agent_label: Option<String>,
-    pub previous_known_agent: Option<Agent>,
-    pub previous_state: AgentState,
-    pub previous_presentation: crate::terminal::EffectivePresentation,
+pub struct PaneStateSnapshot {
     pub agent_label: Option<String>,
     pub known_agent: Option<Agent>,
     pub state: AgentState,
     pub presentation: crate::terminal::EffectivePresentation,
-    pub agent_name_changed: bool,
-    pub agent_released: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneStateCause {
+    StateChanged,
+    NameChanged,
+    Released,
+    NameChangedAndReleased,
+}
+
+impl PaneStateCause {
+    pub fn name_changed(self) -> bool {
+        matches!(self, Self::NameChanged | Self::NameChangedAndReleased)
+    }
+
+    pub fn released(self) -> bool {
+        matches!(self, Self::Released | Self::NameChangedAndReleased)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneStateUpdate {
+    pub pane_id: PaneId,
+    pub workspace_id: String,
+    pub previous: PaneStateSnapshot,
+    pub current: PaneStateSnapshot,
+    pub cause: PaneStateCause,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -412,16 +431,19 @@ impl AppState {
                 let update = PaneStateUpdate {
                     pane_id,
                     workspace_id,
-                    previous_agent_label: change.previous_agent_label.clone(),
-                    previous_known_agent: change.previous_known_agent,
-                    previous_state: change.previous_state,
-                    previous_presentation: change.previous_presentation.clone(),
-                    agent_label: change.agent_label.clone(),
-                    known_agent: change.known_agent,
-                    state: change.state,
-                    presentation: change.presentation.clone(),
-                    agent_name_changed: false,
-                    agent_released: false,
+                    previous: PaneStateSnapshot {
+                        agent_label: change.previous_agent_label.clone(),
+                        known_agent: change.previous_known_agent,
+                        state: change.previous_state,
+                        presentation: change.previous_presentation.clone(),
+                    },
+                    current: PaneStateSnapshot {
+                        agent_label: change.agent_label.clone(),
+                        known_agent: change.known_agent,
+                        state: change.state,
+                        presentation: change.presentation.clone(),
+                    },
+                    cause: PaneStateCause::StateChanged,
                 };
                 Some(update)
             })
@@ -1382,24 +1404,32 @@ impl AppState {
         let update = PaneStateUpdate {
             pane_id,
             workspace_id,
-            previous_agent_label: change.previous_agent_label.clone(),
-            previous_known_agent: change.previous_known_agent,
-            previous_state: change.previous_state,
-            previous_presentation: change.previous_presentation.clone(),
-            agent_label: if agent_released {
-                change.previous_agent_label.clone()
-            } else {
-                change.agent_label.clone()
+            previous: PaneStateSnapshot {
+                agent_label: change.previous_agent_label.clone(),
+                known_agent: change.previous_known_agent,
+                state: change.previous_state,
+                presentation: change.previous_presentation.clone(),
             },
-            known_agent: if agent_released {
-                change.previous_known_agent
-            } else {
-                change.known_agent
+            current: PaneStateSnapshot {
+                agent_label: if agent_released {
+                    change.previous_agent_label.clone()
+                } else {
+                    change.agent_label.clone()
+                },
+                known_agent: if agent_released {
+                    change.previous_known_agent
+                } else {
+                    change.known_agent
+                },
+                state: change.state,
+                presentation: change.presentation.clone(),
             },
-            state: change.state,
-            presentation: change.presentation.clone(),
-            agent_name_changed,
-            agent_released,
+            cause: match (agent_name_changed, agent_released) {
+                (false, false) => PaneStateCause::StateChanged,
+                (true, false) => PaneStateCause::NameChanged,
+                (false, true) => PaneStateCause::Released,
+                (true, true) => PaneStateCause::NameChangedAndReleased,
+            },
         };
         Some(update)
     }
@@ -1448,7 +1478,7 @@ impl AppState {
                 observed_at,
             ))
         })?;
-        update.agent_released.then_some(update)
+        update.cause.released().then_some(update)
     }
 
     fn handle_pane_died(&mut self, pane_id: PaneId) {
@@ -1680,14 +1710,23 @@ mod tests {
                 demand: crate::workspace::GitStatusRefreshDemand::ALL,
                 auto_label: "one".into(),
                 branch: Some("main".into()),
-                ahead_behind: Some((2, 1)),
+                ahead_behind: Some(crate::workspace::AheadBehind {
+                    ahead: 2,
+                    behind: 1,
+                }),
                 space: None,
             }],
         );
 
         assert!(changed);
         assert_eq!(state.workspaces[0].branch().as_deref(), Some("main"));
-        assert_eq!(state.workspaces[0].git_ahead_behind(), Some((2, 1)));
+        assert_eq!(
+            state.workspaces[0].git_ahead_behind(),
+            Some(crate::workspace::AheadBehind {
+                ahead: 2,
+                behind: 1
+            })
+        );
         assert_eq!(state.workspaces[1].id, second_id);
         assert_eq!(state.workspaces[1].git_ahead_behind(), None);
     }
@@ -1697,7 +1736,10 @@ mod tests {
         let mut state = app_with_workspaces(&["one"]);
         let workspace_id = state.workspaces[0].id.clone();
         state.workspaces[0].cached_git_branch = Some("old".into());
-        state.workspaces[0].cached_git_ahead_behind = Some((1, 0));
+        state.workspaces[0].cached_git_ahead_behind = Some(crate::workspace::AheadBehind {
+            ahead: 1,
+            behind: 0,
+        });
 
         let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         let changed = state.apply_workspace_git_statuses(
@@ -1709,14 +1751,23 @@ mod tests {
                 demand: crate::workspace::GitStatusRefreshDemand::ALL,
                 auto_label: "stale".into(),
                 branch: Some("main".into()),
-                ahead_behind: Some((0, 1)),
+                ahead_behind: Some(crate::workspace::AheadBehind {
+                    ahead: 0,
+                    behind: 1,
+                }),
                 space: None,
             }],
         );
 
         assert!(!changed);
         assert_eq!(state.workspaces[0].branch().as_deref(), Some("old"));
-        assert_eq!(state.workspaces[0].git_ahead_behind(), Some((1, 0)));
+        assert_eq!(
+            state.workspaces[0].git_ahead_behind(),
+            Some(crate::workspace::AheadBehind {
+                ahead: 1,
+                behind: 0
+            })
+        );
     }
 
     #[test]
@@ -1759,7 +1810,10 @@ mod tests {
             .resolved_identity_cwd()
             .expect("test precondition");
         state.workspaces[0].cached_git_branch = Some("main".into());
-        state.workspaces[0].cached_git_ahead_behind = Some((1, 2));
+        state.workspaces[0].cached_git_ahead_behind = Some(crate::workspace::AheadBehind {
+            ahead: 1,
+            behind: 2,
+        });
 
         let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         let changed = state.apply_workspace_git_statuses(
@@ -2553,8 +2607,8 @@ mod tests {
         );
 
         let update = updates.first().expect("expiry publishes a state update");
-        assert_eq!(update.previous_state, AgentState::Working);
-        assert_eq!(update.state, AgentState::Idle);
+        assert_eq!(update.previous.state, AgentState::Working);
+        assert_eq!(update.current.state, AgentState::Idle);
         assert_eq!(state.next_agent_state_change_seq, seq_before + 1);
         let terminal = &state.terminals[&terminal_id];
         assert_eq!(
@@ -2759,11 +2813,11 @@ mod tests {
             .expect("process exit update");
 
         assert_eq!(update.workspace_id, state.workspaces[0].id);
-        assert_eq!(update.previous_state, AgentState::Working);
-        assert_eq!(update.state, AgentState::Idle);
-        assert_eq!(update.agent_label.as_deref(), Some("pi"));
-        assert_eq!(update.known_agent, Some(Agent::Pi));
-        assert!(update.agent_released);
+        assert_eq!(update.previous.state, AgentState::Working);
+        assert_eq!(update.current.state, AgentState::Idle);
+        assert_eq!(update.current.agent_label.as_deref(), Some("pi"));
+        assert_eq!(update.current.known_agent, Some(Agent::Pi));
+        assert!(update.cause.released());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::workspace::WorkspaceGitStatusSnapshot;
+use crate::workspace::{AheadBehind, WorkspaceGitStatusSnapshot};
 
 use super::{
     config::{ConfigCtx, FileDep, deps_current, read_config, stamp, upstream_full_ref},
@@ -310,11 +310,7 @@ fn read_upstream(repo: &mut RepoContext, branch: &str) -> Option<GitUpstreamIden
     })
 }
 
-fn git_ahead_behind_between(
-    cwd: &Path,
-    head_oid: &str,
-    upstream_oid: &str,
-) -> Option<(usize, usize)> {
+fn git_ahead_behind_between(cwd: &Path, head_oid: &str, upstream_oid: &str) -> Option<AheadBehind> {
     let range = format!("{head_oid}...{upstream_oid}");
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -331,11 +327,11 @@ fn git_ahead_behind_between(
     parse_git_ahead_behind_output(&stdout)
 }
 
-fn parse_git_ahead_behind_output(stdout: &str) -> Option<(usize, usize)> {
+fn parse_git_ahead_behind_output(stdout: &str) -> Option<AheadBehind> {
     let mut parts = stdout.split_whitespace();
     let ahead = parts.next()?.parse().ok()?;
     let behind = parts.next()?.parse().ok()?;
-    Some((ahead, behind))
+    Some(AheadBehind { ahead, behind })
 }
 
 #[cfg(test)]
@@ -546,7 +542,10 @@ mod tests {
             snapshot: WorkspaceGitStatusSnapshot {
                 auto_label: "repo".into(),
                 branch: Some("main".into()),
-                ahead_behind: Some((2, 1)),
+                ahead_behind: Some(crate::workspace::AheadBehind {
+                    ahead: 2,
+                    behind: 1,
+                }),
                 space: live_git_space(&root),
             },
         };
@@ -554,10 +553,19 @@ mod tests {
         let (snapshot, update) = git_status_snapshot_for_cwd(&root, Some(&cached));
 
         assert_eq!(snapshot.branch.as_deref(), Some("main"));
-        assert_eq!(snapshot.ahead_behind, Some((2, 1)));
+        assert_eq!(
+            snapshot.ahead_behind,
+            Some(AheadBehind {
+                ahead: 2,
+                behind: 1
+            })
+        );
         assert_eq!(
             update.expect("test precondition").snapshot.ahead_behind,
-            Some((2, 1))
+            Some(AheadBehind {
+                ahead: 2,
+                behind: 1
+            })
         );
 
         std::fs::remove_dir_all(root).expect("test precondition");
@@ -574,7 +582,10 @@ mod tests {
             snapshot: WorkspaceGitStatusSnapshot {
                 auto_label: "repo".into(),
                 branch: Some("main".into()),
-                ahead_behind: Some((4, 0)),
+                ahead_behind: Some(crate::workspace::AheadBehind {
+                    ahead: 4,
+                    behind: 0,
+                }),
                 space: live_git_space(&root),
             },
         };
@@ -610,7 +621,10 @@ mod tests {
             snapshot: WorkspaceGitStatusSnapshot {
                 auto_label: "repo".into(),
                 branch: Some("main".into()),
-                ahead_behind: Some((0, 3)),
+                ahead_behind: Some(crate::workspace::AheadBehind {
+                    ahead: 0,
+                    behind: 3,
+                }),
                 space: live_git_space(&root),
             },
         };
@@ -781,13 +795,25 @@ mod tests {
         run_git(&repo, &["push", "-u", "origin", "main"]);
 
         let (initial, cache_entry) = git_status_snapshot_for_cwd(&repo, None);
-        assert_eq!(initial.ahead_behind, Some((0, 0)));
+        assert_eq!(
+            initial.ahead_behind,
+            Some(AheadBehind {
+                ahead: 0,
+                behind: 0
+            })
+        );
         run_git(&repo, &["commit", "--allow-empty", "-m", "ahead"]);
 
         let (updated, _) = git_status_snapshot_for_cwd(&repo, cache_entry.as_ref());
 
         assert_eq!(updated.branch.as_deref(), Some("main"));
-        assert_eq!(updated.ahead_behind, Some((1, 0)));
+        assert_eq!(
+            updated.ahead_behind,
+            Some(AheadBehind {
+                ahead: 1,
+                behind: 0
+            })
+        );
 
         std::fs::remove_dir_all(base).expect("test precondition");
     }

@@ -5,6 +5,7 @@ mod lease;
 mod model;
 pub(crate) mod mouse;
 mod parse;
+pub(crate) mod raw_input;
 
 pub(crate) use encode::encode_mouse_event;
 pub use encode::{KeyEncodeModes, encode_terminal_key, encode_terminal_key_with_modes};

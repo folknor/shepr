@@ -12,7 +12,7 @@ pub(super) enum ShutdownPhase {
 /// Session-save freeze held from a host shutdown warning until shutdown
 /// completes or is cancelled.
 pub(super) struct HostShutdownFreeze {
-    /// `policy.persist_session` before the freeze turned it off.
+    /// Whether session persistence was active before the freeze.
     pub(super) persist_session: bool,
     /// The warning this checkpoint answered. A cancellation followed quickly
     /// by another warning may never expose `requested = false` to the loop.
@@ -205,7 +205,11 @@ impl HeadlessServer {
                 if self.lifecycle.frozen_warning_generation() != generation
                     && let Some(freeze) = self.lifecycle.restart_host_shutdown_warning()
                 {
-                    self.app.policy.persist_session = freeze.persist_session;
+                    self.app.policy = if freeze.persist_session {
+                        crate::app::AppPolicy::PRODUCTION
+                    } else {
+                        crate::app::AppPolicy::Suspended
+                    };
                     self.freeze_for_host_shutdown();
                 }
             }
@@ -219,12 +223,12 @@ impl HeadlessServer {
             .host_shutdown_monitor
             .as_ref()
             .map(crate::platform::HostShutdownMonitor::warning_generation);
-        let persist_session = self.app.policy.persist_session;
+        let persist_session = self.app.policy.persists_session();
         if persist_session {
             self.app.save_session_now();
         }
-        self.app.policy.persist_session = false;
-        self.app.session_save_deadline = None;
+        self.app.policy = crate::app::AppPolicy::Suspended;
+        self.app.session_saver.clear_deadline();
         if let (Some(monitor), Some(generation)) = (self.host_shutdown_monitor.as_ref(), generation)
         {
             monitor.release_delay_lock(generation);
@@ -238,7 +242,11 @@ impl HeadlessServer {
 
     fn thaw_after_host_shutdown(&mut self, freeze: &HostShutdownFreeze) {
         info!("host shutdown cancelled; resuming session saves");
-        self.app.policy.persist_session = freeze.persist_session;
+        self.app.policy = if freeze.persist_session {
+            crate::app::AppPolicy::PRODUCTION
+        } else {
+            crate::app::AppPolicy::Suspended
+        };
         self.app.state.mark_session_dirty();
     }
 

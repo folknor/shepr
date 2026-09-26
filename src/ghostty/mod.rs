@@ -39,6 +39,7 @@ mod locks;
 mod modes;
 mod rows;
 mod scan;
+pub(crate) use scan::{ProgressReport, WorkingDirectoryReport};
 
 pub(crate) use locks::{
     TerminalCorePoisoned, lock_auxiliary, lock_terminal_core, recover_auxiliary_poison,
@@ -628,7 +629,7 @@ struct ExtraModes {
     color_scheme_report: bool,
     in_band_resize: bool,
     /// xterm modifyOtherKeys level (0, 1 or 2).
-    modify_other_keys: u8,
+    modify_other_keys: ModifyOtherKeysLevel,
     /// The child chose a cursor shape (DECSCUSR 1-6 or OSC 50) and has not
     /// asked for the default back (DECSCUSR 0, RIS).
     cursor_shape_set: bool,
@@ -636,6 +637,54 @@ struct ExtraModes {
     /// inside a buffered frame is replay order. Only DECRQM ?2026 reads it;
     /// [`Terminal::mode_get`] asks the parser.
     synchronized_update: bool,
+}
+
+/// The three xterm modifyOtherKeys levels.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ModifyOtherKeysLevel {
+    #[default]
+    Off,
+    ExceptWellDefined,
+    All,
+}
+
+impl ModifyOtherKeysLevel {
+    pub const fn from_parameter(value: u16) -> Self {
+        match value {
+            0 => Self::Off,
+            1 => Self::ExceptWellDefined,
+            _ => Self::All,
+        }
+    }
+
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Off => 0,
+            Self::ExceptWellDefined => 1,
+            Self::All => 2,
+        }
+    }
+}
+
+impl fmt::Display for ModifyOtherKeysLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_u8())
+    }
+}
+
+/// A parsed title event; absence of an event is represented by `None` at the
+/// collection boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TitleUpdate {
+    Set(String),
+    Reset,
+}
+
+/// Result of a host-requested clear operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClearScreenOutcome {
+    Cleared,
+    AlternateScreenActive,
 }
 
 #[derive(Clone, Copy)]
@@ -665,12 +714,12 @@ pub struct Terminal {
     host_foreground: Option<RgbColor>,
     host_background: Option<RgbColor>,
     responses: Vec<PtyResponse>,
-    pwd_changes: Vec<Vec<u8>>,
+    pwd_changes: Vec<WorkingDirectoryReport>,
     clipboard_writes: Vec<Vec<u8>>,
-    /// The latest title change not yet collected: `Some(None)` is a reset.
-    title_update: Option<Option<String>>,
+    /// The latest title change not yet collected.
+    title_update: Option<TitleUpdate>,
     /// The latest OSC 9;4 progress payload (after `9;`) not yet collected.
-    progress_update: Option<Vec<u8>>,
+    progress_update: Option<ProgressReport>,
     /// The child set the default foreground or background since the last
     /// [`Terminal::take_default_color_set`].
     default_color_set: bool,
@@ -813,7 +862,7 @@ impl Terminal {
     }
 
     /// The xterm modifyOtherKeys level the child selected (0, 1 or 2).
-    pub fn modify_other_keys_level(&self) -> u8 {
+    pub fn modify_other_keys_level(&self) -> ModifyOtherKeysLevel {
         self.modes.modify_other_keys
     }
 
@@ -936,8 +985,8 @@ impl Terminal {
                 {
                     self.clipboard_writes.push(text.into_bytes());
                 }
-                Event::Title(title) => self.title_update = Some(Some(title)),
-                Event::ResetTitle => self.title_update = Some(None),
+                Event::Title(title) => self.title_update = Some(TitleUpdate::Set(title)),
+                Event::ResetTitle => self.title_update = Some(TitleUpdate::Reset),
                 _ => {}
             }
         }
@@ -1109,15 +1158,15 @@ impl Terminal {
     }
 
     /// The latest window-title change (OSC 0/2, CSI 23 t, RIS) since the last
-    /// call: `Some(None)` is a reset, `None` means no change. The title is
+    /// call: `TitleUpdate::Reset` is a reset, `None` means no change. The title is
     /// exactly what vte parsed (trimmed, not otherwise sanitised).
-    pub fn take_title_update(&mut self) -> Option<Option<String>> {
+    pub fn take_title_update(&mut self) -> Option<TitleUpdate> {
         self.title_update.take()
     }
 
     /// The latest OSC 9;4 progress payload (the text after `9;`) since the
     /// last call.
-    pub fn take_progress_update(&mut self) -> Option<Vec<u8>> {
+    pub fn take_progress_update(&mut self) -> Option<ProgressReport> {
         self.progress_update.take()
     }
 
@@ -1200,7 +1249,7 @@ impl Terminal {
         mem::replace(&mut self.color_scheme, color_scheme)
     }
 
-    pub fn take_pwd_changes(&mut self) -> Vec<Vec<u8>> {
+    pub fn take_pwd_changes(&mut self) -> Vec<WorkingDirectoryReport> {
         mem::take(&mut self.pwd_changes)
     }
 
@@ -1246,15 +1295,30 @@ impl Terminal {
     }
 
     /// Active kitty keyboard flags (bit 0 disambiguate … bit 4 associated text).
-    pub fn kitty_keyboard_flags(&self) -> u8 {
+    pub fn kitty_keyboard_flags(&self) -> crate::protocol::KittyKeyboardFlags {
         let term_mode = *self.term.mode();
-        let mut flags = 0u8;
+        let mut flags = crate::protocol::KittyKeyboardFlags::NONE;
         for (mode, bit) in [
-            (TermMode::DISAMBIGUATE_ESC_CODES, 0b0000_0001),
-            (TermMode::REPORT_EVENT_TYPES, 0b0000_0010),
-            (TermMode::REPORT_ALTERNATE_KEYS, 0b0000_0100),
-            (TermMode::REPORT_ALL_KEYS_AS_ESC, 0b0000_1000),
-            (TermMode::REPORT_ASSOCIATED_TEXT, 0b0001_0000),
+            (
+                TermMode::DISAMBIGUATE_ESC_CODES,
+                crate::protocol::KittyKeyboardFlags::DISAMBIGUATE,
+            ),
+            (
+                TermMode::REPORT_EVENT_TYPES,
+                crate::protocol::KittyKeyboardFlags::REPORT_EVENT_TYPES,
+            ),
+            (
+                TermMode::REPORT_ALTERNATE_KEYS,
+                crate::protocol::KittyKeyboardFlags::REPORT_ALTERNATE_KEYS,
+            ),
+            (
+                TermMode::REPORT_ALL_KEYS_AS_ESC,
+                crate::protocol::KittyKeyboardFlags::REPORT_ALL_KEYS,
+            ),
+            (
+                TermMode::REPORT_ASSOCIATED_TEXT,
+                crate::protocol::KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT,
+            ),
         ] {
             if term_mode.contains(mode) {
                 flags |= bit;
@@ -1538,11 +1602,11 @@ impl Terminal {
     /// soft-wrapped) line, moved to the top of the screen together with any
     /// DECSC-saved cursor position. Cleared rows are blank in default colours,
     /// whatever SGR the child has active. A no-op returning
-    /// `false` while the alternate screen is active: the full-screen app owns
+    /// `AlternateScreenActive` while the alternate screen is active: the full-screen app owns
     /// that screen, and the primary history must survive until it exits.
-    pub fn clear_screen(&mut self) -> bool {
+    pub fn clear_screen(&mut self) -> ClearScreenOutcome {
         if self.term.mode().contains(TermMode::ALT_SCREEN) {
-            return false;
+            return ClearScreenOutcome::AlternateScreenActive;
         }
         let screen_lines = self.term.screen_lines();
         let last_column = self.term.last_column();
@@ -1589,7 +1653,7 @@ impl Terminal {
         // `shift` screen rows the kept line moved up over.
         self.rows.evict(history.saturating_add(shift));
         self.bump_full_damage();
-        true
+        ClearScreenOutcome::Cleared
     }
 
     pub fn scroll_viewport_bottom(&mut self) {

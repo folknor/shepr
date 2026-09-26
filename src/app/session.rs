@@ -2,6 +2,47 @@ use std::time::{Duration, Instant};
 
 use super::{App, SESSION_SAVE_DEBOUNCE};
 
+pub(crate) struct SessionSaver {
+    pub(crate) session_save_deadline: Option<Instant>,
+    pub(crate) session_save_thread: Option<std::thread::JoinHandle<()>>,
+    pub(crate) session_writer: std::sync::Arc<std::sync::Mutex<crate::persist::SessionWriter>>,
+    pub(crate) pane_exit_checkpoint_pending: bool,
+}
+
+impl SessionSaver {
+    pub(crate) fn new(
+        writer: std::sync::Arc<std::sync::Mutex<crate::persist::SessionWriter>>,
+    ) -> Self {
+        Self {
+            session_save_deadline: None,
+            session_save_thread: None,
+            session_writer: writer,
+            pane_exit_checkpoint_pending: false,
+        }
+    }
+
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        self.session_save_deadline
+    }
+
+    pub(crate) fn is_due(&self, now: Instant) -> bool {
+        self.deadline().is_some_and(|deadline| now >= deadline)
+    }
+
+    pub(crate) fn clear_deadline(&mut self) {
+        self.session_save_deadline = None;
+    }
+
+    fn schedule(&mut self, now: Instant) {
+        self.pane_exit_checkpoint_pending = false;
+        self.session_save_deadline = Some(now + SESSION_SAVE_DEBOUNCE);
+    }
+
+    fn retry(&mut self, now: Instant) {
+        self.session_save_deadline = Some(now + Duration::from_millis(250));
+    }
+}
+
 enum SessionSaveJob {
     Clear,
     Save {
@@ -12,9 +53,8 @@ enum SessionSaveJob {
 
 impl App {
     pub(super) fn schedule_session_save(&mut self) {
-        if self.policy.persist_session {
-            self.pane_exit_checkpoint_pending = false;
-            self.session_save_deadline = Some(Instant::now() + SESSION_SAVE_DEBOUNCE);
+        if self.policy.persists_session() {
+            self.session_saver.schedule(Instant::now());
         }
     }
 
@@ -27,10 +67,11 @@ impl App {
 
     fn reap_finished_session_save(&mut self) {
         if self
+            .session_saver
             .session_save_thread
             .as_ref()
             .is_some_and(std::thread::JoinHandle::is_finished)
-            && let Some(thread) = self.session_save_thread.take()
+            && let Some(thread) = self.session_saver.session_save_thread.take()
         {
             let _ = thread.join();
         }
@@ -66,21 +107,21 @@ impl App {
     }
 
     pub(crate) fn start_background_session_save(&mut self) {
-        if !self.policy.persist_session {
-            self.session_save_deadline = None;
+        if !self.policy.persists_session() {
+            self.session_saver.session_save_deadline = None;
             return;
         }
 
         self.reap_finished_session_save();
-        if self.session_save_thread.is_some() {
-            self.session_save_deadline = Some(Instant::now() + Duration::from_millis(250));
+        if self.session_saver.session_save_thread.is_some() {
+            self.session_saver.retry(Instant::now());
             return;
         }
 
         let job = self.capture_session_save_job();
-        self.pane_exit_checkpoint_pending = false;
-        self.session_save_deadline = None;
-        let writer = std::sync::Arc::clone(&self.session_writer);
+        self.session_saver.pane_exit_checkpoint_pending = false;
+        self.session_saver.session_save_deadline = None;
+        let writer = std::sync::Arc::clone(&self.session_saver.session_writer);
         // The job goes to the thread over a channel rather than inside the
         // closure, so a failed spawn hands it back to be saved inline instead
         // of capturing everything a second time.
@@ -95,68 +136,72 @@ impl App {
             Ok(thread) => {
                 if let Err(std::sync::mpsc::SendError(job)) = job_tx.send(job) {
                     // Only possible if the thread is already gone.
-                    run_session_save_job(job, &self.session_writer);
+                    run_session_save_job(job, &self.session_saver.session_writer);
                 }
-                self.session_save_thread = Some(thread);
+                self.session_saver.session_save_thread = Some(thread);
             }
             Err(err) => {
                 tracing::warn!(err = %err, "failed to spawn session save thread; saving inline");
-                run_session_save_job(job, &self.session_writer);
+                run_session_save_job(job, &self.session_saver.session_writer);
             }
         }
     }
 
     pub(crate) fn save_session_now(&mut self) {
-        if let Some(thread) = self.session_save_thread.take() {
+        if let Some(thread) = self.session_saver.session_save_thread.take() {
             let _ = thread.join();
         }
 
-        if !self.policy.persist_session {
-            self.session_save_deadline = None;
+        if !self.policy.persists_session() {
+            self.session_saver.session_save_deadline = None;
             return;
         }
 
-        run_session_save_job(self.capture_session_save_job(), &self.session_writer);
-        self.pane_exit_checkpoint_pending = false;
-        self.session_save_deadline = None;
+        run_session_save_job(
+            self.capture_session_save_job(),
+            &self.session_saver.session_writer,
+        );
+        self.session_saver.pane_exit_checkpoint_pending = false;
+        self.session_saver.session_save_deadline = None;
     }
 
     pub(crate) fn checkpoint_session_before_pane_exit(&mut self) {
-        if !self.policy.persist_session
-            || (self.pane_exit_checkpoint_pending && !self.state.session_dirty)
+        if !self.policy.persists_session()
+            || (self.session_saver.pane_exit_checkpoint_pending && !self.state.session_dirty)
         {
             return;
         }
         self.save_session_now();
-        self.pane_exit_checkpoint_pending = true;
+        self.session_saver.pane_exit_checkpoint_pending = true;
         self.state.session_dirty = false;
     }
 
     pub(crate) fn finish_checkpointed_pane_exit(&mut self) {
-        if self.pane_exit_checkpoint_pending {
+        if self.session_saver.pane_exit_checkpoint_pending {
             self.state.session_dirty = false;
-            self.session_save_deadline = Some(Instant::now() + SESSION_SAVE_DEBOUNCE);
+            self.session_saver.session_save_deadline = Some(Instant::now() + SESSION_SAVE_DEBOUNCE);
         }
     }
 
     /// Save the live pane histories while runtimes still exist, keeping the
     /// directory claim until their processes have finished tearing down.
     pub(crate) fn save_session_before_teardown(&mut self) {
-        if self.pane_exit_checkpoint_pending && !self.state.session_dirty {
-            self.session_save_deadline = None;
+        if self.session_saver.pane_exit_checkpoint_pending && !self.state.session_dirty {
+            self.session_saver.session_save_deadline = None;
         } else {
             self.save_session_now();
         }
     }
 
     pub(crate) fn retire_session_writer(&mut self) {
-        if let Some(thread) = self.session_save_thread.take() {
+        if let Some(thread) = self.session_saver.session_save_thread.take() {
             let _ = thread.join();
         }
-        self.session_save_deadline = None;
+        self.session_saver.session_save_deadline = None;
         // Retiring only drops the lock and marks the writer done; a panic in
         // an earlier save cannot leave anything here half-updated.
-        self.session_writer
+        self.session_saver
+            .session_writer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retire();

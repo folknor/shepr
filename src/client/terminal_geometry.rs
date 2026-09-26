@@ -40,10 +40,30 @@ fn ioctl_terminal_geometry() -> Option<(u16, u16, u32, u32)> {
     Some((size.columns, size.rows, cell_width_px, cell_height_px))
 }
 
+#[cfg(test)]
 pub(super) fn cell_size_fallback(reported: u64, last: Option<(u32, u32)>) -> (u32, u32) {
     unpack_cell_size(reported)
         .or(last.filter(|(width, height)| *width > 0 && *height > 0))
         .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX))
+}
+
+/// A coherent cell pitch snapshot shared by the stdin and resize threads.
+#[derive(Debug, Default)]
+pub(super) struct AtomicCellSize(AtomicU64);
+
+impl AtomicCellSize {
+    pub(super) fn new() -> Self {
+        Self(AtomicU64::new(0))
+    }
+
+    pub(super) fn load(&self) -> Option<(u32, u32)> {
+        unpack_cell_size(self.0.load(Ordering::Acquire))
+    }
+
+    pub(super) fn store(&self, width_px: u32, height_px: u32) -> bool {
+        let packed = pack_cell_size(width_px, height_px);
+        self.0.swap(packed, Ordering::AcqRel) != packed
+    }
 }
 
 pub(super) fn pack_cell_size(width_px: u32, height_px: u32) -> u64 {
@@ -95,7 +115,7 @@ pub(super) fn bounded_cell_geometry(
 pub(super) fn current_terminal_geometry_with(
     pixel_geometry_enabled: bool,
     pixel_geometry_fallback: bool,
-    reported_cell_size: &AtomicU64,
+    reported_cell_size: &AtomicCellSize,
     last_cell_size: Option<(u32, u32)>,
     exact_geometry: Option<(u16, u16, u32, u32)>,
     terminal_grid_size: impl FnOnce() -> io::Result<(u16, u16)>,
@@ -111,15 +131,17 @@ pub(super) fn current_terminal_geometry_with(
     if !pixel_geometry_fallback {
         return Ok((cols, rows, 0, 0, false));
     }
-    let (cell_width_px, cell_height_px) =
-        cell_size_fallback(reported_cell_size.load(Ordering::Acquire), last_cell_size);
+    let (cell_width_px, cell_height_px) = reported_cell_size
+        .load()
+        .or(last_cell_size.filter(|(width, height)| *width > 0 && *height > 0))
+        .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX));
     Ok((cols, rows, cell_width_px, cell_height_px, false))
 }
 
 fn current_terminal_geometry(
     pixel_geometry_enabled: bool,
     pixel_geometry_fallback: bool,
-    reported_cell_size: &AtomicU64,
+    reported_cell_size: &AtomicCellSize,
     last_cell_size: Option<(u32, u32)>,
 ) -> io::Result<TerminalGeometry> {
     current_terminal_geometry_with(
@@ -141,7 +163,7 @@ pub(super) fn initial_terminal_geometry(
     current_terminal_geometry(
         pixel_geometry_enabled,
         pixel_geometry_fallback,
-        &AtomicU64::new(0),
+        &AtomicCellSize::new(),
         None,
     )
 }
@@ -169,7 +191,7 @@ pub(super) fn resize_poll_loop(
     initial_pixel_geometry_exact: bool,
     pixel_geometry_enabled: bool,
     pixel_geometry_fallback: bool,
-    reported_cell_size: &AtomicU64,
+    reported_cell_size: &AtomicCellSize,
     should_quit: &Arc<AtomicBool>,
 ) {
     crate::platform::watch_terminal_resize_signal();
@@ -246,12 +268,11 @@ pub(super) fn write_host_cell_size_query(mut writer: impl io::Write) -> io::Resu
 }
 
 pub(super) fn store_reported_cell_size(
-    reported_cell_size: &AtomicU64,
+    reported_cell_size: &AtomicCellSize,
     width_px: u32,
     height_px: u32,
 ) {
-    let packed = pack_cell_size(width_px, height_px);
-    if reported_cell_size.swap(packed, Ordering::AcqRel) != packed {
+    if reported_cell_size.store(width_px, height_px) {
         debug!(width_px, height_px, "host terminal reported cell size");
     }
 }

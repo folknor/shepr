@@ -92,7 +92,10 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
             width: 1,
             height: 19,
         },
-        path: vec![false, true],
+        path: vec![
+            crate::protocol::SplitBranch::First,
+            crate::protocol::SplitBranch::Second,
+        ],
     });
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("split pane surface");
@@ -109,7 +112,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
         Some(ClientChromeDrag::PaneSplit { .. })
     ));
     let mut replacement = snapshot();
-    replacement.revision = 2;
+    replacement.revision = crate::protocol::ProjectionRevision::new(2);
     replacement
         .tab_bar_right
         .push(crate::protocol::ClientShellTabStatusSegment {
@@ -117,7 +120,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
             accent: false,
         });
     let mut replacement_surface = surface();
-    replacement_surface.projection_revision = 2;
+    replacement_surface.projection_revision = crate::protocol::ProjectionRevision::new(2);
     replacement_surface.splits.push(PaneSurfaceSplit {
         direction: PaneSurfaceSplitDirection::Horizontal,
         pos: 40,
@@ -133,7 +136,10 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
             width: 1,
             height: 19,
         },
-        path: vec![false, true],
+        path: vec![
+            crate::protocol::SplitBranch::First,
+            crate::protocol::SplitBranch::Second,
+        ],
     });
     state.set_snapshot(Box::new(replacement));
     state.set_pane_surface(replacement_surface);
@@ -824,7 +830,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
     state.set_snapshot(Box::new(snapshot()));
     let surface_at = |surface_revision, content_revision, alternate_screen_active| {
         let mut pane_surface = surface();
-        pane_surface.surface_revision = surface_revision;
+        pane_surface.surface_revision = crate::protocol::SurfaceRevision::new(surface_revision);
         pane_surface.panes[0].content_revision = content_revision;
         pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
             offset_from_bottom: 0,
@@ -901,8 +907,8 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         state.apply_pane_surface_patch(&crate::protocol::PaneSurfacePatch {
             boot_id: scrolled.boot_id,
             projection_revision: scrolled.projection_revision,
-            base_surface_revision: 3,
-            surface_revision: 4,
+            base_surface_revision: crate::protocol::SurfaceRevision::new(3),
+            surface_revision: crate::protocol::SurfaceRevision::new(4),
             panes: scrolled.panes,
             rows: vec![],
             cursor: scrolled.frame.cursor,
@@ -973,7 +979,7 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
             position: ClientMousePosition::Cell { column: 2, row: 1 },
             modifiers,
             ..
-        }] if *modifiers == KeyModifiers::ALT.bits()
+        }] if *modifiers == crate::protocol::WireModifiers::ALT
     ));
     let moved = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Moved,
@@ -1025,7 +1031,7 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     let x = u32::from(pane.inner_rect.x) * 10 + 21;
     let y = u32::from(pane.inner_rect.y) * 20 + 21;
     let report = format!("\x1b[<0;{x};{y}M");
-    let mut framer = crate::raw_input::RawInputFramer::default();
+    let mut framer = crate::raw_input::RawInputFramer::<crate::raw_input::NoHostReplies>::default();
     let mut framed = framer.push_framed(report.as_bytes());
     framed.extend(framer.flush_timeout_framed());
     assert_eq!(framed.len(), 1);

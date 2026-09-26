@@ -2,6 +2,17 @@ use super::*;
 use crate::test_support::IsolatedEnv;
 
 #[test]
+fn atomic_cell_size_keeps_width_and_height_in_one_snapshot() {
+    let size = AtomicCellSize::new();
+    assert_eq!(size.load(), None);
+    assert!(size.store(9, 18));
+    assert_eq!(size.load(), Some((9, 18)));
+    assert!(!size.store(9, 18));
+    assert!(size.store(0, 18));
+    assert_eq!(size.load(), None);
+}
+
+#[test]
 fn resize_signal_reports_even_when_polled_size_is_unchanged() {
     let size = (120, 40, 8, 16, true);
     assert!(resize_report_required(true, size, size));
@@ -13,7 +24,7 @@ fn resize_signal_reports_even_when_polled_size_is_unchanged() {
 
 #[test]
 fn unavailable_terminal_grid_is_not_fabricated() {
-    let reported_cell_size = AtomicU64::new(0);
+    let reported_cell_size = AtomicCellSize::new();
     let err = current_terminal_geometry_with(false, false, &reported_cell_size, None, None, || {
         Err(io::Error::new(
             io::ErrorKind::NotConnected,
@@ -27,7 +38,7 @@ fn unavailable_terminal_grid_is_not_fabricated() {
 
 #[test]
 fn missing_pixel_geometry_keeps_a_valid_terminal_grid() {
-    let reported_cell_size = AtomicU64::new(0);
+    let reported_cell_size = AtomicCellSize::new();
     let geometry = current_terminal_geometry_with(
         true,
         true,

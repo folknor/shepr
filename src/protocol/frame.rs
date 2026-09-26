@@ -35,11 +35,31 @@ impl Clone for CellData {
 }
 
 /// Cursor shape encoded as a DECSCUSR parameter.
-///
-/// 0 = terminal default, 1 = blinking block, 2 = steady block,
-/// 3 = blinking underline, 4 = steady underline, 5 = blinking bar,
-/// 6 = steady bar.
-pub type CursorShapeParam = u8;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum CursorShapeParam {
+    Default = 0,
+    BlinkingBlock = 1,
+    SteadyBlock = 2,
+    BlinkingUnderline = 3,
+    SteadyUnderline = 4,
+    BlinkingBar = 5,
+    SteadyBar = 6,
+}
+
+impl CursorShapeParam {
+    pub fn from_decscusr(value: u8) -> Self {
+        match value {
+            1 => Self::BlinkingBlock,
+            2 => Self::SteadyBlock,
+            3 => Self::BlinkingUnderline,
+            4 => Self::SteadyUnderline,
+            5 => Self::BlinkingBar,
+            6 => Self::SteadyBar,
+            _ => Self::Default,
+        }
+    }
+}
 
 /// Cursor position within a rendered frame.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

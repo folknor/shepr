@@ -1,3 +1,5 @@
+use crate::api::error::{ApiError, ApiErrorCode};
+
 fn parse_api_key(key: &str) -> Option<crossterm::event::KeyEvent> {
     let normalized = normalize_api_key_alias(key.trim());
     let (code, modifiers) = crate::config::parse_key_combo(normalized)?;
@@ -24,11 +26,14 @@ pub(super) fn encode_api_text(runtime: &crate::terminal::TerminalRuntime, text: 
 pub(super) fn encode_api_keys(
     runtime: &crate::terminal::TerminalRuntime,
     keys: &[String],
-) -> Result<Vec<Vec<u8>>, String> {
+) -> Result<Vec<Vec<u8>>, ApiError> {
     let mut encoded_keys = Vec::with_capacity(keys.len());
     for key in keys {
         let Some(key_event) = parse_api_key(key) else {
-            return Err(key.clone());
+            return Err(ApiError::new(
+                ApiErrorCode::InvalidKey,
+                format!("unsupported key {key}"),
+            ));
         };
         encoded_keys.push(runtime.encode_terminal_key(key_event.into()));
     }
@@ -60,7 +65,7 @@ pub(super) fn encode_api_input(
     runtime: &crate::terminal::TerminalRuntime,
     text: &str,
     keys: &[String],
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, ApiError> {
     let mut bytes = if text.is_empty() {
         Vec::new()
     } else {
@@ -126,15 +131,12 @@ pub(super) fn effective_read_format(
     }
 }
 
-/// A rejected read: `(error code, message)`.
-pub(super) type ReadRejection = (&'static str, String);
-
 pub(super) fn read_terminal_snapshot(
     terminal: &crate::terminal::TerminalRuntime,
     source: crate::api::schema::ReadSource,
     format: crate::api::schema::ReadFormat,
     lines: Option<u32>,
-) -> Result<crate::pane::TerminalReadSnapshot, ReadRejection> {
+) -> Result<crate::pane::TerminalReadSnapshot, ApiError> {
     validate_read_request(source, format, lines)?;
     Ok(read_validated_terminal_snapshot(
         terminal, source, format, lines,
@@ -145,21 +147,21 @@ fn validate_read_request(
     source: crate::api::schema::ReadSource,
     format: crate::api::schema::ReadFormat,
     lines: Option<u32>,
-) -> Result<(), ReadRejection> {
+) -> Result<(), ApiError> {
     use crate::api::schema::{ReadFormat, ReadSource};
 
     if let Some(lines) = lines
         && lines > MAX_READ_LINES
     {
-        return Err((
-            "invalid_lines",
+        return Err(ApiError::new(
+            ApiErrorCode::InvalidLines,
             format!("lines must be at most {MAX_READ_LINES}, got {lines}"),
         ));
     }
     if format == ReadFormat::Ansi && source == ReadSource::Detection {
-        return Err((
-            "unsupported_read_format",
-            "the detection source is plain text; read it with format text".into(),
+        return Err(ApiError::new(
+            ApiErrorCode::UnsupportedReadFormat,
+            "the detection source is plain text; read it with format text",
         ));
     }
     Ok(())
@@ -251,20 +253,23 @@ mod read_snapshot_tests {
             validate_read_request(ReadSource::Recent, ReadFormat::Text, Some(MAX_READ_LINES))
                 .is_ok()
         );
-        let (code, _) = validate_read_request(
+        let error = validate_read_request(
             ReadSource::Recent,
             ReadFormat::Text,
             Some(MAX_READ_LINES + 1),
         )
         .expect_err("test precondition");
-        assert_eq!(code, "invalid_lines");
+        assert_eq!(error.code, crate::api::error::ApiErrorCode::InvalidLines);
     }
 
     #[test]
     fn ansi_detection_reads_are_rejected_instead_of_returning_plain_text() {
-        let (code, _) = validate_read_request(ReadSource::Detection, ReadFormat::Ansi, None)
+        let error = validate_read_request(ReadSource::Detection, ReadFormat::Ansi, None)
             .expect_err("test precondition");
-        assert_eq!(code, "unsupported_read_format");
+        assert_eq!(
+            error.code,
+            crate::api::error::ApiErrorCode::UnsupportedReadFormat
+        );
         assert!(validate_read_request(ReadSource::Detection, ReadFormat::Text, None).is_ok());
         assert!(validate_read_request(ReadSource::Visible, ReadFormat::Ansi, None).is_ok());
     }

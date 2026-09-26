@@ -83,6 +83,7 @@ api_error_codes! {
     TargetPaneNotFound => "target_pane_not_found",
     Timeout => "timeout",
     UnsupportedEventWaitMatch => "unsupported_event_wait_match",
+    UnsupportedReadFormat => "unsupported_read_format",
     WorkspaceCreateFailed => "workspace_create_failed",
     WorkspaceMoveBlockFailed => "workspace_move_block_failed",
     WorkspaceMoveFailed => "workspace_move_failed",

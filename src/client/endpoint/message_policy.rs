@@ -105,8 +105,8 @@ mod tests {
     fn surface() -> PaneSurfaceFrame {
         PaneSurfaceFrame {
             boot_id: "boot".into(),
-            projection_revision: 1,
-            surface_revision: 1,
+            projection_revision: crate::protocol::ProjectionRevision::new(1),
+            surface_revision: crate::protocol::SurfaceRevision::new(1),
             frame: FrameData {
                 cells: Vec::new(),
                 width: 0,
@@ -122,9 +122,9 @@ mod tests {
     fn patch() -> PaneSurfacePatch {
         PaneSurfacePatch {
             boot_id: "boot".into(),
-            projection_revision: 1,
-            base_surface_revision: 1,
-            surface_revision: 2,
+            projection_revision: crate::protocol::ProjectionRevision::new(1),
+            base_surface_revision: crate::protocol::SurfaceRevision::new(1),
+            surface_revision: crate::protocol::SurfaceRevision::new(2),
             rows: Vec::new(),
             panes: Vec::new(),
             cursor: None,

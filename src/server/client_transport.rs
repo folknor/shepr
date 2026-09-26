@@ -431,7 +431,7 @@ pub(crate) enum ServerEvent {
         lines: u16,
         column: Option<u16>,
         row: Option<u16>,
-        modifiers: u8,
+        modifiers: crate::protocol::WireModifiers,
     },
     /// A direct terminal attach client delivered one structured mouse event.
     ClientAttachMouse {
@@ -439,7 +439,7 @@ pub(crate) enum ServerEvent {
         kind: crate::protocol::ClientMouseKind,
         position: crate::protocol::ClientMousePosition,
         geometry: Option<crate::protocol::ClientMouseGeometry>,
-        modifiers: u8,
+        modifiers: crate::protocol::WireModifiers,
         lines: u16,
     },
     /// A client sent a resize message.
@@ -2213,7 +2213,7 @@ mod tests {
             kind: crate::protocol::ClientMouseKind::ScrollUp,
             position: crate::protocol::ClientMousePosition::Cell { column: 0, row: 0 },
             geometry: None,
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
             lines: u16::try_from(MAX_INPUT_EVENT_BATCH + 1).unwrap_or(u16::MAX),
         };
         assert_eq!(

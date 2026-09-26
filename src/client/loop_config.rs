@@ -3,7 +3,7 @@ use super::*;
 /// Client behavior resolved once from the launch config.
 #[derive(Clone, Copy)]
 pub(super) struct ClientSettings {
-    pub(super) mouse_scroll_lines: usize,
+    pub(super) mouse_scroll_lines: u16,
     pub(super) redraw_on_focus_gained: bool,
     pub(super) host_cursor: crate::config::HostCursorModeConfig,
     pub(super) pixel_geometry_enabled: bool,
@@ -15,7 +15,8 @@ pub(super) struct ClientSettings {
 impl ClientSettings {
     pub(super) fn from_config(config: &crate::config::ValidatedConfig) -> Self {
         Self {
-            mouse_scroll_lines: config.ui.mouse_scroll_lines(),
+            mouse_scroll_lines: u16::try_from(config.ui.mouse_scroll_lines().max(1))
+                .unwrap_or(u16::MAX),
             redraw_on_focus_gained: config.ui.redraw_on_focus_gained,
             host_cursor: config.ui.host_cursor,
             pixel_geometry_enabled: false,

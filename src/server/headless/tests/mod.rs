@@ -1287,7 +1287,7 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
     assert!(frame_text(&before.frame).contains("BASE"));
     let projection_before = server.clients[&7]
         .shell_state()
-        .map_or(0, |shell| shell.projection_revision);
+        .map_or(0, |shell| shell.projection_revision.get());
 
     write_shared_test_pane(
         &mut server,
@@ -1305,7 +1305,7 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
     assert_eq!(
         server.clients[&7]
             .shell_state()
-            .map_or(0, |shell| shell.projection_revision),
+            .map_or(0, |shell| shell.projection_revision.get()),
         projection_before
     );
 
@@ -2715,7 +2715,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
             events: vec![
                 crate::protocol::ClientPaneInputEvent::Key {
                     code: crate::protocol::ClientKeyCode::Char('c'),
-                    modifiers: crossterm::event::KeyModifiers::CONTROL.bits(),
+                    modifiers: crate::protocol::WireModifiers::CONTROL,
                     kind: crate::protocol::ClientKeyKind::Press,
                     repeat_count: 1,
                     shifted_codepoint: None,
@@ -2723,7 +2723,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
                 },
                 crate::protocol::ClientPaneInputEvent::Key {
                     code: crate::protocol::ClientKeyCode::Char('c'),
-                    modifiers: crossterm::event::KeyModifiers::CONTROL.bits(),
+                    modifiers: crate::protocol::WireModifiers::CONTROL,
                     kind: crate::protocol::ClientKeyKind::Release,
                     repeat_count: 1,
                     shifted_codepoint: None,
@@ -2731,7 +2731,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
                 },
                 crate::protocol::ClientPaneInputEvent::Key {
                     code: crate::protocol::ClientKeyCode::Char('x'),
-                    modifiers: crossterm::event::KeyModifiers::ALT.bits(),
+                    modifiers: crate::protocol::WireModifiers::ALT,
                     kind: crate::protocol::ClientKeyKind::Press,
                     repeat_count: 1,
                     shifted_codepoint: None,
@@ -2743,7 +2743,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
                     ),
                     position: crate::protocol::ClientMousePosition::Cell { column: 2, row: 1 },
                     geometry: None,
-                    modifiers: 0,
+                    modifiers: crate::protocol::WireModifiers::NONE,
                     lines: 3,
                 },
             ],
@@ -2821,7 +2821,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     );
     let key = |kind| crate::protocol::ClientPaneInputEvent::Key {
         code: crate::protocol::ClientKeyCode::Char('x'),
-        modifiers: 0,
+        modifiers: crate::protocol::WireModifiers::NONE,
         kind,
         repeat_count: 1,
         shifted_codepoint: None,
@@ -2960,7 +2960,7 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
                 kind: crate::protocol::ClientMouseKind::Moved,
                 position: crate::protocol::ClientMousePosition::Cell { column: 2, row: 1 },
                 geometry: None,
-                modifiers: 0,
+                modifiers: crate::protocol::WireModifiers::NONE,
                 lines: 0,
             }],
         });
@@ -3002,7 +3002,7 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
                 kind: crate::protocol::ClientMouseKind::Moved,
                 position: crate::protocol::ClientMousePosition::Cell { column: 2, row: 1 },
                 geometry: None,
-                modifiers: 0,
+                modifiers: crate::protocol::WireModifiers::NONE,
                 lines: 0,
             }],
         });
@@ -3705,7 +3705,7 @@ fn terminal_attach_is_told_about_rejected_pastes_and_dropped_input_once() {
 #[test]
 fn unchanged_git_refresh_does_not_request_headless_render() {
     let mut server = test_headless_server();
-    server.app.git_refresh_in_flight = true;
+    server.app.git_refresh.git_refresh_in_flight = true;
     let mut workspace = crate::workspace::Workspace::test_new("one");
     let workspace_id = workspace.id.clone();
     let cwd = workspace.identity_cwd.clone();
@@ -3729,7 +3729,7 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
     });
 
     assert!(!changed);
-    assert!(!server.app.git_refresh_in_flight);
+    assert!(!server.app.git_refresh.git_refresh_in_flight);
 }
 
 #[test]
@@ -3776,8 +3776,8 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
     assert_eq!(server.lifecycle.frozen_session_policy(), Some(false));
     // Pretend saving was on before the warning, so the thaw has to restore it.
     server.lifecycle.set_frozen_session_policy_for_test(true);
-    assert!(!server.app.policy.persist_session);
-    assert!(server.app.session_save_deadline.is_none());
+    assert!(!server.app.policy.persists_session());
+    assert!(server.app.session_saver.session_save_deadline.is_none());
 
     // The server keeps running and applies pane deaths; only the disk is frozen.
     assert!(
@@ -3787,7 +3787,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
         })
     );
     assert!(server.app.find_pane(pane_id).is_none());
-    assert!(!server.app.policy.persist_session);
+    assert!(!server.app.policy.persists_session());
 
     // Cancellation reported through the flag thaws and re-saves current state.
     server.app.state.session_dirty = false;
@@ -3797,7 +3797,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
         .store(false, Ordering::Release);
     server.sync_host_shutdown_freeze(Instant::now());
     assert_eq!(server.lifecycle.phase(), ShutdownPhase::Running);
-    assert!(server.app.policy.persist_session);
+    assert!(server.app.policy.persists_session());
     assert!(server.app.state.session_dirty);
     // Not stopping: the warning alone never ends the server.
     assert!(
@@ -3805,7 +3805,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
             .lifecycle
             .stop_requested(server.app.state.should_quit)
     );
-    server.app.policy.persist_session = false;
+    server.app.policy = crate::app::AppPolicy::Suspended;
     shutdown_test_runtimes(&mut server);
 }
 
@@ -4192,7 +4192,7 @@ fn client_pane_pixel_mouse_uses_runtime_pixel_encoding() {
                 row: 1,
             },
             geometry: None,
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
             lines: 3,
         }],
     )
@@ -4234,7 +4234,7 @@ fn client_pane_pixel_mouse_stays_pixel_scaled_when_sgr_is_reasserted() {
                 row: 12,
             },
             geometry: None,
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
             lines: 1,
         }],
     )
@@ -4276,7 +4276,7 @@ fn client_pane_pixel_mouse_falls_back_to_canonical_cell_position() {
                 row: 1,
             },
             geometry: None,
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
             lines: 3,
         }],
     )
@@ -4309,7 +4309,7 @@ fn client_pane_wheel_input_accumulates_scrollback_offset() {
         kind,
         position: crate::protocol::ClientMousePosition::Cell { column: 2, row: 1 },
         geometry: None,
-        modifiers: 0,
+        modifiers: crate::protocol::WireModifiers::NONE,
         lines: 3,
     };
 
@@ -4351,7 +4351,7 @@ fn client_pane_wheel_input_accumulates_scrollback_offset() {
             kind: crate::protocol::ClientMouseKind::Moved,
             position: crate::protocol::ClientMousePosition::Cell { column: 2, row: 1 },
             geometry: None,
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
             lines: 3,
         }],
     )
@@ -4374,7 +4374,7 @@ fn client_pane_wheel_input_accumulates_scrollback_offset() {
             kind: crate::protocol::ClientMouseKind::Down(crate::protocol::ClientMouseButton::Left),
             position: crate::protocol::ClientMousePosition::Cell { column: 2, row: 1 },
             geometry: None,
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
             lines: 3,
         }],
     )
@@ -4489,7 +4489,7 @@ fn client_page_key(
 ) -> crate::protocol::ClientPaneInputEvent {
     crate::protocol::ClientPaneInputEvent::Key {
         code,
-        modifiers: modifiers.bits(),
+        modifiers: crate::protocol::WireModifiers::from(modifiers),
         kind,
         repeat_count: 1,
         shifted_codepoint: None,
@@ -5093,7 +5093,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     }
     let key = |kind| crate::protocol::ClientPaneInputEvent::Key {
         code: crate::protocol::ClientKeyCode::Char('x'),
-        modifiers: 0,
+        modifiers: crate::protocol::WireModifiers::NONE,
         kind,
         repeat_count: 1,
         shifted_codepoint: None,
@@ -5317,9 +5317,9 @@ fn direct_terminal_streams_child_keyboard_and_mouse_modes() {
                     .expect("keyboard mode message")
             ),
             ServerMessage::DirectTerminalKeyboardProtocol {
-                flags: 15,
-                modify_other_keys_level: 0
-            }
+                flags,
+                modify_other_keys_level
+            } if flags.bits() == 15 && modify_other_keys_level.as_u8() == 0
         ));
 
         server
@@ -5334,9 +5334,9 @@ fn direct_terminal_streams_child_keyboard_and_mouse_modes() {
                     .expect("modifyOtherKeys mode-one keyboard message")
             ),
             ServerMessage::DirectTerminalKeyboardProtocol {
-                flags: 3,
-                modify_other_keys_level: 1
-            }
+                flags,
+                modify_other_keys_level
+            } if flags.bits() == 3 && modify_other_keys_level.as_u8() == 1
         ));
 
         server
@@ -5351,9 +5351,9 @@ fn direct_terminal_streams_child_keyboard_and_mouse_modes() {
                     .expect("modifyOtherKeys mode-two keyboard message")
             ),
             ServerMessage::DirectTerminalKeyboardProtocol {
-                flags: 3,
-                modify_other_keys_level: 2
-            }
+                flags,
+                modify_other_keys_level
+            } if flags.bits() == 3 && modify_other_keys_level.as_u8() == 2
         ));
 
         server
@@ -5368,9 +5368,9 @@ fn direct_terminal_streams_child_keyboard_and_mouse_modes() {
                     .expect("modifyOtherKeys-only keyboard mode message")
             ),
             ServerMessage::DirectTerminalKeyboardProtocol {
-                flags: 0,
-                modify_other_keys_level: 2
-            }
+                flags,
+                modify_other_keys_level
+            } if flags.bits() == 0 && modify_other_keys_level.as_u8() == 2
         ));
 
         server.stream_host_mouse_capture_mode();
@@ -5454,7 +5454,7 @@ fn direct_terminal_mouse_uses_runtime_protocol_encoding() {
             kind: protocol::ClientMouseKind::Down(protocol::ClientMouseButton::Left),
             position: protocol::ClientMousePosition::Cell { column: 10, row: 5 },
             geometry: None,
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
             lines: 1,
         }));
         assert_eq!(
@@ -5513,7 +5513,7 @@ fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
                 width_px: 800,
                 height_px: 480,
             }),
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
             lines: 1,
         }));
         assert!(input_rx.try_recv().is_err());
@@ -5533,7 +5533,7 @@ fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
                 width_px: 805,
                 height_px: 485,
             }),
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
             lines: 1,
         }));
         assert_eq!(
@@ -5558,7 +5558,7 @@ fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
                 width_px: 800,
                 height_px: 480,
             }),
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
             lines: 1,
         }));
         assert!(input_rx.try_recv().is_err());
@@ -5578,7 +5578,7 @@ fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
                 width_px: 800,
                 height_px: 480,
             }),
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
             lines: 1,
         }));
         assert_eq!(

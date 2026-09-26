@@ -889,11 +889,11 @@ mod tests {
     fn capture_and_restore_node_round_trip() {
         let node = Node::Split {
             direction: Direction::Horizontal,
-            ratio: 0.5,
+            ratio: crate::layout::SplitRatio::clamped(0.5),
             first: Box::new(Node::Pane(PaneId::from_raw(0))),
             second: Box::new(Node::Split {
                 direction: Direction::Vertical,
-                ratio: 0.3,
+                ratio: crate::layout::SplitRatio::clamped(0.3),
                 first: Box::new(Node::Pane(PaneId::from_raw(1))),
                 second: Box::new(Node::Pane(PaneId::from_raw(2))),
             }),
@@ -927,7 +927,7 @@ mod tests {
             let Node::Split { ratio, .. } = node else {
                 panic!("expected split");
             };
-            assert_eq!(ratio, expected, "saved ratio {saved}");
+            assert_eq!(ratio.get(), expected, "saved ratio {saved}");
         }
     }
 
@@ -1395,7 +1395,7 @@ mod tests {
         let missing = PaneId::from_raw(12);
         let node = Node::Split {
             direction: Direction::Horizontal,
-            ratio: 0.5,
+            ratio: crate::layout::SplitRatio::clamped(0.5),
             first: Box::new(Node::Pane(keep)),
             second: Box::new(Node::Pane(missing)),
         };

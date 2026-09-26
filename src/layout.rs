@@ -4,6 +4,31 @@ use std::cmp::Reverse;
 
 use ratatui::layout::{Direction, Rect};
 
+use crate::protocol::SplitBranch;
+
+/// First-child share of a BSP split, constrained to leave room for both panes.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SplitRatio(f32);
+
+impl SplitRatio {
+    #[cfg(test)]
+    pub fn new(value: f32) -> Option<Self> {
+        (value.is_finite() && (0.1..=0.9).contains(&value)).then_some(Self(value))
+    }
+
+    pub fn clamped(value: f32) -> Self {
+        Self(if value.is_finite() {
+            value.clamp(0.1, 0.9)
+        } else {
+            0.5
+        })
+    }
+
+    pub fn get(self) -> f32 {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PaneId(u32);
 
@@ -47,8 +72,8 @@ pub struct SplitBorder {
     pub ratio: f32,
     /// Total area of the split node.
     pub area: Rect,
-    /// Path from root to this split node (false=first, true=second).
-    pub path: Vec<bool>,
+    /// Path from root to this split node.
+    pub path: Vec<SplitBranch>,
 }
 
 /// Cardinal direction for pane navigation.
@@ -67,7 +92,7 @@ pub enum Node {
     Pane(PaneId),
     Split {
         direction: Direction,
-        ratio: f32,
+        ratio: SplitRatio,
         first: Box<Node>,
         second: Box<Node>,
     },
@@ -269,8 +294,8 @@ impl TileLayout {
     }
 
     /// Set the ratio of a split node at the given path.
-    pub fn set_ratio_at(&mut self, path: &[bool], ratio: f32) -> bool {
-        set_ratio_at(&mut self.root, path, ratio.clamp(0.1, 0.9))
+    pub fn set_ratio_at(&mut self, path: &[SplitBranch], ratio: f32) -> bool {
+        set_ratio_at(&mut self.root, path, SplitRatio::clamped(ratio))
     }
 
     /// Adjust the nearest split in the given direction for the focused pane.
@@ -295,7 +320,9 @@ impl TileLayout {
 
         if let Some(split) = best {
             let path = split.path.clone();
-            let current_ratio = get_ratio_at(&self.root, &path).unwrap_or(0.5);
+            let current_ratio = get_ratio_at(&self.root, &path)
+                .map(SplitRatio::get)
+                .unwrap_or(0.5);
             let adj = if grows { delta } else { -delta };
             self.set_ratio_at(&path, current_ratio + adj);
         }
@@ -492,14 +519,14 @@ fn collect_panes(node: &Node, area: Rect, focus: PaneId, result: &mut Vec<PaneIn
             first,
             second,
         } => {
-            let (a, b) = split_rect(area, *direction, *ratio);
+            let (a, b) = split_rect(area, *direction, ratio.get());
             collect_panes(first, a, focus, result);
             collect_panes(second, b, focus, result);
         }
     }
 }
 
-fn collect_splits(node: &Node, area: Rect, path: Vec<bool>, result: &mut Vec<SplitBorder>) {
+fn collect_splits(node: &Node, area: Rect, path: Vec<SplitBranch>, result: &mut Vec<SplitBorder>) {
     if let Node::Split {
         direction,
         ratio,
@@ -507,7 +534,7 @@ fn collect_splits(node: &Node, area: Rect, path: Vec<bool>, result: &mut Vec<Spl
         second,
     } = node
     {
-        let (a, b) = split_rect(area, *direction, *ratio);
+        let (a, b) = split_rect(area, *direction, ratio.get());
         let pos = match direction {
             Direction::Horizontal => a.x + a.width,
             Direction::Vertical => a.y + a.height,
@@ -515,15 +542,15 @@ fn collect_splits(node: &Node, area: Rect, path: Vec<bool>, result: &mut Vec<Spl
         result.push(SplitBorder {
             pos,
             direction: *direction,
-            ratio: *ratio,
+            ratio: ratio.get(),
             area,
             path: path.clone(),
         });
         let mut lp = path.clone();
-        lp.push(false);
+        lp.push(SplitBranch::First);
         collect_splits(first, a, lp, result);
         let mut rp = path;
-        rp.push(true);
+        rp.push(SplitBranch::Second);
         collect_splits(second, b, rp, result);
     }
 }
@@ -538,8 +565,8 @@ fn collect_ids(node: &Node, ids: &mut Vec<PaneId>) {
     }
 }
 
-fn split_ratios(node: &Node) -> Vec<(Vec<bool>, f32)> {
-    fn collect(node: &Node, path: &mut Vec<bool>, out: &mut Vec<(Vec<bool>, f32)>) {
+fn split_ratios(node: &Node) -> Vec<(Vec<SplitBranch>, f32)> {
+    fn collect(node: &Node, path: &mut Vec<SplitBranch>, out: &mut Vec<(Vec<SplitBranch>, f32)>) {
         match node {
             Node::Pane(_) => {}
             Node::Split {
@@ -548,11 +575,11 @@ fn split_ratios(node: &Node) -> Vec<(Vec<bool>, f32)> {
                 second,
                 ..
             } => {
-                out.push((path.clone(), *ratio));
-                path.push(false);
+                out.push((path.clone(), ratio.get()));
+                path.push(SplitBranch::First);
                 collect(first, path, out);
                 path.pop();
-                path.push(true);
+                path.push(SplitBranch::Second);
                 collect(second, path, out);
                 path.pop();
             }
@@ -585,7 +612,7 @@ fn split_at(
     target: PaneId,
     direction: Direction,
     new_id: PaneId,
-    split_ratio: f32,
+    split_ratio: SplitRatio,
 ) -> Node {
     match node {
         Node::Pane(id) if id == target => Node::Split {
@@ -609,12 +636,8 @@ fn split_at(
     }
 }
 
-pub(crate) fn valid_split_ratio(ratio: f32) -> f32 {
-    if ratio.is_finite() {
-        ratio.clamp(0.1, 0.9)
-    } else {
-        0.5
-    }
+pub(crate) fn valid_split_ratio(ratio: f32) -> SplitRatio {
+    SplitRatio::clamped(ratio)
 }
 
 fn remove_pane(node: Node, target: PaneId) -> Option<Node> {
@@ -640,7 +663,7 @@ fn remove_pane(node: Node, target: PaneId) -> Option<Node> {
     }
 }
 
-fn set_ratio_at(node: &mut Node, path: &[bool], new_ratio: f32) -> bool {
+fn set_ratio_at(node: &mut Node, path: &[SplitBranch], new_ratio: SplitRatio) -> bool {
     if let Node::Split {
         ratio,
         first,
@@ -651,7 +674,7 @@ fn set_ratio_at(node: &mut Node, path: &[bool], new_ratio: f32) -> bool {
         if path.is_empty() {
             *ratio = new_ratio;
             true
-        } else if path[0] {
+        } else if path[0] == SplitBranch::Second {
             set_ratio_at(second, &path[1..], new_ratio)
         } else {
             set_ratio_at(first, &path[1..], new_ratio)
@@ -661,7 +684,7 @@ fn set_ratio_at(node: &mut Node, path: &[bool], new_ratio: f32) -> bool {
     }
 }
 
-fn get_ratio_at(node: &Node, path: &[bool]) -> Option<f32> {
+fn get_ratio_at(node: &Node, path: &[SplitBranch]) -> Option<SplitRatio> {
     if let Node::Split {
         ratio,
         first,
@@ -671,7 +694,7 @@ fn get_ratio_at(node: &Node, path: &[bool]) -> Option<f32> {
     {
         if path.is_empty() {
             Some(*ratio)
-        } else if path[0] {
+        } else if path[0] == SplitBranch::Second {
             get_ratio_at(second, &path[1..])
         } else {
             get_ratio_at(first, &path[1..])
@@ -712,6 +735,15 @@ fn split_rect(area: Rect, direction: Direction, ratio: f32) -> (Rect, Rect) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn split_ratio_rejects_values_outside_layout_bounds() {
+        assert_eq!(SplitRatio::new(0.1).map(SplitRatio::get), Some(0.1));
+        assert_eq!(SplitRatio::new(0.9).map(SplitRatio::get), Some(0.9));
+        assert!(SplitRatio::new(0.05).is_none());
+        assert!(SplitRatio::new(f32::NAN).is_none());
+        assert_eq!(SplitRatio::clamped(f32::NAN).get(), 0.5);
+    }
+
     fn pane(id: u32) -> PaneId {
         PaneId::from_raw(id)
     }
@@ -720,15 +752,15 @@ mod tests {
         TileLayout::from_saved(
             Node::Split {
                 direction: Direction::Horizontal,
-                ratio: 0.3,
+                ratio: crate::layout::SplitRatio::clamped(0.3),
                 first: Box::new(Node::Pane(pane(1))),
                 second: Box::new(Node::Split {
                     direction: Direction::Vertical,
-                    ratio: 0.6,
+                    ratio: crate::layout::SplitRatio::clamped(0.6),
                     first: Box::new(Node::Pane(pane(2))),
                     second: Box::new(Node::Split {
                         direction: Direction::Horizontal,
-                        ratio: 0.4,
+                        ratio: crate::layout::SplitRatio::clamped(0.4),
                         first: Box::new(Node::Pane(pane(3))),
                         second: Box::new(Node::Pane(pane(4))),
                     }),
@@ -763,7 +795,7 @@ mod tests {
                     first,
                     second,
                 } => {
-                    out.push((*direction, *ratio));
+                    out.push((*direction, ratio.get()));
                     collect(first, out);
                     collect(second, out);
                 }
@@ -908,10 +940,10 @@ mod tests {
         let mut layout = TileLayout::from_saved(
             Node::Split {
                 direction: Direction::Horizontal,
-                ratio: 0.6,
+                ratio: crate::layout::SplitRatio::clamped(0.6),
                 first: Box::new(Node::Split {
                     direction: Direction::Vertical,
-                    ratio: 0.5,
+                    ratio: crate::layout::SplitRatio::clamped(0.5),
                     first: Box::new(Node::Pane(pane(1))),
                     second: Box::new(Node::Pane(pane(2))),
                 }),
@@ -937,10 +969,10 @@ mod tests {
         let mut layout = TileLayout::from_saved(
             Node::Split {
                 direction: Direction::Vertical,
-                ratio: 0.6,
+                ratio: crate::layout::SplitRatio::clamped(0.6),
                 first: Box::new(Node::Split {
                     direction: Direction::Horizontal,
-                    ratio: 0.5,
+                    ratio: crate::layout::SplitRatio::clamped(0.5),
                     first: Box::new(Node::Pane(pane(1))),
                     second: Box::new(Node::Pane(pane(2))),
                 }),
@@ -966,16 +998,16 @@ mod tests {
         let mut layout = TileLayout::from_saved(
             Node::Split {
                 direction: Direction::Vertical,
-                ratio: 0.5,
+                ratio: crate::layout::SplitRatio::clamped(0.5),
                 first: Box::new(Node::Split {
                     direction: Direction::Horizontal,
-                    ratio: 0.5,
+                    ratio: crate::layout::SplitRatio::clamped(0.5),
                     first: Box::new(Node::Pane(pane(1))),
                     second: Box::new(Node::Pane(pane(2))),
                 }),
                 second: Box::new(Node::Split {
                     direction: Direction::Horizontal,
-                    ratio: 0.5,
+                    ratio: crate::layout::SplitRatio::clamped(0.5),
                     first: Box::new(Node::Pane(pane(3))),
                     second: Box::new(Node::Pane(pane(4))),
                 }),

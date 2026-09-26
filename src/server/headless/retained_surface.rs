@@ -273,7 +273,9 @@ impl HeadlessServer {
                 || surface.projection_revision
                     != client
                         .shell_state()
-                        .map_or(0, |shell| shell.projection_revision)
+                        .map_or(crate::protocol::ProjectionRevision::ZERO, |shell| {
+                            shell.projection_revision
+                        })
                 || surface.frame.width != target.terminal_size.0
                 || surface.frame.height != target.terminal_size.1
             {
@@ -422,7 +424,7 @@ impl HeadlessServer {
                 boot_id: self.client_shell_boot_id.clone(),
                 projection_revision,
                 base_surface_revision,
-                surface_revision: 0,
+                surface_revision: crate::protocol::SurfaceRevision::new(0),
                 rows: patch_rows,
                 panes: changed_panes,
                 cursor,

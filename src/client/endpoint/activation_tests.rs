@@ -39,7 +39,7 @@ impl super::super::EndpointTransport for FakeTransport {
 fn test_snapshot(boot_id: &str, revision: u64) -> crate::protocol::ClientShellSnapshot {
     crate::protocol::ClientShellSnapshot {
         boot_id: boot_id.into(),
-        revision,
+        revision: revision.into(),
         resolved_config: crate::config::ValidatedConfig::test_default(),
         focused_workspace_id: None,
         focused_tab_id: None,
@@ -168,8 +168,8 @@ fn resize() -> crate::protocol::ClientMessage {
 fn surface(boot_id: &str, revision: u64, pane: &str) -> crate::protocol::PaneSurfaceFrame {
     crate::protocol::PaneSurfaceFrame {
         boot_id: boot_id.into(),
-        projection_revision: revision,
-        surface_revision: revision,
+        projection_revision: revision.into(),
+        surface_revision: revision.into(),
         frame: crate::protocol::FrameData {
             cells: Vec::new(),
             width: 80,
@@ -390,7 +390,7 @@ fn activation_requires_an_exact_snapshot_surface_revision_pair() {
     let target = endpoint();
     let snapshot = crate::protocol::ClientShellSnapshot {
         boot_id: "remote-boot".into(),
-        revision: 2,
+        revision: crate::protocol::ProjectionRevision::new(2),
         resolved_config: crate::config::ValidatedConfig::test_default(),
         focused_workspace_id: None,
         focused_tab_id: None,

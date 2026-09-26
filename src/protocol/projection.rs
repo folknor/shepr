@@ -7,7 +7,7 @@ pub struct ClientShellSnapshot {
     /// Changes whenever the endpoint process restarts.
     pub boot_id: String,
     /// Monotonic replacement revision within one endpoint boot.
-    pub revision: u64,
+    pub revision: ProjectionRevision,
     /// Endpoint's complete resolved configuration and provenance.
     pub resolved_config: crate::config::ValidatedConfig,
     pub focused_workspace_id: Option<String>,

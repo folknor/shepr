@@ -522,16 +522,19 @@ mod tests {
         let update = crate::app::actions::PaneStateUpdate {
             pane_id,
             workspace_id: workspace_id.clone(),
-            previous_agent_label: None,
-            previous_known_agent: None,
-            previous_state: AgentState::Unknown,
-            previous_presentation: presentation.clone(),
-            agent_label: Some("codex".into()),
-            known_agent: Some(Agent::Codex),
-            state: AgentState::Working,
-            presentation,
-            agent_name_changed: false,
-            agent_released: false,
+            previous: crate::app::actions::PaneStateSnapshot {
+                agent_label: None,
+                known_agent: None,
+                state: AgentState::Unknown,
+                presentation: presentation.clone(),
+            },
+            current: crate::app::actions::PaneStateSnapshot {
+                agent_label: Some("codex".into()),
+                known_agent: Some(Agent::Codex),
+                state: AgentState::Working,
+                presentation,
+            },
+            cause: crate::app::actions::PaneStateCause::StateChanged,
         };
 
         app.state.close_workspace_at(0);

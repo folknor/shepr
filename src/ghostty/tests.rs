@@ -118,7 +118,10 @@ fn terminal_reports_pty_responses_and_pwd_changes() {
 
     let output = core_replies(&mut terminal).concat();
     assert_eq!(output, b"\x1b[1;1R");
-    assert_eq!(terminal.take_pwd_changes(), [b"file:///tmp/shepr".to_vec()]);
+    assert_eq!(
+        terminal.take_pwd_changes(),
+        [WorkingDirectoryReport(b"file:///tmp/shepr".to_vec())]
+    );
 }
 
 #[test]
@@ -131,7 +134,7 @@ fn modes_and_kitty_flags_follow_terminal_state() {
     assert!(terminal.mode_get(1));
     assert!(terminal.mode_get(MODE_CURSOR_BLINK));
     assert!(terminal.mode_get(MODE_URGENCY_HINTS));
-    assert_eq!(terminal.kitty_keyboard_flags(), 1);
+    assert_eq!(terminal.kitty_keyboard_flags().bits(), 1);
     assert!(terminal.mouse_tracking_enabled());
     assert!(terminal.mode_get(1000));
     assert!(terminal.mode_get(1006));
@@ -149,7 +152,7 @@ fn modes_and_kitty_flags_follow_terminal_state() {
     terminal.write(b"\x1b[?12l\x1b[?1042l");
     assert!(!terminal.mode_get(MODE_CURSOR_BLINK));
     assert!(!terminal.mode_get(MODE_URGENCY_HINTS));
-    assert_eq!(terminal.kitty_keyboard_flags(), 0);
+    assert_eq!(terminal.kitty_keyboard_flags().bits(), 0);
 }
 
 #[test]
@@ -679,16 +682,31 @@ fn render_cells_preserve_issue_453_unicode_payload_exactly() {
 #[test]
 fn modify_other_keys_level_is_terminal_state() {
     let mut terminal = Terminal::new(8, 2, 0);
-    assert_eq!(terminal.modify_other_keys_level(), 0);
+    assert_eq!(
+        terminal.modify_other_keys_level(),
+        ModifyOtherKeysLevel::Off
+    );
     terminal.write(b"\x1b[>4;");
     terminal.write(b"1m");
-    assert_eq!(terminal.modify_other_keys_level(), 1);
+    assert_eq!(
+        terminal.modify_other_keys_level(),
+        ModifyOtherKeysLevel::ExceptWellDefined
+    );
     terminal.write(b"\x1b[>4;2m");
-    assert_eq!(terminal.modify_other_keys_level(), 2);
+    assert_eq!(
+        terminal.modify_other_keys_level(),
+        ModifyOtherKeysLevel::All
+    );
     terminal.write(b"\x1b[>4n");
-    assert_eq!(terminal.modify_other_keys_level(), 0);
+    assert_eq!(
+        terminal.modify_other_keys_level(),
+        ModifyOtherKeysLevel::Off
+    );
     terminal.write(b"\x1b[>4;2m\x1bc");
-    assert_eq!(terminal.modify_other_keys_level(), 0);
+    assert_eq!(
+        terminal.modify_other_keys_level(),
+        ModifyOtherKeysLevel::Off
+    );
 }
 
 /// The pinned alacritty evicts from the title stack when the keyboard-mode
@@ -711,23 +729,23 @@ fn kitty_keyboard_push_flood_is_bounded_without_panicking() {
         terminal.write(&flood);
         terminal.write(suffix);
         assert_eq!(terminal.keyboard_depth.primary, max, "{prefix:?}");
-        assert_eq!(terminal.kitty_keyboard_flags(), 1);
+        assert_eq!(terminal.kitty_keyboard_flags().bits(), 1);
 
         // At the cap a push replaces the top entry, so the new mode is active
         // and one pop returns to the entry beneath it.
         terminal.write(b"\x1b[>3u");
         assert_eq!(terminal.keyboard_depth.primary, max);
-        assert_eq!(terminal.kitty_keyboard_flags(), 3);
+        assert_eq!(terminal.kitty_keyboard_flags().bits(), 3);
         terminal.write(b"\x1b[<u");
-        assert_eq!(terminal.kitty_keyboard_flags(), 1);
+        assert_eq!(terminal.kitty_keyboard_flags().bits(), 1);
 
         // alacritty's real stack is bounded too: popping the mirrored depth
         // empties it.
         terminal.write(format!("\x1b[<{}u", max - 2).as_bytes());
-        assert_eq!(terminal.kitty_keyboard_flags(), 1);
+        assert_eq!(terminal.kitty_keyboard_flags().bits(), 1);
         terminal.write(b"\x1b[<u");
         assert_eq!(terminal.keyboard_depth.primary, 0);
-        assert_eq!(terminal.kitty_keyboard_flags(), 0);
+        assert_eq!(terminal.kitty_keyboard_flags().bits(), 0);
     }
 }
 
@@ -752,12 +770,12 @@ fn kitty_keyboard_depth_follows_screen_swaps_and_ris() {
         ),
         (3, 7)
     );
-    assert_eq!(terminal.kitty_keyboard_flags(), 1);
+    assert_eq!(terminal.kitty_keyboard_flags().bits(), 1);
     terminal.write(b"\x1b[<9u");
     assert_eq!(terminal.keyboard_depth.primary, 0);
     terminal.write(b"\x1b[?1049h\x1bc");
     assert_eq!(terminal.keyboard_depth, KeyboardStackDepth::default());
-    assert_eq!(terminal.kitty_keyboard_flags(), 0);
+    assert_eq!(terminal.kitty_keyboard_flags().bits(), 0);
 }
 
 #[test]
@@ -890,7 +908,7 @@ fn clear_screen_keeps_the_cursor_line_and_drops_history() {
     terminal.write(b"$ prompt");
     assert!(terminal.scrollback_rows() > 0);
 
-    assert!(terminal.clear_screen());
+    assert_eq!(terminal.clear_screen(), ClearScreenOutcome::Cleared);
 
     assert_eq!(terminal.scrollback_rows(), 0);
     assert_eq!(terminal.cursor_y(), 0);
@@ -903,12 +921,24 @@ fn clear_screen_keeps_the_cursor_line_and_drops_history() {
 }
 
 #[test]
+fn clear_screen_reports_alternate_screen_refusal() {
+    let mut terminal = Terminal::new(10, 4, 100);
+    terminal.write(b"primary\x1b[?1049h");
+    assert_eq!(
+        terminal.clear_screen(),
+        ClearScreenOutcome::AlternateScreenActive
+    );
+    terminal.write(b"\x1b[?1049l");
+    assert_eq!(terminal.clear_screen(), ClearScreenOutcome::Cleared);
+}
+
+#[test]
 fn clear_screen_moves_the_saved_cursor_and_fills_with_default_colours() {
     let mut terminal = Terminal::new(10, 4, 100_000);
     // Save the cursor at the start of the prompt row (row 3), then leave a
     // background colour active.
     terminal.write(b"a\r\nb\r\nc\r\n\x1b7$ \x1b[44m");
-    assert!(terminal.clear_screen());
+    assert_eq!(terminal.clear_screen(), ClearScreenOutcome::Cleared);
 
     let grid = terminal.term.grid();
     assert_eq!(grid.saved_cursor.point.line, Line(0));
@@ -1033,12 +1063,21 @@ fn titles_follow_the_parser_title_stack_and_ris() {
     // An OSC ends at any ESC, exactly as the parser sees it: the CSI after it
     // is not part of the title and the later OSC is a title of its own.
     terminal.write(b"\x1b]0;foo\x1b[m text \x1b]2;bar\x07");
-    assert_eq!(terminal.take_title_update(), Some(Some("bar".to_owned())));
+    assert_eq!(
+        terminal.take_title_update(),
+        Some(TitleUpdate::Set("bar".to_owned()))
+    );
 
     terminal.write(b"\x1b[22t\x1b]2;vim\x07");
-    assert_eq!(terminal.take_title_update(), Some(Some("vim".to_owned())));
+    assert_eq!(
+        terminal.take_title_update(),
+        Some(TitleUpdate::Set("vim".to_owned()))
+    );
     terminal.write(b"\x1b[23t");
-    assert_eq!(terminal.take_title_update(), Some(Some("bar".to_owned())));
+    assert_eq!(
+        terminal.take_title_update(),
+        Some(TitleUpdate::Set("bar".to_owned()))
+    );
 
     // Resizing re-announces the title inside alacritty; that is no change.
     terminal.resize(30, 5, 0, 0);
@@ -1046,14 +1085,17 @@ fn titles_follow_the_parser_title_stack_and_ris() {
     assert_eq!(terminal.take_title_update(), None);
 
     terminal.write(b"\x1bc");
-    assert_eq!(terminal.take_title_update(), Some(None));
+    assert_eq!(terminal.take_title_update(), Some(TitleUpdate::Reset));
 }
 
 #[test]
 fn only_conemu_progress_is_reported_as_progress() {
     let mut terminal = Terminal::new(20, 3, 0);
     terminal.write(b"\x1b]9;4;3;\x07");
-    assert_eq!(terminal.take_progress_update(), Some(b"4;3;".to_vec()));
+    assert_eq!(
+        terminal.take_progress_update(),
+        Some(ProgressReport(b"4;3;".to_vec()))
+    );
     terminal.write(b"\x1b]9;build finished\x07");
     assert_eq!(terminal.take_progress_update(), None);
 }
@@ -1271,7 +1313,7 @@ fn purges_retire_the_ids_of_purged_lines() {
 
     // The host's clear keeps the cursor line, moved to the top.
     terminal.write(b"$ prompt");
-    assert!(terminal.clear_screen());
+    assert_eq!(terminal.clear_screen(), ClearScreenOutcome::Cleared);
     assert_eq!(terminal.history_origin(), AbsRow(60));
     assert_eq!(
         absolute_row_text(&terminal, AbsRow(60)).as_deref(),

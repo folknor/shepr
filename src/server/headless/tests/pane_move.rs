@@ -211,7 +211,7 @@ async fn public_pane_move_without_effective_focus_preserves_client_views() {
             .and_then(|shell| shell.location.clone());
         let revision_before = server.clients[&9]
             .shell_state()
-            .map_or(0, |shell| shell.projection_revision);
+            .map_or(0, |shell| shell.projection_revision.get());
         if case == "zoomed" {
             server.app.state.workspaces[0].tabs[0].zoomed = true;
         }
@@ -254,7 +254,7 @@ async fn public_pane_move_without_effective_focus_preserves_client_views() {
         assert_eq!(
             server.clients[&9]
                 .shell_state()
-                .map_or(0, |shell| shell.projection_revision),
+                .map_or(0, |shell| shell.projection_revision.get()),
             revision_before,
             "{case}"
         );

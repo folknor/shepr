@@ -278,7 +278,7 @@ pub(super) fn render(
         x: area.x + cursor,
         y: area.y,
         visible: true,
-        shape: 0,
+        shape: crate::protocol::CursorShapeParam::Default,
     })
 }
 

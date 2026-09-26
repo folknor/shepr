@@ -512,9 +512,9 @@ impl HeadlessServer {
         }
 
         // Save session on exit. During a host shutdown saving is frozen
-        // (`policy.persist_session` is off), so this writes nothing and the
+        // (session persistence is suspended), so this writes nothing and the
         // checkpoint taken on the warning stands; the writer is still retired.
-        if self.app.policy.persist_session
+        if self.app.policy.persists_session()
             || self.lifecycle.frozen_session_policy().unwrap_or(false)
         {
             self.app.save_session_before_teardown();
@@ -832,7 +832,7 @@ impl HeadlessServer {
         lines: u16,
         column: Option<u16>,
         row: Option<u16>,
-        modifiers: u8,
+        modifiers: protocol::WireModifiers,
     ) -> bool {
         let Some(ClientConnection {
             mode: ClientConnectionMode::TerminalAttach { terminal_id, .. },
@@ -845,8 +845,15 @@ impl HeadlessServer {
             return false;
         };
 
-        let result =
-            apply_terminal_attach_scroll(runtime, source, direction, lines, column, row, modifiers);
+        let result = apply_terminal_attach_scroll(
+            runtime,
+            source,
+            direction,
+            lines,
+            column,
+            row,
+            modifiers.bits(),
+        );
         if let Err(err) = &result {
             warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach scroll failed");
         }
@@ -860,7 +867,7 @@ impl HeadlessServer {
         kind: protocol::ClientMouseKind,
         position: protocol::ClientMousePosition,
         geometry: Option<protocol::ClientMouseGeometry>,
-        modifiers: u8,
+        modifiers: protocol::WireModifiers,
         lines: u16,
     ) -> bool {
         let Some(client) = self.clients.get(&client_id) else {
@@ -1377,11 +1384,11 @@ impl HeadlessServer {
                 };
                 shell.mouse_capture = mouse_capture;
                 shell.surface_active = surface_active;
-                shell.projection_revision = 1;
+                shell.projection_revision = crate::protocol::ProjectionRevision::new(1);
                 let seed_snapshot = client_shell_snapshot(
                     &self.app,
                     &self.client_shell_boot_id,
-                    shell.projection_revision,
+                    shell.projection_revision.get(),
                     None,
                 );
                 let location =
@@ -1963,11 +1970,7 @@ impl HeadlessServer {
             self.app.start_git_status_refresh_if_due(now);
         }
 
-        if self
-            .app
-            .session_save_deadline
-            .is_some_and(|deadline| now >= deadline)
-        {
+        if self.app.session_saver.is_due(now) {
             self.app.start_background_session_save();
         }
 

@@ -551,14 +551,14 @@ fn assert_local_highlight(state: &mut ClientShellState, selected_id: &str) {
 
 fn set_local_focus(state: &mut ClientShellState, workspace_id: &str, revision: u64) {
     let mut snapshot = workspaces(3);
-    snapshot.revision = revision;
+    snapshot.revision = crate::protocol::ProjectionRevision::new(revision);
     snapshot.focused_workspace_id = Some(workspace_id.into());
     for workspace in &mut snapshot.workspaces {
         workspace.focused = workspace.workspace_id == workspace_id;
     }
     state.set_snapshot(Box::new(snapshot));
     let mut frame = surface();
-    frame.projection_revision = revision;
+    frame.projection_revision = crate::protocol::ProjectionRevision::new(revision);
     state.set_pane_surface(frame);
 }
 

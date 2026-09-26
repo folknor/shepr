@@ -10,7 +10,7 @@ mod text_editing;
 pub(super) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
         boot_id: "boot-1".into(),
-        revision: 1,
+        revision: crate::protocol::ProjectionRevision::new(1),
         resolved_config: crate::config::ValidatedConfig::test_default(),
         focused_workspace_id: Some("ws_1".into()),
         focused_tab_id: Some("tab_1".into()),
@@ -58,15 +58,15 @@ fn surface() -> PaneSurfaceFrame {
     let surface_buffer = Buffer::with_lines(["LIVE", "PANE"]);
     PaneSurfaceFrame {
         boot_id: "boot-1".into(),
-        projection_revision: 1,
-        surface_revision: 1,
+        projection_revision: crate::protocol::ProjectionRevision::new(1),
+        surface_revision: crate::protocol::SurfaceRevision::new(1),
         frame: FrameData::from_ratatui_buffer_with_hyperlinks(
             &surface_buffer,
             Some(crate::protocol::CursorState {
                 x: 1,
                 y: 1,
                 visible: true,
-                shape: 2,
+                shape: crate::protocol::CursorShapeParam::SteadyBlock,
             }),
             &[],
         ),

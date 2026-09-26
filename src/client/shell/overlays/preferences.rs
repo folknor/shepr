@@ -20,7 +20,7 @@ pub(super) struct ClientChromePreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) sidebar_width: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) sidebar_section_split: Option<f32>,
+    pub(super) sidebar_section_split: Option<super::sidebar_tokens::SectionSplit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) sidebar_collapsed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,7 +138,7 @@ mod tests {
     fn configured_chrome_drops_only_the_values_config_owns() {
         let remembered = || ClientChromePreferences {
             sidebar_width: Some(31),
-            sidebar_section_split: Some(0.3),
+            sidebar_section_split: super::super::sidebar_tokens::SectionSplit::new(0.3),
             sidebar_collapsed: Some(true),
             agent_panel_sort: Some(crate::config::AgentPanelSortConfig::Priority),
             configured: ConfiguredChrome::default(),
@@ -158,7 +158,12 @@ mod tests {
         assert_eq!(owned.sidebar_width, None);
         assert_eq!(owned.sidebar_collapsed, None);
         assert_eq!(owned.agent_panel_sort, None);
-        assert_eq!(owned.sidebar_section_split, Some(0.3));
+        assert_eq!(
+            owned
+                .sidebar_section_split
+                .map(super::super::sidebar_tokens::SectionSplit::get),
+            Some(0.3)
+        );
         assert_eq!(owned.configured, configured);
     }
 

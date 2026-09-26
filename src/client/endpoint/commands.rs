@@ -56,14 +56,21 @@ const MAX_RETIRED_REQUESTS_PER_ENDPOINT: usize = 128;
 /// reads are the biggest legitimate responses and stay far below this.
 const MAX_ENDPOINT_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::client) enum CommandResponseKind {
+    Active,
+    Retired,
+    Untracked,
+}
+
 struct QueuedCommand {
-    generation: u64,
+    generation: crate::protocol::ConnectionGeneration,
     boot_id: String,
     request: Box<Request>,
 }
 
 struct InFlightCommand {
-    generation: u64,
+    generation: crate::protocol::ConnectionGeneration,
     boot_id: String,
     request_id: String,
     response: Vec<u8>,
@@ -82,11 +89,11 @@ pub(in crate::client) struct EndpointCommandResult {
 struct EndpointCommandLane {
     queued: VecDeque<QueuedCommand>,
     in_flight: Option<InFlightCommand>,
-    retired: VecDeque<(u64, String, String)>,
+    retired: VecDeque<(crate::protocol::ConnectionGeneration, String, String)>,
 }
 
 impl EndpointCommandLane {
-    fn retire(&mut self, request: (u64, String, String)) {
+    fn retire(&mut self, request: (crate::protocol::ConnectionGeneration, String, String)) {
         if self.retired.contains(&request) {
             return;
         }
@@ -96,7 +103,11 @@ impl EndpointCommandLane {
         self.retired.push_back(request);
     }
 
-    fn consume_retired(&mut self, request: &(u64, String, String), final_chunk: bool) -> bool {
+    fn consume_retired(
+        &mut self,
+        request: &(crate::protocol::ConnectionGeneration, String, String),
+        final_chunk: bool,
+    ) -> bool {
         let Some(index) = self.retired.iter().position(|retired| retired == request) else {
             return false;
         };
@@ -113,6 +124,31 @@ pub(in crate::client) struct EndpointCommands {
 }
 
 impl EndpointCommands {
+    pub(in crate::client) fn response_kind(
+        &self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+        boot_id: &str,
+        request_id: &str,
+    ) -> CommandResponseKind {
+        let Some(lane) = self.lanes.get(endpoint_id) else {
+            return CommandResponseKind::Untracked;
+        };
+        if lane.in_flight.as_ref().is_some_and(|command| {
+            command.generation == generation
+                && command.boot_id == boot_id
+                && command.request_id == request_id
+        }) {
+            return CommandResponseKind::Active;
+        }
+        if lane.retired.iter().any(|retired| {
+            retired.0 == generation && retired.1 == boot_id && retired.2 == request_id
+        }) {
+            return CommandResponseKind::Retired;
+        }
+        CommandResponseKind::Untracked
+    }
+
     pub(in crate::client) fn enqueue(
         &mut self,
         endpoint_id: ClientEndpointId,
@@ -125,7 +161,7 @@ impl EndpointCommands {
             .or_default()
             .queued
             .push_back(QueuedCommand {
-                generation,
+                generation: generation.into(),
                 boot_id,
                 request,
             });
@@ -143,7 +179,7 @@ impl EndpointCommands {
         }
         while let Some(queued) = lane.queued.pop_front() {
             let request_id = queued.request.id.clone();
-            if !endpoints.accepts(endpoint_id, queued.generation) {
+            if !endpoints.accepts(endpoint_id, queued.generation.get()) {
                 cancelled.push(request_id);
                 continue;
             }
@@ -228,7 +264,7 @@ impl EndpointCommands {
                 ));
                 Some(EndpointCommandResult {
                     endpoint_id: endpoint_id.clone(),
-                    generation: command.generation,
+                    generation: command.generation.get(),
                     boot_id: command.boot_id,
                     request_id: command.request_id,
                     result: Err(ClientShellEndpointError {
@@ -251,7 +287,7 @@ impl EndpointCommands {
     ) -> Option<EndpointCommandResult> {
         let lane = self.lanes.get_mut(endpoint_id)?;
         let retired = (
-            response_generation,
+            response_generation.into(),
             response_boot_id.to_owned(),
             response_request_id.to_owned(),
         );
@@ -278,7 +314,7 @@ impl EndpointCommands {
             }
             return Some(EndpointCommandResult {
                 endpoint_id: endpoint_id.clone(),
-                generation: in_flight.generation,
+                generation: in_flight.generation.get(),
                 boot_id: in_flight.boot_id,
                 request_id: in_flight.request_id,
                 result: Err(ClientShellEndpointError {
@@ -299,7 +335,7 @@ impl EndpointCommands {
         let result = parse_response(&in_flight.request_id, &in_flight.response);
         Some(EndpointCommandResult {
             endpoint_id: endpoint_id.clone(),
-            generation: in_flight.generation,
+            generation: in_flight.generation.get(),
             boot_id: in_flight.boot_id,
             request_id: in_flight.request_id,
             result,
@@ -376,7 +412,7 @@ mod tests {
                 endpoint(),
                 EndpointCommandLane {
                     in_flight: Some(InFlightCommand {
-                        generation: 1,
+                        generation: crate::protocol::ConnectionGeneration::new(1),
                         boot_id: "boot-a".into(),
                         request_id: "request-a".into(),
                         response: Vec::new(),
@@ -393,6 +429,24 @@ mod tests {
             .lanes
             .get(&endpoint())
             .is_some_and(|lane| lane.in_flight.is_some())
+    }
+
+    #[test]
+    fn response_kind_uses_tracked_identity_instead_of_id_text() {
+        let mut commands = commands_with_in_flight();
+        assert_eq!(
+            commands.response_kind(&endpoint(), 1, "boot-a", "request-a"),
+            CommandResponseKind::Active
+        );
+        assert_eq!(
+            commands.response_kind(&endpoint(), 1, "boot-a", "client-shell-surface:1:on"),
+            CommandResponseKind::Untracked
+        );
+        commands.retire_lane(&endpoint());
+        assert_eq!(
+            commands.response_kind(&endpoint(), 1, "boot-a", "request-a"),
+            CommandResponseKind::Retired
+        );
     }
 
     #[test]
@@ -515,7 +569,7 @@ mod tests {
             remote.clone(),
             EndpointCommandLane {
                 in_flight: Some(InFlightCommand {
-                    generation: 2,
+                    generation: crate::protocol::ConnectionGeneration::new(2),
                     boot_id: "boot-b".into(),
                     request_id: "request-b".into(),
                     response: Vec::new(),
@@ -557,7 +611,7 @@ mod tests {
             .expect("test precondition")
             .queued
             .push_back(QueuedCommand {
-                generation: 1,
+                generation: crate::protocol::ConnectionGeneration::new(1),
                 boot_id: "boot-a".into(),
                 request: Box::new(Request {
                     id: "queued-source".into(),
@@ -570,7 +624,7 @@ mod tests {
             remote.clone(),
             EndpointCommandLane {
                 queued: VecDeque::from([QueuedCommand {
-                    generation: 2,
+                    generation: crate::protocol::ConnectionGeneration::new(2),
                     boot_id: "boot-b".into(),
                     request: Box::new(Request {
                         id: "request-b".into(),
@@ -622,7 +676,7 @@ mod tests {
             .expect("test precondition")
             .queued
             .push_back(QueuedCommand {
-                generation: 1,
+                generation: crate::protocol::ConnectionGeneration::new(1),
                 boot_id: "boot-a".into(),
                 request: Box::new(Request {
                     id: "queued-a".into(),
@@ -642,16 +696,20 @@ mod tests {
     fn retired_request_tombstones_are_bounded() {
         let mut lane = EndpointCommandLane::default();
         for serial in 0..MAX_RETIRED_REQUESTS_PER_ENDPOINT + 10 {
-            lane.retire((1, "boot".into(), format!("request-{serial}")));
+            lane.retire((
+                crate::protocol::ConnectionGeneration::new(1),
+                "boot".into(),
+                format!("request-{serial}"),
+            ));
         }
         assert_eq!(lane.retired.len(), MAX_RETIRED_REQUESTS_PER_ENDPOINT);
-        assert!(
-            !lane
-                .retired
-                .contains(&(1, "boot".into(), "request-0".into()))
-        );
+        assert!(!lane.retired.contains(&(
+            crate::protocol::ConnectionGeneration::new(1),
+            "boot".into(),
+            "request-0".into(),
+        )));
         assert!(lane.retired.contains(&(
-            1,
+            crate::protocol::ConnectionGeneration::new(1),
             "boot".into(),
             format!("request-{}", MAX_RETIRED_REQUESTS_PER_ENDPOINT + 9)
         )));

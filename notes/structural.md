@@ -57,92 +57,6 @@ See CON-004.
 
 Reported by: terminal-core, pane-detection, app-state, server, client, config-cli.
 
-## STR-005 - Terminal modes, keyboard protocol levels, cursor shape and modifiers as integers
-
-DEC private modes as bare `u16` (`mode_get`, `mode_set`, `MODE_*`, CON-011);
-modifyOtherKeys level `u8` in `ExtraModes`, `ScanEvent::ModifyOtherKeys`,
-`set_direct_host_keyboard_protocol`; kitty flags `u8` in
-`Terminal::kitty_keyboard_flags` but `u16` in `DirectHostKeyboardState`;
-`terminal_modes.rs` ORs `0b0001_0000` by hand (crossterm lacks the flag).
-`CursorShapeParam = u8` alias for DECSCUSR 0..=6 on the wire and
-`cjk_ime_cursor_shape: u8` in app. `modifiers: u8` (crossterm bits truncated) in
-`ClientPaneInputEvent::Key/Mouse`, `AttachScroll`, `AttachMouse`. Proposed: mode
-enum with total mapping, level/flag types, a DECSCUSR enum, `WireModifiers`
-bitflags.
-
-Reported by: terminal-core, protocol, app-state.
-
-## STR-007 - Revisions and generations as bare u64
-
-`projection_revision`, `surface_revision`, `base_surface_revision` side by side in
-`PaneSurfaceFrame`, `PaneSurfacePatch`, `SurfaceDelta`, `SurfaceReuse`, compared
-by hand. Connection generation bare `u64` in supervisor, registry, commands and
-the selection tracker. Proposed: `ProjectionRevision`, `SurfaceRevision` with
-`next()`, `ConnectionGeneration`.
-
-Reported by: protocol, remote.
-
-## STR-008 - Terminal event payloads that are domain values
-
-OSC 7 working directory and OSC 9;4 progress come out as `Vec<u8>`; the title
-update is `Option<Option<String>>`; `clear_screen() -> bool` means "refused
-because the alternate screen is active"; `TerminalRuntime::clear_screen` returns
-`Result<(), String>`.
-
-Reported by: terminal-core.
-
-## STR-010 - API errors are prose plus string codes
-
-`ReadRejection = (&'static str, String)`; `collect_panes_for_workspace ->
-Result<_, (String, String)>`; `normalize_launch_env`; `close_pane(...) ->
-Result<(), String>` whose `Err` is already-encoded JSON; handlers return `String`
-from `encode_error(id, "pane_not_found", ...)`; `ApiRequestMessage::respond_to`
-is `Sender<String>` (`src/api/mod.rs:67`); hand-written JSON literals
-(`headless.rs:2186`); error-code literals at ~60 sites (`"server_unavailable"`,
-`"internal_error"` ~10 times, `"agent_not_found"` in `app/agents.rs` and
-`api/wait.rs`, `"invalid_request"` in `api/server.rs` and `client_transport.rs`);
-the SSH-agent path (`api/server.rs:364-383`) maps `io::ErrorKind` to codes.
-Proposed: `ApiErrorCode` enum and `ApiError` with typed payloads; handlers return
-`Result<ResponseResult, ApiError>`, serialised once at the socket boundary; tests
-assert typed results instead of parsing JSON back. See BUG-010.
-
-Reported by: app-state, server.
-
-## STR-017 - App-state flags and snapshots
-
-`cjk_ime_agent_filter_configured: bool` plus `cjk_ime_agents: Vec<Agent>`
-(proposed `AgentFilter { Any, Only(Vec<Agent>) }` validated at load, BUG-004);
-`PaneStateUpdate` has 16 previous/current fields plus `agent_released`,
-`agent_name_changed`, `suppress_completion` (proposed `Snapshot` pair plus a
-cause enum); `AppPolicy{restore_session, persist_session}` two bools with one
-production combination; `ahead_behind: Option<(u32, u32)>` (and
-`git_ahead_behind: Option<(usize, usize)>` on the wire).
-
-Reported by: app-state, protocol.
-
-## STR-018 - Split ratios and paths
-
-Split `ratio: f32` unvalidated; `SplitBorder.path: Vec<bool>` and wire
-`PaneSurfaceSplit.path: Vec<bool>` (proposed `Vec<Side>`/`Vec<Branch>`); sidebar
-`split_ratio: f32` clamped silently in `sidebar_section_heights` (proposed
-`SectionSplit` validated at config and drag time).
-
-Reported by: app-state, protocol, ui.
-
-## STR-020 - Client-side primitives
-
-Cell size packed into `AtomicU64` as `width<<32 | height` with 0 = absent
-(`pack_cell_size`/`unpack_cell_size`; proposed `AtomicCellSize`);
-`HandshakeResult` is a unit struct callers ignore; pending request ids
-classified by `request_id.starts_with("client-shell-surface:")`
-(`client/mod.rs:1123`); `mouse_scroll_lines: usize` clamped to `u16` ad hoc
-(`client/mod.rs:735`); the stdin framer outputs `Vec<Vec<u8>>` (CON-007);
-`run_client_with_mode(attach_request: Option<(String,bool)>, attach_escape:
-Option<AttachEscapeState>)` discards the passed state (proposed
-`ClientMode::{Shell, Attach{terminal_id, takeover}}`).
-
-Reported by: client.
-
 # Moves, splits and rewrites
 
 ## STR-024 - Rename src/ghostty to vt and split it
@@ -154,28 +68,6 @@ still holds the colour model, palette, cell/style types, `Terminal`, the
 `src/ghostty` to `vt`. Several accessors are now `#[cfg(test)]`-only.
 
 Reported by: terminal-core.
-
-## STR-035 - App carries ~35 flat scheduler fields
-
-Git refresh flags, deadlines, the session save thread, tab bar runtimes.
-Proposed `GitRefreshScheduler`, `SessionSaver`, `TabBarStatus`, each owning its
-deadline logic.
-
-Reported by: app-state.
-
-## STR-045 - Client input plumbing
-
-`client/input.rs` module doc is stale ("the server handles semantic parsing…");
-the initial-host-input block (lines 82-131) duplicates the loop's flush and
-held-escape logic; `stdin_reader_loop` is a leftover wrapper around
-`unix_stdin_reader_loop`. `raw_input.rs` is crate-root and mixes host-reply
-tracking (awaited colour and cell-size replies, appearance-on-focus) into a
-generic byte framer; proposed move to `src/input/` with host-reply accounting in
-a client-side wrapper. `transport::start_endpoint_transport` spawns a named
-reader thread while `client/mod.rs:882` spawns the same `server_reader_thread`
-unnamed with duplicated arguments.
-
-Reported by: client.
 
 ## STR-055 - Test layouts that mirror accidents
 

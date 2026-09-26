@@ -45,8 +45,8 @@ impl ClientShellState {
             return;
         }
         let ratio = row.saturating_sub(divider.y) as f32 / divider.height as f32;
-        let ratio = ratio.clamp(0.1, 0.9);
-        if (self.sidebar_section_split - ratio).abs() > f32::EPSILON {
+        let ratio = super::sidebar_tokens::SectionSplit::from_drag(ratio);
+        if self.sidebar_section_split != ratio {
             self.sidebar_section_split = ratio;
             self.sidebar_section_split_manual = true;
             outcome.repaint = true;
@@ -855,7 +855,13 @@ impl ClientShellState {
                                 crate::api::schema::LayoutSetSplitRatioParams {
                                     tab_id: Some(tab_id),
                                     pane_id: None,
-                                    path: hit.path,
+                                    path: hit
+                                        .path
+                                        .into_iter()
+                                        .map(|branch| {
+                                            branch == crate::protocol::SplitBranch::Second
+                                        })
+                                        .collect(),
                                     ratio,
                                 },
                             ),
@@ -1018,7 +1024,13 @@ impl ClientShellState {
                                     crate::api::schema::LayoutSetSplitRatioParams {
                                         tab_id: Some(tab_id),
                                         pane_id: None,
-                                        path: hit.path,
+                                        path: hit
+                                            .path
+                                            .into_iter()
+                                            .map(|branch| {
+                                                branch == crate::protocol::SplitBranch::Second
+                                            })
+                                            .collect(),
                                         ratio,
                                     },
                                 ),
@@ -1937,7 +1949,7 @@ impl ClientShellState {
                 kind,
                 position,
                 geometry,
-                modifiers: modifiers.bits(),
+                modifiers: crate::protocol::WireModifiers::from(modifiers),
                 lines: u16::try_from(self.config.mouse_scroll_lines).unwrap_or(u16::MAX),
             },
             outcome,

@@ -39,7 +39,7 @@ pub fn stdin_reader_loop(
     let stdin = io::stdin();
     let mut reader = stdin.lock();
     let mut scratch = [0u8; 4096];
-    let mut framer = crate::raw_input::RawInputFramer::for_host_input();
+    let mut framer = super::host_replies::HostInputFramer::for_host_input();
     framer.set_host_escape_disambiguation_active(host_escape_disambiguation_active);
     if host_color_query_sent {
         framer.host_color_query_sent();
@@ -54,21 +54,17 @@ pub fn stdin_reader_loop(
     let mut last_geometry = None;
 
     if !initial_host_input.is_empty() {
-        let sgr_pixels = host_sgr_pixels_active.load(Ordering::Acquire);
-        if sgr_pixels {
-            last_geometry = crate::input::mouse::HostGeometry::current();
-        }
-        let chunks = framer.push_framed(initial_host_input);
-        if !send_unix_input_chunks(
-            chunks,
+        if !consume_input_bytes(
+            initial_host_input,
+            &mut framer,
             event_tx,
             &mut pending_palette,
-            sgr_pixels,
-            last_geometry,
+            &mut pending_mode,
+            &mut last_geometry,
+            host_sgr_pixels_active,
         ) {
             return;
         }
-        pending_mode = framer.has_pending_input().then_some(sgr_pixels);
         if !flush_idle_input(
             &reader,
             &mut framer,
@@ -87,24 +83,14 @@ pub fn stdin_reader_loop(
         match reader.read(&mut scratch) {
             Ok(0) => break,
             Ok(n) => {
-                let sgr_pixels = *pending_mode
-                    .get_or_insert_with(|| host_sgr_pixels_active.load(Ordering::Acquire));
-                if sgr_pixels {
-                    last_geometry = retain_geometry(
-                        last_geometry,
-                        crate::input::mouse::HostGeometry::current(),
-                    );
-                }
-                let chunks = framer.push_framed(&scratch[..n]);
-                if !framer.has_pending_input() {
-                    pending_mode = None;
-                }
-                if !send_unix_input_chunks(
-                    chunks,
+                if !consume_input_bytes(
+                    &scratch[..n],
+                    &mut framer,
                     event_tx,
                     &mut pending_palette,
-                    sgr_pixels,
-                    last_geometry,
+                    &mut pending_mode,
+                    &mut last_geometry,
+                    host_sgr_pixels_active,
                 ) {
                     return;
                 }
@@ -132,10 +118,38 @@ pub fn stdin_reader_loop(
     }
 }
 
+fn consume_input_bytes(
+    data: &[u8],
+    framer: &mut super::host_replies::HostInputFramer,
+    event_tx: &mpsc::Sender<ClientLoopEvent>,
+    pending_palette: &mut Vec<ParsedHostInput>,
+    pending_mode: &mut Option<bool>,
+    last_geometry: &mut Option<crate::input::mouse::HostGeometry>,
+    host_sgr_pixels_active: &AtomicBool,
+) -> bool {
+    let sgr_pixels =
+        *pending_mode.get_or_insert_with(|| host_sgr_pixels_active.load(Ordering::Acquire));
+    if sgr_pixels {
+        *last_geometry =
+            retain_geometry(*last_geometry, crate::input::mouse::HostGeometry::current());
+    }
+    let chunks = framer.push_framed(data);
+    if !framer.has_pending_input() {
+        *pending_mode = None;
+    }
+    send_unix_input_chunks(
+        chunks,
+        event_tx,
+        pending_palette,
+        sgr_pixels,
+        *last_geometry,
+    )
+}
+
 #[allow(clippy::too_many_arguments)] // The reader owns these independent input states.
 fn flush_idle_input<R: AsRawFd>(
     reader: &R,
-    framer: &mut crate::raw_input::RawInputFramer,
+    framer: &mut super::host_replies::HostInputFramer,
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     pending_palette: &mut Vec<ParsedHostInput>,
     pending_mode: &mut Option<bool>,
@@ -262,8 +276,8 @@ fn flush_unix_palette_input(
         .is_ok()
 }
 
-fn idle_flush_timeout_ms(
-    framer: &crate::raw_input::RawInputFramer,
+fn idle_flush_timeout_ms<P: crate::raw_input::HostReplyPolicy>(
+    framer: &crate::raw_input::RawInputFramer<P>,
     host_mouse_capture_active: bool,
 ) -> i32 {
     if host_mouse_capture_active
@@ -296,7 +310,8 @@ mod tests {
     use super::*;
 
     fn framed(raw: &[u8]) -> Vec<crate::raw_input::FramedRawInputEvent> {
-        let mut framer = crate::raw_input::RawInputFramer::default();
+        let mut framer =
+            crate::raw_input::RawInputFramer::<crate::raw_input::NoHostReplies>::default();
         let mut inputs = framer.push_framed(raw);
         inputs.extend(framer.flush_timeout_framed());
         inputs
@@ -407,13 +422,17 @@ mod tests {
 
     #[test]
     fn mouse_active_escape_sequences_get_longer_reassembly_window() {
-        let mut escape = crate::raw_input::RawInputFramer::default();
+        let mut escape =
+            crate::raw_input::RawInputFramer::<crate::raw_input::NoHostReplies>::default();
         assert!(escape.push(b"\x1b").is_empty());
-        let mut sgr_mouse = crate::raw_input::RawInputFramer::default();
+        let mut sgr_mouse =
+            crate::raw_input::RawInputFramer::<crate::raw_input::NoHostReplies>::default();
         assert!(sgr_mouse.push(b"\x1b[<3").is_empty());
-        let mut default_mouse = crate::raw_input::RawInputFramer::default();
+        let mut default_mouse =
+            crate::raw_input::RawInputFramer::<crate::raw_input::NoHostReplies>::default();
         assert!(default_mouse.push(b"\x1b[MC").is_empty());
-        let mut unrelated = crate::raw_input::RawInputFramer::default();
+        let mut unrelated =
+            crate::raw_input::RawInputFramer::<crate::raw_input::NoHostReplies>::default();
         assert!(unrelated.push(b"\x1b[49:33;2:").is_empty());
 
         for framer in [&escape, &sgr_mouse, &default_mouse, &unrelated] {

@@ -84,6 +84,12 @@ pub(crate) struct TabCreationOutcome {
     pub(crate) root_pane: PaneId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AheadBehind {
+    pub ahead: usize,
+    pub behind: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceGitStatus {
     pub workspace_id: String,
@@ -92,7 +98,7 @@ pub struct WorkspaceGitStatus {
     pub demand: GitStatusRefreshDemand,
     pub auto_label: String,
     pub branch: Option<String>,
-    pub ahead_behind: Option<(usize, usize)>,
+    pub ahead_behind: Option<AheadBehind>,
     pub space: Option<GitSpaceMetadata>,
 }
 
@@ -100,7 +106,7 @@ pub struct WorkspaceGitStatus {
 pub struct WorkspaceGitStatusSnapshot {
     pub auto_label: String,
     pub branch: Option<String>,
-    pub ahead_behind: Option<(usize, usize)>,
+    pub ahead_behind: Option<AheadBehind>,
     pub space: Option<GitSpaceMetadata>,
 }
 
@@ -332,7 +338,7 @@ pub struct Workspace {
     /// Cached current git branch for the workspace repo.
     pub(crate) cached_git_branch: Option<String>,
     /// Cached ahead/behind counts for the workspace repo's current branch upstream.
-    pub(crate) cached_git_ahead_behind: Option<(usize, usize)>,
+    pub(crate) cached_git_ahead_behind: Option<AheadBehind>,
     /// Cached derived Git repo metadata for status display.
     pub(crate) cached_git_space: Option<GitSpaceMetadata>,
     pub(crate) metadata_tokens: crate::terminal::metadata_tokens::MetadataTokens,
@@ -1021,7 +1027,7 @@ impl Workspace {
         self.cached_git_branch.clone()
     }
 
-    pub fn git_ahead_behind(&self) -> Option<(usize, usize)> {
+    pub fn git_ahead_behind(&self) -> Option<AheadBehind> {
         self.cached_git_ahead_behind
     }
 

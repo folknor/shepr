@@ -10,7 +10,7 @@ use crate::api::schema::{
 use crate::app::App;
 use crate::pty::actor::{QueuedSubmission, SubmissionCancelOutcome};
 
-use super::responses::{failure, failure_body, success};
+use super::responses::{failure, success};
 
 const AGENT_PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(300);
 
@@ -26,19 +26,13 @@ impl App {
 
     pub(super) fn handle_agent_get(&mut self, id: String, target: &AgentTarget) -> ApiResult {
         self.reconcile_managed_agent_target(&target.target);
-        let agent = match self.agent_info_for_target(&target.target) {
-            Ok(agent) => agent,
-            Err(err) => return failure_body(id, self.agent_target_error_body(err)),
-        };
+        let agent = self.agent_info_for_target(&target.target)?;
 
         success(id, ResponseResult::AgentInfo { agent })
     }
 
     pub(super) fn handle_agent_focus(&mut self, id: String, target: &AgentTarget) -> ApiResult {
-        let agent = match self.focus_agent_target(&target.target) {
-            Ok(agent) => agent,
-            Err(err) => return failure_body(id, self.agent_target_error_body(err)),
-        };
+        let agent = self.focus_agent_target(&target.target)?;
 
         success(id, ResponseResult::AgentInfo { agent })
     }
@@ -48,19 +42,13 @@ impl App {
         id: String,
         params: AgentRenameParams,
     ) -> ApiResult {
-        let agent = match self.rename_agent_target(&params.target, params.name) {
-            Ok(agent) => agent,
-            Err(err) => return failure_body(id, self.agent_rename_error_body(err)),
-        };
+        let agent = self.rename_agent_target(&params.target, params.name)?;
 
         success(id, ResponseResult::AgentInfo { agent })
     }
 
     pub(super) fn handle_agent_start(&mut self, id: String, params: AgentStartParams) -> ApiResult {
-        let (agent, argv) = match self.start_agent(params) {
-            Ok(started) => started,
-            Err(err) => return failure_body(id, self.agent_start_error_body(err)),
-        };
+        let (agent, argv) = self.start_agent(params)?;
 
         success(id, ResponseResult::AgentStarted { agent, argv })
     }
@@ -132,7 +120,7 @@ impl App {
         }
         let resolved = match self.resolve_agent_target(&params.target) {
             Ok(resolved) => resolved,
-            Err(err) => return Err(ApiError::from_body(self.agent_target_error_body(err))),
+            Err(err) => return Err(self.agent_target_error(err)),
         };
         let Some(terminal_id) = self
             .state
@@ -205,7 +193,7 @@ impl App {
     ) -> ApiResult {
         let resolved = match self.resolve_agent_target(&params.target) {
             Ok(resolved) => resolved,
-            Err(err) => return failure_body(id, self.agent_target_error_body(err)),
+            Err(err) => return Err(self.agent_target_error(err)),
         };
         let Some((pane, workspace_id)) = self.lookup_runtime(resolved.ws_idx, resolved.pane_id)
         else {
@@ -216,15 +204,12 @@ impl App {
         // A write can land while the snapshot is built. Keep the revision at
         // the start so it never claims to cover output absent from the text.
         let revision = pane.content_seq();
-        let snapshot = match crate::app::api_helpers::read_terminal_snapshot(
+        let snapshot = crate::app::api_helpers::read_terminal_snapshot(
             pane,
             params.source,
             format,
             params.lines,
-        ) {
-            Ok(snapshot) => snapshot,
-            Err((code, message)) => return failure(id, code, message),
-        };
+        )?;
         let tab_id = self
             .public_tab_id(resolved.ws_idx, resolved.tab_idx)
             .unwrap_or_else(|| {
@@ -253,7 +238,7 @@ impl App {
     pub(super) fn handle_agent_explain(&mut self, id: String, target: &AgentTarget) -> ApiResult {
         let resolved = match self.resolve_agent_target(&target.target) {
             Ok(resolved) => resolved,
-            Err(err) => return failure_body(id, self.agent_target_error_body(err)),
+            Err(err) => return Err(self.agent_target_error(err)),
         };
         let Some((pane, _workspace_id)) = self.lookup_runtime(resolved.ws_idx, resolved.pane_id)
         else {
@@ -323,7 +308,7 @@ impl App {
     ) -> ApiResult {
         let resolved = match self.resolve_agent_target(&params.target) {
             Ok(resolved) => resolved,
-            Err(err) => return failure_body(id, self.agent_target_error_body(err)),
+            Err(err) => return Err(self.agent_target_error(err)),
         };
         let Some(terminal_id) = self
             .state
@@ -347,16 +332,7 @@ impl App {
         if !super::super::agents::runtime_hosts_agent(runtime, expected_agent) {
             return agent_not_ready(id, &params.target);
         }
-        let encoded = match super::super::api_helpers::encode_api_keys(runtime, &params.keys) {
-            Ok(encoded) => encoded,
-            Err(key) => {
-                return failure(
-                    id,
-                    ApiErrorCode::InvalidKey,
-                    format!("unsupported key {key}"),
-                );
-            }
-        };
+        let encoded = super::super::api_helpers::encode_api_keys(runtime, &params.keys)?;
         let bytes: Vec<u8> = encoded.into_iter().flatten().collect();
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
             return failure(id, ApiErrorCode::AgentSendKeysFailed, err.to_string());

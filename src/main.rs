@@ -38,7 +38,7 @@ mod persist;
 mod platform;
 mod protocol;
 mod pty;
-mod raw_input;
+pub(crate) use input::raw_input;
 mod remote;
 #[path = "server/render_signal.rs"]
 mod render_signal;

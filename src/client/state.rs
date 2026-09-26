@@ -79,8 +79,8 @@ impl Drop for ClientState {
             let _ = crate::host_term::modes::set_direct_host_keyboard_protocol(
                 &mut io::stdout(),
                 &mut self.direct_keyboard_protocol,
-                0,
-                0,
+                crate::protocol::KittyKeyboardFlags::NONE,
+                crate::ghostty::ModifyOtherKeysLevel::Off,
             );
         }
     }

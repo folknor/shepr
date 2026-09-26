@@ -1,3 +1,5 @@
+use crate::ghostty::ModifyOtherKeysLevel;
+use crate::protocol::KittyKeyboardFlags;
 use std::io::{self, Write};
 
 const DISABLE_HOST_MOUSE_REPORTING_SEQUENCE: &[u8] =
@@ -18,7 +20,9 @@ pub(crate) fn set_host_kitty_keyboard_report_all<W: Write>(
     if report_all_keys {
         flags |= crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
         flags = crossterm::event::KeyboardEnhancementFlags::from_bits_retain(
-            flags.bits() | 0b0001_0000,
+            flags.bits()
+                | u8::try_from(KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT.bits())
+                    .unwrap_or_default(),
         );
     }
     crossterm::execute!(
@@ -30,17 +34,17 @@ pub(crate) fn set_host_kitty_keyboard_report_all<W: Write>(
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DirectHostKeyboardState {
-    kitty_flags: Option<u16>,
-    modify_other_keys_level: u8,
+    kitty_flags: Option<KittyKeyboardFlags>,
+    modify_other_keys_level: ModifyOtherKeysLevel,
 }
 
 pub(crate) fn set_direct_host_keyboard_protocol<W: Write>(
     writer: &mut W,
     active: &mut DirectHostKeyboardState,
-    next_flags: u16,
-    next_modify_other_keys_level: u8,
+    next_flags: KittyKeyboardFlags,
+    next_modify_other_keys_level: ModifyOtherKeysLevel,
 ) -> io::Result<()> {
-    let next_kitty_flags = (next_flags != 0).then_some(next_flags);
+    let next_kitty_flags = (!next_flags.is_empty()).then_some(next_flags);
     if active.kitty_flags == next_kitty_flags
         && active.modify_other_keys_level == next_modify_other_keys_level
     {
@@ -51,8 +55,8 @@ pub(crate) fn set_direct_host_keyboard_protocol<W: Write>(
         if active.kitty_flags.is_some() {
             writer.write_all(b"\x1b[<1u")?;
         }
-        if next_flags != 0 {
-            write!(writer, "\x1b[>{next_flags}u")?;
+        if !next_flags.is_empty() {
+            write!(writer, "\x1b[>{}u", next_flags.bits())?;
         }
     }
     if active.modify_other_keys_level != next_modify_other_keys_level {
@@ -85,12 +89,27 @@ mod tests {
         let mut output = Vec::new();
         let mut active = DirectHostKeyboardState::default();
 
-        set_direct_host_keyboard_protocol(&mut output, &mut active, 3, 0)
-            .expect("test precondition");
-        set_direct_host_keyboard_protocol(&mut output, &mut active, 15, 2)
-            .expect("test precondition");
-        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 0)
-            .expect("test precondition");
+        set_direct_host_keyboard_protocol(
+            &mut output,
+            &mut active,
+            KittyKeyboardFlags::from_bits_retain(3),
+            ModifyOtherKeysLevel::from_parameter(0),
+        )
+        .expect("test precondition");
+        set_direct_host_keyboard_protocol(
+            &mut output,
+            &mut active,
+            KittyKeyboardFlags::from_bits_retain(15),
+            ModifyOtherKeysLevel::from_parameter(2),
+        )
+        .expect("test precondition");
+        set_direct_host_keyboard_protocol(
+            &mut output,
+            &mut active,
+            KittyKeyboardFlags::from_bits_retain(0),
+            ModifyOtherKeysLevel::from_parameter(0),
+        )
+        .expect("test precondition");
 
         assert_eq!(
             output,
@@ -104,12 +123,27 @@ mod tests {
         let mut output = Vec::new();
         let mut active = DirectHostKeyboardState::default();
 
-        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 1)
-            .expect("test precondition");
-        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 2)
-            .expect("test precondition");
-        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 0)
-            .expect("test precondition");
+        set_direct_host_keyboard_protocol(
+            &mut output,
+            &mut active,
+            KittyKeyboardFlags::from_bits_retain(0),
+            ModifyOtherKeysLevel::from_parameter(1),
+        )
+        .expect("test precondition");
+        set_direct_host_keyboard_protocol(
+            &mut output,
+            &mut active,
+            KittyKeyboardFlags::from_bits_retain(0),
+            ModifyOtherKeysLevel::from_parameter(2),
+        )
+        .expect("test precondition");
+        set_direct_host_keyboard_protocol(
+            &mut output,
+            &mut active,
+            KittyKeyboardFlags::from_bits_retain(0),
+            ModifyOtherKeysLevel::from_parameter(0),
+        )
+        .expect("test precondition");
 
         assert_eq!(output, b"\x1b[>4;1m\x1b[>4;2m\x1b[>4;0m");
         assert_eq!(active, DirectHostKeyboardState::default());
@@ -120,8 +154,13 @@ mod tests {
         let mut output = Vec::new();
         let mut active = DirectHostKeyboardState::default();
 
-        set_direct_host_keyboard_protocol(&mut output, &mut active, 0, 0)
-            .expect("test precondition");
+        set_direct_host_keyboard_protocol(
+            &mut output,
+            &mut active,
+            KittyKeyboardFlags::from_bits_retain(0),
+            ModifyOtherKeysLevel::from_parameter(0),
+        )
+        .expect("test precondition");
 
         assert!(output.is_empty());
         assert_eq!(active, DirectHostKeyboardState::default());

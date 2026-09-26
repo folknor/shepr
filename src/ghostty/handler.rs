@@ -658,9 +658,11 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
     /// picked up by the byte scanner.
     fn set_modify_other_keys(&mut self, mode: ModifyOtherKeys) {
         self.modes.modify_other_keys = match mode {
-            ModifyOtherKeys::Reset => 0,
-            ModifyOtherKeys::EnableExceptWellDefined => 1,
-            ModifyOtherKeys::EnableAll => 2,
+            ModifyOtherKeys::Reset => super::ModifyOtherKeysLevel::Off,
+            ModifyOtherKeys::EnableExceptWellDefined => {
+                super::ModifyOtherKeysLevel::ExceptWellDefined
+            }
+            ModifyOtherKeys::EnableAll => super::ModifyOtherKeysLevel::All,
         };
         Handler::set_modify_other_keys(self.term, mode);
     }

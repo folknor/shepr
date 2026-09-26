@@ -26,7 +26,7 @@ impl ActivationEvidence {
             .snapshot_revision
             .is_none_or(|current| snapshot.revision >= current)
         {
-            self.snapshot_revision = Some(snapshot.revision);
+            self.snapshot_revision = Some(snapshot.revision.get());
             self.focused_workspace_id = snapshot.focused_workspace_id.clone();
             self.focused_pane_id = snapshot.focused_pane_id.clone();
         }
@@ -53,8 +53,8 @@ impl ActivationEvidence {
         geometry: crate::protocol::ClientSurfaceSize,
     ) -> Option<&crate::protocol::PaneSurfaceFrame> {
         self.surface.as_ref().filter(|surface| {
-            self.snapshot_revision == Some(surface.projection_revision)
-                && surface.projection_revision >= minimum_revision
+            self.snapshot_revision == Some(surface.projection_revision.get())
+                && surface.projection_revision.get() >= minimum_revision
                 && super::surface_matches_geometry(surface, geometry)
         })
     }

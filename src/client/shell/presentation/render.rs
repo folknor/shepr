@@ -229,7 +229,7 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) reveal_focused_workspace: &'a mut bool,
     pub(super) reveal_focused_tab: &'a mut bool,
     pub(super) sidebar_collapsed: bool,
-    pub(super) sidebar_section_split: f32,
+    pub(super) sidebar_section_split: super::sidebar_tokens::SectionSplit,
     pub(super) tab_drag_insert_index: Option<usize>,
     pub(super) selected_workspace_id: Option<&'a WorkspaceNavigationTarget>,
     pub(super) reveal_navigation_workspace: &'a mut bool,

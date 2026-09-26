@@ -33,14 +33,12 @@ pub(super) fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64
                 crate::protocol::PaneSurfaceSplitDirection::Vertical => 1,
             }],
         );
-        write(
-            &mut hash,
-            &split
-                .path
-                .iter()
-                .map(|right| u8::from(*right))
-                .collect::<Vec<_>>(),
-        );
+        for branch in &split.path {
+            hash ^= u64::from(*branch == crate::protocol::SplitBranch::Second);
+            hash = hash.wrapping_mul(PRIME);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(PRIME);
     }
     hash
 }

@@ -18,7 +18,12 @@ pub(super) fn dispatch_client_shell_actions(
                 if let Some(connection) = endpoints.connection(&endpoint_id).filter(|_| {
                     endpoints.active_id() == &endpoint_id && endpoints.active_surface_available()
                 }) {
-                    endpoint_commands.enqueue(endpoint_id, connection.generation, boot_id, request);
+                    endpoint_commands.enqueue(
+                        endpoint_id,
+                        connection.generation.get(),
+                        boot_id,
+                        request,
+                    );
                 } else if let Some(shell) = shell.as_deref_mut() {
                     repaint |= shell.cancel_endpoint_request(&request.id);
                 }
@@ -140,7 +145,7 @@ fn local_activation_metadata_ready(
                 shell
                     .endpoint_snapshot_identity(
                         &endpoint::ClientEndpointId::Local,
-                        connection.generation,
+                        connection.generation.get(),
                     )
                     .is_some()
             })
@@ -569,7 +574,8 @@ pub(super) fn stale_freeze_recovery(
     let generation = endpoints
         .connection(selected)
         .filter(|connection| connection.surface_active)?
-        .generation;
+        .generation
+        .get();
     // Without metadata for this connection the handoff could not even be prepared; the
     // snapshot that brings it also runs the ordinary activation check.
     shell.endpoint_snapshot_identity(selected, generation)?;
@@ -615,7 +621,7 @@ pub(super) fn follow_endpoint_catalog(
         supervisors.retire(&endpoint_id);
         let generation = endpoints
             .connection(&endpoint_id)
-            .map_or(0, |connection| connection.generation);
+            .map_or(0, |connection| connection.generation.get());
         active_retired |= handle_endpoint_disconnect(
             state,
             endpoints,
@@ -657,7 +663,7 @@ pub(super) fn follow_endpoint_catalog(
             local_socket_path.to_path_buf(),
             endpoints
                 .connection(&endpoint::ClientEndpointId::Local)
-                .map(|connection| connection.generation),
+                .map(|connection| connection.generation.get()),
             now,
         );
     }
@@ -681,7 +687,7 @@ pub(super) fn install_client_shell_snapshot(
     let Some(connection) = endpoints.connection(endpoint_id) else {
         return Ok(());
     };
-    let generation = connection.generation;
+    let generation = connection.generation.get();
     // While presentation is frozen the projection on screen must not move: a frame composed
     // now may bypass the freeze as client chrome (below), and that is only sound if its
     // snapshot and pane surface are the ones frozen. Metadata is cached instead and projected
@@ -913,7 +919,7 @@ mod tests {
     fn snapshot(boot_id: &str) -> Box<crate::protocol::ClientShellSnapshot> {
         Box::new(crate::protocol::ClientShellSnapshot {
             boot_id: boot_id.into(),
-            revision: 1,
+            revision: crate::protocol::ProjectionRevision::new(1),
             resolved_config: crate::config::ValidatedConfig::test_default(),
             focused_workspace_id: None,
             focused_tab_id: None,

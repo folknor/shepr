@@ -37,7 +37,20 @@ pub struct PaneSurfaceSplit {
         serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_SPLIT_PATH, _, _>",
         deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_SPLIT_PATH, _, _>"
     )]
-    pub path: Vec<bool>,
+    pub path: Vec<SplitBranch>,
+}
+
+/// Child selected at each step of a BSP split path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum SplitBranch {
+    First,
+    Second,
+}
+
+impl From<bool> for SplitBranch {
+    fn from(second: bool) -> Self {
+        if second { Self::Second } else { Self::First }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,9 +74,9 @@ pub struct PaneSurfaceFrame {
     /// Endpoint process identity that produced this surface.
     pub boot_id: String,
     /// Projection revision whose focused IDs and topology produced this surface.
-    pub projection_revision: u64,
+    pub projection_revision: ProjectionRevision,
     /// Monotonic revision for full surfaces and incremental patches on one connection.
-    pub surface_revision: u64,
+    pub surface_revision: SurfaceRevision,
     pub frame: FrameData,
     #[serde(
         serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_PANES, _, _>",
@@ -125,8 +138,8 @@ impl SurfaceMeta {
     pub(crate) fn into_surface(
         self,
         boot_id: String,
-        projection_revision: u64,
-        surface_revision: u64,
+        projection_revision: ProjectionRevision,
+        surface_revision: SurfaceRevision,
         cells: Vec<CellData>,
     ) -> PaneSurfaceFrame {
         PaneSurfaceFrame {
@@ -219,9 +232,9 @@ pub(crate) fn sort_patch_rows(rows: &mut [PaneSurfacePatchRow]) {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSurfacePatch {
     pub boot_id: String,
-    pub projection_revision: u64,
-    pub base_surface_revision: u64,
-    pub surface_revision: u64,
+    pub projection_revision: ProjectionRevision,
+    pub base_surface_revision: SurfaceRevision,
+    pub surface_revision: SurfaceRevision,
     #[serde(
         serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_PATCH_SPANS, _, _>",
         deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_PATCH_SPANS, _, _>"
@@ -242,10 +255,10 @@ pub struct PaneSurfacePatch {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceUpdate {
     pub boot_id: String,
-    pub base_surface_revision: u64,
-    pub surface_revision: u64,
-    pub base_projection_revision: u64,
-    pub projection_revision: u64,
+    pub base_surface_revision: SurfaceRevision,
+    pub surface_revision: SurfaceRevision,
+    pub base_projection_revision: ProjectionRevision,
+    pub projection_revision: ProjectionRevision,
     pub meta: Option<SurfaceMeta>,
     #[serde(
         serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_PATCH_SPANS, _, _>",

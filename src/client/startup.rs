@@ -5,7 +5,12 @@ pub fn run_client(
     config: &crate::config::ValidatedConfig,
     paths: &crate::config::AppPaths,
 ) -> io::Result<()> {
-    run_client_with_mode(config, paths, None, None, "connecting to server")
+    run_client_with_mode(
+        config,
+        paths,
+        ClientLaunchMode::Shell,
+        "connecting to server",
+    )
 }
 
 pub fn run_terminal_attach(
@@ -17,8 +22,11 @@ pub fn run_terminal_attach(
     run_client_with_mode(
         config,
         paths,
-        Some((terminal_id, takeover)),
-        Some(AttachEscapeState::from_config(config)),
+        ClientLaunchMode::Attach {
+            terminal_id,
+            takeover,
+            escape: AttachEscapeState::from_config(config),
+        },
         "attaching to terminal",
     )
 }

@@ -576,7 +576,7 @@ pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
                 Direction::Horizontal => DirectionSnapshot::Horizontal,
                 Direction::Vertical => DirectionSnapshot::Vertical,
             },
-            ratio: *ratio,
+            ratio: ratio.get(),
             first: Box::new(capture_node(first)),
             second: Box::new(capture_node(second)),
         },

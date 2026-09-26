@@ -174,7 +174,7 @@ impl App {
     pub(super) fn handle_pane_list(&mut self, id: String, params: &PaneListParams) -> ApiResult {
         match self.collect_panes_for_workspace(params.workspace_id.as_deref()) {
             Ok(panes) => success(id, ResponseResult::PaneList { panes }),
-            Err((code, message)) => failure(id, &code, message),
+            Err(error) => Err(error),
         }
     }
 
@@ -305,15 +305,12 @@ impl App {
         // snapshot may advance it; reporting the later value would claim that
         // the returned text included output it never observed.
         let revision = pane.content_seq();
-        let snapshot = match crate::app::api_helpers::read_terminal_snapshot(
+        let snapshot = crate::app::api_helpers::read_terminal_snapshot(
             pane,
             params.source,
             format,
             params.lines,
-        ) {
-            Ok(snapshot) => snapshot,
-            Err((code, message)) => return failure(id, code, message),
-        };
+        )?;
         let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
             crate::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
         });
@@ -364,20 +361,8 @@ impl App {
         let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
-        let bytes = match super::super::api_helpers::encode_api_input(
-            runtime,
-            &params.text,
-            &params.keys,
-        ) {
-            Ok(bytes) => bytes,
-            Err(key) => {
-                return failure(
-                    id,
-                    ApiErrorCode::InvalidKey,
-                    format!("unsupported key {key}"),
-                );
-            }
-        };
+        let bytes =
+            super::super::api_helpers::encode_api_input(runtime, &params.text, &params.keys)?;
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
             return failure(id, ApiErrorCode::PaneSendFailed, err.to_string());
         }
@@ -448,16 +433,7 @@ impl App {
         let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
             return pane_not_found(id, &params.pane_id);
         };
-        let encoded_keys = match encode_api_keys(runtime, &params.keys) {
-            Ok(encoded_keys) => encoded_keys,
-            Err(key) => {
-                return failure(
-                    id,
-                    ApiErrorCode::InvalidKey,
-                    format!("unsupported key {key}"),
-                );
-            }
-        };
+        let encoded_keys = encode_api_keys(runtime, &params.keys)?;
         // One write for the whole sequence: per-key writes let backpressure
         // reject a later key after earlier ones went out, leaving a partial
         // chord sequence in the pane.
@@ -711,13 +687,19 @@ impl From<ratatui::layout::Rect> for PaneLayoutRect {
     }
 }
 
-fn split_path_id(idx: usize, path: &[bool]) -> String {
+fn split_path_id(idx: usize, path: &[crate::protocol::SplitBranch]) -> String {
     if path.is_empty() {
         return format!("split_{idx}_root");
     }
     let path = path
         .iter()
-        .map(|right| if *right { "1" } else { "0" })
+        .map(|branch| {
+            if *branch == crate::protocol::SplitBranch::Second {
+                "1"
+            } else {
+                "0"
+            }
+        })
         .collect::<Vec<_>>()
         .join("");
     format!("split_{idx}_{path}")

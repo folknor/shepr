@@ -92,7 +92,7 @@ mod tests {
             events: vec![
                 ClientPaneInputEvent::Key {
                     code: ClientKeyCode::Char('l'),
-                    modifiers: crossterm::event::KeyModifiers::SHIFT.bits(),
+                    modifiers: crate::protocol::WireModifiers::SHIFT,
                     kind: ClientKeyKind::Release,
                     repeat_count: 1,
                     shifted_codepoint: Some('L' as u32),
@@ -100,9 +100,19 @@ mod tests {
                 },
                 ClientPaneInputEvent::Key {
                     code: ClientKeyCode::Char('7'),
-                    modifiers: crossterm::event::KeyModifiers::CONTROL.bits(),
+                    modifiers: crate::protocol::WireModifiers::CONTROL,
                     kind: ClientKeyKind::Press,
                     repeat_count: 3,
+                    shifted_codepoint: None,
+                    generated_text: None,
+                },
+                ClientPaneInputEvent::Key {
+                    code: ClientKeyCode::Char('x'),
+                    modifiers: crate::protocol::WireModifiers::SUPER
+                        | crate::protocol::WireModifiers::HYPER
+                        | crate::protocol::WireModifiers::META,
+                    kind: ClientKeyKind::Press,
+                    repeat_count: 1,
                     shifted_codepoint: None,
                     generated_text: None,
                 },
@@ -124,6 +134,18 @@ mod tests {
         assert_eq!(key.code, crossterm::event::KeyCode::Char('7'));
         assert_eq!(key.modifiers, crossterm::event::KeyModifiers::CONTROL);
         assert_eq!(key.repeat_count, 3);
+        let crate::raw_input::RawInputEvent::Key(key) = events[2].to_raw_input_event() else {
+            panic!("expected key with extended modifiers");
+        };
+        assert!(
+            key.modifiers
+                .contains(crossterm::event::KeyModifiers::SUPER)
+        );
+        assert!(
+            key.modifiers
+                .contains(crossterm::event::KeyModifiers::HYPER)
+        );
+        assert!(key.modifiers.contains(crossterm::event::KeyModifiers::META));
         Ok(())
     }
 
@@ -247,7 +269,7 @@ mod tests {
             lines: 3,
             column: Some(12),
             row: Some(7),
-            modifiers: 4,
+            modifiers: crate::protocol::WireModifiers::from_bits_retain(4),
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
@@ -334,17 +356,33 @@ mod tests {
                 x: 0,
                 y: 0,
                 visible: true,
-                shape: 6,
+                shape: crate::protocol::CursorShapeParam::SteadyBar,
             }),
             hyperlinks: vec!["https://example.com".to_owned()],
         };
         let msg = ServerMessage::PaneSurface(PaneSurfaceFrame {
             boot_id: "boot-1".into(),
-            projection_revision: 1,
-            surface_revision: 1,
+            projection_revision: crate::protocol::ProjectionRevision::new(1),
+            surface_revision: crate::protocol::SurfaceRevision::new(1),
             frame: frame.clone(),
             panes: Vec::new(),
-            splits: Vec::new(),
+            splits: vec![PaneSurfaceSplit {
+                direction: PaneSurfaceSplitDirection::Horizontal,
+                pos: 1,
+                area: SurfaceRect {
+                    x: 0,
+                    y: 0,
+                    width: 3,
+                    height: 2,
+                },
+                hit_rect: SurfaceRect {
+                    x: 1,
+                    y: 0,
+                    width: 1,
+                    height: 2,
+                },
+                path: vec![SplitBranch::First, SplitBranch::Second],
+            }],
         });
         let decoded = roundtrip(&msg)?;
         assert_eq!(msg, decoded);
@@ -365,10 +403,10 @@ mod tests {
     fn surface_update_roundtrip() -> TestResult {
         let msg = ServerMessage::SurfaceUpdate(SurfaceUpdate {
             boot_id: "boot-1".into(),
-            base_projection_revision: 3,
-            projection_revision: 3,
-            base_surface_revision: 7,
-            surface_revision: 8,
+            base_projection_revision: crate::protocol::ProjectionRevision::new(3),
+            projection_revision: crate::protocol::ProjectionRevision::new(3),
+            base_surface_revision: crate::protocol::SurfaceRevision::new(7),
+            surface_revision: crate::protocol::SurfaceRevision::new(8),
             meta: None,
             spans: vec![PaneSurfacePatchRow {
                 x: 2,
@@ -391,9 +429,9 @@ mod tests {
     fn internal_surface_patch_cannot_be_framed() {
         let patch = ServerMessage::PaneSurfacePatch(PaneSurfacePatch {
             boot_id: "boot".into(),
-            projection_revision: 1,
-            base_surface_revision: 1,
-            surface_revision: 2,
+            projection_revision: crate::protocol::ProjectionRevision::new(1),
+            base_surface_revision: crate::protocol::SurfaceRevision::new(1),
+            surface_revision: crate::protocol::SurfaceRevision::new(2),
             rows: Vec::new(),
             panes: Vec::new(),
             cursor: None,
@@ -407,7 +445,7 @@ mod tests {
         let config = toml::from_str(config_source)?;
         let msg = ClientShellSnapshot {
             boot_id: "boot-1".into(),
-            revision: 1,
+            revision: crate::protocol::ProjectionRevision::new(1),
             resolved_config: crate::config::ValidatedConfig::test_from_config(
                 config,
                 Some(config_source),
@@ -533,7 +571,7 @@ mod tests {
             lines: 1,
             column: None,
             row: None,
-            modifiers: 0,
+            modifiers: crate::protocol::WireModifiers::NONE,
         };
         assert_eq!(roundtrip(&page_key)?, page_key);
 
@@ -564,8 +602,8 @@ mod tests {
     #[test]
     fn direct_terminal_keyboard_mode_roundtrip() -> TestResult {
         let msg = ServerMessage::DirectTerminalKeyboardProtocol {
-            flags: 15,
-            modify_other_keys_level: 1,
+            flags: KittyKeyboardFlags::from_bits_retain(15),
+            modify_other_keys_level: crate::ghostty::ModifyOtherKeysLevel::ExceptWellDefined,
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
@@ -636,14 +674,14 @@ mod tests {
                 x: 10,
                 y: 5,
                 visible: true,
-                shape: 0,
+                shape: crate::protocol::CursorShapeParam::Default,
             }),
             hyperlinks: Vec::new(),
         };
         let msg = ServerMessage::PaneSurface(PaneSurfaceFrame {
             boot_id: "boot-1".into(),
-            projection_revision: 1,
-            surface_revision: 1,
+            projection_revision: crate::protocol::ProjectionRevision::new(1),
+            surface_revision: crate::protocol::SurfaceRevision::new(1),
             frame,
             panes: Vec::new(),
             splits: Vec::new(),
@@ -875,7 +913,7 @@ mod tests {
             x: 1,
             y: 0,
             visible: true,
-            shape: 0,
+            shape: crate::protocol::CursorShapeParam::Default,
         };
         let frame = FrameData::from_ratatui_buffer(&buffer, Some(cursor.clone()));
 

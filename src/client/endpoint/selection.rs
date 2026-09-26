@@ -17,7 +17,7 @@ use super::{ClientEndpointId, EndpointCatalog, ProfileId};
 
 struct SelectionAttempt {
     endpoint_id: ClientEndpointId,
-    generation: Option<u64>,
+    generation: Option<crate::protocol::ConnectionGeneration>,
     previous: Option<ProfileId>,
 }
 
@@ -26,7 +26,10 @@ pub(in crate::client) struct EndpointSelectionTracker {
     selected: Option<ProfileId>,
     persisted: Option<ProfileId>,
     attempt: Option<SelectionAttempt>,
-    failed: Option<(ClientEndpointId, Option<u64>)>,
+    failed: Option<(
+        ClientEndpointId,
+        Option<crate::protocol::ConnectionGeneration>,
+    )>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -94,7 +97,7 @@ impl EndpointSelectionTracker {
         }
         self.attempt = Some(SelectionAttempt {
             endpoint_id: endpoint_id.clone(),
-            generation,
+            generation: generation.map(Into::into),
             previous,
         });
         true
@@ -156,7 +159,7 @@ impl EndpointSelectionTracker {
         self.failed
             .as_ref()
             .is_some_and(|(failed, failed_generation)| {
-                failed == endpoint_id && *failed_generation == generation
+                failed == endpoint_id && *failed_generation == generation.map(Into::into)
             })
     }
 

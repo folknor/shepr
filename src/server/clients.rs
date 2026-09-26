@@ -42,7 +42,7 @@ pub(crate) struct ClientShellState {
     /// Last coherent shell replacement sent to this client.
     pub(crate) snapshot: Option<crate::protocol::ClientShellSnapshot>,
     /// Monotonic shell replacement revision for this connection.
-    pub(crate) projection_revision: u64,
+    pub(crate) projection_revision: crate::protocol::ProjectionRevision,
     /// Whether this shell is waiting for one ordered endpoint command response.
     pub(crate) endpoint_command_in_flight: bool,
 }
@@ -912,7 +912,7 @@ mod tests {
             "w1:p1",
             &[ClientPaneInputEvent::Key {
                 code: crate::protocol::ClientKeyCode::Char('x'),
-                modifiers: 0,
+                modifiers: crate::protocol::WireModifiers::NONE,
                 kind: ClientKeyKind::Press,
                 repeat_count: 1,
                 shifted_codepoint: None,
@@ -928,7 +928,7 @@ mod tests {
         let mut client = shell_client();
         let key = |code, kind| ClientPaneInputEvent::Key {
             code,
-            modifiers: crossterm::event::KeyModifiers::SHIFT.bits(),
+            modifiers: crate::protocol::WireModifiers::SHIFT,
             kind,
             repeat_count: 1,
             shifted_codepoint: None,

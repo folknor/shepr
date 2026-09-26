@@ -2,7 +2,7 @@
 
 use crate::protocol::{
     ClientKeyCode, ClientKeyKind, ClientMouseButton, ClientMouseKind, ClientMousePosition,
-    ClientPaneInputEvent,
+    ClientPaneInputEvent, WireModifiers,
 };
 
 impl ClientKeyKind {
@@ -144,7 +144,7 @@ impl ClientPaneInputEvent {
     pub(crate) fn from_terminal_key(key: crate::input::TerminalKey) -> Option<Self> {
         Some(Self::Key {
             code: ClientKeyCode::from_crossterm(key.code)?,
-            modifiers: key.modifiers.bits(),
+            modifiers: WireModifiers::from(key.modifiers),
             kind: ClientKeyKind::from_crossterm(key.kind),
             repeat_count: key.repeat_count,
             shifted_codepoint: key.shifted_codepoint,
@@ -162,13 +162,11 @@ impl ClientPaneInputEvent {
                 shifted_codepoint,
                 generated_text,
             } => {
-                let mut key = crate::input::TerminalKey::new(
-                    code.to_crossterm(),
-                    crossterm::event::KeyModifiers::from_bits_truncate(*modifiers),
-                )
-                .with_kind(kind.to_crossterm())
-                .with_repeat_count(*repeat_count)
-                .with_generated_text(generated_text.clone());
+                let mut key =
+                    crate::input::TerminalKey::new(code.to_crossterm(), modifiers.to_crossterm())
+                        .with_kind(kind.to_crossterm())
+                        .with_repeat_count(*repeat_count)
+                        .with_generated_text(generated_text.clone());
                 if let Some(shifted_codepoint) = shifted_codepoint {
                     key = key.with_shifted_codepoint(*shifted_codepoint);
                 }
@@ -190,7 +188,7 @@ impl ClientPaneInputEvent {
                     kind: kind.to_crossterm(),
                     column,
                     row,
-                    modifiers: crossterm::event::KeyModifiers::from_bits_truncate(*modifiers),
+                    modifiers: modifiers.to_crossterm(),
                 })
             }
             Self::Paste(text) => crate::raw_input::RawInputEvent::Paste(text.clone()),

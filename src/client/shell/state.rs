@@ -115,7 +115,7 @@ pub(super) struct PaneSplitHit {
     pub(super) pos: u16,
     pub(super) area: Rect,
     pub(super) hit_rect: Rect,
-    pub(super) path: Vec<bool>,
+    pub(super) path: Vec<crate::protocol::SplitBranch>,
     pub(super) topology_signature: u64,
 }
 
@@ -611,7 +611,7 @@ pub(crate) struct ClientShellState {
     pub(super) sidebar_collapsed_manual: bool,
     pub(super) sidebar_width: u16,
     pub(super) sidebar_width_manual: bool,
-    pub(super) sidebar_section_split: f32,
+    pub(super) sidebar_section_split: super::sidebar_tokens::SectionSplit,
     pub(super) sidebar_section_split_manual: bool,
     pub(super) agent_panel_sort_manual: bool,
     pub(super) last_sidebar_divider_click: Option<std::time::Instant>,
@@ -689,9 +689,7 @@ impl ClientShellState {
             .clamp(config.sidebar_min_width, config.sidebar_max_width);
         let sidebar_section_split = preferences
             .sidebar_section_split
-            .filter(|split| split.is_finite())
-            .map(|split| split.clamp(0.1, 0.9))
-            .unwrap_or(0.5);
+            .unwrap_or(super::sidebar_tokens::SectionSplit::DEFAULT);
         if let Some(sort) = preferences.agent_panel_sort {
             config.agent_panel_sort = sort;
         }
@@ -1103,7 +1101,7 @@ impl ClientShellState {
         }) {
             return;
         }
-        if surface.projection_revision == snapshot.revision.saturating_add(1) {
+        if surface.projection_revision == snapshot.revision.next() {
             // The next expected surface waits separately for its exact snapshot. Keeping the
             // current pair avoids treating this speculative successor as presentation evidence.
             // The visible pair and its hit map are untouched, so the hits stay live.

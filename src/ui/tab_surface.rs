@@ -190,7 +190,7 @@ pub(crate) fn tab_surface_cursor(
             y: cursor.y,
             visible,
             shape: if reveal && visible {
-                app.settings.cjk_ime_cursor_shape
+                crate::protocol::CursorShapeParam::from_decscusr(app.settings.cjk_ime_cursor_shape)
             } else {
                 cursor.shape
             },
@@ -200,7 +200,9 @@ pub(crate) fn tab_surface_cursor(
             x: info.inner_rect.x,
             y: info.inner_rect.y,
             visible: true,
-            shape: app.settings.cjk_ime_cursor_shape,
+            shape: crate::protocol::CursorShapeParam::from_decscusr(
+                app.settings.cjk_ime_cursor_shape,
+            ),
         })
     } else {
         None

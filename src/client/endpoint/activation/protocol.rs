@@ -27,11 +27,11 @@ pub(super) fn endpoint_lease(
         .connection(endpoint_id)
         .ok_or_else(|| "endpoint connection is unavailable".to_owned())?;
     let (boot_id, minimum_revision) = shell
-        .endpoint_snapshot_identity(endpoint_id, connection.generation)
+        .endpoint_snapshot_identity(endpoint_id, connection.generation.get())
         .ok_or_else(|| "endpoint metadata is not ready for this connection".to_owned())?;
     Ok(EndpointLease {
         endpoint_id: endpoint_id.clone(),
-        generation: connection.generation,
+        generation: connection.generation.get(),
         boot_id: boot_id.to_owned(),
         minimum_revision,
     })
@@ -84,7 +84,7 @@ pub(super) fn coherent_completion_surface(
         &lease.endpoint_id,
         lease.generation,
         &lease.boot_id,
-        surface.projection_revision,
+        surface.projection_revision.get(),
     ) {
         return Err("endpoint activation lost its coherent snapshot/surface pair".into());
     }

@@ -243,7 +243,7 @@ impl AttachEscapeState {
         data: Vec<u8>,
         event: &crate::raw_input::RawInputEvent,
         viewport_rows: u16,
-        mouse_scroll_lines: usize,
+        mouse_scroll_lines: u16,
     ) -> AttachInputAction {
         self.filter_parsed_input_inner(data, event, viewport_rows, mouse_scroll_lines)
     }
@@ -253,7 +253,7 @@ impl AttachEscapeState {
         &mut self,
         data: Vec<u8>,
         viewport_rows: u16,
-        mouse_scroll_lines: usize,
+        mouse_scroll_lines: u16,
     ) -> AttachInputAction {
         let mut events = crate::raw_input::parse_raw_input_bytes_sync(&data);
         if events.len() == 1 {
@@ -314,7 +314,7 @@ impl AttachEscapeState {
         data: Vec<u8>,
         event: &crate::raw_input::RawInputEvent,
         viewport_rows: u16,
-        mouse_scroll_lines: usize,
+        mouse_scroll_lines: u16,
     ) -> AttachInputAction {
         if matches!(event, crate::raw_input::RawInputEvent::Paste(_)) {
             return if let Some(prefix) = self.pending_prefix.take() {
@@ -412,7 +412,7 @@ fn attach_scroll_action(
     event: &crate::raw_input::RawInputEvent,
     data: &[u8],
     viewport_rows: u16,
-    mouse_scroll_lines: usize,
+    mouse_scroll_lines: u16,
 ) -> Option<AttachSemanticAction> {
     match event {
         crate::raw_input::RawInputEvent::Mouse(mouse) => match mouse.kind {
@@ -425,7 +425,7 @@ fn attach_scroll_action(
                 Some(AttachSemanticAction::Scroll {
                     source: AttachScrollSource::Wheel,
                     direction,
-                    lines: u16::try_from(mouse_scroll_lines.max(1)).unwrap_or(u16::MAX),
+                    lines: mouse_scroll_lines,
                     column: Some(mouse.column),
                     row: Some(mouse.row),
                     modifiers: mouse.modifiers.bits(),
@@ -487,7 +487,7 @@ pub(super) fn attach_semantic_message(action: AttachSemanticAction) -> Option<Cl
             lines,
             column,
             row,
-            modifiers,
+            modifiers: crate::protocol::WireModifiers::from_bits_retain(modifiers),
         },
         AttachSemanticAction::Mouse {
             kind,
@@ -497,7 +497,7 @@ pub(super) fn attach_semantic_message(action: AttachSemanticAction) -> Option<Cl
             kind,
             position,
             geometry: None,
-            modifiers,
+            modifiers: crate::protocol::WireModifiers::from_bits_retain(modifiers),
             lines: 1,
         },
         AttachSemanticAction::Ignore => return None,

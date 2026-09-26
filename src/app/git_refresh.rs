@@ -6,6 +6,62 @@ use super::{App, GIT_REMOTE_STATUS_REFRESH_INTERVAL, GIT_REPO_DISCOVERY_REFRESH_
 use crate::events::AppEvent;
 use crate::workspace::{GitStatusCacheEntry, GitStatusRefreshDemand, WorkspaceGitStatus};
 
+pub(crate) struct GitRefreshScheduler {
+    pub(crate) last_git_remote_status_refresh: Instant,
+    pub(crate) last_git_repo_discovery_refresh: Instant,
+    pub(crate) git_refresh_in_flight: bool,
+    pub(crate) git_refresh_due_after_in_flight: bool,
+    pub(crate) git_identity_refresh_requested: bool,
+    pub(crate) git_status_cache: HashMap<PathBuf, GitStatusCacheEntry>,
+}
+
+impl GitRefreshScheduler {
+    pub(crate) fn new(now: Instant) -> Self {
+        Self {
+            last_git_remote_status_refresh: now - GIT_REMOTE_STATUS_REFRESH_INTERVAL,
+            last_git_repo_discovery_refresh: now,
+            git_refresh_in_flight: false,
+            git_refresh_due_after_in_flight: false,
+            git_identity_refresh_requested: false,
+            git_status_cache: HashMap::new(),
+        }
+    }
+
+    fn deadline(&self, has_workspaces: bool) -> Option<Instant> {
+        (!self.git_refresh_in_flight && has_workspaces)
+            .then_some(self.last_git_remote_status_refresh + GIT_REMOTE_STATUS_REFRESH_INTERVAL)
+    }
+
+    fn mark_due(&mut self, now: Instant) {
+        self.git_status_cache
+            .retain(|_, entry| entry.fingerprint.is_some());
+        if self.git_refresh_in_flight {
+            self.git_refresh_due_after_in_flight = true;
+            return;
+        }
+        self.last_git_remote_status_refresh = now
+            .checked_sub(GIT_REMOTE_STATUS_REFRESH_INTERVAL)
+            .unwrap_or(now);
+        self.git_refresh_due_after_in_flight = false;
+    }
+
+    pub(crate) fn finish(
+        &mut self,
+        now: Instant,
+        cache_updates: Vec<(PathBuf, GitStatusCacheEntry)>,
+    ) {
+        self.git_refresh_in_flight = false;
+        for (key, entry) in cache_updates {
+            self.git_status_cache.insert(key, entry);
+        }
+        if self.git_refresh_due_after_in_flight {
+            self.mark_due(now);
+        } else {
+            self.last_git_remote_status_refresh = now;
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WorkspaceGitRefreshItem {
     workspace_id: String,
@@ -42,12 +98,12 @@ impl App {
             return;
         }
 
-        let refresh_repo_discovery = self.git_identity_refresh_requested
-            || now.saturating_duration_since(self.last_git_repo_discovery_refresh)
+        let refresh_repo_discovery = self.git_refresh.git_identity_refresh_requested
+            || now.saturating_duration_since(self.git_refresh.last_git_repo_discovery_refresh)
                 >= GIT_REPO_DISCOVERY_REFRESH_INTERVAL;
         let mut workspaces = self.workspace_git_refresh_items(refresh_repo_discovery);
         let mut demand = self.git_refresh_demand();
-        let identity_only = demand.is_empty() && !self.git_identity_refresh_requested;
+        let identity_only = demand.is_empty() && !self.git_refresh.git_identity_refresh_requested;
         if identity_only {
             // Nothing shows Git status, but the workspace label still follows
             // the resolved cwd. Only workspaces whose identity has to be
@@ -58,22 +114,22 @@ impl App {
         }
 
         if workspaces.is_empty() {
-            self.last_git_remote_status_refresh = now;
-            self.git_identity_refresh_requested = false;
+            self.git_refresh.last_git_remote_status_refresh = now;
+            self.git_refresh.git_identity_refresh_requested = false;
             return;
         }
 
-        self.git_refresh_in_flight = true;
+        self.git_refresh.git_refresh_in_flight = true;
         let event_tx = self.event_tx.clone();
-        let cache = self.git_status_cache.clone();
+        let cache = self.git_refresh.git_status_cache.clone();
         // A rediscovered identity may be a different repo, so its branch is
         // refreshed with it rather than left pointing at the old one.
-        if self.git_identity_refresh_requested || identity_only {
+        if self.git_refresh.git_identity_refresh_requested || identity_only {
             demand.branch = true;
         }
-        self.git_identity_refresh_requested = false;
+        self.git_refresh.git_identity_refresh_requested = false;
         if refresh_repo_discovery {
-            self.last_git_repo_discovery_refresh = now;
+            self.git_refresh.last_git_repo_discovery_refresh = now;
         }
         // `git_refresh_in_flight` is only cleared by `GitStatusRefreshed`, so
         // the worker must send that event on every path. A panic inside the
@@ -93,27 +149,18 @@ impl App {
             });
         if let Err(err) = spawned {
             tracing::warn!(%err, "failed to spawn git status refresh thread");
-            self.git_refresh_in_flight = false;
-            self.last_git_remote_status_refresh = now;
+            self.git_refresh.git_refresh_in_flight = false;
+            self.git_refresh.last_git_remote_status_refresh = now;
         }
     }
 
     pub(crate) fn request_git_identity_refresh(&mut self, now: Instant) {
-        self.git_identity_refresh_requested = true;
+        self.git_refresh.git_identity_refresh_requested = true;
         self.mark_git_status_refresh_due(now);
     }
 
     pub(crate) fn mark_git_status_refresh_due(&mut self, now: Instant) {
-        self.git_status_cache
-            .retain(|_, entry| entry.fingerprint.is_some());
-        if self.git_refresh_in_flight {
-            self.git_refresh_due_after_in_flight = true;
-            return;
-        }
-        self.last_git_remote_status_refresh = now
-            .checked_sub(GIT_REMOTE_STATUS_REFRESH_INTERVAL)
-            .unwrap_or(now);
-        self.git_refresh_due_after_in_flight = false;
+        self.git_refresh.mark_due(now);
     }
 
     /// When the next Git refresh pass is due. There is always a pass while
@@ -123,8 +170,7 @@ impl App {
     /// only reveals a `cd` through this poll. A pass with nothing to
     /// rediscover returns without spawning the worker thread.
     pub(crate) fn git_refresh_deadline(&self) -> Option<Instant> {
-        (!self.git_refresh_in_flight && !self.state.workspaces.is_empty())
-            .then_some(self.last_git_remote_status_refresh + GIT_REMOTE_STATUS_REFRESH_INTERVAL)
+        self.git_refresh.deadline(!self.state.workspaces.is_empty())
     }
 
     fn git_refresh_demand(&self) -> GitStatusRefreshDemand {
@@ -412,8 +458,8 @@ mod tests {
 
         assert!(app.git_refresh_deadline().is_some());
         app.start_git_status_refresh_if_due(now);
-        assert!(app.git_refresh_in_flight);
-        assert!(!app.git_identity_refresh_requested);
+        assert!(app.git_refresh.git_refresh_in_flight);
+        assert!(!app.git_refresh.git_identity_refresh_requested);
     }
 
     #[test]
@@ -430,11 +476,11 @@ mod tests {
         workspace.cached_git_status_key = identity_cwd;
         app.state.workspaces.push(workspace);
         let now = Instant::now();
-        app.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+        app.git_refresh.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
 
         app.start_git_status_refresh_if_due(now);
 
-        assert!(!app.git_refresh_in_flight);
+        assert!(!app.git_refresh.git_refresh_in_flight);
         assert!(app.event_rx.try_recv().is_err());
     }
 
@@ -486,12 +532,13 @@ mod tests {
             ws.cached_git_status_key = identity_cwd;
             app.state.workspaces.push(ws);
             let now = Instant::now();
-            app.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+            app.git_refresh.last_git_remote_status_refresh =
+                now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
 
             app.start_git_status_refresh_if_due(now);
 
-            assert!(!app.git_refresh_in_flight);
-            assert_eq!(app.last_git_remote_status_refresh, now);
+            assert!(!app.git_refresh.git_refresh_in_flight);
+            assert_eq!(app.git_refresh.last_git_remote_status_refresh, now);
         }
     }
 
@@ -508,11 +555,11 @@ mod tests {
         ws.tabs.clear();
         app.state.workspaces.push(ws);
         let now = Instant::now();
-        app.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+        app.git_refresh.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
 
         app.start_git_status_refresh_if_due(now);
 
-        assert!(app.git_refresh_in_flight);
+        assert!(app.git_refresh.git_refresh_in_flight);
     }
 
     #[test]
@@ -529,9 +576,9 @@ mod tests {
         assert_eq!(items[0].cache_key_hint, None);
 
         let now = Instant::now();
-        app.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+        app.git_refresh.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
         app.start_git_status_refresh_if_due(now);
-        assert!(app.git_refresh_in_flight);
+        assert!(app.git_refresh.git_refresh_in_flight);
     }
 
     #[test]
@@ -539,7 +586,7 @@ mod tests {
         let mut app = test_app(&crate::config::Config::default());
         app.state.workspaces.push(Workspace::test_new("test"));
         let now = Instant::now();
-        app.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+        app.git_refresh.last_git_remote_status_refresh = now - GIT_REMOTE_STATUS_REFRESH_INTERVAL;
 
         assert_eq!(
             app.next_headless_loop_deadline_with_git_refresh(now, false, false),
@@ -561,30 +608,31 @@ mod tests {
             None,
             GitStatusRefreshDemand::ALL,
         );
-        app.git_status_cache
+        app.git_refresh
+            .git_status_cache
             .insert(cwd.clone(), entry.expect("non-Git cache entry"));
 
         app.mark_git_status_refresh_due(Instant::now());
 
-        assert!(app.git_status_cache.is_empty());
+        assert!(app.git_refresh.git_status_cache.is_empty());
     }
 
     #[test]
     fn git_refresh_due_request_survives_in_flight_refresh() {
         let mut app = test_app(&crate::config::Config::default());
         let now = Instant::now();
-        app.git_refresh_in_flight = true;
+        app.git_refresh.git_refresh_in_flight = true;
 
         app.mark_git_status_refresh_due(now);
-        assert!(app.git_refresh_due_after_in_flight);
+        assert!(app.git_refresh.git_refresh_due_after_in_flight);
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
             results: Vec::new(),
             cache_updates: Vec::new(),
         });
 
-        assert!(!app.git_refresh_in_flight);
-        assert!(!app.git_refresh_due_after_in_flight);
+        assert!(!app.git_refresh.git_refresh_in_flight);
+        assert!(!app.git_refresh.git_refresh_due_after_in_flight);
         assert_eq!(app.git_refresh_deadline(), None);
 
         app.state.workspaces.push(Workspace::test_new("test"));
@@ -606,7 +654,7 @@ mod tests {
     fn empty_refresh_after_a_panic_unwedges_the_refresh_deadline() {
         let mut app = test_app(&crate::config::Config::default());
         app.state.workspaces.push(Workspace::test_new("test"));
-        app.git_refresh_in_flight = true;
+        app.git_refresh.git_refresh_in_flight = true;
         assert_eq!(app.git_refresh_deadline(), None);
 
         let output = refresh_output_or_empty(|| panic!("simulated git refresh failure"));
@@ -615,7 +663,7 @@ mod tests {
             cache_updates: output.cache_updates,
         });
 
-        assert!(!app.git_refresh_in_flight);
+        assert!(!app.git_refresh.git_refresh_in_flight);
         assert!(app.git_refresh_deadline().is_some());
     }
 

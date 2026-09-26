@@ -131,8 +131,8 @@ pub enum ServerMessage {
     /// Exact Kitty keyboard flags requested by a directly attached terminal.
     /// Zero restores the host terminal's previous keyboard mode.
     DirectTerminalKeyboardProtocol {
-        flags: u16,
-        modify_other_keys_level: u8,
+        flags: KittyKeyboardFlags,
+        modify_other_keys_level: crate::ghostty::ModifyOtherKeysLevel,
     },
 
     /// Whether the focused pane needs the shell host to report every key.

@@ -1,5 +1,5 @@
 use crate::api::error::{ApiError, ApiErrorCode, ApiResult};
-use crate::api::schema::{ErrorBody, ResponseResult};
+use crate::api::schema::ResponseResult;
 
 pub(crate) fn success(_id: String, result: ResponseResult) -> ApiResult {
     Ok(result)
@@ -11,10 +11,6 @@ pub(crate) fn failure(
     message: impl Into<String>,
 ) -> ApiResult {
     Err(ApiError::new(code.into(), message))
-}
-
-pub(super) fn failure_body(_id: String, error: ErrorBody) -> ApiResult {
-    Err(ApiError::from_body(error))
 }
 
 #[cfg(test)]

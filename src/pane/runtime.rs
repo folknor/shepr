@@ -11,6 +11,7 @@ use tokio::sync::watch;
 use tokio::sync::{Notify, mpsc};
 use tracing::{error, info, warn};
 
+use super::PaneClearError;
 use super::agent_detection::{
     DetectionPublishDecision, detection_update_for_publish_with_osc,
     mark_detection_content_changed, observe_detection_content_change,
@@ -1015,7 +1016,7 @@ impl PaneRuntime {
         self.terminal.scroll_down(lines);
     }
 
-    pub fn clear_screen(&self) -> Result<(), String> {
+    pub fn clear_screen(&self) -> Result<(), PaneClearError> {
         let guard = crate::ghostty::lock_auxiliary(&self.content_write_lock);
         self.content_seq.fetch_add(1, Ordering::AcqRel);
         let result = self.terminal.clear_screen();

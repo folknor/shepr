@@ -6,7 +6,7 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 /// suitable for synchronous use.
 #[cfg(test)]
 pub fn parse_raw_input_bytes_sync(data: &[u8]) -> Vec<RawInputEvent> {
-    let mut framer = RawInputFramer::default();
+    let mut framer = RawInputFramer::<NoHostReplies>::default();
     let mut events = framer.push(data);
     events.extend(framer.flush_timeout());
     events
@@ -191,12 +191,42 @@ fn raw_input_event_kind(event: &RawInputEvent) -> &'static str {
     }
 }
 
-#[derive(Default)]
-pub(crate) struct RawInputFramer {
-    byte_framer: RawInputByteFramer,
+/// Reply accounting is supplied by the client. Ordinary framing uses the
+/// empty policy and has no host-query state in its byte buffer.
+pub(crate) trait HostReplyPolicy: Default {
+    fn color_query_sent(&mut self) {}
+    fn cell_size_query_sent(&mut self) {}
+    fn enable_color_scheme_tracking(&mut self) {}
+    fn enable_appearance_query_on_focus(&mut self) {}
+    fn awaiting_reply(&self) -> bool {
+        false
+    }
+    fn awaiting_cell_size_or_appearance(&self) -> bool {
+        false
+    }
+    fn awaiting_cell_size(&self) -> bool {
+        false
+    }
+    fn awaiting_appearance(&self) -> bool {
+        false
+    }
+    fn clear_cell_size_and_appearance(&mut self) {}
+    fn clear_cell_size(&mut self) {}
+    fn clear_appearance(&mut self) {}
+    fn clear_all(&mut self) {}
+    fn observe(&mut self, _event: &RawInputEvent) {}
 }
 
-impl RawInputFramer {
+#[derive(Default)]
+pub(crate) struct NoHostReplies;
+impl HostReplyPolicy for NoHostReplies {}
+
+#[derive(Default)]
+pub(crate) struct RawInputFramer<P: HostReplyPolicy = NoHostReplies> {
+    byte_framer: RawInputByteFramer<P>,
+}
+
+impl<P: HostReplyPolicy> RawInputFramer<P> {
     #[cfg(test)]
     pub(crate) fn push(&mut self, data: &[u8]) -> Vec<RawInputEvent> {
         self.push_framed(data)
@@ -290,19 +320,15 @@ impl RawInputFramer {
 }
 
 #[derive(Default)]
-pub(crate) struct RawInputByteFramer {
+pub(crate) struct RawInputByteFramer<P: HostReplyPolicy = NoHostReplies> {
     buffer: Vec<u8>,
     discard_until: Option<ControlStringFamily>,
     discarded_tail_bytes: usize,
     // Keep the discarded prefix separate from continuation bytes awaiting validation.
     timed_out_mouse_prefix: Option<Vec<u8>>,
     lone_escape_recently_flushed: bool,
-    host_color_replies_awaited: u16,
-    host_cell_size_replies_awaited: u16,
-    host_appearance_reply_awaited: bool,
+    host_replies: P,
     held_pending_host_reply_esc: bool,
-    host_color_scheme_change_tracking: bool,
-    host_appearance_query_on_focus: bool,
     split_coalesced_escape: bool,
     host_escape_disambiguation_active: bool,
     /// How many bytes of a held, unterminated bracketed paste have already
@@ -316,11 +342,9 @@ pub(crate) struct RawInputByteFramer {
     discarding_paste_tail: bool,
 }
 
-const HOST_COLOR_QUERY_REPLIES: u16 = 258;
-const HOST_CELL_SIZE_QUERY_REPLIES: u16 = 1;
 const MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES: usize = 32;
 
-impl RawInputByteFramer {
+impl<P: HostReplyPolicy> RawInputByteFramer<P> {
     pub(crate) fn for_host_input() -> Self {
         Self {
             split_coalesced_escape: true,
@@ -427,36 +451,25 @@ impl RawInputByteFramer {
     /// Hold a lone trailing ESC for one idle flush so an OSC 10/11 reply split
     /// at its ESC introducer stitches back together instead of leaking (#549).
     pub(crate) fn host_color_query_sent(&mut self) {
-        self.host_color_replies_awaited = HOST_COLOR_QUERY_REPLIES;
-        self.held_pending_host_reply_esc = false;
-    }
-
-    fn host_appearance_query_sent(&mut self) {
-        self.host_appearance_reply_awaited = true;
+        self.host_replies.color_query_sent();
         self.held_pending_host_reply_esc = false;
     }
 
     /// Same hold window as `host_color_query_sent`, for the XTWINOPS cell size
     /// reply.
     pub(crate) fn host_cell_size_query_sent(&mut self) {
-        self.host_cell_size_replies_awaited = HOST_CELL_SIZE_QUERY_REPLIES;
+        self.host_replies.cell_size_query_sent();
         self.held_pending_host_reply_esc = false;
     }
 
-    fn awaiting_host_reply(&self) -> bool {
-        self.host_color_replies_awaited > 0
-            || self.host_cell_size_replies_awaited > 0
-            || self.host_appearance_reply_awaited
-    }
-
     pub(crate) fn enable_host_color_scheme_change_tracking(&mut self) {
-        self.host_color_scheme_change_tracking = true;
+        self.host_replies.enable_color_scheme_tracking();
     }
 
     /// Arm the bounded host-reply window when focus gain will emit an appearance query.
     /// If the write or reply fails, a lone Escape is delayed for only one extra flush.
     pub(crate) fn enable_host_appearance_query_on_focus(&mut self) {
-        self.host_appearance_query_on_focus = true;
+        self.host_replies.enable_appearance_query_on_focus();
     }
 
     pub(crate) fn has_pending_input(&self) -> bool {
@@ -565,7 +578,7 @@ impl RawInputByteFramer {
             return chunks;
         }
 
-        if (self.host_cell_size_replies_awaited > 0 || self.host_appearance_reply_awaited)
+        if self.host_replies.awaiting_cell_size_or_appearance()
             && self.buffer.as_slice() == b"\x1b["
         {
             if !self.held_pending_host_reply_esc {
@@ -573,19 +586,18 @@ impl RawInputByteFramer {
                 tracing::trace!("holding incomplete host CSI reply one flush");
                 return chunks;
             }
-            self.host_cell_size_replies_awaited = 0;
-            self.host_appearance_reply_awaited = false;
+            self.host_replies.clear_cell_size_and_appearance();
             self.held_pending_host_reply_esc = false;
         }
 
-        if self.host_cell_size_replies_awaited > 0
+        if self.host_replies.awaiting_cell_size()
             && starts_with_incomplete_host_cell_size_report(&self.buffer)
         {
             tracing::debug!(
                 len = self.buffer.len(),
                 "discarding incomplete host cell size report after input timeout"
             );
-            self.host_cell_size_replies_awaited = 0;
+            self.host_replies.clear_cell_size();
             self.held_pending_host_reply_esc = false;
             self.discard_until = Some(ControlStringFamily::HostReplyCsi);
             self.discarded_tail_bytes = 0;
@@ -594,7 +606,7 @@ impl RawInputByteFramer {
         }
 
         if starts_with_incomplete_host_color_scheme_report(&self.buffer) {
-            if self.host_appearance_reply_awaited && !self.held_pending_host_reply_esc {
+            if self.host_replies.awaiting_appearance() && !self.held_pending_host_reply_esc {
                 self.held_pending_host_reply_esc = true;
                 tracing::trace!(
                     len = self.buffer.len(),
@@ -606,7 +618,7 @@ impl RawInputByteFramer {
                 len = self.buffer.len(),
                 "discarding incomplete host color scheme report after input timeout"
             );
-            self.host_appearance_reply_awaited = false;
+            self.host_replies.clear_appearance();
             self.held_pending_host_reply_esc = false;
             self.discard_until = Some(ControlStringFamily::HostReplyCsi);
             self.discarded_tail_bytes = 0;
@@ -628,15 +640,13 @@ impl RawInputByteFramer {
         }
 
         if self.buffer.as_slice() == [ESC] {
-            if self.awaiting_host_reply() && !self.held_pending_host_reply_esc {
+            if self.host_replies.awaiting_reply() && !self.held_pending_host_reply_esc {
                 self.held_pending_host_reply_esc = true;
                 tracing::trace!("holding lone escape one flush while awaiting host reply");
                 return chunks;
             }
             // No continuation arrived; give up the window so Escape is not delayed again.
-            self.host_color_replies_awaited = 0;
-            self.host_cell_size_replies_awaited = 0;
-            self.host_appearance_reply_awaited = false;
+            self.host_replies.clear_all();
             self.held_pending_host_reply_esc = false;
             tracing::warn!(
                 bytes = ?self.buffer,
@@ -772,24 +782,7 @@ impl RawInputByteFramer {
             let Some((event, consumed)) = extract_one_event(&self.buffer) else {
                 break;
             };
-            if matches!(
-                event,
-                RawInputEvent::HostDefaultColor { .. } | RawInputEvent::HostPaletteColors { .. }
-            ) {
-                self.host_color_replies_awaited = self.host_color_replies_awaited.saturating_sub(1);
-            } else if matches!(event, RawInputEvent::HostCellSizeReport { .. }) {
-                self.host_cell_size_replies_awaited =
-                    self.host_cell_size_replies_awaited.saturating_sub(1);
-            } else if self.host_appearance_query_on_focus
-                && matches!(event, RawInputEvent::OuterFocusGained)
-            {
-                self.host_appearance_query_sent();
-            } else if matches!(event, RawInputEvent::HostColorSchemeChanged(_)) {
-                self.host_appearance_reply_awaited = false;
-                if self.host_color_scheme_change_tracking {
-                    self.host_color_query_sent();
-                }
-            }
+            self.host_replies.observe(&event);
             self.held_pending_host_reply_esc = false;
             chunks.push(self.buffer[..consumed].to_vec());
             self.buffer.drain(..consumed);
@@ -1435,6 +1428,10 @@ fn parse_mouse_cb(cb: u8) -> Option<(MouseEventKind, KeyModifiers)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::host_replies::HostReplies;
+
+    type RawInputFramer = super::RawInputFramer<HostReplies>;
+    type RawInputByteFramer = super::RawInputByteFramer<HostReplies>;
     use crossterm::event::{KeyCode, KeyEventKind};
 
     fn assert_raw_key(event: RawInputEvent, code: KeyCode, modifiers: KeyModifiers) {
@@ -2076,13 +2073,13 @@ mod tests {
 
     #[test]
     fn raw_input_corpus_fixture_extracts_whole_events() {
-        let corpus = include_str!("../tests/fixtures/keyboard_protocol_corpus.tsv");
+        let corpus = include_str!("../../tests/fixtures/keyboard_protocol_corpus.tsv");
         assert_fixture_extracts_whole_events(corpus);
     }
 
     #[test]
     fn raw_input_linux_terminal_variants_fixture_extracts_whole_events() {
-        let corpus = include_str!("../tests/fixtures/linux_terminal_variants.tsv");
+        let corpus = include_str!("../../tests/fixtures/linux_terminal_variants.tsv");
         assert_fixture_extracts_whole_events(corpus);
     }
 

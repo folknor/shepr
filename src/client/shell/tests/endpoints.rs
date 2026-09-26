@@ -631,7 +631,7 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
     assert!(state.hits.workspace_max_scroll > 0);
 
     let mut update = state.snapshot.as_deref().expect("snapshot").clone();
-    update.revision = 2;
+    update.revision = crate::protocol::ProjectionRevision::new(2);
     update.workspaces.push(ClientShellWorkspace {
         workspace_id: "ws_13".into(),
         number: 13,
@@ -644,7 +644,7 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
     }
     state.set_snapshot(Box::new(update));
     let mut updated_surface = surface();
-    updated_surface.projection_revision = 2;
+    updated_surface.projection_revision = crate::protocol::ProjectionRevision::new(2);
     state.set_pane_surface(updated_surface);
     state.compose(106, 2).expect("zero-height workspace body");
     assert!(state.reveal_focused_workspace);
@@ -971,7 +971,7 @@ fn unselected_endpoint_snapshot_keeps_server_idle_status() {
     remote.boot_id = "remote-boot".into();
     remote.agents = vec![agent("background agent", AgentStatus::Working, 2)];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
-    remote.revision = 2;
+    remote.revision = crate::protocol::ProjectionRevision::new(2);
     remote.agents = vec![agent("background agent", AgentStatus::Idle, 3)];
 
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
@@ -1206,33 +1206,33 @@ fn context_menu_lookup_ignores_inactive_endpoint_workspaces() {
 fn future_surface_waits_for_its_exact_snapshot_revision() {
     let (mut state, _) = state_with_remote();
     let mut future = surface();
-    future.projection_revision = 2;
-    future.surface_revision = 2;
+    future.projection_revision = crate::protocol::ProjectionRevision::new(2);
+    future.surface_revision = crate::protocol::SurfaceRevision::new(2);
     state.set_pane_surface(future);
     assert_eq!(
         state
             .pane_surface
             .as_ref()
             .map(|surface| surface.projection_revision),
-        Some(1)
+        Some(crate::protocol::ProjectionRevision::new(1))
     );
     assert_eq!(
         state
             .pending_pane_surface
             .as_ref()
             .map(|surface| surface.projection_revision),
-        Some(2)
+        Some(crate::protocol::ProjectionRevision::new(2))
     );
 
     let mut next = snapshot();
-    next.revision = 2;
+    next.revision = crate::protocol::ProjectionRevision::new(2);
     state.set_snapshot(Box::new(next));
     assert_eq!(
         state
             .pane_surface
             .as_ref()
             .map(|surface| surface.projection_revision),
-        Some(2)
+        Some(crate::protocol::ProjectionRevision::new(2))
     );
     assert!(state.pending_pane_surface.is_none());
 }
@@ -1242,12 +1242,12 @@ fn inactive_endpoint_snapshot_cache_never_regresses_revision() {
     let (mut state, endpoint_id) = state_with_remote();
     let mut newest = snapshot();
     newest.boot_id = "remote-boot".into();
-    newest.revision = 3;
+    newest.revision = crate::protocol::ProjectionRevision::new(3);
     newest.workspaces[0].label = "newest".into();
     state.set_endpoint_snapshot(&endpoint_id, Box::new(newest));
     let mut delayed = snapshot();
     delayed.boot_id = "remote-boot".into();
-    delayed.revision = 2;
+    delayed.revision = crate::protocol::ProjectionRevision::new(2);
     delayed.workspaces[0].label = "delayed".into();
 
     state.set_endpoint_snapshot(&endpoint_id, Box::new(delayed));
@@ -1267,12 +1267,12 @@ fn new_connection_generation_accepts_a_lower_same_boot_projection_revision() {
     let (mut state, endpoint_id) = state_with_remote();
     let mut previous = snapshot();
     previous.boot_id = "shared-server-boot".into();
-    previous.revision = 9;
+    previous.revision = crate::protocol::ProjectionRevision::new(9);
     previous.workspaces[0].label = "old connection".into();
     state.cache_endpoint_snapshot_for_generation(&endpoint_id, 4, Box::new(previous));
     let mut reconnected = snapshot();
     reconnected.boot_id = "shared-server-boot".into();
-    reconnected.revision = 1;
+    reconnected.revision = crate::protocol::ProjectionRevision::new(1);
     reconnected.workspaces[0].label = "new connection".into();
 
     state.cache_endpoint_snapshot_for_generation(&endpoint_id, 5, Box::new(reconnected));
@@ -1308,13 +1308,14 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         let (mut state, endpoint_id) = state_with_remote();
         let mut previous = snapshot();
         previous.boot_id = "shared-server-boot".into();
-        previous.revision = previous_revision;
+        previous.revision = crate::protocol::ProjectionRevision::new(previous_revision);
         state.cache_endpoint_snapshot_for_generation(&endpoint_id, 4, Box::new(previous));
         assert!(state.activate_endpoint_projection(&endpoint_id));
         let mut previous_surface = surface();
         previous_surface.boot_id = "shared-server-boot".into();
-        previous_surface.projection_revision = previous_revision;
-        previous_surface.surface_revision = 9;
+        previous_surface.projection_revision =
+            crate::protocol::ProjectionRevision::new(previous_revision);
+        previous_surface.surface_revision = crate::protocol::SurfaceRevision::new(9);
         state.set_pane_surface(previous_surface.clone());
         previous_surface.projection_revision += 1;
         state.set_pane_surface(previous_surface);
@@ -1324,7 +1325,7 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         state.mark_endpoint_disconnected(&endpoint_id);
         let mut reconnected = snapshot();
         reconnected.boot_id = "shared-server-boot".into();
-        reconnected.revision = 1;
+        reconnected.revision = crate::protocol::ProjectionRevision::new(1);
         state.cache_endpoint_snapshot_for_generation(&endpoint_id, 5, Box::new(reconnected));
         assert_eq!(
             state.snapshot.as_ref().expect("test precondition").revision,
@@ -1344,8 +1345,8 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         assert!(state.compose(106, 20).is_none());
         let mut reconnected_surface = surface();
         reconnected_surface.boot_id = "shared-server-boot".into();
-        reconnected_surface.projection_revision = 1;
-        reconnected_surface.surface_revision = 1;
+        reconnected_surface.projection_revision = crate::protocol::ProjectionRevision::new(1);
+        reconnected_surface.surface_revision = crate::protocol::SurfaceRevision::new(1);
         state.set_pane_surface(reconnected_surface);
 
         assert_eq!(

@@ -1,6 +1,6 @@
 //! Optional endpoint encoding that retains unchanged terminal cells across projections.
 
-use super::{CellData, PaneSurfaceFrame, ServerMessage};
+use super::{CellData, PaneSurfaceFrame, ProjectionRevision, ServerMessage, SurfaceRevision};
 
 #[derive(Debug)]
 pub(crate) enum SurfaceDecodeError {
@@ -90,8 +90,8 @@ pub(crate) fn message(
 #[derive(Default)]
 struct CellBaseline {
     boot_id: String,
-    projection_revision: u64,
-    surface_revision: u64,
+    projection_revision: ProjectionRevision,
+    surface_revision: SurfaceRevision,
     width: u16,
     height: u16,
     cells: Vec<CellData>,
@@ -100,12 +100,16 @@ struct CellBaseline {
 
 pub(crate) struct Baseline<'a> {
     boot_id: &'a str,
-    projection_revision: u64,
-    surface_revision: u64,
+    projection_revision: ProjectionRevision,
+    surface_revision: SurfaceRevision,
 }
 
 impl<'a> Baseline<'a> {
-    pub(crate) fn new(boot_id: &'a str, projection_revision: u64, surface_revision: u64) -> Self {
+    pub(crate) fn new(
+        boot_id: &'a str,
+        projection_revision: ProjectionRevision,
+        surface_revision: SurfaceRevision,
+    ) -> Self {
         Self {
             boot_id,
             projection_revision,
@@ -116,14 +120,14 @@ impl<'a> Baseline<'a> {
     pub(crate) fn accepts(
         &self,
         boot_id: &str,
-        base_surface_revision: u64,
-        surface_revision: u64,
-        base_projection_revision: u64,
-        projection_revision: u64,
+        base_surface_revision: SurfaceRevision,
+        surface_revision: SurfaceRevision,
+        base_projection_revision: ProjectionRevision,
+        projection_revision: ProjectionRevision,
     ) -> bool {
         if self.boot_id != boot_id
             || base_surface_revision != self.surface_revision
-            || self.surface_revision.checked_add(1) != Some(surface_revision)
+            || self.surface_revision.checked_next() != Some(surface_revision)
         {
             return false;
         }
@@ -343,8 +347,8 @@ mod tests {
     fn surface() -> PaneSurfaceFrame {
         PaneSurfaceFrame {
             boot_id: "boot".into(),
-            projection_revision: 1,
-            surface_revision: 1,
+            projection_revision: crate::protocol::ProjectionRevision::new(1),
+            surface_revision: crate::protocol::SurfaceRevision::new(1),
             frame: FrameData {
                 cells: vec![cell("a"), cell("b")],
                 width: 2,
@@ -366,10 +370,10 @@ mod tests {
             .expect("baseline");
         let update = SurfaceUpdate {
             boot_id: first.boot_id.clone(),
-            base_surface_revision: 1,
-            surface_revision: 2,
-            base_projection_revision: 1,
-            projection_revision: 2,
+            base_surface_revision: crate::protocol::SurfaceRevision::new(1),
+            surface_revision: crate::protocol::SurfaceRevision::new(2),
+            base_projection_revision: crate::protocol::ProjectionRevision::new(1),
+            projection_revision: crate::protocol::ProjectionRevision::new(2),
             meta: None,
             spans: vec![PaneSurfacePatchRow {
                 x: 1,
@@ -399,10 +403,10 @@ mod tests {
             .expect("baseline");
         let update = SurfaceUpdate {
             boot_id: "boot".into(),
-            base_surface_revision: 0,
-            surface_revision: 2,
-            base_projection_revision: 1,
-            projection_revision: 1,
+            base_surface_revision: crate::protocol::SurfaceRevision::new(0),
+            surface_revision: crate::protocol::SurfaceRevision::new(2),
+            base_projection_revision: crate::protocol::ProjectionRevision::new(1),
+            projection_revision: crate::protocol::ProjectionRevision::new(1),
             meta: None,
             spans: Vec::new(),
         };
@@ -420,10 +424,10 @@ mod tests {
             .expect("baseline");
         let update = SurfaceUpdate {
             boot_id: "boot".into(),
-            base_surface_revision: 1,
-            surface_revision: 2,
-            base_projection_revision: 1,
-            projection_revision: 1,
+            base_surface_revision: crate::protocol::SurfaceRevision::new(1),
+            surface_revision: crate::protocol::SurfaceRevision::new(2),
+            base_projection_revision: crate::protocol::ProjectionRevision::new(1),
+            projection_revision: crate::protocol::ProjectionRevision::new(1),
             meta: None,
             spans: vec![PaneSurfacePatchRow {
                 x: 0,

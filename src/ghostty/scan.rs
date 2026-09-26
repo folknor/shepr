@@ -27,6 +27,15 @@ const MAX_OSC_BYTES: usize = 4096;
 const MAX_DCS_INTRO_BYTES: usize = 16;
 const MAX_XTGETTCAP_BYTES: usize = 1024;
 
+/// Raw OSC working-directory report. It may be a URI or a path, so parsing
+/// belongs to the pane after the terminal scanner has framed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkingDirectoryReport(pub(crate) Vec<u8>);
+
+/// Raw ConEmu OSC 9;4 payload, including its `4` command byte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProgressReport(pub(crate) Vec<u8>);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ScanEvent {
     /// CSI ? 996 n (color scheme DSR).
@@ -36,15 +45,15 @@ pub(super) enum ScanEvent {
     /// Complete XTGETTCAP replies, in request order.
     Xtgettcap(Vec<Vec<u8>>),
     /// Working-directory report payload (URI or path, exactly as sent).
-    WorkingDirectory(Vec<u8>),
+    WorkingDirectory(WorkingDirectoryReport),
     /// ConEmu progress report: the OSC 9 payload after `9;`, starting `4`.
-    Progress(Vec<u8>),
+    Progress(ProgressReport),
     /// CSI ? 3 J: the DECSED spelling of ED3 (erase scrollback). vte only
     /// dispatches `CSI 3 J`, but programs (Droid among them) emit this form.
     EraseScrollback,
     /// xterm modifyOtherKeys level (0, 1 or 2) set by a spelling vte does not
     /// dispatch: `CSI > m`, `CSI > 4 n`, or `CSI > 4 ; Pv m` with Pv > 2.
-    ModifyOtherKeys(u8),
+    ModifyOtherKeys(super::ModifyOtherKeysLevel),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,7 +244,7 @@ impl Scanner {
                 .strip_prefix(b">")
                 .is_some_and(|resource| parse_decimal(resource) == Some(4)) =>
             {
-                Some(ScanEvent::ModifyOtherKeys(0))
+                Some(ScanEvent::ModifyOtherKeys(super::ModifyOtherKeysLevel::Off))
             }
             b'm' => params
                 .strip_prefix(b">")
@@ -271,7 +280,7 @@ impl Scanner {
         if let Some(payload) = payload {
             events.push(ScannedEvent {
                 end: index + 1,
-                event: ScanEvent::WorkingDirectory(payload.to_vec()),
+                event: ScanEvent::WorkingDirectory(WorkingDirectoryReport(payload.to_vec())),
             });
             return;
         }
@@ -284,7 +293,7 @@ impl Scanner {
         {
             events.push(ScannedEvent {
                 end: index + 1,
-                event: ScanEvent::Progress(payload.to_vec()),
+                event: ScanEvent::Progress(ProgressReport(payload.to_vec())),
             });
         }
     }
@@ -312,9 +321,9 @@ impl Scanner {
 /// every resource) and `CSI > 4 ; Pv m` with Pv above 2 (clamped to 2). vte
 /// dispatches `CSI > 4 ; Pv m` for Pv 0..=2 itself (a missing or empty Pv is
 /// 0); reporting those here too would apply them twice and out of order.
-fn undispatched_modify_other_keys_level(params: &[u8]) -> Option<u8> {
+fn undispatched_modify_other_keys_level(params: &[u8]) -> Option<super::ModifyOtherKeysLevel> {
     if params.is_empty() {
-        return Some(0);
+        return Some(super::ModifyOtherKeysLevel::Off);
     }
     let mut parts = params.split(|byte| *byte == b';');
     let resource = parts.next().unwrap_or_default();
@@ -323,7 +332,7 @@ fn undispatched_modify_other_keys_level(params: &[u8]) -> Option<u8> {
         return None;
     }
     let level = value.and_then(parse_decimal)?;
-    (level > 2).then_some(2)
+    (level > 2).then_some(super::ModifyOtherKeysLevel::All)
 }
 
 fn parse_decimal(bytes: &[u8]) -> Option<u16> {
@@ -524,9 +533,9 @@ mod tests {
         assert_eq!(
             payloads,
             vec![
-                b"file:///tmp/a".to_vec(),
-                b"/tmp/b".to_vec(),
-                b"/tmp/c".to_vec()
+                WorkingDirectoryReport(b"file:///tmp/a".to_vec()),
+                WorkingDirectoryReport(b"/tmp/b".to_vec()),
+                WorkingDirectoryReport(b"/tmp/c".to_vec())
             ]
         );
         assert_chunk_equivalence(bytes);
@@ -539,9 +548,9 @@ mod tests {
         assert_eq!(
             scanned_events(bytes),
             vec![
-                ScanEvent::Progress(b"4;3;50".to_vec()),
-                ScanEvent::Progress(b"4".to_vec()),
-                ScanEvent::WorkingDirectory(b"/tmp".to_vec()),
+                ScanEvent::Progress(ProgressReport(b"4;3;50".to_vec())),
+                ScanEvent::Progress(ProgressReport(b"4".to_vec())),
+                ScanEvent::WorkingDirectory(WorkingDirectoryReport(b"/tmp".to_vec())),
             ]
         );
         assert_chunk_equivalence(bytes);
@@ -567,10 +576,14 @@ mod tests {
             b"\x1b[>4;1m\x1b[>4;02m\x1b[>4;9m\x1b[>4m\x1b[>4;m\x1b[>m\x1b[>4;2m\x1b[>04n";
         assert_eq!(
             scanned_events(bytes),
-            [2, 0, 0]
-                .into_iter()
-                .map(ScanEvent::ModifyOtherKeys)
-                .collect::<Vec<_>>()
+            [
+                crate::ghostty::ModifyOtherKeysLevel::All,
+                crate::ghostty::ModifyOtherKeysLevel::Off,
+                crate::ghostty::ModifyOtherKeysLevel::Off
+            ]
+            .into_iter()
+            .map(ScanEvent::ModifyOtherKeys)
+            .collect::<Vec<_>>()
         );
         assert_chunk_equivalence(bytes);
     }
