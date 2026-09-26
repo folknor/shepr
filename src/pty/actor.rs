@@ -20,6 +20,12 @@ const ACTOR_COMMAND_BUFFER: usize = 1024;
 
 pub(crate) struct PtyReadResult {
     pub terminal_responses: Vec<Bytes>,
+    /// The callback could not consume the bytes and never will again: the
+    /// terminal core's lock was poisoned by a panic on some other thread
+    /// (render, detection, an API read). The loop ends exactly as for a
+    /// panic in the callback itself, so the owner hears the pane is dead
+    /// instead of the reader discarding output forever.
+    pub core_broken: bool,
 }
 
 impl PtyReadResult {
@@ -27,6 +33,7 @@ impl PtyReadResult {
     pub(crate) fn empty() -> Self {
         Self {
             terminal_responses: Vec::new(),
+            core_broken: false,
         }
     }
 }
@@ -41,7 +48,8 @@ pub(crate) enum ReaderExit {
     /// child has gone or is being torn down; its own exit is reported by
     /// whoever reaps it.
     Closed,
-    /// The read callback panicked (a terminal core bug). The loop stops and
+    /// The read callback panicked, or reported the terminal core broken by a
+    /// panic elsewhere (a terminal core bug either way). The loop stops and
     /// the master fd is closed, but the child may outlive the SIGHUP, so the
     /// owner must be told the pane is dead.
     Panicked,
@@ -605,6 +613,14 @@ impl PtyIoActorRunner {
                             return ReadOutcome::Closed;
                         }
                     };
+                if result.core_broken {
+                    error!(
+                        pane = self.pane_id,
+                        "terminal core is broken by an earlier panic; closing the pane"
+                    );
+                    self.read_callback_panicked = true;
+                    return ReadOutcome::Closed;
+                }
                 self.controls
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1205,6 +1221,23 @@ mod tests {
     }
 
     #[test]
+    fn broken_core_ends_the_loop_like_a_panic() {
+        let (_handle, mut peer, exit_rx) = actor_reporting_exit(Box::new(|_| PtyReadResult {
+            terminal_responses: Vec::new(),
+            core_broken: true,
+        }));
+
+        peer.write_all(b"output").expect("peer write");
+
+        assert_eq!(
+            exit_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("reader exit is reported for a broken core"),
+            ReaderExit::Panicked
+        );
+    }
+
+    #[test]
     fn peer_closure_reports_a_plain_reader_exit() {
         let (_handle, peer, exit_rx) = actor_reporting_exit(Box::new(|_| PtyReadResult::empty()));
 
@@ -1411,6 +1444,7 @@ mod tests {
                 } else {
                     Bytes::from_static(b"query-dark")
                 }],
+                core_broken: false,
             }),
             on_reader_exit: None,
             read_callback_panicked: false,

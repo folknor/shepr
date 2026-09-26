@@ -138,16 +138,26 @@ pub(crate) fn palette_from_config(config: &Config) -> state::Palette {
     if let Some(custom) = &config.theme.custom {
         palette = palette.with_overrides(custom);
     }
+    if let Some(accent) = ui_accent_override(config) {
+        palette.accent = crate::config::parse_color(accent);
+    }
+    palette
+}
+
+/// The `ui.accent` value that replaces the theme's accent, if any. The
+/// precedence is `theme.custom.accent` (already applied through the theme
+/// overrides), then `ui.accent` when the config file sets it (to any value,
+/// cyan included), then the theme's own accent. The serde default of
+/// `ui.accent` is only a placeholder: an unset key keeps the theme's accent,
+/// which is why this asks whether the file wrote the key instead of comparing
+/// the value against the default.
+fn ui_accent_override(config: &Config) -> Option<&str> {
     let custom_accent = config
         .theme
         .custom
         .as_ref()
-        .and_then(|custom| custom.accent.as_ref())
-        .is_some();
-    if config.ui.accent != "cyan" && !custom_accent {
-        palette.accent = crate::config::parse_color(&config.ui.accent);
-    }
-    palette
+        .is_some_and(|custom| custom.accent.is_some());
+    (!custom_accent && config.ui.is_user_configured("accent")).then_some(config.ui.accent.as_str())
 }
 
 impl App {
@@ -607,6 +617,37 @@ mod tests {
         );
 
         assert_eq!(app.state.palette, state::Palette::tokyo_night());
+    }
+
+    #[test]
+    fn ui_accent_applies_only_when_set_and_not_overridden_by_the_theme() {
+        use ratatui::style::Color;
+
+        let theme_accent = state::Palette::catppuccin().accent;
+        assert_ne!(theme_accent, Color::Cyan, "test precondition");
+
+        // Unset: the theme's accent, not the placeholder default.
+        let config = Config::default();
+        assert_eq!(ui_accent_override(&config), None);
+        assert_eq!(palette_from_config(&config).accent, theme_accent);
+
+        // Set explicitly to the placeholder value: it still applies.
+        let mut config = Config::default();
+        config.ui.accent = "cyan".into();
+        config.ui.user_fields.insert("accent".into());
+        assert_eq!(ui_accent_override(&config), Some("cyan"));
+        assert_eq!(palette_from_config(&config).accent, Color::Cyan);
+
+        config.ui.accent = "magenta".into();
+        assert_eq!(palette_from_config(&config).accent, Color::Magenta);
+
+        // `theme.custom.accent` wins over `ui.accent`.
+        config.theme.custom = Some(crate::config::CustomThemeColors {
+            accent: Some("#010203".into()),
+            ..Default::default()
+        });
+        assert_eq!(ui_accent_override(&config), None);
+        assert_eq!(palette_from_config(&config).accent, Color::Rgb(1, 2, 3));
     }
 
     #[test]
@@ -1706,7 +1747,6 @@ mod tests {
             agent: Some(Agent::Pi),
             state: AgentState::Working,
             visible_blocker: false,
-            visible_working: false,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });
@@ -1734,7 +1774,6 @@ mod tests {
             agent: Some(Agent::Pi),
             state: AgentState::Idle,
             visible_blocker: false,
-            visible_working: false,
             process_exited: false,
             observed_at: std::time::Instant::now(),
         });

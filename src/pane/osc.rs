@@ -539,14 +539,6 @@ mod tests {
             parse_reported_cwd(b"file:///tmp/shepr%20repo"),
             Some(std::path::PathBuf::from("/tmp/shepr repo"))
         );
-        assert_eq!(
-            parse_reported_cwd(b"C:\\Users\\shepr\\src\\shepr"),
-            Some(std::path::PathBuf::from("C:\\Users\\shepr\\src\\shepr"))
-        );
-        assert_eq!(
-            parse_reported_cwd(b"\"C:\\my proj\""),
-            Some(std::path::PathBuf::from("C:\\my proj"))
-        );
     }
 
     #[test]

@@ -14,6 +14,18 @@ use crate::terminal::TerminalId;
 mod metadata;
 pub use metadata::{AgentMetadata, AgentMetadataReport, EffectivePresentation};
 
+/// Hook reports are ordered per source by the `seq` each hook process takes
+/// from its own wall clock (nanoseconds for the shell/python hooks,
+/// microseconds for the JS plugins; only ever compared within one source).
+/// A report whose `seq` is not above the last accepted one is normally a
+/// straggler from a racing hook process and is dropped. Hook processes race
+/// over milliseconds, though; a non-increasing `seq` arriving this long after
+/// the source's last accepted report means the clock stepped backwards (NTP,
+/// resume, a manual change), and dropping would lose every report until the
+/// clock caught up again. Such a report is accepted and re-anchors the
+/// source's sequence.
+const HOOK_SEQUENCE_REANCHOR_AFTER: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HookAuthority {
     pub source: String,
@@ -68,6 +80,23 @@ enum ManagedAgentPhase {
     },
     Blocked,
     Active,
+    /// Restored from a save with a resume planned, and the resume command not
+    /// typed yet: no process exists, so nothing observed about the pane can
+    /// confirm or refute the agent. Saved like `Active` (the name must
+    /// survive a restart before the resume runs) and left alone by
+    /// reconciliation.
+    AwaitingResume,
+    /// The resume command has been typed into the restored shell. Until the
+    /// agent's own process (or a hook report from it) shows up this is only a
+    /// hope: a failed command leaves a plain shell. Evidence of the agent
+    /// makes it `Active`; reaching `deadline` without any releases the name.
+    /// Saved like `Active`: until the deadline the name is still the agent's.
+    /// The seeded restore detection (`restored_terminal` marks the resumed
+    /// agent detected before any process exists) is deliberately not
+    /// evidence here.
+    Resuming {
+        deadline: Instant,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +166,9 @@ pub struct TerminalState {
     codex_prompt_ready: bool,
     managed_agent_launch_session: Option<crate::agent_resume::PersistedAgentSession>,
     hook_report_sequences: HashMap<String, u64>,
+    /// When each source's entry in `hook_report_sequences` was last
+    /// accepted; see [`HOOK_SEQUENCE_REANCHOR_AFTER`].
+    hook_report_accepted_at: HashMap<String, Instant>,
     suppressed_full_lifecycle_hook_reports: HashMap<String, SuppressedFullLifecycleHookReport>,
     stale_full_lifecycle_hook_sessions: HashMap<String, Vec<StaleFullLifecycleHookSession>>,
     metadata_report_sequences: HashMap<String, u64>,
@@ -174,6 +206,7 @@ impl TerminalState {
             codex_prompt_ready: false,
             managed_agent_launch_session: None,
             hook_report_sequences: HashMap::new(),
+            hook_report_accepted_at: HashMap::new(),
             suppressed_full_lifecycle_hook_reports: HashMap::new(),
             stale_full_lifecycle_hook_sessions: HashMap::new(),
             metadata_report_sequences: HashMap::new(),
@@ -204,14 +237,13 @@ impl TerminalState {
             AgentState::Unknown,
             false,
             false,
-            false,
-            false,
             now,
         );
         if starts_acquisition {
             self.codex_prompt_ready = false;
             self.agent_process_acquisition_pending = true;
         }
+        self.confirm_managed_agent_resume(agent);
         mutation
     }
 
@@ -279,8 +311,6 @@ impl TerminalState {
             fallback_state,
             false,
             false,
-            false,
-            false,
             Instant::now(),
         )
     }
@@ -298,8 +328,6 @@ impl TerminalState {
             agent,
             fallback_state,
             visible_blocker,
-            false,
-            false,
             process_exited,
             Instant::now(),
         )
@@ -311,8 +339,6 @@ impl TerminalState {
         agent: Option<Agent>,
         fallback_state: AgentState,
         visible_blocker: bool,
-        _visible_idle: bool,
-        _visible_working: bool,
         process_exited: bool,
         now: Instant,
     ) -> TerminalStateMutation {
@@ -955,11 +981,7 @@ impl TerminalState {
         let Some(seq) = seq else {
             return FullLifecycleHookReportRoute::Ignore;
         };
-        if self
-            .hook_report_sequences
-            .get(source)
-            .is_some_and(|previous| seq <= *previous)
-        {
+        if self.hook_seq_superseded(source, seq, Instant::now()) {
             return FullLifecycleHookReportRoute::Ignore;
         }
 
@@ -1174,7 +1196,7 @@ impl TerminalState {
                 session_ref,
             });
             if let Some(pending) = pending {
-                self.hook_report_sequences.insert(source, pending.seq);
+                self.record_hook_seq(source, pending.seq, Instant::now());
                 self.hook_authority = Some(pending.authority);
             }
         }
@@ -1470,18 +1492,14 @@ impl TerminalState {
                 return None;
             }
             let seq = seq?;
-            if self
-                .hook_report_sequences
-                .get(&source)
-                .is_some_and(|previous| seq <= *previous)
-            {
+            let now = Instant::now();
+            if self.hook_seq_superseded(&source, seq, now) {
                 return None;
             }
 
             let previous_agent_label = self.effective_agent_label().map(str::to_string);
             let previous_known_agent = self.effective_known_agent();
             let previous_state = self.state;
-            let now = Instant::now();
             let previous_presentation =
                 self.effective_presentation_for_state_at(previous_state, now);
             let previous_session = self.current_session_identity_for_persistence();
@@ -1508,7 +1526,7 @@ impl TerminalState {
                 }
                 suppressed.replacement_session_ref = Some(session_ref);
             }
-            self.hook_report_sequences.insert(source.clone(), seq);
+            self.record_hook_seq(source.clone(), seq, now);
 
             if process_present {
                 self.clear_full_lifecycle_hook_suppression_for_detected_agent(None, known_agent);
@@ -1679,20 +1697,41 @@ impl TerminalState {
     }
 
     fn accept_hook_report(&mut self, source: &str, seq: Option<u64>) -> bool {
+        self.accept_hook_report_at(source, seq, Instant::now())
+    }
+
+    fn accept_hook_report_at(&mut self, source: &str, seq: Option<u64>, now: Instant) -> bool {
         let Some(seq) = seq else {
             return !self.hook_report_sequences.contains_key(source);
         };
-
-        if self
-            .hook_report_sequences
-            .get(source)
-            .is_some_and(|last_seq| seq <= *last_seq)
-        {
+        if self.hook_seq_superseded(source, seq, now) {
             return false;
         }
-
-        self.hook_report_sequences.insert(source.to_string(), seq);
+        self.record_hook_seq(source.to_string(), seq, now);
         true
+    }
+
+    /// Whether `seq` from `source` is older than what was already accepted.
+    /// See [`HOOK_SEQUENCE_REANCHOR_AFTER`] for why a non-increasing `seq`
+    /// long after the last acceptance is not.
+    fn hook_seq_superseded(&self, source: &str, seq: u64, now: Instant) -> bool {
+        let Some(last_seq) = self.hook_report_sequences.get(source) else {
+            return false;
+        };
+        if seq > *last_seq {
+            return false;
+        }
+        !self
+            .hook_report_accepted_at
+            .get(source)
+            .is_some_and(|accepted_at| {
+                now.saturating_duration_since(*accepted_at) >= HOOK_SEQUENCE_REANCHOR_AFTER
+            })
+    }
+
+    fn record_hook_seq(&mut self, source: String, seq: u64, now: Instant) {
+        self.hook_report_accepted_at.insert(source.clone(), now);
+        self.hook_report_sequences.insert(source, seq);
     }
 
     #[cfg(test)]
@@ -1983,27 +2022,46 @@ impl TerminalState {
     }
 
     pub fn next_managed_agent_deadline(&self) -> Option<Instant> {
-        let ManagedAgentPhase::Pending {
-            ready_after,
-            deadline,
-            ..
-        } = self.managed_agent?.phase
-        else {
-            return None;
-        };
-        Some(ready_after.unwrap_or(deadline).min(deadline))
+        match self.managed_agent?.phase {
+            ManagedAgentPhase::Pending {
+                ready_after,
+                deadline,
+                ..
+            } => Some(ready_after.unwrap_or(deadline).min(deadline)),
+            ManagedAgentPhase::Resuming { deadline } => Some(deadline),
+            ManagedAgentPhase::Blocked
+            | ManagedAgentPhase::Active
+            | ManagedAgentPhase::AwaitingResume => None,
+        }
     }
 
     pub fn reconcile_managed_agent_at(&mut self, now: Instant, process_exited: bool) -> bool {
         let Some(managed) = self.managed_agent else {
             return false;
         };
+        match managed.phase {
+            ManagedAgentPhase::AwaitingResume => return false,
+            ManagedAgentPhase::Resuming { deadline } => {
+                return self.reconcile_managed_agent_resume(
+                    managed.kind,
+                    deadline,
+                    now,
+                    process_exited,
+                );
+            }
+            ManagedAgentPhase::Pending { .. }
+            | ManagedAgentPhase::Blocked
+            | ManagedAgentPhase::Active => {}
+        }
         let known_agent = self.effective_known_agent();
         let observed_expected = match managed.phase {
             ManagedAgentPhase::Pending {
                 observed_expected, ..
             } => observed_expected || known_agent == Some(managed.kind),
-            ManagedAgentPhase::Blocked | ManagedAgentPhase::Active => false,
+            ManagedAgentPhase::Blocked
+            | ManagedAgentPhase::Active
+            | ManagedAgentPhase::AwaitingResume
+            | ManagedAgentPhase::Resuming { .. } => false,
         };
         let clear = process_exited
             || known_agent.is_some_and(|agent| agent != managed.kind)
@@ -2093,15 +2151,91 @@ impl TerminalState {
     }
 
     pub fn restore_managed_agent(&mut self, name: String, kind: Agent) {
+        self.restore_managed_agent_in(name, kind, ManagedAgentPhase::Active);
+    }
+
+    /// Restores a managed agent whose resume has not been launched yet. See
+    /// [`ManagedAgentPhase::AwaitingResume`]; [`Self::begin_managed_agent_resume`]
+    /// moves it on once the resume command is typed.
+    pub fn restore_managed_agent_for_resume(&mut self, name: String, kind: Agent) {
+        self.restore_managed_agent_in(name, kind, ManagedAgentPhase::AwaitingResume);
+    }
+
+    fn restore_managed_agent_in(&mut self, name: String, kind: Agent, phase: ManagedAgentPhase) {
         self.set_agent_name(name);
         self.agent_name_owner = Some(AgentNameOwner {
             agent_label: crate::detect::agent_label(kind).to_string(),
             session_ref: None,
         });
+        self.managed_agent = Some(ManagedAgent { kind, phase });
+    }
+
+    /// The restored shell has been handed the resume command: from now on the
+    /// managed name holds only until `now + timeout` unless the agent shows
+    /// up. A no-op for anything but a restored agent awaiting its resume.
+    /// Returns whether the phase changed.
+    pub fn begin_managed_agent_resume(&mut self, now: Instant, timeout: Duration) -> bool {
+        let Some(managed) = self.managed_agent else {
+            return false;
+        };
+        if managed.phase != ManagedAgentPhase::AwaitingResume {
+            return false;
+        }
         self.managed_agent = Some(ManagedAgent {
-            kind,
-            phase: ManagedAgentPhase::Active,
+            kind: managed.kind,
+            phase: ManagedAgentPhase::Resuming {
+                deadline: now.checked_add(timeout).unwrap_or(now),
+            },
         });
+        true
+    }
+
+    /// A process of `agent` was detected in the pane: if a resume of that
+    /// agent is waiting for proof, this is it.
+    fn confirm_managed_agent_resume(&mut self, agent: Agent) {
+        if let Some(managed) = self.managed_agent
+            && managed.kind == agent
+            && matches!(managed.phase, ManagedAgentPhase::Resuming { .. })
+        {
+            self.managed_agent = Some(ManagedAgent {
+                kind: managed.kind,
+                phase: ManagedAgentPhase::Active,
+            });
+        }
+    }
+
+    /// Reconciles [`ManagedAgentPhase::Resuming`]. A hook report from the
+    /// agent is evidence as good as its process; the seeded restore
+    /// detection is not, so `effective_known_agent` alone decides nothing
+    /// except a different agent taking the pane.
+    fn reconcile_managed_agent_resume(
+        &mut self,
+        kind: Agent,
+        deadline: Instant,
+        now: Instant,
+        process_exited: bool,
+    ) -> bool {
+        let hook_confirms = self
+            .hook_authority
+            .as_ref()
+            .filter(|authority| self.hook_authority_is_effective(authority))
+            .and_then(|authority| crate::detect::parse_agent_label(&authority.agent_label))
+            == Some(kind);
+        if hook_confirms {
+            self.managed_agent = Some(ManagedAgent {
+                kind,
+                phase: ManagedAgentPhase::Active,
+            });
+            return true;
+        }
+        let other_agent = self
+            .effective_known_agent()
+            .is_some_and(|agent| agent != kind);
+        if process_exited || other_agent || now >= deadline {
+            self.clear_agent_name();
+            return true;
+        }
+        false
     }
 
     pub fn clear_agent_name(&mut self) {
@@ -2218,10 +2352,6 @@ impl TerminalState {
     }
 }
 
-pub(crate) fn stabilize_agent_detection(detection: crate::detect::AgentDetection) -> AgentState {
-    detection.state
-}
-
 /// Whether a managed agent launch in `state` counts as ready for input.
 ///
 /// `Idle` is ready. Codex's idle screen is ambiguous and reports `Unknown`,
@@ -2247,7 +2377,6 @@ fn managed_agent_state_is_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detect::AgentDetection;
 
     fn test_terminal() -> TerminalState {
         TerminalState::new(TerminalId::alloc(), "/tmp".into())
@@ -2465,16 +2594,141 @@ mod tests {
     }
 
     #[test]
-    fn stabilization_uses_raw_policy_state() {
-        let detection = AgentDetection {
-            state: AgentState::Idle,
-            skip_state_update: false,
-            visible_idle: false,
-            visible_blocker: false,
-            visible_working: false,
-        };
+    fn hook_sequence_drops_stragglers_but_survives_a_clock_stepping_back() {
+        let mut terminal = test_terminal();
+        let t0 = Instant::now();
+        assert!(terminal.accept_hook_report_at("shepr:kimi", Some(1_000), t0));
+        // A racing hook process delivering an older report moments later.
+        assert!(!terminal.accept_hook_report_at(
+            "shepr:kimi",
+            Some(999),
+            t0 + Duration::from_millis(50)
+        ));
+        assert!(!terminal.accept_hook_report_at(
+            "shepr:kimi",
+            Some(1_000),
+            t0 + Duration::from_millis(50)
+        ));
+        // Rejections do not extend the window.
+        assert!(!terminal.accept_hook_report_at(
+            "shepr:kimi",
+            Some(10),
+            t0 + HOOK_SEQUENCE_REANCHOR_AFTER - Duration::from_millis(1)
+        ));
+        // The wall clock stepped back: after the window the lower seq is
+        // accepted and becomes the new anchor.
+        let t1 = t0 + HOOK_SEQUENCE_REANCHOR_AFTER;
+        assert!(terminal.accept_hook_report_at("shepr:kimi", Some(10), t1));
+        assert!(terminal.accept_hook_report_at(
+            "shepr:kimi",
+            Some(11),
+            t1 + Duration::from_millis(10)
+        ));
+        assert!(!terminal.accept_hook_report_at(
+            "shepr:kimi",
+            Some(10),
+            t1 + Duration::from_millis(20)
+        ));
+        // Other sources keep their own order.
+        assert!(terminal.accept_hook_report_at("shepr:pi", Some(5), t1));
+    }
 
-        assert_eq!(stabilize_agent_detection(detection), AgentState::Idle);
+    /// A restored managed agent the way `restored_terminal` builds it for a
+    /// pending resume: name held, the resumed agent seeded as detected Idle.
+    fn restored_for_resume(kind: Agent) -> TerminalState {
+        let mut terminal = test_terminal();
+        terminal.restore_managed_agent_for_resume("worker".into(), kind);
+        terminal.set_detected_state(Some(kind), AgentState::Idle);
+        terminal
+    }
+
+    #[test]
+    fn a_restored_agent_awaiting_its_resume_is_saved_and_left_alone() {
+        let now = Instant::now();
+        let mut terminal = restored_for_resume(Agent::Pi);
+
+        // Saves persist it (they skip only launch-pending agents).
+        assert!(!terminal.managed_agent_launch_pending());
+        assert_eq!(terminal.managed_agent_kind(), Some(Agent::Pi));
+        assert_eq!(terminal.next_managed_agent_deadline(), None);
+        // No process exists, so nothing observed can decide anything yet.
+        terminal.set_detected_state(None, AgentState::Unknown);
+        assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(3600), false));
+        assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
+    }
+
+    #[test]
+    fn a_resume_that_never_shows_up_releases_the_name_at_its_deadline() {
+        let now = Instant::now();
+        let mut terminal = restored_for_resume(Agent::Pi);
+        assert!(terminal.begin_managed_agent_resume(now, Duration::from_secs(30)));
+        // Only a restored agent awaiting its resume can start one.
+        assert!(!terminal.begin_managed_agent_resume(now, Duration::from_secs(30)));
+
+        assert!(!terminal.managed_agent_launch_pending());
+        assert!(!terminal.managed_agent_interactive_ready());
+        let deadline = now + Duration::from_secs(30);
+        assert_eq!(terminal.next_managed_agent_deadline(), Some(deadline));
+        // The seeded Idle detection is not evidence of the agent.
+        assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(29), false));
+        assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
+
+        assert!(terminal.reconcile_managed_agent_at(deadline, false));
+        assert_eq!(terminal.agent_name, None);
+        assert_eq!(terminal.managed_agent_kind(), None);
+        assert_eq!(terminal.next_managed_agent_deadline(), None);
+    }
+
+    #[test]
+    fn a_resumed_agent_process_makes_the_name_its_own() {
+        let now = Instant::now();
+        let mut terminal = restored_for_resume(Agent::Pi);
+        assert!(terminal.begin_managed_agent_resume(now, Duration::from_secs(30)));
+
+        let _ = terminal.set_detected_agent_process_at(Agent::Pi, now);
+        assert!(terminal.managed_agent_interactive_ready());
+        assert_eq!(terminal.next_managed_agent_deadline(), None);
+        assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(60), false));
+        assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
+    }
+
+    #[test]
+    fn a_hook_report_from_the_resumed_agent_confirms_it() {
+        let now = Instant::now();
+        let mut terminal = restored_for_resume(Agent::Pi);
+        assert!(terminal.begin_managed_agent_resume(now, Duration::from_secs(30)));
+
+        anchor_full_lifecycle_session(
+            &mut terminal,
+            Agent::Pi,
+            "shepr:pi",
+            "pi",
+            crate::agent_resume::AgentSessionRef::path(test_session_path("resumed.jsonl"))
+                .expect("test precondition"),
+        );
+        let _ = terminal.set_hook_authority(
+            "shepr:pi".into(),
+            "pi".into(),
+            AgentState::Working,
+            None,
+            None,
+        );
+        assert_eq!(terminal.effective_known_agent(), Some(Agent::Pi));
+        assert!(terminal.reconcile_managed_agent_at(now, false));
+        assert!(terminal.managed_agent_interactive_ready());
+        assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(60), false));
+        assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
+    }
+
+    #[test]
+    fn a_different_agent_in_a_resuming_pane_releases_the_name() {
+        let now = Instant::now();
+        let mut terminal = restored_for_resume(Agent::Pi);
+        assert!(terminal.begin_managed_agent_resume(now, Duration::from_secs(30)));
+
+        let _ = terminal.set_detected_agent_process_at(Agent::Codex, now);
+        assert!(terminal.reconcile_managed_agent_at(now, false));
+        assert_eq!(terminal.agent_name, None);
     }
 
     #[test]
@@ -2582,8 +2836,6 @@ mod tests {
             terminal.set_detected_state_with_screen_signals_at(
                 Some(agent),
                 AgentState::Working,
-                false,
-                false,
                 false,
                 false,
                 Instant::now(),
@@ -3058,8 +3310,6 @@ mod tests {
             AgentState::Idle,
             false,
             true,
-            false,
-            true,
             now + Duration::from_millis(1),
         );
         let late = terminal.set_hook_authority_with_session_ref(
@@ -3138,8 +3388,6 @@ mod tests {
             AgentState::Idle,
             false,
             true,
-            false,
-            true,
             process_exit_seen_at,
         );
 
@@ -3149,15 +3397,11 @@ mod tests {
             AgentState::Unknown,
             false,
             false,
-            false,
-            false,
             fresh_process_seen_at,
         );
         terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Pi),
             AgentState::Unknown,
-            false,
-            false,
             false,
             false,
             fresh_process_seen_at + Duration::from_millis(1),
@@ -3215,8 +3459,6 @@ mod tests {
             AgentState::Idle,
             false,
             true,
-            false,
-            true,
             now + Duration::from_millis(1),
         );
 
@@ -3264,8 +3506,6 @@ mod tests {
             Some(Agent::Pi),
             AgentState::Idle,
             false,
-            true,
-            false,
             false,
             now + Duration::from_millis(5),
         );
@@ -3302,15 +3542,11 @@ mod tests {
             AgentState::Idle,
             false,
             true,
-            false,
-            true,
             now + Duration::from_millis(1),
         );
         terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Pi),
             AgentState::Idle,
-            false,
-            true,
             false,
             false,
             now + Duration::from_millis(2),
@@ -3330,15 +3566,11 @@ mod tests {
             AgentState::Idle,
             false,
             true,
-            false,
-            true,
             now + Duration::from_millis(4),
         );
         terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Pi),
             AgentState::Idle,
-            false,
-            true,
             false,
             false,
             now + Duration::from_millis(5),
@@ -3377,8 +3609,6 @@ mod tests {
             AgentState::Idle,
             false,
             true,
-            false,
-            true,
             process_exit_at,
         );
 
@@ -3387,15 +3617,11 @@ mod tests {
             AgentState::Unknown,
             false,
             false,
-            false,
-            false,
             process_exit_at + Duration::from_millis(1),
         );
         terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Pi),
             AgentState::Idle,
-            false,
-            true,
             false,
             false,
             process_exit_at + Duration::from_millis(2),
@@ -3432,8 +3658,6 @@ mod tests {
             AgentState::Idle,
             false,
             true,
-            false,
-            true,
             now + Duration::from_millis(1),
         );
 
@@ -3455,15 +3679,11 @@ mod tests {
             AgentState::Unknown,
             false,
             false,
-            false,
-            false,
             now + Duration::from_millis(3),
         );
         terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Pi),
             AgentState::Unknown,
-            false,
-            false,
             false,
             false,
             now + Duration::from_millis(4),
@@ -3501,8 +3721,6 @@ mod tests {
             AgentState::Idle,
             false,
             true,
-            false,
-            true,
             now + Duration::from_millis(1),
         );
 
@@ -3524,15 +3742,11 @@ mod tests {
             AgentState::Unknown,
             false,
             false,
-            false,
-            false,
             now + Duration::from_millis(3),
         );
         terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Pi),
             AgentState::Unknown,
-            false,
-            false,
             false,
             false,
             now + Duration::from_millis(4),
@@ -3625,8 +3839,6 @@ mod tests {
             AgentState::Idle,
             false,
             true,
-            false,
-            true,
             now + Duration::from_millis(1),
         );
 
@@ -3646,15 +3858,11 @@ mod tests {
             AgentState::Unknown,
             false,
             false,
-            false,
-            false,
             now + Duration::from_millis(2),
         );
         terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Omp),
             AgentState::Unknown,
-            false,
-            false,
             false,
             false,
             now + Duration::from_millis(3),
@@ -3835,8 +4043,6 @@ mod tests {
             Some(Agent::Claude),
             AgentState::Idle,
             false,
-            true,
-            false,
             false,
             now + Duration::from_secs(10),
         );
@@ -3870,8 +4076,6 @@ mod tests {
             Some(Agent::OpenCode),
             AgentState::Idle,
             false,
-            true,
-            false,
             false,
             now + Duration::from_secs(10),
         );
@@ -3899,8 +4103,6 @@ mod tests {
             Some(Agent::Claude),
             AgentState::Working,
             false,
-            false,
-            true,
             false,
             now + Duration::from_millis(1),
         );
@@ -3937,8 +4139,6 @@ mod tests {
             AgentState::Working,
             false,
             false,
-            true,
-            false,
             now + Duration::from_millis(1),
         );
 
@@ -3974,8 +4174,6 @@ mod tests {
             AgentState::Working,
             false,
             false,
-            false,
-            false,
             now + Duration::from_millis(1),
         );
 
@@ -3992,8 +4190,6 @@ mod tests {
             Some(Agent::Claude),
             AgentState::Working,
             false,
-            false,
-            true,
             false,
             now,
         );
@@ -4028,8 +4224,6 @@ mod tests {
             AgentState::Working,
             false,
             false,
-            true,
-            false,
             now,
         );
         terminal.set_hook_authority_at(
@@ -4048,8 +4242,6 @@ mod tests {
             Some(Agent::Codex),
             AgentState::Working,
             false,
-            false,
-            true,
             false,
             now + Duration::from_millis(2000),
         );
@@ -4190,8 +4382,6 @@ mod tests {
             AgentState::Unknown,
             false,
             false,
-            false,
-            false,
             now + Duration::from_millis(1),
         );
 
@@ -4278,8 +4468,6 @@ mod tests {
             AgentState::Working,
             false,
             false,
-            true,
-            false,
             observed,
         );
         terminal.set_hook_authority_at(
@@ -4295,8 +4483,6 @@ mod tests {
         terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Claude),
             AgentState::Idle,
-            false,
-            true,
             false,
             false,
             observed,
@@ -4314,8 +4500,6 @@ mod tests {
             AgentState::Idle,
             false,
             false,
-            false,
-            false,
             observed,
         );
         terminal.set_hook_authority_at(
@@ -4331,8 +4515,6 @@ mod tests {
         let mutation = terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Pi),
             AgentState::Idle,
-            false,
-            false,
             false,
             true,
             observed,
@@ -4367,16 +4549,12 @@ mod tests {
             Some(Agent::Pi),
             AgentState::Idle,
             false,
-            false,
-            false,
             true,
             observed + Duration::from_millis(1),
         );
         terminal.set_detected_state_with_screen_signals_at(
             None,
             AgentState::Unknown,
-            false,
-            false,
             false,
             false,
             observed + Duration::from_millis(2),
@@ -4408,8 +4586,6 @@ mod tests {
             AgentState::Idle,
             false,
             false,
-            false,
-            false,
             observed + Duration::from_millis(3),
         );
         assert!(
@@ -4432,8 +4608,6 @@ mod tests {
         terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Codex),
             AgentState::Working,
-            false,
-            false,
             false,
             false,
             observed,
@@ -4460,8 +4634,6 @@ mod tests {
         terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Codex),
             AgentState::Idle,
-            false,
-            false,
             false,
             true,
             observed,
@@ -5554,8 +5726,6 @@ mod tests {
             AgentState::Idle,
             false,
             false,
-            false,
-            false,
             now,
         );
 
@@ -5799,8 +5969,6 @@ mod tests {
             Some(Agent::Pi),
             AgentState::Idle,
             false,
-            false,
-            false,
             true,
             now,
         );
@@ -5837,8 +6005,6 @@ mod tests {
             Some(Agent::Pi),
             AgentState::Idle,
             false,
-            false,
-            false,
             true,
             now,
         );
@@ -5849,8 +6015,6 @@ mod tests {
         terminal.set_detected_state_with_screen_signals_at(
             None,
             AgentState::Unknown,
-            false,
-            false,
             false,
             false,
             now + Duration::from_secs(1),
@@ -6071,8 +6235,6 @@ mod tests {
             Some(Agent::Pi),
             AgentState::Idle,
             false,
-            false,
-            false,
             true,
             std::time::Instant::now(),
         );
@@ -6104,8 +6266,6 @@ mod tests {
         let mutation = terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Pi),
             AgentState::Idle,
-            false,
-            false,
             false,
             true,
             std::time::Instant::now(),

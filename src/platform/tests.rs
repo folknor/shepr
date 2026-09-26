@@ -133,6 +133,59 @@ fn only_a_session_leader_without_a_terminal_counts_as_detached() {
     assert!(!is_detached_session(90, 70, 0));
 }
 
+#[test]
+fn bridge_socket_names_carry_a_random_token_before_the_extension() {
+    assert_eq!(
+        with_name_token("shepr-r-42-dev.sock", 0xab),
+        "shepr-r-42-dev.00000000000000ab.sock"
+    );
+    assert_eq!(with_name_token("bridge", 1), "bridge.0000000000000001");
+    assert_eq!(with_name_token(".sock", 1), ".sock.0000000000000001");
+
+    let first = remote_bridge_endpoint_path("shepr-t-1-a.sock", "shepr-t-1.sock");
+    let second = remote_bridge_endpoint_path("shepr-t-1-a.sock", "shepr-t-1.sock");
+    assert_ne!(
+        first, second,
+        "a squatter must not be able to predict the path"
+    );
+    for path in [&first, &second] {
+        assert!(fits_unix_socket_path(path), "{}", path.display());
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        assert!(name.starts_with("shepr-t-1"), "{name}");
+        assert!(name.ends_with(".sock"), "{name}");
+    }
+}
+
+#[test]
+fn launch_executable_follows_a_replaced_binary_to_its_new_install() {
+    let installed = |path: &Path| path == Path::new("/usr/bin/shepr");
+    // A running binary that an install replaced.
+    assert_eq!(
+        resolve_launch_executable(PathBuf::from("/usr/bin/shepr (deleted)"), installed),
+        PathBuf::from("/usr/bin/shepr")
+    );
+    // The normal case: the path is there, nothing is rewritten.
+    assert_eq!(
+        resolve_launch_executable(PathBuf::from("/usr/bin/shepr"), installed),
+        PathBuf::from("/usr/bin/shepr")
+    );
+    // Removed with no replacement: keep the reported path, there is nothing
+    // better to offer.
+    assert_eq!(
+        resolve_launch_executable(PathBuf::from("/opt/shepr (deleted)"), installed),
+        PathBuf::from("/opt/shepr (deleted)")
+    );
+    // A binary whose real name ends in the suffix is left alone.
+    let literal = |path: &Path| path == Path::new("/opt/shepr (deleted)");
+    assert_eq!(
+        resolve_launch_executable(PathBuf::from("/opt/shepr (deleted)"), literal),
+        PathBuf::from("/opt/shepr (deleted)")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Shells and agent hints
 // ---------------------------------------------------------------------------

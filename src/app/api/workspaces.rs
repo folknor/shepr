@@ -24,16 +24,11 @@ impl App {
         let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
             return workspace_not_found(id, &target.workspace_id);
         };
-        let Some(_) = self.state.workspaces.get(index) else {
+        let Some(workspace) = self.workspace_info(index) else {
             return workspace_not_found(id, &target.workspace_id);
         };
 
-        encode_success(
-            id,
-            ResponseResult::WorkspaceInfo {
-                workspace: self.workspace_info(index),
-            },
-        )
+        encode_success(id, ResponseResult::WorkspaceInfo { workspace })
     }
 
     pub(super) fn handle_workspace_create(
@@ -99,13 +94,11 @@ impl App {
             return workspace_not_found(id, &target.workspace_id);
         }
         self.state.switch_workspace(index);
+        let Some(workspace) = self.workspace_info(index) else {
+            return workspace_not_found(id, &target.workspace_id);
+        };
 
-        encode_success(
-            id,
-            ResponseResult::WorkspaceInfo {
-                workspace: self.workspace_info(index),
-            },
-        )
+        encode_success(id, ResponseResult::WorkspaceInfo { workspace })
     }
 
     pub(super) fn handle_workspace_rename(
@@ -129,13 +122,11 @@ impl App {
                 label: params.label,
             },
         });
+        let Some(workspace) = self.workspace_info(index) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
 
-        encode_success(
-            id,
-            ResponseResult::WorkspaceInfo {
-                workspace: self.workspace_info(index),
-            },
-        )
+        encode_success(id, ResponseResult::WorkspaceInfo { workspace })
     }
 
     pub(super) fn handle_workspace_move(
@@ -335,11 +326,8 @@ impl App {
     }
 
     fn workspace_list_info(&self) -> Vec<crate::api::schema::WorkspaceInfo> {
-        self.state
-            .workspaces
-            .iter()
-            .enumerate()
-            .map(|(idx, _)| self.workspace_info(idx))
+        (0..self.state.workspaces.len())
+            .filter_map(|idx| self.workspace_info(idx))
             .collect()
     }
 }
@@ -598,7 +586,10 @@ mod tests {
             let success: SuccessResponse =
                 serde_json::from_str(&response).expect("test precondition");
             assert_eq!(success.result, ResponseResult::Ok {});
-            assert_eq!(app.workspace_info(0).tokens, expected);
+            assert_eq!(
+                app.workspace_info(0).expect("test precondition").tokens,
+                expected
+            );
         }
 
         assert!(event_hub.events_after(0).iter().any(|(_, event)| matches!(
@@ -639,11 +630,34 @@ mod tests {
 
         app.expire_metadata_at(deadline, deadline);
 
-        assert!(app.workspace_info(0).tokens.is_empty());
+        assert!(
+            app.workspace_info(0)
+                .expect("test precondition")
+                .tokens
+                .is_empty()
+        );
         assert!(event_hub.events_after(0).iter().any(|(_, event)| matches!(
             &event.data,
             EventData::WorkspaceMetadataUpdated { workspace } if workspace.tokens.is_empty()
         )));
+    }
+
+    #[test]
+    fn workspace_info_for_a_stale_index_is_none_and_emits_nothing() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            api_rx,
+            event_hub.clone(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("one")];
+
+        assert!(app.workspace_info(0).is_some());
+        assert!(app.workspace_info(1).is_none());
+        app.emit_workspace_token_updated(1);
+        assert!(event_hub.events_after(0).is_empty());
     }
 
     #[test]

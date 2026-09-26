@@ -11,10 +11,6 @@
 4. Once all findings are resolved, the file gets deleted.
 ```
 
-## APP-026 - `workspace_info` indexes workspaces directly
+## APP-029 - Directional pane API calls ignore zoom (decision)
 
-- `App::workspace_info` (`src/app/creation.rs`) indexes `workspaces[index]`. It has many callers; returning `Option` touches all of them.
-
-## APP-027 - The API layout of a zoomed tab doesn't match the screen
-
-- `pane_layout_snapshot` reports the tiled rects for a zoomed tab, with only a `zoomed` flag. `PaneGeometry::tab_panes(layout, zoomed)` now holds the zoom rule; use it so the API layout matches what is on screen. Other UI files (`src/ui/tab_surface.rs`, mouse hit-testing) were not checked for their own zoom geometry.
+- `pane.edges`, `directional_pane_target` (neighbor, focus-direction, swap) and `pane.resize` in `src/app/api/panes.rs` use tiled geometry even when the tab is zoomed, consistent with TUI navigation (`AppState::navigate_pane`). So `pane.edges` on a zoomed pane reports tiled edges while on screen it touches every edge. Needs a decision on intent.

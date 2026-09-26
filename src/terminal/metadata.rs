@@ -750,16 +750,12 @@ mod tests {
             Some(Agent::Pi),
             AgentState::Idle,
             false,
-            false,
-            false,
             true,
             exit_at,
         );
         terminal.set_detected_state_with_screen_signals_at(
             None,
             AgentState::Unknown,
-            false,
-            false,
             false,
             false,
             exit_at + Duration::from_millis(1),
@@ -769,8 +765,6 @@ mod tests {
         terminal.set_detected_state_with_screen_signals_at(
             Some(Agent::Pi),
             AgentState::Idle,
-            false,
-            false,
             false,
             false,
             exit_at + Duration::from_millis(2),

@@ -162,50 +162,6 @@ fn modal_paste_inserts_clipboard_text_through_overlay_text_path() {
 }
 
 #[test]
-fn physical_release_uses_the_leased_press_code_with_current_modifiers() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface());
-    let press = crate::input::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::empty())
-        .with_windows_record(crate::input::WindowsKeyRecord {
-            key_down: true,
-            repeat_count: 1,
-            virtual_key_code: 0x58,
-            virtual_scan_code: 0x2d,
-            unicode: 0,
-            control_key_state: 0,
-        });
-    state.handle_raw_events(vec![RawInputEvent::Key(press)]);
-    let release = crate::input::TerminalKey::new(KeyCode::Char('z'), KeyModifiers::SHIFT)
-        .with_kind(crossterm::event::KeyEventKind::Release)
-        .with_windows_record(crate::input::WindowsKeyRecord {
-            key_down: false,
-            repeat_count: 1,
-            virtual_key_code: 0x5a,
-            virtual_scan_code: 0x2d,
-            unicode: 0,
-            control_key_state: 0x0010,
-        });
-
-    let outcome = state.handle_raw_events(vec![RawInputEvent::Key(release)]);
-
-    assert!(matches!(
-        &outcome.requests[..],
-        [ClientMessage::ClientShellPaneInput { events, .. }]
-            if matches!(
-                &events[..],
-                [ClientPaneInputEvent::Key {
-                    code: crate::protocol::ClientKeyCode::Char('x'),
-                    modifiers,
-                    kind: crate::protocol::ClientKeyKind::Release,
-                    physical_key_id: Some(0x2d),
-                    ..
-                }] if *modifiers == KeyModifiers::SHIFT.bits()
-            )
-    ));
-}
-
-#[test]
 fn highlighted_search_match_copies_after_in_flight_repeat() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));

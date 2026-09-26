@@ -379,7 +379,14 @@ async fn run_client_loop(
         window_title_written: false,
         shell: config.shell_config.map(shell::ClientShellState::new),
     };
-    let federated = endpoint_catalog.has_enabled_ssh();
+    // Whether this client keeps running without Local. It follows the live catalog: a client
+    // that gains a saved machine survives losing Local from then on.
+    let mut federated = endpoint_catalog.has_enabled_ssh();
+    // Only a client that loaded the saved machines follows them; attach and remote-client
+    // processes run with an empty catalog.
+    let mut catalog_watch = (state.shell.is_some() && !is_remote_client_process())
+        .then(|| endpoint::EndpointCatalogWatch::new(std::time::Instant::now()));
+    let mut freeze_recovery_attempted = None;
     if let Some(shell) = state.shell.as_mut() {
         shell.set_endpoint_catalog(&endpoint_catalog.ssh);
         if local_unavailable {
@@ -524,6 +531,15 @@ async fn run_client_loop(
                 .connection(write_stream.active_id())
                 .is_some_and(|connection| connection.surface_active),
         );
+        if scheduled_activation.is_none() {
+            scheduled_activation = stale_freeze_recovery(
+                &state,
+                &write_stream,
+                &endpoint_catalog.selected_endpoint(),
+                pending_activation.is_some() || state.deferred_local_activation.is_some(),
+                &mut freeze_recovery_attempted,
+            );
+        }
         if let Some(shell) = state.shell.as_ref() {
             supervisors.spawn_due(
                 std::time::Instant::now(),
@@ -828,7 +844,9 @@ async fn run_client_loop(
                     } else if let Some(frame) = state.shell.as_mut().and_then(|shell| {
                         shell.compose(state.reported_size.0, state.reported_size.1)
                     }) {
-                        state.present_frame(frame);
+                        // A status change is machine-list chrome; it must show even while
+                        // no endpoint owns presentation.
+                        state.present_chrome(frame, pending_activation.is_some());
                     }
                 }
                 endpoint::EndpointSupervisorEvent::Connected {
@@ -851,7 +869,9 @@ async fn run_client_loop(
                     let reader_quit = writer.stop_handle();
                     write_stream.insert(endpoint_id.clone(), writer, generation, false);
                     if let Some(frame) = frame {
-                        state.present_frame(frame);
+                        // Connecting changes no pane projection (the connection has no
+                        // surface yet), only the machine list.
+                        state.present_chrome(frame, pending_activation.is_some());
                     }
                     let surface_decoder = Some(protocol::surface_reuse::Decoder::new(true));
                     let reader_tx = event_tx.clone();
@@ -1315,12 +1335,7 @@ async fn run_client_loop(
                             scheduled_activation = Some(event);
                             continue;
                         }
-                        let selected_endpoint = endpoint_catalog
-                            .selected_profile
-                            .as_ref()
-                            .map_or(endpoint::ClientEndpointId::Local, |profile_id| {
-                                endpoint::ClientEndpointId::Ssh(profile_id.clone())
-                            });
+                        let selected_endpoint = endpoint_catalog.selected_endpoint();
                         let activation_ready = state.shell.as_ref().is_some_and(|shell| {
                             shell.endpoint_has_snapshot(&selected_endpoint)
                                 && (!write_stream
@@ -1424,6 +1439,38 @@ async fn run_client_loop(
                         &format!("{label} did not produce a coherent surface in time"),
                         false,
                     );
+                }
+                match catalog_watch.as_mut().and_then(|watch| watch.poll(now)) {
+                    Some(Ok(profiles)) => {
+                        if follow_endpoint_catalog(
+                            &mut state,
+                            &mut write_stream,
+                            &mut endpoint_commands,
+                            &mut supervisors,
+                            &mut pending_activation,
+                            &mut endpoint_catalog,
+                            profiles,
+                            now,
+                        ) {
+                            clear_endpoint_host_effects(
+                                &mut state,
+                                &host_mouse_capture_active,
+                                &host_sgr_pixels_active,
+                            );
+                            if scheduled_activation.is_none() {
+                                scheduled_activation = Some(ClientLoopEvent::ActivateEndpoint {
+                                    endpoint_id: endpoint::ClientEndpointId::Local,
+                                    target: None,
+                                    force: false,
+                                });
+                            }
+                        }
+                        federated = endpoint_catalog.has_enabled_ssh();
+                    }
+                    Some(Err(error)) => {
+                        warn!(%error, "saved SSH endpoint catalog changed but is unusable; keeping the machines already loaded");
+                    }
+                    None => {}
                 }
                 if state.shell.is_some() {
                     let expired_endpoints = endpoint_commands

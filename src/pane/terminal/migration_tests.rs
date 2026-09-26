@@ -110,7 +110,6 @@ impl Harness {
     }
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn primary_screen_replay_honors_ed3_for_droid_at_chunk_boundaries() {
     // A zero PID would bypass the former process-specific filter entirely.

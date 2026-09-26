@@ -1,4 +1,10 @@
 //! Session-local indirection for SSH agents whose sockets belong to an attachment.
+//!
+//! No socket is bound here. The published address is a symlink, swapped in
+//! with a rename, to an agent socket that sshd created; only sockets owned by
+//! this user are ever a target. Who may connect is decided by the agent
+//! socket's own permissions, so the owner-only staged bind and the
+//! `SO_PEERCRED` accept check the server and API sockets use do not apply.
 
 use std::fs;
 use std::io;

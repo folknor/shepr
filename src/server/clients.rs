@@ -22,21 +22,12 @@ pub(crate) type RenderTarget = (
     ClientConnectionMode,
 );
 
+/// A held press, keyed by what the client reports: the key code (a Linux
+/// terminal reports no physical key identity) or the mouse button.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum ClientShellPressId {
-    PhysicalKey(u32),
-    SemanticKey(ClientKeyCode),
+    Key(ClientKeyCode),
     Mouse(ClientMouseButton),
-}
-
-fn client_shell_key_press_id(
-    code: &ClientKeyCode,
-    physical_key_id: Option<u32>,
-) -> ClientShellPressId {
-    physical_key_id.map_or_else(
-        || ClientShellPressId::SemanticKey(code.clone()),
-        ClientShellPressId::PhysicalKey,
-    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -265,18 +256,18 @@ impl ClientConnection {
     pub(crate) fn track_shell_input(&mut self, target: &str, events: &[ClientPaneInputEvent]) {
         for event in events {
             match event {
+                // A press that committed text gets no release from the client,
+                // so only presses without generated text are held.
                 ClientPaneInputEvent::Key {
                     code,
                     modifiers,
                     kind: ClientKeyKind::Press,
                     shifted_codepoint,
-                    tracks_release: true,
-                    physical_key_id,
-                    windows_record,
+                    generated_text: None,
                     ..
                 } => {
                     self.shell_held_inputs.insert(
-                        client_shell_key_press_id(code, *physical_key_id),
+                        ClientShellPressId::Key(code.clone()),
                         ClientShellHeldInput {
                             target: target.to_owned(),
                             release: ClientPaneInputEvent::Key {
@@ -286,9 +277,6 @@ impl ClientConnection {
                                 repeat_count: 1,
                                 shifted_codepoint: *shifted_codepoint,
                                 generated_text: None,
-                                tracks_release: true,
-                                physical_key_id: *physical_key_id,
-                                windows_record: *windows_record,
                             },
                         },
                     );
@@ -296,11 +284,10 @@ impl ClientConnection {
                 ClientPaneInputEvent::Key {
                     code,
                     kind: ClientKeyKind::Release,
-                    physical_key_id,
                     ..
                 } => {
                     self.shell_held_inputs
-                        .remove(&client_shell_key_press_id(code, *physical_key_id));
+                        .remove(&ClientShellPressId::Key(code.clone()));
                 }
                 ClientPaneInputEvent::Mouse {
                     kind: ClientMouseKind::Down(button),
@@ -567,9 +554,6 @@ mod tests {
                 repeat_count: 1,
                 shifted_codepoint: None,
                 generated_text: Some("x".into()),
-                tracks_release: false,
-                physical_key_id: None,
-                windows_record: None,
             }],
         );
 
@@ -577,47 +561,35 @@ mod tests {
     }
 
     #[test]
-    fn physical_keys_with_the_same_semantic_code_keep_distinct_release_leases() {
+    fn held_key_presses_are_released_once_per_key_code() {
         let mut client = shell_client();
-        let windows_record = crate::input::WindowsKeyRecord {
-            key_down: true,
-            repeat_count: 1,
-            virtual_key_code: 0x6c,
-            virtual_scan_code: 0x1c,
-            unicode: 13,
-            control_key_state: 0,
-        };
-        let key = |kind, physical_key_id| ClientPaneInputEvent::Key {
-            code: crate::protocol::ClientKeyCode::Enter,
-            modifiers: 0,
+        let key = |code, kind| ClientPaneInputEvent::Key {
+            code,
+            modifiers: crossterm::event::KeyModifiers::SHIFT.bits(),
             kind,
             repeat_count: 1,
             shifted_codepoint: None,
             generated_text: None,
-            tracks_release: true,
-            physical_key_id: Some(physical_key_id),
-            windows_record: (physical_key_id == 108).then_some(windows_record),
         };
         client.track_shell_input(
             "w1:p1",
             &[
-                key(ClientKeyKind::Press, 13),
-                key(ClientKeyKind::Press, 108),
-                key(ClientKeyKind::Release, 13),
+                key(crate::protocol::ClientKeyCode::Enter, ClientKeyKind::Press),
+                key(crate::protocol::ClientKeyCode::Enter, ClientKeyKind::Press),
+                key(crate::protocol::ClientKeyCode::Esc, ClientKeyKind::Press),
+                key(crate::protocol::ClientKeyCode::Esc, ClientKeyKind::Release),
             ],
         );
 
         let held = client.drain_shell_held_inputs();
         assert_eq!(held.len(), 1);
-        assert!(matches!(
-            &held[0].release,
-            ClientPaneInputEvent::Key {
-                code: crate::protocol::ClientKeyCode::Enter,
-                kind: ClientKeyKind::Release,
-                physical_key_id: Some(108),
-                windows_record: Some(record),
-                ..
-            } if *record == windows_record
-        ));
+        assert_eq!(held[0].target, "w1:p1");
+        assert_eq!(
+            held[0].release,
+            key(
+                crate::protocol::ClientKeyCode::Enter,
+                ClientKeyKind::Release
+            )
+        );
     }
 }

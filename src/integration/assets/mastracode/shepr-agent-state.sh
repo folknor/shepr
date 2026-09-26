@@ -3,7 +3,7 @@
 # managed by shepr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # SHEPR_INTEGRATION_ID=mastracode
-# SHEPR_INTEGRATION_VERSION=3
+# SHEPR_INTEGRATION_VERSION=4
 
 set -eu
 
@@ -29,7 +29,9 @@ esac
 [ -n "${SHEPR_PANE_ID:-}" ] || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
-SHEPR_ACTION="$action" SHEPR_HOOK_INPUT_FILE="$hook_input_file" SHEPR_HOOK_SEQ="$hook_seq" python3 - <<'PY'
+# A python failure must not fail the hook: under `set -eu` it would exit
+# non-zero with a traceback on stderr, which the agent may show to the user.
+SHEPR_ACTION="$action" SHEPR_HOOK_INPUT_FILE="$hook_input_file" SHEPR_HOOK_SEQ="$hook_seq" python3 - 2>/dev/null <<'PY' || true
 import json
 import os
 import random

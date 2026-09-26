@@ -19,7 +19,10 @@ impl App {
             crate::api::SOCKET_PATH_ENV_VAR.to_string(),
             crate::api::socket_path().display().to_string(),
         )];
-        if let Ok(current_exe) = std::env::current_exe() {
+        // Not raw `current_exe()`: after an install replaces the binary, Linux
+        // reports the running one as "/…/shepr (deleted)", which a status
+        // command cannot run.
+        if let Ok(current_exe) = crate::platform::launch_executable() {
             env.push((
                 "SHEPR_BIN_PATH".to_string(),
                 current_exe.display().to_string(),

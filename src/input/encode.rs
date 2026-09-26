@@ -19,13 +19,6 @@ fn encode_key(key: KeyEvent, protocol: KeyboardProtocol) -> Vec<u8> {
 }
 
 pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<u8> {
-    // The host layout has not committed text for this Windows dead key. Neither
-    // legacy nor Kitty panes should receive its physical character fallback.
-    // Legacy Windows panes take the native ConPTY fallback before reaching this encoder.
-    if key.is_windows_dead_key() {
-        return Vec::new();
-    }
-
     // Super has no legacy character encoding. Preserve the chord with CSI-u
     // instead of leaking the unmodified character into the pane.
     if matches!(protocol, KeyboardProtocol::Legacy)
@@ -37,11 +30,10 @@ pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<
         return bytes;
     }
 
-    // REPORT_ALL_KEYS must retain physical press/repeat/release semantics instead of
-    // reducing a native key to its layout-generated text.
-    let preserve_physical_key = key.has_physical_identity() && protocol.reports_all_keys();
-    if !preserve_physical_key
-        && key.kind != crossterm::event::KeyEventKind::Release
+    // Text the client committed is sent as that text. This currently holds
+    // under REPORT_ALL_KEYS too, although that mode asks for text keys as
+    // CSI u; whether a committed key should be re-encoded there is open.
+    if key.kind != crossterm::event::KeyEventKind::Release
         && let Some(text) = &key.generated_text
     {
         return text.as_bytes().to_vec();
@@ -792,31 +784,17 @@ mod tests {
     }
 
     #[test]
-    fn kitty_all_keys_does_not_encode_windows_altgr_dead_key_phases() {
-        use crossterm::event::KeyEventKind;
-
-        let key = TerminalKey::new(KeyCode::Char('4'), KeyModifiers::empty()).with_windows_record(
-            crate::input::WindowsKeyRecord {
-                key_down: true,
-                repeat_count: 1,
-                virtual_key_code: 52,
-                virtual_scan_code: 5,
-                unicode: 0,
-                control_key_state: 9,
-            },
-        );
-        for kind in [
-            KeyEventKind::Press,
-            KeyEventKind::Repeat,
-            KeyEventKind::Release,
+    fn generated_text_is_sent_as_text() {
+        let key = TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
+            .with_generated_text(Some("/".to_owned()));
+        for protocol in [
+            KeyboardProtocol::Legacy,
+            KeyboardProtocol::Kitty { flags: 1 },
         ] {
-            assert!(
-                encode_terminal_key(
-                    key.clone().with_kind(kind),
-                    KeyboardProtocol::Kitty { flags: 31 },
-                )
-                .is_empty(),
-                "{kind:?}"
+            assert_eq!(
+                encode_terminal_key(key.clone(), protocol),
+                b"/",
+                "{protocol:?}"
             );
         }
     }

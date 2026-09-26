@@ -26,7 +26,3 @@
   - On the hot render path, `surface_delta::message` does a full `encoded_len(full)` pass, then `encoded_len(delta)`, `to_vec`, base64 and `encoded_len(message)`, then the frame is encoded once more. That is several whole-frame passes per client per render.
   - Composition also rebuilds every cell's `String` plus a hyperlink HashMap per frame whenever it round-trips a frame through a ratatui buffer (`client/shell/composition.rs`).
 - **Suggested fix:** make SurfaceDelta, SurfaceReuse, Snapshot, Hello/Welcome and so on typed `ServerMessage`/`ClientMessage` variants, and drop the `.v1` kind strings.
-
-## WIRE-013 - Two more local sockets may bind without the staged path
-
-- The server, API and SSH-bridge sockets bind owner-only through `ipc::bind_private_local_listener` (staging dir + hard link), and server and API accepts check `SO_PEERCRED` (`ipc::peer_is_same_user`: same euid or root). `src/session.rs` and `src/platform/ssh_agent.rs` bind local sockets that were not examined; check them for the same bind window and peer check.

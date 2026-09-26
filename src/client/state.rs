@@ -156,6 +156,24 @@ impl ClientState {
         self.presentation_frozen = frozen;
     }
 
+    /// Presents a frame whose change is client chrome only: machine statuses and diagnostics,
+    /// the machine list, overlays and modes. With no handoff in flight it passes a freeze left
+    /// by `present_handoff_unavailable` (see `present_frozen_chrome` for why that is sound), so
+    /// the machine list keeps showing live status while no endpoint owns presentation. During
+    /// a handoff it obeys the freeze: the source frame stays authoritative, and the commit
+    /// that ends the freeze repaints in full.
+    pub(super) fn present_chrome(
+        &mut self,
+        frame_data: impl Into<frame_output::ComposedFrame>,
+        handoff_in_flight: bool,
+    ) {
+        if handoff_in_flight {
+            self.present_frame(frame_data);
+        } else {
+            self.present_frozen_chrome(frame_data);
+        }
+    }
+
     pub(super) fn present_surface_patch(
         &mut self,
         patch: shell::ClientComposedSurfacePatch,
@@ -226,7 +244,13 @@ impl ClientState {
         } else {
             self.blit_encoder.encode(&frame_data, self.repaint_pending)
         };
+        // Unit tests drive the loop's presentation paths; a full-screen frame written to the
+        // test runner's real stdout (libtest only captures `print!`) would scribble on its
+        // terminal.
+        #[cfg(not(test))]
         let mut stdout = io::stdout();
+        #[cfg(test)]
+        let mut stdout = io::sink();
         if let Err(error) = self.write_composed_output(&mut stdout, &encoded.bytes) {
             tracing::warn!(%error, "failed to present client frame");
             self.repaint_pending = true;

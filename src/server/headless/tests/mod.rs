@@ -811,7 +811,6 @@ async fn completion_guard_endpoint_pairs_runtime_completions_with_snapshots() {
                 agent: Some(crate::detect::Agent::Pi),
                 state,
                 visible_blocker: false,
-                visible_working: state == crate::detect::AgentState::Working,
                 process_exited: false,
                 observed_at: Instant::now(),
             });
@@ -2730,9 +2729,6 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
                     repeat_count: 1,
                     shifted_codepoint: None,
                     generated_text: None,
-                    tracks_release: true,
-                    physical_key_id: None,
-                    windows_record: None,
                 },
                 crate::protocol::ClientPaneInputEvent::Key {
                     code: crate::protocol::ClientKeyCode::Char('c'),
@@ -2741,9 +2737,6 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
                     repeat_count: 1,
                     shifted_codepoint: None,
                     generated_text: None,
-                    tracks_release: true,
-                    physical_key_id: None,
-                    windows_record: None,
                 },
                 crate::protocol::ClientPaneInputEvent::Key {
                     code: crate::protocol::ClientKeyCode::Char('x'),
@@ -2752,9 +2745,6 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
                     repeat_count: 1,
                     shifted_codepoint: None,
                     generated_text: None,
-                    tracks_release: true,
-                    physical_key_id: None,
-                    windows_record: None,
                 },
                 crate::protocol::ClientPaneInputEvent::Mouse {
                     kind: crate::protocol::ClientMouseKind::Down(
@@ -2845,9 +2835,6 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
         repeat_count: 1,
         shifted_codepoint: None,
         generated_text: None,
-        tracks_release: true,
-        physical_key_id: Some(0x2d),
-        windows_record: None,
     };
 
     assert!(
@@ -4567,9 +4554,6 @@ fn client_page_key(
         repeat_count: 1,
         shifted_codepoint: None,
         generated_text: None,
-        tracks_release: true,
-        physical_key_id: None,
-        windows_record: None,
     }
 }
 
@@ -5182,10 +5166,9 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
         kind,
         repeat_count: 1,
         shifted_codepoint: None,
-        generated_text: (kind == crate::protocol::ClientKeyKind::Press).then(|| "x".to_owned()),
-        tracks_release: true,
-        physical_key_id: Some(0x2d),
-        windows_record: None,
+        // No generated text: the server only holds presses that will get a
+        // release, and a key that committed text does not.
+        generated_text: None,
     };
 
     assert!(

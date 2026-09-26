@@ -1,19 +1,24 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 
-use super::{KeyIdentity, TerminalKey};
+use crossterm::event::KeyCode;
 
+use super::TerminalKey;
+
+/// A held key, identified by its source and key code. A Linux host terminal
+/// reports no physical key identity, so two physical keys with the same code
+/// (the two Enter keys, say) share one lease.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct InputLeaseKey<Source> {
     source: Source,
-    identity: KeyIdentity,
+    code: KeyCode,
 }
 
 impl<Source> InputLeaseKey<Source> {
     pub(crate) fn new(source: Source, key: &TerminalKey) -> Self {
         Self {
             source,
-            identity: key.identity(),
+            code: key.code,
         }
     }
 }
@@ -64,22 +69,19 @@ where
     Context: Clone + Eq,
     Target: Clone + Eq,
 {
+    /// A fresh press of a key without generated text starts a new lease,
+    /// dropping whatever the last press of that key left behind. Keys are
+    /// semantic, so a second press cannot be told apart from a new one and is
+    /// never turned into a repeat here.
     pub(crate) fn normalize_press(
         &mut self,
         lease_key: &InputLeaseKey<Source>,
         key: TerminalKey,
     ) -> TerminalKey {
-        if key.kind != crossterm::event::KeyEventKind::Press
-            || (key.generated_text.is_some() && !key.has_physical_identity())
-        {
-            return key;
-        }
-        if key.has_physical_identity() && self.leases.contains_key(lease_key) {
-            key.with_kind(crossterm::event::KeyEventKind::Repeat)
-        } else {
+        if key.kind == crossterm::event::KeyEventKind::Press && key.generated_text.is_none() {
             self.leases.remove(lease_key);
-            key
         }
+        key
     }
 
     pub(crate) fn complete_press(
@@ -90,7 +92,8 @@ where
         resulting_context: Option<&Context>,
         target: Option<Target>,
     ) -> RepeatPlan<Context, Target> {
-        if key.generated_text.is_some() && !key.has_physical_identity() {
+        // A key that committed text gets no release, so it holds no lease.
+        if key.generated_text.is_some() {
             return RepeatPlan::Ignore;
         }
         if let Some(target) = target {
@@ -258,19 +261,6 @@ mod tests {
 
     type Leases = InputLeaseTable<u64, Context, u64>;
 
-    fn physical_generated_slash(repeat_count: u16) -> TerminalKey {
-        TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
-            .with_generated_text(Some("/".to_owned()))
-            .with_windows_record(crate::input::WindowsKeyRecord {
-                key_down: true,
-                repeat_count,
-                virtual_key_code: 0x37,
-                virtual_scan_code: 0x08,
-                unicode: u16::from(b'/'),
-                control_key_state: 0x0010,
-            })
-    }
-
     #[test]
     fn remove_source_returns_forwarded_and_discards_consumed_leases() {
         let key = TerminalKey::new(KeyCode::Esc, KeyModifiers::empty());
@@ -294,71 +284,55 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_physical_press_normalizes_for_forwarded_and_consumed_leases() {
-        let record = crate::input::WindowsKeyRecord {
-            key_down: true,
-            repeat_count: 1,
-            virtual_key_code: 65,
-            virtual_scan_code: 30,
-            unicode: 97,
-            control_key_state: 0,
-        };
-        let physical =
-            TerminalKey::new(KeyCode::Char('a'), KeyModifiers::empty()).with_windows_record(record);
-        let lease_key = InputLeaseKey::new(7, &physical);
+    fn a_second_press_stays_a_press_and_drops_the_old_lease() {
+        let key = TerminalKey::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let lease_key = InputLeaseKey::new(7, &key);
         let mut leases = Leases::default();
 
+        leases.insert_forwarded(lease_key, 10, key.clone());
         assert_eq!(
-            leases.normalize_press(&lease_key, physical.clone()).kind,
+            leases.normalize_press(&lease_key, key.clone()).kind,
             crossterm::event::KeyEventKind::Press
         );
+        assert!(!leases.contains(&lease_key));
+
         leases.insert_consumed(lease_key, ConsumedInputLease::SuppressRepeats);
         assert_eq!(
-            leases.normalize_press(&lease_key, physical.clone()).kind,
-            crossterm::event::KeyEventKind::Repeat
+            leases.normalize_press(&lease_key, key).kind,
+            crossterm::event::KeyEventKind::Press
         );
-        leases.insert_forwarded(lease_key, 10, physical.clone());
-        assert_eq!(
-            leases.normalize_press(&lease_key, physical).kind,
-            crossterm::event::KeyEventKind::Repeat
-        );
+        assert!(!leases.contains(&lease_key));
     }
 
     #[test]
-    fn physical_generated_text_keeps_native_repeat_lifecycle() {
-        let key = physical_generated_slash(3);
+    fn a_text_press_leaves_existing_leases_alone() {
+        let key = TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
+            .with_generated_text(Some("/".to_owned()));
+        let lease_key = InputLeaseKey::new(7, &key);
+        let mut leases = Leases::default();
+        leases.insert_forwarded(lease_key, 10, key.clone());
+
+        assert_eq!(leases.normalize_press(&lease_key, key.clone()), key);
+        assert!(leases.contains(&lease_key));
+    }
+
+    #[test]
+    fn forwarded_press_repeats_go_to_the_same_target() {
+        let key = TerminalKey::new(KeyCode::Left, KeyModifiers::empty());
         let lease_key = InputLeaseKey::new(7, &key);
         let context = Context::Pane;
         let mut leases = Leases::default();
 
         assert!(matches!(
-            leases.complete_press(lease_key, &key, Some(&context), Some(&context), Some(10),),
+            leases.complete_press(lease_key, &key, Some(&context), Some(&context), Some(10)),
             RepeatPlan::Ignore
         ));
-        let repeated = leases.normalize_press(&lease_key, key.with_repeat_count(1));
-        assert_eq!(repeated.kind, crossterm::event::KeyEventKind::Repeat);
+        let repeated = key.with_kind(crossterm::event::KeyEventKind::Repeat);
         assert!(matches!(
             leases.plan_repeat(lease_key, &repeated, Some(&context)),
             RepeatPlan::Forwarded(10)
         ));
         assert!(leases.remove_forwarded(&lease_key).is_some());
-    }
-
-    #[test]
-    fn consumed_grouped_physical_generated_text_reprocesses_repeats() {
-        let key = physical_generated_slash(3);
-        let lease_key = InputLeaseKey::new(7, &key);
-        let context = Context::Pane;
-        let mut leases = Leases::default();
-
-        assert!(matches!(
-            leases.complete_press(lease_key, &key, Some(&context), Some(&context), None),
-            RepeatPlan::Reprocess {
-                context: Context::Pane,
-                repetitions: 2,
-                tracked: true,
-            }
-        ));
     }
 
     #[test]
@@ -397,22 +371,13 @@ mod tests {
     }
 
     #[test]
-    fn physical_and_semantic_identities_do_not_collide() {
-        let record = crate::input::WindowsKeyRecord {
-            key_down: true,
-            repeat_count: 1,
-            virtual_key_code: 65,
-            virtual_scan_code: 30,
-            unicode: 97,
-            control_key_state: 0,
-        };
-        let physical =
-            TerminalKey::new(KeyCode::Char('a'), KeyModifiers::empty()).with_windows_record(record);
-        let semantic = TerminalKey::new(KeyCode::Char('a'), KeyModifiers::empty());
+    fn lease_keys_follow_the_key_code_not_its_modifiers() {
+        let plain = TerminalKey::new(KeyCode::Char('a'), KeyModifiers::empty());
+        let chord = TerminalKey::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        let other = TerminalKey::new(KeyCode::Char('b'), KeyModifiers::empty());
 
-        assert_ne!(
-            InputLeaseKey::new(7, &physical),
-            InputLeaseKey::new(7, &semantic)
-        );
+        assert_eq!(InputLeaseKey::new(7, &plain), InputLeaseKey::new(7, &chord));
+        assert_ne!(InputLeaseKey::new(7, &plain), InputLeaseKey::new(7, &other));
+        assert_ne!(InputLeaseKey::new(7, &plain), InputLeaseKey::new(8, &plain));
     }
 }

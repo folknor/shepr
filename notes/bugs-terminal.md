@@ -22,15 +22,10 @@ Surfaced in two scopes: pane/terminal state, client UI.
   - **API:** API-024.
   - **Mouse copy:** once rows are absolute, `content_revision: None` is safe because evicted rows are refused.
 
-## TERM-024 - The mouse-encoder comment is wrong about cell positions
+## TERM-035 - A poisoned core is only noticed on the pane's next output
 
-- `encode_mouse_event` sends cell coordinates as SGR "pixels" when mode 1016 is on and the client supplied a `Cell` position (`pane/terminal.rs`), despite the comment "cells are converted here".
+- A core poisoned off the reader thread now ends the reader loop and reports `PaneDied` on the next PTY read. An idle pane isn't noticed until it produces output, and render, detection text and API reads on a poisoned core still quietly return empty or default values.
 
-## TERM-035 - A panic off the reader thread while holding the core lock freezes the pane silently
+## TERM-041 - Kitty report-all-keys sends text keys as raw text
 
-- Reader-thread panics are caught and reported as `PaneDied`. A panic on another thread while it holds the terminal core lock (render, detection, API reads) still poisons the core; `process_pty_bytes` then logs "ghostty core lock poisoned in reader" on every read and the pane freezes, with nothing reporting it.
-- After a reader panic, the child watcher's own `PaneDied` may follow and log "PaneDied for unknown pane"; harmless but noisy.
-
-## TERM-040 - The alt-screen read copies the whole primary history for nothing
-
-- `screen_text_snapshot` (reached through `pane.rs` from the alt-screen read) copies the whole history as owned rows while on the primary screen, only for the caller to fall back. `ScreenTextCell.graphemes: Vec<u32>` is still an allocation per cell there (`history_read.rs` builds it with `vec![]`).
+- Under REPORT_ALL_KEYS (kitty flag 8), a key the client committed as text is still sent as raw text rather than CSI u. The removed Windows path was the only code that re-encoded it; pre-existing. A comment in `encode_terminal_key` (`src/input/encode.rs`) marks it open.

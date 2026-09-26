@@ -722,6 +722,8 @@ pub struct UiConfig {
     pub sidebar: SidebarConfig,
     /// Accent color for highlights, borders, and navigation UI.
     /// Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250)).
+    /// Applies when set in the config file; otherwise the theme accent applies.
+    /// theme.custom.accent takes precedence.
     pub accent: String,
     /// Keys present under `[ui]` in the loaded config file, filled by
     /// `Config::load`. Empty for a config built any other way.

@@ -31,7 +31,6 @@ pub enum AppEvent {
         agent: Option<Agent>,
         state: AgentState,
         visible_blocker: bool,
-        visible_working: bool,
         process_exited: bool,
         observed_at: Instant,
     },

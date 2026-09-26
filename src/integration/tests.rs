@@ -61,7 +61,6 @@ fn enforce_agent_version_warns_when_binary_missing() {
     assert!(warning.contains("0.14.0"));
 }
 
-#[cfg(unix)]
 #[test]
 fn enforce_agent_version_rejects_old_version() {
     let requirement = AgentVersionRequirement {
@@ -77,7 +76,6 @@ fn enforce_agent_version_rejects_old_version() {
     assert!(message.contains("upgrade"));
 }
 
-#[cfg(unix)]
 #[test]
 fn enforce_agent_version_accepts_current_version() {
     let requirement = AgentVersionRequirement {
@@ -1465,7 +1463,6 @@ fn install_opencode_writes_server_and_tui_plugins() {
     let _ = fs::remove_dir_all(base);
 }
 
-#[cfg(unix)]
 #[test]
 fn opencode_reuses_json_registration_in_symlinked_config_directory() {
     let _lock = integration_env_lock();
@@ -2324,6 +2321,8 @@ fn bundled_integration_asset_versions_match_expected_versions() {
             MASTRACODE_INTEGRATION_VERSION,
         ),
         ("grok", GROK_HOOK_ASSET, GROK_INTEGRATION_VERSION),
+        ("qwen", QWEN_HOOK_ASSET, QWEN_INTEGRATION_VERSION),
+        ("letta", LETTA_HOOK_ASSET, LETTA_INTEGRATION_VERSION),
     ] {
         assert_eq!(
             parse_integration_version(asset),
@@ -2884,7 +2883,6 @@ fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
     let _ = fs::remove_dir_all(base);
 }
 
-#[cfg(unix)]
 #[test]
 fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     use std::io::Write;
@@ -2956,7 +2954,6 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
 /// Runs the bundled Kimi hook with `payload` on stdin and returns the request
 /// line it sent to a stand-in server socket, or `None` when it sent nothing.
 /// The hook needs python3; callers skip when [`python3_available`] is false.
-#[cfg(unix)]
 // The `expect` calls below are test preconditions (fixture setup), not the
 // `None` path this function's return type communicates to callers.
 #[allow(clippy::unwrap_in_result)]
@@ -3003,7 +3000,6 @@ fn run_kimi_hook(base: &Path, action: &str, payload: &[u8]) -> Option<String> {
     Some(request)
 }
 
-#[cfg(unix)]
 fn python3_available() -> bool {
     std::process::Command::new("python3")
         .arg("--version")
@@ -3013,7 +3009,6 @@ fn python3_available() -> bool {
         .is_ok_and(|status| status.success())
 }
 
-#[cfg(unix)]
 #[test]
 fn kimi_hook_reports_state_when_the_payload_is_not_a_json_object() {
     let _lock = integration_env_lock();
@@ -3050,7 +3045,6 @@ fn kimi_hook_reports_state_when_the_payload_is_not_a_json_object() {
 /// Runs a session-only python hook asset with `payload` on stdin. Returns the
 /// hook's exit success, its stderr, and the request it sent to a stand-in
 /// server socket (if any).
-#[cfg(unix)]
 // The `expect` calls below are test preconditions (fixture setup).
 #[allow(clippy::unwrap_in_result)]
 fn run_session_hook(base: &Path, asset: &str, payload: &[u8]) -> (bool, Vec<u8>, Option<String>) {
@@ -3076,6 +3070,10 @@ fn run_session_hook(base: &Path, asset: &str, payload: &[u8]) -> (bool, Vec<u8>,
         .env_remove("CURSOR_VERSION")
         .env_remove("CODEX_THREAD_ID")
         .env_remove("GROK_SESSION_ID")
+        // Without a session id in the payload the Devin hook asks `devin list`;
+        // pin that lookup to an empty list so the test never runs a real binary.
+        .env("SHEPR_DEVIN_LIST_JSON", "[]")
+        .env_remove("DEVIN_PROJECT_DIR")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -3100,7 +3098,6 @@ fn run_session_hook(base: &Path, asset: &str, payload: &[u8]) -> (bool, Vec<u8>,
     (output.status.success(), output.stderr, request)
 }
 
-#[cfg(unix)]
 #[test]
 fn session_hooks_ignore_non_object_payloads_quietly() {
     let _lock = integration_env_lock();
@@ -3109,7 +3106,7 @@ fn session_hooks_ignore_non_object_payloads_quietly() {
         return;
     }
     let base = unique_base();
-    let hooks: [(&str, &str, &[u8]); 4] = [
+    let hooks: [(&str, &str, &[u8]); 8] = [
         (
             "claude",
             CLAUDE_HOOK_ASSET,
@@ -3126,6 +3123,28 @@ fn session_hooks_ignore_non_object_payloads_quietly() {
             br#"{"hook_event_name":"session_start","session_id":"abc"}"#,
         ),
         ("droid", DROID_HOOK_ASSET, br#"{"session_id":"abc"}"#),
+        (
+            "cursor",
+            CURSOR_HOOK_ASSET,
+            br#"{"hook_event_name":"sessionStart","session_id":"abc"}"#,
+        ),
+        (
+            "copilot",
+            COPILOT_HOOK_ASSET,
+            br#"{"hook_event_name":"sessionStart","sessionId":"abc"}"#,
+        ),
+        (
+            "devin",
+            DEVIN_HOOK_ASSET,
+            br#"{"hook_event_name":"SessionStart","session_id":"abc"}"#,
+        ),
+        // Mastracode also reports state; its `session` action is the one that
+        // must send nothing without a session id.
+        (
+            "mastracode",
+            MASTRACODE_HOOK_ASSET,
+            br#"{"session_id":"abc"}"#,
+        ),
     ];
     let non_objects: [&[u8]; 4] = [b"[1, 2]", b"\"text\"", b"null", b"7"];
 
@@ -3153,6 +3172,38 @@ fn session_hooks_ignore_non_object_payloads_quietly() {
     }
 
     let _ = fs::remove_dir_all(base);
+}
+
+/// A python exception the payload tests cannot provoke must still not fail the
+/// agent's hook or print a traceback: every shell hook runs its python with
+/// stderr discarded and its exit status ignored.
+#[test]
+fn shell_hooks_never_let_python_fail_the_hook() {
+    for (name, asset) in [
+        ("claude", CLAUDE_HOOK_ASSET),
+        ("codex", CODEX_HOOK_ASSET),
+        ("kimi", KIMI_HOOK_ASSET),
+        ("copilot", COPILOT_HOOK_ASSET),
+        ("devin", DEVIN_HOOK_ASSET),
+        ("droid", DROID_HOOK_ASSET),
+        ("qodercli", QODERCLI_HOOK_ASSET),
+        ("qwen", QWEN_HOOK_ASSET),
+        ("letta", LETTA_HOOK_ASSET),
+        ("cursor", CURSOR_HOOK_ASSET),
+        ("antigravity_cli", ANTIGRAVITY_CLI_HOOK_ASSET),
+        ("mastracode", MASTRACODE_HOOK_ASSET),
+        ("grok", GROK_HOOK_ASSET),
+    ] {
+        let heredoc = asset.contains("python3 - 2>/dev/null <<'PY' || true");
+        let inline = asset.contains("python3 -c '")
+            && asset
+                .lines()
+                .any(|line| line.starts_with('\'') && line.ends_with("2>/dev/null || true"));
+        assert!(
+            heredoc || inline,
+            "{name} hook must run python as `2>/dev/null ... || true`"
+        );
+    }
 }
 
 #[test]
@@ -3414,7 +3465,7 @@ fn install_cursor_uses_cursor_config_dir_env() {
 }
 
 #[test]
-fn cursor_v1_integration_status_is_current() {
+fn cursor_integration_status_is_current_after_install() {
     let _lock = integration_env_lock();
     let base = unique_base();
     let cursor_dir = base.join(".cursor");

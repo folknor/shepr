@@ -537,7 +537,8 @@ pub(super) fn handle_endpoint_disconnect(
         .as_mut()
         .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
     {
-        state.present_frame(frame);
+        // A non-active machine going offline only changes its machine-list status.
+        state.present_chrome(frame, pending_activation.is_some());
     }
     endpoint_was_active
 }
@@ -591,9 +592,140 @@ pub(super) fn handle_endpoint_attention(
         .as_mut()
         .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
     {
-        state.present_frame(frame);
+        // A non-active machine needing attention only changes its machine-list status.
+        state.present_chrome(frame, pending_activation.is_some());
     }
     endpoint_was_active
+}
+
+/// A freeze with no handoff in flight is one `present_handoff_unavailable` left: no endpoint
+/// has proved it owns the presentation, so pane input and output stay blocked. Usually the
+/// owner's connection is gone, and its reconnection (a connection without a surface) or the
+/// user's next pick starts the handoff that ends the freeze. When the selected endpoint is the
+/// active one and its connection is still marked surface-active, neither happens: automatic
+/// activation only targets connections without a surface, and picking the machine that is
+/// already active is a no-op. Pane input would then stay frozen until the user picked some
+/// other machine.
+///
+/// This schedules one forced handoff to that endpoint, which re-proves ownership with a
+/// fresh surface round trip and commits (unfreezing) or reports why not. It fires once per
+/// connection generation and frozen episode, so a handoff that fails again cannot loop.
+pub(super) fn stale_freeze_recovery(
+    state: &ClientState,
+    endpoints: &endpoint::EndpointRegistry,
+    selected: &endpoint::ClientEndpointId,
+    handoff_busy: bool,
+    attempted: &mut Option<(endpoint::ClientEndpointId, u64)>,
+) -> Option<ClientLoopEvent> {
+    if !state.presentation_frozen {
+        *attempted = None;
+        return None;
+    }
+    if handoff_busy || endpoints.active_id() != selected {
+        return None;
+    }
+    let shell = state.shell.as_ref()?;
+    let generation = endpoints
+        .connection(selected)
+        .filter(|connection| connection.surface_active)?
+        .generation;
+    // Without metadata for this connection the handoff could not even be prepared; the
+    // snapshot that brings it also runs the ordinary activation check.
+    shell.endpoint_snapshot_identity(selected, generation)?;
+    let key = (selected.clone(), generation);
+    if attempted.as_ref() == Some(&key) {
+        return None;
+    }
+    *attempted = Some(key);
+    Some(ClientLoopEvent::ActivateEndpoint {
+        endpoint_id: selected.clone(),
+        target: None,
+        force: true,
+    })
+}
+
+/// Makes an open client follow a newer copy of the saved-machine catalog: machines that
+/// were removed, disabled or pointed at another target or session are disconnected and stop
+/// being supervised; added, enabled or re-pointed ones start connecting; labels update.
+/// Config is still read once at launch; the catalog is state that `shepr machine` edits.
+///
+/// Returns whether the endpoint that owned (or last owned) the presentation was retired.
+/// The caller then clears its host effects and hands the presentation to Local, as if the
+/// user had picked Local.
+#[allow(clippy::too_many_arguments)] // The same loop state `handle_endpoint_disconnect` takes.
+pub(super) fn follow_endpoint_catalog(
+    state: &mut ClientState,
+    endpoints: &mut endpoint::EndpointRegistry,
+    endpoint_commands: &mut endpoint_commands::EndpointCommands,
+    supervisors: &mut endpoint::EndpointSupervisors,
+    pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
+    catalog: &mut endpoint::EndpointCatalog,
+    profiles: Vec<endpoint::SavedSshEndpoint>,
+    now: std::time::Instant,
+) -> bool {
+    if profiles == catalog.ssh {
+        return false;
+    }
+    let changes = endpoint::EndpointCatalogChanges::between(&catalog.ssh, &profiles);
+    let mut active_retired = false;
+    for profile_id in &changes.retired {
+        let endpoint_id = endpoint::ClientEndpointId::Ssh(profile_id.clone());
+        supervisors.retire(&endpoint_id);
+        let generation = endpoints
+            .connection(&endpoint_id)
+            .map_or(0, |connection| connection.generation);
+        active_retired |= handle_endpoint_disconnect(
+            state,
+            endpoints,
+            endpoint_commands,
+            supervisors,
+            pending_activation,
+            &endpoint_id,
+            generation,
+            now,
+            "is no longer an enabled saved machine",
+        );
+        endpoints.disconnect(&endpoint_id);
+    }
+    if let Some(shell) = state.shell.as_mut() {
+        // Retired machines first go through a disabled state, which drops what the shell
+        // kept from them (status, snapshot, agents). A re-pointed machine is then shown
+        // afresh by the final catalog instead of with the old target's workspaces.
+        if !changes.retired.is_empty() {
+            let mut interim = profiles.clone();
+            for profile in &mut interim {
+                if changes.retired.contains(&profile.id) {
+                    profile.enabled = false;
+                }
+            }
+            shell.set_endpoint_catalog(&interim);
+        }
+        shell.set_endpoint_catalog(&profiles);
+    }
+    for profile in &changes.started {
+        supervisors.start_ssh(profile, now);
+    }
+    catalog.replace_profiles(profiles);
+    // A client that launched with no enabled machine had no Local supervisor: losing Local
+    // ended it. Once a machine exists, Local is supervised like the rest, so its loss is
+    // recovered instead of ending the client and taking the machine with it.
+    if catalog.has_enabled_ssh() && !supervisors.supervises(&endpoint::ClientEndpointId::Local) {
+        supervisors.add_local(
+            client_socket_path(),
+            endpoints
+                .connection(&endpoint::ClientEndpointId::Local)
+                .map(|connection| connection.generation),
+            now,
+        );
+    }
+    if let Some(frame) = state
+        .shell
+        .as_mut()
+        .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
+    {
+        state.present_chrome(frame, pending_activation.is_some());
+    }
+    active_retired
 }
 
 pub(super) fn install_client_shell_snapshot(
@@ -786,11 +918,7 @@ pub(super) fn finish_client_shell_input(
         // responsive while no endpoint owns presentation. That is sound because nothing moves
         // the pane projection while frozen (see `install_client_shell_snapshot` and the pane
         // surface arms of the client loop): the pane cells in this frame are the frozen ones.
-        if pending_activation.is_some() {
-            state.present_frame(frame);
-        } else {
-            state.present_frozen_chrome(frame);
-        }
+        state.present_chrome(frame, pending_activation.is_some());
     }
     Ok(false)
 }
@@ -821,6 +949,243 @@ mod tests {
             }
             other => panic!("expected a corrective resize, got {other:?}"),
         }
+    }
+
+    struct NullTransport;
+
+    impl endpoint::EndpointTransport for NullTransport {
+        fn send(&mut self, _message: &ClientMessage) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn snapshot(boot_id: &str) -> Box<crate::protocol::ClientShellSnapshot> {
+        Box::new(crate::protocol::ClientShellSnapshot {
+            boot_id: boot_id.into(),
+            revision: 1,
+            config_diagnostic: None,
+            server_keybindings_toml: None,
+            focused_workspace_id: None,
+            focused_tab_id: None,
+            focused_pane_id: None,
+            tab_bar_right: Vec::new(),
+            tab_bar_right_separator: String::new(),
+            workspaces: Vec::new(),
+            tabs: Vec::new(),
+            panes: Vec::new(),
+            agents: Vec::new(),
+        })
+    }
+
+    fn is_forced_activation(
+        event: Option<ClientLoopEvent>,
+        expected: &endpoint::ClientEndpointId,
+    ) -> bool {
+        matches!(
+            event,
+            Some(ClientLoopEvent::ActivateEndpoint {
+                endpoint_id,
+                target: None,
+                force: true,
+            }) if &endpoint_id == expected
+        )
+    }
+
+    #[test]
+    fn chrome_frames_pass_an_unavailable_freeze_but_not_a_handoff() {
+        let mut state = ClientState::test_new();
+        let compose = |state: &mut ClientState| {
+            let (cols, rows) = state.reported_size;
+            state
+                .shell
+                .as_mut()
+                .expect("test shell")
+                .compose(cols, rows)
+                .expect("test shell composes")
+        };
+        state.freeze_presentation();
+        state.request_repaint();
+
+        // During a handoff the source frame stays authoritative.
+        let frame = compose(&mut state);
+        state.present_chrome(frame, true);
+        assert!(
+            state.repaint_pending,
+            "a handoff freeze must hold the frame back"
+        );
+
+        // With no handoff in flight (`present_handoff_unavailable`), machine statuses show.
+        let frame = compose(&mut state);
+        state.present_chrome(frame, false);
+        assert!(!state.repaint_pending, "the chrome frame was presented");
+        assert!(
+            state.presentation_frozen,
+            "pane input and output stay frozen"
+        );
+    }
+
+    #[test]
+    fn a_freeze_the_surface_owner_survived_is_recovered_once_per_episode() {
+        let local = endpoint::ClientEndpointId::Local;
+        let mut state = ClientState::test_new();
+        state
+            .shell
+            .as_mut()
+            .expect("test shell")
+            .set_endpoint_snapshot_for_generation(&local, 1, snapshot("local-boot"));
+        let mut endpoints = endpoint::EndpointRegistry::new(NullTransport, 1);
+        let mut attempted = None;
+
+        // Nothing to recover while presentation is live.
+        assert!(stale_freeze_recovery(&state, &endpoints, &local, false, &mut attempted).is_none());
+
+        // `present_handoff_unavailable` froze presentation although Local still holds the
+        // surface. A handoff in flight owns the freeze and is left alone.
+        state.freeze_presentation();
+        assert!(stale_freeze_recovery(&state, &endpoints, &local, true, &mut attempted).is_none());
+        let other = endpoint::ClientEndpointId::Ssh(
+            endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
+                .expect("test precondition"),
+        );
+        assert!(
+            stale_freeze_recovery(&state, &endpoints, &other, false, &mut attempted).is_none(),
+            "a different selected machine is the ordinary activation path's job"
+        );
+
+        assert!(is_forced_activation(
+            stale_freeze_recovery(&state, &endpoints, &local, false, &mut attempted),
+            &local
+        ));
+        assert!(
+            stale_freeze_recovery(&state, &endpoints, &local, false, &mut attempted).is_none(),
+            "a recovery that fails again must not loop"
+        );
+
+        // A later episode may recover again.
+        state.unfreeze_presentation();
+        assert!(stale_freeze_recovery(&state, &endpoints, &local, false, &mut attempted).is_none());
+        state.freeze_presentation();
+        assert!(is_forced_activation(
+            stale_freeze_recovery(&state, &endpoints, &local, false, &mut attempted),
+            &local
+        ));
+
+        // A connection without a surface is reactivated by the ordinary snapshot path.
+        state.unfreeze_presentation();
+        stale_freeze_recovery(&state, &endpoints, &local, false, &mut attempted);
+        state.freeze_presentation();
+        endpoints.set_surface_active(&local, false);
+        assert!(stale_freeze_recovery(&state, &endpoints, &local, false, &mut attempted).is_none());
+    }
+
+    #[test]
+    fn an_open_client_follows_saved_machine_changes() {
+        let now = std::time::Instant::now();
+        let mut catalog = endpoint::EndpointCatalog::default();
+        let build = catalog
+            .add_ssh("Build", "build", "agents")
+            .expect("test precondition");
+        let build_id = endpoint::ClientEndpointId::Ssh(build.clone());
+        let local = endpoint::ClientEndpointId::Local;
+        assert!(catalog.select_ssh(&build));
+
+        let mut state = ClientState::test_new();
+        let shell = state.shell.as_mut().expect("test shell");
+        shell.set_endpoint_catalog(&catalog.ssh);
+        let mut endpoints = endpoint::EndpointRegistry::new(NullTransport, 1);
+        endpoints.insert(build_id.clone(), NullTransport, 7, true);
+        assert!(endpoints.set_active(&build_id));
+        let mut commands = endpoint_commands::EndpointCommands::default();
+        let mut pending = None;
+        let mut supervisors = endpoint::EndpointSupervisors::with_ssh_settings(
+            &catalog.ssh,
+            crate::remote::SavedSshSettings {
+                manage_ssh_config: false,
+            },
+            now,
+        );
+
+        // `shepr machine disable` for the active machine and `shepr machine add` for another.
+        let mut added = endpoint::EndpointCatalog::default();
+        let docs = added
+            .add_ssh("Docs", "docs", "default")
+            .expect("test precondition");
+        let docs_id = endpoint::ClientEndpointId::Ssh(docs);
+        let mut profiles = catalog.ssh.clone();
+        profiles[0].enabled = false;
+        profiles.extend(added.ssh);
+
+        assert!(
+            follow_endpoint_catalog(
+                &mut state,
+                &mut endpoints,
+                &mut commands,
+                &mut supervisors,
+                &mut pending,
+                &mut catalog,
+                profiles.clone(),
+                now,
+            ),
+            "retiring the active machine hands presentation back to Local"
+        );
+        assert!(endpoints.connection(&build_id).is_none());
+        assert!(!supervisors.supervises(&build_id));
+        assert!(supervisors.supervises(&docs_id));
+        assert!(
+            supervisors.supervises(&local),
+            "Local is supervised once the client has a saved machine"
+        );
+        assert_eq!(catalog.ssh, profiles);
+        assert_eq!(catalog.selected_profile, None);
+        assert!(
+            state.presentation_frozen,
+            "nothing owns presentation until Local commits"
+        );
+        let shell = state.shell.as_ref().expect("test shell");
+        assert_eq!(
+            shell.endpoint_status(&build_id),
+            Some(endpoint::ClientEndpointStatus::Disabled)
+        );
+        assert_eq!(
+            shell.endpoint_status(&docs_id),
+            Some(endpoint::ClientEndpointStatus::Connecting)
+        );
+
+        // Seeing the same catalog again changes nothing.
+        assert!(!follow_endpoint_catalog(
+            &mut state,
+            &mut endpoints,
+            &mut commands,
+            &mut supervisors,
+            &mut pending,
+            &mut catalog,
+            profiles,
+            now,
+        ));
+        assert!(supervisors.supervises(&docs_id));
+
+        // `shepr machine remove` for every machine; none of them is active.
+        assert!(endpoints.set_active(&local));
+        assert!(!follow_endpoint_catalog(
+            &mut state,
+            &mut endpoints,
+            &mut commands,
+            &mut supervisors,
+            &mut pending,
+            &mut catalog,
+            Vec::new(),
+            now,
+        ));
+        assert!(!supervisors.supervises(&docs_id));
+        assert!(!catalog.has_enabled_ssh());
+        assert!(
+            state
+                .shell
+                .as_ref()
+                .expect("test shell")
+                .endpoint_status(&docs_id)
+                .is_none()
+        );
     }
 
     #[test]

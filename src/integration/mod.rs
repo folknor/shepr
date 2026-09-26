@@ -70,11 +70,11 @@ const KIMI_HOOK_EVENTS: [(&str, Option<&str>, &str); 12] = [
 ];
 const COPILOT_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const COPILOT_HOOK_ASSET: &str = include_str!("assets/copilot/shepr-agent-state.sh");
-const COPILOT_INTEGRATION_VERSION: u32 = 1;
+const COPILOT_INTEGRATION_VERSION: u32 = 2;
 const COPILOT_HOOK_EVENTS: [&str; 1] = ["SessionStart"];
 const DEVIN_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const DEVIN_HOOK_ASSET: &str = include_str!("assets/devin/shepr-agent-state.sh");
-const DEVIN_INTEGRATION_VERSION: u32 = 1;
+const DEVIN_INTEGRATION_VERSION: u32 = 2;
 const DEVIN_HOOK_EVENTS: [(&str, &str); 6] = [
     ("SessionStart", "session"),
     ("UserPromptSubmit", "session"),
@@ -119,7 +119,7 @@ const LETTA_INTEGRATION_VERSION: u32 = 1;
 const LETTA_HOOK_TIMEOUT_MS: u64 = 10_000;
 const CURSOR_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const CURSOR_HOOK_ASSET: &str = include_str!("assets/cursor/shepr-agent-state.sh");
-const CURSOR_INTEGRATION_VERSION: u32 = 1;
+const CURSOR_INTEGRATION_VERSION: u32 = 2;
 const ANTIGRAVITY_CLI_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const ANTIGRAVITY_CLI_HOOK_ASSET: &str =
     include_str!("assets/antigravity_cli/shepr-agent-state.sh");
@@ -141,7 +141,7 @@ const ANTIGRAVITY_CLI_HOOK_EVENTS: [(&str, &str); 1] = [("PreInvocation", "sessi
 const INTEGRATION_VERSION_MARKER: &str = "SHEPR_INTEGRATION_VERSION=";
 const MASTRACODE_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const MASTRACODE_HOOK_ASSET: &str = include_str!("assets/mastracode/shepr-agent-state.sh");
-const MASTRACODE_INTEGRATION_VERSION: u32 = 3;
+const MASTRACODE_INTEGRATION_VERSION: u32 = 4;
 const MASTRACODE_HOOK_TIMEOUT_MS: u64 = 10_000;
 const MASTRACODE_HOOK_EVENTS: [(&str, &str); 11] = [
     ("SessionStart", "session"),

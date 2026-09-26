@@ -7,6 +7,11 @@ use interprocess::local_socket::traits::Stream as _;
 
 use crate::ipc::LocalStream;
 
+// Session management only connects to sockets (the API socket, to stop or
+// probe a server); it never binds one. Binding goes through
+// `ipc::bind_private_local_listener` in the server and API, and the peer check
+// on accept is theirs, so nothing here needs the staged bind or `SO_PEERCRED`.
+
 pub const SESSION_ENV_VAR: &str = "SHEPR_SESSION";
 pub const DEFAULT_SESSION_NAME: &str = "default";
 

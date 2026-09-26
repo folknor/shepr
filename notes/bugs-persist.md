@@ -18,11 +18,6 @@ Surfaced in three scopes: persistence, terminal core, pane/terminal state.
 - Capture is split (`persist::capture_pending_history` on the loop, `PendingHistory::resolve` on the save thread) and unchanged history isn't rewritten, but `live_history_read` (`src/persist/snapshot.rs`) still formats each pane's whole scrollback eagerly on the loop: a `TerminalRuntime` can't leave the loop and there is no `Send` handle to the terminal core.
 - The terminal now has stable absolute rows (`Terminal::history_origin()`): an absolute id stays valid while it is at or above the origin, and rows below `origin + history size` are append-only. A `Send` reader could remember the last absolute row it saved and resume from the later of that and the current origin (full re-read if the origin passed it), re-reading the screen rows each time, in bounded chunks under short lock holds.
 
-## PER-011 - A restored managed-agent name can stick to a plain shell
-
-- The pending-resume path calls `TerminalState::restore_managed_agent`, which sets `ManagedAgentPhase::Active` before any process exists; if the typed resume command fails, `reconcile_managed_agent_at` never clears the name. Restore can't fix this alone (commented in `restored_terminal`).
-- **Needs:** a phase such as `ManagedAgentPhase::AwaitingResume` set by `restore_managed_agent_for_resume(name, kind)` in `src/terminal/state.rs` (not counted by `managed_agent_launch_pending()`, a no-op in `reconcile_managed_agent_at`); in `start_pending_agent_resume` (`src/app/agent_resume.rs`), after the resume command is sent, move it to `Pending { ready_after, deadline, observed_expected: false }` so the existing deadline releases the name if the agent never appears. Then swap the call in `restored_terminal`'s `PendingResume` arm. Decide too whether a failed deferred resume (missing cwd, failed spawn) should move it back to Active or keep it waiting.
-
 ## PER-015 - Structural recommendation from the persistence hunter
 
 - Persistence is spread out: capture, writing, the history pairing and the resume schedule sit in separate places with no single owner. The data directory is locked (`src/persist/lock.rs`). The hunter suggests one persistence actor that owns the lock, takes cheap snapshots on the loop and formats history off it (PER-003), and writes layout plus history as one bundle.

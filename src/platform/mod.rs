@@ -278,11 +278,21 @@ fn is_detached_session(pid: u32, session: i32, tty_nr: i32) -> bool {
     i64::from(session) == i64::from(pid) && tty_nr == 0
 }
 
+/// The path to run to start this program again. Use this, never raw
+/// `current_exe()`, for anything that re-executes shepr or hands its path to
+/// another process: once an install replaces the binary, Linux reports the
+/// running one as "/…/shepr (deleted)", a path nothing can execute.
 pub(crate) fn launch_executable() -> std::io::Result<PathBuf> {
+    Ok(resolve_launch_executable(
+        std::env::current_exe()?,
+        Path::is_file,
+    ))
+}
+
+fn resolve_launch_executable(executable: PathBuf, is_file: impl Fn(&Path) -> bool) -> PathBuf {
     use std::os::unix::ffi::OsStrExt;
 
-    let executable = std::env::current_exe()?;
-    if !executable.is_file() {
+    if !is_file(&executable) {
         // Linux marks the old inode as deleted after an update replaces the binary.
         if let Some(path) = executable
             .as_os_str()
@@ -290,12 +300,12 @@ pub(crate) fn launch_executable() -> std::io::Result<PathBuf> {
             .strip_suffix(b" (deleted)")
         {
             let replacement = PathBuf::from(std::ffi::OsStr::from_bytes(path));
-            if replacement.is_file() {
-                return Ok(replacement);
+            if is_file(&replacement) {
+                return replacement;
             }
         }
     }
-    Ok(executable)
+    executable
 }
 
 const WSL_MARKER_ENV_VARS: &[&str] = &["WSL_DISTRO_NAME", "WSL_INTEROP"];
@@ -653,17 +663,55 @@ pub(crate) fn create_private_file(path: &Path) -> std::io::Result<std::fs::File>
         .open(path)
 }
 
+/// A path in the shared temp directory for an SSH bridge socket. Callers
+/// compute it once and carry it; it is not derivable again.
+///
+/// The names callers pass are pid-derived and so predictable, and the temp
+/// directory is shared: another user could leave a socket at the exact path
+/// first, and this user cannot remove it, so the bind would fail. A random
+/// token goes into every name ("<stem>.<token>.sock") so such a squat has to
+/// guess it. The bind is owner-only and the accept checks its peer either
+/// way; this only keeps a connect attempt from being blocked.
 pub(crate) fn remote_bridge_endpoint_path(readable_name: &str, short_name: &str) -> PathBuf {
+    let token = unpredictable_token();
+    let readable_name = with_name_token(readable_name, token);
+    let short_name = with_name_token(short_name, token);
     let tmp = std::env::temp_dir();
-    let readable = tmp.join(readable_name);
+    let readable = tmp.join(&readable_name);
     if fits_unix_socket_path(&readable) {
         return readable;
     }
-    let short = tmp.join(short_name);
+    let short = tmp.join(&short_name);
     if fits_unix_socket_path(&short) {
         return short;
     }
     PathBuf::from("/tmp").join(short_name)
+}
+
+/// `name` with `.{token:016x}` inserted before its extension, or appended
+/// when it has none.
+fn with_name_token(name: &str, token: u64) -> String {
+    match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => format!("{stem}.{token:016x}.{extension}"),
+        _ => format!("{name}.{token:016x}"),
+    }
+}
+
+/// 64 bits another local user cannot predict: getrandom(2), or std's
+/// OS-seeded hasher keys if that fails.
+fn unpredictable_token() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+
+    let mut bytes = [0_u8; 8];
+    // SAFETY: getrandom(2) writes at most `bytes.len()` bytes into a live
+    // stack buffer and keeps no reference to it.
+    let filled = unsafe { libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), 0) };
+    if usize::try_from(filled).is_ok_and(|filled| filled == bytes.len()) {
+        return u64::from_ne_bytes(bytes);
+    }
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u32(std::process::id());
+    hasher.finish()
 }
 
 /// Shared OpenSSH sockets outlive individual helpers. Never adopt a directory

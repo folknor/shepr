@@ -190,7 +190,6 @@ async fn publish_state_changed_event(
     agent: Option<Agent>,
     state: AgentState,
     visible_blocker: bool,
-    visible_working: bool,
     process_exited: bool,
     observed_at: std::time::Instant,
 ) {
@@ -203,7 +202,6 @@ async fn publish_state_changed_event(
             agent,
             state,
             visible_blocker,
-            visible_working,
             process_exited,
             observed_at,
         })
@@ -304,7 +302,6 @@ async fn apply_agent_detection_publish_update(
         agent,
         update.state,
         update.visible_blocker,
-        update.visible_working,
         update.process_exited,
         observed_at,
     )
@@ -1510,6 +1507,13 @@ impl PaneRuntime {
                 let result = terminal.process_pty_bytes(pane_id, shell_pid, bytes);
                 content_seq.fetch_add(1, Ordering::Release);
                 drop(_content_write_guard);
+                if result.core_poisoned {
+                    // The actor ends the loop and reports the pane dead.
+                    return PtyReadResult {
+                        terminal_responses: Vec::new(),
+                        core_broken: true,
+                    };
+                }
                 if result.default_color_owner_pending {
                     terminal.resolve_default_color_owner(
                         pane_id,
@@ -1610,16 +1614,19 @@ impl PaneRuntime {
                 }
                 PtyReadResult {
                     terminal_responses: result.terminal_responses,
+                    core_broken: false,
                 }
             });
             // A normal reader exit needs no report: the child watcher above
             // sends PaneDied once the child is reaped. A panic in the terminal
-            // core is different. The PTY actor catches it and closes the
+            // core is different, whether it hit this reader or another thread
+            // holding the core lock (the next read then finds the lock
+            // poisoned and reports the core broken). The PTY actor closes the
             // master, but a child that ignores SIGHUP keeps running and is
             // never reaped, and the poisoned core leaves the pane frozen.
             // Report the pane dead so the app removes it and tears down its
             // session. The child watcher's own PaneDied that may follow is
-            // ignored for a pane that no longer exists.
+            // dropped by the app for a pane that no longer exists.
             let on_reader_exit: Box<dyn FnOnce(ReaderExit) + Send> = {
                 Box::new(move |exit: ReaderExit| {
                     if exit != ReaderExit::Panicked {
@@ -4126,7 +4133,6 @@ mod tests {
             AgentState::Idle,
             false,
             false,
-            false,
             std::time::Instant::now(),
         );
         tokio::pin!(publish);
@@ -4163,7 +4169,6 @@ mod tests {
                 agent: Some(Agent::Pi),
                 state: AgentState::Idle,
                 visible_blocker: false,
-                visible_working: false,
                 process_exited: false,
                 observed_at: _,
             } if delivered_pane == pane_id

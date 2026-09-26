@@ -96,7 +96,11 @@ impl EndpointSelectionTracker {
             let persist = catalog.selected_profile != self.persisted;
             return SelectionOutcome::Committed { persist };
         }
-        catalog.selected_profile = attempt.previous;
+        // The catalog may have lost the previous machine while the handoff ran (the client
+        // follows `shepr machine remove/disable`); an unselectable one falls back to Local.
+        catalog.selected_profile = attempt
+            .previous
+            .filter(|previous| catalog.is_selectable(previous));
         self.failed = Some((attempt.endpoint_id, attempt.generation));
         SelectionOutcome::Reverted
     }
@@ -214,6 +218,26 @@ mod tests {
         let mut tracker = EndpointSelectionTracker::new(&catalog);
         assert!(tracker.begin(&mut catalog, &ClientEndpointId::Ssh(first), Some(2)));
         assert!(tracker.begin(&mut catalog, &ClientEndpointId::Ssh(second), Some(3)));
+        assert_eq!(
+            tracker.settle(&mut catalog, false, &ClientEndpointId::Local, true),
+            SelectionOutcome::Reverted
+        );
+        assert_eq!(catalog.selected_profile, None);
+    }
+
+    #[test]
+    fn a_revert_never_restores_a_machine_the_catalog_lost_meanwhile() {
+        let (mut catalog, first) = catalog_with_machine();
+        let second = catalog
+            .add_ssh("Other", "other", "agents")
+            .expect("test precondition");
+        assert!(catalog.select_ssh(&first));
+        let mut tracker = EndpointSelectionTracker::new(&catalog);
+        assert!(tracker.begin(&mut catalog, &ClientEndpointId::Ssh(second), Some(3)));
+        // `shepr machine disable` lands while the handoff runs.
+        let mut profiles = catalog.ssh.clone();
+        profiles[0].enabled = false;
+        catalog.replace_profiles(profiles);
         assert_eq!(
             tracker.settle(&mut catalog, false, &ClientEndpointId::Local, true),
             SelectionOutcome::Reverted

@@ -369,6 +369,17 @@ peach = "#aééb"
                 .any(|d| d.contains("invalid color ui.accent = \"#aééb\"")),
             "{diagnostics:?}"
         );
+        assert!(diagnostics.iter().all(|d| !d.contains("using cyan")));
+
+        let custom: Config =
+            toml::from_str("[ui]\naccent = \"#aééb\"\n[theme.custom]\naccent = \"#112233\"\n")
+                .expect("test precondition");
+        assert!(
+            custom
+                .collect_diagnostics()
+                .iter()
+                .any(|d| { d.contains("ui.accent is ignored when theme.custom.accent is set") })
+        );
 
         let valid: Config =
             toml::from_str("[ui]\naccent = \"magenta\"\n").expect("test precondition");

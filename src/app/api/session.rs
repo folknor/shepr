@@ -31,7 +31,7 @@ impl App {
         let mut tabs = Vec::new();
         let mut layouts = Vec::new();
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
-            workspaces.push(self.workspace_info(ws_idx));
+            workspaces.extend(self.workspace_info(ws_idx));
             for tab_idx in 0..ws.tabs.len() {
                 if let Some(tab) = self.tab_info(ws_idx, tab_idx) {
                     tabs.push(tab);

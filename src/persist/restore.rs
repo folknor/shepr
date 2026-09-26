@@ -366,7 +366,8 @@ fn restore_workspace(
 ///   an earlier pane of this restore resumes.
 /// - agent name: a running shell is a plain shell, so it carries none until
 ///   detection or a hook reports an agent. A pending resume keeps a managed
-///   agent's name (its resumed process will own it). An unavailable pane keeps
+///   agent's name (its resumed process will own it, and the name is released
+///   if that process never appears). An unavailable pane keeps
 ///   whatever name it had, so a later save writes it back unchanged.
 fn restored_terminal(
     pane: &super::snapshot::PaneSnapshot,
@@ -398,26 +399,17 @@ fn restored_terminal(
             let resumed_agent = crate::detect::parse_agent_label(&plan.agent);
             terminal = terminal.with_pending_agent_resume_plan(plan);
             if let (Some(name), Some(agent)) = (pane.agent_name.clone(), managed_agent) {
-                // Known gap: this marks the managed agent Active before any
-                // process exists, because Active is the only phase a save
-                // persists and the resume may wait a while for the event
-                // loop. If the typed resume command then fails (binary not
-                // found, say), the pane is a plain shell but keeps the name:
-                // `reconcile_managed_agent_at` releases an Active agent only
-                // when another agent is detected or the process exits, not
-                // when no agent is known. Closing it needs a terminal-side
-                // phase for "restored, resume not yet launched" that saves
-                // persist like Active and that the resume launch turns into a
-                // deadline-bound Pending, so an agent that never shows up
-                // releases the name.
-                terminal.restore_managed_agent(name, agent);
+                // No process exists yet, so the name is held in a phase that
+                // saves persist but nothing reconciles. Launching the resume
+                // gives it a deadline: if the typed command fails (binary not
+                // found, say) and the agent never shows up, the name is
+                // released instead of sticking to a plain shell.
+                terminal.restore_managed_agent_for_resume(name, agent);
             }
             if let Some(agent) = resumed_agent {
                 let _ = terminal.set_detected_state_with_screen_signals_at(
                     Some(agent),
                     AgentState::Idle,
-                    false,
-                    false,
                     false,
                     false,
                     std::time::Instant::now(),

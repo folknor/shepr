@@ -15,6 +15,11 @@ use crate::protocol::{AttachScrollDirection, AttachScrollSource, ClientPaneInput
 /// against later sends. So a full queue drops the input and reports it as
 /// `Backpressure`; shell callers surface that to the user rather than only
 /// logging it.
+///
+/// Callers log these errors, so they must never carry what was typed or
+/// pasted: every variant holds a static label or a message that names only the
+/// kind of input. Keep it that way, and keep input text and bytes out of every
+/// `tracing` call on the input path (log lengths and kinds instead).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum PaneInputError {
     /// The PTY input queue is full; the input was dropped.
@@ -254,6 +259,7 @@ fn apply_scroll(
                 position,
                 KeyModifiers::from_bits_truncate(modifiers),
             ) else {
+                // Only the wheel direction: this ends up in the server log.
                 return Err(PaneInputError::Other(format!(
                     "failed to encode mouse wheel event: {wheel_kind:?}"
                 )));
@@ -471,6 +477,35 @@ mod tests {
             &[ClientPaneInputEvent::TextCommit("g".to_owned())],
         )
         .expect("room again after the queue drained");
+    }
+
+    #[tokio::test]
+    async fn dropped_input_errors_do_not_carry_the_typed_text() {
+        let (runtime, _input_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                20, 5, 0, b"", 1,
+            );
+        let secret = "hunter2-secret";
+        let events = [
+            ClientPaneInputEvent::TextCommit("x".to_owned()),
+            ClientPaneInputEvent::TextCommit(secret.to_owned()),
+            ClientPaneInputEvent::Paste(secret.to_owned()),
+            ClientPaneInputEvent::Key {
+                code: crate::protocol::ClientKeyCode::Char('h'),
+                modifiers: 0,
+                kind: crate::protocol::ClientKeyKind::Press,
+                repeat_count: 1,
+                shifted_codepoint: None,
+                generated_text: Some(secret.to_owned()),
+            },
+        ];
+
+        // The server logs this text on failure.
+        let failures =
+            apply_client_pane_input_events(&runtime, &events).expect_err("queue overflows");
+        assert_eq!(failures.dropped_for_backpressure(), 3);
+        let logged = failures.to_string();
+        assert!(!logged.contains(secret), "{logged}");
     }
 
     #[tokio::test]

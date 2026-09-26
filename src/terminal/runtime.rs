@@ -366,6 +366,9 @@ impl TerminalRuntime {
         self.0.wheel_routing()
     }
 
+    /// The rows are only captured on the alternate screen; on the primary
+    /// screen the snapshot's rows are empty (see
+    /// `GhosttyPaneTerminal::screen_text_snapshot`).
     pub(crate) fn screen_text_snapshot(
         &self,
     ) -> Option<(

@@ -369,7 +369,7 @@ impl App {
             event: EventKind::WorkspaceClosed,
             data: EventData::WorkspaceClosed {
                 workspace_id: self.public_workspace_id(ws_idx),
-                workspace: Some(self.workspace_info(ws_idx)),
+                workspace: self.workspace_info(ws_idx),
             },
         });
         events
@@ -385,11 +385,12 @@ impl App {
     }
 
     pub(crate) fn emit_workspace_token_updated(&mut self, ws_idx: usize) {
+        let Some(workspace) = self.workspace_info(ws_idx) else {
+            return;
+        };
         self.event_hub.push(crate::api::schema::EventEnvelope {
             event: crate::api::schema::EventKind::WorkspaceMetadataUpdated,
-            data: crate::api::schema::EventData::WorkspaceMetadataUpdated {
-                workspace: self.workspace_info(ws_idx),
-            },
+            data: crate::api::schema::EventData::WorkspaceMetadataUpdated { workspace },
         });
     }
 
@@ -1103,7 +1104,6 @@ mod tests {
                 agent: Some(Agent::Pi),
                 state: AgentState::Idle,
                 visible_blocker: false,
-                visible_working: false,
                 process_exited: true,
                 observed_at: std::time::Instant::now(),
             });
@@ -1169,7 +1169,6 @@ mod tests {
             agent: Some(Agent::Codex),
             state: AgentState::Idle,
             visible_blocker: false,
-            visible_working: false,
             process_exited: true,
             observed_at,
         });

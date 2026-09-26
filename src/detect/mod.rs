@@ -25,15 +25,20 @@ pub struct AgentDetection {
     /// True when the current screen is an agent-owned viewer that shows
     /// transcript/history instead of the live prompt state.
     pub skip_state_update: bool,
-    /// True when the current screen visibly shows live idle chrome.
+    /// True when the current screen visibly shows live idle chrome. The pane's
+    /// detection loop uses it to publish a Working -> Idle change at once
+    /// instead of waiting for the idle to be confirmed over several ticks.
     pub visible_idle: bool,
     /// True when the current screen visibly shows live UI chrome that needs
     /// human input. This is stronger than arbitrary prompt-like text in the
     /// scrollback and may override a non-blocked integration state.
     pub visible_blocker: bool,
-    /// True when the current screen visibly shows live working chrome. PTY
-    /// activity is the normal working authority; this remains diagnostic
-    /// metadata and for non-PTY fallback paths.
+    /// True when the current screen visibly shows live working chrome. The
+    /// pane's detection loop republishes when it changes and forwards it only
+    /// together with `state == Working`, so past that loop it says nothing
+    /// `state` does not: the app state takes the detected `Working` as its
+    /// fallback state and, by design, never lets the screen's working
+    /// override a hook's report.
     pub visible_working: bool,
 }
 

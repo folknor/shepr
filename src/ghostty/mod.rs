@@ -312,8 +312,12 @@ pub enum CellWide {
 }
 
 /// An owned copy of one cell's text. Building these costs an allocation per
-/// non-blank cell; readers that run per tick or over the whole history use
-/// [`Terminal::visit_screen_row_text`] instead.
+/// non-blank cell (blank cells hold an empty, unallocated `Vec`); readers
+/// that run per tick or over the whole history use
+/// [`Terminal::visit_screen_row_text`] instead. The one remaining builder of
+/// whole screens, the alternate-screen history read, copies a single
+/// viewport per poll step of an explicit API read, so the per-cell `Vec` is
+/// kept rather than moving every consumer to a packed representation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScreenTextCell {
     pub wide: CellWide,

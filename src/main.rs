@@ -265,9 +265,10 @@ const DEFAULT_CONFIG: &str = r##"# shepr configuration
 # distinct static glyphs for blocked, working, done, idle, and unknown states.
 # status_indicators = "dots"
 
-# Accent color for highlights, borders, and navigation UI.
+# Accent color for highlights, borders, and navigation UI. Unset uses the theme accent.
 # Accepts: hex (#89b4fa), named colors (cyan, blue, magenta), or rgb(r,g,b)
-# accent = "cyan"
+# This is an example override; theme.custom.accent takes precedence.
+# accent = "#89b4fa"
 
 # Expanded agent rows. Built-ins are state_icon, state_text, machine, workspace, tab,
 # pane, agent, terminal_title, and terminal_title_stripped.
@@ -597,7 +598,7 @@ mod tests {
 
     #[test]
     fn default_config_lists_ui_accent_before_nested_tables() {
-        let accent_marker = "# accent = \"cyan\"";
+        let accent_marker = "# accent = \"#89b4fa\"";
         assert_eq!(DEFAULT_CONFIG.matches(accent_marker).count(), 1);
 
         let accent = DEFAULT_CONFIG

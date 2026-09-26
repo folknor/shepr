@@ -157,7 +157,6 @@ mod tests {
         assert_eq!(first.load(), Some(metadata.clone()));
         assert!(load_metadata(&first.path, "different-host", "fleet").is_none());
         assert!(load_metadata(&first.path, "mac", "different-session").is_none());
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
             assert_eq!(
@@ -198,7 +197,6 @@ mod tests {
         std::fs::remove_dir_all(root).expect("test precondition");
     }
 
-    #[cfg(unix)]
     #[test]
     fn metadata_does_not_follow_symlinks() {
         let root =

@@ -9,9 +9,12 @@ use crate::protocol::ClientSurfaceSize;
 use interprocess::TryClone as _;
 
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
-const MAX_RETRY_DELAY: Duration = Duration::from_secs(120);
-const MAX_LOCAL_RETRY_DELAY: Duration = Duration::from_secs(30);
+/// Every endpoint, Local or saved machine, retries at least this often. `shepr machine
+/// reconnect` tells the user that open clients retry within 30 seconds once the machine is
+/// reachable again; a longer backoff for a reconnecting machine would make that untrue.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
+/// Same bound as `MAX_RETRY_DELAY`, for the same `shepr machine reconnect` promise.
 const ATTENTION_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy)]
@@ -44,9 +47,10 @@ pub(crate) enum EndpointSupervisorEvent {
 #[derive(Clone)]
 enum ConnectTarget {
     Local(PathBuf),
-    /// One connector per endpoint for the supervisor's lifetime: it carries the
-    /// launch-time ssh settings, the temporary ssh config and the remembered remote
-    /// executable from one attempt to the next.
+    /// One connector per saved machine for as long as it stays enabled with the same
+    /// target and session: it carries the launch-time ssh settings, the temporary ssh
+    /// config and the remembered remote executable from one attempt to the next. A
+    /// catalog change that retires the machine drops it; re-enabling builds a new one.
     Ssh(Arc<crate::remote::SavedSshConnector>),
 }
 
@@ -74,6 +78,13 @@ impl ReconnectState {
 
 pub(crate) struct EndpointSupervisors {
     endpoints: HashMap<ClientEndpointId, ReconnectState>,
+    /// Launch-time ssh settings (config is read once), applied to every saved machine,
+    /// including ones added to the catalog while the client runs.
+    ssh_settings: crate::remote::SavedSshSettings,
+    /// Attempts still running for endpoints that were retired mid-attempt, by generation.
+    /// A saved machine's bridge socket path is derived from its profile id, so a restarted
+    /// supervisor for the same id must not start its own attempt until this one reports.
+    retired_attempts: HashMap<ClientEndpointId, u64>,
     next_generation: u64,
     shutdown: Arc<AtomicBool>,
 }
@@ -84,27 +95,53 @@ impl EndpointSupervisors {
         settings: crate::remote::SavedSshSettings,
         now: Instant,
     ) -> Self {
-        let endpoints = profiles
-            .iter()
-            .filter(|profile| profile.enabled)
-            .map(|profile| {
-                let connector = crate::remote::SavedSshConnector::new(
-                    profile.id.as_str(),
-                    &profile.target,
-                    &profile.session,
-                    settings,
-                );
-                (
-                    ClientEndpointId::Ssh(profile.id.clone()),
-                    ReconnectState::new(ConnectTarget::Ssh(Arc::new(connector)), now),
-                )
-            })
-            .collect();
-        Self {
-            endpoints,
+        let mut supervisors = Self {
+            endpoints: HashMap::new(),
+            ssh_settings: settings,
+            retired_attempts: HashMap::new(),
             next_generation: 2,
             shutdown: Arc::new(AtomicBool::new(false)),
+        };
+        for profile in profiles.iter().filter(|profile| profile.enabled) {
+            supervisors.start_ssh(profile, now);
         }
+        supervisors
+    }
+
+    /// Supervises a saved machine with a fresh connector, replacing any previous one for
+    /// the same profile id. The first attempt is due immediately, unless a retired attempt
+    /// for the same id is still running; then it is due as soon as that one reports.
+    pub(crate) fn start_ssh(&mut self, profile: &super::SavedSshEndpoint, now: Instant) {
+        let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
+        self.retire(&endpoint_id);
+        let connector = crate::remote::SavedSshConnector::new(
+            profile.id.as_str(),
+            &profile.target,
+            &profile.session,
+            self.ssh_settings,
+        );
+        let mut state = ReconnectState::new(ConnectTarget::Ssh(Arc::new(connector)), now);
+        if self.retired_attempts.contains_key(&endpoint_id) {
+            state.next_attempt = None;
+        }
+        self.endpoints.insert(endpoint_id, state);
+    }
+
+    /// Stops supervising an endpoint and drops its connector. An attempt already in flight
+    /// still finishes, but its event carries a generation nothing records any more, so
+    /// `record_status` rejects it and the client loop drops the connection it delivers.
+    pub(crate) fn retire(&mut self, endpoint_id: &ClientEndpointId) {
+        if let Some(state) = self.endpoints.remove(endpoint_id)
+            && state.in_flight
+            && let Some(generation) = state.generation
+        {
+            self.retired_attempts
+                .insert(endpoint_id.clone(), generation);
+        }
+    }
+
+    pub(crate) fn supervises(&self, endpoint_id: &ClientEndpointId) -> bool {
+        self.endpoints.contains_key(endpoint_id)
     }
 
     pub(crate) fn add_local(&mut self, path: PathBuf, generation: Option<u64>, now: Instant) {
@@ -177,6 +214,19 @@ impl EndpointSupervisors {
         status: ClientEndpointStatus,
         now: Instant,
     ) -> bool {
+        if self.retired_attempts.get(endpoint_id) == Some(&generation) {
+            // The retired attempt has finished, so its bridge socket is free again. Its
+            // outcome belongs to the retired connector and is not recorded.
+            self.retired_attempts.remove(endpoint_id);
+            if let Some(state) = self
+                .endpoints
+                .get_mut(endpoint_id)
+                .filter(|state| !state.in_flight && state.generation.is_none())
+            {
+                state.next_attempt = Some(now);
+            }
+            return false;
+        }
         let Some(state) = self.endpoints.get_mut(endpoint_id) else {
             return false;
         };
@@ -212,14 +262,7 @@ impl EndpointSupervisors {
                     state.attempts = 0;
                 }
                 state.attempts = state.attempts.saturating_add(1);
-                let delay = retry_delay(state.attempts);
-                state.next_attempt = Some(
-                    now + if endpoint_id.is_local() {
-                        delay.min(MAX_LOCAL_RETRY_DELAY)
-                    } else {
-                        delay
-                    },
-                );
+                state.next_attempt = Some(now + retry_delay(state.attempts));
             }
         }
         true
@@ -452,6 +495,76 @@ mod tests {
     fn retry_backoff_is_bounded() {
         assert_eq!(retry_delay(1), INITIAL_RETRY_DELAY);
         assert_eq!(retry_delay(100), MAX_RETRY_DELAY);
+    }
+
+    #[test]
+    fn a_reconnecting_machine_retries_within_thirty_seconds() {
+        // `shepr machine reconnect` promises open clients retry within 30 seconds.
+        let now = Instant::now();
+        let profile = profile();
+        let id = ClientEndpointId::Ssh(profile.id.clone());
+        let mut supervisors = supervisors_for(&[profile], now);
+        supervisors
+            .endpoints
+            .get_mut(&id)
+            .expect("test precondition")
+            .generation = Some(2);
+        for _ in 0..20 {
+            assert!(supervisors.disconnected(&id, 2, now));
+            assert!(
+                supervisors.endpoints[&id]
+                    .next_attempt
+                    .is_some_and(|next| next <= now + Duration::from_secs(30))
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_changes_start_and_retire_machines() {
+        let now = Instant::now();
+        let mut supervisors = supervisors_for(&[], now);
+        let profile = profile();
+        let id = ClientEndpointId::Ssh(profile.id.clone());
+        assert!(!supervisors.supervises(&id));
+
+        supervisors.start_ssh(&profile, now);
+        assert!(supervisors.supervises(&id));
+        assert_eq!(supervisors.endpoints[&id].next_attempt, Some(now));
+
+        supervisors.retire(&id);
+        assert!(!supervisors.supervises(&id));
+        // Nothing records a retired machine's events any more.
+        assert!(!supervisors.record_status(&id, 2, ClientEndpointStatus::Online, now));
+    }
+
+    #[test]
+    fn a_restarted_machine_waits_for_its_retired_attempt_to_report() {
+        let now = Instant::now();
+        let profile = profile();
+        let id = ClientEndpointId::Ssh(profile.id.clone());
+        let mut supervisors = supervisors_for(std::slice::from_ref(&profile), now);
+        {
+            // What `spawn_due` does when it launches an attempt.
+            let state = supervisors
+                .endpoints
+                .get_mut(&id)
+                .expect("test precondition");
+            state.in_flight = true;
+            state.next_attempt = None;
+            state.generation = Some(5);
+        }
+
+        // Disabled and re-enabled (or re-pointed) while that attempt still runs: the new
+        // connector shares the profile's bridge socket path, so it must not start yet.
+        supervisors.retire(&id);
+        supervisors.start_ssh(&profile, now);
+        assert_eq!(supervisors.endpoints[&id].next_attempt, None);
+
+        // The retired attempt's outcome is not recorded, but frees the path.
+        let later = now + Duration::from_secs(3);
+        assert!(!supervisors.record_status(&id, 5, ClientEndpointStatus::Online, later));
+        assert_eq!(supervisors.endpoints[&id].next_attempt, Some(later));
+        assert!(supervisors.retired_attempts.is_empty());
     }
 
     #[test]

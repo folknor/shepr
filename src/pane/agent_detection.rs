@@ -249,7 +249,9 @@ pub(super) fn decide_screen_detection_publish(
     pending_idle: &mut PendingIdleConfirmation,
 ) -> DetectionPublishDecision {
     let detection = input.screen_detection;
-    let new_state = crate::terminal::state::stabilize_agent_detection(detection);
+    // Published as detected: debouncing lives in the pending-idle hold below,
+    // not in a separate stabilisation step.
+    let new_state = detection.state;
     let visible_idle = detection.visible_idle && new_state == AgentState::Idle;
     let visible_blocker = detection.visible_blocker && new_state == AgentState::Blocked;
     let visible_working = detection.visible_working && new_state == AgentState::Working;

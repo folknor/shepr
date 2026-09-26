@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -314,6 +315,137 @@ impl EndpointCatalog {
         let content = serde_json::to_vec_pretty(self)
             .map_err(|error| format!("failed to encode endpoint catalog: {error}"))?;
         store_private_json(path, &content, "endpoint catalog")
+    }
+}
+
+/// How often an open client looks at the saved-machine catalog file for changes.
+const CATALOG_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Identity of the catalog file as last seen. Writers replace the file by rename, so a
+/// change shows up as a new inode even when size and mtime happen to match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CatalogFingerprint {
+    device: u64,
+    inode: u64,
+    len: u64,
+    modified_sec: i64,
+    modified_nsec: i64,
+}
+
+fn catalog_fingerprint(path: &Path) -> Option<CatalogFingerprint> {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(CatalogFingerprint {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        len: metadata.len(),
+        modified_sec: metadata.mtime(),
+        modified_nsec: metadata.mtime_nsec(),
+    })
+}
+
+/// Watches the saved-machine catalog for an open client. The catalog is state, not config:
+/// `shepr machine add/remove/enable/disable` rewrite it while clients run, and those clients
+/// pick the change up here instead of at their next launch.
+///
+/// It polls a `stat` at most once per `CATALOG_POLL_INTERVAL` and reloads only when the
+/// file's identity changed. The first poll always reloads, so a write that landed between
+/// the client's launch-time load and the watcher's creation is not missed; applying an
+/// unchanged catalog is a no-op.
+pub(crate) struct EndpointCatalogWatch {
+    path: PathBuf,
+    /// `None` until the first poll; `Some(None)` when the file was absent.
+    seen: Option<Option<CatalogFingerprint>>,
+    next_poll: Instant,
+}
+
+impl EndpointCatalogWatch {
+    pub(crate) fn new(now: Instant) -> Self {
+        Self::for_path(catalog_path(), now)
+    }
+
+    fn for_path(path: PathBuf, now: Instant) -> Self {
+        Self {
+            path,
+            seen: None,
+            next_poll: now,
+        }
+    }
+
+    /// The saved profiles when the file changed since the last poll, or `None` when it did
+    /// not (or it is not time to look yet). An unreadable or invalid file is reported once
+    /// per change; the caller keeps the profiles it has.
+    pub(crate) fn poll(&mut self, now: Instant) -> Option<Result<Vec<SavedSshEndpoint>, String>> {
+        if now < self.next_poll {
+            return None;
+        }
+        self.next_poll = now + CATALOG_POLL_INTERVAL;
+        let fingerprint = catalog_fingerprint(&self.path);
+        if self.seen == Some(fingerprint) {
+            return None;
+        }
+        self.seen = Some(fingerprint);
+        Some(EndpointCatalog::load_from_path(&self.path).map(|catalog| catalog.ssh))
+    }
+}
+
+/// What a catalog change means for connections: which saved machines stop being
+/// supervised and which start. A machine counts as live when it is enabled; a live machine
+/// whose target or session changed is both retired and started, because its connector,
+/// bridge and remote server all belong to the old target. A label change is neither.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct EndpointCatalogChanges {
+    pub(crate) retired: Vec<ProfileId>,
+    pub(crate) started: Vec<SavedSshEndpoint>,
+}
+
+impl EndpointCatalogChanges {
+    pub(crate) fn between(previous: &[SavedSshEndpoint], next: &[SavedSshEndpoint]) -> Self {
+        fn same_live_machine(a: &SavedSshEndpoint, b: &SavedSshEndpoint) -> bool {
+            a.id == b.id && a.enabled && b.enabled && a.target == b.target && a.session == b.session
+        }
+        let retired = previous
+            .iter()
+            .filter(|old| old.enabled)
+            .filter(|old| !next.iter().any(|new| same_live_machine(old, new)))
+            .map(|old| old.id.clone())
+            .collect();
+        let started = next
+            .iter()
+            .filter(|new| new.enabled)
+            .filter(|new| !previous.iter().any(|old| same_live_machine(old, new)))
+            .cloned()
+            .collect();
+        Self { retired, started }
+    }
+}
+
+impl EndpointCatalog {
+    /// Replaces the saved profiles with a newer copy of the catalog file, keeping this
+    /// client's in-memory selection only while it still names an enabled machine.
+    pub(crate) fn replace_profiles(&mut self, profiles: Vec<SavedSshEndpoint>) {
+        self.ssh = profiles;
+        if let Some(selected) = self.selected_profile.as_ref()
+            && !self.is_selectable(selected)
+        {
+            self.selected_profile = None;
+        }
+    }
+
+    /// The endpoint this client wants to own the pane surface.
+    pub(crate) fn selected_endpoint(&self) -> super::ClientEndpointId {
+        self.selected_profile
+            .as_ref()
+            .map_or(super::ClientEndpointId::Local, |profile_id| {
+                super::ClientEndpointId::Ssh(profile_id.clone())
+            })
+    }
+
+    /// Whether `id` names an enabled saved machine, i.e. whether it may be selected.
+    pub(crate) fn is_selectable(&self, id: &ProfileId) -> bool {
+        self.ssh
+            .iter()
+            .any(|profile| &profile.id == id && profile.enabled)
     }
 }
 
@@ -652,6 +784,135 @@ mod tests {
         assert_eq!(loaded.ssh.len(), 1);
         assert_eq!(loaded.selected_profile, None);
         std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"))
+            .expect("test precondition");
+    }
+
+    fn machine(id: &str, target: &str, enabled: bool) -> SavedSshEndpoint {
+        SavedSshEndpoint {
+            id: ProfileId::parse(id).expect("test precondition"),
+            label: "Build".into(),
+            target: target.into(),
+            session: "agents".into(),
+            enabled,
+        }
+    }
+
+    #[test]
+    fn catalog_changes_retire_and_start_only_what_changed() {
+        let a = "0123456789abcdef0123456789abcdef";
+        let b = "fedcba9876543210fedcba9876543210";
+        let c = "00112233445566778899aabbccddeeff";
+        let previous = vec![
+            machine(a, "one", true),
+            machine(b, "two", true),
+            machine(c, "three", false),
+        ];
+
+        // A label change touches no connection.
+        let mut renamed = previous.clone();
+        renamed[0].label = "Renamed".into();
+        assert_eq!(
+            EndpointCatalogChanges::between(&previous, &renamed),
+            EndpointCatalogChanges::default()
+        );
+
+        // Removed, disabled, enabled, added and re-pointed machines.
+        let d = "ffeeddccbbaa99887766554433221100";
+        let next = vec![
+            machine(a, "one-moved", true),
+            machine(c, "three", true),
+            machine(d, "four", true),
+        ];
+        let changes = EndpointCatalogChanges::between(&previous, &next);
+        assert_eq!(
+            changes.retired,
+            vec![
+                ProfileId::parse(a).expect("test precondition"),
+                ProfileId::parse(b).expect("test precondition"),
+            ]
+        );
+        assert_eq!(
+            changes
+                .started
+                .iter()
+                .map(|profile| profile.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![a, c, d]
+        );
+
+        let disabled = vec![machine(a, "one", false), machine(b, "two", true)];
+        let changes = EndpointCatalogChanges::between(&previous, &disabled);
+        assert_eq!(
+            changes.retired,
+            vec![ProfileId::parse(a).expect("test precondition")]
+        );
+        assert!(changes.started.is_empty());
+    }
+
+    #[test]
+    fn replacing_profiles_drops_a_selection_that_is_no_longer_selectable() {
+        let mut catalog = EndpointCatalog::default();
+        let id = catalog
+            .add_ssh("Build", "build", "agents")
+            .expect("test precondition");
+        assert!(catalog.select_ssh(&id));
+        assert_eq!(
+            catalog.selected_endpoint(),
+            crate::client::endpoint::ClientEndpointId::Ssh(id.clone())
+        );
+
+        let kept = catalog.ssh.clone();
+        catalog.replace_profiles(kept.clone());
+        assert_eq!(catalog.selected_profile, Some(id));
+
+        let mut disabled = kept;
+        disabled[0].enabled = false;
+        catalog.replace_profiles(disabled);
+        assert_eq!(catalog.selected_profile, None);
+        assert_eq!(
+            catalog.selected_endpoint(),
+            crate::client::endpoint::ClientEndpointId::Local
+        );
+    }
+
+    #[test]
+    fn catalog_watch_reloads_only_after_the_file_changes() {
+        let path = path("watch");
+        let _ = std::fs::remove_dir_all(path.parent().expect("test precondition"));
+        let start = Instant::now();
+        let mut watch = EndpointCatalogWatch::for_path(path.clone(), start);
+
+        // The first poll always loads; an absent file is an empty catalog.
+        assert_eq!(watch.poll(start), Some(Ok(Vec::new())));
+        let later = start + CATALOG_POLL_INTERVAL;
+        assert_eq!(watch.poll(later), None);
+
+        let mut catalog = EndpointCatalog::default();
+        catalog
+            .add_ssh("Build", "build", "agents")
+            .expect("test precondition");
+        catalog.store_to_path(&path).expect("test precondition");
+        // Not due yet: at most one stat per interval.
+        assert_eq!(watch.poll(later), None);
+        let later = later + CATALOG_POLL_INTERVAL;
+        assert_eq!(watch.poll(later), Some(Ok(catalog.ssh.clone())));
+        let later = later + CATALOG_POLL_INTERVAL;
+        assert_eq!(watch.poll(later), None);
+
+        // Every store replaces the file, so even an identical rewrite is seen (and applying
+        // it is a no-op for the client).
+        catalog.store_to_path(&path).expect("test precondition");
+        let later = later + CATALOG_POLL_INTERVAL;
+        assert_eq!(watch.poll(later), Some(Ok(catalog.ssh.clone())));
+
+        // An invalid file is reported once, not on every poll.
+        std::fs::write(&path, b"not json").expect("test precondition");
+        let later = later + CATALOG_POLL_INTERVAL;
+        assert!(matches!(watch.poll(later), Some(Err(_))));
+        let later = later + CATALOG_POLL_INTERVAL;
+        assert_eq!(watch.poll(later), None);
+
+        std::fs::remove_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
     }
 

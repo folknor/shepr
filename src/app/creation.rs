@@ -213,7 +213,9 @@ impl App {
     }
 
     pub(crate) fn emit_workspace_open_events(&mut self, ws_idx: usize) {
-        let workspace_info = self.workspace_info(ws_idx);
+        let Some(workspace_info) = self.workspace_info(ws_idx) else {
+            return;
+        };
         let Some(tab) = self.tab_info(ws_idx, 0) else {
             return;
         };
@@ -261,7 +263,7 @@ impl App {
         ws_idx: usize,
     ) -> Option<crate::api::schema::ResponseResult> {
         Some(crate::api::schema::ResponseResult::WorkspaceCreated {
-            workspace: self.workspace_info(ws_idx),
+            workspace: self.workspace_info(ws_idx)?,
             tab: self.tab_info(ws_idx, 0)?,
             root_pane: self.root_pane_info(ws_idx, 0)?,
         })
@@ -365,10 +367,13 @@ impl App {
             .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
     }
 
-    pub(super) fn workspace_info(&self, index: usize) -> crate::api::schema::WorkspaceInfo {
-        let ws = &self.state.workspaces[index];
+    /// `None` when `index` names no workspace, like `tab_info` and
+    /// `pane_info`: every caller either resolved the index a moment ago or
+    /// carries it across an event, and a stale index must not panic the server.
+    pub(super) fn workspace_info(&self, index: usize) -> Option<crate::api::schema::WorkspaceInfo> {
+        let ws = self.state.workspaces.get(index)?;
         let (agg_state, seen) = ws.aggregate_state(&self.state.terminals);
-        crate::api::schema::WorkspaceInfo {
+        Some(crate::api::schema::WorkspaceInfo {
             workspace_id: self.public_workspace_id(index),
             number: index + 1,
             label: ws.display_name(),
@@ -380,7 +385,7 @@ impl App {
             }),
             agent_status: pane_agent_status(agg_state, seen),
             tokens: ws.metadata_tokens.values(),
-        }
+        })
     }
 }
 

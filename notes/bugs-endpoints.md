@@ -11,16 +11,6 @@
 4. Once all findings are resolved, the file gets deleted.
 ```
 
-## EP-003 - Saved-machine changes do not reach open clients, although the CLI says they do
+## EP-020 - A hung SSH attempt can outlast the 30-second reconnect promise
 
-- **Claim broken:** `cli/machine.rs` says "Changes apply automatically to open local Shepr clients", "Open Shepr clients connect automatically", and "Open Shepr clients retry within 30 seconds".
-- **Actual behaviour:**
-  - The client loads `EndpointCatalog` once (`mod.rs`). `EndpointSupervisors::new` only uses the profiles from startup. `set_endpoint_catalog` is only called at startup, and nothing watches the file.
-  - Added machines never connect, and removed or disabled ones keep reconnecting.
-  - `federated` is also fixed at launch, so a Local-only client stays fatal on Local loss after a machine is added.
-  - The `reconnect` message is only true for an endpoint already in `Attention`.
-- A `SavedSshConnector` is built per enabled profile at startup; a live-catalog fix should create and drop connectors per profile.
-
-## EP-011 - Bridge socket paths are predictable
-
-- Bridge socket names are pid-derived, so a socket another user leaves at that path can block a connect attempt. The bind is owner-only (`ipc::bind_private_local_listener`) and the bridge accept checks its peer, so this is only a denial of a connect attempt, not an access problem.
+- Reconnect backoff is capped at 30 s, so `shepr machine reconnect`'s "retry within 30 seconds" holds, except that an SSH attempt already in flight finishes on its own schedule first; a hung ssh attempt can push past 30 s.

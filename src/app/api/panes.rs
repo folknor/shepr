@@ -1251,7 +1251,11 @@ impl App {
                 .record_pane_focus_change(previous_focus, target_ws_idx, moved_pane_id);
             self.state.mode = crate::app::Mode::Terminal;
         }
-        let created_workspace = created_workspace.then(|| self.workspace_info(target_ws_idx));
+        let created_workspace = if created_workspace {
+            self.workspace_info(target_ws_idx)
+        } else {
+            None
+        };
         let created_tab = if created_tab {
             self.tab_info(target_ws_idx, target_tab_idx)
         } else {
@@ -2030,24 +2034,32 @@ impl App {
         let tab = ws.tabs.get(tab_idx)?;
         let area = self.state.view.terminal_area;
         let focused_pane_id = self.public_pane_id(ws_idx, tab.layout.focused())?;
-        let panes = crate::ui::apply_pane_chrome(
-            &tab.layout.panes(area),
-            self.state.pane_borders,
-            self.state.pane_gaps,
-            self.state.pane_outer_borders,
-        )
-        .into_iter()
-        .filter_map(|pane| {
-            Some(PaneLayoutPane {
-                pane_id: self.public_pane_id(ws_idx, pane.id)?,
-                focused: pane.is_focused,
-                rect: pane.rect.into(),
+        // The layout reports what is on screen: a zoomed tab shows only its
+        // focused pane over the whole area and no split lines, so its hidden
+        // panes and the split tree under them are left out (`zoomed` says the
+        // tree exists; `pane.list` still enumerates every pane of the tab and
+        // the layout description still carries the full split tree).
+        // `tab_panes` is the one place the zoom rule lives, shared with view
+        // computation and spawn sizing.
+        let panes = self
+            .state
+            .pane_geometry_in(area)
+            .tab_panes(&tab.layout, tab.zoomed)
+            .into_iter()
+            .filter_map(|pane| {
+                Some(PaneLayoutPane {
+                    pane_id: self.public_pane_id(ws_idx, pane.id)?,
+                    focused: pane.is_focused,
+                    rect: pane.rect.into(),
+                })
             })
-        })
-        .collect();
-        let splits = tab
-            .layout
-            .splits(area)
+            .collect();
+        let visible_splits = if tab.zoomed {
+            Vec::new()
+        } else {
+            tab.layout.splits(area)
+        };
+        let splits = visible_splits
             .into_iter()
             .enumerate()
             .map(|(idx, split)| PaneLayoutSplit {
@@ -4113,6 +4125,33 @@ mod tests {
     }
 
     #[test]
+    fn api_pane_layout_of_a_zoomed_tab_reports_only_the_zoomed_pane() {
+        let mut app = app_with_workspace();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+        let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces[0].tabs[0].layout.focus_pane(right);
+        app.state.workspaces[0].tabs[0].zoomed = true;
+        crate::ui::compute_view_with_runtime_registry(
+            &mut app.state,
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            ratatui::layout::Rect::new(0, 0, 100, 20),
+        );
+        let right_public = app.public_pane_id(0, right).expect("test precondition");
+        assert!(app.public_pane_id(0, root).is_some());
+
+        let layout = app.pane_layout_snapshot(0, 0).expect("layout");
+
+        assert!(layout.zoomed);
+        assert_eq!(layout.panes.len(), 1);
+        assert_eq!(layout.panes[0].pane_id, right_public);
+        assert!(layout.panes[0].focused);
+        assert_eq!(layout.panes[0].rect, layout.area);
+        assert!(layout.splits.is_empty());
+    }
+
+    #[test]
     fn api_pane_layout_returns_public_ids_rects_and_splits() {
         let mut app = app_with_workspace();
         let root = app.state.workspaces[0].tabs[0].root_pane;
@@ -4556,8 +4595,6 @@ mod tests {
                 Some(Agent::Pi),
                 AgentState::Idle,
                 false,
-                false,
-                false,
                 true,
                 exit_at,
             );
@@ -4568,8 +4605,6 @@ mod tests {
             .set_detected_state_with_screen_signals_at(
                 None,
                 AgentState::Unknown,
-                false,
-                false,
                 false,
                 false,
                 exit_at + std::time::Duration::from_millis(1),
@@ -4601,8 +4636,6 @@ mod tests {
             .set_detected_state_with_screen_signals_at(
                 Some(Agent::Pi),
                 AgentState::Idle,
-                false,
-                false,
                 false,
                 false,
                 exit_at + std::time::Duration::from_millis(2),

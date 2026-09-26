@@ -121,7 +121,9 @@ fn validate_running_server_compatibility() -> io::Result<()> {
 ///
 /// Returns the PID of the spawned server process.
 pub fn spawn_server_daemon() -> io::Result<u32> {
-    let exe = std::env::current_exe().map_err(|err| {
+    // After an install replaces the binary, raw `current_exe()` names the
+    // running one "/…/shepr (deleted)"; this resolves to the new install.
+    let exe = crate::platform::launch_executable().map_err(|err| {
         io::Error::new(
             err.kind(),
             format!("failed to determine shepr executable path: {err}"),

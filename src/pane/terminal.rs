@@ -183,7 +183,7 @@ impl InputState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ProcessBytesResult {
     pub request_render: bool,
     pub render_delay: Option<Duration>,
@@ -193,6 +193,10 @@ pub(crate) struct ProcessBytesResult {
     pub terminal_responses: Vec<Bytes>,
     pub default_color_owner_pending: bool,
     pub default_color_generation: u64,
+    /// The core lock was poisoned: a panic on another thread (render,
+    /// detection, an API read) while it held the lock. The bytes were not
+    /// processed and no later bytes will be; the reader must end the pane.
+    pub core_poisoned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -1562,16 +1566,14 @@ impl GhosttyPaneTerminal {
         bytes: &[u8],
     ) -> ProcessBytesResult {
         let Ok(mut core) = self.core.lock() else {
+            // Poisoned by a panic on another thread while it held the lock.
+            // The core's state is suspect and every later read would land
+            // here too, so the reader ends the pane (reported as dead)
+            // rather than dropping output forever.
             error!(pane = pane_id.raw(), "ghostty core lock poisoned in reader");
             return ProcessBytesResult {
-                request_render: false,
-                render_delay: None,
-                terminal_title_changed: false,
-                clipboard_writes: Vec::new(),
-                reported_cwd: None,
-                terminal_responses: Vec::new(),
-                default_color_owner_pending: false,
-                default_color_generation: 0,
+                core_poisoned: true,
+                ..ProcessBytesResult::default()
             };
         };
 
@@ -1627,6 +1629,7 @@ impl GhosttyPaneTerminal {
             terminal_responses: effects.terminal_responses,
             default_color_owner_pending: effects.default_color_owner_pending,
             default_color_generation,
+            core_poisoned: false,
         }
     }
 
@@ -1670,15 +1673,11 @@ impl GhosttyPaneTerminal {
         _shell_pid: u32,
     ) -> ProcessBytesResult {
         let Ok(mut core) = self.core.lock() else {
+            // A poisoned core is reported by the reader's next read, which
+            // ends the pane; this timer has no loop to stop.
             return ProcessBytesResult {
-                request_render: false,
-                render_delay: None,
-                terminal_title_changed: false,
-                clipboard_writes: Vec::new(),
-                reported_cwd: None,
-                terminal_responses: Vec::new(),
-                default_color_owner_pending: false,
-                default_color_generation: 0,
+                core_poisoned: true,
+                ..ProcessBytesResult::default()
             };
         };
         let flushed = core.terminal.flush_expired_synchronized_output();
@@ -1697,6 +1696,7 @@ impl GhosttyPaneTerminal {
             terminal_responses: effects.terminal_responses,
             default_color_owner_pending: effects.default_color_owner_pending,
             default_color_generation,
+            core_poisoned: false,
         }
     }
 
@@ -2234,31 +2234,48 @@ impl GhosttyPaneTerminal {
             crate::input::MouseProtocolEncoding::Default
         };
         let sgr_pixels = mode_enabled(crate::ghostty::MODE_MOUSE_SGR_PIXELS);
-        // Coordinates are 1-based: cells are converted here, pixel positions
-        // already arrive 1-based.
+        // Reports are 1-based. Pixel positions already arrive 1-based; cell
+        // positions are shifted here. Under SGR-pixels (mode 1016) a cell
+        // position is mapped to the top-left pixel of that cell using the same
+        // integer cell pitch the pixel fallback below uses, so the child maps
+        // it straight back to the cell. Only when the pane has no pixel
+        // geometry at all is the cell sent as-is in SGR form: the child can't
+        // know a cell size either then, and a report beats a dropped click.
+        let cell_pitch = || {
+            let cols = u32::from(terminal.cols().ok()?);
+            let rows = u32::from(terminal.rows().ok()?);
+            let width_px = terminal.width_px().ok()?;
+            let height_px = terminal.height_px().ok()?;
+            (cols > 0 && rows > 0 && width_px > 0 && height_px > 0)
+                .then(|| ((width_px / cols).max(1), (height_px / rows).max(1)))
+        };
         let (encoding, x, y) = match position {
-            crate::input::mouse::Position::Cell { column, row } => (
-                if sgr_pixels {
-                    crate::input::MouseProtocolEncoding::Sgr
-                } else {
-                    cell_encoding
-                },
-                u32::from(column) + 1,
-                u32::from(row) + 1,
-            ),
+            crate::input::mouse::Position::Cell { column, row } if sgr_pixels => {
+                match cell_pitch() {
+                    Some((cell_width, cell_height)) => (
+                        crate::input::MouseProtocolEncoding::SgrPixels,
+                        u32::from(column)
+                            .saturating_mul(cell_width)
+                            .saturating_add(1),
+                        u32::from(row).saturating_mul(cell_height).saturating_add(1),
+                    ),
+                    None => (
+                        crate::input::MouseProtocolEncoding::Sgr,
+                        u32::from(column) + 1,
+                        u32::from(row) + 1,
+                    ),
+                }
+            }
+            crate::input::mouse::Position::Cell { column, row } => {
+                (cell_encoding, u32::from(column) + 1, u32::from(row) + 1)
+            }
             crate::input::mouse::Position::Pixels { x, y } if sgr_pixels => {
                 (crate::input::MouseProtocolEncoding::SgrPixels, x, y)
             }
             crate::input::mouse::Position::Pixels { x, y } => {
                 let cols = u32::from(terminal.cols().ok()?);
                 let rows = u32::from(terminal.rows().ok()?);
-                let width_px = terminal.width_px().ok()?;
-                let height_px = terminal.height_px().ok()?;
-                if cols == 0 || rows == 0 || width_px == 0 || height_px == 0 {
-                    return None;
-                }
-                let cell_width = (width_px / cols).max(1);
-                let cell_height = (height_px / rows).max(1);
+                let (cell_width, cell_height) = cell_pitch()?;
                 (
                     cell_encoding,
                     (x.saturating_sub(1) / cell_width).min(cols - 1) + 1,
@@ -2269,6 +2286,12 @@ impl GhosttyPaneTerminal {
         crate::input::encode_mouse_event(kind, x, y, modifiers, mode, encoding)
     }
 
+    /// The active screen, its width and, on the alternate screen only, its
+    /// rows as owned text. Every caller (the alt-screen history read and its
+    /// guards) falls back as soon as it sees the primary screen, where the
+    /// retained rows are the whole scrollback: copying them cell by cell under
+    /// the core lock only to be dropped is pure waste, so the rows come back
+    /// empty there.
     pub(crate) fn screen_text_snapshot(
         &self,
     ) -> Option<(
@@ -2277,11 +2300,12 @@ impl GhosttyPaneTerminal {
         Vec<crate::ghostty::ScreenTextRow>,
     )> {
         let core = self.core.lock().ok()?;
-        Some((
-            core.terminal.active_screen().ok()?,
-            core.terminal.cols().ok()?,
-            core.terminal.screen_text_rows().ok()?,
-        ))
+        let screen = core.terminal.active_screen().ok()?;
+        let rows = match screen {
+            crate::ghostty::ActiveScreen::Alternate => core.terminal.screen_text_rows().ok()?,
+            crate::ghostty::ActiveScreen::Primary => Vec::new(),
+        };
+        Some((screen, core.terminal.cols().ok()?, rows))
     }
 
     pub fn visible_text(&self) -> String {
@@ -4465,7 +4489,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn ghostty_legacy_modified_enter_is_shell_compatible() {
         use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
@@ -4510,7 +4533,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn ghostty_modified_enter_tracks_live_protocol_negotiation() {
         use crossterm::event::{KeyCode, KeyModifiers};
@@ -4696,14 +4718,7 @@ mod tests {
             crossterm::event::KeyModifiers::SHIFT,
         )
         .with_generated_text(Some("/".to_owned()))
-        .with_windows_record(crate::input::WindowsKeyRecord {
-            key_down: true,
-            repeat_count: 3,
-            virtual_key_code: 0x37,
-            virtual_scan_code: 0x08,
-            unicode: u16::from(b'/'),
-            control_key_state: 0x0010,
-        });
+        .with_repeat_count(3);
         let legacy_expected = b"///".as_slice();
         assert_eq!(
             pane.encode_terminal_key(shifted.clone(), crate::input::KeyboardProtocol::Legacy,),
@@ -4714,7 +4729,7 @@ mod tests {
         let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
         assert_eq!(
             pane.encode_terminal_key(shifted, crate::input::KeyboardProtocol::Kitty { flags: 15 },),
-            b"\x1b[47;2:1u\x1b[47;2:2u\x1b[47;2:2u"
+            b"///"
         );
     }
 
@@ -4981,7 +4996,7 @@ mod tests {
     }
 
     #[test]
-    fn ghostty_mouse_sgr_pixels_preserves_exact_and_downgrades_cell_input() {
+    fn ghostty_mouse_sgr_pixels_preserves_exact_and_maps_cell_input_to_pixels() {
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.resize(80, 24, 10, 20).expect("test precondition");
         terminal.write(b"\x1b[?1003h\x1b[?1006h\x1b[?1016h");
@@ -4992,14 +5007,31 @@ mod tests {
             crate::input::mouse::Position::Pixels { x: 48, y: 139 },
             crossterm::event::KeyModifiers::empty(),
         );
-        let fallback = pane.encode_mouse_motion(
+        let from_cell = pane.encode_mouse_motion(
             crossterm::event::MouseEventKind::Moved,
             crate::input::mouse::Position::Cell { column: 4, row: 6 },
             crossterm::event::KeyModifiers::empty(),
         );
 
         assert_eq!(exact.as_deref(), Some(&b"\x1b[<35;48;139M"[..]));
-        assert_eq!(fallback.as_deref(), Some(&b"\x1b[<35;5;7M"[..]));
+        // Column 4 at 10 px per cell starts at pixel 41; row 6 at 20 px at 121.
+        assert_eq!(from_cell.as_deref(), Some(&b"\x1b[<35;41;121M"[..]));
+    }
+
+    #[test]
+    fn ghostty_mouse_sgr_pixels_without_pixel_geometry_sends_cells() {
+        let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
+        terminal.resize(80, 24, 0, 0).expect("test precondition");
+        terminal.write(b"\x1b[?1003h\x1b[?1006h\x1b[?1016h");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
+
+        let encoded = pane.encode_mouse_motion(
+            crossterm::event::MouseEventKind::Moved,
+            crate::input::mouse::Position::Cell { column: 4, row: 6 },
+            crossterm::event::KeyModifiers::empty(),
+        );
+
+        assert_eq!(encoded.as_deref(), Some(&b"\x1b[<35;5;7M"[..]));
     }
 
     #[test]
@@ -7189,5 +7221,44 @@ mod tests {
             pane.primary_history_ansi()
                 .is_some_and(|ansi| ansi.contains("history one") && !ansi.contains("full-screen"))
         );
+    }
+
+    #[test]
+    fn screen_text_snapshot_copies_rows_only_on_the_alternate_screen() {
+        let terminal = crate::ghostty::Terminal::new(20, 3, 100_000).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
+        let pane_id = PaneId::from_raw(1);
+        pane.process_pty_bytes(pane_id, 0, b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
+
+        let (screen, cols, rows) = pane.screen_text_snapshot().expect("snapshot");
+        assert_eq!(screen, crate::ghostty::ActiveScreen::Primary);
+        assert_eq!(cols, 20);
+        assert!(rows.is_empty());
+
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[?1049h\x1b[2J\x1b[Hframe");
+        let (screen, _, rows) = pane.screen_text_snapshot().expect("snapshot");
+        assert_eq!(screen, crate::ghostty::ActiveScreen::Alternate);
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[test]
+    fn a_core_poisoned_off_the_reader_is_reported_to_the_reader() {
+        let terminal = crate::ghostty::Terminal::new(20, 3, 0).expect("test precondition");
+        let pane = std::sync::Arc::new(PaneTerminal::new(
+            GhosttyPaneTerminal::new(terminal).expect("test precondition"),
+        ));
+        let pane_id = PaneId::from_raw(1);
+        assert!(!pane.process_pty_bytes(pane_id, 0, b"before").core_poisoned);
+
+        // A render or API read panicking while it holds the core lock.
+        let poisoner = std::sync::Arc::clone(&pane);
+        let joined = std::thread::spawn(move || {
+            let _core = poisoner.ghostty.core.lock();
+            panic!("panic while holding the core lock");
+        })
+        .join();
+        assert!(joined.is_err(), "test precondition");
+
+        assert!(pane.process_pty_bytes(pane_id, 0, b"after").core_poisoned);
     }
 }

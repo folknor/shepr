@@ -3,7 +3,7 @@
 # managed by shepr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # SHEPR_INTEGRATION_ID=copilot
-# SHEPR_INTEGRATION_VERSION=1
+# SHEPR_INTEGRATION_VERSION=2
 
 set -eu
 
@@ -16,7 +16,9 @@ cat >"$hook_input_file" 2>/dev/null || true
 [ -n "${SHEPR_PANE_ID:-}" ] || exit 0
 command -v python3 >/dev/null 2>&1 || exit 0
 
-SHEPR_HOOK_INPUT_FILE="$hook_input_file" python3 - <<'PY'
+# A python failure must not fail the hook: under `set -eu` it would exit
+# non-zero with a traceback on stderr, which the agent may show to the user.
+SHEPR_HOOK_INPUT_FILE="$hook_input_file" python3 - 2>/dev/null <<'PY' || true
 import json
 import os
 import random

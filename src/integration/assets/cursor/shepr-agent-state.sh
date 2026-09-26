@@ -1,7 +1,7 @@
 #!/bin/sh
 # managed by shepr; reinstalling the integration replaces this file.
 # SHEPR_INTEGRATION_ID=cursor
-# SHEPR_INTEGRATION_VERSION=1
+# SHEPR_INTEGRATION_VERSION=2
 
 [ "${1:-}" = "session" ] || exit 0
 [ "${SHEPR_ENV:-}" = "1" ] || exit 0
@@ -19,6 +19,11 @@ import time
 try:
     payload = json.load(sys.stdin)
 except Exception:
+    raise SystemExit(0)
+
+# A valid JSON body that is not an object (a list, a string, null) carries no
+# session id; do not rely on stderr suppression to hide the AttributeError.
+if not isinstance(payload, dict):
     raise SystemExit(0)
 
 def first_text(*names):

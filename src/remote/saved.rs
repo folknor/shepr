@@ -28,7 +28,9 @@ pub(crate) struct SavedSshSettings {
     pub(crate) manage_ssh_config: bool,
 }
 
-/// Connects one saved SSH machine, repeatedly, for the lifetime of a client.
+/// Connects one saved SSH machine, repeatedly, for as long as a client keeps it enabled
+/// with the same target and session (the client follows catalog edits and builds a new
+/// connector when a machine is re-enabled or re-pointed).
 ///
 /// It owns what used to be rebuilt on every attempt: the ssh settings fixed at
 /// launch, one temporary managed ssh config (instead of a new directory per
@@ -88,7 +90,8 @@ impl SavedSshConnector {
             &self.target,
             &self.session,
         )?;
-        // Attempts for one endpoint never overlap (the supervisor keeps one in flight),
+        // Attempts for one endpoint never overlap (the supervisor keeps one in flight, and
+        // a replacement connector for the same profile waits for a retired one's attempt),
         // so holding the lock for the whole attempt contends with nothing.
         let mut state = self
             .state
