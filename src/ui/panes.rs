@@ -586,9 +586,14 @@ pub(crate) fn render_selection_highlight<P: PartialEq>(
     }
     for screen_y in visible.top()..visible.bottom() {
         let y = screen_y - inner.y;
+        let row = crate::terminal::ViewportRow(y);
+        let absolute_row = scroll_metrics.map_or_else(
+            || crate::terminal::AbsRow(u64::from(row.0)),
+            |metrics| metrics.absolute_row_at_viewport(row),
+        );
         for screen_x in visible.left()..visible.right() {
             let x = screen_x - inner.x;
-            if selection.contains(y, x, scroll_metrics)
+            if selection.contains(crate::terminal::Point::new(absolute_row, x))
                 && let Some(cell) = buffer.cell_mut((screen_x, screen_y))
             {
                 cell.set_style(style);
@@ -1367,10 +1372,10 @@ mod tests {
             ..Default::default()
         };
         let expected_style = automatic_selection_style(&palette, host_theme);
-        let selection = Some(Selection::absolute_range(
+        let selection = Some(Selection::range(
             PaneId::from_raw(1),
-            (0u64, 0),
-            (0, 2),
+            crate::terminal::Point::new(crate::terminal::AbsRow(0), 0),
+            crate::terminal::Point::new(crate::terminal::AbsRow(0), 2),
         ));
         let backend = ratatui::backend::TestBackend::new(4, 1);
         let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
@@ -1426,10 +1431,10 @@ mod tests {
         let palette = Palette::catppuccin();
         let host_theme = crate::terminal_theme::TerminalTheme::default();
         let expected = automatic_selection_style(&palette, host_theme);
-        let selection = Some(Selection::absolute_range(
+        let selection = Some(Selection::range(
             PaneId::from_raw(1),
-            (0u64, 0),
-            (2, 3),
+            crate::terminal::Point::new(crate::terminal::AbsRow(0), 0),
+            crate::terminal::Point::new(crate::terminal::AbsRow(2), 3),
         ));
         let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 2));
 

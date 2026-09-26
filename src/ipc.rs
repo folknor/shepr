@@ -21,6 +21,14 @@ pub(crate) enum LocalStreamReadCount {
     Closed,
 }
 
+#[derive(Debug)]
+pub(crate) enum Liveness {
+    Absent,
+    Stale,
+    Live,
+    Unreachable(io::Error),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SocketFileIdentity {
     dev: u64,
@@ -44,6 +52,30 @@ pub(crate) fn bind_local_listener(path: &Path) -> io::Result<LocalListener> {
         .create_sync()
 }
 
+/// Probe a local server socket and classify whether it is absent, stale, live,
+/// or present but unreachable. Timeouts and access failures stay errors because
+/// they do not prove that no server is listening.
+pub(crate) fn probe(path: &Path) -> Liveness {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Liveness::Absent,
+        Err(error) => return Liveness::Unreachable(error),
+        Ok(_) => {}
+    }
+
+    match connect_local_stream(path) {
+        Ok(_) => Liveness::Live,
+        Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => Liveness::Stale,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => match fs::symlink_metadata(path) {
+            Err(metadata_error) if metadata_error.kind() == io::ErrorKind::NotFound => {
+                Liveness::Absent
+            }
+            Err(metadata_error) => Liveness::Unreachable(metadata_error),
+            Ok(_) => Liveness::Stale,
+        },
+        Err(error) => Liveness::Unreachable(error),
+    }
+}
+
 pub(crate) fn prepare_socket_path(
     path: &Path,
     busy_message: impl FnOnce(&Path) -> String,
@@ -52,32 +84,22 @@ pub(crate) fn prepare_socket_path(
         fs::create_dir_all(parent)?;
     }
 
-    if !path.exists() {
-        return Ok(());
-    }
-
-    match connect_local_stream(path) {
-        Ok(_) => {
+    match probe(path) {
+        Liveness::Absent => return Ok(()),
+        Liveness::Live => {
             return Err(io::Error::new(io::ErrorKind::AddrInUse, busy_message(path)));
         }
-        Err(err) if stale_socket_connect_error(err.kind()) => {}
-        Err(err) => return Err(err),
+        Liveness::Stale => {}
+        Liveness::Unreachable(error) => return Err(error),
     }
 
-    if let Err(err) = fs::remove_file(path)
-        && err.kind() != io::ErrorKind::NotFound
+    if let Err(error) = fs::remove_file(path)
+        && error.kind() != io::ErrorKind::NotFound
     {
-        return Err(err);
+        return Err(error);
     }
 
     Ok(())
-}
-
-fn stale_socket_connect_error(kind: io::ErrorKind) -> bool {
-    matches!(
-        kind,
-        io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound | io::ErrorKind::TimedOut
-    )
 }
 
 /// Reports whether the peer has closed or shut down its write side.
@@ -409,11 +431,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stale_socket_connect_errors_keep_unix_would_block_strict() {
-        assert!(stale_socket_connect_error(io::ErrorKind::ConnectionRefused));
-        assert!(stale_socket_connect_error(io::ErrorKind::NotFound));
-        assert!(stale_socket_connect_error(io::ErrorKind::TimedOut));
-        assert!(!stale_socket_connect_error(io::ErrorKind::WouldBlock));
+    fn probe_classifies_absent_stale_and_live_sockets() {
+        let dir = crate::test_support::ScratchDir::new("probe-liveness");
+        let path = dir.join("server.sock");
+        assert!(matches!(probe(&path), Liveness::Absent));
+
+        {
+            let _listener =
+                std::os::unix::net::UnixListener::bind(&path).expect("bind stale socket");
+        }
+        assert!(matches!(probe(&path), Liveness::Stale));
+
+        let live_path = dir.join("live.sock");
+        let _listener =
+            std::os::unix::net::UnixListener::bind(&live_path).expect("bind live socket");
+        assert!(matches!(probe(&live_path), Liveness::Live));
     }
 
     /// A socket path in a scratch directory kept until the test process exits.

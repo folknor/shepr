@@ -496,7 +496,8 @@ pub(super) fn write_managed_ssh_config(
     app_paths: &crate::config::AppPaths,
 ) -> io::Result<ManagedSshConfig> {
     let config_file = app_paths.config_file();
-    let paths = crate::platform::remote_ssh_config_paths(app_paths.home_dir());
+    let paths: crate::platform::RemoteSshConfigPaths =
+        crate::platform::remote_ssh_config_paths(app_paths.home_dir());
     let control_path = Some(crate::platform::shared_ssh_control_path(
         config_file,
         target,

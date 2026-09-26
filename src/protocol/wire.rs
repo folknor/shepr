@@ -1209,6 +1209,7 @@ pub struct PaneSurfaceScrollMetrics {
     pub offset_from_bottom: u64,
     pub max_offset_from_bottom: u64,
     pub viewport_rows: u64,
+    pub history_origin: crate::terminal::AbsRow,
 }
 
 /// One draggable BSP split handle relative to a pane surface.

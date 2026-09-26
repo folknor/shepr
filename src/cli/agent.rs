@@ -593,12 +593,12 @@ fn process_info_shows_shell_initialization(process_info: &serde_json::Value) -> 
                 process["pid"].as_u64() == Some(shell_pid)
                     && (process["name"]
                         .as_str()
-                        .is_some_and(crate::platform::is_pane_shell_process_name)
+                        .is_some_and(crate::detect::is_pane_shell_process_name)
                         || process["argv"]
                             .as_array()
                             .and_then(|argv| argv.first())
                             .and_then(serde_json::Value::as_str)
-                            .is_some_and(crate::platform::is_pane_shell_process_name))
+                            .is_some_and(crate::detect::is_pane_shell_process_name))
             })
         })
 }

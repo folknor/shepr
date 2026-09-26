@@ -8,7 +8,6 @@ use crate::api::schema::{
 };
 use crate::app::{App, Mode};
 use crate::layout::{Node, PaneId};
-use crate::workspace::NewPane;
 
 use super::responses::{encode_error, encode_success};
 
@@ -68,6 +67,9 @@ impl App {
         if let Err(message) = validate_layout_tree(&params.root) {
             return encode_error(id, "invalid_layout", message);
         }
+        if let Err(message) = validate_layout_launches(&params.root) {
+            return encode_error(id, "invalid_layout", message);
+        }
 
         let replacement_label = params.tab_label.clone().or_else(|| {
             let (_, tab_idx) = replace_target?;
@@ -87,6 +89,9 @@ impl App {
                     .get(target_ws)
                     .is_some_and(|ws| ws.active_tab_index() == target_tab)
         });
+        let replace_close_events = replace_target
+            .map(|(target_ws, target_tab)| self.tab_close_events(target_ws, target_tab))
+            .unwrap_or_default();
         let root_leaf = first_layout_leaf(&params.root);
         let first_cwd = self.layout_root_cwd(ws_idx, replace_target, root_leaf);
         let (rows, cols) = self.state.pane_geometry().sole_pane_size();
@@ -103,13 +108,16 @@ impl App {
             Err(message) => return encode_error(id, "invalid_layout", message),
         };
 
-        let created = {
-            let spawn = self.pane_spawn_handles();
-            let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
+        let spawn = self.pane_spawn_handles();
+        let (workspace_id, tab_number, root_pane_number, created) = {
+            let Some(workspace) = self.state.workspaces.get(ws_idx) else {
                 return encode_error(id, "workspace_not_found", "workspace not found");
             };
-            if let Some(argv) = command.as_deref() {
-                ws.create_tab_argv_command(
+            let workspace_id = workspace.id.clone();
+            let tab_number = workspace.next_public_tab_number();
+            let root_pane_number = workspace.next_public_pane_number();
+            let created = if let Some(argv) = command.as_deref() {
+                workspace.create_tab_argv_command(
                     rows,
                     cols,
                     first_cwd,
@@ -121,7 +129,7 @@ impl App {
                     &spawn,
                 )
             } else {
-                ws.create_tab(
+                workspace.create_tab(
                     rows,
                     cols,
                     first_cwd,
@@ -132,53 +140,80 @@ impl App {
                     extra_env,
                     &spawn,
                 )
-            }
+            };
+            (workspace_id, tab_number, root_pane_number, created)
         };
 
-        let (new_tab_idx, terminal, runtime) = match created {
+        let (mut tab, terminal, runtime) = match created {
             Ok(result) => result,
             Err(err) => return encode_error(id, "layout_apply_failed", err.to_string()),
         };
-        let new_root_pane = self.state.workspaces[ws_idx].tabs[new_tab_idx].root_pane;
-        self.terminal_runtimes.insert(terminal.id.clone(), runtime);
-        self.state.terminals.insert(terminal.id.clone(), terminal);
-        if let Some(label) = replacement_label {
-            self.state.workspaces[ws_idx].tabs[new_tab_idx].set_custom_name(label);
-        }
-        self.apply_layout_pane_label(ws_idx, new_root_pane, root_leaf);
-
-        if let Err(message) = self.apply_layout_node_to_pane(ws_idx, new_root_pane, &params.root) {
-            self.rollback_layout_tab(ws_idx, new_root_pane);
+        let new_root_pane = tab.root_pane;
+        let root_terminal_id = terminal.id.clone();
+        let root_cwd = terminal.cwd.clone();
+        let mut pane_terminals = std::collections::HashMap::from([(new_root_pane, terminal)]);
+        let mut pane_runtimes =
+            std::collections::HashMap::from([(new_root_pane, (root_terminal_id, runtime))]);
+        let mut pane_cwds = std::collections::HashMap::from([(new_root_pane, root_cwd)]);
+        let mut next_pane_number = root_pane_number.saturating_add(1);
+        let mut staging = LayoutStaging {
+            workspace_id: &workspace_id,
+            tab_number,
+            geometry: self.state.pane_geometry(),
+            default_shell: &default_shell,
+            login_shell: self.state.login_shell,
+            scrollback_limit_bytes,
+            host_terminal_theme,
+            host_terminal_appearance,
+            default_cwd: self
+                .paths
+                .current_dir()
+                .unwrap_or_else(|| std::path::Path::new("/")),
+            next_pane_number: &mut next_pane_number,
+            pane_cwds: &mut pane_cwds,
+            pane_terminals: &mut pane_terminals,
+            pane_runtimes: &mut pane_runtimes,
+            spawn: &spawn,
+        };
+        if let Err(message) = stage_layout_node(&mut tab, new_root_pane, &params.root, &mut staging)
+        {
             return encode_error(id, "layout_apply_failed", message);
+        }
+        if let Some(label) = replacement_label {
+            tab.set_custom_name(label);
+        }
+        let terminals = pane_terminals.into_values().collect();
+        let runtimes = pane_runtimes.into_values().collect::<Vec<_>>();
+        let Some(tab_outcome) = self
+            .state
+            .commit_layout_tab_creation(ws_idx, tab, terminals, false)
+        else {
+            drop(runtimes);
+            return encode_error(id, "layout_apply_failed", "workspace not found");
+        };
+        for (terminal_id, runtime) in runtimes {
+            self.terminal_runtimes.insert(terminal_id, runtime);
         }
 
         if let Some((target_ws_idx, target_tab_idx)) = replace_target {
-            let close_events = self.tab_close_events(target_ws_idx, target_tab_idx);
-            let terminal_ids = self
+            let Some(plan) = self
                 .state
-                .terminal_ids_for_tab(target_ws_idx, target_tab_idx);
-            let pane_ids_for_focus_clear =
-                self.state.pane_ids_for_tab(target_ws_idx, target_tab_idx);
-            let Some(ws) = self.state.workspaces.get_mut(target_ws_idx) else {
+                .prepare_tab_removal(target_ws_idx, target_tab_idx)
+            else {
                 return encode_error(id, "tab_not_found", "tab not found");
             };
-            if ws.close_tab(target_tab_idx) {
-                self.state.remove_pane_aliases(&pane_ids_for_focus_clear);
-                self.state
-                    .clear_stale_previous_pane_focus(pane_ids_for_focus_clear);
-                self.state.remove_unattached_terminal_ids(terminal_ids);
+            if matches!(
+                self.state.commit_tab_removal(&plan),
+                crate::app::actions::TabRemovalCommit::Removed(_)
+            ) {
                 self.shutdown_detached_terminal_runtimes();
-                self.emit_events(close_events);
+                self.emit_events(replace_close_events);
             }
         }
 
-        let Some(new_tab_idx) = self.state.workspaces[ws_idx]
-            .tabs
-            .iter()
-            .position(|tab| tab.root_pane == new_root_pane)
-        else {
-            return encode_error(id, "layout_apply_failed", "new layout tab disappeared");
-        };
+        let new_tab_idx = tab_outcome
+            .tab_index
+            .saturating_sub(usize::from(replace_target.is_some()));
 
         if params.focus || replace_was_active {
             self.state.switch_workspace_tab(ws_idx, new_tab_idx);
@@ -348,167 +383,146 @@ impl App {
             follow_cwd.or_else(|| self.focused_pane_cwd_in_workspace(ws_idx)),
         )
     }
+}
 
-    // Every leaf becomes a freshly spawned pane. `LayoutPane::pane_id` is
-    // ignored on purpose: export fills it in, and ignoring it lets an exported
-    // layout be applied back unchanged. Reusing live panes is `pane.move`.
-    fn apply_layout_node_to_pane(
-        &mut self,
-        ws_idx: usize,
-        pane_id: PaneId,
-        node: &LayoutNode,
-    ) -> Result<(), String> {
-        match node {
-            LayoutNode::Pane { pane } => {
-                self.apply_layout_pane_label(ws_idx, pane_id, pane);
-                Ok(())
+struct LayoutStaging<'a> {
+    workspace_id: &'a str,
+    tab_number: usize,
+    geometry: crate::workspace::PaneGeometry,
+    default_shell: &'a str,
+    login_shell: bool,
+    scrollback_limit_bytes: usize,
+    host_terminal_theme: crate::terminal_theme::TerminalTheme,
+    host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+    default_cwd: &'a std::path::Path,
+    next_pane_number: &'a mut usize,
+    pane_cwds: &'a mut std::collections::HashMap<PaneId, PathBuf>,
+    pane_terminals: &'a mut std::collections::HashMap<PaneId, crate::terminal::TerminalState>,
+    pane_runtimes: &'a mut std::collections::HashMap<
+        PaneId,
+        (
+            crate::terminal::TerminalId,
+            crate::terminal::TerminalRuntime,
+        ),
+    >,
+    spawn: &'a crate::workspace::PaneSpawnHandles,
+}
+
+fn stage_layout_node(
+    tab: &mut crate::workspace::Tab,
+    target_pane_id: PaneId,
+    node: &LayoutNode,
+    staging: &mut LayoutStaging<'_>,
+) -> Result<(), String> {
+    match node {
+        LayoutNode::Pane { pane } => {
+            if let Some(label) = pane
+                .label
+                .as_ref()
+                .map(|label| label.trim())
+                .filter(|label| !label.is_empty())
+                && let Some(terminal) = staging.pane_terminals.get_mut(&target_pane_id)
+            {
+                terminal.set_manual_label(label.to_string());
             }
-            LayoutNode::Split {
-                direction,
-                ratio,
-                first,
-                second,
-            } => {
-                let second_leaf = first_layout_leaf(second);
-                let new_pane =
-                    self.layout_split_pane(ws_idx, pane_id, direction, *ratio, second_leaf)?;
-                self.apply_layout_node_to_pane(ws_idx, pane_id, first)?;
-                self.apply_layout_node_to_pane(ws_idx, new_pane, second)
-            }
+            Ok(())
         }
-    }
-
-    fn layout_split_pane(
-        &mut self,
-        ws_idx: usize,
-        target_pane_id: PaneId,
-        direction: &SplitDirection,
-        ratio: f32,
-        pane: &LayoutPane,
-    ) -> Result<PaneId, String> {
-        let geometry = self.state.pane_geometry();
-        let default_shell = self.state.default_shell.clone();
-        let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
-        let host_terminal_theme = self.state.host_terminal_theme;
-        let host_terminal_appearance = self.state.host_terminal_appearance;
-        let cwd = pane
-            .cwd
-            .as_ref()
-            .map(PathBuf::from)
-            .or_else(|| self.launch_cwd_for_pane_in_workspace(ws_idx, target_pane_id));
-        let default_cwd = self
-            .paths
-            .current_dir()
-            .unwrap_or_else(|| std::path::Path::new("/"))
-            .to_path_buf();
-        let extra_env =
-            super::env::normalize_launch_env(pane.env.clone()).map_err(|(_, message)| message)?;
-        let direction = match direction {
-            SplitDirection::Right => Direction::Horizontal,
-            SplitDirection::Down => Direction::Vertical,
-        };
-        let command = layout_command(pane)?;
-        let spawn = self.pane_spawn_handles();
-        let result = {
-            let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
-                return Err("workspace not found".into());
+        LayoutNode::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } => {
+            let second_leaf = first_layout_leaf(second);
+            let cwd = second_leaf
+                .cwd
+                .as_ref()
+                .map(PathBuf::from)
+                .or_else(|| {
+                    staging
+                        .pane_runtimes
+                        .get(&target_pane_id)
+                        .and_then(|(_, runtime)| runtime.follow_cwd())
+                })
+                .or_else(|| staging.pane_cwds.get(&target_pane_id).cloned())
+                .unwrap_or_else(|| staging.default_cwd.to_path_buf());
+            let extra_env = super::env::normalize_launch_env(second_leaf.env.clone())
+                .map_err(|(_, message)| message)?;
+            let command = layout_command(second_leaf)?;
+            let launch_env = crate::pane::PaneLaunchEnv::from_extra(extra_env).with_identity(
+                staging.workspace_id.to_string(),
+                crate::workspace::public_tab_id_for_number(
+                    staging.workspace_id,
+                    staging.tab_number,
+                ),
+                crate::workspace::public_pane_id_for_number(
+                    staging.workspace_id,
+                    *staging.next_pane_number,
+                ),
+            );
+            let direction = match direction {
+                SplitDirection::Right => Direction::Horizontal,
+                SplitDirection::Down => Direction::Vertical,
             };
-            if let Some(argv) = command.as_deref() {
-                ws.split_pane_argv_command_with_ratio(
+            let new_pane = if let Some(argv) = command.as_deref() {
+                tab.split_pane_argv(
                     target_pane_id,
-                    direction,
-                    ratio,
-                    &geometry,
-                    cwd,
-                    default_cwd,
-                    argv,
-                    extra_env,
-                    scrollback_limit_bytes,
-                    host_terminal_theme,
-                    host_terminal_appearance,
                     false,
-                    &spawn,
+                    direction,
+                    Some(*ratio),
+                    &staging.geometry,
+                    Some(cwd),
+                    staging.default_cwd.to_path_buf(),
+                    argv,
+                    &launch_env,
+                    staging.scrollback_limit_bytes,
+                    staging.host_terminal_theme,
+                    staging.host_terminal_appearance,
+                    staging.spawn,
                 )
             } else {
-                ws.split_pane_with_ratio(
+                tab.split_pane_shell(
                     target_pane_id,
-                    direction,
-                    ratio,
-                    &geometry,
-                    cwd,
-                    default_cwd,
-                    scrollback_limit_bytes,
-                    host_terminal_theme,
-                    host_terminal_appearance,
-                    crate::pane::PaneShellConfig::new(&default_shell, self.state.login_shell),
-                    extra_env,
                     false,
-                    &spawn,
+                    direction,
+                    Some(*ratio),
+                    &staging.geometry,
+                    Some(cwd),
+                    staging.default_cwd.to_path_buf(),
+                    staging.scrollback_limit_bytes,
+                    staging.host_terminal_theme,
+                    staging.host_terminal_appearance,
+                    crate::pane::PaneShellConfig::new(staging.default_shell, staging.login_shell),
+                    &launch_env,
+                    staging.spawn,
                 )
             }
-        };
-        let (_, new_pane) = result
-            .ok_or_else(|| "pane not found".to_string())?
             .map_err(|err| err.to_string())?;
-        let new_pane_id = new_pane.pane_id;
-        self.attach_new_layout_pane(new_pane);
-        self.apply_layout_pane_label(ws_idx, new_pane_id, pane);
-        Ok(new_pane_id)
-    }
-
-    fn attach_new_layout_pane(&mut self, new_pane: NewPane) {
-        self.terminal_runtimes
-            .insert(new_pane.terminal.id.clone(), new_pane.runtime);
-        self.state
-            .terminals
-            .insert(new_pane.terminal.id.clone(), new_pane.terminal);
-    }
-
-    fn apply_layout_pane_label(&mut self, ws_idx: usize, pane_id: PaneId, pane: &LayoutPane) {
-        let Some(label) = pane
-            .label
-            .as_ref()
-            .map(|label| label.trim())
-            .filter(|label| !label.is_empty())
-        else {
-            return;
-        };
-        let Some(terminal_id) = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.terminal_id(pane_id))
-            .cloned()
-        else {
-            return;
-        };
-        if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
-            terminal.set_manual_label(label.to_string());
-        }
-    }
-
-    fn rollback_layout_tab(&mut self, ws_idx: usize, root_pane: PaneId) {
-        let Some(tab_idx) = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.tabs.iter().position(|tab| tab.root_pane == root_pane))
-        else {
-            return;
-        };
-        let terminal_ids = self.state.terminal_ids_for_tab(ws_idx, tab_idx);
-        let pane_ids_for_focus_clear = self.state.pane_ids_for_tab(ws_idx, tab_idx);
-        if self
-            .state
-            .workspaces
-            .get_mut(ws_idx)
-            .is_some_and(|ws| ws.close_tab(tab_idx))
-        {
-            self.state.remove_pane_aliases(&pane_ids_for_focus_clear);
-            self.state
-                .clear_stale_previous_pane_focus(pane_ids_for_focus_clear);
-            self.state.remove_unattached_terminal_ids(terminal_ids);
-            self.shutdown_detached_terminal_runtimes();
+            let crate::workspace::NewPane {
+                pane_id,
+                terminal,
+                runtime,
+                prepared_layout,
+            } = new_pane;
+            let terminal_id = terminal.id.clone();
+            let terminal_cwd = terminal.cwd.clone();
+            if !tab.commit_prepared_split(
+                pane_id,
+                prepared_layout,
+                terminal_id.clone(),
+                *staging.next_pane_number,
+            ) {
+                drop(runtime);
+                return Err("prepared layout split no longer matches its tab".into());
+            }
+            *staging.next_pane_number = (*staging.next_pane_number).saturating_add(1);
+            staging.pane_cwds.insert(pane_id, terminal_cwd);
+            staging.pane_terminals.insert(pane_id, terminal);
+            staging
+                .pane_runtimes
+                .insert(pane_id, (terminal_id, runtime));
+            stage_layout_node(tab, target_pane_id, first, staging)?;
+            stage_layout_node(tab, pane_id, second, staging)
         }
     }
 }
@@ -517,6 +531,20 @@ fn first_layout_leaf(node: &LayoutNode) -> &LayoutPane {
     match node {
         LayoutNode::Pane { pane } => pane,
         LayoutNode::Split { first, .. } => first_layout_leaf(first),
+    }
+}
+
+fn validate_layout_launches(node: &LayoutNode) -> Result<(), String> {
+    match node {
+        LayoutNode::Pane { pane } => {
+            super::env::normalize_launch_env(pane.env.clone()).map_err(|(_, message)| message)?;
+            let _ = layout_command(pane)?;
+            Ok(())
+        }
+        LayoutNode::Split { first, second, .. } => {
+            validate_layout_launches(first)?;
+            validate_layout_launches(second)
+        }
     }
 }
 

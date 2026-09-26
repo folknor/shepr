@@ -107,7 +107,11 @@ impl Replacement {
             // Existing configs can contain secrets. Start their staging file private;
             // the platform writer preserves the original permissions before publication.
             // New configs retain ordinary create/umask/inherited-ACL defaults.
-            let created = crate::platform::create_config_temporary(&temporary, existing.is_some());
+            let created = if existing.is_some() {
+                crate::platform::create_private_temporary(&temporary)
+            } else {
+                crate::platform::create_config_temporary(&temporary)
+            };
             match created {
                 Ok(file) => drop(file),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,

@@ -190,7 +190,7 @@ impl App {
 
         let mut argv = vec![crate::detect::interactive_agent_executable(kind).to_string()];
         argv.extend(params.args);
-        let command = crate::platform::interactive_shell_command(&argv)
+        let command = crate::remote::interactive_shell_command(&argv)
             .ok_or(AgentStartError::InvalidArgument)?;
         let bytes = crate::app::api_helpers::encode_api_submission(runtime, &command);
         let timeout =
@@ -423,7 +423,7 @@ fn available_shell_name(runtime: &crate::terminal::TerminalRuntime) -> Option<St
     if runtime.child_pid().is_none() {
         return Some("sh".into());
     }
-    crate::platform::available_pane_shell(runtime.child_pid()?)
+    crate::detect::available_pane_shell(runtime.child_pid()?)
 }
 
 pub(super) fn runtime_hosts_agent(
@@ -444,7 +444,7 @@ fn live_runtime_agent(runtime: &crate::terminal::TerminalRuntime) -> Option<crat
         .or_else(|| {
             job.processes
                 .iter()
-                .find_map(|process| crate::platform::process_agent_hint(process.pid))
+                .find_map(|process| crate::detect::process_agent_hint(process.pid))
         })
 }
 

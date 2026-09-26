@@ -4,7 +4,7 @@ use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, TabCreateParams, TabListParams,
     TabMoveParams, TabRenameParams, TabTarget,
 };
-use crate::app::{App, Mode};
+use crate::app::App;
 
 use super::responses::{encode_error, encode_success};
 
@@ -78,7 +78,7 @@ impl App {
         let result = self
             .state
             .workspaces
-            .get_mut(ws_idx)
+            .get(ws_idx)
             .ok_or_else(|| std::io::Error::other("workspace disappeared"))
             .and_then(|ws| {
                 ws.create_tab(
@@ -94,9 +94,15 @@ impl App {
                 )
             });
         match result {
-            Ok((tab_idx, terminal, runtime)) => {
-                self.terminal_runtimes.insert(terminal.id.clone(), runtime);
-                self.state.terminals.insert(terminal.id.clone(), terminal);
+            Ok((tab, terminal, runtime)) => {
+                let terminal_id = terminal.id.clone();
+                let Some(outcome) = self.state.commit_tab_creation(ws_idx, tab, terminal, focus)
+                else {
+                    drop(runtime);
+                    return encode_error(id, "tab_create_failed", "workspace disappeared");
+                };
+                let tab_idx = outcome.tab_index;
+                self.terminal_runtimes.insert(terminal_id, runtime);
                 if let Some(label) = label {
                     let workspace_id = self.public_workspace_id(ws_idx);
                     let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
@@ -111,10 +117,6 @@ impl App {
                         tab.set_custom_name(label);
                         crate::logging::tab_renamed(&workspace_id, &tab_id);
                     }
-                }
-                if focus {
-                    self.state.switch_workspace_tab(ws_idx, tab_idx);
-                    self.state.mode = Mode::Terminal;
                 }
                 self.schedule_session_save();
                 self.emit_tab_created_events(ws_idx, tab_idx);
@@ -224,40 +226,23 @@ impl App {
         if self.public_tab_id(ws_idx, tab_idx).is_none() {
             return tab_not_found(id, &target.tab_id);
         }
-        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+        let Some(plan) = self.state.prepare_tab_removal(ws_idx, tab_idx) else {
             return tab_not_found(id, &target.tab_id);
         };
-        let closes_workspace = ws.tabs.len() <= 1;
-        let terminal_ids = self.state.terminal_ids_for_tab(ws_idx, tab_idx);
-        let pane_ids = ws
-            .tabs
-            .get(tab_idx)
-            .map(|tab| tab.layout.pane_ids())
-            .unwrap_or_default();
-
-        if closes_workspace {
-            let close_events = self.workspace_close_events(ws_idx);
-            self.state.close_workspace_at(ws_idx);
-            self.state.clear_stale_previous_pane_focus(pane_ids);
-            self.shutdown_detached_terminal_runtimes();
-            self.emit_events(close_events);
-            return encode_success(id, ResponseResult::Ok {});
-        }
-        let close_events = self.tab_close_events(ws_idx, tab_idx);
-
-        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
-            return tab_not_found(id, &target.tab_id);
+        let close_events = match plan.scope {
+            crate::app::actions::TabRemovalScope::Tab => self.tab_close_events(ws_idx, tab_idx),
+            crate::app::actions::TabRemovalScope::Workspace => self.workspace_close_events(ws_idx),
         };
-        if !ws.close_tab(tab_idx) {
+        if !matches!(
+            self.state.commit_tab_removal(&plan),
+            crate::app::actions::TabRemovalCommit::Removed(_)
+        ) {
             return encode_error(
                 id,
                 "tab_close_failed",
                 format!("tab {} could not be closed", target.tab_id),
             );
         }
-        self.state.remove_pane_aliases(&pane_ids);
-        self.state.clear_stale_previous_pane_focus(pane_ids);
-        self.state.remove_unattached_terminal_ids(terminal_ids);
         self.shutdown_detached_terminal_runtimes();
         self.schedule_session_save();
         self.emit_events(close_events);

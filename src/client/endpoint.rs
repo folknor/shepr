@@ -2,6 +2,7 @@ mod activation;
 pub(crate) mod commands;
 mod control;
 mod health;
+mod local_failure;
 mod message_policy;
 mod registry;
 pub(crate) mod selection;
@@ -13,6 +14,7 @@ pub(crate) use crate::machine::{
 };
 pub(crate) use activation::*;
 pub(crate) use control::*;
+pub(crate) use local_failure::*;
 pub(crate) use message_policy::*;
 pub(crate) use registry::*;
 pub(crate) use supervisor::*;

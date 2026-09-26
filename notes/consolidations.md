@@ -51,38 +51,6 @@ Proposed owner: one scheduler state machine.
 
 Reported by: pane-detection.
 
-## CON-020 - Does removing this pane take its tab or workspace with it?
-
-Sites: `Workspace::close_pane` (workspace.rs:890, returns bool); `Tab::close_pane`
-(tab.rs:385); precomputed before mutation in `api/panes.rs::close_pane`
-(`pane_count() <= 1`, then `tab_close_events` / `workspace_close_events`), in
-`api.rs::pane_exit_container_events` (`pane_count() > 1`, `tabs.len() <= 1`) and
-`api/tabs.rs:230` (`closes_workspace = ws.tabs.len() <= 1`); `Workspace::close_tab`
-(`tabs.len() <= 1`); test-only `AppState::close_tab` (actions.rs:859).
-`handle_internal_event_with_pane_updates` runs `find_pane` four times for one
-PaneDied to predict post-mutation facts. The two production close paths already
-differ in teardown order (BUG-006).
-
-Proposed owner: `Workspace::remove_pane(pane) -> Removal { Pane | Tab{idx, panes} |
-Workspace }`, with events derived from the outcome.
-
-Reported by: app-state.
-
-## CON-021 - What creating a pane or workspace entails
-
-Question: insert the runtime into `terminal_runtimes`, insert `TerminalState`,
-focus, set `mode = Terminal`, save the session, emit events.
-
-Sites: inline in `api/panes.rs::handle_pane_split` and
-`creation.rs::create_workspace_with_launch_env`, presumably also keybinding
-paths; events are a separate call the caller must remember
-(`emit_workspace_open_events`). See BUG-005.
-
-Proposed owner: an `AppState`/`Workspace` command returning a typed outcome from
-which `App` applies side effects (see STR-031).
-
-Reported by: app-state.
-
 ## CON-023 - Which terminal does this target name?
 
 Sites: `resolve_terminal_target` matches `agent_name` or
@@ -91,16 +59,6 @@ gates pane ids on `is_agent_terminal`. The hunter notes the difference may be
 intended.
 
 Proposed owner: one resolver parameterised by a `TargetKind`.
-
-Reported by: app-state.
-
-## CON-024 - Which workspace or pane when no target is given?
-
-Sites: `handle_pane_split` (`target_pane_id`, else `workspace_id` + focused, else
-`active` + focused); `creation.rs::workspace_creation_source` (Navigate-mode
-`selected`, else `active`); likely other handlers.
-
-Proposed owner: one `resolve_pane_context(Option<pane>, Option<ws>)`.
 
 Reported by: app-state.
 
@@ -144,18 +102,6 @@ choice becomes a function of `(diagnostics, KeybindingSource)`.
 
 Reported by: config-cli, server.
 
-## CON-039 - Is the client federated; does a Local failure end it?
-
-Sites: `federated = endpoint_catalog.has_enabled_ssh()` computed in
-`run_client_with_mode` and again in the loop (the startup copy has already chosen
-fatal vs non-fatal connect behaviour); "Local failure ends the client" at
-`client/mod.rs:1040`, `1282-1283` (with `endpoint::protocol_failure_is_fatal`),
-and `1405`.
-
-Proposed owner: one `LocalFailurePolicy` query on the registry or supervisor.
-
-Reported by: client.
-
 ## CON-040 - Which role is this client process?
 
 Sites: `is_remote_client_process()` called in `run_client_with_mode`,
@@ -166,31 +112,6 @@ Sites: `is_remote_client_process()` called in `run_client_with_mode`,
 Proposed owner: a typed `ClientProcessRole` resolved once at startup.
 
 Reported by: client.
-
-## CON-041 - Which endpoint messages are accepted now?
-
-Sites: `write_stream.accepts(...)`, `endpoint::accepts_endpoint_message(...)`,
-per-arm checks (`!endpoint_active || presentation_frozen` for surfaces, a
-separate `presentation_frozen` for patches); the freeze rule is spread across
-`client/mod.rs:960-1006` and the prose in `state.rs:144-175`.
-
-Proposed owner: a `PresentationGate` returning Apply/Drop/Buffer per message.
-
-Reported by: client.
-
-## CON-043 - Is a server alive?
-
-Sites: `session::is_running_at` (`path.exists() && connect().is_ok()`);
-`cli::server_not_running_error` (`NotFound | ConnectionRefused`); `cli/status.rs`
-status probe plus that classifier; `server_not_running` /
-`map_server_not_running_or_io`; `ipc::prepare_socket_path` (stale vs live, not
-read). Already disagree: `PermissionDenied` on connect is "not running" in
-`session list`/`delete` but a transport error in the CLI.
-
-Proposed owner: `ipc::probe(path) -> Liveness { Absent, Stale, Live,
-Unreachable(io::Error) }`.
-
-Reported by: config-cli.
 
 ## CON-045 - Config keys, defaults and validation
 

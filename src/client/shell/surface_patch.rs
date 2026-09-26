@@ -236,6 +236,7 @@ impl ClientShellState {
                     max_offset_from_bottom: usize::try_from(metrics.max_offset_from_bottom)
                         .unwrap_or(usize::MAX),
                     viewport_rows: usize::try_from(metrics.viewport_rows).unwrap_or(usize::MAX),
+                    history_origin: metrics.history_origin,
                 });
                 hit.mouse_reporting = updated.mouse_reporting;
                 hit.sgr_pixel_mouse = updated.sgr_pixel_mouse;

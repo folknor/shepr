@@ -5,7 +5,7 @@ use crate::api::schema::{
     WorkspaceCreateParams, WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams,
     WorkspaceReportMetadataParams, WorkspaceTarget,
 };
-use crate::app::App;
+use crate::app::{App, actions::PaneContextFallback};
 
 use super::super::api_helpers::{normalize_metadata_source, normalize_metadata_ttl};
 use super::responses::{encode_error, encode_success};
@@ -36,7 +36,7 @@ impl App {
         id: String,
         params: WorkspaceCreateParams,
     ) -> String {
-        let source_workspace_index = if params.cwd.is_some() {
+        let source_context = if params.cwd.is_some() {
             None
         } else {
             match params.source_workspace_id.as_deref() {
@@ -44,16 +44,29 @@ impl App {
                     .parse_workspace_id(workspace_id)
                     .filter(|index| self.state.workspaces.get(*index).is_some())
                 {
-                    Some(index) => Some(index),
+                    Some(index) => self.state.resolve_pane_context(
+                        None,
+                        Some(index),
+                        PaneContextFallback::None,
+                    ),
                     None => return workspace_not_found(id, workspace_id),
                 },
-                None => self.workspace_creation_source(),
+                None => self.state.resolve_pane_context(
+                    None,
+                    None,
+                    PaneContextFallback::WorkspaceCreation,
+                ),
             }
         };
         let cwd = params.cwd.map(PathBuf::from).unwrap_or_else(|| {
-            source_workspace_index.map_or_else(
+            source_context.map_or_else(
                 || self.resolve_new_terminal_cwd(None),
-                |index| self.resolved_new_workspace_cwd_from(index),
+                |context| {
+                    self.resolved_new_workspace_cwd_from_tab(
+                        context.workspace_index,
+                        Some(context.tab_index),
+                    )
+                },
             )
         });
         let extra_env = match super::env::normalize_launch_env(params.env) {

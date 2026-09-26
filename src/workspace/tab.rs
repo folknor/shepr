@@ -50,6 +50,7 @@ pub struct NewPane {
     pub pane_id: PaneId,
     pub terminal: TerminalState,
     pub runtime: TerminalRuntime,
+    pub(crate) prepared_layout: TileLayout,
 }
 
 pub struct Tab {
@@ -201,13 +202,12 @@ impl Tab {
         self.custom_name = Some(name);
     }
 
-    /// Split `target` with a shell pane. Focus moves to the new pane only when
-    /// `focus_new_pane` is set; a spawn failure rolls the layout back without
-    /// touching focus or its history. The child is spawned at the size
-    /// `geometry` gives the new pane in the split layout.
+    /// Prepare a shell split on a cloned layout and start its runtime. The
+    /// returned layout is installed by the workspace command after startup.
+    /// Focus moves only when `focus_new_pane` is set.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn split_pane_shell(
-        &mut self,
+        &self,
         target: PaneId,
         focus_new_pane: bool,
         direction: Direction,
@@ -244,7 +244,7 @@ impl Tab {
     /// `split_pane_shell`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn split_pane_argv(
-        &mut self,
+        &self,
         target: PaneId,
         focus_new_pane: bool,
         direction: Direction,
@@ -280,7 +280,7 @@ impl Tab {
     // Split construction threads geometry, host context, launch policy, and command state.
     #[allow(clippy::too_many_arguments)]
     fn split_pane_with_runtime(
-        &mut self,
+        &self,
         target: PaneId,
         focus_new_pane: bool,
         direction: Direction,
@@ -296,9 +296,8 @@ impl Tab {
         spawn: &PaneSpawnHandles,
         argv: Option<&[String]>,
     ) -> std::io::Result<NewPane> {
-        let Some(new_id) = self
-            .layout
-            .split_pane(target, direction, ratio.unwrap_or(0.5))
+        let mut prepared_layout = self.layout.clone();
+        let Some(new_id) = prepared_layout.split_pane(target, direction, ratio.unwrap_or(0.5))
         else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -307,7 +306,7 @@ impl Tab {
         };
         // The split un-zooms the tab (below), so size against the tiled layout.
         let (rows, cols) = geometry
-            .pane_size(&self.layout, false, new_id)
+            .pane_size(&prepared_layout, false, new_id)
             .unwrap_or_else(|| geometry.sole_pane_size());
         let actual_cwd = cwd.unwrap_or(default_cwd);
         let launch_argv = argv.map(<[String]>::to_vec);
@@ -341,13 +340,7 @@ impl Tab {
                 &spawn.render_dirty,
             ),
         };
-        let runtime = match runtime {
-            Ok(runtime) => runtime,
-            Err(err) => {
-                self.layout.close_pane(new_id);
-                return Err(err);
-            }
-        };
+        let runtime = runtime?;
         let terminal_id = TerminalId::alloc();
         let terminal = match launch_argv {
             Some(argv) => {
@@ -356,22 +349,39 @@ impl Tab {
             None => TerminalState::new(terminal_id.clone(), actual_cwd),
         };
         if focus_new_pane {
-            self.layout.focus_pane(new_id);
+            prepared_layout.focus_pane(new_id);
         }
-        self.panes
-            .insert(new_id, TabPane::new(PaneState::new(terminal_id)));
-        self.zoomed = false;
         Ok(NewPane {
             pane_id: new_id,
             terminal,
             runtime,
+            prepared_layout,
         })
     }
 
-    #[cfg(test)]
-    pub fn close_focused(&mut self) -> Option<DetachedPane> {
-        let pane_id = self.layout.focused();
-        self.close_pane(pane_id)
+    pub(crate) fn commit_prepared_split(
+        &mut self,
+        pane_id: PaneId,
+        prepared_layout: TileLayout,
+        terminal_id: TerminalId,
+        public_number: usize,
+    ) -> bool {
+        let current_ids = self.layout.pane_ids();
+        let prepared_ids = prepared_layout.pane_ids();
+        if self.panes.contains_key(&pane_id)
+            || !prepared_ids.contains(&pane_id)
+            || prepared_ids.len() != current_ids.len().saturating_add(1)
+            || current_ids.iter().any(|id| !prepared_ids.contains(id))
+        {
+            return false;
+        }
+
+        self.layout = prepared_layout;
+        self.zoomed = false;
+        let mut pane = TabPane::new(PaneState::new(terminal_id));
+        pane.public_number = public_number;
+        self.panes.insert(pane_id, pane);
+        true
     }
 
     /// Detaches `pane_id` from the layout and returns it with its terminal id.

@@ -7,6 +7,13 @@ pub mod manifest;
 
 pub use crate::agents::Agent;
 
+mod proc_tree;
+pub use proc_tree::{
+    ForegroundJob, ForegroundProcess, foreground_group_leader_job, foreground_job,
+    foreground_process_group_id, process_agent_hint, process_cwd,
+};
+pub(crate) use proc_tree::{available_pane_shell, is_pane_shell_process_name};
+
 /// The detected state of a terminal pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AgentState {
@@ -81,7 +88,7 @@ pub fn identify_agent(process_name: &str) -> Option<Agent> {
 
 /// Blocking: path-shaped argv tokens are resolved on the filesystem (through
 /// `/proc/<pid>/cwd` for relative ones). Call from a blocking context.
-pub fn identify_agent_in_job(job: &crate::platform::ForegroundJob) -> Option<(Agent, String)> {
+pub fn identify_agent_in_job(job: &ForegroundJob) -> Option<(Agent, String)> {
     if let Some(process) = job
         .processes
         .iter()
@@ -169,26 +176,7 @@ pub(crate) fn session_identity_only_integration(source: &str, agent_label: &str)
 // detection task is async, so it has to reach these through a blocking
 // section rather than calling them on a runtime worker.
 
-/// Get the foreground job for a given child PID.
-pub fn foreground_job(child_pid: u32) -> Option<crate::platform::ForegroundJob> {
-    crate::platform::foreground_job(child_pid)
-}
-
-/// Get the foreground process group leader as a one-process job.
-/// This is cheaper than collecting every process in the foreground job.
-pub fn foreground_group_leader_job(
-    process_group_id: u32,
-) -> Option<crate::platform::ForegroundJob> {
-    crate::platform::foreground_group_leader_job(process_group_id)
-}
-
-/// Get the foreground process group for a pane shell PID.
-/// This is cheaper than collecting every process in the foreground job.
-pub fn foreground_process_group_id(child_pid: u32) -> Option<u32> {
-    crate::platform::foreground_process_group_id(child_pid)
-}
-
-fn normalized_process_name(process: &crate::platform::ForegroundProcess) -> String {
+fn normalized_process_name(process: &ForegroundProcess) -> String {
     let effective = process.argv0.as_deref().unwrap_or(&process.name);
     let lower_effective = effective.to_lowercase();
     let cwd_pid = Some(process.pid);
@@ -450,7 +438,7 @@ fn letta_first_arg_after_backend_selection(args: &[String]) -> Option<&str> {
     None
 }
 
-fn is_interactive_letta_process(process: &crate::platform::ForegroundProcess) -> bool {
+fn is_interactive_letta_process(process: &ForegroundProcess) -> bool {
     let parsed_cmdline;
     let argv = if let Some(argv) = process.argv.as_deref() {
         argv
@@ -562,7 +550,7 @@ fn path_basename(path: &str) -> &str {
         .unwrap_or(path)
 }
 
-fn process_priority(process: &crate::platform::ForegroundProcess, normalized_name: &str) -> u8 {
+fn process_priority(process: &ForegroundProcess, normalized_name: &str) -> u8 {
     let lower_name = normalized_name.to_lowercase();
     if lower_name != process.name.to_lowercase() {
         return 3;
@@ -610,12 +598,8 @@ mod tests {
         );
     }
 
-    fn foreground_process(
-        pid: u32,
-        name: &str,
-        argv: &[&str],
-    ) -> crate::platform::ForegroundProcess {
-        crate::platform::ForegroundProcess {
+    fn foreground_process(pid: u32, name: &str, argv: &[&str]) -> ForegroundProcess {
+        ForegroundProcess {
             pid,
             name: name.to_string(),
             argv0: None,
@@ -810,7 +794,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_prefers_wrapped_codex() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![
                 foreground_process(1, "node", &["node", "/path/to/bin/codex"]),
@@ -833,7 +817,7 @@ mod tests {
                 "/usr/lib/node_modules/@qwen-code/qwen-code/dist/index.js",
             ],
         ] {
-            let job = crate::platform::ForegroundJob {
+            let job = ForegroundJob {
                 process_group_id: 123,
                 processes: vec![foreground_process(123, "MainThread", &argv)],
             };
@@ -857,7 +841,7 @@ mod tests {
                 "/usr/local/lib/node_modules/@cline/cli-linux-x64/bin/cline",
             ),
         ] {
-            let job = crate::platform::ForegroundJob {
+            let job = ForegroundJob {
                 process_group_id: 123,
                 processes: vec![foreground_process(123, name, &[executable, "--tui"])],
             };
@@ -881,7 +865,7 @@ mod tests {
                 vec!["node", "/usr/local/lib/node_modules/cline/bin/cline"],
             ),
         ] {
-            let job = crate::platform::ForegroundJob {
+            let job = ForegroundJob {
                 process_group_id: 123,
                 processes: vec![foreground_process(123, name, &argv)],
             };
@@ -903,7 +887,7 @@ mod tests {
             vec!["/path/to/.cline-helper"],
             vec!["/path/to/other", "/path/to/cline"],
         ] {
-            let job = crate::platform::ForegroundJob {
+            let job = ForegroundJob {
                 process_group_id: 123,
                 processes: vec![foreground_process(123, "MainThread", &argv)],
             };
@@ -930,7 +914,7 @@ mod tests {
                 "agent-id",
             ],
         ] {
-            let job = crate::platform::ForegroundJob {
+            let job = ForegroundJob {
                 process_group_id: 123,
                 processes: vec![foreground_process(123, "MainThread", &argv)],
             };
@@ -958,7 +942,7 @@ mod tests {
         ] {
             let mut argv = vec!["node", "/home/user/project/node_modules/.bin/letta"];
             argv.extend(args);
-            let job = crate::platform::ForegroundJob {
+            let job = ForegroundJob {
                 process_group_id: 123,
                 processes: vec![foreground_process(123, "MainThread", &argv)],
             };
@@ -966,7 +950,7 @@ mod tests {
             assert_eq!(identify_agent_in_job(&job), None, "argv: {argv:?}");
         }
 
-        let unrelated = crate::platform::ForegroundJob {
+        let unrelated = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 123,
@@ -976,7 +960,7 @@ mod tests {
         };
         assert_eq!(identify_agent_in_job(&unrelated), None);
 
-        let source_checkout = crate::platform::ForegroundJob {
+        let source_checkout = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 123,
@@ -989,7 +973,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_prefers_recognized_process_group_leader() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 42,
             processes: vec![
                 foreground_process(42, "claude", &["claude"]),
@@ -1005,7 +989,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_falls_back_when_process_group_leader_is_unrecognized() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 42,
             processes: vec![
                 foreground_process(42, "bash", &["bash"]),
@@ -1021,7 +1005,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_detects_python_version_wrapped_hermes() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 123,
@@ -1043,7 +1027,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_detects_nix_wrapped_codex_from_cmdline_argv0() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 1,
@@ -1060,7 +1044,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_canonicalizes_nix_wrapped_aliases_from_cmdline_argv0() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 1,
@@ -1077,7 +1061,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_detects_shell_wrapped_pi() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 1,
@@ -1101,7 +1085,7 @@ mod tests {
                 "/usr/lib/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js",
             ),
         ] {
-            let job = crate::platform::ForegroundJob {
+            let job = ForegroundJob {
                 process_group_id: 123,
                 processes: vec![foreground_process(123, runtime, &[runtime, script])],
             };
@@ -1112,7 +1096,7 @@ mod tests {
             );
         }
 
-        let other_script = crate::platform::ForegroundJob {
+        let other_script = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 123,
@@ -1128,7 +1112,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_detects_node_wrapped_pi_package_cli() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 123,
@@ -1148,7 +1132,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_detects_node_wrapped_pi_bundled_cli() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 123,
@@ -1168,7 +1152,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_detects_node_wrapped_mastracode_package_cli() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 123,
@@ -1185,7 +1169,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_detects_node_wrapped_kimi_package_cli() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 123,
@@ -1215,7 +1199,7 @@ mod tests {
             "/workspace/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.exe",
             "/workspace/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js/other.js",
         ] {
-            let job = crate::platform::ForegroundJob {
+            let job = ForegroundJob {
                 process_group_id: 123,
                 processes: vec![foreground_process(123, "node", &["node", script])],
             };
@@ -1226,7 +1210,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_detects_opencode2_as_opencode() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 123,
@@ -1243,7 +1227,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_detects_opencode_exe_from_pnpm_package() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 123,
@@ -1260,7 +1244,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_detects_opencode_exe_from_argv0_path() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 123,
@@ -1289,7 +1273,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_ignores_python_c_argument_named_codex() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 1,
@@ -1303,7 +1287,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_ignores_node_eval_argument_named_codex() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 1,
@@ -1317,7 +1301,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_ignores_shell_c_argument_named_codex() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 1,
@@ -1331,7 +1315,7 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_detects_python_script_named_codex() {
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 1,
@@ -1407,7 +1391,7 @@ mod tests {
         std::os::unix::fs::symlink(&target, &link).expect("symlink should be created");
 
         let argv0 = link.to_string_lossy().into_owned();
-        let job = crate::platform::ForegroundJob {
+        let job = ForegroundJob {
             process_group_id: 42,
             processes: vec![foreground_process(
                 42,

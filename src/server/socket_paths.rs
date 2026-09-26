@@ -116,9 +116,9 @@ impl ServerAddress {
         format!(
             "{}={} {}={} {command}",
             crate::session::SESSION_ENV_VAR,
-            shell_quote(session.display_name()),
+            crate::remote::shell_quote(session.display_name()),
             crate::api::SOCKET_PATH_ENV_VAR,
-            shell_quote(&api_socket.to_string_lossy())
+            crate::remote::shell_quote(&api_socket.to_string_lossy())
         )
     }
 
@@ -131,9 +131,9 @@ impl ServerAddress {
         format!(
             "{}={} {}={} {command}",
             crate::session::SESSION_ENV_VAR,
-            shell_quote(session.display_name()),
+            crate::remote::shell_quote(session.display_name()),
             CLIENT_SOCKET_PATH_ENV_VAR,
-            shell_quote(&client_socket.to_string_lossy())
+            crate::remote::shell_quote(&client_socket.to_string_lossy())
         )
     }
 
@@ -156,10 +156,6 @@ impl ServerAddress {
             }
         }
     }
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// Returns the resolved client protocol socket for this process.

@@ -17,9 +17,37 @@ pub(crate) fn write_window_title<W: Write>(writer: &mut W, title: Option<&str>) 
     writer.flush()
 }
 
+fn osc52_sequence(bytes: &[u8]) -> String {
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    format!("\x1b]52;c;{encoded}\x07")
+}
+
+/// Write clipboard bytes with native Linux tools when the host has a local
+/// clipboard, falling back to an OSC 52 write through the host terminal.
+///
+/// Remote, VS Code remote, and WSL sessions use OSC 52 so bytes reach the
+/// terminal on the user's machine. Some terminals still only honor BEL-
+/// terminated writes, so OSC 52 uses BEL here.
+pub(crate) fn write_clipboard_bytes(bytes: &[u8]) {
+    if !crate::platform::prefers_osc52_clipboard() && crate::platform::write_clipboard(bytes) {
+        return;
+    }
+
+    let sequence = osc52_sequence(bytes);
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(sequence.as_bytes());
+    let _ = stdout.flush();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn osc52_sequence_uses_bel_terminator() {
+        assert_eq!(osc52_sequence(b"hello"), "\x1b]52;c;aGVsbG8=\x07");
+    }
 
     #[test]
     fn window_title_strips_terminators_and_defaults_to_shepr() {

@@ -1,5 +1,49 @@
 use super::*;
 
+pub(super) type ShellSession = shell::ClientShellState;
+
+/// Direct attach can use the raw byte stream or intercept its configured escape keys.
+pub(super) struct AttachSession {
+    pub(super) escape: Option<AttachEscapeState>,
+}
+
+/// The mutually exclusive interaction mode owned by the client session.
+pub(super) enum SessionMode {
+    Shell(Box<ShellSession>),
+    DirectAttach(AttachSession),
+}
+
+impl SessionMode {
+    pub(super) fn is_shell(&self) -> bool {
+        matches!(self, Self::Shell(_))
+    }
+
+    pub(super) fn shell(&self) -> Option<&ShellSession> {
+        match self {
+            Self::Shell(shell) => Some(shell.as_ref()),
+            Self::DirectAttach(_) => None,
+        }
+    }
+
+    pub(super) fn shell_mut(&mut self) -> Option<&mut ShellSession> {
+        match self {
+            Self::Shell(shell) => Some(shell.as_mut()),
+            Self::DirectAttach(_) => None,
+        }
+    }
+
+    pub(super) fn attach_escape_mut(&mut self) -> Option<&mut AttachEscapeState> {
+        match self {
+            Self::Shell(_) => None,
+            Self::DirectAttach(session) => session.escape.as_mut(),
+        }
+    }
+
+    pub(super) fn is_escape_attach(&self) -> bool {
+        matches!(self, Self::DirectAttach(AttachSession { escape: Some(_) }))
+    }
+}
+
 /// State tracking for the thin client.
 pub(super) struct ClientState {
     /// Stateful semantic-frame encoder used when the server sends FrameData.
@@ -15,7 +59,7 @@ pub(super) struct ClientState {
     pub(super) reported_cell_size: (u32, u32),
     pub(super) pixel_geometry_enabled: bool,
     pub(super) pixel_geometry_exact: bool,
-    pub(super) attach_escape: Option<AttachEscapeState>,
+    pub(super) mode: SessionMode,
     pub(super) mouse_scroll_lines: usize,
     pub(super) redraw_on_focus_gained: bool,
     pub(super) repaint_pending: bool,
@@ -29,12 +73,11 @@ pub(super) struct ClientState {
     /// reset. An empty `ui.window_title` means the server never sends one, and
     /// then the host title must be left alone rather than reset to "shepr".
     pub(super) window_title_written: bool,
-    pub(super) shell: Option<shell::ClientShellState>,
 }
 
 impl Drop for ClientState {
     fn drop(&mut self) {
-        if self.attach_escape.is_some() {
+        if self.mode.is_escape_attach() {
             let _ = crate::terminal_modes::set_direct_host_keyboard_protocol(
                 &mut io::stdout(),
                 &mut self.direct_keyboard_protocol,
@@ -59,7 +102,9 @@ impl ClientState {
             reported_cell_size: (0, 0),
             pixel_geometry_enabled: false,
             pixel_geometry_exact: false,
-            attach_escape: None,
+            mode: SessionMode::Shell(Box::new(shell::ClientShellState::new(
+                shell::ClientShellConfig::from_config(&crate::config::Config::default()),
+            ))),
             mouse_scroll_lines: 3,
             redraw_on_focus_gained: false,
             repaint_pending: false,
@@ -67,9 +112,6 @@ impl ClientState {
             deferred_local_activation: None,
             draw_host_cursor: false,
             window_title_written: false,
-            shell: Some(shell::ClientShellState::new(
-                shell::ClientShellConfig::from_config(&crate::config::Config::default()),
-            )),
         }
     }
 
@@ -78,7 +120,7 @@ impl ClientState {
     }
 
     pub(super) fn set_host_size(&mut self, cols: u16, rows: u16) {
-        let size = terminal_geometry::ClientHostSize::new(cols, rows, self.shell.is_some());
+        let size = terminal_geometry::ClientHostSize::new(cols, rows, self.mode.is_shell());
         self.reported_size = (size.cols, size.rows);
     }
 

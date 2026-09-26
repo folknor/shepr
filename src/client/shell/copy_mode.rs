@@ -41,12 +41,11 @@ impl ClientShellState {
         let Some(metrics) = hit.scroll else {
             return false;
         };
-        let viewport_top = u32::try_from(
+        let viewport_top = crate::terminal::ScreenRow(
             metrics
                 .max_offset_from_bottom
                 .saturating_sub(metrics.offset_from_bottom),
-        )
-        .unwrap_or(u32::MAX);
+        );
         let cursor = self
             .pane_surface
             .as_ref()
@@ -63,13 +62,20 @@ impl ClientShellState {
                     && cursor.y >= inner.y
                     && cursor.y < inner.y.saturating_add(inner.height))
                 .then_some(crate::api::schema::PaneTextPoint {
-                    row: viewport_top.saturating_add(u32::from(cursor.y - inner.y)),
+                    row: crate::terminal::ScreenRow(
+                        viewport_top
+                            .0
+                            .saturating_add(usize::from(cursor.y - inner.y)),
+                    ),
                     col: cursor.x - inner.x,
                 })
             })
             .unwrap_or(crate::api::schema::PaneTextPoint {
-                row: viewport_top
-                    .saturating_add(u32::from(hit.inner_rect.height.saturating_sub(1))),
+                row: crate::terminal::ScreenRow(
+                    viewport_top
+                        .0
+                        .saturating_add(usize::from(hit.inner_rect.height.saturating_sub(1))),
+                ),
                 col: 0,
             });
         self.selection = None;
@@ -541,16 +547,22 @@ impl ClientShellState {
             .saturating_add(usize::from(height))
             .max(1);
         if row_delta < 0 {
-            copy_mode.cursor.row = copy_mode
-                .cursor
-                .row
-                .saturating_sub(u32::from(row_delta.unsigned_abs()));
+            copy_mode.cursor.row = crate::terminal::ScreenRow(
+                copy_mode
+                    .cursor
+                    .row
+                    .0
+                    .saturating_sub(usize::from(row_delta.unsigned_abs())),
+            );
         } else if row_delta > 0 {
-            copy_mode.cursor.row = copy_mode
-                .cursor
-                .row
-                .saturating_add(u32::from(row_delta.unsigned_abs()))
-                .min(u32::try_from(total_rows.saturating_sub(1)).unwrap_or(u32::MAX));
+            copy_mode.cursor.row = crate::terminal::ScreenRow(
+                copy_mode
+                    .cursor
+                    .row
+                    .0
+                    .saturating_add(usize::from(row_delta.unsigned_abs()))
+                    .min(total_rows.saturating_sub(1)),
+            );
         }
         self.reveal_copy_cursor(outcome);
         self.sync_copy_selection();
@@ -564,10 +576,8 @@ impl ClientShellState {
         let lines = crate::copy_mode::copy_mode_page_lines(hit.inner_rect.height, half_page);
         let Some((pane_id, next_offset)) = self.copy_mode.as_mut().map(|copy_mode| {
             if direction < 0 {
-                copy_mode.cursor.row = copy_mode
-                    .cursor
-                    .row
-                    .saturating_sub(u32::try_from(lines).unwrap_or(u32::MAX));
+                copy_mode.cursor.row =
+                    crate::terminal::ScreenRow(copy_mode.cursor.row.0.saturating_sub(lines));
                 copy_mode.offset_from_bottom = copy_mode
                     .offset_from_bottom
                     .saturating_add(lines)
@@ -577,12 +587,9 @@ impl ClientShellState {
                     .max_offset_from_bottom
                     .saturating_add(usize::from(hit.inner_rect.height))
                     .saturating_sub(1);
-                let last_row = u32::try_from(last_row).unwrap_or(u32::MAX);
-                copy_mode.cursor.row = copy_mode
-                    .cursor
-                    .row
-                    .saturating_add(u32::try_from(lines).unwrap_or(u32::MAX))
-                    .min(last_row);
+                copy_mode.cursor.row = crate::terminal::ScreenRow(
+                    copy_mode.cursor.row.0.saturating_add(lines).min(last_row),
+                );
                 copy_mode.offset_from_bottom = copy_mode.offset_from_bottom.saturating_sub(lines);
             }
             (copy_mode.pane_id.clone(), copy_mode.offset_from_bottom)
@@ -600,14 +607,14 @@ impl ClientShellState {
         };
         let Some((pane_id, offset_from_bottom)) = self.copy_mode.as_mut().map(|copy_mode| {
             if top {
-                copy_mode.cursor.row = 0;
+                copy_mode.cursor.row = crate::terminal::ScreenRow(0);
                 copy_mode.offset_from_bottom = copy_mode.max_offset_from_bottom;
             } else {
                 let last_row = copy_mode
                     .max_offset_from_bottom
                     .saturating_add(usize::from(hit.inner_rect.height))
                     .saturating_sub(1);
-                copy_mode.cursor.row = u32::try_from(last_row).unwrap_or(u32::MAX);
+                copy_mode.cursor.row = crate::terminal::ScreenRow(last_row);
                 copy_mode.offset_from_bottom = 0;
             }
             (copy_mode.pane_id.clone(), copy_mode.offset_from_bottom)
@@ -647,30 +654,34 @@ impl ClientShellState {
     fn reveal_copy_cursor(&mut self, outcome: &mut ClientShellInput) {
         let reserve_mode_bar_row = self.mode_bar_covers_copy_pane();
         let request = self.copy_mode.as_mut().and_then(|copy_mode| {
-            let current_top = u32::try_from(
+            let current_top = crate::terminal::ScreenRow(
                 copy_mode
                     .max_offset_from_bottom
                     .saturating_sub(copy_mode.offset_from_bottom),
-            )
-            .unwrap_or(u32::MAX);
+            );
             let max_cursor_row = copy_mode
                 .geometry
                 .1
                 .saturating_sub(if reserve_mode_bar_row { 2 } else { 1 });
-            let bottom = current_top.saturating_add(u32::from(max_cursor_row));
+            let bottom = crate::terminal::ScreenRow(
+                current_top.0.saturating_add(usize::from(max_cursor_row)),
+            );
             let desired_top = if copy_mode.cursor.row < current_top {
                 copy_mode.cursor.row
             } else if copy_mode.cursor.row > bottom {
-                copy_mode
-                    .cursor
-                    .row
-                    .saturating_sub(u32::from(max_cursor_row))
+                crate::terminal::ScreenRow(
+                    copy_mode
+                        .cursor
+                        .row
+                        .0
+                        .saturating_sub(usize::from(max_cursor_row)),
+                )
             } else {
                 current_top
             };
             let offset = copy_mode
                 .max_offset_from_bottom
-                .saturating_sub(usize::try_from(desired_top).unwrap_or(usize::MAX));
+                .saturating_sub(desired_top.0);
             if offset == copy_mode.offset_from_bottom {
                 return None;
             }
@@ -683,33 +694,40 @@ impl ClientShellState {
     }
 
     fn begin_copy_selection(&mut self, linewise: bool) {
-        let width = self.copy_hit().map(|hit| hit.inner_rect.width);
+        let hit = self.copy_hit();
+        let width = hit.as_ref().map(|hit| hit.inner_rect.width);
+        let history_origin = hit
+            .and_then(|hit| hit.scroll)
+            .map_or(crate::terminal::AbsRow(0), |metrics| metrics.history_origin);
         let Some(copy_mode) = self.copy_mode.as_mut() else {
             return;
         };
         let end_col = width.unwrap_or(copy_mode.geometry.0).saturating_sub(1);
+        let row = copy_mode.cursor.row.absolute(history_origin);
         if linewise {
-            copy_mode.selection = Some(ClientCopySelection::Linewise {
-                anchor_row: copy_mode.cursor.row,
-            });
+            copy_mode.selection = Some(ClientCopySelection::Linewise { anchor_row: row });
             self.selection = Some(crate::selection::Selection::line_range(
                 copy_mode.pane_id.clone(),
-                copy_mode.cursor.row,
-                copy_mode.cursor.row,
+                row,
+                row,
                 end_col,
             ));
         } else {
             copy_mode.selection = Some(ClientCopySelection::Character {
-                anchor: copy_mode.cursor,
+                anchor: crate::terminal::Point::new(row, copy_mode.cursor.col),
             });
-            self.selection = Some(crate::selection::Selection::absolute_anchor(
+            self.selection = Some(crate::selection::Selection::anchor(
                 copy_mode.pane_id.clone(),
-                (copy_mode.cursor.row, copy_mode.cursor.col),
+                crate::terminal::Point::new(row, copy_mode.cursor.col),
             ));
         }
     }
 
     pub(super) fn sync_copy_selection(&mut self) {
+        let history_origin = self
+            .copy_hit()
+            .and_then(|hit| hit.scroll)
+            .map_or(crate::terminal::AbsRow(0), |metrics| metrics.history_origin);
         let Some(copy_mode) = self.copy_mode.as_ref() else {
             return;
         };
@@ -717,18 +735,19 @@ impl ClientShellState {
             return;
         };
         self.selection = Some(match selection {
-            ClientCopySelection::Character { anchor } => {
-                crate::selection::Selection::absolute_range(
-                    copy_mode.pane_id.clone(),
-                    (anchor.row, anchor.col),
-                    (copy_mode.cursor.row, copy_mode.cursor.col),
-                )
-            }
+            ClientCopySelection::Character { anchor } => crate::selection::Selection::range(
+                copy_mode.pane_id.clone(),
+                anchor,
+                crate::terminal::Point::new(
+                    copy_mode.cursor.row.absolute(history_origin),
+                    copy_mode.cursor.col,
+                ),
+            ),
             ClientCopySelection::Linewise { anchor_row } => {
                 crate::selection::Selection::line_range(
                     copy_mode.pane_id.clone(),
                     anchor_row,
-                    copy_mode.cursor.row,
+                    copy_mode.cursor.row.absolute(history_origin),
                     self.copy_hit()
                         .map_or(copy_mode.geometry.0, |hit| hit.inner_rect.width)
                         .saturating_sub(1),
@@ -866,10 +885,20 @@ impl ClientShellState {
                     .map(|text_match| (copy_mode.pane_id.clone(), text_match))
             })
         {
-            self.selection = Some(crate::selection::Selection::absolute_range(
+            let history_origin = self
+                .copy_hit()
+                .and_then(|hit| hit.scroll)
+                .map_or(crate::terminal::AbsRow(0), |metrics| metrics.history_origin);
+            self.selection = Some(crate::selection::Selection::range(
                 pane_id,
-                (text_match.start.row, text_match.start.col),
-                (text_match.end.row, text_match.end.col),
+                crate::terminal::Point::new(
+                    text_match.start.row.absolute(history_origin),
+                    text_match.start.col,
+                ),
+                crate::terminal::Point::new(
+                    text_match.end.row.absolute(history_origin),
+                    text_match.end.col,
+                ),
             ));
         }
         let Some(copy_mode) = self.copy_mode.take() else {

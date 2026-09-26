@@ -761,7 +761,7 @@ mod tests {
         let removed_tab = workspace.test_add_tab(None);
         let survivor_tab = workspace.test_add_tab(None);
         let survivor_pane = workspace.tabs[survivor_tab].root_pane;
-        assert!(workspace.close_tab(removed_tab));
+        assert!(workspace.close_tab(removed_tab).is_some());
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
         app.state.active = Some(0);
@@ -787,7 +787,7 @@ mod tests {
         let fourth_position_tab = workspace.test_add_tab(None);
         let public_four_pane = workspace.tabs[public_four_tab].root_pane;
         let fourth_position_pane = workspace.tabs[fourth_position_tab].root_pane;
-        assert!(workspace.close_tab(removed_tab));
+        assert!(workspace.close_tab(removed_tab).is_some());
         app.state.workspaces = vec![workspace];
 
         let public_four_idx = app.state.workspaces[0]
@@ -822,12 +822,16 @@ mod tests {
         app.state.selected = 1;
         app.state.mode = Mode::Navigate;
 
-        let ws_idx = app.workspace_creation_source().expect("test precondition");
+        let context = app
+            .state
+            .resolve_pane_context(None, None, actions::PaneContextFallback::WorkspaceCreation)
+            .expect("test precondition");
         let seed_cwd = app
-            .seed_cwd_from_workspace(ws_idx)
+            .seed_cwd_from_workspace(context.workspace_index)
             .expect("test precondition");
 
-        assert_eq!(ws_idx, 1);
+        assert_eq!(context.workspace_index, 1);
+        assert_eq!(context.tab_index, 0);
         assert_eq!(seed_cwd, std::path::PathBuf::from("/tmp/pion"));
     }
 

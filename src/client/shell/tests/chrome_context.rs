@@ -562,10 +562,10 @@ fn oversized_retained_surface_is_clipped_with_its_hits() {
 fn selection_without_a_previous_surface_is_dropped_by_the_next_surface() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.selection = Some(crate::selection::Selection::absolute_range(
+    state.selection = Some(crate::selection::Selection::range(
         "pane_1".to_owned(),
-        (0u64, 0),
-        (0, 2),
+        crate::terminal::Point::new(crate::terminal::AbsRow(0), 0),
+        crate::terminal::Point::new(crate::terminal::AbsRow(0), 2),
     ));
     state.set_pane_surface(surface());
     assert!(state.selection.is_none());

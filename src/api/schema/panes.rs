@@ -229,17 +229,25 @@ pub struct PaneScrollParams {
     pub offset_from_bottom: u64,
 }
 
+/// A terminal text point addressed by retained-screen rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneTextPoint {
-    pub row: u32,
+    pub row: crate::terminal::ScreenRow,
+    pub col: u16,
+}
+
+/// A selection point addressed by stable absolute row IDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneSelectionPoint {
+    pub row: crate::terminal::AbsRow,
     pub col: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSelectionReadParams {
     pub pane_id: String,
-    pub anchor: PaneTextPoint,
-    pub cursor: PaneTextPoint,
+    pub anchor: PaneSelectionPoint,
+    pub cursor: PaneSelectionPoint,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_revision: Option<u64>,
 }

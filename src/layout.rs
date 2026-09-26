@@ -72,6 +72,7 @@ pub enum NavDirection {
 
 /// A node in the BSP tree. Pane leaves connect layout order to `Tab.panes`;
 /// pane state and public numbers live in those tab records.
+#[derive(Clone)]
 pub enum Node {
     Pane(PaneId),
     Split {
@@ -83,6 +84,7 @@ pub enum Node {
 }
 
 /// BSP tiling layout. Tracks a tree of splits and a focused pane.
+#[derive(Clone)]
 pub struct TileLayout {
     root: Node,
     focus: PaneId,
@@ -138,9 +140,8 @@ impl TileLayout {
         result
     }
 
-    /// Split the focused pane. Returns the new pane's id. Production splits
-    /// flow through `Tab` so a failed runtime spawn can roll back; this remains
-    /// as the user-split shape for tests.
+    /// Split the focused pane. Returns the new pane's id. This helper is used
+    /// by tests; production prepares a cloned layout before starting a runtime.
     #[cfg(test)]
     pub fn split_focused(&mut self, direction: Direction) -> PaneId {
         self.split_focused_with_ratio(direction, 0.5)
@@ -157,7 +158,8 @@ impl TileLayout {
     }
 
     /// Split `target` without moving focus. Returns the new pane's id, or None
-    /// when `target` is not in the layout.
+    /// when `target` is not in the layout. Launch paths prepare on a cloned
+    /// layout and install that value only after the runtime starts.
     pub fn split_pane(
         &mut self,
         target: PaneId,
@@ -1164,17 +1166,26 @@ mod tests {
     }
 
     #[test]
-    fn failed_split_rollback_preserves_focus_history() {
-        let mut layout = sample_layout();
-        layout.focus_pane(pane(4));
-
-        let new_id = layout
-            .split_pane(layout.focused(), Direction::Horizontal, 0.5)
+    fn discarded_prepared_split_preserves_focus_history() {
+        let (mut layout, root) = TileLayout::new();
+        let _ = layout
+            .split_pane(root, Direction::Horizontal, 0.5)
             .expect("target exists");
-        assert!(layout.close_pane(new_id));
+        let focused = layout
+            .split_pane(root, Direction::Vertical, 0.5)
+            .expect("target exists");
+        layout.focus_pane(focused);
+        let original_ids = layout.pane_ids();
+        let mut prepared = layout.clone();
+        let new_id = prepared
+            .split_pane(focused, Direction::Horizontal, 0.5)
+            .expect("target exists");
+        assert!(prepared.pane_ids().contains(&new_id));
 
-        assert_eq!(layout.focused(), pane(4));
-        assert!(layout.close_focused());
-        assert_eq!(layout.focused(), pane(2));
+        assert_eq!(layout.pane_ids(), original_ids);
+        assert_eq!(layout.focused(), focused);
+        let mut probe = layout.clone();
+        assert!(probe.close_focused());
+        assert_eq!(probe.focused(), root);
     }
 }

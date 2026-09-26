@@ -282,6 +282,7 @@ impl ClientShellState {
                         max_offset_from_bottom: usize::try_from(metrics.max_offset_from_bottom)
                             .unwrap_or(usize::MAX),
                         viewport_rows: usize::try_from(metrics.viewport_rows).unwrap_or(usize::MAX),
+                        history_origin: metrics.history_origin,
                     }),
                     pane_id: pane.pane_id.clone(),
                     mouse_reporting: pane.mouse_reporting,
@@ -650,14 +651,13 @@ fn client_copy_cursor_cell(
     let hit = hits.iter().find(|hit| {
         hit.pane_id == copy_mode.pane_id && client_copy_surface_coherent(Some(copy_mode), hit)
     })?;
-    let viewport_top = u32::try_from(
+    let viewport_top = crate::terminal::ScreenRow(
         copy_mode
             .max_offset_from_bottom
             .saturating_sub(copy_mode.offset_from_bottom),
-    )
-    .unwrap_or(u32::MAX);
-    let viewport_row = copy_mode.cursor.row.checked_sub(viewport_top)?;
-    if viewport_row >= u32::from(hit.inner_rect.height)
+    );
+    let viewport_row = copy_mode.cursor.row.0.checked_sub(viewport_top.0)?;
+    if viewport_row >= usize::from(hit.inner_rect.height)
         || copy_mode.cursor.col >= hit.inner_rect.width
     {
         return None;
@@ -683,13 +683,15 @@ fn render_client_copy_search_highlights(
     if hit.inner_rect.is_empty() {
         return;
     }
-    let top = u32::try_from(
+    let top = crate::terminal::ScreenRow(
         copy_mode
             .max_offset_from_bottom
             .saturating_sub(copy_mode.offset_from_bottom),
-    )
-    .unwrap_or(u32::MAX);
-    let bottom = top.saturating_add(u32::from(hit.inner_rect.height.saturating_sub(1)));
+    );
+    let bottom = crate::terminal::ScreenRow(
+        top.0
+            .saturating_add(usize::from(hit.inner_rect.height.saturating_sub(1))),
+    );
     let style = if current_only {
         Style::default()
             .fg(panel_contrast_fg(palette))
@@ -707,14 +709,15 @@ fn render_client_copy_search_highlights(
         }
         let start_row = text_match.start.row.max(top);
         let end_row = text_match.end.row.min(bottom);
-        for absolute_row in start_row..=end_row {
-            let viewport_row = u16::try_from(absolute_row.saturating_sub(top)).unwrap_or(u16::MAX);
-            let start_col = if absolute_row == text_match.start.row {
+        for absolute_row in start_row.0..=end_row.0 {
+            let viewport_row =
+                u16::try_from(absolute_row.saturating_sub(top.0)).unwrap_or(u16::MAX);
+            let start_col = if absolute_row == text_match.start.row.0 {
                 text_match.start.col
             } else {
                 0
             };
-            let end_col = if absolute_row == text_match.end.row {
+            let end_col = if absolute_row == text_match.end.row.0 {
                 text_match.end.col
             } else {
                 hit.inner_rect.width.saturating_sub(1)
@@ -743,13 +746,16 @@ mod tests {
     use super::*;
     use crate::api::schema::{PaneTextPoint, PaneTextRange};
 
-    fn text_range(row: u32, start_col: u16, end_col: u16) -> PaneTextRange {
+    fn text_range(row: usize, start_col: u16, end_col: u16) -> PaneTextRange {
         PaneTextRange {
             start: PaneTextPoint {
-                row,
+                row: crate::terminal::ScreenRow(row),
                 col: start_col,
             },
-            end: PaneTextPoint { row, col: end_col },
+            end: PaneTextPoint {
+                row: crate::terminal::ScreenRow(row),
+                col: end_col,
+            },
         }
     }
 
@@ -766,6 +772,7 @@ mod tests {
                 offset_from_bottom: 0,
                 max_offset_from_bottom: 0,
                 viewport_rows: 4,
+                history_origin: crate::terminal::AbsRow(0),
             }),
             pane_id: "pane".to_string(),
             mouse_reporting: false,
@@ -778,7 +785,10 @@ mod tests {
             content_revision: 0,
             geometry: (6, 4),
             alternate_screen_active: false,
-            cursor: PaneTextPoint { row: 3, col: 0 },
+            cursor: PaneTextPoint {
+                row: crate::terminal::ScreenRow(3),
+                col: 0,
+            },
             offset_from_bottom: 0,
             max_offset_from_bottom: 0,
             entry_offset_from_bottom: 0,

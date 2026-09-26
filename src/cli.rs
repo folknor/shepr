@@ -746,12 +746,14 @@ pub(crate) fn server_not_running_reported_response(
     server_not_running::reported_response(err)
 }
 
-/// True when an io::Error indicates nothing is listening on the API socket.
-pub(super) fn server_not_running_error(err: &std::io::Error) -> bool {
-    matches!(
-        err.kind(),
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-    )
+/// Whether the local API socket is definitely absent or stale. Other probe
+/// failures remain transport errors because they do not establish liveness.
+pub(super) fn server_not_running_error(socket_path: &std::path::Path) -> std::io::Result<bool> {
+    match crate::ipc::probe(socket_path) {
+        crate::ipc::Liveness::Absent | crate::ipc::Liveness::Stale => Ok(true),
+        crate::ipc::Liveness::Live => Ok(false),
+        crate::ipc::Liveness::Unreachable(error) => Err(error),
+    }
 }
 
 /// Maps an `ApiClientError` from a socket command into the io::Error that
@@ -768,7 +770,9 @@ fn map_server_not_running_or_io(
         return target::remote_error(context, api_client_error_to_io(err));
     }
     match err {
-        ApiClientError::Io(io_err) if server_not_running_error(&io_err) => {
+        ApiClientError::Io(_)
+            if server_not_running_error(&client.socket_path()).unwrap_or(false) =>
+        {
             server_not_running::reported_error(server_not_running::response(
                 request_id,
                 &client.socket_path(),
@@ -1112,7 +1116,10 @@ mod tests {
         let scratch = crate::test_support::ScratchDir::new("cli-socket-classifier");
         let paths =
             super::target::CliContext::test_local(crate::config::AppPaths::test_at(scratch.path()));
+        std::fs::create_dir_all(paths.config_dir()).expect("create test config directory");
         let client = ApiClient::local(&paths);
+        let _listener = crate::ipc::bind_local_listener(&client.socket_path())
+            .expect("bind test server socket");
         let mapped = super::map_server_not_running_or_io(
             &paths,
             ApiClientError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut)),

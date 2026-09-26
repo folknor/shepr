@@ -63,7 +63,10 @@ fn selection_release_copies_latest_position_before_deferred_paint() {
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(&request.method,
                 crate::api::schema::Method::PaneSelectionRead(params)
-                    if params.cursor == crate::api::schema::PaneTextPoint { row: 0, col: 2 })
+                    if params.cursor == crate::api::schema::PaneSelectionPoint {
+                        row: crate::terminal::AbsRow(0),
+                        col: 2,
+                    })
     ));
     state.compose(106, 20).expect("release frame");
     assert!(state.selection_repaint_deadline.is_none());
@@ -260,7 +263,10 @@ fn client_double_click_selects_word_and_copies_only_after_release() {
                 .as_ref()
                 .expect("test precondition")
                 .ordered_cells(),
-            ((0, 6), (0, 10))
+            (
+                (crate::terminal::AbsRow(0), 6),
+                (crate::terminal::AbsRow(0), 10)
+            )
         );
         assert!(
             word_drag_mouse(&mut state, release, 0, 8)
@@ -381,11 +387,41 @@ fn double_click_drag_selects_whole_words_in_both_directions() {
     let initial = start_word_drag(&mut state);
     word_row_reply(&mut state, &initial, "alpha bravo charlie");
     for (col, expected) in [
-        (14, ((0, 6), (0, 18))),
-        (2, ((0, 0), (0, 10))),
-        (8, ((0, 6), (0, 10))),
-        (11, ((0, 6), (0, 11))),
-        (16, ((0, 6), (0, 18))),
+        (
+            14,
+            (
+                (crate::terminal::AbsRow(0), 6),
+                (crate::terminal::AbsRow(0), 18),
+            ),
+        ),
+        (
+            2,
+            (
+                (crate::terminal::AbsRow(0), 0),
+                (crate::terminal::AbsRow(0), 10),
+            ),
+        ),
+        (
+            8,
+            (
+                (crate::terminal::AbsRow(0), 6),
+                (crate::terminal::AbsRow(0), 10),
+            ),
+        ),
+        (
+            11,
+            (
+                (crate::terminal::AbsRow(0), 6),
+                (crate::terminal::AbsRow(0), 11),
+            ),
+        ),
+        (
+            16,
+            (
+                (crate::terminal::AbsRow(0), 6),
+                (crate::terminal::AbsRow(0), 18),
+            ),
+        ),
     ] {
         let motion = word_drag_mouse(&mut state, MouseEventKind::Drag(MouseButton::Left), 0, col);
         assert!(
@@ -449,14 +485,21 @@ fn double_click_drag_waits_for_latest_row_before_copying() {
         assert!(
             matches!(&final_read[..], [ClientShellAction::Endpoint { request, .. }]
             if matches!(&request.method, crate::api::schema::Method::PaneSelectionRead(params)
-                if params.anchor.row == 2 && params.cursor.row == 2))
+                if params.anchor.row == crate::terminal::AbsRow(2)
+                    && params.cursor.row == crate::terminal::AbsRow(2)))
         );
         let copy = word_row_reply(&mut state, &word_read_id(&final_read), "golf hotel india");
         assert!(
             matches!(&copy[..], [ClientShellAction::Endpoint { request, .. }]
             if matches!(&request.method, crate::api::schema::Method::PaneSelectionRead(params)
-                if params.anchor == crate::api::schema::PaneTextPoint { row: 0, col: 6 }
-                    && params.cursor == crate::api::schema::PaneTextPoint { row: 2, col: 9 }))
+                if params.anchor == crate::api::schema::PaneSelectionPoint {
+                    row: crate::terminal::AbsRow(0),
+                    col: 6,
+                }
+                    && params.cursor == crate::api::schema::PaneSelectionPoint {
+                        row: crate::terminal::AbsRow(2),
+                        col: 9,
+                    }))
         );
         let copied = word_row_reply(
             &mut state,
@@ -506,7 +549,10 @@ fn double_click_drag_survives_focus_lag_after_anchor_reply() {
             .as_ref()
             .expect("test precondition")
             .ordered_cells(),
-        ((0, 6), (0, 18))
+        (
+            (crate::terminal::AbsRow(0), 6),
+            (crate::terminal::AbsRow(0), 18)
+        )
     );
     let released = word_drag_mouse(&mut state, MouseEventKind::Up(MouseButton::Left), 0, 14);
     assert_eq!(released.actions.len(), 1);
@@ -558,7 +604,10 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
             .as_ref()
             .expect("drag continues")
             .ordered_cells(),
-        ((0, 0), (0, 2))
+        (
+            (crate::terminal::AbsRow(0), 0),
+            (crate::terminal::AbsRow(0), 2)
+        )
     );
 
     state.set_snapshot(Box::new(focused_on("pane_1")));
@@ -732,6 +781,7 @@ fn double_click_drag_autoscroll_keeps_absolute_word_anchor() {
         max_offset_from_bottom: 10,
         offset_from_bottom: 5,
         viewport_rows: 3,
+        history_origin: crate::terminal::AbsRow(0),
     });
     let initial = start_word_drag(&mut state);
     word_row_reply(&mut state, &initial, "alpha bravo charlie");
@@ -752,7 +802,10 @@ fn double_click_drag_autoscroll_keeps_absolute_word_anchor() {
             .as_ref()
             .expect("test precondition")
             .ordered_cells(),
-        ((4, 11), (5, 10))
+        (
+            (crate::terminal::AbsRow(4), 11),
+            (crate::terminal::AbsRow(5), 10)
+        )
     );
     word_drag_mouse(&mut state, MouseEventKind::Up(MouseButton::Left), 0, 14);
     assert!(
@@ -777,6 +830,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
             offset_from_bottom: 0,
             max_offset_from_bottom: 11,
             viewport_rows: 2,
+            history_origin: crate::terminal::AbsRow(0),
         });
         pane_surface.panes[0].alternate_screen_active = alternate_screen_active;
         pane_surface
@@ -812,7 +866,13 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
     assert!(drag.repaint || state.selection_repaint_deadline.is_some());
     let selection = state.selection.as_ref().expect("visible selection");
     assert!(selection.is_visible());
-    assert_eq!(selection.ordered_cells(), ((12, 0), (12, 1)));
+    assert_eq!(
+        selection.ordered_cells(),
+        (
+            (crate::terminal::AbsRow(12), 0),
+            (crate::terminal::AbsRow(12), 1)
+        )
+    );
 
     let mut replaced_surface = surface_at(3, 4, true);
     replaced_surface.frame.cells[4].symbol = "X".into();
@@ -823,7 +883,10 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
             .as_ref()
             .expect("test precondition")
             .ordered_cells(),
-        ((12, 0), (12, 1))
+        (
+            (crate::terminal::AbsRow(12), 0),
+            (crate::terminal::AbsRow(12), 1)
+        )
     );
 
     // The selected row can leave the viewport during a drag. A later patch,
@@ -859,15 +922,18 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
             .as_ref()
             .expect("test precondition")
             .ordered_cells(),
-        ((12, 0), (12, 1))
+        (
+            (crate::terminal::AbsRow(12), 0),
+            (crate::terminal::AbsRow(12), 1)
+        )
     );
 
     for (surface_revision, content_revision, width, alternate_screen_active) in
         [(5, 6, 4, false), (6, 8, 3, false)]
     {
-        state.selection = Some(crate::selection::Selection::absolute_anchor(
+        state.selection = Some(crate::selection::Selection::anchor(
             "pane_1".to_owned(),
-            (12u64, 0),
+            crate::terminal::Point::new(crate::terminal::AbsRow(12), 0),
         ));
         let mut changed_surface =
             surface_at(surface_revision, content_revision, alternate_screen_active);

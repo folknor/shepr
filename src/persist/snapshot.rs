@@ -923,7 +923,9 @@ mod tests {
         let root = state.workspaces[0].tabs[0].root_pane;
         let second = state.workspaces[0].test_split(Direction::Horizontal);
         state.workspaces[0].tabs[0].layout.focus_pane(second);
-        state.toggle_zoom();
+        state
+            .apply_pane_zoom(0, second, crate::app::actions::PaneZoomCommand::Toggle)
+            .expect("test precondition");
 
         let snapshot = capture_from_state(&state);
         let tab = &snapshot.workspaces[0].tabs[0];
@@ -981,7 +983,7 @@ mod tests {
         let second_tab = state.workspaces[0].test_add_tab(Some("logs"));
         state.switch_tab(second_tab);
 
-        state.close_tab();
+        let _ = state.remove_active_tab();
 
         let snapshot = capture_from_state(&state);
         let workspace = &snapshot.workspaces[0];
@@ -995,7 +997,10 @@ mod tests {
         let mut state = state_with_workspaces(&["one"]);
         state.workspaces[0].test_split(Direction::Horizontal);
 
-        state.close_pane();
+        let focused = state.workspaces[0]
+            .focused_pane_id()
+            .expect("test precondition");
+        let _ = state.remove_pane(0, focused);
 
         let snapshot = capture_from_state(&state);
         let tab = &snapshot.workspaces[0].tabs[0];
@@ -1011,7 +1016,7 @@ mod tests {
         let third = state.workspaces[0].test_split(Direction::Vertical);
         let second_tab = state.workspaces[0].test_add_tab(None);
 
-        state.workspaces[0].close_pane(second);
+        let _ = state.workspaces[0].close_pane(second);
 
         let snapshot = capture_from_state(&state);
         let workspace = &snapshot.workspaces[0];
@@ -1068,13 +1073,13 @@ mod tests {
             )))
             .expect("test precondition");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while (crate::platform::process_cwd(pid).as_ref() != Some(&new)
+        while (crate::detect::process_cwd(pid).as_ref() != Some(&new)
             || runtime.cwd().as_ref() != Some(&old))
             && std::time::Instant::now() < deadline
         {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert_eq!(crate::platform::process_cwd(pid), Some(new.clone()));
+        assert_eq!(crate::detect::process_cwd(pid), Some(new.clone()));
         assert_eq!(
             runtime.cwd(),
             Some(old.clone()),
@@ -1099,12 +1104,11 @@ mod tests {
         );
         crate::platform::signal_processes(&[pid], crate::platform::Signal::Kill);
         let exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while crate::platform::process_cwd(pid).is_some()
-            && std::time::Instant::now() < exit_deadline
+        while crate::detect::process_cwd(pid).is_some() && std::time::Instant::now() < exit_deadline
         {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert!(crate::platform::process_cwd(pid).is_none());
+        assert!(crate::detect::process_cwd(pid).is_none());
         let after = capture_from_state_with_runtimes(&state, &runtimes);
         assert_eq!(
             after.workspaces[0].tabs[0]

@@ -299,14 +299,21 @@ fn stop_socket_with_timeout(
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     let request = server_stop_request("cli:session:stop");
-    let stream = crate::ipc::connect_local_stream(socket_path).map_err(|err| {
-        let state = if socket_error_means_not_running(&err) {
-            "is not running"
-        } else {
-            "cannot be reached"
-        };
-        format!("{label} {state} at {}: {err}", socket_path.display())
-    })?;
+    let stream = match crate::ipc::connect_local_stream(socket_path) {
+        Ok(stream) => stream,
+        Err(error) => {
+            let state = match crate::ipc::probe(socket_path) {
+                crate::ipc::Liveness::Absent | crate::ipc::Liveness::Stale => "is not running",
+                crate::ipc::Liveness::Live | crate::ipc::Liveness::Unreachable(_) => {
+                    "cannot be reached"
+                }
+            };
+            return Err(format!(
+                "{label} {state} at {}: {error}",
+                socket_path.display()
+            ));
+        }
+    };
     let stop_response = send_stop_request(stream, &request, deadline)?;
     if let Some(response) = stop_response
         && let Some(error) = response.get("error")
@@ -471,22 +478,15 @@ fn stop_request_error_allows_wait(err: &std::io::Error) -> bool {
 }
 
 fn is_running_at(socket_path: &Path) -> std::io::Result<bool> {
-    is_running_from_connection(crate::ipc::connect_local_stream(socket_path))
+    running_from_liveness(crate::ipc::probe(socket_path))
 }
 
-fn is_running_from_connection<T>(connection: std::io::Result<T>) -> std::io::Result<bool> {
-    match connection {
-        Ok(_) => Ok(true),
-        Err(err) if socket_error_means_not_running(&err) => Ok(false),
-        Err(err) => Err(err),
+fn running_from_liveness(liveness: crate::ipc::Liveness) -> std::io::Result<bool> {
+    match liveness {
+        crate::ipc::Liveness::Absent | crate::ipc::Liveness::Stale => Ok(false),
+        crate::ipc::Liveness::Live => Ok(true),
+        crate::ipc::Liveness::Unreachable(error) => Err(error),
     }
-}
-
-fn socket_error_means_not_running(err: &std::io::Error) -> bool {
-    matches!(
-        err.kind(),
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
-    )
 }
 
 fn all_sockets_stopped(socket_paths: &[PathBuf]) -> std::io::Result<bool> {
@@ -810,7 +810,7 @@ mod tests {
 
         assert_eq!(
             restart_after_update_guidance_for(&paths),
-            "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `SHEPR_SESSION='default' SHEPR_SOCKET_PATH='/tmp/custom-shepr.sock' shepr server stop`, then run `SHEPR_SESSION='default' SHEPR_SOCKET_PATH='/tmp/custom-shepr.sock' shepr` again."
+            "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `SHEPR_SESSION=default SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr server stop`, then run `SHEPR_SESSION=default SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr` again."
         );
     }
 
@@ -826,7 +826,7 @@ mod tests {
 
         assert_eq!(
             restart_after_update_guidance_for(&paths),
-            "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `SHEPR_SESSION='work' SHEPR_CLIENT_SOCKET_PATH='/tmp/work-client.sock' shepr server stop`, then run `SHEPR_SESSION='work' SHEPR_CLIENT_SOCKET_PATH='/tmp/work-client.sock' shepr` again."
+            "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `SHEPR_SESSION=work SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr server stop`, then run `SHEPR_SESSION=work SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr` again."
         );
     }
 
@@ -949,21 +949,15 @@ mod tests {
     }
 
     #[test]
-    fn session_socket_probe_propagates_errors_other_than_not_running() {
-        for kind in [
-            std::io::ErrorKind::NotFound,
-            std::io::ErrorKind::ConnectionRefused,
-        ] {
-            assert!(
-                !is_running_from_connection::<()>(Err(std::io::Error::from(kind)))
-                    .expect("not-running errors are status, not failures")
-            );
-        }
+    fn session_socket_liveness_maps_absent_and_stale_to_stopped() {
+        assert!(!running_from_liveness(crate::ipc::Liveness::Absent).expect("absent status"));
+        assert!(!running_from_liveness(crate::ipc::Liveness::Stale).expect("stale status"));
+        assert!(running_from_liveness(crate::ipc::Liveness::Live).expect("live status"));
 
-        let error = is_running_from_connection::<()>(Err(std::io::Error::from(
+        let error = running_from_liveness(crate::ipc::Liveness::Unreachable(std::io::Error::from(
             std::io::ErrorKind::PermissionDenied,
         )))
-        .expect_err("permission errors must remain transport errors");
+        .expect_err("unreachable sockets remain transport errors");
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     }
 

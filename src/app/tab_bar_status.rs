@@ -1,5 +1,6 @@
 use std::{
-    process::Stdio,
+    path::Path,
+    process::{Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -434,7 +435,7 @@ struct StatusCommandTask {
 
 struct StatusCommandControl {
     terminated: AtomicBool,
-    process_group: Mutex<Option<crate::platform::StatusCommandGuard>>,
+    process_group: Mutex<Option<StatusCommandGuard>>,
 }
 
 impl StatusCommandControl {
@@ -454,7 +455,7 @@ impl StatusCommandControl {
         }
     }
 
-    fn register(&self, mut process_group: crate::platform::StatusCommandGuard) {
+    fn register(&self, mut process_group: StatusCommandGuard) {
         let mut registered = self
             .process_group
             .lock()
@@ -527,13 +528,12 @@ async fn run_status_command(
     if let Some(cwd) = cwd {
         process.current_dir(cwd);
     }
-    crate::platform::configure_status_command(&mut process);
+    configure_status_command(&mut process);
 
     let mut process = tokio::process::Command::from(process);
     process.kill_on_drop(true);
     let mut child = process.spawn().map_err(|error| error.to_string())?;
-    let process_group =
-        crate::platform::StatusCommandGuard::new(&child).map_err(|error| error.to_string())?;
+    let process_group = StatusCommandGuard::new(&child).map_err(|error| error.to_string())?;
     control.register(process_group);
     if control.is_terminated() {
         return Err("status command was cancelled".into());
@@ -815,5 +815,114 @@ mod tests {
     #[test]
     fn separator_preserves_printable_spacing_and_drops_controls() {
         assert_eq!(sanitize_separator(" \x1b|\n "), " | ");
+    }
+}
+
+// Status commands run in their own process group so completion, timeout, and
+// cancellation can stop any background descendants safely.
+fn configure_status_command(process: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    process.process_group(0);
+}
+
+struct StatusCommandGuard {
+    process_group_id: Option<i32>,
+    /// A handle on the group leader, opened while the child was certainly
+    /// unreaped. `None` only if it could not be opened at all.
+    leader: Option<crate::platform::ProcessHandle>,
+}
+
+impl StatusCommandGuard {
+    pub(crate) fn new(child: &tokio::process::Child) -> std::io::Result<Self> {
+        // `id()` is `None` once tokio has reaped the child, and reaping needs
+        // `&mut Child`, so the pid cannot be reused before the handle is open.
+        let process_id = child
+            .id()
+            .ok_or_else(|| std::io::Error::other("status command has no process id"))?;
+        let process_group_id = i32::try_from(process_id)
+            .map_err(|_| std::io::Error::other("status command process id exceeds i32"))?;
+        Ok(Self {
+            process_group_id: Some(process_group_id),
+            leader: crate::platform::ProcessHandle::open(process_id),
+        })
+    }
+
+    pub(crate) fn terminate(&mut self) {
+        let Some(process_group_id) = self.process_group_id.take() else {
+            return;
+        };
+        let leader = self.leader.take();
+        // The command was spawned as this process group's leader. Killing the
+        // group also cleans up background descendants on completion or
+        // cancellation, but only while the id still names that group: tokio
+        // may have reaped the leader already, and a reused number would send
+        // SIGKILL to an unrelated group. The remaining gap (the number is
+        // reused, the new owner leads a group and exits, all between the reap
+        // and this call) needs a full pid wraparound in that window.
+        let ours = status_group_is_ours(
+            leader
+                .as_ref()
+                .map(crate::platform::ProcessHandle::is_unreaped),
+            || Path::new(&format!("/proc/{process_group_id}")).exists(),
+        );
+        if !ours {
+            return;
+        }
+        // SAFETY: kill(2) touches no memory of this process.
+        unsafe {
+            libc::kill(-process_group_id, libc::SIGKILL);
+        }
+    }
+}
+
+/// Whether process group `process_group_id` can still only be the one the
+/// status command led. The kernel reuses a number only once nothing holds it
+/// as a pid, process-group id or session id. An unreaped leader holds it.
+/// After the leader is reaped, any task that holds that pid again is proof
+/// the number was reused, and the original group had no members left when
+/// that happened. Without a leader handle the second test is all there is.
+fn status_group_is_ours(
+    leader_unreaped: Option<bool>,
+    pid_held_by_a_task: impl FnOnce() -> bool,
+) -> bool {
+    leader_unreaped == Some(true) || !pid_held_by_a_task()
+}
+
+impl Drop for StatusCommandGuard {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
+#[cfg(test)]
+mod status_command_tests {
+    use super::*;
+
+    #[test]
+    fn status_group_is_signalled_only_while_its_id_cannot_have_been_reused() {
+        assert!(status_group_is_ours(Some(true), || true));
+        assert!(status_group_is_ours(Some(false), || false));
+        assert!(status_group_is_ours(None, || false));
+        assert!(!status_group_is_ours(Some(false), || true));
+        assert!(!status_group_is_ours(None, || true));
+    }
+
+    #[tokio::test]
+    async fn status_guard_kills_the_group_while_the_leader_is_unreaped() {
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "sleep 30 & exec sleep 30"]);
+        configure_status_command(&mut command);
+        let mut child = tokio::process::Command::from(command)
+            .spawn()
+            .expect("spawn status command");
+        let mut guard = StatusCommandGuard::new(&child).expect("guard");
+        guard.terminate();
+        let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+            .await
+            .expect("leader dies after the group kill")
+            .expect("wait");
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
     }
 }

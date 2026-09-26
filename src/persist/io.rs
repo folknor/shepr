@@ -83,7 +83,7 @@ pub(super) fn publish_private_file(
     replace: bool,
 ) -> std::io::Result<Published> {
     let directory = containing_directory(target);
-    let mut output = crate::platform::create_config_temporary(pending, true)?;
+    let mut output = crate::platform::create_private_temporary(pending)?;
     let mut published = false;
     let result = (|| {
         if !replace {

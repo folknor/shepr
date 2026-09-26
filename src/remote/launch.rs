@@ -229,3 +229,51 @@ pub(super) fn reattach_command(
     }
     command
 }
+
+pub(crate) fn shell_quote(value: &str) -> String {
+    if !value.is_empty()
+        && value.chars().all(|ch| {
+            ch.is_ascii_alphanumeric()
+                || matches!(
+                    ch,
+                    '@' | '%' | '_' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
+                )
+        })
+    {
+        return value.to_string();
+    }
+
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+pub(crate) fn interactive_shell_command(argv: &[String]) -> Option<String> {
+    let mut parts = argv.iter();
+    let mut command = shell_quote(parts.next()?);
+    for part in parts {
+        command.push(' ');
+        command.push_str(&shell_quote(part));
+    }
+    Some(command)
+}
+
+#[cfg(test)]
+mod shell_command_tests {
+    use super::*;
+
+    #[test]
+    fn interactive_shell_command_quotes_posix_arguments() {
+        let argv = vec![
+            "pi".into(),
+            String::new(),
+            "two words".into(),
+            "a'b".into(),
+            "$HOME".into(),
+            "semi;colon".into(),
+            "@options".into(),
+        ];
+        assert_eq!(
+            interactive_shell_command(&argv).as_deref(),
+            Some("pi '' 'two words' 'a'\\''b' '$HOME' 'semi;colon' @options")
+        );
+    }
+}

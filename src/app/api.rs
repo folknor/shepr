@@ -92,38 +92,53 @@ impl App {
             self.emit_pane_state_update(&update);
         }
 
+        let pane_removal_plan = if let AppEvent::PaneDied { pane_id, .. } = &ev {
+            self.state.prepare_pane_removal_by_id(*pane_id)
+        } else {
+            None
+        };
         let checkpointed_pane_exit = matches!(
             &ev,
             AppEvent::PaneDied {
-                pane_id,
-                exit_reason,
-            } if exit_reason.requires_session_checkpoint() && self.find_pane(*pane_id).is_some()
+                exit_reason, ..
+            } if exit_reason.requires_session_checkpoint() && pane_removal_plan.is_some()
         );
         if checkpointed_pane_exit {
             self.checkpoint_session_before_pane_exit();
         }
 
         if let AppEvent::PaneDied { pane_id, .. } = &ev
-            && let Some((ws_idx, _)) = self.find_pane(*pane_id)
-            && let Some(public_pane_id) = self.public_pane_id(ws_idx, *pane_id)
+            && let Some(plan) = &pane_removal_plan
+            && let Some(public_pane_id) = self.public_pane_id(plan.workspace_index, *pane_id)
         {
             self.emit_event(crate::api::schema::EventEnvelope {
                 event: crate::api::schema::EventKind::PaneExited,
                 data: crate::api::schema::EventData::PaneExited {
                     pane_id: public_pane_id,
-                    workspace_id: self.public_workspace_id(ws_idx),
+                    workspace_id: self.public_workspace_id(plan.workspace_index),
                 },
             });
         }
-        let pane_exit_layout_target = if let AppEvent::PaneDied { pane_id, .. } = &ev {
-            self.find_pane(*pane_id).and_then(|(ws_idx, _)| {
-                self.layout_update_target_after_pane_removal(ws_idx, *pane_id)
-            })
+        let pane_exit_layout_target = if let Some(plan) = &pane_removal_plan {
+            (plan.scope == crate::workspace::PaneRemovalScope::Pane)
+                .then_some((plan.workspace_index, plan.tab_index))
         } else {
             None
         };
-        let pane_exit_container_events = if let AppEvent::PaneDied { pane_id, .. } = &ev {
-            self.pane_exit_container_events(*pane_id)
+        let pane_exit_container_events = if let Some(plan) = &pane_removal_plan {
+            let events = match plan.scope {
+                crate::workspace::PaneRemovalScope::Pane => Vec::new(),
+                crate::workspace::PaneRemovalScope::Tab => {
+                    self.tab_close_events(plan.workspace_index, plan.tab_index)
+                }
+                crate::workspace::PaneRemovalScope::Workspace => {
+                    self.workspace_close_events(plan.workspace_index)
+                }
+            };
+            events
+                .into_iter()
+                .filter(|event| event.event != crate::api::schema::EventKind::PaneClosed)
+                .collect()
         } else {
             Vec::new()
         };
@@ -140,7 +155,14 @@ impl App {
         };
 
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
-        let pane_updates = self.state.handle_app_event(ev);
+        let pane_updates = if matches!(ev, AppEvent::PaneDied { .. }) {
+            if let Some(plan) = pane_removal_plan {
+                let _ = self.state.commit_pane_removal(&plan);
+            }
+            Vec::new()
+        } else {
+            self.state.handle_app_event(ev)
+        };
         if checkpointed_pane_exit {
             self.finish_checkpointed_pane_exit();
         }
@@ -170,40 +192,6 @@ impl App {
 
         self.shutdown_detached_terminal_runtimes();
         pane_updates
-    }
-
-    /// Close events for the tab, and the workspace, that disappear when the
-    /// exited `pane_id` was their last pane (see `AppState::handle_pane_died`).
-    /// The pane itself is announced by `pane.exited`.
-    fn pane_exit_container_events(
-        &self,
-        pane_id: crate::layout::PaneId,
-    ) -> Vec<crate::api::schema::EventEnvelope> {
-        let Some((ws_idx, _)) = self.find_pane(pane_id) else {
-            return Vec::new();
-        };
-        let Some(ws) = self.state.workspaces.get(ws_idx) else {
-            return Vec::new();
-        };
-        let Some(tab_idx) = ws.find_tab_index_for_pane(pane_id) else {
-            return Vec::new();
-        };
-        if ws
-            .tabs
-            .get(tab_idx)
-            .is_none_or(|tab| tab.layout.pane_count() > 1)
-        {
-            return Vec::new();
-        }
-        let events = if ws.tabs.len() <= 1 {
-            self.workspace_close_events(ws_idx)
-        } else {
-            self.tab_close_events(ws_idx, tab_idx)
-        };
-        events
-            .into_iter()
-            .filter(|event| event.event != crate::api::schema::EventKind::PaneClosed)
-            .collect()
     }
 
     fn reset_all_agent_detection_runtimes(&self) {
@@ -300,15 +288,8 @@ impl App {
     /// rebuild the model from these events. Public ids stop resolving once
     /// the tab is gone, so build these before removing it and emit them after.
     ///
-    /// Every production close reaches one of the emitting paths: keybinding,
-    /// context-menu and confirm-dialog closes in the client shell are sent as
-    /// `tab.close` / `pane.close` / `workspace.close` over the client-shell
-    /// endpoint lane and land in the same API handlers as socket requests,
-    /// and a pane whose process exits is covered by
-    /// `pane_exit_container_events`. `AppState::close_tab` and
-    /// `AppState::close_pane` are test-only; a new direct caller of
-    /// `AppState::close_workspace_at` or `Workspace::close_tab` must emit
-    /// these events itself.
+    /// The app prepares these while ids still resolve, then emits them after
+    /// the state command removes the tab or workspace.
     pub(super) fn tab_close_events(
         &self,
         ws_idx: usize,

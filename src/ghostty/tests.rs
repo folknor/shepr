@@ -1,5 +1,13 @@
 use super::*;
 
+fn vp(col: u16, row: u16) -> Point<ViewportRow> {
+    Point::new(ViewportRow(row), col)
+}
+
+fn sr(col: u16, row: usize) -> Point<ScreenRow> {
+    Point::new(ScreenRow(row), col)
+}
+
 fn write_numbered_lines(terminal: &mut Terminal, count: usize) {
     for i in 0..count {
         terminal.write(format!("{i:06}\r\n").as_bytes());
@@ -312,7 +320,7 @@ fn synchronized_output_buffers_until_end_or_timeout() {
     assert!(!terminal.flush_expired_synchronized_output());
     assert_eq!(
         terminal
-            .read_text_viewport((0, 0), (19, 0), false)
+            .read_text_viewport(vp(0, 0), vp(19, 0), false)
             .expect("test precondition"),
         ""
     );
@@ -321,7 +329,7 @@ fn synchronized_output_buffers_until_end_or_timeout() {
     assert!(!terminal.mode_get(MODE_SYNCHRONIZED_OUTPUT));
     assert_eq!(
         terminal
-            .read_text_viewport((0, 0), (19, 0), false)
+            .read_text_viewport(vp(0, 0), vp(19, 0), false)
             .expect("test precondition"),
         "hidden"
     );
@@ -337,7 +345,7 @@ fn synchronized_output_buffers_until_end_or_timeout() {
     assert!(!terminal.mode_get(MODE_SYNCHRONIZED_OUTPUT));
     assert!(
         terminal
-            .read_text_viewport((0, 0), (19, 0), false)
+            .read_text_viewport(vp(0, 0), vp(19, 0), false)
             .expect("test precondition")
             .contains("forgotten")
     );
@@ -349,7 +357,7 @@ fn terminal_read_text_viewport_unwraps_soft_wrapped_selection() {
     terminal.write("1ABCD2EFGH3IJKL".as_bytes());
 
     let text = terminal
-        .read_text_viewport((0, 1), (2, 2), false)
+        .read_text_viewport(vp(0, 1), vp(2, 2), false)
         .expect("test precondition");
     assert_eq!(text, "2EFGH3IJ");
 }
@@ -361,14 +369,14 @@ fn terminal_extracts_viewport_hyperlink_uri() {
 
     assert_eq!(
         terminal
-            .viewport_hyperlink_uri(0, 0)
+            .viewport_hyperlink_uri(0, ViewportRow(0))
             .expect("test precondition")
             .as_deref(),
         Some("https://example.com")
     );
     assert_eq!(
         terminal
-            .viewport_hyperlink_uri(4, 0)
+            .viewport_hyperlink_uri(4, ViewportRow(0))
             .expect("test precondition"),
         None
     );
@@ -380,17 +388,17 @@ fn terminal_read_text_viewport_handles_wide_chars() {
     terminal.write("1A\u{26A1}".as_bytes());
 
     let full = terminal
-        .read_text_viewport((0, 0), (3, 0), false)
+        .read_text_viewport(vp(0, 0), vp(3, 0), false)
         .expect("test precondition");
     assert_eq!(full, "1A\u{26A1}");
 
     let through_wide_head = terminal
-        .read_text_viewport((0, 0), (2, 0), false)
+        .read_text_viewport(vp(0, 0), vp(2, 0), false)
         .expect("test precondition");
     assert_eq!(through_wide_head, "1A\u{26A1}");
 
     let wide_only = terminal
-        .read_text_viewport((3, 0), (3, 0), false)
+        .read_text_viewport(vp(3, 0), vp(3, 0), false)
         .expect("test precondition");
     assert_eq!(wide_only, "\u{26A1}");
 }
@@ -445,7 +453,7 @@ fn absolute_scroll_row_round_trips_and_clamps() {
     assert!(max_row > 0);
 
     for row in [0, max_row / 2, max_row, usize::MAX] {
-        terminal.scroll_viewport_row(row);
+        terminal.scroll_viewport_row(ScreenRow(row));
         let after = terminal.scrollbar();
         assert_eq!(after.offset, row.min(max_row));
         assert_eq!(after.len, before.len);
@@ -473,13 +481,13 @@ fn deep_scrollback_resize_preserves_unicode_and_hyperlinks() {
     assert_eq!(terminal.scrollbar().offset, 0);
     assert!(
         terminal
-            .read_text_viewport((0, 0), (19, 0), false)
+            .read_text_viewport(vp(0, 0), vp(19, 0), false)
             .expect("test precondition")
             .starts_with("FIRST \u{1F1E7}\u{1F1F7}")
     );
     assert_eq!(
         terminal
-            .viewport_hyperlink_uri(0, 0)
+            .viewport_hyperlink_uri(0, ViewportRow(0))
             .expect("test precondition")
             .as_deref(),
         Some("https://example.com")
@@ -492,13 +500,13 @@ fn deep_scrollback_resize_preserves_unicode_and_hyperlinks() {
     assert_eq!(metrics.len, 5);
     assert!(
         terminal
-            .read_text_viewport((0, 0), (9, 0), false)
+            .read_text_viewport(vp(0, 0), vp(9, 0), false)
             .expect("test precondition")
             .starts_with("FIRST")
     );
     assert_eq!(
         terminal
-            .viewport_hyperlink_uri(0, 0)
+            .viewport_hyperlink_uri(0, ViewportRow(0))
             .expect("test precondition")
             .as_deref(),
         Some("https://example.com")
@@ -514,11 +522,8 @@ fn raw_resize_preserves_content_without_replaying_terminal_effects() {
         terminal.write(b"X");
         let text = terminal
             .read_text_screen(
-                (0, 0),
-                (
-                    cols - 1,
-                    u32::try_from(terminal.total_rows()).unwrap_or(u32::MAX) - 1,
-                ),
+                sr(0, 0),
+                sr(cols - 1, terminal.total_rows().saturating_sub(1)),
                 false,
             )
             .expect("test precondition");
@@ -533,7 +538,7 @@ fn raw_resize_preserves_content_without_replaying_terminal_effects() {
     terminal.resize(12, 3, 8, 16);
     assert!(
         terminal
-            .read_text_viewport((0, 0), (11, 2), false)
+            .read_text_viewport(vp(0, 0), vp(11, 2), false)
             .expect("test precondition")
             .trim()
             .is_empty()
@@ -583,7 +588,7 @@ fn active_screen_and_cursor_visibility_contract() {
     assert_eq!(terminal.active_screen(), ActiveScreen::Primary);
     assert_eq!(
         terminal
-            .read_text_viewport((0, 0), (6, 0), false)
+            .read_text_viewport(vp(0, 0), vp(6, 0), false)
             .expect("test precondition"),
         "primary"
     );
@@ -598,7 +603,7 @@ fn active_screen_and_cursor_visibility_contract() {
     assert_eq!(terminal.active_screen(), ActiveScreen::Alternate);
     assert_eq!(
         terminal
-            .read_text_viewport((0, 0), (2, 0), false)
+            .read_text_viewport(vp(0, 0), vp(2, 0), false)
             .expect("test precondition"),
         "ALT"
     );
@@ -607,7 +612,7 @@ fn active_screen_and_cursor_visibility_contract() {
     assert_eq!(terminal.active_screen(), ActiveScreen::Primary);
     assert_eq!(
         terminal
-            .read_text_viewport((0, 0), (6, 0), false)
+            .read_text_viewport(vp(0, 0), vp(6, 0), false)
             .expect("test precondition"),
         "primary"
     );
@@ -885,7 +890,7 @@ fn clear_screen_keeps_the_cursor_line_and_drops_history() {
     assert_eq!(terminal.cursor_y(), 0);
     assert_eq!(
         terminal
-            .read_text_viewport((0, 0), (9, 3), false)
+            .read_text_viewport(vp(0, 0), vp(9, 3), false)
             .expect("test precondition"),
         "$ prompt"
     );
@@ -918,7 +923,7 @@ fn clear_screen_moves_the_saved_cursor_and_fills_with_default_colours() {
     terminal.write(b"\x1b8X");
     assert_eq!(
         terminal
-            .read_text_viewport((0, 0), (9, 0), false)
+            .read_text_viewport(vp(0, 0), vp(9, 0), false)
             .expect("test precondition"),
         "X"
     );
@@ -940,7 +945,7 @@ fn widening_resize_keeps_history_that_already_fit() {
     assert_eq!(terminal.scrollback_rows(), before);
     assert_eq!(
         terminal
-            .read_text_screen((0, 0), (39, 0), false)
+            .read_text_screen(sr(0, 0), sr(39, 0), false)
             .expect("test precondition"),
         "000000"
     );
@@ -960,7 +965,12 @@ fn vt_history_round_trips_through_the_parser() {
     );
     let total = u32::try_from(source.total_rows()).unwrap_or(u32::MAX);
     let ansi = source
-        .read_ansi_screen((0, 0), (11, total - 1), false, true)
+        .read_ansi_screen(
+            sr(0, 0),
+            sr(11, usize::try_from(total - 1).unwrap_or(usize::MAX)),
+            false,
+            true,
+        )
         .expect("test precondition");
 
     let mut restored = Terminal::new(12, 4, 100_000);
@@ -997,13 +1007,13 @@ fn plain_reads_trim_trailing_blank_lines_and_spaces() {
     terminal.write(b"a  \r\n\r\nb   ");
     assert_eq!(
         terminal
-            .read_text_viewport((0, 0), (9, 3), false)
+            .read_text_viewport(vp(0, 0), vp(9, 3), false)
             .expect("test precondition"),
         "a\n\nb"
     );
     assert_eq!(
         terminal
-            .read_text_viewport((0, 3), (9, 3), false)
+            .read_text_viewport(vp(0, 3), vp(9, 3), false)
             .expect("test precondition"),
         ""
     );
@@ -1165,7 +1175,7 @@ fn mode_set_does_not_disturb_a_partial_child_sequence() {
     assert!(terminal.mode_get(MODE_BRACKETED_PASTE));
     assert_eq!(
         terminal
-            .read_text_viewport((0, 0), (19, 0), false)
+            .read_text_viewport(vp(0, 0), vp(19, 0), false)
             .expect("test precondition"),
         "red"
     );
@@ -1181,20 +1191,23 @@ fn write_line_range(terminal: &mut Terminal, lines: std::ops::Range<usize>, per_
 }
 
 /// The text of the line an absolute row id names, `None` once it is gone.
-fn absolute_row_text(terminal: &Terminal, row: u64) -> Option<String> {
-    let y = u32::try_from(terminal.screen_row_for_absolute(row)?).ok()?;
+fn absolute_row_text(terminal: &Terminal, row: AbsRow) -> Option<String> {
+    let y = terminal.screen_row_for_absolute(row)?;
     let last = terminal.cols().saturating_sub(1);
-    terminal.read_text_screen((0, y), (last, y), false).ok()
+    terminal
+        .read_text_screen(sr(0, y.0), sr(last, y.0), false)
+        .ok()
 }
 
 /// Line `i` of `write_line_range` output was written on absolute row `i`.
-fn assert_rows_name_their_lines(terminal: &Terminal, rows: impl IntoIterator<Item = u64>) {
+fn assert_rows_name_their_lines(terminal: &Terminal, rows: impl IntoIterator<Item = AbsRow>) {
     for row in rows {
         assert_eq!(
             absolute_row_text(terminal, row),
-            Some(format!("{row:06}")),
-            "absolute row {row} (origin {})",
-            terminal.history_origin()
+            Some(format!("{:06}", row.0)),
+            "absolute row {} (origin {})",
+            row.0,
+            terminal.history_origin().0
         );
     }
 }
@@ -1205,58 +1218,65 @@ fn absolute_rows_keep_naming_their_lines_while_full_history_evicts() {
     let mut terminal = Terminal::new(10, 3, 1);
     let limit = u64::try_from(MIN_SCROLLBACK_LINES).expect("test precondition");
     write_line_range(&mut terminal, 0..900, 1);
-    assert_eq!(terminal.history_origin(), 0, "history is not full yet");
-    assert_rows_name_their_lines(&terminal, [0, 450, 899]);
+    assert_eq!(
+        terminal.history_origin(),
+        AbsRow(0),
+        "history is not full yet"
+    );
+    assert_rows_name_their_lines(&terminal, [AbsRow(0), AbsRow(450), AbsRow(899)]);
 
     write_line_range(&mut terminal, 900..1_500, 1);
     write_line_range(&mut terminal, 1_500..2_500, 37);
     // 2500 lines and the cursor's empty row were written; three screen rows
     // and a full history are retained.
     let origin = terminal.history_origin();
-    assert_eq!(origin, 2_501 - (limit + 3));
-    assert_eq!(absolute_row_text(&terminal, origin - 1), None);
-    assert_rows_name_their_lines(&terminal, [origin, origin + 500, 2_499]);
-    assert_eq!(terminal.absolute_row_for_screen(0), origin);
+    assert_eq!(origin, AbsRow(2_501 - (limit + 3)));
+    assert_eq!(absolute_row_text(&terminal, origin.saturating_sub(1)), None);
+    assert_rows_name_their_lines(
+        &terminal,
+        [origin, origin.saturating_add(500), AbsRow(2_499)],
+    );
+    assert_eq!(terminal.absolute_row_for_screen(ScreenRow(0)), origin);
 
     // A single write longer than the whole history evicts the tracker's
     // reference row as well: every earlier id is retired rather than guessed.
     write_line_range(&mut terminal, 2_500..6_000, 3_500);
-    assert!(terminal.history_origin() > 2_499);
-    assert_eq!(absolute_row_text(&terminal, 2_499), None);
+    assert!(terminal.history_origin() > AbsRow(2_499));
+    assert_eq!(absolute_row_text(&terminal, AbsRow(2_499)), None);
 }
 
 #[test]
 fn purges_retire_the_ids_of_purged_lines() {
     let mut terminal = Terminal::new(10, 3, 100_000);
     write_line_range(&mut terminal, 0..50, 1);
-    assert_rows_name_their_lines(&terminal, [0, 49]);
+    assert_rows_name_their_lines(&terminal, [AbsRow(0), AbsRow(49)]);
 
     // ED 3 drops the history; the screen's lines keep their ids.
     terminal.write(b"\x1b[3J");
-    assert_eq!(terminal.history_origin(), 48);
-    assert_eq!(absolute_row_text(&terminal, 47), None);
-    assert_rows_name_their_lines(&terminal, [48, 49]);
+    assert_eq!(terminal.history_origin(), AbsRow(48));
+    assert_eq!(absolute_row_text(&terminal, AbsRow(47)), None);
+    assert_rows_name_their_lines(&terminal, [AbsRow(48), AbsRow(49)]);
 
     // So does the `CSI ? 3 J` spelling the scanner feeds through.
     write_line_range(&mut terminal, 50..60, 1);
     terminal.write(b"\x1b[?3J");
-    assert_eq!(terminal.history_origin(), 58);
-    assert_rows_name_their_lines(&terminal, [58, 59]);
+    assert_eq!(terminal.history_origin(), AbsRow(58));
+    assert_rows_name_their_lines(&terminal, [AbsRow(58), AbsRow(59)]);
 
     // The host's clear keeps the cursor line, moved to the top.
     terminal.write(b"$ prompt");
     assert!(terminal.clear_screen());
-    assert_eq!(terminal.history_origin(), 60);
+    assert_eq!(terminal.history_origin(), AbsRow(60));
     assert_eq!(
-        absolute_row_text(&terminal, 60).as_deref(),
+        absolute_row_text(&terminal, AbsRow(60)).as_deref(),
         Some("$ prompt")
     );
-    assert_eq!(absolute_row_text(&terminal, 59), None);
+    assert_eq!(absolute_row_text(&terminal, AbsRow(59)), None);
 
     // RIS resets every line.
     terminal.write(b"\x1bc");
-    assert!(terminal.history_origin() > 60);
-    assert_eq!(absolute_row_text(&terminal, 60), None);
+    assert!(terminal.history_origin() > AbsRow(60));
+    assert_eq!(absolute_row_text(&terminal, AbsRow(60)), None);
 }
 
 #[test]
@@ -1264,7 +1284,7 @@ fn the_alternate_screen_leaves_primary_row_ids_alone() {
     let mut terminal = Terminal::new(10, 3, 1);
     write_line_range(&mut terminal, 0..1_200, 1);
     let origin = terminal.history_origin();
-    assert!(origin > 0);
+    assert!(origin > AbsRow(0));
 
     terminal.write(b"\x1b[?1049h");
     for _ in 0..50 {
@@ -1273,14 +1293,14 @@ fn the_alternate_screen_leaves_primary_row_ids_alone() {
     assert_eq!(terminal.history_origin(), origin);
     terminal.write(b"\x1b[?1049l");
     assert_eq!(terminal.history_origin(), origin);
-    assert_rows_name_their_lines(&terminal, [origin, 1_199]);
+    assert_rows_name_their_lines(&terminal, [origin, AbsRow(1_199)]);
 
     write_line_range(&mut terminal, 1_200..1_300, 5);
-    assert_rows_name_their_lines(&terminal, [terminal.history_origin(), 1_299]);
+    assert_rows_name_their_lines(&terminal, [terminal.history_origin(), AbsRow(1_299)]);
 
     // RIS from the alternate screen discards the primary screen too.
     terminal.write(b"\x1b[?1049h\x1bc");
-    assert_eq!(absolute_row_text(&terminal, 1_299), None);
+    assert_eq!(absolute_row_text(&terminal, AbsRow(1_299)), None);
 }
 
 #[test]
@@ -1291,15 +1311,15 @@ fn height_resizes_keep_row_ids_and_column_resizes_retire_them() {
     // Height changes move lines between screen and history, evicting at the
     // history limit.
     terminal.resize(10, 3, 0, 0);
-    assert_rows_name_their_lines(&terminal, [terminal.history_origin(), 1_499]);
+    assert_rows_name_their_lines(&terminal, [terminal.history_origin(), AbsRow(1_499)]);
     terminal.resize(10, 8, 0, 0);
-    assert_rows_name_their_lines(&terminal, [terminal.history_origin(), 1_499]);
+    assert_rows_name_their_lines(&terminal, [terminal.history_origin(), AbsRow(1_499)]);
 
     // A column change re-wraps every line.
-    let retained_end = terminal.absolute_row_for_screen(terminal.total_rows());
+    let retained_end = terminal.absolute_row_for_screen(ScreenRow(terminal.total_rows()));
     terminal.resize(12, 8, 0, 0);
     assert!(terminal.history_origin() >= retained_end);
-    assert_eq!(absolute_row_text(&terminal, 1_499), None);
+    assert_eq!(absolute_row_text(&terminal, AbsRow(1_499)), None);
 }
 
 #[test]
@@ -1311,7 +1331,7 @@ fn visited_rows_match_the_owned_text_rows() {
     for (y, row) in owned.iter().enumerate() {
         let mut cells = Vec::new();
         let wrap = terminal
-            .visit_screen_row_text(y, &mut scratch, |x, wide, text| {
+            .visit_screen_row_text(ScreenRow(y), &mut scratch, |x, wide, text| {
                 cells.push((x, wide, text.to_owned()));
             })
             .expect("row is retained");
@@ -1346,7 +1366,7 @@ fn visited_rows_match_the_owned_text_rows() {
     }
     assert!(
         terminal
-            .visit_screen_row_text(owned.len(), &mut scratch, |_, _, _| {})
+            .visit_screen_row_text(ScreenRow(owned.len()), &mut scratch, |_, _, _| {})
             .is_none()
     );
 }
@@ -1357,14 +1377,17 @@ fn kitty_unicode_placeholder_is_blank_in_reads_and_rendering() {
     terminal.write("A\u{10eeee}B".as_bytes());
 
     assert_eq!(
-        terminal.screen_cell(1, 0).expect("test precondition").1,
+        terminal
+            .screen_cell(1, ScreenRow(0))
+            .expect("test precondition")
+            .1,
         Vec::<u32>::new()
     );
     let rows = terminal.screen_text_rows();
     assert!(rows[0].cells[1].graphemes.is_empty());
     assert_eq!(
         terminal
-            .read_text_screen((0, 0), (2, 0), true)
+            .read_text_screen(sr(0, 0), sr(2, 0), true)
             .expect("test precondition"),
         "A B"
     );
@@ -1372,7 +1395,7 @@ fn kitty_unicode_placeholder_is_blank_in_reads_and_rendering() {
     let mut scratch = String::new();
     let mut visited = Vec::new();
     terminal
-        .visit_screen_row_text(0, &mut scratch, |x, _, text| {
+        .visit_screen_row_text(ScreenRow(0), &mut scratch, |x, _, text| {
             if x < 3 {
                 visited.push(text.to_owned());
             }

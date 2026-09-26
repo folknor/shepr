@@ -923,7 +923,7 @@ mod tests {
         // This is the exact text sent to the PTY for the restored shell to
         // parse, not just the planner's argv representation.
         assert_eq!(
-            crate::platform::interactive_shell_command(&codex_plan.argv).as_deref(),
+            crate::remote::interactive_shell_command(&codex_plan.argv).as_deref(),
             Some("codex resume 'abc; rm -rf /'")
         );
 

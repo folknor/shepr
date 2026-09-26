@@ -144,7 +144,8 @@ fn print_server_status_body(
 fn read_server_runtime_status(
     paths: &super::target::CliContext,
 ) -> std::io::Result<ServerRuntimeStatus> {
-    match super::target::server_status(paths, &super::target::api_client(paths)?) {
+    let client = super::target::api_client(paths)?;
+    match super::target::server_status(paths, &client) {
         Ok(status) => Ok(ServerRuntimeStatus::Running {
             version: status.version,
             protocol: status.protocol,
@@ -154,8 +155,12 @@ fn read_server_runtime_status(
             paths,
             super::api_client_error_to_io(err),
         )),
-        Err(ApiClientError::Io(err)) if super::server_not_running_error(&err) => {
-            Ok(ServerRuntimeStatus::NotRunning)
+        Err(ApiClientError::Io(error)) => {
+            match super::server_not_running_error(&client.socket_path()) {
+                Ok(true) => Ok(ServerRuntimeStatus::NotRunning),
+                Ok(false) => Err(error),
+                Err(probe_error) => Err(probe_error),
+            }
         }
         Err(err) => Err(super::api_client_error_to_io(err)),
     }

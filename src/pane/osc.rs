@@ -343,7 +343,7 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn foreground_job_is_shell(job: &crate::platform::ForegroundJob, shell_pid: u32) -> bool {
+fn foreground_job_is_shell(job: &crate::detect::ForegroundJob, shell_pid: u32) -> bool {
     job.processes.iter().any(|process| process.pid == shell_pid)
 }
 
@@ -358,7 +358,7 @@ pub(super) fn should_restore_host_terminal_theme(
     owner_pgid: u32,
     shell_pid: u32,
     alternate_screen: bool,
-    foreground_job: Option<&crate::platform::ForegroundJob>,
+    foreground_job: Option<&crate::detect::ForegroundJob>,
 ) -> bool {
     if alternate_screen {
         return false;
@@ -381,7 +381,7 @@ pub(super) fn restore_host_terminal_theme_if_needed(
     pane_id: PaneId,
     shell_pid: u32,
     alternate_screen: bool,
-    foreground_job: Option<&crate::platform::ForegroundJob>,
+    foreground_job: Option<&crate::detect::ForegroundJob>,
 ) -> bool {
     let Some(owner_pgid) = core.transient_default_color_owner_pgid else {
         return false;
@@ -464,10 +464,10 @@ mod tests {
         }
     }
 
-    fn shell_job(shell_pid: u32) -> crate::platform::ForegroundJob {
-        crate::platform::ForegroundJob {
+    fn shell_job(shell_pid: u32) -> crate::detect::ForegroundJob {
+        crate::detect::ForegroundJob {
             process_group_id: shell_pid,
-            processes: vec![crate::platform::ForegroundProcess {
+            processes: vec![crate::detect::ForegroundProcess {
                 pid: shell_pid,
                 name: "zsh".to_string(),
                 argv0: Some("zsh".to_string()),
@@ -884,9 +884,9 @@ mod tests {
             42,
             7,
             false,
-            Some(&crate::platform::ForegroundJob {
+            Some(&crate::detect::ForegroundJob {
                 process_group_id: 42,
-                processes: vec![crate::platform::ForegroundProcess {
+                processes: vec![crate::detect::ForegroundProcess {
                     pid: 42,
                     name: "droid".to_string(),
                     argv0: Some("droid".to_string()),
@@ -961,7 +961,11 @@ mod tests {
             core.terminal.write(b"1mX");
             assert_eq!(
                 core.terminal
-                    .read_text_viewport((0, 0), (0, 0), false)
+                    .read_text_viewport(
+                        crate::terminal::Point::new(crate::terminal::ViewportRow(0), 0),
+                        crate::terminal::Point::new(crate::terminal::ViewportRow(0), 0),
+                        false,
+                    )
                     .expect("test precondition"),
                 "X"
             );

@@ -1641,9 +1641,11 @@ mod tests {
         blit_frame_to(&mut diff, &curr, Some(&prev));
         terminal.write(&diff);
 
-        for row in 0..3 {
+        for row in 0_usize..3 {
             for col in 0..4 {
-                let (_, graphemes) = terminal.screen_cell(col, row).expect("test precondition");
+                let (_, graphemes) = terminal
+                    .screen_cell(col, crate::terminal::ScreenRow(row))
+                    .expect("test precondition");
                 assert_eq!(graphemes, vec![u32::from('B')]);
             }
         }

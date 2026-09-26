@@ -164,11 +164,11 @@ impl ClientShellState {
             crate::api::schema::Method::PaneSelectionRead(
                 crate::api::schema::PaneSelectionReadParams {
                     pane_id,
-                    anchor: crate::api::schema::PaneTextPoint {
+                    anchor: crate::api::schema::PaneSelectionPoint {
                         row: anchor.0,
                         col: anchor.1,
                     },
-                    cursor: crate::api::schema::PaneTextPoint {
+                    cursor: crate::api::schema::PaneSelectionPoint {
                         row: cursor.0,
                         col: cursor.1,
                     },

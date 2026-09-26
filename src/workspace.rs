@@ -10,9 +10,7 @@ use ratatui::layout::Direction;
 use tokio::sync::{Notify, mpsc};
 
 use crate::events::AppEvent;
-use crate::layout::PaneId;
-#[cfg(test)]
-use crate::layout::TileLayout;
+use crate::layout::{PaneId, TileLayout};
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::render_signal::RenderSignal;
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
@@ -44,6 +42,46 @@ pub(crate) struct PaneSpawnHandles {
     pub events: mpsc::Sender<AppEvent>,
     pub render_notify: Arc<Notify>,
     pub render_dirty: Arc<RenderSignal>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaneRemovalScope {
+    Pane,
+    Tab,
+    Workspace,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PaneRemovalPlan {
+    workspace_id: String,
+    pub(crate) pane_id: PaneId,
+    pub(crate) tab_index: usize,
+    pub(crate) scope: PaneRemovalScope,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PaneRemoval {
+    pub(crate) workspace_id: String,
+    pub(crate) pane_id: PaneId,
+    pub(crate) tab_index: usize,
+    pub(crate) scope: PaneRemovalScope,
+    pub(crate) pane_ids: Vec<PaneId>,
+    pub(crate) terminal_ids: Vec<TerminalId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TabRemoval {
+    pub(crate) workspace_id: String,
+    pub(crate) tab_index: usize,
+    pub(crate) tab_number: usize,
+    pub(crate) pane_ids: Vec<PaneId>,
+    pub(crate) terminal_ids: Vec<TerminalId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TabCreationOutcome {
+    pub(crate) tab_index: usize,
+    pub(crate) root_pane: PaneId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -513,7 +551,7 @@ impl Workspace {
     // spawn handles through to the runtime spawn.
     #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
     pub(crate) fn create_tab(
-        &mut self,
+        &self,
         rows: u16,
         cols: u16,
         cwd: PathBuf,
@@ -523,7 +561,7 @@ impl Workspace {
         shell_config: crate::pane::PaneShellConfig<'_>,
         extra_env: Vec<(String, String)>,
         spawn: &PaneSpawnHandles,
-    ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Tab, TerminalState, TerminalRuntime)> {
         self.create_tab_with_runtime(
             rows,
             cols,
@@ -541,7 +579,7 @@ impl Workspace {
     // Same argument set as `create_tab`, with an argv instead of a shell.
     #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
     pub(crate) fn create_tab_argv_command(
-        &mut self,
+        &self,
         rows: u16,
         cols: u16,
         cwd: PathBuf,
@@ -551,7 +589,7 @@ impl Workspace {
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         spawn: &PaneSpawnHandles,
-    ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Tab, TerminalState, TerminalRuntime)> {
         self.create_tab_with_runtime(
             rows,
             cols,
@@ -569,7 +607,7 @@ impl Workspace {
     // Shared body of the two tab constructors above.
     #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
     fn create_tab_with_runtime(
-        &mut self,
+        &self,
         rows: u16,
         cols: u16,
         cwd: PathBuf,
@@ -580,13 +618,12 @@ impl Workspace {
         argv: Option<&[String]>,
         extra_env: Vec<(String, String)>,
         spawn: &PaneSpawnHandles,
-    ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Tab, TerminalState, TerminalRuntime)> {
         let number = self.next_public_tab_number;
-        self.next_public_tab_number += 1;
         let pane_number = self.next_public_pane_number;
         let launch_env = self.launch_env_for_new_pane(number, pane_number, extra_env);
 
-        let (tab, terminal, runtime) = if let Some(argv) = argv {
+        let (mut tab, terminal, runtime) = if let Some(argv) = argv {
             Tab::new_argv_command(
                 number,
                 cwd,
@@ -614,18 +651,51 @@ impl Workspace {
             )?
         };
         let root_pane = tab.root_pane;
-        self.tabs.push(tab);
-        self.register_new_pane_with_number(root_pane, pane_number);
-        Ok((self.tabs.len() - 1, terminal, runtime))
+        if let Some(pane) = tab.panes.get_mut(&root_pane) {
+            pane.public_number = pane_number;
+        }
+        Ok((tab, terminal, runtime))
     }
 
-    pub fn close_tab(&mut self, idx: usize) -> bool {
-        if self.tabs.len() <= 1 || idx >= self.tabs.len() {
-            return false;
+    pub(crate) fn commit_new_tab(&mut self, tab: Tab) -> TabCreationOutcome {
+        let tab_index = self.tabs.len();
+        let root_pane = tab.root_pane;
+        let pane_numbers = tab
+            .panes
+            .iter()
+            .map(|(pane_id, pane)| (*pane_id, pane.public_number))
+            .collect::<Vec<_>>();
+        self.tabs.push(tab);
+        for (pane_id, public_number) in pane_numbers {
+            self.register_new_pane_with_number(pane_id, public_number);
         }
+        let next_tab_number = self.tabs[tab_index].number.saturating_add(1);
+        self.next_public_tab_number = self.next_public_tab_number.max(next_tab_number);
+        TabCreationOutcome {
+            tab_index,
+            root_pane,
+        }
+    }
+
+    pub(crate) fn close_tab(&mut self, idx: usize) -> Option<TabRemoval> {
+        if self.tabs.len() <= 1 || idx >= self.tabs.len() {
+            return None;
+        }
+        let tab = self.tabs.get(idx)?;
+        let removal = TabRemoval {
+            workspace_id: self.id.clone(),
+            tab_index: idx,
+            tab_number: tab.number,
+            pane_ids: tab.layout.pane_ids(),
+            terminal_ids: tab
+                .panes
+                .values()
+                .map(|pane| pane.attached_terminal_id.clone())
+                .collect(),
+        };
         self.tabs.remove(idx);
         self.adjust_active_tab_after_removal(idx);
-        true
+        Some(removal)
     }
 
     pub fn move_tab(&mut self, source_idx: usize, insert_idx: usize) -> bool {
@@ -653,15 +723,10 @@ impl Workspace {
         true
     }
 
-    #[cfg(test)]
-    pub fn close_active_tab(&mut self) -> bool {
-        self.close_tab(self.active_tab)
-    }
-
     // Workspace split routing carries pane identity, geometry, host context, and focus policy.
     #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
     pub(crate) fn split_pane(
-        &mut self,
+        &self,
         pane_id: PaneId,
         direction: Direction,
         geometry: &PaneGeometry,
@@ -695,7 +760,7 @@ impl Workspace {
 
     #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
     pub(crate) fn split_pane_with_ratio(
-        &mut self,
+        &self,
         pane_id: PaneId,
         direction: Direction,
         ratio: f32,
@@ -729,43 +794,8 @@ impl Workspace {
     }
 
     #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
-    pub(crate) fn split_pane_argv_command_with_ratio(
-        &mut self,
-        pane_id: PaneId,
-        direction: Direction,
-        ratio: f32,
-        geometry: &PaneGeometry,
-        cwd: Option<PathBuf>,
-        default_cwd: PathBuf,
-        argv: &[String],
-        extra_env: Vec<(String, String)>,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        focus_new_pane: bool,
-        spawn: &PaneSpawnHandles,
-    ) -> Option<std::io::Result<(usize, crate::workspace::tab::NewPane)>> {
-        self.split_pane_with_runtime(
-            pane_id,
-            direction,
-            Some(ratio),
-            geometry,
-            cwd,
-            default_cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            crate::pane::PaneShellConfig::new("", false),
-            extra_env,
-            focus_new_pane,
-            Some(argv),
-            spawn,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)] // Pane creation needs launch settings and spawn context.
     fn split_pane_with_runtime(
-        &mut self,
+        &self,
         pane_id: PaneId,
         direction: Direction,
         ratio: Option<f32>,
@@ -785,7 +815,7 @@ impl Workspace {
         let pane_number = self.next_public_pane_number;
         let tab_number = self.tabs[tab_idx].number;
         let launch_env = self.launch_env_for_new_pane(tab_number, pane_number, extra_env);
-        let tab = &mut self.tabs[tab_idx];
+        let tab = &self.tabs[tab_idx];
         let new_pane = match if let Some(argv) = argv {
             tab.split_pane_argv(
                 pane_id,
@@ -822,21 +852,26 @@ impl Workspace {
             Ok(new_pane) => new_pane,
             Err(err) => return Some(Err(err)),
         };
-        self.register_new_pane_with_number(new_pane.pane_id, pane_number);
         Some(Ok((tab_idx, new_pane)))
     }
 
-    /// Close the focused pane. Returns true if the workspace should close.
-    #[cfg(test)]
-    pub fn close_focused(&mut self) -> bool {
-        let pane_count = self.active_tab().map(|tab| tab.panes.len()).unwrap_or(0);
-        let tab_count = self.tabs.len();
-        if pane_count <= 1 {
-            return tab_count <= 1 || self.close_active_tab_and_report();
+    pub(crate) fn commit_new_pane(
+        &mut self,
+        tab_index: usize,
+        pane_id: PaneId,
+        prepared_layout: TileLayout,
+        terminal_id: TerminalId,
+        focus: bool,
+    ) -> Option<()> {
+        let number = self.next_public_pane_number;
+        let tab = self.tabs.get_mut(tab_index)?;
+        tab.commit_prepared_split(pane_id, prepared_layout, terminal_id, number)
+            .then_some(())?;
+        if focus {
+            tab.layout.focus_pane(pane_id);
         }
-
-        let _closed_pane = self.active_tab_mut().and_then(Tab::close_focused);
-        false
+        self.register_new_pane_with_number(pane_id, number);
+        Some(())
     }
 
     pub(crate) fn take_pane_for_move(&mut self, pane_id: PaneId) -> Option<TakenPane> {
@@ -919,7 +954,7 @@ impl Workspace {
         self.tabs.iter().map(|tab| tab.panes.len()).sum()
     }
 
-    fn launch_env_for_new_pane(
+    pub(crate) fn launch_env_for_new_pane(
         &self,
         tab_number: usize,
         pane_number: usize,
@@ -930,6 +965,14 @@ impl Workspace {
             public_tab_id_for_number(&self.id, tab_number),
             public_pane_id_for_number(&self.id, pane_number),
         )
+    }
+
+    pub(crate) fn next_public_tab_number(&self) -> usize {
+        self.next_public_tab_number
+    }
+
+    pub(crate) fn next_public_pane_number(&self) -> usize {
+        self.next_public_pane_number
     }
 
     pub fn public_tab_number(&self, tab_idx: usize) -> Option<usize> {
@@ -1008,25 +1051,94 @@ impl Workspace {
         self.active_tab().map(|tab| tab.layout.focused())
     }
 
-    /// Removes a pane from this workspace, dropping its tab when it was the
-    /// tab's last pane. The pane's runtime is not touched; the caller owns
-    /// terminal teardown. Returns true, leaving the workspace unchanged, when
-    /// the pane is the workspace's last one: the caller closes the workspace.
-    pub fn close_pane(&mut self, pane_id: PaneId) -> bool {
-        let Some(tab_idx) = self.find_tab_index_for_pane(pane_id) else {
-            return false;
+    pub(crate) fn prepare_pane_removal(&self, pane_id: PaneId) -> Option<PaneRemovalPlan> {
+        let tab_index = self.find_tab_index_for_pane(pane_id)?;
+        let tab = self.tabs.get(tab_index)?;
+        let scope = if tab.panes.len() > 1 {
+            PaneRemovalScope::Pane
+        } else if self.tabs.len() > 1 {
+            PaneRemovalScope::Tab
+        } else {
+            PaneRemovalScope::Workspace
         };
-        if self.tabs[tab_idx].panes.len() <= 1 {
-            if self.tabs.len() <= 1 {
-                return true;
-            }
-            self.tabs.remove(tab_idx);
-            self.adjust_active_tab_after_removal(tab_idx);
-            return false;
+        Some(PaneRemovalPlan {
+            workspace_id: self.id.clone(),
+            pane_id,
+            tab_index,
+            scope,
+        })
+    }
+
+    /// Commits a pane removal prepared from this workspace. The typed scope
+    /// tells the app which surrounding container was removed as a consequence.
+    /// A workspace-scoped result leaves this value intact; `AppState` owns the
+    /// workspace collection and removes it as part of the same command.
+    pub(crate) fn remove_pane(&mut self, plan: &PaneRemovalPlan) -> Option<PaneRemoval> {
+        if plan.workspace_id != self.id
+            || self.prepare_pane_removal(plan.pane_id)?.scope != plan.scope
+            || self.find_tab_index_for_pane(plan.pane_id)? != plan.tab_index
+        {
+            return None;
         }
 
-        self.tabs[tab_idx].close_pane(pane_id);
-        false
+        let (pane_ids, terminal_ids) = match plan.scope {
+            PaneRemovalScope::Pane => {
+                let tab = self.tabs.get(plan.tab_index)?;
+                (
+                    vec![plan.pane_id],
+                    vec![tab.terminal_id(plan.pane_id)?.clone()],
+                )
+            }
+            PaneRemovalScope::Tab => {
+                let tab = self.tabs.get(plan.tab_index)?;
+                (
+                    tab.layout.pane_ids(),
+                    tab.panes
+                        .values()
+                        .map(|pane| pane.attached_terminal_id.clone())
+                        .collect(),
+                )
+            }
+            PaneRemovalScope::Workspace => (
+                self.tabs
+                    .iter()
+                    .flat_map(|tab| tab.layout.pane_ids())
+                    .collect(),
+                self.tabs
+                    .iter()
+                    .flat_map(|tab| tab.panes.values())
+                    .map(|pane| pane.attached_terminal_id.clone())
+                    .collect(),
+            ),
+        };
+
+        match plan.scope {
+            PaneRemovalScope::Pane => {
+                self.tabs
+                    .get_mut(plan.tab_index)?
+                    .close_pane(plan.pane_id)?;
+            }
+            PaneRemovalScope::Tab => {
+                self.tabs.remove(plan.tab_index);
+                self.adjust_active_tab_after_removal(plan.tab_index);
+            }
+            PaneRemovalScope::Workspace => {}
+        }
+
+        Some(PaneRemoval {
+            workspace_id: self.id.clone(),
+            pane_id: plan.pane_id,
+            tab_index: plan.tab_index,
+            scope: plan.scope,
+            pane_ids,
+            terminal_ids,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn close_pane(&mut self, pane_id: PaneId) -> Option<PaneRemoval> {
+        let plan = self.prepare_pane_removal(pane_id)?;
+        self.remove_pane(&plan)
     }
 
     #[cfg(test)]
@@ -1070,15 +1182,6 @@ impl Workspace {
             pane.public_number = number;
         }
         self.next_public_pane_number = self.next_public_pane_number.max(number + 1);
-    }
-
-    #[cfg(test)]
-    fn close_active_tab_and_report(&mut self) -> bool {
-        if self.tabs.len() <= 1 {
-            return true;
-        }
-        self.close_active_tab();
-        false
     }
 }
 
@@ -1160,7 +1263,10 @@ impl Workspace {
         let mut ws = Self::test_new("adversarial-identity");
         let removed_pane = ws.test_split(Direction::Horizontal);
         ws.test_split(Direction::Vertical);
-        assert!(!ws.close_pane(removed_pane));
+        assert_eq!(
+            ws.close_pane(removed_pane).map(|removal| removal.scope),
+            Some(PaneRemovalScope::Pane)
+        );
         let _unused_raw_id = PaneId::alloc();
         let later_pane = ws.test_split(Direction::Horizontal);
 
@@ -1169,7 +1275,7 @@ impl Workspace {
         let final_tab = ws.test_add_tab(None);
         let survivor_root = ws.tabs[survivor_tab].root_pane;
         let final_root = ws.tabs[final_tab].root_pane;
-        assert!(ws.close_tab(removed_tab));
+        assert!(ws.close_tab(removed_tab).is_some());
         assert!(ws.move_tab(0, ws.tabs.len()));
         ws.switch_tab(
             ws.find_tab_index_for_pane(survivor_root)
@@ -1400,7 +1506,10 @@ mod tests {
         assert_eq!(ws.public_pane_number(second), Some(2));
         assert_eq!(ws.public_pane_number(third), Some(3));
 
-        assert!(!ws.close_pane(second));
+        assert_eq!(
+            ws.close_pane(second).map(|removal| removal.scope),
+            Some(PaneRemovalScope::Pane)
+        );
 
         assert_eq!(ws.public_pane_number(root), Some(1));
         assert_eq!(ws.public_pane_number(second), None);
@@ -1423,7 +1532,7 @@ mod tests {
         assert_eq!(ws.public_tab_number_for_pane(second_root), Some(2));
         assert_eq!(ws.public_tab_number_for_pane(third_root), Some(3));
 
-        assert!(ws.close_tab(second_tab));
+        assert!(ws.close_tab(second_tab).is_some());
 
         assert_eq!(ws.public_tab_number_for_pane(first_root), Some(1));
         assert_eq!(ws.public_tab_number_for_pane(third_root), Some(3));

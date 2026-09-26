@@ -9,6 +9,7 @@ fn shell(field: usize) -> ClientShellState {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         viewport_rows: 2,
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(frame);
     state.compose(106, 30).expect("initial shell");

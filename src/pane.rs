@@ -342,7 +342,7 @@ struct AgentDetectionPresence {
 }
 
 fn absolute_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
-    crate::platform::process_cwd(pid).filter(|cwd| cwd.is_absolute())
+    crate::detect::process_cwd(pid).filter(|cwd| cwd.is_absolute())
 }
 
 fn usable_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
@@ -579,7 +579,7 @@ struct ProcessProbeResult {
 }
 
 fn agent_hint_for_foreground_job_members(
-    job: &crate::platform::ForegroundJob,
+    job: &crate::detect::ForegroundJob,
     read_hint: impl Fn(u32) -> Option<Agent>,
 ) -> Option<Agent> {
     read_hint(job.process_group_id)
@@ -587,7 +587,7 @@ fn agent_hint_for_foreground_job_members(
 }
 
 fn agent_hint_for_non_leader_foreground_job_members(
-    job: &crate::platform::ForegroundJob,
+    job: &crate::detect::ForegroundJob,
     read_hint: impl Fn(u32) -> Option<Agent>,
 ) -> Option<Agent> {
     job.processes
@@ -597,13 +597,13 @@ fn agent_hint_for_non_leader_foreground_job_members(
 }
 
 fn identify_process_group_leader_in_job(
-    job: &crate::platform::ForegroundJob,
+    job: &crate::detect::ForegroundJob,
 ) -> Option<(Agent, String)> {
     let leader = job
         .processes
         .iter()
         .find(|process| process.pid == job.process_group_id)?;
-    let leader_job = crate::platform::ForegroundJob {
+    let leader_job = crate::detect::ForegroundJob {
         process_group_id: job.process_group_id,
         processes: vec![leader.clone()],
     };
@@ -611,7 +611,7 @@ fn identify_process_group_leader_in_job(
 }
 
 fn process_probe_result(
-    job: &crate::platform::ForegroundJob,
+    job: &crate::detect::ForegroundJob,
     pid: u32,
     agent: Agent,
     process_name: String,
@@ -625,7 +625,7 @@ fn process_probe_result(
 }
 
 fn hinted_process_probe_result(
-    job: &crate::platform::ForegroundJob,
+    job: &crate::detect::ForegroundJob,
     pid: u32,
     read_hint: impl Fn(u32) -> Option<Agent>,
 ) -> Option<ProcessProbeResult> {
@@ -641,8 +641,8 @@ fn hinted_process_probe_result(
 fn probe_foreground_process_from_jobs(
     pid: u32,
     foreground_pgid: Option<u32>,
-    leader_job: Option<&crate::platform::ForegroundJob>,
-    foreground_job: impl FnOnce() -> Option<crate::platform::ForegroundJob>,
+    leader_job: Option<&crate::detect::ForegroundJob>,
+    foreground_job: impl FnOnce() -> Option<crate::detect::ForegroundJob>,
     read_hint: impl Fn(u32) -> Option<Agent> + Copy,
 ) -> ProcessProbeResult {
     if let Some(job) = leader_job {
@@ -701,7 +701,7 @@ fn probe_foreground_process(pid: u32, foreground_pgid: Option<u32>) -> ProcessPr
             .and_then(crate::detect::foreground_group_leader_job)
             .as_ref(),
         || crate::detect::foreground_job(pid),
-        crate::platform::process_agent_hint,
+        crate::detect::process_agent_hint,
     )
 }
 
@@ -2205,7 +2205,7 @@ impl PaneRuntime {
 
     pub(crate) fn word_motion_target(
         &self,
-        row: u32,
+        row: crate::terminal::ScreenRow,
         col: u16,
         motion: crate::pane::TerminalWordMotion,
     ) -> Option<crate::pane::TerminalTextPoint> {
@@ -2218,7 +2218,7 @@ impl PaneRuntime {
 
     pub(crate) fn paragraph_motion_target(
         &self,
-        row: u32,
+        row: crate::terminal::ScreenRow,
         direction: i8,
     ) -> Option<crate::pane::TerminalTextPoint> {
         self.terminal.paragraph_motion_target(row, direction)
@@ -2497,13 +2497,13 @@ impl PaneRuntime {
         }
 
         let pid = self.child_liveness.pid();
-        crate::platform::process_cwd(pid)
+        crate::detect::process_cwd(pid)
     }
 
     pub fn cwd_for_persistence(&self) -> Option<std::path::PathBuf> {
         let pid = self.child_liveness.pid();
         if let Some(cwd) = (!self.child_liveness.wait_completed())
-            .then(|| crate::platform::process_cwd(pid))
+            .then(|| crate::detect::process_cwd(pid))
             .flatten()
             .filter(|cwd| cwd.is_absolute())
         {
@@ -2528,7 +2528,7 @@ impl PaneRuntime {
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
         let leader_cwd = self
             .child_pid()
-            .and_then(crate::platform::foreground_process_group_id)
+            .and_then(crate::detect::foreground_process_group_id)
             .and_then(usable_process_cwd);
         leader_cwd.or_else(|| self.cwd())
     }
@@ -2536,7 +2536,7 @@ impl PaneRuntime {
     /// Get the current working directory of the process group controlling the pane PTY.
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
         let pid = self.child_liveness.pid();
-        let foreground_pgid = crate::platform::foreground_process_group_id(pid);
+        let foreground_pgid = crate::detect::foreground_process_group_id(pid);
         let leader_cwd = foreground_pgid.and_then(absolute_process_cwd);
 
         // The group leader's cwd is authoritative (issue #3270): a helper
@@ -2959,7 +2959,7 @@ mod tests {
             .current_dir(&cwd)
             .spawn()
             .expect("spawn process in cwd");
-        let expected_cwd = crate::platform::process_cwd(child.id())
+        let expected_cwd = crate::detect::process_cwd(child.id())
             .expect("resolve process cwd before restricting traversal");
         std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o000))
             .expect("make cwd path untraversable");
@@ -3369,8 +3369,8 @@ mod tests {
         );
     }
 
-    fn foreground_process(pid: u32, name: &str) -> crate::platform::ForegroundProcess {
-        crate::platform::ForegroundProcess {
+    fn foreground_process(pid: u32, name: &str) -> crate::detect::ForegroundProcess {
+        crate::detect::ForegroundProcess {
             pid,
             name: name.to_string(),
             argv0: None,
@@ -3381,7 +3381,7 @@ mod tests {
 
     #[test]
     fn foreground_agent_hint_accepts_pane_shell_environment() {
-        let job = crate::platform::ForegroundJob {
+        let job = crate::detect::ForegroundJob {
             process_group_id: 42,
             processes: vec![foreground_process(42, "bash")],
         };
@@ -3396,7 +3396,7 @@ mod tests {
 
     #[test]
     fn foreground_agent_hint_accepts_non_leader_foreground_process_environment() {
-        let job = crate::platform::ForegroundJob {
+        let job = crate::detect::ForegroundJob {
             process_group_id: 99,
             processes: vec![
                 foreground_process(99, "fence"),
@@ -3414,7 +3414,7 @@ mod tests {
 
     #[test]
     fn foreground_agent_hint_wins_over_process_name_detection() {
-        let job = crate::platform::ForegroundJob {
+        let job = crate::detect::ForegroundJob {
             process_group_id: 99,
             processes: vec![foreground_process(99, "codex")],
         };
@@ -3433,7 +3433,7 @@ mod tests {
 
     #[test]
     fn foreground_agent_hint_on_inherited_child_environment_is_authoritative() {
-        let job = crate::platform::ForegroundJob {
+        let job = crate::detect::ForegroundJob {
             process_group_id: 99,
             processes: vec![foreground_process(99, "vim")],
         };
@@ -3452,7 +3452,7 @@ mod tests {
 
     #[test]
     fn non_leader_agent_hint_does_not_override_identifiable_leader() {
-        let job = crate::platform::ForegroundJob {
+        let job = crate::detect::ForegroundJob {
             process_group_id: 99,
             processes: vec![
                 foreground_process(99, "codex"),
@@ -3474,7 +3474,7 @@ mod tests {
 
     #[test]
     fn non_leader_agent_hint_wins_when_leader_is_unidentified() {
-        let job = crate::platform::ForegroundJob {
+        let job = crate::detect::ForegroundJob {
             process_group_id: 99,
             processes: vec![
                 foreground_process(99, "some_vm"),

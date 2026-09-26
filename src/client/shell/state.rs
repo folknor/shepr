@@ -440,7 +440,7 @@ pub(super) enum PendingEndpointKind {
     },
     WordSelection {
         pane_id: String,
-        absolute_row: u32,
+        absolute_row: crate::terminal::AbsRow,
         generation: u64,
     },
     CopyMotion {
@@ -541,10 +541,10 @@ pub(super) struct ClientSelectionAutoscroll {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ClientCopySelection {
     Character {
-        anchor: crate::api::schema::PaneTextPoint,
+        anchor: crate::terminal::Point<crate::terminal::AbsRow>,
     },
     Linewise {
-        anchor_row: u32,
+        anchor_row: crate::terminal::AbsRow,
     },
 }
 

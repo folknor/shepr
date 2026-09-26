@@ -24,7 +24,7 @@ pub(super) fn dispatch_client_shell_actions(
                 }
             }
             shell::ClientShellAction::ClipboardWrite(bytes) => {
-                crate::selection::write_osc52_bytes(&bytes);
+                crate::terminal_effects::write_clipboard_bytes(&bytes);
             }
             shell::ClientShellAction::ActivateEndpoint {
                 endpoint_id,
@@ -74,7 +74,7 @@ pub(super) fn client_shell_resize_message(
 pub(super) fn sync_client_shell_keyboard_report_all(
     state: &mut ClientState,
 ) -> Result<(), ClientError> {
-    let Some(shell) = state.shell.as_ref() else {
+    let Some(shell) = state.mode.shell() else {
         return Ok(());
     };
     let desired = state.pane_keyboard_report_all || shell.host_keyboard_report_all_requested();
@@ -91,7 +91,7 @@ pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) {
     state.host_mouse_mode.clear_endpoint_request();
     let _ = state
         .host_mouse_mode
-        .apply(state.shell.is_some(), state.pixel_geometry_exact, false);
+        .apply(state.mode.is_shell(), state.pixel_geometry_exact, false);
 
     state.pane_keyboard_report_all = false;
     let _ = sync_client_shell_keyboard_report_all(state);
@@ -119,7 +119,7 @@ fn install_pending_activation(
         .source_command_lane()
         .map(|source| endpoint_commands.retire_lane(source))
         .unwrap_or_default();
-    if let Some(shell) = state.shell.as_mut() {
+    if let Some(shell) = state.mode.shell_mut() {
         for request_id in retired {
             shell.cancel_endpoint_request(&request_id);
         }
@@ -136,7 +136,7 @@ fn local_activation_metadata_ready(
     endpoints
         .connection(&endpoint::ClientEndpointId::Local)
         .is_some_and(|connection| {
-            state.shell.as_ref().is_some_and(|shell| {
+            state.mode.shell().is_some_and(|shell| {
                 shell
                     .endpoint_snapshot_identity(
                         &endpoint::ClientEndpointId::Local,
@@ -182,7 +182,7 @@ pub(super) fn begin_endpoint_activation(
             endpoint_id,
             target,
         });
-        if let Some(shell) = state.shell.as_mut() {
+        if let Some(shell) = state.mode.shell_mut() {
             shell.receive_endpoint_unavailable(
                 "Local is reconnecting; selection will resume when it is ready".into(),
             );
@@ -217,7 +217,7 @@ pub(super) fn begin_endpoint_activation(
             .connection(&endpoint_id)
             .is_some_and(|connection| connection.surface_active);
     if already_active {
-        if let (Some(shell), Some(target)) = (state.shell.as_mut(), target) {
+        if let (Some(shell), Some(target)) = (state.mode.shell_mut(), target) {
             let actions = shell.focus_endpoint_target(target);
             let repaint = dispatch_client_shell_actions(
                 actions,
@@ -234,7 +234,7 @@ pub(super) fn begin_endpoint_activation(
         }
         return Ok(());
     }
-    let Some(shell) = state.shell.as_ref() else {
+    let Some(shell) = state.mode.shell() else {
         return Ok(());
     };
     let resize = client_shell_resize_message(
@@ -270,7 +270,7 @@ pub(super) fn begin_endpoint_activation(
             activation,
         ),
         Err(endpoint::ActivationBeginError::Preflight(error)) => {
-            if let Some(shell) = state.shell.as_mut() {
+            if let Some(shell) = state.mode.shell_mut() {
                 shell.receive_endpoint_unavailable(format!(
                     "{}: {error}",
                     shell.endpoint_label(&endpoint_id)
@@ -295,8 +295,8 @@ pub(super) fn begin_endpoint_activation(
                 &format!(
                     "{}: {error}",
                     state
-                        .shell
-                        .as_ref()
+                        .mode
+                        .shell()
                         .map(|shell| shell.endpoint_label(&endpoint_id).to_owned())
                         .unwrap_or_else(|| format!("{endpoint_id:?}"))
                 ),
@@ -324,7 +324,7 @@ pub(super) fn complete_endpoint_activation(
         let Some(activation) = pending.as_mut() else {
             return Ok(None);
         };
-        let Some(shell) = state.shell.as_mut() else {
+        let Some(shell) = state.mode.shell_mut() else {
             return Ok(None);
         };
         match activation.complete(shell, endpoints) {
@@ -344,8 +344,8 @@ pub(super) fn complete_endpoint_activation(
         // pane input disabled until a second projection epoch has replayed host modes/effects.
         state.unfreeze_presentation();
         let frame = state
-            .shell
-            .as_mut()
+            .mode
+            .shell_mut()
             .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1));
         if let Some(frame) = frame {
             state.present_frame(frame);
@@ -367,7 +367,7 @@ pub(super) fn complete_endpoint_activation(
             ..
         } => {
             if next.is_none()
-                && let Some(shell) = state.shell.as_mut()
+                && let Some(shell) = state.mode.shell_mut()
             {
                 shell.receive_endpoint_unavailable(error);
             }
@@ -383,15 +383,15 @@ pub(super) fn complete_endpoint_activation(
         correct_committed_surface_size(state, endpoints, requested_surface_size);
         let active_endpoint = endpoints.active_id().clone();
         let cancelled = endpoint_commands.send_next(&active_endpoint, endpoints);
-        if let Some(shell) = state.shell.as_mut() {
+        if let Some(shell) = state.mode.shell_mut() {
             for request_id in cancelled {
                 shell.cancel_endpoint_request(&request_id);
             }
         }
     }
     let frame = state
-        .shell
-        .as_mut()
+        .mode
+        .shell_mut()
         .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1));
     if let Some(frame) = frame {
         state.present_frame(frame);
@@ -429,7 +429,7 @@ fn committed_resize(
     state: &ClientState,
     requested: crate::protocol::ClientSurfaceSize,
 ) -> Option<ClientMessage> {
-    let shell = state.shell.as_ref()?;
+    let shell = state.mode.shell()?;
     (shell.surface_size(state.reported_size.0, state.reported_size.1) != requested).then(|| {
         client_shell_resize_message(
             shell,
@@ -446,7 +446,7 @@ pub(super) fn present_handoff_unavailable(state: &mut ClientState, message: Stri
     // An unavailable committed endpoint has no presentation lease. Keep all pane input and late
     // source output blocked, while allowing this client-owned chrome frame through the freeze.
     state.freeze_presentation();
-    let frame = state.shell.as_mut().and_then(|shell| {
+    let frame = state.mode.shell_mut().and_then(|shell| {
         shell.receive_endpoint_unavailable(message);
         shell.compose(state.reported_size.0, state.reported_size.1)
     });
@@ -501,8 +501,8 @@ pub(super) fn handle_endpoint_disconnect(
         .filter(|pending| pending.involves_endpoint(endpoint_id))
     {
         let label = state
-            .shell
-            .as_ref()
+            .mode
+            .shell()
             .map_or("Endpoint", |shell| shell.endpoint_label(endpoint_id));
         let outcome = pending.endpoint_disconnected(
             endpoints,
@@ -519,7 +519,7 @@ pub(super) fn handle_endpoint_disconnect(
     }
     let endpoint_was_active = endpoints.active_id() == endpoint_id;
     let cancelled = endpoint_commands.disconnect(endpoint_id);
-    let unavailable = state.shell.as_mut().and_then(|shell| {
+    let unavailable = state.mode.shell_mut().and_then(|shell| {
         for request_id in cancelled {
             shell.cancel_endpoint_request(&request_id);
         }
@@ -529,8 +529,8 @@ pub(super) fn handle_endpoint_disconnect(
     if let Some(message) = unavailable {
         present_handoff_unavailable(state, message);
     } else if let Some(frame) = state
-        .shell
-        .as_mut()
+        .mode
+        .shell_mut()
         .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
     {
         // A non-active machine going offline only changes its machine-list status.
@@ -573,7 +573,7 @@ pub(super) fn handle_endpoint_attention(
     }
     let endpoint_was_active = endpoints.active_id() == endpoint_id;
     let cancelled = endpoint_commands.disconnect(endpoint_id);
-    let unavailable = state.shell.as_mut().and_then(|shell| {
+    let unavailable = state.mode.shell_mut().and_then(|shell| {
         for request_id in cancelled {
             shell.cancel_endpoint_request(&request_id);
         }
@@ -584,8 +584,8 @@ pub(super) fn handle_endpoint_attention(
     if let Some(message) = unavailable {
         present_handoff_unavailable(state, message);
     } else if let Some(frame) = state
-        .shell
-        .as_mut()
+        .mode
+        .shell_mut()
         .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
     {
         // A non-active machine needing attention only changes its machine-list status.
@@ -620,7 +620,7 @@ pub(super) fn stale_freeze_recovery(
     if handoff_busy || endpoints.active_id() != selected {
         return None;
     }
-    let shell = state.shell.as_ref()?;
+    let shell = state.mode.shell()?;
     let generation = endpoints
         .connection(selected)
         .filter(|connection| connection.surface_active)?
@@ -684,7 +684,7 @@ pub(super) fn follow_endpoint_catalog(
         );
         endpoints.disconnect(&endpoint_id);
     }
-    if let Some(shell) = state.shell.as_mut() {
+    if let Some(shell) = state.mode.shell_mut() {
         // Retired machines are first dropped from the shell, which discards what it kept
         // from them (status, snapshot, agents). A re-pointed machine is then shown afresh
         // by the final catalog instead of with the old target's workspaces.
@@ -705,7 +705,9 @@ pub(super) fn follow_endpoint_catalog(
     // A client that launched with no saved machine had no Local supervisor: losing Local
     // ended it. Once a machine exists, Local is supervised like the rest, so its loss is
     // recovered instead of ending the client and taking the machine with it.
-    if catalog.has_ssh() && !supervisors.supervises(&endpoint::ClientEndpointId::Local) {
+    if endpoint::LocalFailurePolicy::for_catalog(catalog).reconnects_local()
+        && !supervisors.supervises(&endpoint::ClientEndpointId::Local)
+    {
         supervisors.add_local(
             local_socket_path.to_path_buf(),
             endpoints
@@ -715,8 +717,8 @@ pub(super) fn follow_endpoint_catalog(
         );
     }
     if let Some(frame) = state
-        .shell
-        .as_mut()
+        .mode
+        .shell_mut()
         .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
     {
         state.present_chrome(frame, pending_activation.is_some());
@@ -743,7 +745,7 @@ pub(super) fn install_client_shell_snapshot(
         && !state.presentation_frozen
         && endpoints.active_id() == endpoint_id
         && connection.surface_active;
-    let (composed, resize) = if let Some(shell) = &mut state.shell {
+    let (composed, resize) = if let Some(shell) = state.mode.shell_mut() {
         let waits_for_selected_surface = projection_pending
             || (endpoints.active_id() == endpoint_id
                 && !project_snapshot
@@ -808,7 +810,7 @@ pub(super) fn finish_client_shell_input(
         return Ok(true);
     }
     if outcome.resize
-        && let Some(shell) = state.shell.as_ref()
+        && let Some(shell) = state.mode.shell()
     {
         let resize = client_shell_resize_message(
             shell,
@@ -842,20 +844,20 @@ pub(super) fn finish_client_shell_input(
         outcome.actions,
         endpoint_commands,
         endpoints,
-        state.shell.as_mut(),
+        state.mode.shell_mut(),
         scheduled_activation,
     );
     let frame = if dispatch_repaint {
         state
-            .shell
-            .as_mut()
+            .mode
+            .shell_mut()
             .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
     } else {
         frame
     };
     let active_endpoint_online = state
-        .shell
-        .as_ref()
+        .mode
+        .shell()
         .is_none_or(|shell| shell.endpoint_is_online(endpoints.active_id()))
         && endpoints.active_surface_available();
     for request in outcome.requests {
@@ -923,8 +925,8 @@ mod tests {
     fn committed_handoff_resizes_only_when_its_requested_size_is_stale() {
         let state = ClientState::test_new();
         let committed = state
-            .shell
-            .as_ref()
+            .mode
+            .shell()
             .expect("test shell")
             .surface_size(state.reported_size.0, state.reported_size.1);
         assert!(committed_resize(&state, committed).is_none());
@@ -1000,8 +1002,8 @@ mod tests {
         let compose = |state: &mut ClientState| {
             let (cols, rows) = state.reported_size;
             state
-                .shell
-                .as_mut()
+                .mode
+                .shell_mut()
                 .expect("test shell")
                 .compose(cols, rows)
                 .expect("test shell composes")
@@ -1032,8 +1034,8 @@ mod tests {
         let local = endpoint::ClientEndpointId::Local;
         let mut state = ClientState::test_new();
         state
-            .shell
-            .as_mut()
+            .mode
+            .shell_mut()
             .expect("test shell")
             .set_endpoint_snapshot_for_generation(&local, 1, snapshot("local-boot"));
         let mut endpoints = endpoint::EndpointRegistry::new(NullTransport, 1);
@@ -1094,7 +1096,7 @@ mod tests {
         let local = endpoint::ClientEndpointId::Local;
 
         let mut state = ClientState::test_new();
-        let shell = state.shell.as_mut().expect("test shell");
+        let shell = state.mode.shell_mut().expect("test shell");
         shell.set_endpoint_catalog(&catalog.ssh);
         let mut endpoints = endpoint::EndpointRegistry::new(NullTransport, 1);
         endpoints.insert(build_id.clone(), NullTransport, 7, true);
@@ -1150,7 +1152,7 @@ mod tests {
             state.presentation_frozen,
             "nothing owns presentation until Local commits"
         );
-        let shell = state.shell.as_ref().expect("test shell");
+        let shell = state.mode.shell().expect("test shell");
         assert_eq!(
             shell.endpoint_status(&build_id),
             Some(endpoint::ClientEndpointStatus::Connecting),
@@ -1193,8 +1195,8 @@ mod tests {
         assert!(!catalog.has_ssh());
         assert!(
             state
-                .shell
-                .as_ref()
+                .mode
+                .shell()
                 .expect("test shell")
                 .endpoint_status(&docs_id)
                 .is_none()

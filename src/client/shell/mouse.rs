@@ -8,6 +8,12 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 const SELECTION_AUTOSCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(30);
 const SELECTION_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 
+fn selection_cell(column: u16, row: u16, pane: Rect) -> (crate::terminal::ViewportRow, u16) {
+    let column = column.clamp(pane.x, pane.x + pane.width.saturating_sub(1));
+    let row = row.clamp(pane.y, pane.y + pane.height.saturating_sub(1));
+    (crate::terminal::ViewportRow(row - pane.y), column - pane.x)
+}
+
 impl ClientShellState {
     /// Moves the sidebar edge during a width drag. The retained pane surface stays on screen,
     /// clipped to the new pane area; the endpoint resize waits for the release (see
@@ -170,6 +176,7 @@ impl ClientShellState {
                     offset_from_bottom: autoscroll.offset_from_bottom,
                     max_offset_from_bottom: autoscroll.max_offset_from_bottom,
                     viewport_rows: metrics.viewport_rows,
+                    history_origin: metrics.history_origin,
                 }),
         )
     }
@@ -203,16 +210,19 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         if self.word_selection_gesture.is_some() {
-            let viewport_row = row
-                .saturating_sub(hit.inner_rect.y)
-                .min(hit.inner_rect.height.saturating_sub(1));
-            let col = column
-                .saturating_sub(hit.inner_rect.x)
-                .min(hit.inner_rect.width.saturating_sub(1));
-            let absolute_row = crate::selection::absolute_row_for_viewport(viewport_row, metrics);
+            let (viewport_row, col) = selection_cell(column, row, hit.inner_rect);
+            let absolute_row = metrics.map_or_else(
+                || crate::terminal::AbsRow(u64::from(viewport_row.0)),
+                |metrics| metrics.absolute_row_at_viewport(viewport_row),
+            );
             self.drag_word_selection((absolute_row, col), outcome);
         } else if let Some(selection) = self.selection.as_mut() {
-            selection.drag(column, row, hit.inner_rect, metrics);
+            let (viewport_row, col) = selection_cell(column, row, hit.inner_rect);
+            let absolute_row = metrics.map_or_else(
+                || crate::terminal::AbsRow(u64::from(viewport_row.0)),
+                |metrics| metrics.absolute_row_at_viewport(viewport_row),
+            );
+            selection.drag(crate::terminal::Point::new(absolute_row, col));
         }
     }
 
@@ -229,7 +239,22 @@ impl ClientShellState {
             .as_ref()
             .is_some_and(crate::selection::Selection::is_dragging);
         let moved_from_anchor = self.selection.as_ref().is_some_and(|selection| {
-            let (anchor_row, anchor_col) = selection.anchor_screen_pos(hit.inner_rect, metrics);
+            let anchor = selection.anchor_position();
+            let top = metrics.map_or(crate::terminal::AbsRow(0), |metrics| {
+                metrics.viewport_top_row()
+            });
+            let anchor_row = hit
+                .inner_rect
+                .y
+                .saturating_add(anchor.row.viewport_row(top).0)
+                .clamp(
+                    hit.inner_rect.y,
+                    hit.inner_rect.y + hit.inner_rect.height.saturating_sub(1),
+                );
+            let anchor_col = hit.inner_rect.x.saturating_add(anchor.col).clamp(
+                hit.inner_rect.x,
+                hit.inner_rect.x + hit.inner_rect.width.saturating_sub(1),
+            );
             anchor_row != row || anchor_col != column
         });
         self.update_selection_cursor_with_metrics(hit, column, row, metrics, outcome);
@@ -424,6 +449,9 @@ impl ClientShellState {
             offset_from_bottom: next_offset,
             max_offset_from_bottom: autoscroll.max_offset_from_bottom,
             viewport_rows: hit.scroll.map_or(0, |metrics| metrics.viewport_rows),
+            history_origin: hit
+                .scroll
+                .map_or(crate::terminal::AbsRow(0), |metrics| metrics.history_origin),
         };
         self.update_selection_cursor_with_metrics(
             &hit,
@@ -1779,11 +1807,15 @@ impl ClientShellState {
                             self.selection_focus_pending = (self.focused_pane_id().as_deref()
                                 != Some(hit.pane_id.as_str()))
                             .then(|| hit.pane_id.clone());
+                            let (viewport_row, col) =
+                                selection_cell(mouse.column, mouse.row, hit.inner_rect);
+                            let absolute_row = hit.scroll.map_or_else(
+                                || crate::terminal::AbsRow(u64::from(viewport_row.0)),
+                                |metrics| metrics.absolute_row_at_viewport(viewport_row),
+                            );
                             self.selection = Some(crate::selection::Selection::anchor(
                                 hit.pane_id.clone(),
-                                mouse.row.saturating_sub(hit.inner_rect.y),
-                                mouse.column.saturating_sub(hit.inner_rect.x),
-                                hit.scroll,
+                                crate::terminal::Point::new(absolute_row, col),
                             ));
                         }
                     }

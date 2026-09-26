@@ -23,7 +23,10 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
         content_revision: 0,
         geometry: (80, 24),
         alternate_screen_active: false,
-        cursor: crate::api::schema::PaneTextPoint { row: 0, col: 0 },
+        cursor: crate::api::schema::PaneTextPoint {
+            row: crate::terminal::ScreenRow(0),
+            col: 0,
+        },
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         entry_offset_from_bottom: 0,
@@ -76,6 +79,7 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 50,
         viewport_rows: u64::from(area.height),
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("terminal frame");
@@ -107,14 +111,17 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
 
     // Scrolled back, a motion onto the covered row scrolls one line instead of hiding the
     // cursor under the bar.
-    let height = u32::from(area.height);
+    let height = usize::from(area.height);
     if let Some(copy_mode) = state.copy_mode.as_mut() {
         copy_mode.offset_from_bottom = 10;
-        copy_mode.cursor.row = 40 + height - 2;
+        copy_mode.cursor.row = crate::terminal::ScreenRow(40 + height - 2);
     }
     state.handle_input_bytes(b"j");
     let copy_mode = state.copy_mode.as_ref().expect("still in copy mode");
-    assert_eq!(copy_mode.cursor.row, 40 + height - 1);
+    assert_eq!(
+        copy_mode.cursor.row,
+        crate::terminal::ScreenRow(40 + height - 1)
+    );
     assert_eq!(copy_mode.offset_from_bottom, 9);
 }
 
@@ -263,8 +270,14 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
         &request.method,
         crate::api::schema::Method::PaneSelectionRead(params)
             if params.pane_id == "pane_1"
-                && params.anchor == crate::api::schema::PaneTextPoint { row: 0, col: 0 }
-                && params.cursor == crate::api::schema::PaneTextPoint { row: 0, col: 2 }
+                && params.anchor == crate::api::schema::PaneSelectionPoint {
+                    row: crate::terminal::AbsRow(0),
+                    col: 0,
+                }
+                && params.cursor == crate::api::schema::PaneSelectionPoint {
+                    row: crate::terminal::AbsRow(0),
+                    col: 2,
+                }
                 && params.content_revision.is_none()
     ));
 
@@ -401,6 +414,7 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 20,
         viewport_rows: 2,
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
@@ -458,6 +472,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 20,
         viewport_rows: 2,
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
@@ -470,7 +485,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     assert_eq!(state.mode, ClientShellMode::Copy);
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(21)
+        Some(crate::terminal::ScreenRow(21))
     );
     assert!(enter.actions.is_empty());
 
@@ -491,7 +506,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     ))]);
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(20)
+        Some(crate::terminal::ScreenRow(20))
     );
     assert!(matches!(
         &page.actions[..],
@@ -514,7 +529,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     assert!(top.actions.is_empty());
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(0)
+        Some(crate::terminal::ScreenRow(0))
     );
     let (_, top_actions) = state
         .handle_endpoint_result("boot-1", &page_request_id, Ok(pane_scroll_result(1, 20, 2)))
@@ -581,6 +596,7 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
             offset_from_bottom: 0,
             max_offset_from_bottom: 0,
             viewport_rows: 2,
+            history_origin: crate::terminal::AbsRow(0),
         });
         state.set_pane_surface(pane_surface.clone());
         state.compose(106, 20).expect("composed frame");
@@ -639,6 +655,7 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         viewport_rows: 2,
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
@@ -648,9 +665,20 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
         panic!("search request");
     };
     let found = crate::api::schema::PaneTextRange {
-        start: crate::api::schema::PaneTextPoint { row: 0, col: 0 },
-        end: crate::api::schema::PaneTextPoint { row: 0, col: 3 },
+        start: crate::api::schema::PaneTextPoint {
+            row: crate::terminal::ScreenRow(0),
+            col: 0,
+        },
+        end: crate::api::schema::PaneTextPoint {
+            row: crate::terminal::ScreenRow(0),
+            col: 3,
+        },
     };
+    let to_selection_point =
+        |point: crate::api::schema::PaneTextPoint| crate::api::schema::PaneSelectionPoint {
+            row: point.row.absolute(crate::terminal::AbsRow(0)),
+            col: point.col,
+        };
     state.handle_endpoint_result(
         "boot-1",
         &request.id,
@@ -669,8 +697,8 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
         action,
         ClientShellAction::Endpoint { request, .. }
             if matches!(&request.method, crate::api::schema::Method::PaneSelectionRead(params)
-                if params.anchor == found.start
-                    && params.cursor == found.end
+                if params.anchor == to_selection_point(found.start)
+                    && params.cursor == to_selection_point(found.end)
                     && params.content_revision == Some(0))
     )));
 }
@@ -685,6 +713,7 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
             offset_from_bottom: 0,
             max_offset_from_bottom: 0,
             viewport_rows: 2,
+            history_origin: crate::terminal::AbsRow(0),
         });
         state.set_pane_surface(pane_surface.clone());
         state.compose(106, 20).expect("composed frame");
@@ -726,6 +755,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed_and_stale_safe() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         viewport_rows: 2,
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
@@ -781,6 +811,7 @@ fn keys_replayed_after_a_copy_motion_reach_the_pane() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         viewport_rows: 2,
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
@@ -842,6 +873,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 20,
         viewport_rows: 2,
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
@@ -915,12 +947,24 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     ));
     let matches = vec![
         crate::api::schema::PaneTextRange {
-            start: crate::api::schema::PaneTextPoint { row: 5, col: 2 },
-            end: crate::api::schema::PaneTextPoint { row: 5, col: 7 },
+            start: crate::api::schema::PaneTextPoint {
+                row: crate::terminal::ScreenRow(5),
+                col: 2,
+            },
+            end: crate::api::schema::PaneTextPoint {
+                row: crate::terminal::ScreenRow(5),
+                col: 7,
+            },
         },
         crate::api::schema::PaneTextRange {
-            start: crate::api::schema::PaneTextPoint { row: 15, col: 1 },
-            end: crate::api::schema::PaneTextPoint { row: 15, col: 6 },
+            start: crate::api::schema::PaneTextPoint {
+                row: crate::terminal::ScreenRow(15),
+                col: 1,
+            },
+            end: crate::api::schema::PaneTextPoint {
+                row: crate::terminal::ScreenRow(15),
+                col: 6,
+            },
         },
     ];
     let (repaint, actions) = state
@@ -933,7 +977,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     assert!(repaint);
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(5)
+        Some(crate::terminal::ScreenRow(5))
     );
     assert!(actions.iter().any(|action| matches!(
         action,
@@ -1013,7 +1057,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     }
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(15)
+        Some(crate::terminal::ScreenRow(15))
     );
     assert!(
         state
@@ -1918,6 +1962,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 10,
         viewport_rows: 2,
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
@@ -1979,8 +2024,11 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     ))]);
     assert_eq!(state.mode, ClientShellMode::Terminal);
 
-    let mut other_selection =
-        crate::selection::Selection::absolute_range("pane_2".to_owned(), (0u64, 0), (0, 1));
+    let mut other_selection = crate::selection::Selection::range(
+        "pane_2".to_owned(),
+        crate::terminal::Point::new(crate::terminal::AbsRow(0), 0),
+        crate::terminal::Point::new(crate::terminal::AbsRow(0), 1),
+    );
     assert!(other_selection.finish());
     state.selection = Some(other_selection);
     state.set_snapshot(Box::new(unfocused));
@@ -2059,8 +2107,11 @@ fn retained_selection_copy_suppresses_key_repeats() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
-    let mut selection =
-        crate::selection::Selection::absolute_range("pane_1".to_owned(), (0u64, 0), (0, 1));
+    let mut selection = crate::selection::Selection::range(
+        "pane_1".to_owned(),
+        crate::terminal::Point::new(crate::terminal::AbsRow(0), 0),
+        crate::terminal::Point::new(crate::terminal::AbsRow(0), 1),
+    );
     assert!(selection.finish());
     state.selection = Some(selection);
 
@@ -2093,6 +2144,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         viewport_rows: 2,
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
@@ -2146,6 +2198,7 @@ fn queued_copy_keys_preserve_prefix_order() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 10,
         viewport_rows: 2,
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
@@ -2194,6 +2247,7 @@ fn reentering_copy_mode_on_the_same_pane_is_a_no_op() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 10,
         viewport_rows: 2,
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
@@ -2225,6 +2279,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         viewport_rows: 2,
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
@@ -2246,6 +2301,11 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
         row: origin.row,
         col: 2,
     };
+    let selection_point =
+        |point: crate::api::schema::PaneTextPoint| crate::api::schema::PaneSelectionPoint {
+            row: point.row.absolute(crate::terminal::AbsRow(0)),
+            col: point.col,
+        };
     let (_, actions) = state
         .handle_endpoint_result(
             "boot-1",
@@ -2264,7 +2324,8 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
             if matches!(
                 &request.method,
                 crate::api::schema::Method::PaneSelectionRead(params)
-                    if params.anchor == origin && params.cursor == target
+                    if params.anchor == selection_point(origin)
+                        && params.cursor == selection_point(target)
             )
     )));
 }
@@ -2278,6 +2339,7 @@ fn new_content_revision_invalidates_copy_search_coordinates() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 0,
         viewport_rows: 2,
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(pane_surface.clone());
     state.compose(106, 20).expect("composed frame");
@@ -2291,8 +2353,14 @@ fn new_content_revision_invalidates_copy_search_coordinates() {
     copy_mode
         .search_matches
         .push(crate::api::schema::PaneTextRange {
-            start: crate::api::schema::PaneTextPoint { row: 0, col: 0 },
-            end: crate::api::schema::PaneTextPoint { row: 0, col: 1 },
+            start: crate::api::schema::PaneTextPoint {
+                row: crate::terminal::ScreenRow(0),
+                col: 0,
+            },
+            end: crate::api::schema::PaneTextPoint {
+                row: crate::terminal::ScreenRow(0),
+                col: 1,
+            },
         });
     copy_mode.search_total = 1;
     copy_mode.search_current = Some(0);
@@ -2352,6 +2420,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
             offset_from_bottom: 0,
             max_offset_from_bottom: 20,
             viewport_rows: 2,
+            history_origin: crate::terminal::AbsRow(0),
         });
         state.set_pane_surface(pane_surface);
         state.compose(106, 20).expect("composed frame");
@@ -2384,7 +2453,10 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
                     .as_ref()
                     .expect("linewise selection")
                     .ordered_cells(),
-                ((20, 0), (20, end_col))
+                (
+                    (crate::terminal::AbsRow(20), 0),
+                    (crate::terminal::AbsRow(20), end_col)
+                )
             );
         }
 
@@ -2411,13 +2483,13 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
                     .expect("linewise selection")
                     .ordered_cells(),
                 (
-                    (19, 0),
+                    (crate::terminal::AbsRow(19), 0),
                     (
-                        if selection_before_gap == Some(true) {
+                        crate::terminal::AbsRow(if selection_before_gap == Some(true) {
                             21
                         } else {
                             20
-                        },
+                        }),
                         end_col
                     )
                 )
@@ -2431,7 +2503,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
                 .copy_mode
                 .as_ref()
                 .map(|copy_mode| copy_mode.cursor.row),
-            Some(19)
+            Some(crate::terminal::ScreenRow(19))
         );
     }
 }

@@ -1,9 +1,77 @@
 use crate::protocol::ServerMessage;
 
-/// Effects that are meaningful only for the endpoint currently holding the host presentation
-/// lease. During a frozen endpoint switch they are intentionally dropped and the committed target
-/// asks for one bounded replay, rather than allowing target modes onto the source frame.
-pub(crate) fn is_presentation_effect(message: &ServerMessage) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PresentationDecision {
+    Apply,
+    Drop,
+    Buffer,
+}
+
+/// Decides whether one endpoint message may affect the current presentation, belongs to a
+/// pending activation, or must be ignored.
+pub(crate) struct PresentationGate {
+    endpoint_active: bool,
+    activation_pending: bool,
+    command_response: bool,
+    frozen: bool,
+}
+
+impl PresentationGate {
+    pub(crate) fn new(
+        endpoint_active: bool,
+        activation_pending: bool,
+        command_response: bool,
+        frozen: bool,
+    ) -> Self {
+        Self {
+            endpoint_active,
+            activation_pending,
+            command_response,
+            frozen,
+        }
+    }
+
+    pub(crate) fn decide(&self, message: &ServerMessage) -> PresentationDecision {
+        if matches!(
+            message,
+            ServerMessage::EndpointControl { .. }
+                | ServerMessage::ServerShutdown { .. }
+                | ServerMessage::Welcome { .. }
+        ) {
+            return PresentationDecision::Apply;
+        }
+
+        if self.frozen && self.activation_pending && is_presentation_effect(message) {
+            return PresentationDecision::Drop;
+        }
+
+        match message {
+            ServerMessage::PaneSurface(_) if self.activation_pending => {
+                PresentationDecision::Buffer
+            }
+            ServerMessage::ClientShellEndpointResponseChunk { .. } if self.activation_pending => {
+                PresentationDecision::Buffer
+            }
+            ServerMessage::ClientShellEndpointResponseChunk { .. } if self.command_response => {
+                PresentationDecision::Apply
+            }
+            ServerMessage::PaneSurface(_) | ServerMessage::PaneSurfacePatch(_) if self.frozen => {
+                PresentationDecision::Drop
+            }
+            ServerMessage::PaneSurface(_) | ServerMessage::PaneSurfacePatch(_)
+                if self.endpoint_active =>
+            {
+                PresentationDecision::Apply
+            }
+            _ if self.endpoint_active => PresentationDecision::Apply,
+            _ => PresentationDecision::Drop,
+        }
+    }
+}
+
+/// Host modes and titles belong to the endpoint holding the host presentation lease. During a
+/// frozen endpoint switch they are replayed after commit instead of being applied to the source.
+fn is_presentation_effect(message: &ServerMessage) -> bool {
     matches!(
         message,
         ServerMessage::MouseCapture { .. }
@@ -12,98 +80,128 @@ pub(crate) fn is_presentation_effect(message: &ServerMessage) -> bool {
     )
 }
 
-pub(crate) fn accepts_endpoint_message(
-    endpoint_active: bool,
-    activation_message: bool,
-    command_response: bool,
-    message: &ServerMessage,
-) -> bool {
-    endpoint_active
-        || matches!(
-            message,
-            ServerMessage::EndpointControl { .. }
-                | ServerMessage::ServerShutdown { .. }
-                | ServerMessage::Welcome { .. }
-        )
-        || (activation_message
-            && matches!(
-                message,
-                ServerMessage::PaneSurface(_)
-                    | ServerMessage::ClientShellEndpointResponseChunk { .. }
-            ))
-        || (command_response
-            && matches!(
-                message,
-                ServerMessage::ClientShellEndpointResponseChunk { .. }
-            ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{FrameData, PaneSurfaceFrame, PaneSurfacePatch};
+
+    fn gate(
+        endpoint_active: bool,
+        activation_pending: bool,
+        command_response: bool,
+        frozen: bool,
+    ) -> PresentationGate {
+        PresentationGate::new(
+            endpoint_active,
+            activation_pending,
+            command_response,
+            frozen,
+        )
+    }
+
+    fn surface() -> PaneSurfaceFrame {
+        PaneSurfaceFrame {
+            boot_id: "boot".into(),
+            projection_revision: 1,
+            surface_revision: 1,
+            frame: FrameData {
+                cells: Vec::new(),
+                width: 0,
+                height: 0,
+                cursor: None,
+                hyperlinks: Vec::new(),
+            },
+            panes: Vec::new(),
+            splits: Vec::new(),
+        }
+    }
+
+    fn patch() -> PaneSurfacePatch {
+        PaneSurfacePatch {
+            boot_id: "boot".into(),
+            projection_revision: 1,
+            base_surface_revision: 1,
+            surface_revision: 2,
+            rows: Vec::new(),
+            panes: Vec::new(),
+            cursor: None,
+        }
+    }
 
     #[test]
-    fn inactive_endpoints_deliver_metadata_but_not_presentation_effects() {
-        assert!(accepts_endpoint_message(
-            false,
-            false,
-            false,
-            &ServerMessage::EndpointControl {
+    fn inactive_endpoint_control_applies_but_presentation_effects_drop() {
+        assert_eq!(
+            gate(false, false, false, false).decide(&ServerMessage::EndpointControl {
                 kind: "snapshot".into(),
                 data: "{}".into(),
-            }
-        ));
-        assert!(!accepts_endpoint_message(
-            false,
-            false,
-            false,
-            &ServerMessage::Clipboard {
+            }),
+            PresentationDecision::Apply
+        );
+        assert_eq!(
+            gate(false, false, false, false).decide(&ServerMessage::WindowTitle {
+                title: Some("remote".into()),
+            }),
+            PresentationDecision::Drop
+        );
+        assert_eq!(
+            gate(false, false, false, false).decide(&ServerMessage::Clipboard {
                 data: "text".into()
-            }
-        ));
-        assert!(!accepts_endpoint_message(
-            false,
-            false,
-            false,
-            &ServerMessage::WindowTitle {
-                title: Some("remote".into())
-            }
-        ));
+            }),
+            PresentationDecision::Drop
+        );
     }
 
     #[test]
-    fn frozen_switches_drop_target_effects_until_the_post_commit_resync() {
-        assert!(is_presentation_effect(&ServerMessage::MouseCapture {
-            enabled: true,
-            sgr_pixels: false,
-        }));
-        assert!(!is_presentation_effect(&ServerMessage::EndpointControl {
-            kind: "shell.snapshot.v1".into(),
-            data: "{}".into(),
-        }));
+    fn activation_surfaces_and_responses_are_buffered() {
+        assert_eq!(
+            gate(false, true, false, false).decide(&ServerMessage::PaneSurface(surface())),
+            PresentationDecision::Buffer
+        );
+        assert_eq!(
+            gate(false, true, false, false).decide(
+                &ServerMessage::ClientShellEndpointResponseChunk {
+                    boot_id: "boot".into(),
+                    request_id: "surface".into(),
+                    final_chunk: true,
+                    data: Vec::new(),
+                }
+            ),
+            PresentationDecision::Buffer
+        );
     }
 
     #[test]
-    fn pending_activation_accepts_only_its_surface_lane() {
-        assert!(accepts_endpoint_message(
-            false,
-            true,
-            false,
-            &ServerMessage::ClientShellEndpointResponseChunk {
-                boot_id: "boot".into(),
-                request_id: "surface".into(),
-                final_chunk: true,
-                data: Vec::new(),
-            }
-        ));
-        assert!(!accepts_endpoint_message(
-            false,
-            true,
-            false,
-            &ServerMessage::MouseCapture {
+    fn tracked_command_responses_apply_outside_the_active_presentation() {
+        assert_eq!(
+            gate(false, false, true, false).decide(
+                &ServerMessage::ClientShellEndpointResponseChunk {
+                    boot_id: "boot".into(),
+                    request_id: "command".into(),
+                    final_chunk: true,
+                    data: Vec::new(),
+                }
+            ),
+            PresentationDecision::Apply
+        );
+    }
+
+    #[test]
+    fn frozen_activation_drops_effects_and_patches() {
+        let frozen = gate(true, true, false, true);
+        assert_eq!(
+            frozen.decide(&ServerMessage::MouseCapture {
                 enabled: true,
                 sgr_pixels: false,
-            }
-        ));
+            }),
+            PresentationDecision::Drop
+        );
+        assert_eq!(
+            frozen.decide(&ServerMessage::PaneSurfacePatch(patch())),
+            PresentationDecision::Drop
+        );
+        assert_eq!(
+            gate(true, false, false, true).decide(&ServerMessage::PaneSurface(surface())),
+            PresentationDecision::Drop
+        );
     }
 }

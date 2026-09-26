@@ -11,7 +11,10 @@ use crate::layout::PaneId;
 #[cfg(test)]
 use crate::layout::{NavDirection, find_in_direction};
 use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
-use crate::workspace::WorkspaceGitStatus;
+use crate::workspace::{
+    PaneRemoval, PaneRemovalPlan as WorkspacePaneRemovalPlan, PaneRemovalScope, TabRemoval,
+    WorkspaceGitStatus,
+};
 
 use super::state::{AppState, Mode, PaneFocusTarget};
 
@@ -38,11 +41,144 @@ pub struct PaneStateUpdate {
     pub agent_released: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PaneRemovalPlan {
+    pub(crate) workspace_index: usize,
+    pub(crate) tab_index: usize,
+    pub(crate) scope: PaneRemovalScope,
+    workspace_plan: WorkspacePaneRemovalPlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PaneRemovalOutcome {
+    pub(crate) workspace_index: usize,
+    pub(crate) removal: PaneRemoval,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PaneRemovalCommit {
+    Removed(PaneRemovalOutcome),
+    Stale,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceRemovalOutcome {
+    pub(crate) workspace_id: String,
+    pub(crate) pane_ids: Vec<PaneId>,
+    pub(crate) terminal_ids: Vec<crate::terminal::TerminalId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TabRemovalScope {
+    Tab,
+    Workspace,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TabRemovalPlan {
+    pub(crate) workspace_index: usize,
+    pub(crate) tab_index: usize,
+    pub(crate) scope: TabRemovalScope,
+    workspace_id: String,
+    tab_number: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TabRemovalOutcome {
+    pub(crate) workspace_index: usize,
+    pub(crate) scope: TabRemovalScope,
+    pub(crate) pane_ids: Vec<PaneId>,
+    pub(crate) terminal_ids: Vec<crate::terminal::TerminalId>,
+    pub(crate) tab: Option<TabRemoval>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TabRemovalCommit {
+    Removed(TabRemovalOutcome),
+    Stale,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceCreationOutcome {
+    pub(crate) workspace_index: usize,
+    pub(crate) workspace_id: String,
+    pub(crate) root_pane: Option<PaneId>,
+    pub(crate) focused: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PaneCreationOutcome {
+    pub(crate) workspace_index: usize,
+    pub(crate) tab_index: usize,
+    pub(crate) pane_id: PaneId,
+    pub(crate) terminal_id: crate::terminal::TerminalId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaneContextFallback {
+    None,
+    ActiveWorkspace,
+    WorkspaceCreation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PaneContext {
+    pub(crate) workspace_index: usize,
+    pub(crate) tab_index: usize,
+    pub(crate) pane_id: PaneId,
+}
+
 // ---------------------------------------------------------------------------
 // Focus tracking
 // ---------------------------------------------------------------------------
 
 impl AppState {
+    pub(crate) fn resolve_pane_context(
+        &self,
+        pane_target: Option<(usize, PaneId)>,
+        workspace_target: Option<usize>,
+        fallback: PaneContextFallback,
+    ) -> Option<PaneContext> {
+        let (workspace_index, pane_id) = if let Some((workspace_index, pane_id)) = pane_target {
+            (workspace_index, pane_id)
+        } else if let Some(workspace_index) = workspace_target {
+            (
+                workspace_index,
+                self.workspaces.get(workspace_index)?.focused_pane_id()?,
+            )
+        } else {
+            let workspace_index = match fallback {
+                PaneContextFallback::None => return None,
+                PaneContextFallback::ActiveWorkspace => self.active?,
+                PaneContextFallback::WorkspaceCreation => {
+                    let selected_exists = self.workspaces.get(self.selected).is_some();
+                    if self.mode == Mode::Navigate && selected_exists {
+                        self.selected
+                    } else if let Some(active) = self.active {
+                        active
+                    } else if selected_exists {
+                        self.selected
+                    } else {
+                        return None;
+                    }
+                }
+            };
+            (
+                workspace_index,
+                self.workspaces.get(workspace_index)?.focused_pane_id()?,
+            )
+        };
+        let tab_index = self
+            .workspaces
+            .get(workspace_index)?
+            .find_tab_index_for_pane(pane_id)?;
+        Some(PaneContext {
+            workspace_index,
+            tab_index,
+            pane_id,
+        })
+    }
+
     pub(crate) fn current_pane_focus_target(&self) -> Option<PaneFocusTarget> {
         let ws_idx = self.active?;
         let ws = self.workspaces.get(ws_idx)?;
@@ -50,6 +186,112 @@ impl AppState {
         Some(PaneFocusTarget {
             workspace_id: ws.id.clone(),
             pane_id,
+        })
+    }
+
+    pub(crate) fn commit_workspace_creation(
+        &mut self,
+        workspace: crate::workspace::Workspace,
+        terminal: crate::terminal::TerminalState,
+        focus: bool,
+    ) -> WorkspaceCreationOutcome {
+        let workspace_id = workspace.id.clone();
+        let root_pane = workspace.tabs.first().map(|tab| tab.root_pane);
+        self.terminals.insert(terminal.id.clone(), terminal);
+        self.workspaces.push(workspace);
+        let workspace_index = self.workspaces.len() - 1;
+        let focused = focus || self.active.is_none();
+        if focused {
+            self.switch_workspace(workspace_index);
+            self.mode = Mode::Terminal;
+        }
+        self.mark_session_dirty();
+        WorkspaceCreationOutcome {
+            workspace_index,
+            workspace_id,
+            root_pane,
+            focused,
+        }
+    }
+
+    pub(crate) fn commit_tab_creation(
+        &mut self,
+        workspace_index: usize,
+        tab: crate::workspace::Tab,
+        terminal: crate::terminal::TerminalState,
+        focus: bool,
+    ) -> Option<crate::workspace::TabCreationOutcome> {
+        let workspace = self.workspaces.get_mut(workspace_index)?;
+        let outcome = workspace.commit_new_tab(tab);
+        self.terminals.insert(terminal.id.clone(), terminal);
+        if focus {
+            self.switch_workspace_tab(workspace_index, outcome.tab_index);
+            self.mode = Mode::Terminal;
+        }
+        self.mark_session_dirty();
+        Some(outcome)
+    }
+
+    pub(crate) fn commit_layout_tab_creation(
+        &mut self,
+        workspace_index: usize,
+        tab: crate::workspace::Tab,
+        terminals: Vec<crate::terminal::TerminalState>,
+        focus: bool,
+    ) -> Option<crate::workspace::TabCreationOutcome> {
+        let outcome = self
+            .workspaces
+            .get_mut(workspace_index)?
+            .commit_new_tab(tab);
+        for terminal in terminals {
+            self.terminals.insert(terminal.id.clone(), terminal);
+        }
+        if focus {
+            self.switch_workspace_tab(workspace_index, outcome.tab_index);
+            self.mode = Mode::Terminal;
+        }
+        self.mark_session_dirty();
+        Some(outcome)
+    }
+
+    pub(crate) fn commit_pane_split(
+        &mut self,
+        workspace_index: usize,
+        tab_index: usize,
+        pane_id: PaneId,
+        prepared_layout: crate::layout::TileLayout,
+        terminal: crate::terminal::TerminalState,
+        focus: bool,
+        right_click_passthrough: bool,
+        previous_focus: Option<PaneFocusTarget>,
+    ) -> Option<PaneCreationOutcome> {
+        let terminal_id = terminal.id.clone();
+        self.workspaces.get_mut(workspace_index)?.commit_new_pane(
+            tab_index,
+            pane_id,
+            prepared_layout,
+            terminal_id.clone(),
+            focus,
+        )?;
+        self.terminals.insert(terminal_id.clone(), terminal);
+        if let Some(pane) = self
+            .workspaces
+            .get_mut(workspace_index)
+            .and_then(|workspace| workspace.pane_state_mut(pane_id))
+        {
+            pane.right_click_passthrough = right_click_passthrough;
+        }
+        if focus {
+            self.switch_workspace_tab(workspace_index, tab_index);
+            self.record_pane_focus_change(previous_focus, workspace_index, pane_id);
+            self.mode = Mode::Terminal;
+        }
+        self.mark_session_dirty();
+        Some(PaneCreationOutcome {
+            workspace_index,
+            tab_index,
+            pane_id,
+            terminal_id,
         })
     }
 
@@ -414,28 +656,7 @@ impl AppState {
             .collect()
     }
 
-    pub(crate) fn terminal_ids_for_tab(
-        &self,
-        ws_idx: usize,
-        tab_idx: usize,
-    ) -> Vec<crate::terminal::TerminalId> {
-        self.workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.tabs.get(tab_idx))
-            .into_iter()
-            .flat_map(|tab| tab.panes.values())
-            .map(|pane| pane.attached_terminal_id.clone())
-            .collect()
-    }
-
-    pub(crate) fn pane_ids_for_tab(&self, ws_idx: usize, tab_idx: usize) -> Vec<PaneId> {
-        self.workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.tabs.get(tab_idx))
-            .map(|tab| tab.layout.pane_ids())
-            .unwrap_or_default()
-    }
-
+    #[cfg(test)]
     pub(crate) fn terminal_id_for_pane(
         &self,
         ws_idx: usize,
@@ -474,6 +695,165 @@ impl AppState {
         }
     }
 
+    pub(crate) fn prepare_pane_removal(
+        &self,
+        workspace_index: usize,
+        pane_id: PaneId,
+    ) -> Option<PaneRemovalPlan> {
+        let workspace_plan = self
+            .workspaces
+            .get(workspace_index)?
+            .prepare_pane_removal(pane_id)?;
+        Some(PaneRemovalPlan {
+            workspace_index,
+            tab_index: workspace_plan.tab_index,
+            scope: workspace_plan.scope,
+            workspace_plan,
+        })
+    }
+
+    pub(crate) fn prepare_pane_removal_by_id(&self, pane_id: PaneId) -> Option<PaneRemovalPlan> {
+        let workspace_index = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.find_tab_index_for_pane(pane_id).is_some())?;
+        self.prepare_pane_removal(workspace_index, pane_id)
+    }
+
+    pub(crate) fn commit_pane_removal(&mut self, plan: &PaneRemovalPlan) -> PaneRemovalCommit {
+        let Some(workspace) = self.workspaces.get_mut(plan.workspace_index) else {
+            return PaneRemovalCommit::Stale;
+        };
+        let Some(removal) = workspace.remove_pane(&plan.workspace_plan) else {
+            return PaneRemovalCommit::Stale;
+        };
+
+        if removal.scope == PaneRemovalScope::Workspace {
+            let Some(closed) = self.close_workspace_at(plan.workspace_index) else {
+                return PaneRemovalCommit::Stale;
+            };
+            return PaneRemovalCommit::Removed(PaneRemovalOutcome {
+                workspace_index: plan.workspace_index,
+                removal: PaneRemoval {
+                    workspace_id: closed.workspace_id,
+                    pane_id: removal.pane_id,
+                    tab_index: removal.tab_index,
+                    scope: removal.scope,
+                    pane_ids: closed.pane_ids,
+                    terminal_ids: closed.terminal_ids,
+                },
+            });
+        }
+
+        self.remove_pane_aliases(&removal.pane_ids);
+        self.clear_stale_previous_pane_focus(removal.pane_ids.iter().copied());
+        self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
+        self.mark_session_dirty();
+        PaneRemovalCommit::Removed(PaneRemovalOutcome {
+            workspace_index: plan.workspace_index,
+            removal,
+        })
+    }
+
+    pub(crate) fn remove_pane(
+        &mut self,
+        workspace_index: usize,
+        pane_id: PaneId,
+    ) -> PaneRemovalCommit {
+        let Some(plan) = self.prepare_pane_removal(workspace_index, pane_id) else {
+            return PaneRemovalCommit::Stale;
+        };
+        self.commit_pane_removal(&plan)
+    }
+
+    pub(crate) fn prepare_tab_removal(
+        &self,
+        workspace_index: usize,
+        tab_index: usize,
+    ) -> Option<TabRemovalPlan> {
+        let workspace = self.workspaces.get(workspace_index)?;
+        let tab_number = workspace.tabs.get(tab_index)?.number;
+        Some(TabRemovalPlan {
+            workspace_index,
+            tab_index,
+            scope: if workspace.tabs.len() <= 1 {
+                TabRemovalScope::Workspace
+            } else {
+                TabRemovalScope::Tab
+            },
+            workspace_id: workspace.id.clone(),
+            tab_number,
+        })
+    }
+
+    pub(crate) fn commit_tab_removal(&mut self, plan: &TabRemovalPlan) -> TabRemovalCommit {
+        let Some(workspace) = self.workspaces.get(plan.workspace_index) else {
+            return TabRemovalCommit::Stale;
+        };
+        let Some(tab) = workspace.tabs.get(plan.tab_index) else {
+            return TabRemovalCommit::Stale;
+        };
+        let expected_scope = if workspace.tabs.len() <= 1 {
+            TabRemovalScope::Workspace
+        } else {
+            TabRemovalScope::Tab
+        };
+        if workspace.id != plan.workspace_id
+            || tab.number != plan.tab_number
+            || expected_scope != plan.scope
+        {
+            return TabRemovalCommit::Stale;
+        }
+        if plan.scope == TabRemovalScope::Workspace {
+            let Some(closed) = self.close_workspace_at(plan.workspace_index) else {
+                return TabRemovalCommit::Stale;
+            };
+            return TabRemovalCommit::Removed(TabRemovalOutcome {
+                workspace_index: plan.workspace_index,
+                scope: plan.scope,
+                pane_ids: closed.pane_ids,
+                terminal_ids: closed.terminal_ids,
+                tab: None,
+            });
+        }
+
+        let Some(removal) = self
+            .workspaces
+            .get_mut(plan.workspace_index)
+            .and_then(|workspace| workspace.close_tab(plan.tab_index))
+        else {
+            return TabRemovalCommit::Stale;
+        };
+        self.remove_pane_aliases(&removal.pane_ids);
+        self.clear_stale_previous_pane_focus(removal.pane_ids.iter().copied());
+        self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
+        self.mark_session_dirty();
+        let tab_id =
+            crate::workspace::public_tab_id_for_number(&removal.workspace_id, removal.tab_number);
+        crate::logging::tab_closed(&removal.workspace_id, &tab_id);
+        TabRemovalCommit::Removed(TabRemovalOutcome {
+            workspace_index: plan.workspace_index,
+            scope: plan.scope,
+            pane_ids: removal.pane_ids.clone(),
+            terminal_ids: removal.terminal_ids.clone(),
+            tab: Some(removal),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove_active_tab(&mut self) -> TabRemovalCommit {
+        let Some(workspace_index) = self.active else {
+            return TabRemovalCommit::Stale;
+        };
+        let Some(tab_index) = self.workspaces.get(workspace_index).map(|ws| ws.active_tab) else {
+            return TabRemovalCommit::Stale;
+        };
+        let Some(plan) = self.prepare_tab_removal(workspace_index, tab_index) else {
+            return TabRemovalCommit::Stale;
+        };
+        self.commit_tab_removal(&plan)
+    }
+
     pub(crate) fn clear_stale_previous_pane_focus(
         &mut self,
         pane_ids: impl IntoIterator<Item = PaneId>,
@@ -505,10 +885,8 @@ impl AppState {
     /// on the previously selected one when they survive; otherwise both fall
     /// back to the closed slot (clamped). Closing the last workspace leaves
     /// terminal mode, since there is no pane left to type into.
-    pub(crate) fn close_workspace_at(&mut self, ws_idx: usize) {
-        let Some(workspace_id) = self.workspaces.get(ws_idx).map(|ws| ws.id.clone()) else {
-            return;
-        };
+    pub(crate) fn close_workspace_at(&mut self, ws_idx: usize) -> Option<WorkspaceRemovalOutcome> {
+        let workspace_id = self.workspaces.get(ws_idx).map(|ws| ws.id.clone())?;
         self.mark_session_dirty();
         crate::logging::workspace_closed(&workspace_id);
 
@@ -521,9 +899,9 @@ impl AppState {
         let selected_workspace_id = self.workspaces.get(self.selected).map(|ws| ws.id.clone());
 
         self.remove_pane_aliases(&pane_ids);
-        self.clear_stale_previous_pane_focus(pane_ids);
+        self.clear_stale_previous_pane_focus(pane_ids.iter().copied());
         self.workspaces.remove(ws_idx);
-        self.remove_unattached_terminal_ids(terminal_ids);
+        self.remove_unattached_terminal_ids(terminal_ids.iter().cloned());
 
         if self.workspaces.is_empty() {
             self.active = None;
@@ -531,7 +909,11 @@ impl AppState {
             if self.mode == Mode::Terminal {
                 self.mode = Mode::Navigate;
             }
-            return;
+            return Some(WorkspaceRemovalOutcome {
+                workspace_id,
+                pane_ids,
+                terminal_ids,
+            });
         }
         let last = self.workspaces.len() - 1;
         let position_of = |id: Option<String>, workspaces: &[crate::workspace::Workspace]| {
@@ -540,6 +922,11 @@ impl AppState {
         let active = position_of(active_workspace_id, &self.workspaces).unwrap_or(ws_idx.min(last));
         self.active = Some(active);
         self.selected = position_of(selected_workspace_id, &self.workspaces).unwrap_or(active);
+        Some(WorkspaceRemovalOutcome {
+            workspace_id,
+            pane_ids,
+            terminal_ids,
+        })
     }
 }
 
@@ -698,98 +1085,6 @@ impl AppState {
             reason: None,
             zoomed,
         })
-    }
-
-    #[cfg(test)]
-    pub fn toggle_zoom(&mut self) {
-        let Some(ws_idx) = self.active else {
-            return;
-        };
-        let Some(pane_id) = self
-            .workspaces
-            .get(ws_idx)
-            .and_then(crate::workspace::Workspace::focused_pane_id)
-        else {
-            return;
-        };
-        self.apply_pane_zoom(ws_idx, pane_id, PaneZoomCommand::Toggle);
-    }
-
-    #[cfg(test)]
-    /// Close the focused pane. Returns true when the close was deferred to confirmation.
-    pub fn close_pane(&mut self) -> bool {
-        let active = self.active;
-        self.mark_session_dirty();
-        let terminal_ids = active
-            .and_then(|i| {
-                self.workspaces
-                    .get(i)
-                    .and_then(|ws| ws.focused_pane_id().map(|pane_id| (i, pane_id)))
-            })
-            .and_then(|(i, pane_id)| self.terminal_id_for_pane(i, pane_id))
-            .into_iter()
-            .collect::<Vec<_>>();
-        let pane_ids = active
-            .and_then(|i| {
-                self.workspaces
-                    .get(i)
-                    .and_then(crate::workspace::Workspace::focused_pane_id)
-            })
-            .into_iter()
-            .collect::<Vec<_>>();
-        let should_close_workspace = active
-            .and_then(|i| self.workspaces.get_mut(i))
-            .is_some_and(crate::workspace::Workspace::close_focused);
-        self.clear_stale_previous_pane_focus(pane_ids);
-        if should_close_workspace {
-            if let Some(active) = active {
-                self.selected = active;
-            }
-            self.close_selected_workspace();
-        } else {
-            self.remove_unattached_terminal_ids(terminal_ids);
-        }
-        false
-    }
-
-    #[cfg(test)]
-    /// Close the active tab. Returns true when the close was deferred to confirmation.
-    pub fn close_tab(&mut self) -> bool {
-        self.mark_session_dirty();
-        let should_close_workspace = self
-            .active
-            .and_then(|i| self.workspaces.get(i))
-            .is_some_and(|ws| ws.tabs.len() <= 1);
-        if should_close_workspace {
-            if let Some(active) = self.active {
-                self.selected = active;
-            }
-            self.close_selected_workspace();
-            return false;
-        }
-        if let Some(ws_idx) = self.active {
-            let terminal_ids = self
-                .workspaces
-                .get(ws_idx)
-                .map(|ws| self.terminal_ids_for_tab(ws_idx, ws.active_tab))
-                .unwrap_or_default();
-            let pane_ids = self
-                .workspaces
-                .get(ws_idx)
-                .map(|ws| self.pane_ids_for_tab(ws_idx, ws.active_tab))
-                .unwrap_or_default();
-            let Some(ws) = self.workspaces.get_mut(ws_idx) else {
-                return false;
-            };
-            let workspace_id = ws.id.clone();
-            let closing_tab_id =
-                public_tab_id_for_index(ws, ws.active_tab).unwrap_or_else(|| workspace_id.clone());
-            ws.close_active_tab();
-            self.clear_stale_previous_pane_focus(pane_ids);
-            self.remove_unattached_terminal_ids(terminal_ids);
-            crate::logging::tab_closed(&workspace_id, &closing_tab_id);
-        }
-        false
     }
 }
 
@@ -1147,7 +1442,6 @@ impl AppState {
     }
 
     fn handle_pane_died(&mut self, pane_id: PaneId) {
-        self.clear_stale_previous_pane_focus([pane_id]);
         let ws_idx = self
             .workspaces
             .iter()
@@ -1160,18 +1454,7 @@ impl AppState {
             debug!(pane = pane_id.raw(), "PaneDied for unknown pane");
             return;
         };
-
-        let pane_terminal_id = self.terminal_id_for_pane(ws_idx, pane_id);
-        // Final-pane closure goes through `close_workspace_at`, which removes
-        // aliases for the whole workspace. Other deaths prune this pane's
-        // aliases directly below.
-        if self.workspaces[ws_idx].close_pane(pane_id) {
-            self.close_workspace_at(ws_idx);
-            return;
-        }
-        self.remove_pane_aliases(&[pane_id]);
-        self.mark_session_dirty();
-        self.remove_unattached_terminal_ids(pane_terminal_id);
+        let _ = self.remove_pane(ws_idx, pane_id);
     }
 }
 
@@ -1198,6 +1481,174 @@ mod tests {
             state.mode = Mode::Terminal;
         }
         state
+    }
+
+    fn toggle_focused_zoom(state: &mut AppState) {
+        let ws_idx = state.active.expect("test precondition");
+        let pane_id = state.workspaces[ws_idx]
+            .focused_pane_id()
+            .expect("test precondition");
+        state
+            .apply_pane_zoom(ws_idx, pane_id, PaneZoomCommand::Toggle)
+            .expect("test precondition");
+    }
+
+    #[test]
+    fn pane_context_resolver_applies_explicit_and_creation_targets() {
+        let mut state = app_with_workspaces(&["active", "selected"]);
+        let selected_pane = state.workspaces[1]
+            .focused_pane_id()
+            .expect("test precondition");
+        state.active = Some(0);
+        state.selected = 1;
+        state.mode = Mode::Navigate;
+
+        let explicit = state
+            .resolve_pane_context(
+                Some((1, selected_pane)),
+                None,
+                PaneContextFallback::ActiveWorkspace,
+            )
+            .expect("explicit pane target");
+        assert_eq!(explicit.workspace_index, 1);
+        assert_eq!(explicit.pane_id, selected_pane);
+
+        let creation = state
+            .resolve_pane_context(None, None, PaneContextFallback::WorkspaceCreation)
+            .expect("selected workspace fallback");
+        assert_eq!(creation.workspace_index, 1);
+        assert_eq!(creation.tab_index, 0);
+
+        let active = state
+            .resolve_pane_context(None, None, PaneContextFallback::ActiveWorkspace)
+            .expect("active workspace fallback");
+        assert_eq!(active.workspace_index, 0);
+    }
+
+    #[test]
+    fn pane_removal_command_returns_the_removed_container_scope() {
+        let mut state = app_with_workspaces(&["one"]);
+        let second_tab = state.workspaces[0].test_add_tab(Some("logs"));
+        state.ensure_test_terminals();
+        let first_pane = state.workspaces[0].tabs[0].root_pane;
+
+        let plan = state
+            .prepare_pane_removal(0, first_pane)
+            .expect("test precondition");
+        assert_eq!(plan.scope, PaneRemovalScope::Tab);
+        let PaneRemovalCommit::Removed(outcome) = state.commit_pane_removal(&plan) else {
+            panic!("prepared tab removal must commit");
+        };
+        assert_eq!(outcome.removal.scope, PaneRemovalScope::Tab);
+        assert_eq!(state.workspaces[0].tabs.len(), 1);
+        assert_eq!(state.workspaces[0].active_tab, second_tab - 1);
+
+        let final_pane = state.workspaces[0].tabs[0].root_pane;
+        let PaneRemovalCommit::Removed(outcome) = state.remove_pane(0, final_pane) else {
+            panic!("final pane removal must commit");
+        };
+        assert_eq!(outcome.removal.scope, PaneRemovalScope::Workspace);
+        assert!(state.workspaces.is_empty());
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
+        let mut state = app_with_workspaces(&["one"]);
+        let root_pane = state.workspaces[0].tabs[0].root_pane;
+        let mut prepared_layout = state.workspaces[0].tabs[0].layout.clone();
+        let new_pane = prepared_layout
+            .split_pane(root_pane, Direction::Horizontal, 0.5)
+            .expect("test precondition");
+        assert_eq!(state.workspaces[0].pane_count(), 1);
+        let terminal_id = crate::terminal::TerminalId::alloc();
+        let terminal = crate::terminal::TerminalState::new(
+            terminal_id.clone(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        let previous_focus = state.current_pane_focus_target();
+
+        let outcome = state
+            .commit_pane_split(
+                0,
+                0,
+                new_pane,
+                prepared_layout,
+                terminal,
+                true,
+                true,
+                previous_focus,
+            )
+            .expect("prepared pane split commits");
+
+        assert_eq!(outcome.pane_id, new_pane);
+        assert_eq!(outcome.terminal_id, terminal_id);
+        assert_eq!(state.workspaces[0].pane_count(), 2);
+        assert!(
+            state.workspaces[0]
+                .pane_state(new_pane)
+                .expect("committed pane is present")
+                .right_click_passthrough
+        );
+        assert!(state.terminals.contains_key(&terminal_id));
+        assert_eq!(state.workspaces[0].focused_pane_id(), Some(new_pane));
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn workspace_creation_state_command_commits_spawned_values() {
+        let mut state = AppState::test_new();
+        let workspace = Workspace::test_new("created");
+        let root_pane = workspace.tabs[0].root_pane;
+        let terminal_id = workspace
+            .terminal_id(root_pane)
+            .expect("test precondition")
+            .clone();
+        let terminal = crate::terminal::TerminalState::new(
+            terminal_id.clone(),
+            std::path::PathBuf::from("/tmp"),
+        );
+
+        let outcome = state.commit_workspace_creation(workspace, terminal, true);
+
+        assert_eq!(outcome.workspace_index, 0);
+        assert_eq!(outcome.root_pane, Some(root_pane));
+        assert_eq!(state.active, Some(0));
+        assert!(state.terminals.contains_key(&terminal_id));
+        state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn tab_creation_state_command_commits_spawned_values_and_focus() {
+        let mut state = app_with_workspaces(&["one"]);
+        let workspace = &state.workspaces[0];
+        let (layout, root_pane) = crate::layout::TileLayout::new();
+        let terminal_id = crate::terminal::TerminalId::alloc();
+        let mut pane =
+            crate::workspace::TabPane::new(crate::pane::PaneState::new(terminal_id.clone()));
+        pane.public_number = workspace.next_public_pane_number();
+        let tab = crate::workspace::Tab {
+            custom_name: None,
+            number: workspace.next_public_tab_number(),
+            root_pane,
+            layout,
+            panes: std::collections::HashMap::from([(root_pane, pane)]),
+            zoomed: false,
+        };
+        let terminal = crate::terminal::TerminalState::new(
+            terminal_id.clone(),
+            std::path::PathBuf::from("/tmp"),
+        );
+
+        let outcome = state
+            .commit_tab_creation(0, tab, terminal, true)
+            .expect("prepared tab creation commits");
+
+        assert_eq!(outcome.tab_index, 1);
+        assert_eq!(outcome.root_pane, root_pane);
+        assert_eq!(state.workspaces[0].active_tab, 1);
+        assert!(state.terminals.contains_key(&terminal_id));
+        state.assert_invariants_for_test();
     }
 
     #[test]
@@ -2108,16 +2559,16 @@ mod tests {
         state.workspaces[0].test_split(Direction::Horizontal);
 
         assert!(!state.workspaces[0].zoomed);
-        state.toggle_zoom();
+        toggle_focused_zoom(&mut state);
         assert!(state.workspaces[0].zoomed);
-        state.toggle_zoom();
+        toggle_focused_zoom(&mut state);
         assert!(!state.workspaces[0].zoomed);
     }
 
     #[test]
     fn toggle_zoom_single_pane_noop() {
         let mut state = app_with_workspaces(&["test"]);
-        state.toggle_zoom();
+        toggle_focused_zoom(&mut state);
         assert!(!state.workspaces[0].zoomed);
     }
 
@@ -2262,8 +2713,10 @@ mod tests {
         let closed = state.workspaces[0].test_split(Direction::Horizontal);
         state.ensure_test_terminals();
         assert_eq!(state.workspaces[0].panes.len(), 2);
-        let _ = closed;
-        state.close_pane();
+        assert!(matches!(
+            state.remove_pane(0, closed),
+            PaneRemovalCommit::Removed(_)
+        ));
         assert_eq!(state.workspaces[0].panes.len(), 1);
         state.assert_invariants_for_test();
     }
@@ -2312,7 +2765,10 @@ mod tests {
             .terminal_id_for_pane(0, pane_id)
             .expect("test precondition");
 
-        state.close_pane();
+        assert!(matches!(
+            state.remove_pane(0, pane_id),
+            PaneRemovalCommit::Removed(_)
+        ));
 
         assert!(!state.terminals.contains_key(&terminal_id));
         state.assert_invariants_for_test();
@@ -2328,7 +2784,10 @@ mod tests {
         let terminal_id = state
             .terminal_id_for_pane(0, pane_id)
             .expect("test precondition");
-        state.close_tab();
+        assert!(matches!(
+            state.remove_active_tab(),
+            TabRemovalCommit::Removed(_)
+        ));
 
         assert!(!state.terminals.contains_key(&terminal_id));
         state.assert_invariants_for_test();
@@ -2434,7 +2893,10 @@ mod tests {
         state.active = Some(1);
         state.selected = 0;
 
-        state.close_tab();
+        assert!(matches!(
+            state.remove_active_tab(),
+            TabRemovalCommit::Removed(_)
+        ));
 
         assert_eq!(state.workspaces.len(), 1);
         assert_eq!(state.workspaces[0].display_name(), "selected");
@@ -2451,7 +2913,11 @@ mod tests {
         state.active = Some(1);
         state.selected = 0;
 
-        state.close_pane();
+        let pane_id = state.workspaces[1].tabs[0].root_pane;
+        assert!(matches!(
+            state.remove_pane(1, pane_id),
+            PaneRemovalCommit::Removed(_)
+        ));
 
         assert_eq!(state.workspaces.len(), 1);
         assert_eq!(state.workspaces[0].display_name(), "selected");

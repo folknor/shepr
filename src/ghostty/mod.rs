@@ -52,6 +52,8 @@ use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, T
 use alacritty_terminal::vte::ansi::{Color, CursorShape, Handler, NamedColor, Processor, Rgb};
 use unicode_width::UnicodeWidthChar;
 
+use crate::terminal::{AbsRow, Point, ScreenRow, ViewportRow};
+
 use self::format::Format;
 use self::handler::{CoreHandler, KeyboardStackDepth};
 use self::rows::RowOrigin;
@@ -560,8 +562,8 @@ struct ExtraModes {
 
 #[derive(Clone, Copy)]
 enum Coordinates {
-    Screen,
-    Viewport,
+    Screen(ScreenRow),
+    Viewport(ViewportRow),
 }
 
 pub struct Terminal {
@@ -1232,22 +1234,23 @@ impl Terminal {
     /// id. On the alternate screen, and on a primary screen without
     /// scrollback, nothing identifies a line once it scrolls off: rows there
     /// are viewport rows and the origin stays put (`rows.rs`).
-    pub fn history_origin(&self) -> u64 {
-        self.rows.origin()
+    pub fn history_origin(&self) -> AbsRow {
+        AbsRow(self.rows.origin())
     }
 
     /// The screen row of an absolute row id, `None` for a line that is no
     /// longer (or not yet) retained.
-    pub fn screen_row_for_absolute(&self, row: u64) -> Option<usize> {
-        let y = usize::try_from(row.checked_sub(self.rows.origin())?).ok()?;
-        (y < self.term.total_lines()).then_some(y)
+    pub fn screen_row_for_absolute(&self, row: AbsRow) -> Option<ScreenRow> {
+        let y = usize::try_from(row.0.checked_sub(self.rows.origin())?).ok()?;
+        (y < self.term.total_lines()).then_some(ScreenRow(y))
     }
 
     /// The absolute row id of screen row `y`.
-    pub fn absolute_row_for_screen(&self, y: usize) -> u64 {
+    pub fn absolute_row_for_screen(&self, y: ScreenRow) -> AbsRow {
         self.rows
             .origin()
-            .saturating_add(u64::try_from(y).unwrap_or(u64::MAX))
+            .saturating_add(u64::try_from(y.0).unwrap_or(u64::MAX))
+            .into()
     }
 
     /// Visits the cells of screen row `y` without allocating: `visit` gets
@@ -1259,11 +1262,11 @@ impl Terminal {
     /// row is not retained.
     pub(crate) fn visit_screen_row_text(
         &self,
-        y: usize,
+        y: ScreenRow,
         scratch: &mut String,
         mut visit: impl FnMut(u16, CellWide, &str),
     ) -> Option<RowWrap> {
-        let line = self.screen_line(u64::try_from(y).ok()?)?;
+        let line = self.screen_line(y)?;
         let grid = self.term.grid();
         let columns = grid.columns();
         let row = &grid[line];
@@ -1291,16 +1294,16 @@ impl Terminal {
     }
 
     /// Converts a screen row (0 = oldest retained line) to an alacritty line.
-    fn screen_line(&self, y: u64) -> Option<Line> {
+    fn screen_line(&self, y: ScreenRow) -> Option<Line> {
         let history_size = i64::try_from(self.term.history_size()).unwrap_or(i64::MAX);
-        let line = i64::try_from(y).ok()? - history_size;
+        let line = i64::try_from(y.0).ok()? - history_size;
         let line = Line(i32::try_from(line).ok()?);
         (line >= self.term.topmost_line() && line <= self.term.bottommost_line()).then_some(line)
     }
 
     /// Converts a viewport row (0 = top of what is displayed) to an alacritty line.
-    fn viewport_line(&self, y: u64) -> Option<Line> {
-        let y = usize::try_from(y).ok()?;
+    fn viewport_line(&self, y: ViewportRow) -> Option<Line> {
+        let y = usize::from(y.0);
         if y >= self.term.screen_lines() {
             return None;
         }
@@ -1310,9 +1313,9 @@ impl Terminal {
     }
 
     #[cfg(test)]
-    pub fn screen_cell(&self, x: u16, y: u32) -> Result<(CellWide, Vec<u32>), Error> {
+    pub fn screen_cell(&self, x: u16, y: ScreenRow) -> Result<(CellWide, Vec<u32>), Error> {
         let line = self
-            .screen_line(u64::from(y))
+            .screen_line(y)
             .ok_or(Error("screen row out of range"))?;
         let column = usize::from(x);
         if column >= self.term.columns() {
@@ -1323,22 +1326,22 @@ impl Terminal {
     }
 
     pub(crate) fn screen_text_rows(&self) -> Vec<ScreenTextRow> {
-        self.screen_text_rows_range(0, usize::MAX)
+        self.screen_text_rows_range(ScreenRow(0), ScreenRow(usize::MAX))
     }
 
     pub(crate) fn screen_text_rows_range(
         &self,
-        start_row: usize,
-        end_row_exclusive: usize,
+        start_row: ScreenRow,
+        end_row_exclusive: ScreenRow,
     ) -> Vec<ScreenTextRow> {
         let total_rows = self.term.total_lines();
-        let start_row = start_row.min(total_rows);
-        let end_row_exclusive = end_row_exclusive.min(total_rows).max(start_row);
+        let start_row = start_row.0.min(total_rows);
+        let end_row_exclusive = end_row_exclusive.0.min(total_rows).max(start_row);
         let grid = self.term.grid();
         let columns = grid.columns();
         let mut rows = Vec::with_capacity(end_row_exclusive - start_row);
         for y in start_row..end_row_exclusive {
-            let Some(line) = self.screen_line(y as u64) else {
+            let Some(line) = self.screen_line(ScreenRow(y)) else {
                 break;
             };
             let row = &grid[line];
@@ -1361,9 +1364,9 @@ impl Terminal {
         rows
     }
 
-    pub fn viewport_hyperlink_uri(&self, x: u16, y: u32) -> Result<Option<String>, Error> {
+    pub fn viewport_hyperlink_uri(&self, x: u16, y: ViewportRow) -> Result<Option<String>, Error> {
         let line = self
-            .viewport_line(u64::from(y))
+            .viewport_line(y)
             .ok_or(Error("viewport row out of range"))?;
         let column = usize::from(x);
         if column >= self.term.columns() {
@@ -1377,14 +1380,13 @@ impl Terminal {
     #[cfg(test)]
     pub fn read_text_viewport(
         &self,
-        start: (u16, u32),
-        end: (u16, u32),
+        start: Point<ViewportRow>,
+        end: Point<ViewportRow>,
         rectangle: bool,
     ) -> Result<String, Error> {
         self.read_range(
-            start,
-            end,
-            Coordinates::Viewport,
+            start.map_row(Coordinates::Viewport),
+            end.map_row(Coordinates::Viewport),
             rectangle,
             Format::Plain,
             true,
@@ -1393,14 +1395,13 @@ impl Terminal {
 
     pub fn read_ansi_viewport(
         &self,
-        start: (u16, u32),
-        end: (u16, u32),
+        start: Point<ViewportRow>,
+        end: Point<ViewportRow>,
         rectangle: bool,
     ) -> Result<String, Error> {
         self.read_range(
-            start,
-            end,
-            Coordinates::Viewport,
+            start.map_row(Coordinates::Viewport),
+            end.map_row(Coordinates::Viewport),
             rectangle,
             Format::Vt,
             false,
@@ -1409,14 +1410,13 @@ impl Terminal {
 
     pub fn read_text_screen(
         &self,
-        start: (u16, u32),
-        end: (u16, u32),
+        start: Point<ScreenRow>,
+        end: Point<ScreenRow>,
         rectangle: bool,
     ) -> Result<String, Error> {
         self.read_range(
-            start,
-            end,
-            Coordinates::Screen,
+            start.map_row(Coordinates::Screen),
+            end.map_row(Coordinates::Screen),
             rectangle,
             Format::Plain,
             true,
@@ -1425,15 +1425,14 @@ impl Terminal {
 
     pub fn read_ansi_screen(
         &self,
-        start: (u16, u32),
-        end: (u16, u32),
+        start: Point<ScreenRow>,
+        end: Point<ScreenRow>,
         rectangle: bool,
         unwrap: bool,
     ) -> Result<String, Error> {
         self.read_range(
-            start,
-            end,
-            Coordinates::Screen,
+            start.map_row(Coordinates::Screen),
+            end.map_row(Coordinates::Screen),
             rectangle,
             Format::Vt,
             unwrap,
@@ -1442,23 +1441,22 @@ impl Terminal {
 
     fn read_range(
         &self,
-        start: (u16, u32),
-        end: (u16, u32),
-        coordinates: Coordinates,
+        start: Point<Coordinates>,
+        end: Point<Coordinates>,
         rectangle: bool,
         format: Format,
         unwrap: bool,
     ) -> Result<String, Error> {
-        let to_line = |y: u32| match coordinates {
-            Coordinates::Screen => self.screen_line(u64::from(y)),
-            Coordinates::Viewport => self.viewport_line(u64::from(y)),
+        let to_line = |coordinate| match coordinate {
+            Coordinates::Screen(y) => self.screen_line(y),
+            Coordinates::Viewport(y) => self.viewport_line(y),
         };
         let grid = self.term.grid();
-        let start = to_line(start.1)
-            .and_then(|line| format::grid_point(grid, line, start.0))
+        let start = to_line(start.row)
+            .and_then(|line| format::grid_point(grid, line, start.col))
             .ok_or(Error("selection start out of range"))?;
-        let end = to_line(end.1)
-            .and_then(|line| format::grid_point(grid, line, end.0))
+        let end = to_line(end.row)
+            .and_then(|line| format::grid_point(grid, line, end.col))
             .ok_or(Error("selection end out of range"))?;
         Ok(format::format_range(
             grid, start, end, rectangle, format, unwrap, true,
@@ -1545,9 +1543,9 @@ impl Terminal {
 
     /// Scrolls so the viewport's top row is screen row `row` (0 = oldest),
     /// clamped to the available history.
-    pub fn scroll_viewport_row(&mut self, row: usize) {
+    pub fn scroll_viewport_row(&mut self, row: ScreenRow) {
         let history = self.term.history_size();
-        let target_offset = history - row.min(history);
+        let target_offset = history - row.0.min(history);
         let current = self.term.grid().display_offset();
         let target_offset_i64 = i64::try_from(target_offset).unwrap_or(i64::MAX);
         let current_i64 = i64::try_from(current).unwrap_or(i64::MAX);

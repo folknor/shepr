@@ -42,23 +42,6 @@ typed ids resolved at the boundary, or a generational `WorkspaceKey`; at least
 
 Reported by: app-state, ui.
 
-## STR-003 - Three row coordinate spaces share bare integers
-
-Viewport rows, screen rows (0 = oldest retained) and absolute rows
-(`history_origin` + screen row) all travel as `u16`/`u32`/`u64`/`usize`.
-`Selection` stores `anchor`/`cursor` as `(u64, u16)`; both constructor families
-(`anchor` vs `anchor_at`, `drag` vs `drag_at`, `contains` vs `contains_at`) write
-the same fields; `absolute_row_for_viewport` returns a screen row ("Despite the
-name, not an absolute row"); `ordered_cells` saturates absolute rows to `u32`;
-`Terminal::screen_line(u64)`, `viewport_line(u64)`, `screen_cell(x, y: u32)`,
-`screen_row_for_absolute(u64) -> usize`, `read_*_{screen,viewport}(start: (u16,
-u32), ...)`. Proposed: `ViewportRow`, `ScreenRow`, `AbsRow` newtypes plus
-`Point<R>`; `Selection` generic over the space or `AbsRow`-only; delete the
-`ScrollMetrics` family. The terminal-core hunter calls this the most important
-item in its scope.
-
-Reported by: terminal-core.
-
 ## STR-004 - Grid and pixel geometry travel as bare tuples
 
 - Terminal core: `(cell_width_px, cell_height_px)` as bare `u32` pairs in `Terminal`, `CoreHandler`, `Terminal::resize`, `PtyIoActorHandle::resize`, `PtyResize`, `TerminalRuntime::resize`; the resize signature flips from `(rows, cols, w, h)` to `(cols, rows, ...)` in `Terminal::resize`; `HostCellSize` exists but is unused there.
@@ -288,16 +271,6 @@ delete the wrapper; `title.rs` belongs in detection (CON-001).
 
 Reported by: terminal-core.
 
-## STR-027 - selection.rs does selection geometry and clipboard delivery
-
-Clipboard delivery (OSC 52, WSL detection reading `/proc` and env,
-`platform::write_clipboard`) sits beside selection geometry; selection depends
-upward on `pane::ScrollMetrics` and `ratatui::Rect`. Proposed: WSL/SSH env
-sniffing to `platform/`, OSC 52 encoding to host-term, selection `AbsRow`-only
-(removes the `ScrollMetrics` dependency).
-
-Reported by: terminal-core.
-
 ## STR-029 - Split pane.rs and give the detector its own state
 
 `pane.rs` (4300 lines) holds launch env policy, shell resolution, the
@@ -311,22 +284,6 @@ without a runtime. Agent-specific code moves to the per-agent descriptor
 (CON-001).
 
 Reported by: pane-detection.
-
-## STR-031 - Make every mutation an AppState command with a typed outcome
-
-Decision: prepare first, then commit. App computes geometry and launch data from
-pure state, spawns the runtime, then a state command commits the change and
-returns a typed outcome; no rollback path.
-
-Production mutations live in `App` methods in `api/panes.rs` (4,747 lines) while
-`actions.rs` holds `#[cfg(test)]` twins (`AppState::close_pane`, `close_tab`,
-`toggle_zoom`, ...), so the pure-AppState tests partly exercise code production
-never runs. Proposed rewrite: every mutation is an `AppState`/`Workspace` command
-returning a typed outcome; `App` applies runtime side effects (spawn, shutdown,
-events) from it; API handlers and keybindings translate into commands. The
-app-state hunter says this dissolves CON-020, CON-021 and CON-024.
-
-Reported by: app-state.
 
 ## STR-032 - API request handling has no single home
 
@@ -402,22 +359,6 @@ session files in the state dir - a breaking layout change.
 
 Reported by: config-cli.
 
-## STR-041 - Split platform/mod.rs along its own section headers
-
-2182 lines with headers `Status commands`, `Foreground job detection`, `SSH
-paths`, `Config file replacement`, `Remote bridge stdio`, `Local client
-streams`. Proposed a flat directory (`proc_tree.rs`, `ssh_paths.rs`,
-`client_stream.rs`, `private_file.rs`, ...); commit f3b5436's "flat platform
-layer" read as "no per-OS tree", not "one file". Domain rules move out: the
-foreground-job `/proc` walker (detection), `StatusCommandGuard` (tab-bar command
-runner), `is_pane_shell_process_name` and `shell_quote`.
-`persist::io::publish_private_file` calls `platform::create_config_temporary(pending,
-true)`; the `private: bool` hides two policies (proposed
-`create_private_temporary`). Remote's `store_private_json` (temp name
-`.endpoints-`) is another private-file writer that belongs here.
-
-Reported by: config-cli, remote.
-
 ## STR-042 - Collapse the three surface update encodings into one
 
 Today: typed `PaneSurfacePatch` ("legacy" in tests), `surface_delta` (base64 of
@@ -446,21 +387,6 @@ position map is rebuilt per frame (two HashMaps, clones of every linked symbol
 and URI) on the render hot path.
 
 Reported by: protocol.
-
-## STR-044 - Rewrite the client loop around a ClientLoop struct and SessionMode
-
-`run_client_loop` is ~1000 lines with one `match`; loop state lives in locals
-(`write_stream`, `pending_activation`, `scheduled_activation`,
-`endpoint_commands`, `supervisors`, `selection`, `catalog_watch`, `federated`,
-`next_surface_serial`, three atomics), so `shell_runtime.rs` functions take 7-10
-`&mut` parameters (`begin_endpoint_activation` takes 10). Shell vs direct attach
-is `state.shell.is_some()` / `state.attach_escape.is_some()` re-checked in ~15
-branches. Proposed: `ClientLoop` with one method per event, `SessionMode {
-Shell(ShellSession), DirectAttach(AttachSession) }`, and `ClientState` split into
-`Presenter`, `HostModes` and the session type. A `Presenter<W: Write>` removes the
-`#[cfg(test)]` `io::sink()` in production code (`state.rs:250-253`).
-
-Reported by: client.
 
 ## STR-045 - Client input plumbing
 

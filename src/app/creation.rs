@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{App, Mode, api_helpers::pane_agent_status};
+use super::{App, api_helpers::pane_agent_status};
 use crate::api::schema::{EventData, EventEnvelope, EventKind};
 use crate::{config::NewTerminalCwdConfig, workspace::Workspace};
 
@@ -88,15 +88,6 @@ impl App {
         )
     }
 
-    pub(crate) fn resolved_new_workspace_cwd_from(&self, ws_idx: usize) -> PathBuf {
-        let tab_idx = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .map(crate::workspace::Workspace::active_tab_index);
-        self.resolved_new_workspace_cwd_from_tab(ws_idx, tab_idx)
-    }
-
     pub(crate) fn resolved_new_workspace_cwd_from_tab(
         &self,
         ws_idx: usize,
@@ -108,21 +99,6 @@ impl App {
             .and_then(|pane_id| self.launch_cwd_for_pane_in_workspace(ws_idx, pane_id))
             .or_else(|| self.seed_cwd_from_workspace(ws_idx));
         self.resolve_new_terminal_cwd(follow_cwd)
-    }
-
-    pub(super) fn workspace_creation_source(&self) -> Option<usize> {
-        if self.state.mode == Mode::Navigate
-            && self.state.workspaces.get(self.state.selected).is_some()
-        {
-            return Some(self.state.selected);
-        }
-
-        self.state.active.or_else(|| {
-            self.state
-                .workspaces
-                .get(self.state.selected)
-                .map(|_| self.state.selected)
-        })
     }
 
     pub(crate) fn create_workspace_with_options(
@@ -151,19 +127,14 @@ impl App {
             &self.pane_spawn_handles(),
             extra_env,
         )?;
-        self.terminal_runtimes.insert(terminal.id.clone(), runtime);
-        self.state.terminals.insert(terminal.id.clone(), terminal);
-        self.state.workspaces.push(ws);
-        let idx = self.state.workspaces.len() - 1;
-        let workspace_id = self.state.workspaces[idx].id.clone();
-        let root_pane = self.state.workspaces[idx].tabs[0].root_pane.raw();
-        crate::logging::workspace_created(&workspace_id, root_pane);
-        if focus || self.state.active.is_none() {
-            self.state.switch_workspace(idx);
-            self.state.mode = Mode::Terminal;
+        let terminal_id = terminal.id.clone();
+        let outcome = self.state.commit_workspace_creation(ws, terminal, focus);
+        self.terminal_runtimes.insert(terminal_id, runtime);
+        if let Some(root_pane) = outcome.root_pane {
+            crate::logging::workspace_created(&outcome.workspace_id, root_pane.raw());
         }
         self.schedule_session_save();
-        Ok(idx)
+        Ok(outcome.workspace_index)
     }
 
     pub(super) fn collect_panes_for_workspace(

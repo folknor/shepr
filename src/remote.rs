@@ -12,7 +12,6 @@ mod ssh;
 mod ssh_agent;
 
 use crate::machine::RemoteExecutable;
-use crate::platform::shell_quote;
 use bridge::*;
 use discovery::*;
 use launch::*;
@@ -24,7 +23,9 @@ pub(crate) use args::*;
 #[cfg(test)]
 pub(crate) use bridge::bridge_upload_cancellation_for_test;
 pub(crate) use host::run_remote_client_bridge;
-pub(crate) use launch::{check_saved_ssh, prepare_saved_ssh, run_remote};
+pub(crate) use launch::{
+    check_saved_ssh, interactive_shell_command, prepare_saved_ssh, run_remote, shell_quote,
+};
 pub(crate) use saved::*;
 pub(crate) use ssh::{release_ssh_resources_before_exit, ssh_authentication_command};
 

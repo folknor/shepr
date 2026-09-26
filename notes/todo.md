@@ -4,6 +4,19 @@ Things to do when the situation comes up or when there is time for a larger
 change, not defects to hunt. Each redesign below touches several modules at
 once, so it needs a wave of its own rather than parallel fixers.
 
+## Resolve typescript question
+
+What to do about src/integration/assets/shepr-agent-state.test.ts.
+
+## Monitor upstream changes to integrations
+
+We need to create a script we can run periodically that checks upstream
+for changes and additions to src/integration/assets/* and
+src/detect/manifests/* and anything else relevant.
+
+Find out which commit we forked from first. Was it 21d0ce6?
+https://github.com/herdrdev/herdr/commit/21d0ce60267ad947c081d3d3fba401c859f06dd2
+
 ## Confirm the opencode/Kilo permission-dialog labels
 
 Do this the next time opencode or Kilo is in use.

@@ -132,10 +132,10 @@ fn failed_selection_copy_does_not_send_terminal_input() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
-    state.selection = Some(crate::selection::Selection::absolute_range(
+    state.selection = Some(crate::selection::Selection::range(
         "pane_1".into(),
-        (0u64, 0),
-        (0, 2),
+        crate::terminal::Point::new(crate::terminal::AbsRow(0), 0),
+        crate::terminal::Point::new(crate::terminal::AbsRow(0), 2),
     ));
     for result in [
         Ok(crate::api::schema::ResponseResult::PaneSelection {

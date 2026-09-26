@@ -373,6 +373,7 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 20,
         viewport_rows: 2,
+        history_origin: crate::terminal::AbsRow(0),
     });
     state.set_pane_surface(local_surface);
     state.compose(100, 28).expect("test precondition");
