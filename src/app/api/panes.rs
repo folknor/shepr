@@ -1,15 +1,16 @@
 use bytes::Bytes;
 
+#[cfg(test)]
+use crate::api::schema::EventKind;
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, PaneClearAgentAuthorityParams, PaneCopyMotion,
-    PaneCopyMotionParams, PaneCopySearchDirection, PaneCopySearchParams, PaneCurrentParams,
-    PaneDirection, PaneEdgesParams, PaneEdgesResult, PaneFocusDirectionParams,
-    PaneFocusDirectionReason, PaneFocusDirectionResult, PaneInfo, PaneInputSetParams,
-    PaneLayoutPane, PaneLayoutParams, PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit,
-    PaneListParams, PaneMoveDestination, PaneMoveParams, PaneMoveReason, PaneMoveResult,
-    PaneNeighborParams, PaneNeighborResult, PaneProcessInfo, PaneProcessInfoParams,
-    PaneProcessInfoProcess, PaneReadParams, PaneReadResult, PaneReleaseAgentParams,
-    PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
+    EventData, EventEnvelope, PaneClearAgentAuthorityParams, PaneCopyMotion, PaneCopyMotionParams,
+    PaneCopySearchDirection, PaneCopySearchParams, PaneCurrentParams, PaneDirection,
+    PaneEdgesParams, PaneEdgesResult, PaneFocusDirectionParams, PaneFocusDirectionReason,
+    PaneFocusDirectionResult, PaneInfo, PaneInputSetParams, PaneLayoutPane, PaneLayoutParams,
+    PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit, PaneListParams, PaneMoveDestination,
+    PaneMoveParams, PaneMoveReason, PaneMoveResult, PaneNeighborParams, PaneNeighborResult,
+    PaneProcessInfo, PaneProcessInfoParams, PaneProcessInfoProcess, PaneReadParams, PaneReadResult,
+    PaneReleaseAgentParams, PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
     PaneReportMetadataParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
     PaneScrollParams, PaneSelectionReadParams, PaneSendInputParams, PaneSendKeysParams,
     PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneSwapReason, PaneSwapResult,
@@ -77,8 +78,8 @@ impl App {
             .current_dir()
             .unwrap_or_else(|| std::path::Path::new("/"))
             .to_path_buf();
-        let default_shell = self.state.default_shell.clone();
-        let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
+        let default_shell = self.state.settings.default_shell.clone();
+        let scrollback_limit_bytes = self.state.settings.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
         let host_terminal_appearance = self.state.host_terminal_appearance;
         let previous_focus = self.state.current_pane_focus_target();
@@ -91,7 +92,7 @@ impl App {
             crate::api::schema::SplitDirection::Down => ratatui::layout::Direction::Vertical,
         };
         let shell_config =
-            crate::pane::PaneShellConfig::new(&default_shell, self.state.login_shell);
+            crate::pane::PaneShellConfig::new(&default_shell, self.state.settings.login_shell);
         let split_result = match params.ratio {
             Some(ratio) => ws.split_pane_with_ratio(
                 target_pane_id,
@@ -161,7 +162,6 @@ impl App {
             return encode_error(id, "pane_split_failed", "new pane is unavailable");
         };
         self.emit_event(EventEnvelope {
-            event: EventKind::PaneCreated,
             data: EventData::PaneCreated { pane: pane.clone() },
         });
         self.emit_layout_updated_event(outcome.workspace_index, outcome.tab_index);
@@ -1337,7 +1337,6 @@ impl App {
         };
         if let Some(closed_tab_id) = &source_removed_tab_id {
             self.emit_event(EventEnvelope {
-                event: EventKind::TabClosed,
                 data: EventData::TabClosed {
                     tab_id: closed_tab_id.clone(),
                     workspace_id: previous_workspace_id.clone(),
@@ -1346,7 +1345,6 @@ impl App {
         }
         if let Some(closed_workspace_id) = &closed_workspace_id {
             self.emit_event(EventEnvelope {
-                event: EventKind::WorkspaceClosed,
                 data: EventData::WorkspaceClosed {
                     workspace_id: closed_workspace_id.clone(),
                     workspace: None,
@@ -1355,7 +1353,6 @@ impl App {
         }
         if let Some(workspace) = &created_workspace {
             self.emit_event(EventEnvelope {
-                event: EventKind::WorkspaceCreated,
                 data: EventData::WorkspaceCreated {
                     workspace: workspace.clone(),
                 },
@@ -1363,12 +1360,10 @@ impl App {
         }
         if let Some(tab) = &created_tab {
             self.emit_event(EventEnvelope {
-                event: EventKind::TabCreated,
                 data: EventData::TabCreated { tab: tab.clone() },
             });
         }
         self.emit_event(EventEnvelope {
-            event: EventKind::PaneMoved,
             data: EventData::PaneMoved {
                 previous_pane_id,
                 previous_workspace_id,
@@ -1525,7 +1520,6 @@ impl App {
         // The label is part of `PaneInfo`, so subscribers see the rename the
         // same way they see agent renames and metadata changes.
         self.emit_event(EventEnvelope {
-            event: EventKind::PaneUpdated,
             data: EventData::PaneUpdated { pane: pane.clone() },
         });
 
@@ -1934,7 +1928,6 @@ impl App {
         self.schedule_session_save();
         match outcome.removal.scope {
             crate::workspace::PaneRemovalScope::Pane => self.emit_event(EventEnvelope {
-                event: EventKind::PaneClosed,
                 data: EventData::PaneClosed {
                     pane_id: public_pane_id,
                     workspace_id,
@@ -2125,7 +2118,6 @@ impl App {
 
     pub(super) fn emit_layout_updated_snapshot(&mut self, layout: PaneLayoutSnapshot) {
         self.emit_event(EventEnvelope {
-            event: EventKind::LayoutUpdated,
             data: EventData::LayoutUpdated { layout },
         });
     }
@@ -3108,7 +3100,7 @@ mod tests {
             app.event_hub
                 .events_after(0)
                 .iter()
-                .map(|(_, event)| event.event)
+                .map(|(_, event)| event.data.kind())
                 .collect::<Vec<_>>(),
             [
                 EventKind::PaneClosed,
@@ -3616,7 +3608,7 @@ mod tests {
         let envelopes = app.event_hub.events_after(0);
         let events: Vec<_> = envelopes
             .iter()
-            .map(|(_, envelope)| envelope.event)
+            .map(|(_, envelope)| envelope.data.kind())
             .collect();
         assert_eq!(
             events,
@@ -3737,7 +3729,7 @@ mod tests {
         let envelopes = app.event_hub.events_after(0);
         let events: Vec<_> = envelopes
             .iter()
-            .map(|(_, envelope)| envelope.event)
+            .map(|(_, envelope)| envelope.data.kind())
             .collect();
         assert_eq!(
             events,

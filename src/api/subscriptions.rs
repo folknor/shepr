@@ -296,7 +296,7 @@ impl ActiveSubscription {
                     return Ok(None);
                 }
                 subscription.last_sequence = sequence;
-                if event.event != subscription.event_kind {
+                if event.data.kind() != subscription.event_kind {
                     return Ok(None);
                 }
                 serde_json::to_value(event)
@@ -308,7 +308,7 @@ impl ActiveSubscription {
                     return Ok(None);
                 }
                 subscription.last_sequence = sequence;
-                if event.event != EventKind::PaneAgentStatusChanged {
+                if event.data.kind() != EventKind::PaneAgentStatusChanged {
                     return Ok(None);
                 }
                 subscription
@@ -467,7 +467,7 @@ impl ActiveEventSubscription {
     fn poll(&mut self, event_hub: &EventHub) -> Result<Option<serde_json::Value>, ErrorBody> {
         for (sequence, event) in subscription_events_after(event_hub, self.last_sequence)? {
             self.last_sequence = sequence;
-            if event.event == self.event_kind {
+            if event.data.kind() == self.event_kind {
                 return serde_json::to_value(event)
                     .map(Some)
                     .map_err(|err| event_encoding_error(&err));
@@ -545,7 +545,7 @@ impl ActiveAgentStatusChangedSubscription {
         &mut self,
         event: crate::api::schema::EventEnvelope,
     ) -> Option<SubscriptionEventEnvelope> {
-        if event.event != EventKind::PaneAgentStatusChanged {
+        if event.data.kind() != EventKind::PaneAgentStatusChanged {
             return None;
         }
         let crate::api::schema::EventData::PaneAgentStatusChanged {
@@ -799,7 +799,6 @@ mod tests {
 
     fn presentation_event(title: Option<&str>) -> EventEnvelope {
         EventEnvelope {
-            event: EventKind::PaneAgentStatusChanged,
             data: EventData::PaneAgentStatusChanged {
                 pane_id: "pane_1".into(),
                 workspace_id: "workspace_1".into(),
@@ -814,7 +813,6 @@ mod tests {
 
     fn workspace_focused_event(workspace_id: &str) -> EventEnvelope {
         EventEnvelope {
-            event: EventKind::WorkspaceFocused,
             data: EventData::WorkspaceFocused {
                 workspace_id: workspace_id.into(),
             },
@@ -956,7 +954,7 @@ mod tests {
             },
             other => panic!("not a pane lifecycle kind: {other:?}"),
         };
-        EventEnvelope { event: kind, data }
+        EventEnvelope { data }
     }
 
     #[test]
@@ -982,7 +980,7 @@ mod tests {
         let events = poll_stream(&mut stream, &api_tx, &event_hub);
         let kinds = events
             .iter()
-            .map(|event| event["event"].as_str().expect("test precondition"))
+            .map(|event| event["data"]["type"].as_str().expect("test precondition"))
             .collect::<Vec<_>>();
         assert_eq!(kinds, ["pane_created", "pane_closed"]);
         let sequences = events
@@ -1040,6 +1038,7 @@ mod tests {
                 (
                     event["event"]
                         .as_str()
+                        .or_else(|| event["data"]["type"].as_str())
                         .expect("test precondition")
                         .to_string(),
                     event[STREAM_SEQUENCE_FIELD]

@@ -224,15 +224,11 @@ fn is_attention_error_kind(kind: std::io::ErrorKind) -> bool {
     )
 }
 
-/// What `remote-api-bridge --check` prints on a build that forwards the API.
-const API_BRIDGE_CHECK_REPLY: &str = "shepr-api-bridge-v1";
-
 pub(crate) fn run_remote_api_bridge(
     check: bool,
     paths: &crate::config::AppPaths,
 ) -> std::io::Result<()> {
     if check {
-        println!("{API_BRIDGE_CHECK_REPLY}");
         return Ok(());
     }
     let path = crate::api::socket_path(paths);

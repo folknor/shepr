@@ -40,11 +40,17 @@ pub(super) struct ConfiguredChrome {
 }
 
 impl ConfiguredChrome {
-    pub(super) fn from_config(config: &crate::config::Config) -> Self {
+    pub(super) fn from_validated_config(config: &crate::config::ValidatedConfig) -> Self {
         Self {
-            sidebar_width: config.ui.is_user_configured("sidebar_width"),
-            sidebar_collapsed: config.ui.is_user_configured("sidebar_start_collapsed"),
-            agent_panel_sort: config.ui.is_user_configured("agent_panel_sort"),
+            sidebar_width: config
+                .provenance()
+                .is_explicit(crate::config::UiPreferenceKey::SidebarWidth),
+            sidebar_collapsed: config
+                .provenance()
+                .is_explicit(crate::config::UiPreferenceKey::SidebarStartCollapsed),
+            agent_panel_sort: config
+                .provenance()
+                .is_explicit(crate::config::UiPreferenceKey::AgentPanelSort),
         }
     }
 }
@@ -157,18 +163,18 @@ mod tests {
     }
 
     #[test]
-    fn configured_chrome_follows_the_keys_the_user_set() {
-        let mut config = crate::config::Config::default();
+    fn configured_chrome_follows_config_value_provenance() {
+        let default_config = crate::config::ValidatedConfig::test_default();
         assert_eq!(
-            ConfiguredChrome::from_config(&config),
+            ConfiguredChrome::from_validated_config(&default_config),
             ConfiguredChrome::default()
         );
-        config
-            .ui
-            .user_fields
-            .insert("sidebar_start_collapsed".to_owned());
+        let config = crate::config::ValidatedConfig::test_from_config(
+            crate::config::Config::default(),
+            Some("[ui]\nsidebar_start_collapsed = false\n"),
+        );
         assert_eq!(
-            ConfiguredChrome::from_config(&config),
+            ConfiguredChrome::from_validated_config(&config),
             ConfiguredChrome {
                 sidebar_collapsed: true,
                 ..ConfiguredChrome::default()

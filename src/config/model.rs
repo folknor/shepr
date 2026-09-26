@@ -1,13 +1,11 @@
-use std::{collections::BTreeSet, num::NonZeroUsize};
+use std::num::NonZeroUsize;
 
 use crossterm::event::KeyModifiers;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-use crate::app::state::Palette;
-
 use super::{
-    ActionKeybinds, BindingConfig, DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
-    IndexedKeybind, Keybinds, SidebarConfig, TabBarRightEntryConfig, ThemeConfig,
+    BindingConfig, DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES, SidebarConfig,
+    TabBarRightEntryConfig, ThemeConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -49,6 +47,30 @@ pub struct RightClickPassthroughModifierConfig(Option<KeyModifiers>);
 impl RightClickPassthroughModifierConfig {
     pub fn modifiers(self) -> Option<KeyModifiers> {
         self.0
+    }
+
+    pub(crate) fn from_modifiers(modifiers: Option<KeyModifiers>) -> Self {
+        Self(modifiers)
+    }
+}
+
+impl Serialize for RightClickPassthroughModifierConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let value = match self.0 {
+            None => "off",
+            Some(modifiers)
+                if modifiers.contains(KeyModifiers::CONTROL)
+                    && modifiers.contains(KeyModifiers::ALT) =>
+            {
+                "ctrl+alt"
+            }
+            Some(modifiers) if modifiers.contains(KeyModifiers::CONTROL) => "ctrl",
+            Some(_) => "alt",
+        };
+        serializer.serialize_str(value)
     }
 }
 
@@ -120,6 +142,21 @@ pub enum NewTerminalCwdConfig {
     Path(String),
 }
 
+impl Serialize for NewTerminalCwdConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let value = match self {
+            Self::Follow => "follow",
+            Self::Home => "home",
+            Self::Current => "current",
+            Self::Path(path) => path,
+        };
+        serializer.serialize_str(value)
+    }
+}
+
 impl<'de> Deserialize<'de> for NewTerminalCwdConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -135,7 +172,7 @@ impl<'de> Deserialize<'de> for NewTerminalCwdConfig {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct TerminalConfig {
     /// Executable used for new interactive panes. Empty means SHELL, then /bin/sh.
@@ -146,7 +183,7 @@ pub struct TerminalConfig {
     pub new_cwd: NewTerminalCwdConfig,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SessionConfig {
     /// Resume supported AI-agent panes into their native conversation sessions
@@ -174,16 +211,9 @@ pub fn validated_sidebar_bounds(min: u16, max: u16) -> Option<(u16, u16)> {
     if min <= max { Some((min, max)) } else { None }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
-    // Config is still the runtime shape passed directly through app startup
-    // and client setup. Moving explicit user overrides into Option fields and
-    // returning a separate validated wrapper also requires migrating the
-    // direct readers in app/mod.rs, client/attach.rs, client/shell/config.rs,
-    // client/shell/preferences.rs, and input/keybind_help.rs. Keep that model
-    // change together with those consumers instead of adding a second partial
-    // representation here.
     pub theme: ThemeConfig,
     pub terminal: TerminalConfig,
     pub session: SessionConfig,
@@ -193,32 +223,44 @@ pub struct Config {
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
     pub remote: RemoteConfig,
-    /// Parsed once after validation so runtime code never reparses theme text.
-    #[serde(skip)]
-    pub(crate) resolved_palette: Palette,
-    /// Parsed once at config load; directly deserialized test/profile values
-    /// compute this lazily through `Config::validated_keybinds`.
-    #[serde(skip)]
-    pub(super) validated_keybinds: std::sync::OnceLock<super::keybinds::KeybindValidation>,
 }
 
 #[derive(Debug)]
 pub struct LoadedConfig {
     pub config: Config,
+    pub provenance: super::ConfigProvenance,
+    pub(crate) keybind_validation: super::keybinds::KeybindValidation,
     pub diagnostics: Vec<String>,
+    pub(crate) document_state: ConfigDocumentState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConfigDocumentState {
+    Missing,
+    Loaded,
+    Unavailable,
 }
 
 impl LoadedConfig {
-    pub(crate) fn into_validated(self) -> Result<Config, Vec<String>> {
+    pub(crate) fn into_validated(
+        self,
+        paths: super::AppPaths,
+    ) -> Result<super::ValidatedConfig, Vec<String>> {
         if self.diagnostics.is_empty() {
-            Ok(self.config)
+            super::ValidatedConfig::from_loaded(
+                self.config,
+                self.provenance,
+                self.keybind_validation,
+                paths,
+            )
         } else {
             Err(self.diagnostics)
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
 pub struct KeysConfig {
     /// Prefix key to enter prefix mode (e.g. "ctrl+b", "f12", "esc").
     pub prefix: String,
@@ -323,325 +365,6 @@ pub struct KeysConfig {
     pub resize_pane_right: BindingConfig,
     /// Toggle sidebar collapse. Default: "prefix+b"
     pub toggle_sidebar: BindingConfig,
-    #[serde(skip_serializing)]
-    pub(crate) user_fields: BTreeSet<&'static str>,
-}
-
-#[derive(Debug, Default, Deserialize, Serialize)]
-#[serde(default)]
-pub(crate) struct KeysConfigOverlay {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prefix: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    help: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    new_workspace: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rename_workspace: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    close_workspace: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    workspace_picker: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    goto: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    navigate_workspace_up: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    navigate_workspace_down: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    navigate_pane_left: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    navigate_pane_down: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    navigate_pane_up: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    navigate_pane_right: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    detach: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    previous_workspace: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    next_workspace: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    previous_agent: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    next_agent: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    focus_agent: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    new_tab: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rename_tab: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    previous_tab: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    next_tab: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    move_tab_previous: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    move_tab_next: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    switch_tab: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    switch_workspace: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    close_tab: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rename_pane: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    clear_pane: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    copy_mode: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    focus_pane_left: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    focus_pane_down: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    focus_pane_up: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    focus_pane_right: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    swap_pane_left: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    swap_pane_down: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    swap_pane_up: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    swap_pane_right: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cycle_pane_next: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cycle_pane_previous: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    last_pane: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    split_vertical: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    split_horizontal: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    close_pane: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    zoom: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resize_mode: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resize_pane_left: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resize_pane_down: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resize_pane_up: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resize_pane_right: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    toggle_sidebar: Option<BindingConfig>,
-}
-
-impl KeysConfigOverlay {
-    pub(crate) fn set_prefix(&mut self, prefix: String) {
-        self.prefix = Some(prefix);
-    }
-}
-
-impl<'de> Deserialize<'de> for KeysConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let input = KeysConfigOverlay::deserialize(deserializer)?;
-        let mut keys = KeysConfig::default();
-
-        macro_rules! apply_field {
-            ($field:ident) => {
-                if let Some(value) = input.$field {
-                    keys.$field = value;
-                    keys.user_fields.insert(stringify!($field));
-                }
-            };
-        }
-
-        apply_field!(prefix);
-        apply_field!(help);
-        apply_field!(new_workspace);
-        apply_field!(rename_workspace);
-        apply_field!(close_workspace);
-        apply_field!(workspace_picker);
-        apply_field!(goto);
-        apply_field!(navigate_workspace_up);
-        apply_field!(navigate_workspace_down);
-        apply_field!(navigate_pane_left);
-        apply_field!(navigate_pane_down);
-        apply_field!(navigate_pane_up);
-        apply_field!(navigate_pane_right);
-        apply_field!(detach);
-        apply_field!(previous_workspace);
-        apply_field!(next_workspace);
-        apply_field!(previous_agent);
-        apply_field!(next_agent);
-        apply_field!(focus_agent);
-        apply_field!(new_tab);
-        apply_field!(rename_tab);
-        apply_field!(previous_tab);
-        apply_field!(next_tab);
-        apply_field!(move_tab_previous);
-        apply_field!(move_tab_next);
-        apply_field!(switch_tab);
-        apply_field!(switch_workspace);
-        apply_field!(close_tab);
-        apply_field!(rename_pane);
-        apply_field!(clear_pane);
-        apply_field!(copy_mode);
-        apply_field!(focus_pane_left);
-        apply_field!(focus_pane_down);
-        apply_field!(focus_pane_up);
-        apply_field!(focus_pane_right);
-        apply_field!(swap_pane_left);
-        apply_field!(swap_pane_down);
-        apply_field!(swap_pane_up);
-        apply_field!(swap_pane_right);
-        apply_field!(cycle_pane_next);
-        apply_field!(cycle_pane_previous);
-        apply_field!(last_pane);
-        apply_field!(split_vertical);
-        apply_field!(split_horizontal);
-        apply_field!(close_pane);
-        apply_field!(zoom);
-        apply_field!(resize_mode);
-        apply_field!(resize_pane_left);
-        apply_field!(resize_pane_down);
-        apply_field!(resize_pane_up);
-        apply_field!(resize_pane_right);
-        apply_field!(toggle_sidebar);
-
-        Ok(keys)
-    }
-}
-
-impl KeysConfig {
-    pub(crate) fn key_field_is_user_configured(&self, field: &str) -> bool {
-        self.user_fields.contains(field)
-    }
-
-    pub(crate) fn local_profile(&self, keybinds: &Keybinds) -> KeysConfigOverlay {
-        let mut profile = KeysConfigOverlay::default();
-
-        macro_rules! copy_effective_action_field {
-            ($field:ident, $target:expr) => {
-                if self.user_fields.contains(stringify!($field)) {
-                    profile.$field = Some(self.$field.clone());
-                } else if binding_config_is_effective(&self.$field, &$target) {
-                    profile.$field = Some(self.$field.clone());
-                } else if binding_config_has_values(&self.$field) {
-                    profile.$field = Some(BindingConfig::empty());
-                }
-            };
-        }
-        macro_rules! copy_effective_indexed_field {
-            ($field:ident, $target:expr) => {
-                if self.user_fields.contains(stringify!($field)) {
-                    profile.$field = Some(self.$field.clone());
-                } else if let Some(effective) = effective_indexed_config(&self.$field, &$target) {
-                    profile.$field = Some(effective);
-                } else if binding_config_has_values(&self.$field) {
-                    profile.$field = Some(BindingConfig::empty());
-                }
-            };
-        }
-
-        profile.prefix = Some(self.prefix.clone());
-        copy_effective_action_field!(help, keybinds.help);
-        copy_effective_action_field!(new_workspace, keybinds.new_workspace);
-        copy_effective_action_field!(rename_workspace, keybinds.rename_workspace);
-        copy_effective_action_field!(close_workspace, keybinds.close_workspace);
-        copy_effective_action_field!(workspace_picker, keybinds.workspace_picker);
-        copy_effective_action_field!(goto, keybinds.goto);
-        copy_effective_action_field!(navigate_workspace_up, keybinds.navigate.workspace_up);
-        copy_effective_action_field!(navigate_workspace_down, keybinds.navigate.workspace_down);
-        copy_effective_action_field!(navigate_pane_left, keybinds.navigate.pane_left);
-        copy_effective_action_field!(navigate_pane_down, keybinds.navigate.pane_down);
-        copy_effective_action_field!(navigate_pane_up, keybinds.navigate.pane_up);
-        copy_effective_action_field!(navigate_pane_right, keybinds.navigate.pane_right);
-        copy_effective_action_field!(detach, keybinds.detach);
-        copy_effective_action_field!(previous_workspace, keybinds.previous_workspace);
-        copy_effective_action_field!(next_workspace, keybinds.next_workspace);
-        copy_effective_action_field!(previous_agent, keybinds.previous_agent);
-        copy_effective_action_field!(next_agent, keybinds.next_agent);
-        copy_effective_indexed_field!(focus_agent, keybinds.focus_agent);
-        copy_effective_action_field!(new_tab, keybinds.new_tab);
-        copy_effective_action_field!(rename_tab, keybinds.rename_tab);
-        copy_effective_action_field!(previous_tab, keybinds.previous_tab);
-        copy_effective_action_field!(next_tab, keybinds.next_tab);
-        copy_effective_action_field!(move_tab_previous, keybinds.move_tab_previous);
-        copy_effective_action_field!(move_tab_next, keybinds.move_tab_next);
-        copy_effective_indexed_field!(switch_tab, keybinds.switch_tab);
-        copy_effective_indexed_field!(switch_workspace, keybinds.switch_workspace);
-        copy_effective_action_field!(close_tab, keybinds.close_tab);
-        copy_effective_action_field!(rename_pane, keybinds.rename_pane);
-        copy_effective_action_field!(clear_pane, keybinds.clear_pane);
-        copy_effective_action_field!(copy_mode, keybinds.copy_mode);
-        copy_effective_action_field!(focus_pane_left, keybinds.focus_pane_left);
-        copy_effective_action_field!(focus_pane_down, keybinds.focus_pane_down);
-        copy_effective_action_field!(focus_pane_up, keybinds.focus_pane_up);
-        copy_effective_action_field!(focus_pane_right, keybinds.focus_pane_right);
-        copy_effective_action_field!(swap_pane_left, keybinds.swap_pane_left);
-        copy_effective_action_field!(swap_pane_down, keybinds.swap_pane_down);
-        copy_effective_action_field!(swap_pane_up, keybinds.swap_pane_up);
-        copy_effective_action_field!(swap_pane_right, keybinds.swap_pane_right);
-        copy_effective_action_field!(cycle_pane_next, keybinds.cycle_pane_next);
-        copy_effective_action_field!(cycle_pane_previous, keybinds.cycle_pane_previous);
-        copy_effective_action_field!(last_pane, keybinds.last_pane);
-        copy_effective_action_field!(split_vertical, keybinds.split_vertical);
-        copy_effective_action_field!(split_horizontal, keybinds.split_horizontal);
-        copy_effective_action_field!(close_pane, keybinds.close_pane);
-        copy_effective_action_field!(zoom, keybinds.zoom);
-        copy_effective_action_field!(resize_mode, keybinds.resize_mode);
-        copy_effective_action_field!(resize_pane_left, keybinds.resize_pane_left);
-        copy_effective_action_field!(resize_pane_down, keybinds.resize_pane_down);
-        copy_effective_action_field!(resize_pane_up, keybinds.resize_pane_up);
-        copy_effective_action_field!(resize_pane_right, keybinds.resize_pane_right);
-        copy_effective_action_field!(toggle_sidebar, keybinds.toggle_sidebar);
-
-        profile
-    }
-}
-
-fn binding_config_has_values(config: &BindingConfig) -> bool {
-    config.has_values()
-}
-
-fn binding_config_is_effective(config: &BindingConfig, keybinds: &ActionKeybinds) -> bool {
-    !binding_config_has_values(config) || !keybinds.bindings.is_empty()
-}
-
-fn effective_indexed_config(
-    config: &BindingConfig,
-    keybinds: &[IndexedKeybind],
-) -> Option<BindingConfig> {
-    if !binding_config_has_values(config) {
-        return Some(config.clone());
-    }
-
-    let expected_labels = config.indexed_labels();
-    if expected_labels.is_empty() {
-        return None;
-    }
-
-    let effective_labels: Vec<String> = expected_labels
-        .iter()
-        .filter(|expected| {
-            keybinds
-                .iter()
-                .any(|binding| binding.label.as_str() == expected.as_str())
-        })
-        .cloned()
-        .collect();
-
-    if effective_labels.is_empty() {
-        None
-    } else if effective_labels.len() == expected_labels.len() {
-        Some(config.clone())
-    } else {
-        Some(BindingConfig::Many(effective_labels))
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
@@ -652,7 +375,7 @@ pub enum TabBarPositionConfig {
     Bottom,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PaneBordersConfig {
     #[default]
@@ -671,7 +394,7 @@ impl PaneBordersConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct UiConfig {
     /// Expanded sidebar width (columns). Default: 26. While unset, the client
@@ -743,14 +466,10 @@ pub struct UiConfig {
     /// Applies when set in the config file; otherwise the theme accent applies.
     /// theme.custom.accent takes precedence.
     pub accent: String,
-    /// Keys present under `[ui]` in the loaded config file, filled by
-    /// `Config::load`. Empty for a config built any other way.
-    #[serde(skip)]
-    pub(crate) user_fields: BTreeSet<String>,
 }
 
 /// Cursor shape (DECSCUSR) used for the forced IME anchor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ImeCursorShape {
     Block,
@@ -776,7 +495,7 @@ impl ImeCursorShape {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ServerConfig {
     /// Virtual terminal width used when no client is attached. Default: 120.
@@ -785,7 +504,7 @@ pub struct ServerConfig {
     pub headless_rows: u16,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AdvancedConfig {
     /// Approximate scrollback budget in bytes per pane terminal, converted to a
@@ -796,7 +515,7 @@ pub struct AdvancedConfig {
     pub scrollback_limit_bytes: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct RemoteConfig {
     /// Add keepalive fallbacks and private connection reuse for `shepr --remote`.
@@ -833,7 +552,23 @@ where
     Ok(agents)
 }
 
-#[derive(Debug, Default, Deserialize)]
+fn serialize_cjk_ime_agents<S>(
+    agents: &[crate::detect::Agent],
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeSeq;
+
+    let mut sequence = serializer.serialize_seq(Some(agents.len()))?;
+    for agent in agents {
+        sequence.serialize_element(crate::detect::agent_label(*agent))?;
+    }
+    sequence.end()
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ExperimentalConfig {
     /// Allow launching shepr inside an existing shepr pane. Default: false.
@@ -860,7 +595,10 @@ pub struct ExperimentalConfig {
     /// opencode, copilot, kimi, kiro, droid, amp, grok, hermes, kilo,
     /// qodercli, qoder, qwen, qwen-code, letta, letta-code, maki.
     /// Default: empty.
-    #[serde(deserialize_with = "deserialize_cjk_ime_agents")]
+    #[serde(
+        deserialize_with = "deserialize_cjk_ime_agents",
+        serialize_with = "serialize_cjk_ime_agents"
+    )]
     pub cjk_ime_agents: Vec<crate::detect::Agent>,
     /// Cursor shape rendered for the IME anchor when
     /// `reveal_hidden_cursor_for_cjk_ime` is enabled. Default: "steady_block".
@@ -922,7 +660,6 @@ impl Default for KeysConfig {
             resize_pane_up: BindingConfig::empty(),
             resize_pane_right: BindingConfig::empty(),
             toggle_sidebar: BindingConfig::one("prefix+b"),
-            user_fields: BTreeSet::new(),
         }
     }
 }
@@ -958,17 +695,11 @@ impl Default for UiConfig {
             status_indicators: StatusIndicatorStyle::Dots,
             sidebar: SidebarConfig::default(),
             accent: "cyan".into(),
-            user_fields: BTreeSet::new(),
         }
     }
 }
 
 impl UiConfig {
-    /// Whether the config file set `[ui] <field>`, even to its default value.
-    pub(crate) fn is_user_configured(&self, field: &str) -> bool {
-        self.user_fields.contains(field)
-    }
-
     pub fn mouse_scroll_lines(&self) -> usize {
         self.mouse_scroll_lines
             .map(NonZeroUsize::get)
@@ -1244,12 +975,6 @@ cjk_ime_agents = ["claude", "typo"]
         .expect_err("unknown cjk_ime_agents names are config errors");
 
         assert!(err.to_string().contains("unknown agent name \"typo\""));
-    }
-
-    #[test]
-    fn default_keys_overlay_omits_unset_clear_pane() {
-        let serialized = toml::to_string(&KeysConfigOverlay::default()).expect("test precondition");
-        assert!(!serialized.contains("clear_pane"));
     }
 
     #[test]

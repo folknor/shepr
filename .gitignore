@@ -5,6 +5,7 @@ __pycache__
 *.swo
 *~
 .agents
+.codex
 .plans
 .claude
 .brokkr

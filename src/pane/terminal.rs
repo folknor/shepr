@@ -249,7 +249,7 @@ impl PaneTerminal {
     /// Whether a panic while holding the core lock has broken the core. A
     /// single atomic load, taking no lock: the PTY actor asks on every loop.
     pub(crate) fn core_poisoned(&self) -> bool {
-        self.ghostty.core.is_poisoned()
+        crate::ghostty::terminal_core_is_poisoned(&self.ghostty.core)
     }
 
     pub fn process_pty_bytes(
@@ -368,7 +368,7 @@ impl PaneTerminal {
         col: u16,
         motion: TerminalWordMotion,
     ) -> Option<TerminalTextPoint> {
-        let core = self.ghostty.core.lock().ok()?;
+        let core = crate::ghostty::lock_terminal_core(&self.ghostty.core).ok()?;
         let origin = core.terminal.history_origin();
         let target = word_motion_in(
             &core.terminal,
@@ -379,7 +379,7 @@ impl PaneTerminal {
     }
 
     pub(crate) fn dimensions(&self) -> Option<(u16, u16)> {
-        let core = self.ghostty.core.lock().ok()?;
+        let core = crate::ghostty::lock_terminal_core(&self.ghostty.core).ok()?;
         Some((core.terminal.cols(), core.terminal.rows()))
     }
 
@@ -390,7 +390,7 @@ impl PaneTerminal {
         row: ScreenRow,
         direction: i8,
     ) -> Option<TerminalTextPoint> {
-        let core = self.ghostty.core.lock().ok()?;
+        let core = crate::ghostty::lock_terminal_core(&self.ghostty.core).ok()?;
         let origin = core.terminal.history_origin();
         let absolute = row.absolute(origin);
         let target = paragraph_motion_in(&core.terminal, absolute, direction)?;
@@ -624,7 +624,7 @@ impl PaneTerminal {
         col: u16,
         motion: TerminalWordMotion,
     ) -> Option<TerminalTextPoint<AbsRow>> {
-        let core = self.ghostty.core.lock().ok()?;
+        let core = crate::ghostty::lock_terminal_core(&self.ghostty.core).ok()?;
         word_motion_in(&core.terminal, TerminalTextPoint { row, col }, motion)
     }
 
@@ -636,7 +636,7 @@ impl PaneTerminal {
         row: AbsRow,
         direction: i8,
     ) -> Option<TerminalTextPoint<AbsRow>> {
-        let core = self.ghostty.core.lock().ok()?;
+        let core = crate::ghostty::lock_terminal_core(&self.ghostty.core).ok()?;
         paragraph_motion_in(&core.terminal, row, direction)
     }
 
@@ -1448,7 +1448,7 @@ impl GhosttyPaneTerminal {
     /// colours. They sit under whatever the child set itself (OSC 4/10/11),
     /// which stays in effect; nothing is written into the child's stream.
     pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
-        if let Ok(mut core) = self.core.lock() {
+        if let Ok(mut core) = crate::ghostty::lock_terminal_core(&self.core) {
             core.host_terminal_theme = theme;
             if !has_default_color_override(&core.terminal) {
                 core.transient_default_color_owner_pgid = None;
@@ -1476,7 +1476,7 @@ impl GhosttyPaneTerminal {
         &self,
         appearance: Option<crate::terminal_theme::HostAppearance>,
     ) -> Option<Bytes> {
-        let mut core = self.core.lock().ok()?;
+        let mut core = crate::ghostty::lock_terminal_core(&self.core).ok()?;
         let color_scheme = appearance.map(|appearance| match appearance {
             crate::terminal_theme::HostAppearance::Dark => crate::ghostty::ColorScheme::Dark,
             crate::terminal_theme::HostAppearance::Light => crate::ghostty::ColorScheme::Light,
@@ -1498,15 +1498,14 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn has_transient_default_color_override(&self) -> bool {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .map(|core| core.transient_default_color_owner_pgid.is_some())
             .unwrap_or(false)
     }
 
     pub fn maybe_restore_host_terminal_theme(&self, pane_id: PaneId, shell_pid: u32) -> bool {
         {
-            let Ok(core) = self.core.lock() else {
+            let Ok(core) = crate::ghostty::lock_terminal_core(&self.core) else {
                 return false;
             };
             if !should_probe_host_terminal_theme_restore(&core) {
@@ -1515,7 +1514,7 @@ impl GhosttyPaneTerminal {
         }
 
         let foreground_job = crate::detect::foreground_job(shell_pid);
-        let Ok(mut core) = self.core.lock() else {
+        let Ok(mut core) = crate::ghostty::lock_terminal_core(&self.core) else {
             return false;
         };
 
@@ -1531,8 +1530,7 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn terminal_title(&self) -> Option<String> {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .ok()
             .and_then(|core| core.agent_osc_state.terminal_title().map(str::to_string))
     }
@@ -1540,8 +1538,7 @@ impl GhosttyPaneTerminal {
     /// Returns the latest OSC 0/2 title retained for agent detection, or `""`
     /// if no title has been seen or the last update was an empty clear.
     pub fn agent_osc_title(&self) -> String {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .map(|core| core.agent_osc_state.latest_title().to_owned())
             .unwrap_or_default()
     }
@@ -1549,8 +1546,7 @@ impl GhosttyPaneTerminal {
     /// Returns the latest OSC 9 progress payload retained for agent detection,
     /// or `""` if none has been seen.
     pub fn agent_osc_progress(&self) -> String {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .map(|core| core.agent_osc_state.latest_progress().to_owned())
             .unwrap_or_default()
     }
@@ -1558,7 +1554,7 @@ impl GhosttyPaneTerminal {
     /// Clears retained OSC title/progress evidence when the pane's foreground
     /// agent changes, so a new agent process starts from a blank OSC slate.
     pub fn clear_agent_osc_state(&self) {
-        if let Ok(mut core) = self.core.lock() {
+        if let Ok(mut core) = crate::ghostty::lock_terminal_core(&self.core) {
             core.agent_osc_state.clear_retained();
         }
     }
@@ -1569,16 +1565,17 @@ impl GhosttyPaneTerminal {
         _shell_pid: u32,
         bytes: &[u8],
     ) -> ProcessBytesResult {
-        let Ok(mut core) = self.core.lock() else {
-            // Poisoned by a panic on another thread while it held the lock.
-            // The core's state is suspect and every later read would land
-            // here too, so the reader ends the pane (reported as dead)
-            // rather than dropping output forever.
-            error!(pane = pane_id.raw(), "ghostty core lock poisoned in reader");
-            return ProcessBytesResult {
-                core_poisoned: true,
-                ..ProcessBytesResult::default()
-            };
+        let mut core = match crate::ghostty::lock_terminal_core(&self.core) {
+            Ok(core) => core,
+            Err(crate::ghostty::TerminalCorePoisoned) => {
+                // The core may be inconsistent after a panic. Fail the pane
+                // so its reader stops and the pane is reported dead.
+                error!(pane = pane_id.raw(), "ghostty core lock poisoned in reader");
+                return ProcessBytesResult {
+                    core_poisoned: true,
+                    ..ProcessBytesResult::default()
+                };
+            }
         };
 
         core.osc_debug_tracker.observe(bytes);
@@ -1649,7 +1646,7 @@ impl GhosttyPaneTerminal {
         let Some(owner_pgid) = current_transient_default_color_owner(shell_pid) else {
             return;
         };
-        let Ok(mut core) = self.core.lock() else {
+        let Ok(mut core) = crate::ghostty::lock_terminal_core(&self.core) else {
             return;
         };
         if core.default_color_generation == generation && has_default_color_override(&core.terminal)
@@ -1674,7 +1671,7 @@ impl GhosttyPaneTerminal {
         _pane_id: PaneId,
         _shell_pid: u32,
     ) -> ProcessBytesResult {
-        let Ok(mut core) = self.core.lock() else {
+        let Ok(mut core) = crate::ghostty::lock_terminal_core(&self.core) else {
             // A poisoned core is noticed by the PTY actor (its per-loop
             // `core_poisoned` check, or its next read), which ends the pane;
             // this timer has no loop to stop.
@@ -1707,7 +1704,7 @@ impl GhosttyPaneTerminal {
         if ansi.is_empty() {
             return;
         }
-        let Ok(mut core) = self.core.lock() else {
+        let Ok(mut core) = crate::ghostty::lock_terminal_core(&self.core) else {
             return;
         };
         core.terminal.write(ansi.as_bytes());
@@ -1730,7 +1727,7 @@ impl GhosttyPaneTerminal {
         cell_width_px: u32,
         cell_height_px: u32,
     ) -> Vec<Bytes> {
-        if let Ok(mut core) = self.core.lock() {
+        if let Ok(mut core) = crate::ghostty::lock_terminal_core(&self.core) {
             let synchronized_output_before = core
                 .terminal
                 .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT);
@@ -1779,57 +1776,54 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn scroll_up(&self, lines: usize) {
-        if let Ok(mut core) = self.core.lock() {
+        if let Ok(mut core) = crate::ghostty::lock_terminal_core(&self.core) {
             let lines = isize::try_from(lines).unwrap_or(isize::MAX);
             core.terminal.scroll_viewport_delta(-lines);
         }
     }
 
     pub fn scroll_down(&self, lines: usize) {
-        if let Ok(mut core) = self.core.lock() {
+        if let Ok(mut core) = crate::ghostty::lock_terminal_core(&self.core) {
             let lines = isize::try_from(lines).unwrap_or(isize::MAX);
             core.terminal.scroll_viewport_delta(lines);
         }
     }
 
     pub fn scroll_reset(&self) {
-        if let Ok(mut core) = self.core.lock() {
+        if let Ok(mut core) = crate::ghostty::lock_terminal_core(&self.core) {
             core.terminal.scroll_viewport_bottom();
         }
     }
 
     pub fn clear_screen(&self) -> Result<(), String> {
-        let mut core = self
-            .core
-            .lock()
+        let mut core = crate::ghostty::lock_terminal_core(&self.core)
             .map_err(|_| "terminal lock poisoned".to_owned())?;
         let _ = core.terminal.clear_screen();
         Ok(())
     }
 
     pub fn set_scroll_offset_from_bottom(&self, lines: usize) {
-        if let Ok(mut core) = self.core.lock() {
+        if let Ok(mut core) = crate::ghostty::lock_terminal_core(&self.core) {
             ghostty_set_scroll_offset_from_bottom(&mut core.terminal, lines);
         }
     }
 
     pub fn scroll_metrics(&self) -> Option<ScrollMetrics> {
-        let Ok(core) = self.core.lock() else {
+        let Ok(core) = crate::ghostty::lock_terminal_core(&self.core) else {
             return None;
         };
         Some(terminal_scroll_metrics(&core.terminal))
     }
 
     pub fn scroll_position(&self) -> Option<ScrollPosition> {
-        let core = self.core.lock().ok()?;
+        let core = crate::ghostty::lock_terminal_core(&self.core).ok()?;
         Some(ScrollPosition {
             metrics: terminal_scroll_metrics(&core.terminal),
         })
     }
 
     pub(crate) fn history_origin(&self) -> Option<AbsRow> {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .ok()
             .map(|core| core.terminal.history_origin())
     }
@@ -1855,7 +1849,7 @@ impl GhosttyPaneTerminal {
         let mut next = None;
         let mut scan = None;
         loop {
-            let Ok(core) = self.core.lock() else {
+            let Ok(core) = crate::ghostty::lock_terminal_core(&self.core) else {
                 break;
             };
             let terminal = &core.terminal;
@@ -1909,7 +1903,7 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn keyboard_protocol(&self) -> Option<crate::input::KeyboardProtocol> {
-        let Ok(core) = self.core.lock() else {
+        let Ok(core) = crate::ghostty::lock_terminal_core(&self.core) else {
             return None;
         };
         Some(crate::input::KeyboardProtocol::from_kitty_flags(
@@ -1926,14 +1920,12 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn mouse_reporting_enabled(&self) -> bool {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .is_ok_and(|core| core.terminal.mouse_tracking_enabled())
     }
 
     pub fn modify_other_keys_level(&self) -> u8 {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .map_or(0, |core| core.terminal.modify_other_keys_level())
     }
 
@@ -1942,13 +1934,12 @@ impl GhosttyPaneTerminal {
     }
 
     fn mode_enabled(&self, mode: u16) -> bool {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .is_ok_and(|core| core.terminal.mode_get(mode))
     }
 
     pub fn plain_page_keys_use_host_scrollback(&self) -> Option<bool> {
-        let core = self.core.lock().ok()?;
+        let core = crate::ghostty::lock_terminal_core(&self.core).ok()?;
         let alternate_screen =
             core.terminal.active_screen() == crate::ghostty::ActiveScreen::Alternate;
         let mouse_reporting = core.terminal.mouse_tracking_enabled();
@@ -1960,7 +1951,7 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn alternate_screen_active(&self) -> bool {
-        self.core.lock().is_ok_and(|core| {
+        crate::ghostty::lock_terminal_core(&self.core).is_ok_and(|core| {
             core.terminal.active_screen() == crate::ghostty::ActiveScreen::Alternate
         })
     }
@@ -1969,7 +1960,7 @@ impl GhosttyPaneTerminal {
     // callers should add a narrow accessor instead.
     #[cfg(test)]
     pub fn input_state(&self) -> Option<InputState> {
-        let Ok(core) = self.core.lock() else {
+        let Ok(core) = crate::ghostty::lock_terminal_core(&self.core) else {
             return None;
         };
         let alternate_screen =
@@ -2023,7 +2014,7 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn wheel_routing(&self) -> Option<crate::pane::WheelRouting> {
-        let Ok(core) = self.core.lock() else {
+        let Ok(core) = crate::ghostty::lock_terminal_core(&self.core) else {
             return None;
         };
         let alternate_screen =
@@ -2045,21 +2036,22 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn cursor_state(&self) -> Option<TerminalCursorState> {
-        let mut core = self.core.lock().ok()?;
+        let mut core = crate::ghostty::lock_terminal_core(&self.core).ok()?;
         current_cursor_state(&mut core)
     }
 
     pub fn synchronized_output_active(&self) -> bool {
-        self.core.lock().ok().is_some_and(|mut core| {
-            flush_expired_synchronized_output(&mut core);
-            core.terminal
-                .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
-        })
+        crate::ghostty::lock_terminal_core(&self.core)
+            .ok()
+            .is_some_and(|mut core| {
+                flush_expired_synchronized_output(&mut core);
+                core.terminal
+                    .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
+            })
     }
 
     pub(crate) fn synchronized_output_state(&self) -> (bool, u64) {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .map(|mut core| {
                 flush_expired_synchronized_output(&mut core);
                 (
@@ -2099,9 +2091,7 @@ impl GhosttyPaneTerminal {
         if matches!(key.code, crossterm::event::KeyCode::Char(_)) {
             return crate::input::encode_terminal_key(key, protocol);
         }
-        let Some(modes) = self
-            .core
-            .lock()
+        let Some(modes) = crate::ghostty::lock_terminal_core(&self.core)
             .ok()
             .map(|core| crate::input::KeyEncodeModes {
                 kitty_flags: u16::from(core.terminal.kitty_keyboard_flags()),
@@ -2169,7 +2159,7 @@ impl GhosttyPaneTerminal {
         position: crate::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        let core = self.core.lock().ok()?;
+        let core = crate::ghostty::lock_terminal_core(&self.core).ok()?;
         let terminal = &core.terminal;
         let mode_enabled = |mode: u16| terminal.mode_get(mode);
         let mode = if mode_enabled(MODE_MOUSE_ANY_MOTION) {
@@ -2256,7 +2246,7 @@ impl GhosttyPaneTerminal {
         u16,
         Vec<crate::ghostty::ScreenTextRow>,
     )> {
-        let core = self.core.lock().ok()?;
+        let core = crate::ghostty::lock_terminal_core(&self.core).ok()?;
         let screen = core.terminal.active_screen();
         let rows = match screen {
             crate::ghostty::ActiveScreen::Alternate => core.terminal.screen_text_rows(),
@@ -2266,24 +2256,21 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn visible_text(&self) -> String {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .ok()
             .map(|mut core| ghostty_visible_text(&mut core))
             .unwrap_or_default()
     }
 
     pub fn visible_ansi(&self) -> String {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .ok()
             .and_then(|core| ghostty_visible_ansi(&core).ok())
             .unwrap_or_default()
     }
 
     pub fn detection_text(&self) -> String {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| ghostty_detection_text(&mut core).ok())
             .unwrap_or_default()
@@ -2295,8 +2282,7 @@ impl GhosttyPaneTerminal {
     }
 
     pub(crate) fn recent_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| ghostty_recent_text_snapshot(&mut core, lines).ok())
             .unwrap_or_default()
@@ -2308,8 +2294,7 @@ impl GhosttyPaneTerminal {
     }
 
     pub(crate) fn recent_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| ghostty_recent_ansi_snapshot(&mut core, lines, false).ok())
             .unwrap_or_default()
@@ -2321,30 +2306,27 @@ impl GhosttyPaneTerminal {
     }
 
     pub(crate) fn recent_unwrapped_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| ghostty_recent_text_unwrapped_snapshot(&mut core, lines).ok())
             .unwrap_or_default()
     }
 
     pub(crate) fn recent_unwrapped_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| ghostty_recent_ansi_snapshot(&mut core, lines, true).ok())
             .unwrap_or_default()
     }
 
     pub fn extract_selection(&self, selection: &crate::selection::Selection) -> Option<String> {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| ghostty_extract_selection(&mut core, selection))
     }
 
     pub fn primary_history_ansi(&self) -> Option<String> {
-        let mut core = self.core.lock().ok()?;
+        let mut core = crate::ghostty::lock_terminal_core(&self.core).ok()?;
         if core.terminal.active_screen() != crate::ghostty::ActiveScreen::Primary {
             return None;
         }
@@ -2354,15 +2336,14 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn visible_hyperlinks(&self, area: Rect) -> Vec<((u16, u16), String, String)> {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| ghostty_visible_hyperlinks(&mut core, area).ok())
             .unwrap_or_default()
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) {
-        let Ok(mut core) = self.core.lock() else {
+        let Ok(mut core) = crate::ghostty::lock_terminal_core(&self.core) else {
             return;
         };
         flush_expired_synchronized_output(&mut core);
@@ -2463,8 +2444,7 @@ impl GhosttyPaneTerminal {
         area_width: u16,
         area_height: u16,
     ) -> TerminalDirtyPatchOutcome {
-        self.core
-            .lock()
+        crate::ghostty::lock_terminal_core(&self.core)
             .ok()
             .map(|mut core| {
                 flush_expired_synchronized_output(&mut core);
@@ -3915,7 +3895,7 @@ mod tests {
     }
 
     fn current_palette_color(pane: &GhosttyPaneTerminal, index: u8) -> crate::ghostty::RgbColor {
-        let mut core = pane.core.lock().expect("test precondition");
+        let mut core = crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
         let GhosttyPaneCore {
             terminal,
             render_state,
@@ -4180,9 +4160,7 @@ mod tests {
         );
         assert!(begin.terminal_responses.is_empty());
         assert!(begin.clipboard_writes.is_empty());
-        let deadline = pane
-            .core
-            .lock()
+        let deadline = crate::ghostty::lock_terminal_core(&pane.core)
             .expect("test precondition")
             .terminal
             .synchronized_output_deadline()
@@ -4227,9 +4205,7 @@ mod tests {
                 .flush_expired_synchronized_output(pane_id, 0)
                 .request_render
         );
-        let deadline = pane
-            .core
-            .lock()
+        let deadline = crate::ghostty::lock_terminal_core(&pane.core)
             .expect("test precondition")
             .terminal
             .synchronized_output_deadline()
@@ -4251,7 +4227,7 @@ mod tests {
     fn host_terminal_theme_restore_probe_skips_when_no_transient_override() {
         let terminal = crate::ghostty::Terminal::new(80, 24, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
-        let core = pane.core.lock().expect("test precondition");
+        let core = crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
 
         assert!(!should_probe_host_terminal_theme_restore(&core));
     }
@@ -4261,10 +4237,11 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(80, 24, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.transient_default_color_owner_pgid = Some(42);
         }
-        let core = pane.core.lock().expect("test precondition");
+        let core = crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
 
         assert!(!should_probe_host_terminal_theme_restore(&core));
     }
@@ -4275,7 +4252,8 @@ mod tests {
         terminal.write(b"\x1b[?1049h");
         let pane = GhosttyPaneTerminal::new(terminal);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.transient_default_color_owner_pgid = Some(42);
             core.host_terminal_theme = crate::terminal_theme::TerminalTheme {
                 foreground: Some(crate::terminal_theme::RgbColor {
@@ -4291,7 +4269,7 @@ mod tests {
                 ..Default::default()
             };
         }
-        let core = pane.core.lock().expect("test precondition");
+        let core = crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
 
         assert!(!should_probe_host_terminal_theme_restore(&core));
     }
@@ -4301,7 +4279,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(80, 24, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.transient_default_color_owner_pgid = Some(42);
             core.host_terminal_theme = crate::terminal_theme::TerminalTheme {
                 foreground: Some(crate::terminal_theme::RgbColor {
@@ -4317,7 +4296,7 @@ mod tests {
                 ..Default::default()
             };
         }
-        let core = pane.core.lock().expect("test precondition");
+        let core = crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
 
         assert!(should_probe_host_terminal_theme_restore(&core));
     }
@@ -5597,7 +5576,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.terminal.write(b"hi");
         }
 
@@ -5621,7 +5601,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.terminal
                 .write("before\u{10eeee}\u{0305}\u{0305}after".as_bytes());
         }
@@ -5645,7 +5626,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.terminal.write(b"\x1b[38;2;68;85;102mhi\x1b[0m");
         }
 
@@ -5668,7 +5650,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.terminal.write(b"\x1b[48;2;68;85;102mhi\x1b[0m");
         }
 
@@ -5691,7 +5674,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.terminal.write(
                 b"\x1b[31mR\x1b[0m \x1b[38;5;171mI\x1b[0m \x1b[48;5;4mB\x1b[0m \x1b[38;2;1;2;3mT",
             );
@@ -5719,7 +5703,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.terminal.write(b"\x1b[48;5;4m\x1b[K");
         }
 
@@ -5741,7 +5726,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.terminal.write(b"\x1b[48;2;17;34;51m\x1b[K");
         }
 
@@ -6117,7 +6103,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.terminal.write(b"\x1b[4m\x1b[58:2::17:34:51mU");
         }
 
@@ -6137,7 +6124,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.terminal.write(b"\x1b[4:3mU");
         }
 
@@ -6416,7 +6404,7 @@ mod tests {
                 .count(),
             3
         );
-        let core = pane.core.lock().expect("test precondition");
+        let core = crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
         assert!(!has_default_color_override(&core.terminal));
         drop(core);
     }
@@ -6456,7 +6444,7 @@ mod tests {
 
         pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?;rgb:44/55/66\x1b\\");
 
-        let core = pane.core.lock().expect("test precondition");
+        let core = crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
         assert_eq!(
             core.terminal
                 .default_color_override(crate::ghostty::DefaultColor::Foreground),
@@ -6672,7 +6660,8 @@ mod tests {
         };
         pane.apply_host_terminal_theme(host_theme);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.terminal.write(b"hi");
         }
 
@@ -6710,7 +6699,8 @@ mod tests {
         };
         pane.apply_host_terminal_theme(host_theme);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.terminal.write(b"\x1b]10;rgb:44/55/66\x1b\\hi");
         }
 
@@ -6747,7 +6737,8 @@ mod tests {
         };
         pane.apply_host_terminal_theme(host_theme);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.terminal.write(b"\x1b]11;rgb:44/55/66\x1b\\hi");
         }
 
@@ -6784,7 +6775,8 @@ mod tests {
         };
         pane.apply_host_terminal_theme(host_theme);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             // SGR 7 enables inverse/reverse video
             core.terminal.write(b"\x1b[7mhi\x1b[27m");
         }
@@ -7146,7 +7138,7 @@ mod tests {
     fn default_color_changes_ask_for_an_owner_only_while_an_override_stands() {
         let terminal = crate::ghostty::Terminal::new(20, 3, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
-        let mut core = pane.core.lock().expect("test precondition");
+        let mut core = crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
         core.terminal.write(b"\x1b]11;rgb:10/20/30\x07");
         assert!(note_default_color_change(&mut core));
         // Nothing new since.
@@ -7208,7 +7200,7 @@ mod tests {
         // A render or API read panicking while it holds the core lock.
         let poisoner = std::sync::Arc::clone(&pane);
         let joined = std::thread::spawn(move || {
-            let _core = poisoner.ghostty.core.lock();
+            let _core = crate::ghostty::lock_terminal_core(&poisoner.ghostty.core);
             panic!("panic while holding the core lock");
         })
         .join();

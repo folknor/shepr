@@ -1,6 +1,8 @@
 mod rules;
 
 pub use rules::SidebarTokenRule;
+pub(crate) use rules::WireSidebarTokenRule;
+pub(crate) use rules::WireSidebarTokenStyle;
 
 use std::collections::BTreeMap;
 
@@ -49,6 +51,14 @@ pub struct SidebarTokenColor {
 impl SidebarTokenColor {
     pub(crate) fn ratatui(self) -> ratatui::style::Color {
         ratatui::style::Color::Rgb(self.r, self.g, self.b)
+    }
+
+    pub(crate) fn rgb(self) -> (u8, u8, u8) {
+        (self.r, self.g, self.b)
+    }
+
+    pub(crate) fn from_rgb((r, g, b): (u8, u8, u8)) -> Self {
+        Self { r, g, b }
     }
 }
 
@@ -99,7 +109,7 @@ impl<'de> Deserialize<'de> for SidebarTokenColor {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SidebarTokenStyle {
     pub fg: Option<SidebarTokenColor>,
     pub bold: Option<bool>,

@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub const THEME_NAMES: &[&str] = &[
     "catppuccin",
@@ -55,7 +55,7 @@ pub(crate) fn canonical_theme_name(name: &str) -> Option<&'static str> {
 /// accent = "#f5c2e7"
 /// red = "#ff6188"
 /// ```
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ThemeConfig {
     /// Built-in theme name. Default: "catppuccin".
@@ -95,7 +95,7 @@ pub(crate) fn color_diagnostic(field: &str, value: &str) -> Option<String> {
 }
 
 /// Per-token color overrides. All fields optional - only set what you want to change.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CustomThemeColors {
     pub accent: Option<String>,
@@ -218,6 +218,7 @@ fn parse_configured_color(
 
 pub(crate) fn resolve_palette(
     config: &super::Config,
+    ui_accent_is_explicit: bool,
 ) -> Result<crate::app::state::Palette, Vec<String>> {
     let name = config.theme.name.as_deref().unwrap_or("catppuccin");
     let canonical = canonical_theme_name(name).ok_or_else(|| {
@@ -237,7 +238,7 @@ pub(crate) fn resolve_palette(
         .custom
         .as_ref()
         .is_some_and(|custom| custom.accent.is_some());
-    if !custom_accent && config.ui.is_user_configured("accent") {
+    if !custom_accent && ui_accent_is_explicit {
         let accent = parse_configured_color("ui.accent", Some(config.ui.accent.as_str()))?
             .ok_or_else(|| vec!["ui.accent was marked configured without a value".to_owned()])?;
         palette.accent = accent;

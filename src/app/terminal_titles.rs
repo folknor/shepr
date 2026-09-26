@@ -11,7 +11,7 @@ pub(crate) struct TerminalTitleChanges {
 
 impl App {
     pub(crate) fn terminal_title_sidebar_changed(&self, changes: &TerminalTitleChanges) -> bool {
-        let config = &self.state.sidebar_agents;
+        let config = &self.state.settings.sidebar_agents;
         std::iter::once(&config.rows)
             .chain(config.rows_by_agent.values())
             .flatten()
@@ -188,7 +188,7 @@ mod tests {
         app.state.workspaces = vec![Workspace::test_new("one")];
         app.state.active = Some(0);
         app.state.ensure_test_terminals();
-        app.state.sidebar_agents.rows = vec![vec![
+        app.state.settings.sidebar_agents.rows = vec![vec![
             crate::config::AgentSidebarToken::TerminalTitleStripped,
         ]];
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
@@ -218,8 +218,9 @@ mod tests {
             api_rx,
             event_hub,
         );
-        app.state.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
-        app.state.sidebar_agents.rows_by_agent.insert(
+        app.state.settings.sidebar_agents.rows =
+            vec![vec![crate::config::AgentSidebarToken::Agent]];
+        app.state.settings.sidebar_agents.rows_by_agent.insert(
             "claude".into(),
             vec![vec![
                 crate::config::AgentSidebarToken::TerminalTitleStripped,
@@ -236,7 +237,7 @@ mod tests {
             ..TerminalTitleChanges::default()
         }));
 
-        app.state.sidebar_agents.rows_by_agent.insert(
+        app.state.settings.sidebar_agents.rows_by_agent.insert(
             "claude".into(),
             vec![vec![crate::config::AgentSidebarToken::TerminalTitle]],
         );
@@ -247,7 +248,7 @@ mod tests {
         event_hub
             .events_after(0)
             .iter()
-            .filter(|(_, event)| event.event == crate::api::schema::EventKind::PaneUpdated)
+            .filter(|(_, event)| event.data.kind() == crate::api::schema::EventKind::PaneUpdated)
             .count()
     }
 }

@@ -217,7 +217,7 @@ pub(super) fn snapshot_from_session(
     protocol::ClientShellSnapshot {
         boot_id: boot_id.to_owned(),
         revision,
-        server_keybindings_toml: app.client_shell_keybindings_profile().map(str::to_owned),
+        resolved_config: app.resolved_config().clone(),
         focused_workspace_id,
         focused_tab_id,
         focused_pane_id,
@@ -350,8 +350,8 @@ pub(super) fn render_pane_surface(
         .filter_map(|split| {
             let hit_rect = split_hit_rect(
                 split,
-                app.state.pane_borders.draws_borders(),
-                app.state.pane_gaps,
+                app.state.settings.pane_borders.draws_borders(),
+                app.state.settings.pane_gaps,
                 &pane_frames,
             )?;
             let direction = match split.direction {

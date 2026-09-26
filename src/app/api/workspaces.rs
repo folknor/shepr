@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, ResponseResult, WorkspaceCloseParams,
-    WorkspaceCreateParams, WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams,
+    EventData, EventEnvelope, ResponseResult, WorkspaceCloseParams, WorkspaceCreateParams,
+    WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams,
     WorkspaceReportMetadataParams, WorkspaceTarget,
 };
 use crate::app::{App, actions::PaneContextFallback};
@@ -129,7 +129,6 @@ impl App {
         crate::logging::workspace_renamed(&ws.id);
         self.schedule_session_save();
         self.emit_event(EventEnvelope {
-            event: EventKind::WorkspaceRenamed,
             data: EventData::WorkspaceRenamed {
                 workspace_id: self.public_workspace_id(index),
                 label: params.label,
@@ -167,7 +166,6 @@ impl App {
         let workspaces = self.workspace_list_info();
         if moved {
             self.emit_event(EventEnvelope {
-                event: EventKind::WorkspaceMoved,
                 data: EventData::WorkspaceMoved {
                     workspace_id,
                     insert_index,
@@ -237,7 +235,6 @@ impl App {
         let workspaces = self.workspace_list_info();
         if moved {
             self.emit_event(EventEnvelope {
-                event: EventKind::WorkspaceReordered,
                 data: EventData::WorkspaceReordered {
                     workspace_ids,
                     before_workspace_id,
@@ -377,8 +374,8 @@ mod tests {
             api_rx,
             crate::api::EventHub::default(),
         );
-        app.state.default_shell = exiting_test_command().into();
-        app.state.login_shell = false;
+        app.state.settings.default_shell = exiting_test_command().into();
+        app.state.settings.login_shell = false;
         app.state.workspaces = vec![Workspace::test_new("spaces")];
         app.state.active = Some(0);
         app.state.selected = 0;
@@ -454,8 +451,8 @@ mod tests {
             api_rx,
             crate::api::EventHub::default(),
         );
-        app.state.default_shell = exiting_test_command().into();
-        app.state.login_shell = false;
+        app.state.settings.default_shell = exiting_test_command().into();
+        app.state.settings.login_shell = false;
         app.state.workspaces = vec![Workspace::test_new("first"), Workspace::test_new("source")];
         app.state.active = Some(0);
         app.state.selected = 0;

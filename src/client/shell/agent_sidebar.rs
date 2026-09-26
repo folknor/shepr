@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::ops::Range;
 
+use crate::protocol::{ClientShellAgent, ClientShellPane};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -22,6 +24,23 @@ pub(super) fn ordered_agent_pane_ids(
     sort: crate::config::AgentPanelSortConfig,
 ) -> Vec<String> {
     let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
+    sort_agent_refs(&mut agents, sort);
+    agents
+        .into_iter()
+        .map(|agent| agent.pane_id.clone())
+        .collect()
+}
+
+pub(super) fn ordered_agent_refs(
+    snapshot: &ClientShellSnapshot,
+    sort: crate::config::AgentPanelSortConfig,
+) -> Vec<&ClientShellAgent> {
+    let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
+    sort_agent_refs(&mut agents, sort);
+    agents
+}
+
+fn sort_agent_refs(agents: &mut [&ClientShellAgent], sort: crate::config::AgentPanelSortConfig) {
     if sort == crate::config::AgentPanelSortConfig::Priority {
         agents.sort_by_key(|agent| {
             (
@@ -30,10 +49,6 @@ pub(super) fn ordered_agent_pane_ids(
             )
         });
     }
-    agents
-        .into_iter()
-        .map(|agent| agent.pane_id.clone())
-        .collect()
 }
 
 pub(super) fn render_agent_panel(
@@ -213,83 +228,263 @@ pub(super) fn agent_rows(
     config: &ClientShellConfig,
     machine: Option<&str>,
 ) -> Vec<AgentRow> {
-    ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
-        .into_iter()
-        .filter_map(|pane_id| agent_row(snapshot, &pane_id, config, machine))
+    if snapshot.agents.is_empty() {
+        return Vec::new();
+    }
+    let index = AgentRowIndex::new(snapshot, config.agent_panel_sort);
+    index.items[index.agents.clone()]
+        .iter()
+        .filter_map(|item| match item {
+            AgentRowIndexItem::Agent { agent, .. } => index.agent_row(agent, config, machine),
+            _ => None,
+        })
         .collect()
 }
 
-pub(super) fn agent_row(
-    snapshot: &ClientShellSnapshot,
-    pane_id: &str,
-    config: &ClientShellConfig,
-    machine: Option<&str>,
-) -> Option<AgentRow> {
-    let agent = snapshot
-        .agents
-        .iter()
-        .find(|agent| agent.pane_id == pane_id)?;
-    let workspace = snapshot
-        .workspaces
-        .iter()
-        .find(|workspace| workspace.workspace_id == agent.workspace_id)?;
-    let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == agent.tab_id);
-    let pane = snapshot
-        .panes
-        .iter()
-        .find(|pane| pane.pane_id == agent.pane_id);
-    let tab_count = snapshot
-        .tabs
-        .iter()
-        .filter(|candidate| candidate.workspace_id == agent.workspace_id)
-        .count();
-    let tab_label = tab
-        .filter(|tab| tab_count > 1 || tab.custom_label)
-        .map(|tab| tab.label.as_str());
-    let agent_label = agent
-        .display_agent
-        .as_deref()
-        .or(agent.name.as_deref())
-        .or(agent.agent.as_deref())
-        .or(agent.title.as_deref());
-    let labels = agent
-        .state_labels
-        .iter()
-        .cloned()
-        .collect::<HashMap<_, _>>();
-    let tokens = agent.tokens.iter().cloned().collect::<HashMap<_, _>>();
-    let state_text = labels
-        .get(status_text(agent.agent_status))
-        .map(String::as_str)
-        .unwrap_or_else(|| status_text(agent.agent_status));
-    let canonical_agent = agent
-        .agent
-        .as_deref()
-        .and_then(crate::detect::parse_agent_label);
-    let rows = sidebar_agent_rows(
-        &config.agents,
-        &AgentTokenContext {
-            machine,
-            workspace: &workspace.label,
-            tab: tab_label,
-            pane: agent
-                .title
-                .as_deref()
-                .or_else(|| pane.and_then(|pane| pane.label.as_deref())),
-            agent_label,
-            terminal_title: agent.terminal_title.as_deref(),
-            terminal_title_stripped: agent.terminal_title_stripped.as_deref(),
-            canonical_agent,
-            tokens: &tokens,
-        },
-        state_text,
-    );
-    Some(AgentRow {
-        pane_id: agent.pane_id.clone(),
-        status: agent.agent_status,
-        focused: agent.focused,
-        rows,
-    })
+/// Snapshot-local joins for the agent panel. Build the indexes once per list
+/// render so each row resolves its related resources with keyed lookups.
+struct AgentRowIndex<'a> {
+    items: Vec<AgentRowIndexItem<'a>>,
+    agents: Range<usize>,
+    workspaces: Range<usize>,
+    tabs: Range<usize>,
+    panes: Range<usize>,
+    tab_workspaces: Range<usize>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum AgentRowIndexKind {
+    Agent,
+    Workspace,
+    Tab,
+    Pane,
+    TabWorkspace,
+}
+
+enum AgentRowIndexItem<'a> {
+    Agent {
+        agent: &'a ClientShellAgent,
+        order: usize,
+    },
+    Workspace(&'a ClientShellWorkspace),
+    Tab(&'a ClientShellTab),
+    Pane(&'a ClientShellPane),
+    TabWorkspace(&'a str),
+}
+
+impl AgentRowIndexItem<'_> {
+    fn kind(&self) -> AgentRowIndexKind {
+        match self {
+            Self::Agent { .. } => AgentRowIndexKind::Agent,
+            Self::Workspace(_) => AgentRowIndexKind::Workspace,
+            Self::Tab(_) => AgentRowIndexKind::Tab,
+            Self::Pane(_) => AgentRowIndexKind::Pane,
+            Self::TabWorkspace(_) => AgentRowIndexKind::TabWorkspace,
+        }
+    }
+}
+
+impl<'a> AgentRowIndex<'a> {
+    fn new(snapshot: &'a ClientShellSnapshot, sort: crate::config::AgentPanelSortConfig) -> Self {
+        let capacity = snapshot
+            .agents
+            .len()
+            .saturating_add(snapshot.workspaces.len())
+            .saturating_add(snapshot.tabs.len().saturating_mul(2))
+            .saturating_add(snapshot.panes.len());
+        let mut items = Vec::with_capacity(capacity);
+        for (order, agent) in snapshot.agents.iter().enumerate() {
+            items.push(AgentRowIndexItem::Agent { agent, order });
+        }
+        items.extend(snapshot.workspaces.iter().map(AgentRowIndexItem::Workspace));
+        for tab in &snapshot.tabs {
+            items.push(AgentRowIndexItem::Tab(tab));
+            items.push(AgentRowIndexItem::TabWorkspace(&tab.workspace_id));
+        }
+        items.extend(snapshot.panes.iter().map(AgentRowIndexItem::Pane));
+        items.sort_unstable_by(|left, right| {
+            left.kind()
+                .cmp(&right.kind())
+                .then_with(|| match (left, right) {
+                    (
+                        AgentRowIndexItem::Agent {
+                            agent: left,
+                            order: left_order,
+                        },
+                        AgentRowIndexItem::Agent {
+                            agent: right,
+                            order: right_order,
+                        },
+                    ) if sort == crate::config::AgentPanelSortConfig::Priority => (
+                        std::cmp::Reverse(status_priority(left.agent_status)),
+                        std::cmp::Reverse(left.state_change_seq),
+                        left_order,
+                    )
+                        .cmp(&(
+                            std::cmp::Reverse(status_priority(right.agent_status)),
+                            std::cmp::Reverse(right.state_change_seq),
+                            right_order,
+                        )),
+                    (
+                        AgentRowIndexItem::Agent {
+                            order: left_order, ..
+                        },
+                        AgentRowIndexItem::Agent {
+                            order: right_order, ..
+                        },
+                    ) => left_order.cmp(right_order),
+                    (AgentRowIndexItem::Workspace(left), AgentRowIndexItem::Workspace(right)) => {
+                        left.workspace_id.cmp(&right.workspace_id)
+                    }
+                    (AgentRowIndexItem::Tab(left), AgentRowIndexItem::Tab(right)) => {
+                        left.tab_id.cmp(&right.tab_id)
+                    }
+                    (AgentRowIndexItem::Pane(left), AgentRowIndexItem::Pane(right)) => {
+                        left.pane_id.cmp(&right.pane_id)
+                    }
+                    (
+                        AgentRowIndexItem::TabWorkspace(left),
+                        AgentRowIndexItem::TabWorkspace(right),
+                    ) => left.cmp(right),
+                    _ => std::cmp::Ordering::Equal,
+                })
+        });
+        let agents = Self::kind_range(&items, AgentRowIndexKind::Agent);
+        let workspaces = Self::kind_range(&items, AgentRowIndexKind::Workspace);
+        let tabs = Self::kind_range(&items, AgentRowIndexKind::Tab);
+        let panes = Self::kind_range(&items, AgentRowIndexKind::Pane);
+        let tab_workspaces = Self::kind_range(&items, AgentRowIndexKind::TabWorkspace);
+        Self {
+            agents,
+            workspaces,
+            tabs,
+            panes,
+            tab_workspaces,
+            items,
+        }
+    }
+
+    fn kind_range(items: &[AgentRowIndexItem<'_>], kind: AgentRowIndexKind) -> Range<usize> {
+        let start = items.partition_point(|item| item.kind() < kind);
+        let end = items.partition_point(|item| item.kind() <= kind);
+        start..end
+    }
+
+    fn workspace(&self, workspace_id: &str) -> Option<&'a ClientShellWorkspace> {
+        let items = &self.items[self.workspaces.clone()];
+        let index = items
+            .binary_search_by(|item| match item {
+                AgentRowIndexItem::Workspace(workspace) => {
+                    workspace.workspace_id.as_str().cmp(workspace_id)
+                }
+                _ => std::cmp::Ordering::Equal,
+            })
+            .ok()?;
+        match items[index] {
+            AgentRowIndexItem::Workspace(workspace) => Some(workspace),
+            _ => None,
+        }
+    }
+
+    fn tab(&self, tab_id: &str) -> Option<&'a ClientShellTab> {
+        let items = &self.items[self.tabs.clone()];
+        let index = items
+            .binary_search_by(|item| match item {
+                AgentRowIndexItem::Tab(tab) => tab.tab_id.as_str().cmp(tab_id),
+                _ => std::cmp::Ordering::Equal,
+            })
+            .ok()?;
+        match items[index] {
+            AgentRowIndexItem::Tab(tab) => Some(tab),
+            _ => None,
+        }
+    }
+
+    fn pane(&self, pane_id: &str) -> Option<&'a ClientShellPane> {
+        let items = &self.items[self.panes.clone()];
+        let index = items
+            .binary_search_by(|item| match item {
+                AgentRowIndexItem::Pane(pane) => pane.pane_id.as_str().cmp(pane_id),
+                _ => std::cmp::Ordering::Equal,
+            })
+            .ok()?;
+        match items[index] {
+            AgentRowIndexItem::Pane(pane) => Some(pane),
+            _ => None,
+        }
+    }
+
+    fn tab_count(&self, workspace_id: &str) -> usize {
+        let items = &self.items[self.tab_workspaces.clone()];
+        let start = items.partition_point(|item| match item {
+            AgentRowIndexItem::TabWorkspace(candidate) => *candidate < workspace_id,
+            _ => false,
+        });
+        let end = items.partition_point(|item| match item {
+            AgentRowIndexItem::TabWorkspace(candidate) => *candidate <= workspace_id,
+            _ => false,
+        });
+        end - start
+    }
+
+    fn agent_row(
+        &self,
+        agent: &'a ClientShellAgent,
+        config: &ClientShellConfig,
+        machine: Option<&str>,
+    ) -> Option<AgentRow> {
+        let workspace = self.workspace(&agent.workspace_id)?;
+        let tab = self.tab(&agent.tab_id);
+        let pane = self.pane(&agent.pane_id);
+        let tab_count = self.tab_count(&agent.workspace_id);
+        let tab_label = tab
+            .filter(|tab| tab_count > 1 || tab.custom_label)
+            .map(|tab| tab.label.as_str());
+        let agent_label = agent
+            .display_agent
+            .as_deref()
+            .or(agent.name.as_deref())
+            .or(agent.agent.as_deref())
+            .or(agent.title.as_deref());
+        let labels = agent
+            .state_labels
+            .iter()
+            .cloned()
+            .collect::<HashMap<_, _>>();
+        let tokens = agent.tokens.iter().cloned().collect::<HashMap<_, _>>();
+        let state_text = labels
+            .get(status_text(agent.agent_status))
+            .map(String::as_str)
+            .unwrap_or_else(|| status_text(agent.agent_status));
+        let canonical_agent = agent
+            .agent
+            .as_deref()
+            .and_then(crate::detect::parse_agent_label);
+        let rows = sidebar_agent_rows(
+            &config.agents,
+            &AgentTokenContext {
+                machine,
+                workspace: &workspace.label,
+                tab: tab_label,
+                pane: agent
+                    .title
+                    .as_deref()
+                    .or_else(|| pane.and_then(|pane| pane.label.as_deref())),
+                agent_label,
+                terminal_title: agent.terminal_title.as_deref(),
+                terminal_title_stripped: agent.terminal_title_stripped.as_deref(),
+                canonical_agent,
+                tokens: &tokens,
+            },
+            state_text,
+        );
+        Some(AgentRow {
+            pane_id: agent.pane_id.clone(),
+            status: agent.agent_status,
+            focused: agent.focused,
+            rows,
+        })
+    }
 }
 
 pub(super) fn render_agent_row(
@@ -357,15 +552,14 @@ fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: 
     // The cell holding the last drawn character, so zero-width characters
     // (combining marks, variation selectors) join its grapheme.
     let mut last_column = None;
-    for character in text.chars() {
-        // Control characters have no width and draw nothing.
-        let Some(char_width) = unicode_width::UnicodeWidthChar::width(character) else {
-            continue;
-        };
+    for (unit, char_width) in crate::ghostty::unicode_display_units(text) {
+        let char_width = usize::from(char_width);
         if char_width == 0 {
-            if let Some(cell) = last_column.and_then(|column| buffer.cell_mut((column, y))) {
+            if !unit.chars().all(char::is_control)
+                && let Some(cell) = last_column.and_then(|column| buffer.cell_mut((column, y)))
+            {
                 let mut symbol = cell.symbol().to_owned();
-                symbol.push(character);
+                symbol.push_str(unit);
                 cell.set_symbol(&symbol);
             }
             continue;
@@ -380,7 +574,7 @@ fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: 
             break;
         };
         if let Some(cell) = buffer.cell_mut((column, y)) {
-            cell.set_char(character).set_style(style);
+            cell.set_symbol(unit).set_style(style);
             last_column = Some(column);
         } else {
             last_column = None;
@@ -390,12 +584,12 @@ fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: 
 }
 
 fn display_width(text: &str) -> usize {
-    unicode_width::UnicodeWidthStr::width(text)
+    crate::ghostty::unicode_text_width(text)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::put_text;
+    use super::{display_width, put_text};
     use ratatui::{buffer::Buffer, layout::Rect, style::Style};
 
     #[test]
@@ -433,5 +627,25 @@ mod tests {
         assert_eq!(buffer[(0, 0)].symbol(), "e\u{301}");
         assert_eq!(buffer[(1, 0)].symbol(), "x");
         assert_eq!(buffer[(2, 0)].symbol(), " ");
+    }
+
+    #[test]
+    fn put_text_gives_halfwidth_voiced_marks_their_terminal_column() {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 1));
+
+        put_text(&mut buffer, 0, 0, 3, "x\u{ff9e}y", Style::default());
+
+        assert_eq!(buffer[(0, 0)].symbol(), "x");
+        assert_eq!(buffer[(1, 0)].symbol(), "\u{ff9e}");
+        assert_eq!(buffer[(2, 0)].symbol(), "y");
+    }
+
+    #[test]
+    fn display_width_matches_terminal_graphemes_and_voiced_marks() {
+        assert_eq!(
+            display_width("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}"),
+            2
+        );
+        assert_eq!(display_width("ｶﾞx"), 3);
     }
 }

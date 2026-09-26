@@ -652,34 +652,11 @@ pub struct AppState {
     /// Last reported focus state for the outer terminal hosting shepr.
     /// When focus has not been reported, pane focus events default to Gained.
     pub outer_terminal_focus: Option<bool>,
-    // Config
-    /// Virtual terminal size (columns, rows) used when no client is attached.
-    pub(crate) headless_size: (u16, u16),
-    pub sidebar_agents: crate::config::AgentsSidebarConfig,
-    pub sidebar_spaces: crate::config::SpacesSidebarConfig,
+    /// Immutable settings resolved from the launch configuration.
+    pub(crate) settings: AppSettings,
     pub next_agent_state_change_seq: u64,
-    pub pane_borders: crate::config::PaneBordersConfig,
-    pub pane_outer_borders: bool,
-    pub pane_scrollbars: bool,
-    pub pane_gaps: bool,
-    pub show_agent_labels_on_pane_borders: bool,
     pub tab_bar_right: Vec<TabBarStatusSegment>,
     pub tab_bar_right_separator: String,
-    /// Expose the focused pane's cursor anchor to the outer terminal even when
-    /// the pane requested `?25l`. See `[experimental] reveal_hidden_cursor_for_cjk_ime`.
-    pub reveal_hidden_cursor_for_cjk_ime: bool,
-    /// Restrict cursor reveal to focused panes whose detected agent matches
-    /// one of these. When false, apply to any focused pane.
-    pub cjk_ime_agent_filter_configured: bool,
-    pub cjk_ime_agents: Vec<crate::detect::Agent>,
-    /// DECSCUSR shape parameter (1-6) for the IME anchor cursor.
-    pub cjk_ime_cursor_shape: u8,
-    pub default_shell: String,
-    pub login_shell: bool,
-    pub new_terminal_cwd: NewTerminalCwdConfig,
-    pub pane_scrollback_limit_bytes: usize,
-    /// UI color palette - all sidebar/UI colors centralized for theming.
-    pub palette: Palette,
     /// Last known foreground host terminal appearance.
     pub host_terminal_appearance: Option<HostAppearance>,
     /// True when the foreground host explicitly reported appearance via Mode 2031.
@@ -697,6 +674,56 @@ pub struct AppState {
     pub(crate) terminal_runtime_shutdowns: Vec<crate::terminal::TerminalId>,
 }
 
+/// Runtime-ready settings copied once from the immutable launch config.
+#[derive(Debug, Clone)]
+pub(crate) struct AppSettings {
+    /// Virtual terminal size (columns, rows) used when no client is attached.
+    pub(crate) headless_size: (u16, u16),
+    pub(crate) sidebar_agents: crate::config::AgentsSidebarConfig,
+    pub(crate) sidebar_spaces: crate::config::SpacesSidebarConfig,
+    pub(crate) pane_borders: crate::config::PaneBordersConfig,
+    pub(crate) pane_outer_borders: bool,
+    pub(crate) pane_scrollbars: bool,
+    pub(crate) pane_gaps: bool,
+    pub(crate) show_agent_labels_on_pane_borders: bool,
+    /// Expose the focused pane's cursor anchor to the outer terminal even when
+    /// the pane requested `?25l`.
+    pub(crate) reveal_hidden_cursor_for_cjk_ime: bool,
+    /// Restrict cursor reveal to focused panes whose detected agent matches
+    /// one of these. An empty vector applies to any focused pane.
+    pub(crate) cjk_ime_agents: Vec<crate::detect::Agent>,
+    /// DECSCUSR shape parameter (1-6) for the IME anchor cursor.
+    pub(crate) cjk_ime_cursor_shape: u8,
+    pub(crate) default_shell: String,
+    pub(crate) login_shell: bool,
+    pub(crate) new_terminal_cwd: NewTerminalCwdConfig,
+    pub(crate) pane_scrollback_limit_bytes: usize,
+    pub(crate) palette: Palette,
+}
+
+impl AppSettings {
+    pub(crate) fn from_config(config: &crate::config::ValidatedConfig) -> Self {
+        Self {
+            headless_size: config.headless_size(),
+            sidebar_agents: config.ui.sidebar.agents.clone(),
+            sidebar_spaces: config.ui.sidebar.spaces.clone(),
+            pane_borders: config.ui.pane_borders,
+            pane_outer_borders: config.ui.pane_outer_borders,
+            pane_scrollbars: config.ui.pane_scrollbars,
+            pane_gaps: config.ui.pane_gaps,
+            show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
+            reveal_hidden_cursor_for_cjk_ime: config.experimental.reveal_hidden_cursor_for_cjk_ime,
+            cjk_ime_agents: config.experimental.cjk_ime_agents.clone(),
+            cjk_ime_cursor_shape: config.experimental.cjk_ime_cursor_shape.to_decscusr(),
+            default_shell: config.terminal.default_shell.clone(),
+            login_shell: config.terminal.login_shell,
+            new_terminal_cwd: config.terminal.new_cwd.clone(),
+            pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
+            palette: config.palette().clone(),
+        }
+    }
+}
+
 impl AppState {
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
@@ -711,7 +738,12 @@ impl AppState {
     /// (at startup, or when no client has ever attached).
     pub(crate) fn pane_geometry(&self) -> crate::workspace::PaneGeometry {
         let area = if self.view.terminal_area.is_empty() {
-            Rect::new(0, 0, self.headless_size.0, self.headless_size.1)
+            Rect::new(
+                0,
+                0,
+                self.settings.headless_size.0,
+                self.settings.headless_size.1,
+            )
         } else {
             self.view.terminal_area
         };
@@ -722,10 +754,10 @@ impl AppState {
     pub(crate) fn pane_geometry_in(&self, area: Rect) -> crate::workspace::PaneGeometry {
         crate::workspace::PaneGeometry {
             area,
-            pane_borders: self.pane_borders,
-            pane_gaps: self.pane_gaps,
-            pane_outer_borders: self.pane_outer_borders,
-            pane_scrollbars: self.pane_scrollbars,
+            pane_borders: self.settings.pane_borders,
+            pane_gaps: self.settings.pane_gaps,
+            pane_outer_borders: self.settings.pane_outer_borders,
+            pane_scrollbars: self.settings.pane_scrollbars,
         }
     }
 
@@ -779,29 +811,10 @@ impl AppState {
                 pane_infos: Vec::new(),
             },
             outer_terminal_focus: None,
-            headless_size: (
-                crate::config::DEFAULT_HEADLESS_COLS,
-                crate::config::DEFAULT_HEADLESS_ROWS,
-            ),
-            sidebar_agents: crate::config::AgentsSidebarConfig::default(),
-            sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
+            settings: AppSettings::from_config(&crate::config::ValidatedConfig::test_default()),
             next_agent_state_change_seq: 0,
-            pane_borders: crate::config::PaneBordersConfig::Auto,
-            pane_outer_borders: true,
-            pane_scrollbars: true,
-            pane_gaps: false,
-            show_agent_labels_on_pane_borders: false,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: " ".into(),
-            reveal_hidden_cursor_for_cjk_ime: false,
-            cjk_ime_agent_filter_configured: false,
-            cjk_ime_agents: Vec::new(),
-            cjk_ime_cursor_shape: 2, // steady_block
-            default_shell: String::new(),
-            login_shell: false,
-            new_terminal_cwd: NewTerminalCwdConfig::Follow,
-            pane_scrollback_limit_bytes: crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES,
-            palette: Palette::catppuccin(),
             host_terminal_appearance: None,
             host_terminal_appearance_explicit: false,
             agent_manifest_summaries: Vec::new(),
@@ -946,8 +959,8 @@ mod tests {
     #[test]
     fn pane_geometry_uses_headless_size_before_first_view() {
         let mut state = AppState::test_new();
-        state.headless_size = (132, 41);
-        state.pane_scrollbars = false;
+        state.settings.headless_size = (132, 41);
+        state.settings.pane_scrollbars = false;
 
         assert_eq!(state.pane_geometry().area, Rect::new(0, 0, 132, 41));
         assert_eq!(state.pane_geometry().sole_pane_size(), (41, 132));
@@ -957,8 +970,8 @@ mod tests {
     fn split_spawn_size_is_the_new_panes_content_size_not_the_first_panes_outer_rect() {
         let mut state = AppState::test_new();
         state.view.terminal_area = Rect::new(5, 2, 120, 40);
-        state.pane_borders = crate::config::PaneBordersConfig::Always;
-        state.pane_scrollbars = true;
+        state.settings.pane_borders = crate::config::PaneBordersConfig::Always;
+        state.settings.pane_scrollbars = true;
         let geometry = state.pane_geometry();
         assert_eq!(geometry.area, state.view.terminal_area);
 

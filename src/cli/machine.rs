@@ -205,8 +205,9 @@ fn reconnect(
     }
     crate::remote::check_saved_ssh(paths, &profile.target, &profile.session, settings)?;
     println!(
-        "Machine {} is reachable. Open Shepr clients retry within 30 seconds.",
-        profile.id
+        "Machine {} is reachable. Open Shepr clients retry within {} seconds.",
+        profile.id,
+        crate::client::endpoint::MAX_RETRY_DELAY.as_secs()
     );
     Ok(0)
 }

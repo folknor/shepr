@@ -55,13 +55,11 @@ pub(super) struct ClientState {
     pub(super) direct_keyboard_protocol: crate::terminal_modes::DirectHostKeyboardState,
     pub(super) pane_keyboard_report_all: bool,
     pub(super) keyboard_report_all_active: bool,
+    pub(super) settings: ClientSettings,
     pub(super) reported_size: (u16, u16),
     pub(super) reported_cell_size: (u32, u32),
-    pub(super) pixel_geometry_enabled: bool,
     pub(super) pixel_geometry_exact: bool,
     pub(super) mode: SessionMode,
-    pub(super) mouse_scroll_lines: usize,
-    pub(super) redraw_on_focus_gained: bool,
     pub(super) repaint_pending: bool,
     /// During a source-off-first endpoint activation the currently blitted frame remains
     /// authoritative until an acknowledged target snapshot/surface pair commits.
@@ -91,6 +89,7 @@ impl Drop for ClientState {
 impl ClientState {
     #[cfg(test)]
     pub(super) fn test_new() -> Self {
+        let config = crate::config::ValidatedConfig::test_default();
         Self {
             blit_encoder: render_ansi::BlitEncoder::new(),
             host_mouse_mode: terminal_setup::HostMouseMode::new(false, false, false),
@@ -98,15 +97,13 @@ impl ClientState {
             direct_keyboard_protocol: Default::default(),
             pane_keyboard_report_all: false,
             keyboard_report_all_active: false,
+            settings: ClientSettings::from_config(&config),
             reported_size: (100, 30),
             reported_cell_size: (0, 0),
-            pixel_geometry_enabled: false,
             pixel_geometry_exact: false,
             mode: SessionMode::Shell(Box::new(shell::ClientShellState::new(
-                shell::ClientShellConfig::from_config(&crate::config::Config::default()),
+                shell::ClientShellConfig::from_validated_config(&config),
             ))),
-            mouse_scroll_lines: 3,
-            redraw_on_focus_gained: false,
             repaint_pending: false,
             presentation_frozen: false,
             deferred_local_activation: None,

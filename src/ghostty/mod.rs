@@ -35,13 +35,21 @@
 
 mod format;
 mod handler;
+mod locks;
 mod modes;
 mod rows;
 mod scan;
 
+pub(crate) use locks::{
+    TerminalCorePoisoned, lock_auxiliary, lock_terminal_core, recover_auxiliary_poison,
+    terminal_core_is_poisoned,
+};
+#[cfg(test)]
+pub(crate) use locks::{TerminalCoreTryLockError, try_lock_auxiliary, try_lock_terminal_core};
+
 use std::fmt;
 use std::mem;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use alacritty_terminal::event::{Event, EventListener};
@@ -449,19 +457,78 @@ pub fn unicode_codepoint_width(codepoint: u32) -> u8 {
     }
 }
 
+/// A visible text unit and the number of terminal cells it occupies.
+/// Graphemes stay together, except that halfwidth voiced marks always get a
+/// cell of their own as they do in [`CoreHandler`].
+pub(crate) struct UnicodeDisplayUnits<'a> {
+    graphemes: unicode_segmentation::Graphemes<'a>,
+    remaining: &'a str,
+}
+
+impl<'a> Iterator for UnicodeDisplayUnits<'a> {
+    type Item = (&'a str, u8);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining.is_empty() {
+            self.remaining = self.graphemes.next()?;
+        }
+        let special = self
+            .remaining
+            .char_indices()
+            .find(|(_, character)| is_halfwidth_voiced_mark(*character as u32));
+        if let Some((index, character)) = special {
+            if index == 0 {
+                let end = character.len_utf8();
+                let mark = &self.remaining[..end];
+                self.remaining = &self.remaining[end..];
+                return Some((mark, unicode_codepoint_width(character as u32)));
+            }
+            let unit = &self.remaining[..index];
+            self.remaining = &self.remaining[index..];
+            return Some((unit, unicode_grapheme_cell_width(unit)));
+        }
+        let unit = self.remaining;
+        self.remaining = "";
+        Some((unit, unicode_grapheme_cell_width(unit)))
+    }
+}
+
+fn unicode_grapheme_cell_width(grapheme: &str) -> u8 {
+    use unicode_width::UnicodeWidthStr;
+
+    if grapheme.chars().all(char::is_control) {
+        0
+    } else {
+        u8::try_from(grapheme.width().min(2)).unwrap_or(2)
+    }
+}
+
+/// Iterate text as terminal display units without allocating.
+pub(crate) fn unicode_display_units(text: &str) -> UnicodeDisplayUnits<'_> {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    UnicodeDisplayUnits {
+        graphemes: text.graphemes(true),
+        remaining: "",
+    }
+}
+
+/// Width of text under the terminal grid's grapheme and voiced-mark rules.
+pub fn unicode_text_width(text: &str) -> usize {
+    unicode_display_units(text).fold(0usize, |width, (_, unit_width)| {
+        width.saturating_add(usize::from(unit_width))
+    })
+}
+
 /// Width of the first grapheme cluster in `codepoints`, returned as
 /// `(codepoints consumed, cell width)`.
 #[cfg(test)]
-pub fn unicode_grapheme_width(codepoints: &[u32]) -> (usize, u8) {
+pub fn test_unicode_grapheme_width(codepoints: &[u32]) -> (usize, u8) {
     use unicode_segmentation::UnicodeSegmentation;
-    use unicode_width::UnicodeWidthStr;
 
     let Some(&first) = codepoints.first() else {
         return (0, 0);
     };
-    if is_halfwidth_voiced_mark(first) {
-        return (1, 1);
-    }
     if char::from_u32(first).is_none() {
         return (1, 1);
     }
@@ -473,7 +540,10 @@ pub fn unicode_grapheme_width(codepoints: &[u32]) -> (usize, u8) {
         return (0, 0);
     };
     let consumed = cluster.chars().count();
-    (consumed, u8::try_from(cluster.width().min(2)).unwrap_or(2))
+    let width = unicode_display_units(cluster).fold(0u8, |width, (_, unit_width)| {
+        width.saturating_add(unit_width)
+    });
+    (consumed, width)
 }
 
 pub fn encode_focus(event: FocusEvent) -> &'static [u8] {
@@ -535,10 +605,7 @@ impl EventListener for Listener {
                 | Event::ResetTitle
         );
         if relevant {
-            self.0
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(event);
+            crate::ghostty::lock_auxiliary(&self.0).push(event);
         }
     }
 }
@@ -827,7 +894,7 @@ impl Terminal {
 
     fn drain_events(&mut self) {
         let events = {
-            let mut queue = self.events.lock().unwrap_or_else(PoisonError::into_inner);
+            let mut queue = crate::ghostty::lock_auxiliary(&self.events);
             mem::take(&mut *queue)
         };
         for event in events {
@@ -1108,21 +1175,14 @@ impl Terminal {
 
     fn set_history_lines(&mut self, history_lines: usize) {
         self.history_lines = history_lines;
-        let queued = self
-            .events
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .len();
+        let queued = crate::ghostty::lock_auxiliary(&self.events).len();
         self.term.set_options(term_config(history_lines));
         // Term::set_options sends only the current title (or reset) through
         // this listener, synchronously. Term mutation is private to this
         // &mut Terminal API and no other event producer can reach this queue,
         // so truncating the tail drops only that synthetic reannouncement,
         // which is not a title change made by the child.
-        self.events
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .truncate(queued);
+        crate::ghostty::lock_auxiliary(&self.events).truncate(queued);
     }
 
     pub fn set_color_scheme(&mut self, color_scheme: Option<ColorScheme>) -> Option<ColorScheme> {

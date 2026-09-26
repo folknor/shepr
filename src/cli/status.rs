@@ -224,8 +224,6 @@ struct ServerStatusJson {
 #[derive(Serialize)]
 struct ServerCapabilitiesJson {
     detached_server_daemon: bool,
-    surface_interest: bool,
-    health_check: bool,
     ssh_agent_registration: bool,
 }
 
@@ -262,8 +260,6 @@ fn server_status_json(
                 .as_ref()
                 .map(|capabilities| ServerCapabilitiesJson {
                     detached_server_daemon: capabilities.detached_server_daemon,
-                    surface_interest: capabilities.surface_interest,
-                    health_check: capabilities.health_check,
                     ssh_agent_registration: capabilities.ssh_agent_registration,
                 }),
             compatible: crate::protocol::Compatibility::of(*protocol).known(),
@@ -341,21 +337,21 @@ mod tests {
             protocol,
             capabilities: Some(crate::api::schema::ServerCapabilities {
                 detached_server_daemon: true,
-                surface_interest: true,
-                health_check: true,
                 ssh_agent_registration: false,
             }),
         }
     }
 
     #[test]
-    fn status_exposes_ssh_agent_registration() {
+    fn status_exposes_only_dynamic_server_capabilities() {
         let server = running_server(Some("test"), Some(crate::protocol::PROTOCOL_VERSION));
         let paths =
             super::super::target::CliContext::test_local(crate::config::AppPaths::default());
         let value =
             serde_json::to_value(server_status_json(&paths, &server)).expect("test precondition");
         assert_eq!(value["capabilities"]["ssh_agent_registration"], false);
+        assert!(value["capabilities"].get("surface_interest").is_none());
+        assert!(value["capabilities"].get("health_check").is_none());
     }
 
     #[test]

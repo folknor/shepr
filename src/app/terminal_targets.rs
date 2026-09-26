@@ -34,6 +34,12 @@ impl TerminalTargetRef<'_> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TargetKind {
+    Terminal,
+    Agent,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TerminalTargetCandidate {
     pub terminal_id: String,
@@ -60,45 +66,33 @@ impl App {
         &self,
         target: &str,
     ) -> Result<TerminalTarget, TerminalTargetError> {
-        let terminal_matches = self
-            .terminal_targets()
-            .filter(|candidate| candidate.terminal_id.as_str() == target);
-        if let Some(resolved) = self.single_terminal_match(target, terminal_matches)? {
-            return Ok(resolved);
-        }
-
-        if let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(target)
-            && let Some(resolved) = self.terminal_target_for_pane(ws_idx, pane_id)
-        {
-            return Ok(resolved);
-        }
-
-        let agent_matches = self.terminal_targets().filter(|candidate| {
-            self.state
-                .terminals
-                .get(candidate.terminal_id)
-                .is_some_and(|terminal| {
-                    terminal.agent_name.as_deref() == Some(target)
-                        || terminal.effective_agent_label() == Some(target)
-                })
-        });
-        if let Some(resolved) = self.single_terminal_match(target, agent_matches)? {
-            return Ok(resolved);
-        }
-
-        Err(TerminalTargetError::NotFound {
-            target: target.to_string(),
-        })
+        self.resolve_target(target, TargetKind::Terminal)
     }
 
     pub(crate) fn resolve_agent_target(
         &self,
         target: &str,
     ) -> Result<TerminalTarget, TerminalTargetError> {
+        self.resolve_target(target, TargetKind::Agent)
+    }
+
+    fn resolve_target(
+        &self,
+        target: &str,
+        kind: TargetKind,
+    ) -> Result<TerminalTarget, TerminalTargetError> {
+        if kind == TargetKind::Terminal {
+            let terminal_matches = self
+                .terminal_targets()
+                .filter(|candidate| candidate.terminal_id.as_str() == target);
+            if let Some(resolved) = self.single_terminal_match(target, terminal_matches)? {
+                return Ok(resolved);
+            }
+        }
+
         if let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(target)
-            && let Some(resolved) = self
-                .terminal_target_for_pane(ws_idx, pane_id)
-                .filter(|resolved| self.target_is_agent(resolved))
+            && let Some(resolved) = self.terminal_target_for_pane(ws_idx, pane_id)
+            && (kind == TargetKind::Terminal || self.target_is_agent(&resolved))
         {
             return Ok(resolved);
         }
@@ -107,7 +101,13 @@ impl App {
             self.state
                 .terminals
                 .get(candidate.terminal_id)
-                .is_some_and(|terminal| terminal.agent_name.as_deref() == Some(target))
+                .is_some_and(|terminal| match kind {
+                    TargetKind::Terminal => {
+                        terminal.agent_name.as_deref() == Some(target)
+                            || terminal.effective_agent_label() == Some(target)
+                    }
+                    TargetKind::Agent => terminal.agent_name.as_deref() == Some(target),
+                })
         });
         if let Some(resolved) = self.single_terminal_match(target, name_matches)? {
             return Ok(resolved);

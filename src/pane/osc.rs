@@ -441,7 +441,7 @@ mod tests {
     fn pane_default_theme(
         pane: &super::super::GhosttyPaneTerminal,
     ) -> crate::terminal_theme::TerminalTheme {
-        let mut core = pane.core.lock().expect("test precondition");
+        let mut core = crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
         let super::super::terminal::GhosttyPaneCore {
             terminal,
             render_state,
@@ -932,7 +932,8 @@ mod tests {
 
         pane.apply_host_terminal_theme(host_theme);
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.transient_default_color_owner_pgid = Some(42);
             core.terminal
                 .write(b"\x1b]10;rgb:01/02/03\x1b\\\x1b]11;rgb:dd/ee/ff\x1b\\");
@@ -947,7 +948,8 @@ mod tests {
         );
 
         {
-            let mut core = pane.core.lock().expect("test precondition");
+            let mut core =
+                crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             // The child is mid-sequence when the restore runs: nothing may be
             // written into its stream.
             core.terminal.write(b"\x1b[3");

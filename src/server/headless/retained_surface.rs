@@ -100,7 +100,7 @@ fn retained_scrollbar_patch(
 ) -> Option<Vec<protocol::PaneSurfacePatchRow>> {
     let next_rect = metrics
         .filter(|metrics| metrics.max_offset_from_bottom > 0)
-        .filter(|_| app.state.pane_scrollbars && !alternate_screen_active)
+        .filter(|_| app.state.settings.pane_scrollbars && !alternate_screen_active)
         .and_then(|_| {
             let rect = protocol::SurfaceRect {
                 x: pane.inner_rect.x.checked_add(pane.inner_rect.width)?,
@@ -126,7 +126,7 @@ fn retained_scrollbar_patch(
             &mut buffer,
             metrics,
             track,
-            &app.state.palette,
+            &app.state.settings.palette,
             pane.focused,
         );
     }
@@ -233,7 +233,7 @@ impl HeadlessServer {
 
         if pty_sources.is_empty()
             || self.app.full_redraw_pending
-            || self.app.state.reveal_hidden_cursor_for_cjk_ime
+            || self.app.state.settings.reveal_hidden_cursor_for_cjk_ime
         {
             fallback!("unsafe_state");
         }

@@ -1,7 +1,7 @@
 use super::*;
 
 /// Run the headless server. This is the entry point called from main.rs.
-pub fn run_server(config: &config::Config, paths: &config::AppPaths) -> io::Result<()> {
+pub fn run_server(config: &config::ValidatedConfig, paths: &config::AppPaths) -> io::Result<()> {
     // Consume the startup-cwd hint before anything below starts a thread: the
     // API server thread, the tokio workers and session restore all run
     // concurrently afterwards, and unsetting a variable while another thread

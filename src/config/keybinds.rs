@@ -42,35 +42,6 @@ impl BindingConfig {
             Self::Many(values) => values.iter().map(String::as_str).collect(),
         }
     }
-
-    pub(crate) fn has_values(&self) -> bool {
-        self.values().iter().any(|value| !value.trim().is_empty())
-    }
-
-    pub(crate) fn indexed_labels(&self) -> Vec<String> {
-        let mut labels = Vec::new();
-        for raw in self.values() {
-            let raw = raw.trim();
-            if raw.is_empty() {
-                continue;
-            }
-            match parse_binding_string(raw) {
-                Some(ParsedBinding::Single(binding)) => {
-                    if matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9')) {
-                        labels.push(binding.label);
-                    }
-                }
-                Some(ParsedBinding::Range(range)) => {
-                    labels.extend(range.into_iter().filter_map(|binding| {
-                        matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9'))
-                            .then_some(binding.label)
-                    }));
-                }
-                None => {}
-            }
-        }
-        labels
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,7 +263,7 @@ pub struct Keybinds {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct KeybindValidation {
+pub(crate) struct KeybindValidation {
     pub(super) prefix_diag: Option<String>,
     pub(super) prefix: KeyCombo,
     pub(super) keybind_diags: Vec<String>,
@@ -376,24 +347,19 @@ impl BindingRegistry {
 }
 
 impl Config {
-    /// Return the result cached by config loading, or validate an in-memory
-    /// config value that was built directly by a test or profile parser.
-    pub(super) fn validated_keybinds(&self) -> &KeybindValidation {
-        self.validated_keybinds
-            .get_or_init(|| self.compute_keybind_validation())
-    }
-
-    /// Parse and validate `[keys]` once while loading a config. This is pure
-    /// and does not log; loading collects its diagnostics with the other
-    /// config checks.
-    pub(super) fn compute_keybind_validation(&self) -> KeybindValidation {
+    /// Parse and validate `[keys]` for an in-memory config. The boot resolver
+    /// calls this once and stores the result on its immutable value.
+    pub(super) fn compute_keybind_validation(
+        &self,
+        is_configured: impl Fn(&str) -> bool,
+    ) -> KeybindValidation {
         let mut diagnostics = Vec::new();
         let (prefix, prefix_diag) = parse_key_combo_with_diagnostic(
             &self.keys.prefix,
             "keys.prefix",
             (KeyCode::Char('b'), KeyModifiers::CONTROL),
         );
-        let prefix_source = if self.keys.key_field_is_user_configured("prefix") {
+        let prefix_source = if is_configured("prefix") {
             BindingSource::User
         } else {
             BindingSource::Default
@@ -468,7 +434,7 @@ impl Config {
 
         macro_rules! field_source {
             ($field:ident) => {
-                if self.keys.key_field_is_user_configured(stringify!($field)) {
+                if is_configured(stringify!($field)) {
                     BindingSource::User
                 } else {
                     BindingSource::Default
@@ -1234,6 +1200,14 @@ mod tests {
             .collect()
     }
 
+    fn diagnostics_and_keybinds(config: &Config, configured: &[&str]) -> (Vec<String>, Keybinds) {
+        let validation = config.compute_keybind_validation(|field| configured.contains(&field));
+        (
+            config.collect_diagnostics_with_keybind_validation(&validation),
+            validation.keybinds,
+        )
+    }
+
     #[test]
     fn parse_simple_char_combo() {
         assert_eq!(
@@ -1865,8 +1839,7 @@ previous_workspace = "prefix+shift+l"
         )
         .expect("test precondition");
 
-        let diagnostics = config.collect_diagnostics();
-        let kb = config.keybinds();
+        let (diagnostics, kb) = diagnostics_and_keybinds(&config, &["previous_workspace"]);
 
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         assert_eq!(
@@ -1889,8 +1862,7 @@ prefix = "n"
         )
         .expect("test precondition");
 
-        let diagnostics = config.collect_diagnostics();
-        let kb = config.keybinds();
+        let (diagnostics, kb) = diagnostics_and_keybinds(&config, &["prefix"]);
 
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         assert!(kb.next_tab.bindings.is_empty());

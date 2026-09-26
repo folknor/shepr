@@ -125,8 +125,6 @@ pub(crate) fn start_server_with_stop_control(
 fn default_capabilities() -> Option<ServerCapabilities> {
     Some(ServerCapabilities {
         detached_server_daemon: crate::platform::current_process_is_detached_server_daemon(),
-        surface_interest: true,
-        health_check: true,
         ssh_agent_registration: false,
     })
 }
@@ -1257,8 +1255,6 @@ mod tests {
             &tx,
             Some(ServerCapabilities {
                 detached_server_daemon: true,
-                surface_interest: true,
-                health_check: true,
                 ssh_agent_registration: false,
             }),
             None,
@@ -1411,7 +1407,6 @@ mod tests {
                 } else {
                     if pane_get_count == 2 {
                         responder_event_hub.push(crate::api::schema::EventEnvelope {
-                            event: crate::api::schema::EventKind::PaneClosed,
                             data: crate::api::schema::EventData::PaneClosed {
                                 pane_id: "pane_1".into(),
                                 workspace_id: "ws_1".into(),
@@ -1567,7 +1562,6 @@ mod tests {
             };
             assert_eq!(params.pane_id, "w999:p9");
             responder_event_hub.push(crate::api::schema::EventEnvelope {
-                event: crate::api::schema::EventKind::PaneClosed,
                 data: crate::api::schema::EventData::PaneClosed {
                     pane_id: "w999:p9".into(),
                     workspace_id: "w999".into(),

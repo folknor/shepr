@@ -78,11 +78,10 @@ impl EventHub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::schema::{EventData, EventEnvelope, EventKind};
+    use crate::api::schema::{EventData, EventEnvelope};
 
     fn event() -> EventEnvelope {
         EventEnvelope {
-            event: EventKind::WorkspaceFocused,
             data: EventData::WorkspaceFocused {
                 workspace_id: "workspace_1".into(),
             },

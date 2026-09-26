@@ -2,6 +2,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use serde::{Deserialize, Serialize};
+
 /// Legacy environment variable for overriding the client socket path.
 ///
 /// Contractual override behavior for auto-detect uses `SHEPR_SOCKET_PATH`.
@@ -9,7 +11,7 @@ use std::process::Command;
 /// client-only override when `SHEPR_SOCKET_PATH` is not set.
 pub const CLIENT_SOCKET_PATH_ENV_VAR: &str = "SHEPR_CLIENT_SOCKET_PATH";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerAddress {
     api_socket: PathBuf,
     client_socket: PathBuf,
@@ -29,7 +31,7 @@ impl Default for ServerAddress {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum AddressSource {
     Session,
     ApiOverride,

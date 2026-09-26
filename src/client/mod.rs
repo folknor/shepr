@@ -33,7 +33,7 @@ mod transport;
 use clipboard_forwarding::decode_clipboard_payload;
 use clipboard_forwarding::forward_clipboard;
 use events::{ClientLoopEvent, ParsedHostInput};
-use loop_config::ClientLoopConfig;
+use loop_config::{ClientLoopConfig, ClientSettings};
 use shell_runtime::*;
 use state::{AttachSession, ClientState, SessionMode};
 use transport::*;
@@ -97,7 +97,7 @@ fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
 }
 
 fn run_client_with_mode(
-    config: &crate::config::Config,
+    config: &crate::config::ValidatedConfig,
     paths: &crate::config::AppPaths,
     attach_request: Option<(String, bool)>,
     attach_escape: Option<AttachEscapeState>,
@@ -105,32 +105,25 @@ fn run_client_with_mode(
 ) -> io::Result<()> {
     crate::logging::init_file_logging(paths, crate::logging::CLIENT_LOG_FILE);
 
-    let attach_escape = attach_escape.map(|_| AttachEscapeState::from_config(config));
     crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let client_rendered_shell = attach_request.is_none();
     let socket_path = client_socket_path(paths);
     let keybinding_source = client_shell_keybinding_source().map_err(io::Error::other)?;
     let shell_config = client_rendered_shell.then(|| {
-        shell::ClientShellConfig::from_config(config)
+        shell::ClientShellConfig::from_validated_config(config)
             .with_keybinding_source(keybinding_source)
             .with_local_endpoint(paths.state_dir(), &socket_path)
     });
-    let mouse_capture = config.ui.mouse_capture;
-    let mouse_scroll_lines = config.ui.mouse_scroll_lines();
-    let redraw_on_focus_gained = config.ui.redraw_on_focus_gained;
-    let host_cursor = config.ui.host_cursor;
+    let mut settings = ClientSettings::from_config(config);
+    let mouse_capture = settings.mouse_capture_active;
     let pixel_geometry_fallback = client_rendered_shell;
     let pixel_geometry_enabled = pixel_geometry_fallback || attach_escape.is_some();
+    settings.pixel_geometry_enabled = pixel_geometry_enabled;
+    settings.pixel_geometry_fallback = pixel_geometry_fallback;
     let mut loop_config = ClientLoopConfig {
-        mouse_scroll_lines,
-        redraw_on_focus_gained,
-        host_cursor,
-        pixel_geometry_enabled,
-        pixel_geometry_fallback,
-        mouse_capture_active: mouse_capture,
+        settings,
         host_escape_disambiguation_active: false,
         initial_host_input: Vec::new(),
-        manage_ssh_config: config.remote.manage_ssh_config,
         paths: paths.clone(),
         local_socket_path: socket_path.clone(),
         shell_config,
@@ -181,7 +174,7 @@ fn run_client_with_mode(
                 cell_height_px,
                 exact_cell_size,
                 shell_surface_size,
-                loop_config.mouse_capture_active,
+                loop_config.settings.mouse_capture_active,
                 true,
                 None,
             )
@@ -326,7 +319,8 @@ async fn run_client_loop(
     direct_notices: &mut VecDeque<String>,
     _terminal_guard: &TerminalGuard,
 ) -> Result<(), ClientError> {
-    let draw_host_cursor = attach_escape.is_none() && should_draw_host_cursor(config.host_cursor);
+    let draw_host_cursor =
+        attach_escape.is_none() && should_draw_host_cursor(config.settings.host_cursor);
     let local_unavailable = initial.is_none();
     let (initial_cell_width_px, initial_cell_height_px, initial_pixel_geometry_exact) =
         terminal_geometry::bounded_cell_geometry(
@@ -338,9 +332,9 @@ async fn run_client_loop(
     let mut state = ClientState {
         blit_encoder: render_ansi::BlitEncoder::new(),
         host_mouse_mode: HostMouseMode::new(
-            attach_escape.is_some() && config.mouse_capture_active,
-            config.mouse_capture_active,
-            config.mouse_capture_active,
+            attach_escape.is_some() && config.settings.mouse_capture_active,
+            config.settings.mouse_capture_active,
+            config.settings.mouse_capture_active,
         ),
         host_theme_updates: Vec::new(),
         direct_keyboard_protocol: crate::terminal_modes::DirectHostKeyboardState::default(),
@@ -348,7 +342,7 @@ async fn run_client_loop(
         keyboard_report_all_active: false,
         reported_size: (cols, rows),
         reported_cell_size: (initial_cell_width_px, initial_cell_height_px),
-        pixel_geometry_enabled: config.pixel_geometry_enabled,
+        settings: config.settings,
         pixel_geometry_exact: initial_pixel_geometry_exact,
         mode: match config.shell_config.take().map(shell::ClientShellState::new) {
             Some(shell) => SessionMode::Shell(Box::new(shell)),
@@ -356,8 +350,6 @@ async fn run_client_loop(
                 escape: attach_escape,
             }),
         },
-        mouse_scroll_lines: config.mouse_scroll_lines,
-        redraw_on_focus_gained: config.redraw_on_focus_gained,
         repaint_pending: false,
         presentation_frozen: false,
         deferred_local_activation: None,
@@ -399,7 +391,7 @@ async fn run_client_loop(
     // Terminals that report no pixel size through the ioctl are asked directly
     // instead of falling back to an assumed cell size.
     let will_query_host_cell_size = !state.mode.is_escape_attach()
-        && host_cell_size_query_required(state.pixel_geometry_enabled);
+        && host_cell_size_query_required(state.settings.pixel_geometry_enabled);
     let stdin_quit = Arc::clone(&should_quit);
     let stdin_escape_disambiguation_active = config.host_escape_disambiguation_active;
     let stdin_initial_host_input = std::mem::take(&mut config.initial_host_input);
@@ -431,8 +423,8 @@ async fn run_client_loop(
     let resize_quit = Arc::clone(&should_quit);
     let resize_tx = event_tx.clone();
     let resize_cell_size = Arc::clone(&reported_cell_size);
-    let pixel_geometry_enabled = state.pixel_geometry_enabled;
-    let pixel_geometry_fallback = config.pixel_geometry_fallback;
+    let pixel_geometry_enabled = state.settings.pixel_geometry_enabled;
+    let pixel_geometry_fallback = config.settings.pixel_geometry_fallback;
     std::thread::spawn(move || {
         resize_poll_loop(
             &resize_tx,
@@ -472,7 +464,7 @@ async fn run_client_loop(
         &config.paths,
         &endpoint_catalog.ssh,
         crate::remote::SavedSshSettings {
-            manage_ssh_config: config.manage_ssh_config,
+            manage_ssh_config: config.settings.manage_ssh_config,
         },
         std::time::Instant::now(),
     );
@@ -760,7 +752,8 @@ impl ClientLoop<'_> {
                             height_px: geometry.height_px,
                         }),
                         modifiers,
-                        lines: u16::try_from(state.mouse_scroll_lines.max(1)).unwrap_or(u16::MAX),
+                        lines: u16::try_from(state.settings.mouse_scroll_lines.max(1))
+                            .unwrap_or(u16::MAX),
                     };
                     write_stream.send(&message);
                 }
@@ -770,7 +763,7 @@ impl ClientLoop<'_> {
                 input.raw,
                 &input.event,
                 state.reported_size.1,
-                state.mouse_scroll_lines,
+                state.settings.mouse_scroll_lines,
             );
             match action {
                 AttachInputAction::Forward(data) => {
@@ -821,7 +814,7 @@ impl ClientLoop<'_> {
         }
         if crate::raw_input::events_require_host_surface_redraw(
             inputs.iter().map(|input| &input.event),
-            state.redraw_on_focus_gained,
+            state.settings.redraw_on_focus_gained,
         ) {
             state.request_repaint();
         }

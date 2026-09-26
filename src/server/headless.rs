@@ -226,7 +226,7 @@ impl HeadlessServer {
         // Channel for server events from client threads.
         let (server_event_tx, server_event_rx) = mpsc::channel(64);
 
-        let headless_size = app.state.headless_size;
+        let headless_size = app.state.settings.headless_size;
         Ok(Self {
             app,
             _api_server: api_server,

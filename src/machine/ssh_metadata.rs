@@ -9,7 +9,6 @@ const MAX_METADATA_BYTES: u64 = 16 * 1024;
 
 #[derive(Serialize, Deserialize)]
 struct StoredMetadata {
-    version: u32,
     target: String,
     session: String,
     executable: String,
@@ -45,7 +44,6 @@ impl SshMetadataCache {
 
     pub(crate) fn store(&self, executable: &RemoteExecutable) {
         let stored = StoredMetadata {
-            version: 1,
             target: self.target.clone(),
             session: self.session.clone(),
             executable: executable.as_str().to_owned(),
@@ -84,7 +82,7 @@ fn load_metadata(path: &Path, target: &str, session: &str) -> Option<RemoteExecu
         return None;
     }
     let stored: StoredMetadata = serde_json::from_slice(&bytes).ok()?;
-    if stored.version != 1 || stored.target != target || stored.session != session {
+    if stored.target != target || stored.session != session {
         return None;
     }
     RemoteExecutable::parse(stored.executable).ok()
@@ -132,6 +130,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&first.path).expect("test precondition"))
                 .expect("test precondition");
         assert_eq!(stored["executable"], "/some path/shepr");
+        assert!(stored.get("version").is_none());
         assert!(stored.get("os").is_none());
         stored["future_field"] = true.into();
         std::fs::write(
@@ -140,13 +139,6 @@ mod tests {
         )
         .expect("test precondition");
         assert_eq!(first.load(), Some(metadata.clone()));
-        stored["version"] = 2.into();
-        std::fs::write(
-            &first.path,
-            serde_json::to_vec(&stored).expect("test precondition"),
-        )
-        .expect("test precondition");
-        assert!(first.load().is_none());
         for bytes in [
             b"broken".to_vec(),
             vec![b' '; usize::try_from(MAX_METADATA_BYTES).unwrap_or(usize::MAX) + 1],

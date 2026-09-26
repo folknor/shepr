@@ -224,7 +224,7 @@ pub fn wait_for_server_socket(
 /// 3. Run the thin client (which connects to the server)
 pub fn auto_detect_launch(
     saved_federation: bool,
-    config: &crate::config::Config,
+    config: &crate::config::ValidatedConfig,
     paths: &crate::config::AppPaths,
 ) -> io::Result<()> {
     // The client requires terminal geometry before it can attach. Reject an

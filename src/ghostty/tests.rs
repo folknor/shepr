@@ -66,12 +66,18 @@ fn unicode_width_helpers_match_terminal_layout_rules() {
     assert_eq!(unicode_codepoint_width('\u{ff9f}' as u32), 1);
     assert_eq!(unicode_codepoint_width('界' as u32), 2);
     assert_eq!(unicode_codepoint_width(0x11_0000), 1);
+    assert_eq!(
+        unicode_text_width("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}"),
+        2
+    );
+    assert_eq!(unicode_text_width("ｶﾞx"), 3);
 
     let cases: &[(&[u32], usize, u8)] = &[
         (&[], 0, 0),
         (&['e' as u32, '\u{301}' as u32], 2, 1),
         (&['\u{ff9e}' as u32, 'A' as u32], 1, 1),
         (&['\u{ff9f}' as u32, 'A' as u32], 1, 1),
+        (&['ｶ' as u32, '\u{ff9e}' as u32], 2, 2),
         (&['\u{26A0}' as u32, '\u{fe0f}' as u32], 2, 2),
         (&['\u{26A0}' as u32, '\u{fe0e}' as u32], 2, 1),
         (&['\u{1F1E7}' as u32, '\u{1F1F7}' as u32], 2, 2),
@@ -91,7 +97,7 @@ fn unicode_width_helpers_match_terminal_layout_rules() {
     ];
     for &(codepoints, consumed, width) in cases {
         assert_eq!(
-            unicode_grapheme_width(codepoints),
+            test_unicode_grapheme_width(codepoints),
             (consumed, width),
             "{codepoints:x?}"
         );

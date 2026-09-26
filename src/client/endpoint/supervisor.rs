@@ -18,7 +18,7 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
 /// keep the promise with an attempt already in flight: from any moment, the next attempt
 /// starts once the current one ends or its retry delay (counted from its start) is up,
 /// whichever is later, and both fall within 30 seconds.
-const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
+pub(crate) const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
 /// Same bound as `MAX_RETRY_DELAY`, for the same `shepr machine reconnect` promise.
 const ATTENTION_RETRY_DELAY: Duration = Duration::from_secs(30);

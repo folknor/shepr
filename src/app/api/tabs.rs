@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 
+#[cfg(test)]
+use crate::api::schema::EventKind;
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, ResponseResult, TabCreateParams, TabListParams,
-    TabMoveParams, TabRenameParams, TabTarget,
+    EventData, EventEnvelope, ResponseResult, TabCreateParams, TabListParams, TabMoveParams,
+    TabRenameParams, TabTarget,
 };
 use crate::app::App;
 
@@ -66,8 +68,8 @@ impl App {
             self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx))
         });
         let (rows, cols) = self.state.pane_geometry().sole_pane_size();
-        let default_shell = self.state.default_shell.clone();
-        let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
+        let default_shell = self.state.settings.default_shell.clone();
+        let scrollback_limit_bytes = self.state.settings.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
         let host_terminal_appearance = self.state.host_terminal_appearance;
         let spawn = self.pane_spawn_handles();
@@ -88,7 +90,10 @@ impl App {
                     scrollback_limit_bytes,
                     host_terminal_theme,
                     host_terminal_appearance,
-                    crate::pane::PaneShellConfig::new(&default_shell, self.state.login_shell),
+                    crate::pane::PaneShellConfig::new(
+                        &default_shell,
+                        self.state.settings.login_shell,
+                    ),
                     extra_env,
                     &spawn,
                 )
@@ -163,7 +168,6 @@ impl App {
         crate::logging::tab_renamed(&workspace_id, &tab_id);
         self.schedule_session_save();
         self.emit_event(EventEnvelope {
-            event: EventKind::TabRenamed,
             data: EventData::TabRenamed {
                 tab_id: tab_id.clone(),
                 workspace_id: self.public_workspace_id(ws_idx),
@@ -206,7 +210,6 @@ impl App {
         if moved {
             self.schedule_session_save();
             self.emit_event(EventEnvelope {
-                event: EventKind::TabMoved,
                 data: EventData::TabMoved {
                     tab_id,
                     workspace_id,
@@ -314,7 +317,7 @@ mod tests {
         assert_eq!(
             events
                 .iter()
-                .map(|(_, event)| event.event)
+                .map(|(_, event)| event.data.kind())
                 .collect::<Vec<_>>(),
             [
                 EventKind::PaneClosed,
@@ -468,8 +471,8 @@ mod tests {
             api_rx,
             event_hub,
         );
-        app.state.default_shell = exiting_test_command().into();
-        app.state.login_shell = false;
+        app.state.settings.default_shell = exiting_test_command().into();
+        app.state.settings.login_shell = false;
         let workspace = Workspace::test_new("tabs");
         let focused_pane = workspace.tabs[0].root_pane;
         app.state.workspaces = vec![workspace];

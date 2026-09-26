@@ -31,7 +31,7 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
     let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = crate::app::App::new(&config, crate::app::AppPolicy::TEST, api_rx, event_hub);
 
-    app.state.default_shell = crate::app::exiting_test_command().into();
+    app.state.settings.default_shell = crate::app::exiting_test_command().into();
     // The server removes its socket when dropped; the directory goes with the
     // scratch root at exit.
     let socket_path = crate::test_support::ScratchDir::new("hh")
@@ -45,7 +45,7 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         .expect("set listener nonblocking");
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
     let stop_requested = Arc::new(AtomicBool::new(false));
-    let headless_size = app.state.headless_size;
+    let headless_size = app.state.settings.headless_size;
 
     HeadlessServer {
         app,
@@ -143,7 +143,7 @@ async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
-    server.app.state.sidebar_agents.rows = vec![vec![
+    server.app.state.settings.sidebar_agents.rows = vec![vec![
         crate::config::AgentSidebarToken::TerminalTitleStripped,
     ]];
     let pane_id = server.app.state.workspaces[0].tabs[0].root_pane;
@@ -208,7 +208,7 @@ fn pane_updated_events(event_hub: &api::EventHub) -> usize {
     event_hub
         .events_after(0)
         .iter()
-        .filter(|(_, event)| event.event == api::schema::EventKind::PaneUpdated)
+        .filter(|(_, event)| event.data.kind() == api::schema::EventKind::PaneUpdated)
         .count()
 }
 
@@ -4721,7 +4721,7 @@ fn headless_scheduled_tasks_expire_agent_metadata() {
             .events_after(0)
             .iter()
             .any(|(_, event)| {
-                event.event == crate::api::schema::EventKind::PaneAgentStatusChanged
+                event.data.kind() == crate::api::schema::EventKind::PaneAgentStatusChanged
                     && matches!(
                         &event.data,
                         crate::api::schema::EventData::PaneAgentStatusChanged {

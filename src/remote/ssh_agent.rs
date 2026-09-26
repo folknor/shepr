@@ -155,8 +155,8 @@ mod tests {
                 let response = if expected == "ping" {
                     serde_json::json!({"id": request["id"], "result": {
                         "type": "pong", "version": "test", "protocol": crate::protocol::PROTOCOL_VERSION,
-                        "capabilities": {"detached_server_daemon": false, "surface_interest": true,
-                            "health_check": true, "ssh_agent_registration": true}
+                        "capabilities": {"detached_server_daemon": false,
+                            "ssh_agent_registration": true}
                     }})
                 } else {
                     serde_json::json!({"id": request["id"], "error": {
@@ -225,8 +225,8 @@ mod tests {
             }
             let result = if expected == "ping" {
                 serde_json::json!({"type": "pong", "version": "test", "protocol": crate::protocol::PROTOCOL_VERSION,
-                    "capabilities": {"detached_server_daemon": false, "surface_interest": true,
-                        "health_check": true, "ssh_agent_registration": true}})
+                    "capabilities": {"detached_server_daemon": false,
+                        "ssh_agent_registration": true}})
             } else {
                 serde_json::json!({"type": "ok"})
             };

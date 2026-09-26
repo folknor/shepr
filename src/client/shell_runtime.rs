@@ -969,7 +969,7 @@ mod tests {
         Box::new(crate::protocol::ClientShellSnapshot {
             boot_id: boot_id.into(),
             revision: 1,
-            server_keybindings_toml: None,
+            resolved_config: crate::config::ValidatedConfig::test_default(),
             focused_workspace_id: None,
             focused_tab_id: None,
             focused_pane_id: None,

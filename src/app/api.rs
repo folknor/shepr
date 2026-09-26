@@ -112,7 +112,6 @@ impl App {
             && let Some(public_pane_id) = self.public_pane_id(plan.workspace_index, *pane_id)
         {
             self.emit_event(crate::api::schema::EventEnvelope {
-                event: crate::api::schema::EventKind::PaneExited,
                 data: crate::api::schema::EventData::PaneExited {
                     pane_id: public_pane_id,
                     workspace_id: self.public_workspace_id(plan.workspace_index),
@@ -137,7 +136,7 @@ impl App {
             };
             events
                 .into_iter()
-                .filter(|event| event.event != crate::api::schema::EventKind::PaneClosed)
+                .filter(|event| event.data.kind() != crate::api::schema::EventKind::PaneClosed)
                 .collect()
         } else {
             Vec::new()
@@ -237,7 +236,6 @@ impl App {
 
         if update.previous_agent_label != update.agent_label || update.agent_released {
             self.emit_event(crate::api::schema::EventEnvelope {
-                event: crate::api::schema::EventKind::PaneAgentDetected,
                 data: crate::api::schema::EventData::PaneAgentDetected {
                     pane_id: pane_id.clone(),
                     workspace_id: workspace_id.clone(),
@@ -258,7 +256,6 @@ impl App {
         {
             let presentation = update.presentation.clone();
             self.emit_event(crate::api::schema::EventEnvelope {
-                event: crate::api::schema::EventKind::PaneAgentStatusChanged,
                 data: crate::api::schema::EventData::PaneAgentStatusChanged {
                     pane_id,
                     workspace_id,
@@ -295,7 +292,7 @@ impl App {
         ws_idx: usize,
         tab_idx: usize,
     ) -> Vec<crate::api::schema::EventEnvelope> {
-        use crate::api::schema::{EventData, EventEnvelope, EventKind};
+        use crate::api::schema::{EventData, EventEnvelope};
 
         let Some(tab) = self
             .state
@@ -312,7 +309,6 @@ impl App {
             .into_iter()
             .filter_map(|pane_id| self.public_pane_id(ws_idx, pane_id))
             .map(|pane_id| EventEnvelope {
-                event: EventKind::PaneClosed,
                 data: EventData::PaneClosed {
                     pane_id,
                     workspace_id: workspace_id.clone(),
@@ -321,7 +317,6 @@ impl App {
             .collect();
         if let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) {
             events.push(EventEnvelope {
-                event: EventKind::TabClosed,
                 data: EventData::TabClosed {
                     tab_id,
                     workspace_id,
@@ -337,7 +332,7 @@ impl App {
         &self,
         ws_idx: usize,
     ) -> Vec<crate::api::schema::EventEnvelope> {
-        use crate::api::schema::{EventData, EventEnvelope, EventKind};
+        use crate::api::schema::{EventData, EventEnvelope};
 
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
             return Vec::new();
@@ -346,7 +341,6 @@ impl App {
             .flat_map(|tab_idx| self.tab_close_events(ws_idx, tab_idx))
             .collect();
         events.push(EventEnvelope {
-            event: EventKind::WorkspaceClosed,
             data: EventData::WorkspaceClosed {
                 workspace_id: self.public_workspace_id(ws_idx),
                 workspace: self.workspace_info(ws_idx),
@@ -358,7 +352,6 @@ impl App {
     pub(crate) fn emit_pane_updated(&mut self, ws_idx: usize, pane_id: crate::layout::PaneId) {
         if let Some(pane) = self.pane_info(ws_idx, pane_id) {
             self.emit_event(crate::api::schema::EventEnvelope {
-                event: crate::api::schema::EventKind::PaneUpdated,
                 data: crate::api::schema::EventData::PaneUpdated { pane },
             });
         }
@@ -369,7 +362,6 @@ impl App {
             return;
         };
         self.event_hub.push(crate::api::schema::EventEnvelope {
-            event: crate::api::schema::EventKind::WorkspaceMetadataUpdated,
             data: crate::api::schema::EventData::WorkspaceMetadataUpdated { workspace },
         });
     }
@@ -405,7 +397,6 @@ impl App {
 
     pub(crate) fn emit_focus_api_events(&mut self, ws_idx: usize, pane_id: crate::layout::PaneId) {
         self.emit_event(crate::api::schema::EventEnvelope {
-            event: crate::api::schema::EventKind::WorkspaceFocused,
             data: crate::api::schema::EventData::WorkspaceFocused {
                 workspace_id: self.public_workspace_id(ws_idx),
             },
@@ -417,7 +408,6 @@ impl App {
             .and_then(|ws| self.public_tab_id(ws_idx, ws.active_tab))
         {
             self.emit_event(crate::api::schema::EventEnvelope {
-                event: crate::api::schema::EventKind::TabFocused,
                 data: crate::api::schema::EventData::TabFocused {
                     tab_id,
                     workspace_id: self.public_workspace_id(ws_idx),
@@ -426,7 +416,6 @@ impl App {
         }
         if let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) {
             self.emit_event(crate::api::schema::EventEnvelope {
-                event: crate::api::schema::EventKind::PaneFocused,
                 data: crate::api::schema::EventData::PaneFocused {
                     pane_id: public_pane_id,
                     workspace_id: self.public_workspace_id(ws_idx),
@@ -957,11 +946,13 @@ mod tests {
         let events = event_hub.events_after(0);
         let pane_exited = events
             .iter()
-            .position(|(_, event)| event.event == crate::api::schema::EventKind::PaneExited)
+            .position(|(_, event)| event.data.kind() == crate::api::schema::EventKind::PaneExited)
             .expect("pane.exited should be emitted");
         let layout_updated = events
             .iter()
-            .position(|(_, event)| event.event == crate::api::schema::EventKind::LayoutUpdated)
+            .position(|(_, event)| {
+                event.data.kind() == crate::api::schema::EventKind::LayoutUpdated
+            })
             .expect("layout.updated should be emitted");
         assert!(pane_exited < layout_updated);
         assert!(matches!(
@@ -1052,7 +1043,7 @@ mod tests {
                 .map(|(_, event)| event)
                 .filter(|event| {
                     matches!(
-                        event.event,
+                        event.data.kind(),
                         crate::api::schema::EventKind::PaneExited
                             | crate::api::schema::EventKind::PaneClosed
                             | crate::api::schema::EventKind::TabClosed
@@ -1063,7 +1054,10 @@ mod tests {
         };
         let events = removals(&event_hub, 0);
         assert_eq!(
-            events.iter().map(|event| event.event).collect::<Vec<_>>(),
+            events
+                .iter()
+                .map(|event| event.data.kind())
+                .collect::<Vec<_>>(),
             [
                 crate::api::schema::EventKind::PaneExited,
                 crate::api::schema::EventKind::TabClosed
@@ -1081,7 +1075,10 @@ mod tests {
         });
         let events = removals(&event_hub, before);
         assert_eq!(
-            events.iter().map(|event| event.event).collect::<Vec<_>>(),
+            events
+                .iter()
+                .map(|event| event.data.kind())
+                .collect::<Vec<_>>(),
             [
                 crate::api::schema::EventKind::PaneExited,
                 crate::api::schema::EventKind::TabClosed,

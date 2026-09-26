@@ -9,12 +9,12 @@ use crate::input::TerminalKey;
 /// that line "start" one column early.
 pub(crate) fn first_non_blank_col(text: &str) -> Option<u16> {
     let mut col = 0u16;
-    for ch in text.chars() {
-        let width = u16::from(crate::ghostty::unicode_codepoint_width(ch as u32));
+    for (unit, width) in crate::ghostty::unicode_display_units(text) {
+        let width = u16::from(width);
         if width == 0 {
             continue;
         }
-        if !ch.is_whitespace() {
+        if !unit.chars().next().is_some_and(char::is_whitespace) {
             return Some(col);
         }
         col = col.saturating_add(width);
@@ -25,8 +25,8 @@ pub(crate) fn first_non_blank_col(text: &str) -> Option<u16> {
 pub(crate) fn last_character_col(text: &str) -> Option<u16> {
     let mut col = 0u16;
     let mut last_col = None;
-    for ch in text.chars() {
-        let width = u16::from(crate::ghostty::unicode_codepoint_width(ch as u32));
+    for (_, width) in crate::ghostty::unicode_display_units(text) {
+        let width = u16::from(width);
         if width > 0 {
             last_col = Some(col);
             col = col.saturating_add(width);
@@ -102,6 +102,15 @@ mod tests {
         assert_eq!(first_non_blank_col("  界x"), Some(2));
         // An ideographic space is a two-column blank.
         assert_eq!(first_non_blank_col("\u{3000}x"), Some(2));
+        // Joined emoji occupy the same two cells as in the terminal grid.
+        assert_eq!(
+            first_non_blank_col("   \u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}x"),
+            Some(3)
+        );
+        assert_eq!(
+            last_character_col("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}x"),
+            Some(2)
+        );
     }
 
     #[test]

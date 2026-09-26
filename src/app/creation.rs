@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use super::{App, api_helpers::pane_agent_status};
-use crate::api::schema::{EventData, EventEnvelope, EventKind};
+use crate::api::schema::{EventData, EventEnvelope};
 use crate::{config::NewTerminalCwdConfig, workspace::Workspace};
 
 pub(crate) fn resolve_new_terminal_cwd(
@@ -81,7 +81,7 @@ impl App {
 
     pub(super) fn resolve_new_terminal_cwd(&self, follow_cwd: Option<PathBuf>) -> PathBuf {
         resolve_new_terminal_cwd(
-            &self.state.new_terminal_cwd,
+            &self.state.settings.new_terminal_cwd,
             self.paths.home_dir(),
             self.paths.current_dir(),
             follow_cwd,
@@ -120,10 +120,13 @@ impl App {
             initial_cwd,
             rows,
             cols,
-            self.state.pane_scrollback_limit_bytes,
+            self.state.settings.pane_scrollback_limit_bytes,
             self.state.host_terminal_theme,
             self.state.host_terminal_appearance,
-            crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.login_shell),
+            crate::pane::PaneShellConfig::new(
+                &self.state.settings.default_shell,
+                self.state.settings.login_shell,
+            ),
             &self.pane_spawn_handles(),
             extra_env,
         )?;
@@ -206,7 +209,6 @@ impl App {
             return;
         };
         self.emit_event(EventEnvelope {
-            event: EventKind::WorkspaceCreated,
             data: EventData::WorkspaceCreated {
                 workspace: workspace_info,
             },
@@ -232,11 +234,9 @@ impl App {
         root_pane: crate::api::schema::PaneInfo,
     ) {
         self.emit_event(EventEnvelope {
-            event: EventKind::TabCreated,
             data: EventData::TabCreated { tab },
         });
         self.emit_event(EventEnvelope {
-            event: EventKind::PaneCreated,
             data: EventData::PaneCreated { pane: root_pane },
         });
     }

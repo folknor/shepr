@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use ratatui::layout::Direction;
 
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, LayoutApplyParams, LayoutDescription, LayoutExportParams,
-    LayoutNode, LayoutPane, LayoutSetSplitRatioParams, ResponseResult, SplitDirection,
+    EventData, EventEnvelope, LayoutApplyParams, LayoutDescription, LayoutExportParams, LayoutNode,
+    LayoutPane, LayoutSetSplitRatioParams, ResponseResult, SplitDirection,
 };
 use crate::app::{App, Mode};
 use crate::layout::{Node, PaneId};
@@ -95,8 +95,8 @@ impl App {
         let root_leaf = first_layout_leaf(&params.root);
         let first_cwd = self.layout_root_cwd(ws_idx, replace_target, root_leaf);
         let (rows, cols) = self.state.pane_geometry().sole_pane_size();
-        let default_shell = self.state.default_shell.clone();
-        let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
+        let default_shell = self.state.settings.default_shell.clone();
+        let scrollback_limit_bytes = self.state.settings.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
         let host_terminal_appearance = self.state.host_terminal_appearance;
         let extra_env = match super::env::normalize_launch_env(root_leaf.env.clone()) {
@@ -136,7 +136,10 @@ impl App {
                     scrollback_limit_bytes,
                     host_terminal_theme,
                     host_terminal_appearance,
-                    crate::pane::PaneShellConfig::new(&default_shell, self.state.login_shell),
+                    crate::pane::PaneShellConfig::new(
+                        &default_shell,
+                        self.state.settings.login_shell,
+                    ),
                     extra_env,
                     &spawn,
                 )
@@ -161,7 +164,7 @@ impl App {
             tab_number,
             geometry: self.state.pane_geometry(),
             default_shell: &default_shell,
-            login_shell: self.state.login_shell,
+            login_shell: self.state.settings.login_shell,
             scrollback_limit_bytes,
             host_terminal_theme,
             host_terminal_appearance,
@@ -222,7 +225,6 @@ impl App {
         self.schedule_session_save();
         if let Some(tab) = self.tab_info(ws_idx, new_tab_idx) {
             self.emit_event(EventEnvelope {
-                event: EventKind::TabCreated,
                 data: EventData::TabCreated { tab },
             });
         }
@@ -232,7 +234,6 @@ impl App {
         {
             if let Some(pane) = self.pane_info(ws_idx, pane_id) {
                 self.emit_event(EventEnvelope {
-                    event: EventKind::PaneCreated,
                     data: EventData::PaneCreated { pane },
                 });
             }
@@ -636,8 +637,8 @@ mod tests {
             api_rx,
             crate::api::EventHub::default(),
         );
-        app.state.default_shell = exiting_test_command().into();
-        app.state.login_shell = false;
+        app.state.settings.default_shell = exiting_test_command().into();
+        app.state.settings.login_shell = false;
         app.state.workspaces = vec![Workspace::test_new("layout")];
         app.state.active = Some(0);
         app.state.selected = 0;

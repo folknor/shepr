@@ -29,7 +29,33 @@ impl ClientShellState {
 }
 
 impl ClientShellConfig {
+    #[cfg(test)]
     pub(crate) fn from_config(config: &Config) -> Self {
+        Self::from_config_with_configured(
+            config,
+            preferences::ConfiguredChrome::default(),
+            config
+                .resolve_palette()
+                .unwrap_or_else(|_| crate::app::state::Palette::catppuccin()),
+            config.live_keybinds(),
+        )
+    }
+
+    pub(crate) fn from_validated_config(config: &crate::config::ValidatedConfig) -> Self {
+        Self::from_config_with_configured(
+            config,
+            preferences::ConfiguredChrome::from_validated_config(config),
+            config.palette().clone(),
+            config.live_keybinds(),
+        )
+    }
+
+    fn from_config_with_configured(
+        config: &Config,
+        configured: preferences::ConfiguredChrome,
+        palette: crate::app::state::Palette,
+        keybinds: LiveKeybindConfig,
+    ) -> Self {
         Self {
             sidebar_width: config.ui.sidebar_width,
             sidebar_min_width: config.ui.sidebar_min_width,
@@ -43,9 +69,9 @@ impl ClientShellConfig {
             agent_panel_sort: config.ui.agent_panel_sort,
             status_indicators: config.ui.status_indicators,
             copy_on_select: config.ui.copy_on_select,
-            palette: crate::app::palette_from_config(config),
+            palette,
             // One validation pass; the launch already rejected invalid bindings.
-            keybinds: config.live_keybinds(),
+            keybinds,
             keybinding_source: ClientShellKeybindingSource::RemoteLocal,
             prompt_new_tab_name: config.ui.prompt_new_tab_name,
             prompt_new_workspace_name: config.ui.prompt_new_workspace_name,
@@ -56,7 +82,7 @@ impl ClientShellConfig {
             redraw_on_focus_gained: config.ui.redraw_on_focus_gained,
             preferences_path: None,
             preferences: preferences::ClientChromePreferences::default()
-                .without_configured(preferences::ConfiguredChrome::from_config(config)),
+                .without_configured(configured),
         }
     }
 
@@ -86,14 +112,12 @@ impl ClientShellConfig {
         self
     }
 
-    pub(super) fn apply_snapshot_keybindings(
+    pub(super) fn apply_snapshot_config(
         &mut self,
-        profile: Option<&str>,
+        config: &crate::config::ValidatedConfig,
     ) -> Result<(), String> {
         let keybinds = match self.keybinding_source {
-            ClientShellKeybindingSource::Endpoint => crate::config::keybindings_from_profile_toml(
-                profile.ok_or("endpoint did not publish its keybindings")?,
-            )?,
+            ClientShellKeybindingSource::Endpoint => config.live_keybinds(),
             ClientShellKeybindingSource::RemoteLocal => return Ok(()),
         };
         self.keybinds = keybinds;
@@ -174,6 +198,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn snapshot_config_applies_endpoint_keybindings_from_the_validated_value() {
+        let local = crate::config::ValidatedConfig::test_default();
+        let mut endpoint = ClientShellConfig::from_validated_config(&local)
+            .with_keybinding_source(ClientShellKeybindingSource::Endpoint);
+        let remote_source = "[keys]\nprefix = \"ctrl+a\"\n";
+        let mut remote_raw = crate::config::Config::default();
+        remote_raw.keys.prefix = "ctrl+a".to_owned();
+        let remote =
+            crate::config::ValidatedConfig::test_from_config(remote_raw, Some(remote_source));
+
+        endpoint
+            .apply_snapshot_config(&remote)
+            .expect("validated endpoint keybindings apply");
+
+        assert_eq!(
+            endpoint.keybinds.prefix,
+            (
+                crossterm::event::KeyCode::Char('a'),
+                crossterm::event::KeyModifiers::CONTROL,
+            )
+        );
+        assert_eq!(
+            endpoint.keybinds.keybinds.new_tab.label().as_deref(),
+            Some("prefix+c")
+        );
+    }
+
+    #[test]
     fn initial_surface_size_uses_persisted_endpoint_chrome() {
         let scratch = crate::test_support::ScratchDir::new("shell-prefs");
         let path = scratch.join("preferences.json");
@@ -209,12 +261,14 @@ mod tests {
         )
         .expect("persist endpoint chrome");
 
-        let mut config = Config::default();
-        config.ui.sidebar_width = 24;
-        config.ui.user_fields.insert("sidebar_width".to_owned());
-        config.ui.user_fields.insert("agent_panel_sort".to_owned());
+        let mut values = Config::default();
+        values.ui.sidebar_width = 24;
+        let config = crate::config::ValidatedConfig::test_from_config(
+            values,
+            Some("[ui]\nsidebar_width = 24\nagent_panel_sort = \"spaces\"\n"),
+        );
         let shell_config =
-            ClientShellConfig::from_config(&config).with_preferences_path(path.clone());
+            ClientShellConfig::from_validated_config(&config).with_preferences_path(path.clone());
         let mut state = ClientShellState::new(shell_config);
 
         // Set keys win; the unset one keeps the remembered toggle.
@@ -227,7 +281,7 @@ mod tests {
         assert!(state.sidebar_collapsed);
 
         // A manual change still applies for the session but is not stored
-        // for a key config.toml owns.
+        // for a value the config owns.
         state.sidebar_width = 30;
         state.sidebar_width_manual = true;
         state.config.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;

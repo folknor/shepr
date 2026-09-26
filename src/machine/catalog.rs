@@ -8,8 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use super::{IntoSshTarget, ProfileId, SshTarget};
 
-const CATALOG_VERSION: u32 = 1;
-const SELECTION_VERSION: u32 = 1;
 const MAX_CATALOG_BYTES: u64 = 64 * 1024;
 const MAX_PROFILES: usize = 64;
 const MAX_LABEL_BYTES: usize = 128;
@@ -58,7 +56,6 @@ impl SavedSshEndpoint {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct EndpointCatalog {
-    version: u32,
     #[serde(default)]
     pub(crate) ssh: Vec<SavedSshEndpoint>,
     #[serde(skip)]
@@ -70,14 +67,12 @@ pub(crate) struct EndpointCatalog {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EndpointSelection {
-    version: u32,
     selected_profile: Option<ProfileId>,
 }
 
 impl Default for EndpointCatalog {
     fn default() -> Self {
         Self {
-            version: CATALOG_VERSION,
             ssh: Vec::new(),
             catalog_path: PathBuf::new(),
             selection_path: PathBuf::new(),
@@ -155,7 +150,6 @@ impl EndpointCatalog {
             return Err("selected SSH endpoint is absent from the catalog".into());
         }
         let content = serde_json::to_vec_pretty(&EndpointSelection {
-            version: SELECTION_VERSION,
             selected_profile: selected.cloned(),
         })
         .map_err(|error| format!("failed to encode endpoint selection: {error}"))?;
@@ -188,12 +182,6 @@ impl EndpointCatalog {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if self.version != CATALOG_VERSION {
-            return Err(format!(
-                "unsupported endpoint catalog version {}; expected {CATALOG_VERSION}",
-                self.version
-            ));
-        }
         if self.ssh.len() > MAX_PROFILES {
             return Err(format!(
                 "endpoint catalog contains more than {MAX_PROFILES} SSH profiles"
@@ -371,12 +359,6 @@ fn load_selection_from_path(path: &Path) -> Result<Option<EndpointSelection>, St
     }
     let selection: EndpointSelection = serde_json::from_slice(&content)
         .map_err(|error| format!("stored endpoint selection is invalid: {error}"))?;
-    if selection.version != SELECTION_VERSION {
-        return Err(format!(
-            "unsupported endpoint selection version {}; expected {SELECTION_VERSION}",
-            selection.version
-        ));
-    }
     Ok(Some(selection))
 }
 
@@ -457,6 +439,7 @@ mod tests {
         assert!(!encoded.contains("password"));
         assert!(!encoded.contains("private_key"));
         assert!(!encoded.contains("control_socket"));
+        assert!(!encoded.contains("version"));
         // The selection belongs to the selection file, not the shared profile list.
         assert!(!encoded.contains("selected_profile"));
         let loaded = EndpointCatalog::load_from_path(&path).expect("test precondition");
@@ -508,7 +491,6 @@ mod tests {
         std::fs::write(
             &path,
             r#"{
-              "version": 1,
               "ssh": [{
                 "id": "0123456789abcdef0123456789abcdef",
                 "label": "Build",
@@ -545,6 +527,8 @@ mod tests {
         catalog
             .store_selection_to_path(&selection_path, Some(&id))
             .expect("test precondition");
+        let selection = std::fs::read_to_string(&selection_path).expect("test precondition");
+        assert!(!selection.contains("version"));
 
         assert_eq!(
             std::fs::read(&catalog_path).expect("test precondition"),
@@ -601,7 +585,6 @@ mod tests {
         store_private_json(
             &selection_path,
             &serde_json::to_vec(&EndpointSelection {
-                version: SELECTION_VERSION,
                 selected_profile: Some(missing),
             })
             .expect("test precondition"),

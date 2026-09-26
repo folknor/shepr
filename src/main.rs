@@ -218,15 +218,16 @@ fn main() -> io::Result<()> {
         _ => {}
     }
 
-    let (loaded_config, paths) = load_validated_config_or_exit(requested_session);
+    let loaded_config = load_validated_config_or_exit(requested_session);
+    let paths = loaded_config.paths();
 
     match invocation.launch {
         cli::Launch::HeadlessServer => {
-            return server::headless::run_server(&loaded_config, &paths);
+            return server::headless::run_server(&loaded_config, paths);
         }
         cli::Launch::Client => {
             exit_if_nested_disabled(&loaded_config);
-            return client::run_client(&loaded_config, &paths);
+            return client::run_client(&loaded_config, paths);
         }
         cli::Launch::Tui { .. } => {}
         cli::Launch::ApiBridge { .. } | cli::Launch::ClientBridge { .. } | cli::Launch::Cli(_) => {
@@ -239,7 +240,7 @@ fn main() -> io::Result<()> {
         let ssh_settings = remote::SavedSshSettings {
             manage_ssh_config: loaded_config.remote.manage_ssh_config,
         };
-        if let Err(err) = remote::run_remote(remote_launch, ssh_settings, &paths) {
+        if let Err(err) = remote::run_remote(remote_launch, ssh_settings, paths) {
             eprintln!("error: {err}");
             remote::print_remote_error_hint(&err, &remote_target);
             std::process::exit(1);
@@ -250,9 +251,9 @@ fn main() -> io::Result<()> {
     exit_if_nested_disabled(&loaded_config);
 
     let saved_federation =
-        machine::EndpointCatalog::load(&paths).is_ok_and(|catalog| catalog.has_ssh());
+        machine::EndpointCatalog::load(paths).is_ok_and(|catalog| catalog.has_ssh());
     if let Err(err) =
-        server::autodetect::auto_detect_launch(saved_federation, &loaded_config, &paths)
+        server::autodetect::auto_detect_launch(saved_federation, &loaded_config, paths)
     {
         eprintln!("shepr: {err}");
         std::process::exit(1);
@@ -262,7 +263,7 @@ fn main() -> io::Result<()> {
 
 fn load_validated_config_or_exit(
     requested_session: Option<session::SessionId>,
-) -> (config::Config, config::AppPaths) {
+) -> config::ValidatedConfig {
     let paths = match config::AppPaths::resolve_with_session(requested_session) {
         Ok(paths) => paths,
         Err(diagnostics) => {
@@ -274,7 +275,7 @@ fn load_validated_config_or_exit(
         }
     };
     match config::Config::load_validated(&paths) {
-        Ok(config) => (config, paths),
+        Ok(config) => config,
         Err(diagnostics) => {
             eprintln!("shepr: configuration error:");
             for diagnostic in diagnostics {

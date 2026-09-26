@@ -102,7 +102,7 @@ pub(super) struct AttachKeys {
 }
 
 impl AttachKeys {
-    pub(super) fn from_config(config: &crate::config::Config) -> Self {
+    pub(super) fn from_config(config: &crate::config::ValidatedConfig) -> Self {
         let live = config.live_keybinds();
         let mut detach_after_prefix = Vec::new();
         let mut detach_direct = Vec::new();
@@ -139,9 +139,10 @@ impl AttachKeys {
     }
 }
 
+#[cfg(test)]
 impl Default for AttachKeys {
     fn default() -> Self {
-        Self::from_config(&crate::config::Config::default())
+        Self::from_config(&crate::config::ValidatedConfig::test_default())
     }
 }
 
@@ -189,7 +190,8 @@ fn matches_any(key: &crate::input::TerminalKey, combos: &[KeyCombo]) -> bool {
         .any(|combo| crate::config::terminal_key_matches_combo(key, *combo))
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Default))]
 pub(super) struct AttachEscapeState {
     keys: AttachKeys,
     pending_prefix: Option<Vec<u8>>,
@@ -229,7 +231,7 @@ pub(super) enum AttachSemanticAction {
 
 impl AttachEscapeState {
     /// An escape state intercepting the prefix and detach keys `config` sets.
-    pub(super) fn from_config(config: &crate::config::Config) -> Self {
+    pub(super) fn from_config(config: &crate::config::ValidatedConfig) -> Self {
         Self {
             keys: AttachKeys::from_config(config),
             pending_prefix: None,
@@ -613,7 +615,8 @@ mod tests {
     }
 
     fn escape_for(config: &str) -> AttachEscapeState {
-        let config: crate::config::Config = toml::from_str(config).expect("test precondition");
+        let values: crate::config::Config = toml::from_str(config).expect("test precondition");
+        let config = crate::config::ValidatedConfig::test_from_config(values, Some(config));
         AttachEscapeState::from_config(&config)
     }
 

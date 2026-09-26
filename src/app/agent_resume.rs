@@ -303,10 +303,10 @@ impl App {
         let mut pane_infos = derived_pending_agent_resume_pane_infos(
             tab,
             terminal_area,
-            self.state.pane_borders,
-            self.state.pane_gaps,
-            self.state.pane_outer_borders,
-            self.state.pane_scrollbars,
+            self.state.settings.pane_borders,
+            self.state.settings.pane_gaps,
+            self.state.settings.pane_outer_borders,
+            self.state.settings.pane_scrollbars,
         );
 
         if self.state.active == Some(ws_idx)
@@ -428,10 +428,13 @@ impl App {
             rows,
             cols,
             cwd,
-            self.state.pane_scrollback_limit_bytes,
+            self.state.settings.pane_scrollback_limit_bytes,
             host_terminal_theme,
             self.state.host_terminal_appearance,
-            crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.login_shell),
+            crate::pane::PaneShellConfig::new(
+                &self.state.settings.default_shell,
+                self.state.settings.login_shell,
+            ),
             &launch_env,
             &self.event_tx,
             &self.render_notify,
@@ -748,7 +751,7 @@ mod tests {
             app.state.active = Some(0);
             app.state.ensure_test_terminals();
             if missing_shell {
-                app.state.default_shell = "__shepr_missing_resume_shell__".into();
+                app.state.settings.default_shell = "__shepr_missing_resume_shell__".into();
             }
             let terminal = app
                 .state

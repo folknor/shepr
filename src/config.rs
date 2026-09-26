@@ -4,7 +4,9 @@ mod model;
 mod sidebar;
 mod tab_bar;
 mod theme;
+mod validated;
 mod window_title;
+mod wire;
 
 #[cfg(test)]
 pub use self::theme::CustomThemeColors;
@@ -18,15 +20,16 @@ pub use self::{
     },
     model::{
         AgentPanelSortConfig, Config, HostCursorModeConfig, NewTerminalCwdConfig,
-        PaneBordersConfig, SidebarCollapsedModeConfig, StatusIndicatorStyle, TabBarPositionConfig,
-        validated_sidebar_bounds,
+        PaneBordersConfig, RightClickPassthroughModifierConfig, SidebarCollapsedModeConfig,
+        StatusIndicatorStyle, TabBarPositionConfig, validated_sidebar_bounds,
     },
     sidebar::{
-        AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenStyle,
+        AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenRule, SidebarTokenStyle,
         SpaceSidebarToken, SpacesSidebarConfig,
     },
     tab_bar::TabBarRightEntryConfig,
     theme::ThemeConfig,
+    validated::{ConfigProvenance, ConfigSource, UiPreferenceKey, ValidatedConfig},
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
 
@@ -50,26 +53,35 @@ pub const DEFAULT_HEADLESS_COLS: u16 = 120;
 pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
 
 impl Config {
-    pub(crate) fn cache_keybind_validation(&self) {
-        let _ = self
-            .validated_keybinds
-            .get_or_init(|| self.compute_keybind_validation());
+    #[cfg(test)]
+    pub(crate) fn resolve_palette(&self) -> Result<crate::app::state::Palette, Vec<String>> {
+        self.resolve_palette_with_ui_accent(false)
     }
 
-    pub(crate) fn resolve_palette(&mut self) -> Result<(), Vec<String>> {
-        self.resolved_palette = theme::resolve_palette(self)?;
-        Ok(())
+    pub(crate) fn resolve_palette_with_ui_accent(
+        &self,
+        ui_accent_is_explicit: bool,
+    ) -> Result<crate::app::state::Palette, Vec<String>> {
+        theme::resolve_palette(self, ui_accent_is_explicit)
     }
 
     /// Parsed keybinds for Shepr actions.
     pub fn keybinds(&self) -> Keybinds {
-        self.validated_keybinds().keybinds.clone()
+        self.compute_keybind_validation(|_| false).keybinds
     }
 
+    #[cfg(test)]
     pub fn collect_diagnostics(&self) -> Vec<String> {
+        let validation = self.compute_keybind_validation(|_| false);
+        self.collect_diagnostics_with_keybind_validation(&validation)
+    }
+
+    pub(crate) fn collect_diagnostics_with_keybind_validation(
+        &self,
+        validation: &keybinds::KeybindValidation,
+    ) -> Vec<String> {
         // sidebar_section_split is persisted client chrome state, not a Config
         // field; its finite-range normalization belongs to preference loading.
-        let validation = self.validated_keybinds();
         validation
             .prefix_diag
             .iter()
@@ -112,97 +124,19 @@ impl Config {
     /// The prefix and keybinds from one validation pass. Launch configs are
     /// validated first, so nothing reaches here with an invalid binding;
     /// `validated_live_keybinds` rejects one instead.
+    #[cfg(test)]
     pub(crate) fn live_keybinds(&self) -> LiveKeybindConfig {
-        let validation = self.validated_keybinds();
+        let validation = self.compute_keybind_validation(|_| false);
         LiveKeybindConfig {
             prefix: validation.prefix,
-            keybinds: validation.keybinds.clone(),
+            keybinds: validation.keybinds,
         }
     }
-
-    pub(crate) fn validated_live_keybinds(&self) -> Result<LiveKeybindConfig, Vec<String>> {
-        let validation = self.validated_keybinds();
-        if validation.prefix_diag.is_some() || !validation.keybind_diags.is_empty() {
-            Err(validation
-                .prefix_diag
-                .iter()
-                .cloned()
-                .chain(validation.keybind_diags.iter().cloned())
-                .collect())
-        } else {
-            Ok(LiveKeybindConfig {
-                prefix: validation.prefix,
-                keybinds: validation.keybinds.clone(),
-            })
-        }
-    }
-
-    pub(crate) fn local_keybindings_profile_toml(&self) -> Result<String, toml::ser::Error> {
-        #[derive(serde::Serialize)]
-        struct KeysProfile {
-            keys: model::KeysConfigOverlay,
-        }
-
-        let live = self.live_keybinds();
-        let mut keys = self.keys.local_profile(&live.keybinds);
-        keys.set_prefix(format_key_combo(live.prefix));
-        toml::to_string_pretty(&KeysProfile { keys })
-    }
-}
-
-/// Keybinds from an endpoint's published keybinding profile. Invalid
-/// bindings reject the profile, just as they reject a local config at launch.
-pub(crate) fn keybindings_from_profile_toml(profile: &str) -> Result<LiveKeybindConfig, String> {
-    let config = toml::from_str::<Config>(profile)
-        .map_err(|err| format!("invalid keybinding profile: {err}"))?;
-    config
-        .validated_live_keybinds()
-        .map_err(|diagnostics| diagnostics.join("; "))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn local_keybindings_profile_includes_defaults() {
-        let config: Config = toml::from_str(
-            r#"
-[keys]
-prefix = "ctrl+a"
-new_tab = "prefix+t"
-"#,
-        )
-        .expect("test precondition");
-
-        let profile = config
-            .local_keybindings_profile_toml()
-            .expect("test precondition");
-        assert!(profile.contains("[keys]"));
-        assert!(profile.contains("prefix = \"ctrl+a\""));
-        assert!(profile.contains("new_tab = \"prefix+t\""));
-        assert!(profile.contains("next_tab = \"prefix+n\""));
-    }
-
-    #[test]
-    fn keybinding_profile_rejects_invalid_bindings() {
-        let error = keybindings_from_profile_toml(
-            r#"
-[keys]
-zoom = "prefix+nonsense-key"
-"#,
-        )
-        .expect_err("a bad binding rejects the profile");
-
-        assert!(error.contains("keys.zoom"), "{error}");
-    }
-
-    #[test]
-    fn keybinding_profile_with_invalid_prefix_is_an_error() {
-        let error = keybindings_from_profile_toml("[keys]\nprefix = \"ctrl+\"\n")
-            .expect_err("an invalid prefix rejects the profile");
-        assert!(error.contains("keys.prefix"), "{error}");
-    }
 
     #[test]
     fn live_keybinds_matches_the_separate_accessor() {
@@ -215,54 +149,6 @@ zoom = "prefix+nonsense-key"
             let live = config.live_keybinds();
             assert_eq!(live.keybinds.detach, config.keybinds().detach);
         }
-    }
-
-    #[test]
-    fn local_keybindings_profile_preserves_user_default_provenance() {
-        let config: Config = toml::from_str(
-            r#"
-[keys]
-zoom = "prefix+?"
-"#,
-        )
-        .expect("test precondition");
-
-        let profile = config
-            .local_keybindings_profile_toml()
-            .expect("test precondition");
-        let round_tripped: Config = toml::from_str(&profile).expect("test precondition");
-
-        assert!(profile.contains("zoom = \"prefix+?\""));
-        assert!(!profile.contains("help = \"prefix+?\""));
-        assert!(
-            round_tripped
-                .keybinds()
-                .zoom
-                .bindings
-                .iter()
-                .any(|binding| binding.label == "prefix+?")
-        );
-        assert!(round_tripped.keybinds().help.bindings.is_empty());
-    }
-
-    #[test]
-    fn local_keybindings_profile_omits_default_displaced_by_user_prefix() {
-        let config: Config = toml::from_str(
-            r#"
-[keys]
-prefix = "n"
-"#,
-        )
-        .expect("test precondition");
-
-        let profile = config
-            .local_keybindings_profile_toml()
-            .expect("test precondition");
-        let round_tripped: Config = toml::from_str(&profile).expect("test precondition");
-
-        assert!(profile.contains("prefix = \"n\""));
-        assert!(!profile.contains("next_tab = \"prefix+n\""));
-        assert!(round_tripped.keybinds().next_tab.bindings.is_empty());
     }
 
     #[test]

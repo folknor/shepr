@@ -86,7 +86,10 @@ impl Harness {
     }
 
     fn cursor(&self) -> Option<TerminalCursorState> {
-        current_cursor_state(&mut self.pane.ghostty.core.lock().expect("test precondition"))
+        current_cursor_state(
+            &mut crate::ghostty::lock_terminal_core(&self.pane.ghostty.core)
+                .expect("test precondition"),
+        )
     }
 
     fn observe(&self) -> Observation {
@@ -363,11 +366,7 @@ fn sparse_dirty_patches_preserve_coordinates_and_clipped_rows() {
         );
         assert!(patch.rows.iter().all(|(_, cells)| cells.len() == 8));
 
-        let core = terminal
-            .pane
-            .ghostty
-            .core
-            .lock()
+        let core = crate::ghostty::lock_terminal_core(&terminal.pane.ghostty.core)
             .expect("test precondition");
         for row in core.render_state.iter_rows() {
             assert_eq!(row.is_dirty(), height == 3 && row.y() == 4);
@@ -386,12 +385,8 @@ fn dirty_patch_fallback_keeps_previously_collected_rows_dirty() {
         terminal.pane.collect_dirty_patch(8, 6),
         TerminalDirtyPatchOutcome::Fallback
     ));
-    let core = terminal
-        .pane
-        .ghostty
-        .core
-        .lock()
-        .expect("test precondition");
+    let core =
+        crate::ghostty::lock_terminal_core(&terminal.pane.ghostty.core).expect("test precondition");
     // `RowView::y` takes `&self`, so it doesn't coerce to the `FnMut(RowView)`
     // that `map` wants here; the closure below is not actually redundant.
     #[allow(clippy::redundant_closure_for_method_calls)]

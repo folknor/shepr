@@ -432,7 +432,7 @@ pub(crate) fn run(
 
 fn dispatch_with_config(
     command: &CliCommand,
-    config: Option<crate::config::Config>,
+    config: Option<crate::config::ValidatedConfig>,
     context: &target::CliContext,
 ) -> std::io::Result<i32> {
     match command {
@@ -492,9 +492,64 @@ pub(super) fn usage_error(message: &str) -> i32 {
 fn config_check() -> i32 {
     // Path problems are reported like any other config issue instead of
     // aborting the check.
-    let diagnostics = match crate::config::AppPaths::resolve() {
-        Ok(paths) => crate::config::Config::load_for_check(&paths).diagnostics,
-        Err(diagnostics) => diagnostics,
+    let (diagnostics, provenance) = match crate::config::AppPaths::resolve() {
+        Ok(paths) => {
+            let loaded = crate::config::Config::load_for_check(&paths);
+            let mut sources = loaded
+                .provenance
+                .values()
+                .iter()
+                .map(|origin| format!("{} = {} <- {}", origin.key, origin.value, origin.source))
+                .collect::<Vec<_>>();
+            let path_sources = paths.provenance();
+            let home = paths.home_dir().map_or_else(
+                || "unavailable".to_owned(),
+                |path| path.display().to_string(),
+            );
+            let current = paths.current_dir().map_or_else(
+                || "unavailable".to_owned(),
+                |path| path.display().to_string(),
+            );
+            sources.extend([
+                format!(
+                    "paths.config_dir={} <- {}",
+                    paths.config_dir().display(),
+                    path_sources.config_dir
+                ),
+                format!(
+                    "paths.state_dir={} <- {}",
+                    paths.state_dir().display(),
+                    path_sources.state_dir
+                ),
+                format!(
+                    "paths.config_file={} <- {}",
+                    paths.config_file().display(),
+                    path_sources.config_file
+                ),
+                format!("paths.home_dir={home} <- {}", path_sources.home_dir),
+                format!(
+                    "paths.current_dir={current} <- {}",
+                    path_sources.current_dir
+                ),
+                format!(
+                    "paths.session_id={} <- {}",
+                    paths.session_id().display_name(),
+                    path_sources.session_id
+                ),
+                format!(
+                    "paths.api_socket={} <- {}",
+                    paths.server_address().api_socket().display(),
+                    path_sources.api_socket
+                ),
+                format!(
+                    "paths.client_socket={} <- {}",
+                    paths.server_address().client_socket().display(),
+                    path_sources.client_socket
+                ),
+            ]);
+            (loaded.diagnostics, sources)
+        }
+        Err(diagnostics) => (diagnostics, Vec::new()),
     };
     if diagnostics.is_empty() {
         println!("config: ok");
@@ -504,13 +559,17 @@ fn config_check() -> i32 {
             println!("{diagnostic}");
         }
     }
+    println!("resolved sources:");
+    for source in provenance {
+        println!("  {source}");
+    }
 
     i32::from(!diagnostics.is_empty())
 }
 
 fn load_validated_config(
     paths: &crate::config::AppPaths,
-) -> std::io::Result<crate::config::Config> {
+) -> std::io::Result<crate::config::ValidatedConfig> {
     crate::config::Config::load_validated(paths).map_err(|diagnostics| {
         std::io::Error::other(format!(
             "configuration error:\n  {}",
@@ -521,7 +580,7 @@ fn load_validated_config(
 
 fn run_terminal_command(
     command: TerminalCommand,
-    config: Option<crate::config::Config>,
+    config: Option<crate::config::ValidatedConfig>,
     context: &target::CliContext,
 ) -> std::io::Result<i32> {
     match command {

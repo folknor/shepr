@@ -200,7 +200,7 @@ pub(super) fn render_pane_scrollbar(
         frame.buffer_mut(),
         metrics,
         track,
-        &app.palette,
+        &app.settings.palette,
         info.is_focused,
     );
 }

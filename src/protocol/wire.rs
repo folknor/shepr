@@ -1079,8 +1079,8 @@ pub struct ClientShellSnapshot {
     pub boot_id: String,
     /// Monotonic replacement revision within one endpoint boot.
     pub revision: u64,
-    /// Endpoint's normalized built-in keybindings, used only when a remote client selects server bindings.
-    pub server_keybindings_toml: Option<String>,
+    /// Endpoint's complete resolved configuration and provenance.
+    pub resolved_config: crate::config::ValidatedConfig,
     pub focused_workspace_id: Option<String>,
     pub focused_tab_id: Option<String>,
     pub focused_pane_id: Option<String>,
@@ -2071,11 +2071,16 @@ mod tests {
     }
 
     #[test]
-    fn client_shell_snapshot_roundtrip() {
+    fn client_shell_snapshot_roundtrip() -> TestResult {
+        let config_source = "[keys]\nprefix = \"ctrl+a\"\n";
+        let config = toml::from_str(config_source)?;
         let msg = ClientShellSnapshot {
             boot_id: "boot-1".into(),
             revision: 1,
-            server_keybindings_toml: Some("[keys]\nprefix = \"ctrl+a\"\n".into()),
+            resolved_config: crate::config::ValidatedConfig::test_from_config(
+                config,
+                Some(config_source),
+            ),
             focused_workspace_id: Some("w1".into()),
             focused_tab_id: Some("w1:t1".into()),
             focused_pane_id: Some("w1:p1".into()),
@@ -2119,10 +2124,16 @@ mod tests {
             }],
             agents: Vec::new(),
         };
-        let encoded = serde_json::to_string(&msg).expect("test precondition");
-        let decoded: ClientShellSnapshot =
-            serde_json::from_str(&encoded).expect("test precondition");
+        let expected_keybindings = msg.resolved_config.live_keybinds();
+        let decoded: ClientShellSnapshot = roundtrip(&msg)?;
         assert_eq!(msg, decoded);
+        let actual_keybindings = decoded.resolved_config.live_keybinds();
+        assert_eq!(actual_keybindings.prefix, expected_keybindings.prefix);
+        assert_eq!(
+            actual_keybindings.keybinds.detach.bindings,
+            expected_keybindings.keybinds.detach.bindings
+        );
+        Ok(())
     }
 
     #[test]

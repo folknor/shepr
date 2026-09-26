@@ -101,12 +101,7 @@ pub(super) fn should_skip_idle_screen_scan(input: IdleScreenScanSkipInput) -> bo
             && input
                 .agent
                 .is_some_and(|agent| agent == Agent::Codex || !agent.screen_manifest()));
-    if !stable_state
-        || input.agent.is_none()
-        || input.pending_idle_active
-        || input.agent_changed
-        || input.process_exited
-    {
+    if !stable_state || input.pending_idle_active || input.agent_changed || input.process_exited {
         return false;
     }
 
@@ -520,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn screen_read_reads_for_transitions_and_missing_agent() {
+    fn screen_read_reads_for_transitions_and_changed_content_without_agent() {
         let mut input = screen_read_input(AgentState::Idle, 10);
         input.pending_idle_active = true;
         assert_eq!(
@@ -544,6 +539,11 @@ mod tests {
 
         let mut input = screen_read_input(AgentState::Idle, 10);
         input.agent = None;
+        assert_eq!(
+            decide_detection_screen_read(input),
+            DetectionScreenReadDecision::Skip
+        );
+        input.current_detection_content_seq = Some(11);
         assert_eq!(
             decide_detection_screen_read(input),
             DetectionScreenReadDecision::Read

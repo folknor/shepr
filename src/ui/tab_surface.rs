@@ -167,15 +167,15 @@ pub(crate) fn tab_surface_cursor(
         return None;
     }
     let scrolled_back = super::panes::pane_is_scrolled_back(runtime);
-    let reveal = app.reveal_hidden_cursor_for_cjk_ime
-        && (!app.cjk_ime_agent_filter_configured || {
+    let reveal = app.settings.reveal_hidden_cursor_for_cjk_ime
+        && (app.settings.cjk_ime_agents.is_empty() || {
             let detected = app
                 .workspaces
                 .get(ws_idx)
                 .and_then(|ws| ws.terminal_id(info.id))
                 .and_then(|terminal_id| app.terminals.get(terminal_id))
                 .and_then(|terminal| terminal.detected_agent);
-            detected.is_some_and(|agent| app.cjk_ime_agents.contains(&agent))
+            detected.is_some_and(|agent| app.settings.cjk_ime_agents.contains(&agent))
         });
 
     if let Some(cursor) = runtime.cursor_state(info.inner_rect, true) {
@@ -189,7 +189,7 @@ pub(crate) fn tab_surface_cursor(
             y: cursor.y,
             visible,
             shape: if reveal && visible {
-                app.cjk_ime_cursor_shape
+                app.settings.cjk_ime_cursor_shape
             } else {
                 cursor.shape
             },
@@ -199,7 +199,7 @@ pub(crate) fn tab_surface_cursor(
             x: info.inner_rect.x,
             y: info.inner_rect.y,
             visible: true,
-            shape: app.cjk_ime_cursor_shape,
+            shape: app.settings.cjk_ime_cursor_shape,
         })
     } else {
         None

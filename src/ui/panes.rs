@@ -243,7 +243,7 @@ pub(super) fn compute_pane_infos_for_tab(
         let mut scrollbar_rect = None;
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
             (inner_rect, scrollbar_rect) =
-                stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
+                stable_scrollbar_gutter(rt, pane_inner, app.settings.pane_scrollbars);
         }
 
         info.inner_rect = inner_rect;
@@ -325,7 +325,9 @@ fn render_pane_borders(
     split_borders: &[crate::layout::SplitBorder],
     frame: &mut Frame,
 ) {
-    if !app.pane_borders.draws_borders() || pane_infos.iter().all(|info| info.borders.is_empty()) {
+    if !app.settings.pane_borders.draws_borders()
+        || pane_infos.iter().all(|info| info.borders.is_empty())
+    {
         return;
     }
 
@@ -333,7 +335,7 @@ fn render_pane_borders(
     for info in pane_infos {
         add_pane_border_cells(&mut cells, info);
     }
-    add_split_border_cells(app.pane_gaps, split_borders, &mut cells);
+    add_split_border_cells(app.settings.pane_gaps, split_borders, &mut cells);
 
     let buf = frame.buffer_mut();
     let area = buf.area;
@@ -347,7 +349,7 @@ fn render_pane_borders(
         }
         let focused = pane_infos
             .iter()
-            .any(|info| info.is_focused && line_touches_pane(x, y, info, app.pane_gaps));
+            .any(|info| info.is_focused && line_touches_pane(x, y, info, app.settings.pane_gaps));
         let symbol = line_cell_symbol(line);
         if symbol.is_empty() {
             continue;
@@ -355,9 +357,9 @@ fn render_pane_borders(
         let cell = &mut buf[(x, y)];
         cell.set_symbol(symbol);
         let color = if focused {
-            app.palette.accent
+            app.settings.palette.accent
         } else {
-            app.palette.overlay0
+            app.settings.palette.overlay0
         };
         cell.set_style(Style::default().fg(color));
     }
@@ -502,7 +504,9 @@ fn render_pane_border_titles(
         let Some(title) = ws
             .pane_state(info.id)
             .and_then(|pane| app.terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders))
+            .and_then(|terminal| {
+                terminal.border_label(app.settings.show_agent_labels_on_pane_borders)
+            })
             .and_then(|label| pane_border_title(&label, info.rect.width, info.is_focused))
         else {
             continue;
@@ -522,9 +526,9 @@ fn render_pane_border_titles(
             continue;
         }
         let color = if info.is_focused {
-            app.palette.accent
+            app.settings.palette.accent
         } else {
-            app.palette.overlay0
+            app.settings.palette.overlay0
         };
         let mut style = Style::default().fg(color);
         if info.is_focused {
@@ -1039,6 +1043,7 @@ mod tests {
     #[test]
     fn global_pane_border_renderer_composes_junctions_and_focus_style() {
         let mut app = AppState::test_new();
+        app.settings.pane_gaps = false;
         app.view.terminal_area = Rect::new(0, 0, 4, 4);
         app.view.pane_infos = vec![
             PaneInfo {
@@ -1100,15 +1105,15 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(2, 2)].symbol(), "┼");
-        assert_eq!(buffer[(2, 2)].style().fg, Some(app.palette.accent));
+        assert_eq!(buffer[(2, 2)].style().fg, Some(app.settings.palette.accent));
         assert_eq!(buffer[(2, 1)].symbol(), "│");
-        assert_eq!(buffer[(2, 1)].style().fg, Some(app.palette.accent));
+        assert_eq!(buffer[(2, 1)].style().fg, Some(app.settings.palette.accent));
     }
 
     #[test]
     fn gapped_pane_focus_does_not_color_neighbor_border() {
         let mut app = AppState::test_new();
-        app.pane_gaps = true;
+        app.settings.pane_gaps = true;
         app.view.terminal_area = Rect::new(0, 0, 4, 3);
         app.view.pane_infos = vec![
             PaneInfo {
@@ -1137,8 +1142,11 @@ mod tests {
             .expect("test precondition");
 
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(1, 1)].style().fg, Some(app.palette.accent));
-        assert_eq!(buffer[(2, 1)].style().fg, Some(app.palette.overlay0));
+        assert_eq!(buffer[(1, 1)].style().fg, Some(app.settings.palette.accent));
+        assert_eq!(
+            buffer[(2, 1)].style().fg,
+            Some(app.settings.palette.overlay0)
+        );
     }
 
     #[tokio::test]
@@ -1286,8 +1294,8 @@ mod tests {
                 [(true, false), (false, false), (true, true), (false, true)]
             {
                 let mut app = AppState::test_new();
-                app.pane_borders = pane_borders;
-                app.pane_scrollbars = pane_scrollbars;
+                app.settings.pane_borders = pane_borders;
+                app.settings.pane_scrollbars = pane_scrollbars;
                 let area = Rect::new(2, 1, 101, 31);
                 app.view.terminal_area = area;
                 let mut workspace = Workspace::test_new("test");
@@ -1350,7 +1358,7 @@ mod tests {
         assert_eq!(info.scrollbar_rect, Some(Rect::new(49, 3, 1, 8)));
         assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
 
-        app.pane_scrollbars = false;
+        app.settings.pane_scrollbars = false;
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
         let info = &infos[0];
 

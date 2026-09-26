@@ -851,7 +851,7 @@ mod tests {
         let fake = dir.join("shepr");
         std::fs::write(
             &fake,
-            "#!/bin/sh\nif [ \"$4\" = --check ]; then echo shepr-api-bridge-v1; else echo bridged-$2; fi\n",
+            "#!/bin/sh\nif [ \"$4\" = --check ]; then exit 0; else echo bridged-$2; fi\n",
         )
         .expect("test precondition");
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
@@ -982,7 +982,7 @@ mod tests {
     fn parse_remote_server_status_json_reads_running_server() {
         assert_eq!(
             parse_remote_server_status_json(
-                r#"{"status":"running","running":true,"version":"0.6.0","protocol":8,"capabilities":{"detached_server_daemon":true,"surface_interest":true,"health_check":true,"ssh_agent_registration":false}}"#
+                r#"{"status":"running","running":true,"version":"0.6.0","protocol":8,"capabilities":{"detached_server_daemon":true,"ssh_agent_registration":false}}"#
             )
             .expect("test precondition"),
             RemoteServerStatus::Running {

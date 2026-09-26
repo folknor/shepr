@@ -11,8 +11,86 @@ pub struct SidebarTokenRule {
     hide: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct WireSidebarTokenRule {
+    condition: WireSidebarTokenCondition,
+    ignore_case: bool,
+    style: WireSidebarTokenStyle,
+    hide: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct WireSidebarTokenStyle {
+    fg: Option<(u8, u8, u8)>,
+    bold: Option<bool>,
+    dim: Option<bool>,
+}
+
+impl From<SidebarTokenStyle> for WireSidebarTokenStyle {
+    fn from(style: SidebarTokenStyle) -> Self {
+        Self {
+            fg: style.fg.map(SidebarTokenColor::rgb),
+            bold: style.bold,
+            dim: style.dim,
+        }
+    }
+}
+
+impl From<WireSidebarTokenStyle> for SidebarTokenStyle {
+    fn from(style: WireSidebarTokenStyle) -> Self {
+        Self {
+            fg: style.fg.map(SidebarTokenColor::from_rgb),
+            bold: style.bold,
+            dim: style.dim,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+enum WireSidebarTokenCondition {
+    Equals(String),
+    Contains(String),
+    StartsWith(String),
+    GreaterThan(f64),
+    LessThan(f64),
+}
+
 // Deserialization rejects non-finite thresholds, so equality is reflexive.
 impl Eq for SidebarTokenRule {}
+
+impl SidebarTokenRule {
+    pub(crate) fn to_wire(&self) -> WireSidebarTokenRule {
+        let condition = match &self.condition {
+            Condition::Equals(value) => WireSidebarTokenCondition::Equals(value.clone()),
+            Condition::Contains(value) => WireSidebarTokenCondition::Contains(value.clone()),
+            Condition::StartsWith(value) => WireSidebarTokenCondition::StartsWith(value.clone()),
+            Condition::GreaterThan(value) => WireSidebarTokenCondition::GreaterThan(*value),
+            Condition::LessThan(value) => WireSidebarTokenCondition::LessThan(*value),
+        };
+        WireSidebarTokenRule {
+            condition,
+            ignore_case: self.ignore_case,
+            style: self.style.into(),
+            hide: self.hide,
+        }
+    }
+
+    pub(crate) fn from_wire(wire: WireSidebarTokenRule) -> Self {
+        let condition = match wire.condition {
+            WireSidebarTokenCondition::Equals(value) => Condition::Equals(value),
+            WireSidebarTokenCondition::Contains(value) => Condition::Contains(value),
+            WireSidebarTokenCondition::StartsWith(value) => Condition::StartsWith(value),
+            WireSidebarTokenCondition::GreaterThan(value) => Condition::GreaterThan(value),
+            WireSidebarTokenCondition::LessThan(value) => Condition::LessThan(value),
+        };
+        Self {
+            condition,
+            ignore_case: wire.ignore_case,
+            style: wire.style.into(),
+            hide: wire.hide,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 enum Condition {

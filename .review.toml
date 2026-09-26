@@ -24,5 +24,10 @@
 # effort = "high"
 # sandbox = "read-only"
 
+[codex.write-sol-medium]
+model = "gpt-6-sol"
+effort = "medium"
+sandbox = "workspace-write"
+
 [_audit]
 id = "a149"

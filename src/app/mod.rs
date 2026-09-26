@@ -39,6 +39,7 @@ use ratatui::layout::Rect;
 use tokio::sync::{Notify, mpsc};
 use tracing::info;
 
+#[cfg(test)]
 use crate::config::Config;
 use crate::events::AppEvent;
 
@@ -108,16 +109,12 @@ pub struct App {
     pub render_notify: Arc<Notify>,
     pub(crate) render_dirty: Arc<crate::render_signal::RenderSignal>,
     pub(crate) full_redraw_pending: bool,
-    client_shell_keybindings_profile: Option<String>,
+    resolved_config: crate::config::ValidatedConfig,
     pub(crate) paths: crate::config::AppPaths,
 }
 
 pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
 pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
-
-pub(crate) fn palette_from_config(config: &Config) -> state::Palette {
-    config.resolved_palette.clone()
-}
 
 impl App {
     /// Test constructor: the app's files live in a fresh scratch directory.
@@ -130,11 +127,16 @@ impl App {
     ) -> Self {
         let scratch = crate::test_support::ScratchDir::new("app").keep_until_exit();
         let paths = crate::config::AppPaths::test_at(&scratch);
-        Self::with_paths(config, &paths, policy, api_rx, event_hub)
+        let config = crate::config::ValidatedConfig::test_from_config_with_paths(
+            config.clone(),
+            None,
+            paths.clone(),
+        );
+        Self::with_paths(&config, &paths, policy, api_rx, event_hub)
     }
 
     pub fn with_paths(
-        config: &Config,
+        config: &crate::config::ValidatedConfig,
         paths: &crate::config::AppPaths,
         policy: AppPolicy,
         api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
@@ -143,6 +145,7 @@ impl App {
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
         let render_notify = Arc::new(Notify::new());
         let render_dirty = Arc::new(crate::render_signal::RenderSignal::new());
+        let settings = state::AppSettings::from_config(config);
 
         // Try to restore previous session
         let mut restored_terminals = std::collections::HashMap::new();
@@ -172,13 +175,13 @@ impl App {
             // (what the server lays out against until a client attaches); the
             // first view computation resizes each to its split. The saved
             // host theme supplies colours until a live client reports its own.
-            let (headless_cols, headless_rows) = config.headless_size();
+            let (headless_cols, headless_rows) = settings.headless_size;
             let (restore_rows, restore_cols) = crate::workspace::PaneGeometry {
                 area: Rect::new(0, 0, headless_cols, headless_rows),
-                pane_borders: config.ui.pane_borders,
-                pane_gaps: config.ui.pane_gaps,
-                pane_outer_borders: config.ui.pane_outer_borders,
-                pane_scrollbars: config.ui.pane_scrollbars,
+                pane_borders: settings.pane_borders,
+                pane_gaps: settings.pane_gaps,
+                pane_outer_borders: settings.pane_outer_borders,
+                pane_scrollbars: settings.pane_scrollbars,
             }
             .sole_pane_size();
             let restored = crate::persist::restore(
@@ -186,9 +189,9 @@ impl App {
                 history.as_ref(),
                 restore_rows,
                 restore_cols,
-                config.advanced.scrollback_limit_bytes,
-                &config.terminal.default_shell,
-                config.terminal.login_shell,
+                settings.pane_scrollback_limit_bytes,
+                &settings.default_shell,
+                settings.login_shell,
                 config.session.resume_agents_on_restore,
                 &event_tx,
                 &render_notify,
@@ -209,7 +212,7 @@ impl App {
         };
 
         info!(
-            pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes,
+            pane_scrollback_limit_bytes = settings.pane_scrollback_limit_bytes,
             "using pane scrollback configuration"
         );
 
@@ -242,26 +245,10 @@ impl App {
                 pane_infos: Vec::new(),
             },
             outer_terminal_focus: None,
-            headless_size: config.headless_size(),
-            sidebar_agents: config.ui.sidebar.agents.clone(),
-            sidebar_spaces: config.ui.sidebar.spaces.clone(),
+            settings,
             next_agent_state_change_seq: 0,
-            pane_borders: config.ui.pane_borders,
-            pane_outer_borders: config.ui.pane_outer_borders,
-            pane_scrollbars: config.ui.pane_scrollbars,
-            pane_gaps: config.ui.pane_gaps,
-            show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: String::new(),
-            reveal_hidden_cursor_for_cjk_ime: config.experimental.reveal_hidden_cursor_for_cjk_ime,
-            cjk_ime_agent_filter_configured: !config.experimental.cjk_ime_agents.is_empty(),
-            cjk_ime_agents: config.experimental.cjk_ime_agents.clone(),
-            cjk_ime_cursor_shape: config.experimental.cjk_ime_cursor_shape.to_decscusr(),
-            default_shell: config.terminal.default_shell.clone(),
-            login_shell: config.terminal.login_shell,
-            new_terminal_cwd: config.terminal.new_cwd.clone(),
-            pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
-            palette: palette_from_config(config),
             host_terminal_appearance: None,
             host_terminal_appearance_explicit: false,
             agent_manifest_summaries,
@@ -284,8 +271,6 @@ impl App {
                 .get(idx)
                 .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
         });
-        let client_shell_keybindings_profile = config.local_keybindings_profile_toml().ok();
-
         let mut app = Self {
             state,
             pixel_mouse_available: false,
@@ -323,7 +308,7 @@ impl App {
             render_notify,
             render_dirty,
             full_redraw_pending: false,
-            client_shell_keybindings_profile,
+            resolved_config: config.clone(),
             paths,
         };
         app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
@@ -376,10 +361,8 @@ impl App {
             .expect("pane must have a live runtime")
     }
 
-    /// Returns the client shell keybindings profile serialized as TOML, if
-    /// one could be computed from the effective config.
-    pub(crate) fn client_shell_keybindings_profile(&self) -> Option<&str> {
-        self.client_shell_keybindings_profile.as_deref()
+    pub(crate) fn resolved_config(&self) -> &crate::config::ValidatedConfig {
+        &self.resolved_config
     }
 
     pub(crate) fn ensure_default_workspace(&mut self) -> bool {
@@ -424,7 +407,7 @@ mod tests {
             api_rx,
             crate::api::EventHub::default(),
         );
-        app.state.default_shell = exiting_test_command().into();
+        app.state.settings.default_shell = exiting_test_command().into();
         app
     }
 
@@ -578,7 +561,6 @@ mod tests {
     fn theme_uses_configured_name() {
         let mut config = Config::default();
         config.theme.name = Some("tokyo-night".to_string());
-        config.resolve_palette().expect("valid test theme");
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let app = App::new(
@@ -588,7 +570,7 @@ mod tests {
             crate::api::EventHub::default(),
         );
 
-        assert_eq!(app.state.palette, state::Palette::tokyo_night());
+        assert_eq!(app.state.settings.palette, state::Palette::tokyo_night());
     }
 
     #[test]
@@ -599,28 +581,47 @@ mod tests {
         assert_ne!(theme_accent, Color::Cyan, "test precondition");
 
         // Unset: the theme's accent, not the placeholder default.
-        let mut config = Config::default();
-        config.resolve_palette().expect("valid default theme");
-        assert_eq!(config.resolved_palette.accent, theme_accent);
+        let config = Config::default();
+        assert_eq!(
+            config
+                .resolve_palette()
+                .expect("valid default theme")
+                .accent,
+            theme_accent
+        );
 
         // Set explicitly to the placeholder value: it still applies.
         let mut config = Config::default();
         config.ui.accent = "cyan".into();
-        config.ui.user_fields.insert("accent".into());
-        config.resolve_palette().expect("valid cyan accent");
-        assert_eq!(config.resolved_palette.accent, Color::Cyan);
+        assert_eq!(
+            config
+                .resolve_palette_with_ui_accent(true)
+                .expect("valid cyan accent")
+                .accent,
+            Color::Cyan
+        );
 
         config.ui.accent = "magenta".into();
-        config.resolve_palette().expect("valid magenta accent");
-        assert_eq!(config.resolved_palette.accent, Color::Magenta);
+        assert_eq!(
+            config
+                .resolve_palette_with_ui_accent(true)
+                .expect("valid magenta accent")
+                .accent,
+            Color::Magenta
+        );
 
         // `theme.custom.accent` wins over `ui.accent`.
         config.theme.custom = Some(crate::config::CustomThemeColors {
             accent: Some("#010203".into()),
             ..Default::default()
         });
-        config.resolve_palette().expect("valid custom accent");
-        assert_eq!(config.resolved_palette.accent, Color::Rgb(1, 2, 3));
+        assert_eq!(
+            config
+                .resolve_palette_with_ui_accent(true)
+                .expect("valid custom accent")
+                .accent,
+            Color::Rgb(1, 2, 3)
+        );
     }
 
     #[test]
@@ -714,7 +715,7 @@ mod tests {
             api_rx,
             event_hub.clone(),
         );
-        app.state.default_shell = exiting_test_command().into();
+        app.state.settings.default_shell = exiting_test_command().into();
 
         assert!(app.ensure_default_workspace());
 
@@ -722,7 +723,7 @@ mod tests {
         assert_eq!(
             events
                 .iter()
-                .map(|(_, event)| event.event)
+                .map(|(_, event)| event.data.kind())
                 .collect::<Vec<_>>(),
             [
                 crate::api::schema::EventKind::WorkspaceCreated,
@@ -1066,6 +1067,36 @@ mod tests {
 
         assert_eq!(resolved.pane_id, pane);
         assert_eq!(resolved.terminal_id, terminal_id);
+    }
+
+    #[test]
+    fn terminal_target_matches_detected_agent_but_agent_target_needs_name() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("terminal-target-detected-agent");
+        let pane = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane)
+            .cloned()
+            .expect("test precondition");
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition")
+            .set_detected_state(
+                Some(crate::detect::Agent::Pi),
+                crate::detect::AgentState::Idle,
+            );
+
+        let resolved = app
+            .resolve_terminal_target("pi")
+            .expect("detected label resolves to terminal");
+        assert_eq!(resolved.pane_id, pane);
+        assert!(matches!(
+            app.resolve_agent_target("pi"),
+            Err(crate::app::terminal_targets::TerminalTargetError::NotFound { .. })
+        ));
     }
 
     #[test]

@@ -185,18 +185,13 @@ pub(crate) fn render_collapsed_sidebar(
         detail_area.width,
         detail_area.height.saturating_sub(1),
     );
-    for (index, pane_id) in super::ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    let ordered_agents =
+        crate::client::shell::agent_sidebar::ordered_agent_refs(snapshot, config.agent_panel_sort);
+    for (index, agent) in ordered_agents
         .into_iter()
         .take(detail_content.height as usize)
         .enumerate()
     {
-        let Some(agent) = snapshot
-            .agents
-            .iter()
-            .find(|agent| agent.pane_id == pane_id)
-        else {
-            continue;
-        };
         let rect = Rect::new(
             detail_content.x,
             detail_content.y + u16::try_from(index).unwrap_or(u16::MAX),
@@ -227,7 +222,7 @@ pub(crate) fn render_collapsed_sidebar(
             glyph.text,
             glyph.style,
         );
-        hits.agents.push((rect, pane_id));
+        hits.agents.push((rect, agent.pane_id.clone()));
     }
     hits.sidebar_toggle = if area.is_empty() || workspace_area.width == 0 {
         Rect::default()

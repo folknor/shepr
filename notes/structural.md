@@ -154,26 +154,6 @@ of `endpoint.rs` then disappears.
 
 Reported by: protocol, client.
 
-## STR-015 - Pane runtime primitives
-
-`publish_state_changed_event(visible_blocker: bool, process_exited: bool)`
-positional; `apply_agent_detection_publish_update` takes 7 separate `&mut`
-fields; `ProcessProbeInput` is 5 unnamed bools/Options;
-`ProcessProbeResult { agent: Option<Agent>, process_name: Option<String> }` can
-hold a name with no agent; `MANAGED_AGENT_RESUME_TIMEOUT` lives in `pane.rs`
-and the resume hold travels as `agent_absence_startup_hold: bool` (proposed
-`LaunchPurpose::{Fresh, AgentResume}`).
-
-Reported by: pane-detection.
-
-## STR-016 - EventEnvelope carries its discriminant twice
-
-`EventEnvelope { event: EventKind::X, data: EventData::X{..} }` can disagree.
-Derive the kind from `EventData`. Lives in `api/schema`, constructed across
-`src/app/`.
-
-Reported by: app-state.
-
 ## STR-017 - App-state flags and snapshots
 
 `cjk_ime_agent_filter_configured: bool` plus `cjk_ime_agents: Vec<Agent>`
@@ -224,17 +204,6 @@ same shape.
 
 Reported by: ui, protocol.
 
-## STR-023 - Remote machine metadata
-
-`SshMachineMetadata.os: String`, where only `"linux"` is valid, is an upstream
-leftover in a Linux-only fork; proposed deletion. `SshTarget`,
-`RemoteExecutable`, `ProfileId` and `SessionName` typing are covered by CON-047,
-CON-050, CON-051, CON-052. `RemoteServerStatus::Running`'s capability bools and
-`remote_server_restart_reason(protocol, bool, bool, bool, bool)` - the remote
-hunter proposes deleting most of them (STR-053) rather than typing them.
-
-Reported by: remote.
-
 # Moves, splits and rewrites
 
 ## STR-024 - Rename src/ghostty to vt and split it
@@ -270,20 +239,6 @@ Proposed: finish the migration (move `PaneRuntime`'s body into `terminal`) or
 delete the wrapper; `title.rs` belongs in detection (CON-001).
 
 Reported by: terminal-core.
-
-## STR-029 - Split pane.rs and give the detector its own state
-
-`pane.rs` (4300 lines) holds launch env policy, shell resolution, the
-process-probe / agent-presence state machine, event publishers, the Codex prompt
-special case, session teardown (global `PANE_TEARDOWNS_IN_FLIGHT` counter plus
-signal escalation), the sync-timeout render scheduler and `PaneRuntime`.
-Proposed `pane/launch.rs`, `pane/teardown.rs`, `pane/process_probe.rs`,
-`pane/runtime.rs`. The detector task's state lives in `&mut` locals; a
-`DetectorState` struct with methods would let the detection loop be unit-tested
-without a runtime. Agent-specific code moves to the per-agent descriptor
-(CON-001).
-
-Reported by: pane-detection.
 
 ## STR-032 - API request handling has no single home
 
@@ -425,19 +380,6 @@ duplicates `app/` rendering and copy-mode logic; not yet reviewed.
 
 Reported by: ui, client.
 
-## STR-053 - Delete the upstream remote compatibility fossils
-
-`restart_policy.rs` (SurfaceInterest, HealthCheck, DaemonDetach reasons for
-servers "started by an older shepr build"), the `capabilities` JSON, the
-`require_surface_interest` plumbing and catalog load in `run_remote`, the
-`remote-api-bridge --check` string `shepr-api-bridge-v1`, herdr-era prompt text
-("predates Shepr's stable endpoint protocol", "join saved SSH endpoint
-federation"). Possibly also `StoredMetadata` version fields, `CATALOG_VERSION`,
-`SELECTION_VERSION` - on-disk formats, which the hunter calls a judgment call.
-See CON-037.
-
-Reported by: remote.
-
 ## STR-054 - Vestiges of removed platforms and features
 
 `should_query_host_terminal_theme()` / `should_query_host_cell_size()` return a
@@ -473,10 +415,3 @@ Reported by: app-state, server, pane-detection, config-cli, client, remote.
 `AsyncFd` on the listener fd.
 
 Reported by: server.
-
-## STR-057 - Per-frame linear lookups in the sidebar
-
-`agent_row` finds agent, workspace, tab and pane by linear string search per row
-per frame (O(n²), silent `?` drops); proposed a keyed snapshot by typed id.
-
-Reported by: ui.

@@ -243,9 +243,7 @@ pub(super) fn remote_api_forwarding_supported(
         }
         return Ok(false);
     }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .any(|line| line.trim() == super::API_BRIDGE_CHECK_REPLY))
+    Ok(true)
 }
 
 pub(super) fn push_if_new_remote_binary_candidate(

@@ -4,9 +4,9 @@ use std::sync::atomic::AtomicBool;
 use regex::Regex;
 
 use crate::api::schema::{
-    ErrorBody, ErrorResponse, EventData, EventEnvelope, EventKind, EventMatch, EventsWaitParams,
-    Method, Request, ResponseResult, Subscription, SubscriptionEventData,
-    SubscriptionEventEnvelope, SuccessResponse,
+    ErrorBody, ErrorResponse, EventData, EventEnvelope, EventMatch, EventsWaitParams, Method,
+    Request, ResponseResult, Subscription, SubscriptionEventData, SubscriptionEventEnvelope,
+    SuccessResponse,
 };
 use crate::api::server::{
     APP_RESPONSE_TIMEOUT, CONNECTION_POLL_INTERVAL, dispatch_to_app_with_caller_timeout,
@@ -827,7 +827,6 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
         id: request_id.into(),
         result: ResponseResult::WaitMatched {
             event: EventEnvelope {
-                event: EventKind::PaneAgentStatusChanged,
                 data: EventData::PaneAgentStatusChanged {
                     pane_id: data.pane_id,
                     workspace_id: data.workspace_id,

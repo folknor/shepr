@@ -278,14 +278,12 @@ fn pane_process_info_request_round_trips() {
 fn event_envelope_round_trips() {
     let events = [
         EventEnvelope {
-            event: EventKind::PaneExited,
             data: EventData::PaneExited {
                 pane_id: "p_1".into(),
                 workspace_id: "w_1".into(),
             },
         },
         EventEnvelope {
-            event: EventKind::WorkspaceMoved,
             data: EventData::WorkspaceMoved {
                 workspace_id: "w_1".into(),
                 insert_index: 2,
@@ -293,7 +291,6 @@ fn event_envelope_round_trips() {
             },
         },
         EventEnvelope {
-            event: EventKind::WorkspaceReordered,
             data: EventData::WorkspaceReordered {
                 workspace_ids: vec!["w_1".into(), "w_2".into()],
                 before_workspace_id: Some("w_3".into()),
@@ -301,7 +298,6 @@ fn event_envelope_round_trips() {
             },
         },
         EventEnvelope {
-            event: EventKind::TabMoved,
             data: EventData::TabMoved {
                 tab_id: "w_1:1".into(),
                 workspace_id: "w_1".into(),
@@ -310,7 +306,6 @@ fn event_envelope_round_trips() {
             },
         },
         EventEnvelope {
-            event: EventKind::LayoutUpdated,
             data: EventData::LayoutUpdated {
                 layout: PaneLayoutSnapshot {
                     workspace_id: "w_1".into(),
@@ -340,6 +335,12 @@ fn event_envelope_round_trips() {
     ];
 
     for event in events {
+        let value = serde_json::to_value(&event).expect("test precondition");
+        assert!(value.get("event").is_none());
+        assert_eq!(
+            value["data"]["type"],
+            serde_json::to_value(event.data.kind()).expect("test precondition")
+        );
         let json = serde_json::to_string(&event).expect("test precondition");
         let restored: EventEnvelope = serde_json::from_str(&json).expect("test precondition");
         assert_eq!(restored, event);
@@ -471,14 +472,23 @@ fn success_response_round_trips() {
             protocol: 6,
             capabilities: Some(ServerCapabilities {
                 detached_server_daemon: true,
-                surface_interest: true,
-                health_check: true,
                 ssh_agent_registration: false,
             }),
         },
     };
 
     let json = serde_json::to_string(&response).expect("test precondition");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("test precondition");
+    assert!(
+        value["result"]["capabilities"]
+            .get("surface_interest")
+            .is_none()
+    );
+    assert!(
+        value["result"]["capabilities"]
+            .get("health_check")
+            .is_none()
+    );
     let restored: SuccessResponse = serde_json::from_str(&json).expect("test precondition");
     assert_eq!(restored, response);
 }

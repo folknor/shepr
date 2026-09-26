@@ -890,13 +890,15 @@ impl ClientShellState {
         }
         self.active_snapshot_generation = generation;
         self.graphics_scope = graphics_scope;
-        let endpoint_profile_changed = self.snapshot.as_ref().is_none_or(|current| {
-            current.server_keybindings_toml != snapshot.server_keybindings_toml
+        let endpoint_keybindings_changed = self.snapshot.as_ref().is_none_or(|current| {
+            !current
+                .resolved_config
+                .same_keybinding_resolution(&snapshot.resolved_config)
         });
-        // Only endpoint-sourced keymaps follow the snapshot; Local and RemoteLocal keep the
-        // keymap built from this client's own config at startup.
+        // Endpoint-sourced keymaps follow its resolved config. Local and
+        // RemoteLocal keep the keymap built from this client's config.
         let snapshot_keybindings_changed =
-            self.config.uses_endpoint_keybindings() && endpoint_profile_changed;
+            self.config.uses_endpoint_keybindings() && endpoint_keybindings_changed;
         let boot_changed = endpoint_boot_changed
             || self
                 .snapshot
@@ -924,10 +926,7 @@ impl ClientShellState {
             self.previous_pane_id = Some(previous.clone());
         }
         if snapshot_keybindings_changed {
-            if let Err(err) = self
-                .config
-                .apply_snapshot_keybindings(snapshot.server_keybindings_toml.as_deref())
-            {
+            if let Err(err) = self.config.apply_snapshot_config(&snapshot.resolved_config) {
                 self.set_endpoint_error(err);
             } else if matches!(
                 self.mode,

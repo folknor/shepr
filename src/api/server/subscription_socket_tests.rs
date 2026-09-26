@@ -1,7 +1,6 @@
 use super::*;
 use crate::api::schema::{
-    AgentStatus, EventData, EventEnvelope, EventKind, PaneInfo, PaneReadResult, ReadFormat,
-    ReadSource,
+    AgentStatus, EventData, EventEnvelope, PaneInfo, PaneReadResult, ReadFormat, ReadSource,
 };
 use crate::ipc::{LocalStreamReadCount, poll_local_stream_read_count};
 use interprocess::local_socket::traits::Listener as _;
@@ -166,7 +165,7 @@ impl Client {
     fn assert_renames(&mut self, indices: std::ops::Range<usize>, deadline: Instant) {
         for index in indices {
             let event = self.next_line(deadline).expect("rename before EOF");
-            assert_eq!(event["event"], "workspace_renamed");
+            assert_eq!(event["data"]["type"], "workspace_renamed");
             assert_eq!(event["data"]["label"], format!("flood-{index}"));
         }
     }
@@ -181,7 +180,6 @@ impl Client {
 
 fn renamed_event(index: usize) -> EventEnvelope {
     EventEnvelope {
-        event: EventKind::WorkspaceRenamed,
         data: EventData::WorkspaceRenamed {
             workspace_id: "workspace_1".into(),
             label: format!("flood-{index}"),
@@ -279,7 +277,6 @@ fn events_for_different_subscriptions_arrive_in_hub_order_with_their_sequence() 
     client.assert_started("order");
     let start = test.hub.current_sequence();
     test.hub.push(EventEnvelope {
-        event: EventKind::WorkspaceFocused,
         data: EventData::WorkspaceFocused {
             workspace_id: "workspace_1".into(),
         },
@@ -289,9 +286,9 @@ fn events_for_different_subscriptions_arrive_in_hub_order_with_their_sequence() 
     let deadline = Instant::now() + RESPONSE_TIMEOUT;
     let first = client.next_line(deadline).expect("focus before EOF");
     let second = client.next_line(deadline).expect("rename before EOF");
-    assert_eq!(first["event"], "workspace_focused");
+    assert_eq!(first["data"]["type"], "workspace_focused");
     assert_eq!(first["seq"], start + 1);
-    assert_eq!(second["event"], "workspace_renamed");
+    assert_eq!(second["data"]["type"], "workspace_renamed");
     assert_eq!(second["seq"], start + 2);
 }
 

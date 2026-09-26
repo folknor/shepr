@@ -195,17 +195,14 @@ pub(in crate::remote) fn cached_remote_api_command(
     // `/bin/sh -c '<script>'`. Keep it to one line with no single quote,
     // backslash or double quote inside, so the login shell (xonsh, fish,
     // nushell or POSIX) sees one plain single-quoted word with nothing to
-    // escape, the same as the client bridge command. `set -f` makes the
-    // unquoted `$capability` safe from globbing; a value with spaces makes
-    // `[` fail, which is the stale branch, as it should be. A path or session
-    // that needs quoting would bring `'\''` back; paths come from discovery
-    // (plain install paths) and session names are validated.
+    // escape, the same as the client bridge command. A path or session that
+    // needs quoting would bring `'\''` back; paths come from discovery and
+    // session names are validated.
     let script = format!(
-        "set -f; if capability=$({path} --session {session} remote-api-bridge --check </dev/null 2>/dev/null) && [ x$capability = x{reply} ]; then {}; else echo {STALE_API_METADATA} >&2; exit 78; fi",
+        "if {path} --session {session} remote-api-bridge --check </dev/null >/dev/null 2>&1; then {}; else echo {STALE_API_METADATA} >&2; exit 78; fi",
         posix_remote_output_command(&format!(
             "exec {path} --session {session} remote-api-bridge"
         )),
-        reply = super::API_BRIDGE_CHECK_REPLY,
     );
     posix_shell_command(&script)
 }

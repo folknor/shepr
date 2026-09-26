@@ -132,7 +132,7 @@ pub(super) fn parse(matches: &ArgMatches) -> Command {
 
 pub(super) fn run_agent_command(
     command: Command,
-    config: Option<crate::config::Config>,
+    config: Option<crate::config::ValidatedConfig>,
     paths: &super::target::CliContext,
 ) -> std::io::Result<i32> {
     match command {
@@ -437,7 +437,7 @@ fn agent_focus(paths: &super::target::CliContext, target: String) -> std::io::Re
 fn agent_attach(
     target: &str,
     takeover: bool,
-    config: Option<crate::config::Config>,
+    config: Option<crate::config::ValidatedConfig>,
     paths: &super::target::CliContext,
 ) -> std::io::Result<i32> {
     let config = match config {

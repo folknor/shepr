@@ -40,28 +40,6 @@ Proposed owner: the vt module owns one set of types; protocol conversions are
 
 Reported by: terminal-core, server.
 
-## CON-017 - When to probe processes
-
-Sites: `should_probe_foreground_job`,
-`should_skip_process_probe_for_lifecycle_authority` and
-`sync_content_change_acquisition` each read the acquisition window and
-foreground-group change.
-
-Proposed owner: one scheduler state machine.
-
-Reported by: pane-detection.
-
-## CON-023 - Which terminal does this target name?
-
-Sites: `resolve_terminal_target` matches `agent_name` or
-`effective_agent_label()`; `resolve_agent_target` matches only `agent_name` and
-gates pane ids on `is_agent_terminal`. The hunter notes the difference may be
-intended.
-
-Proposed owner: one resolver parameterised by a `TargetKind`.
-
-Reported by: app-state.
-
 ## CON-025 - Does this event or API method need a render?
 
 Sites:
@@ -74,34 +52,6 @@ impact, over one `RenderDemand` lattice (None < Partial < Full) with join.
 
 Reported by: app-state, server.
 
-## CON-028 - AppState copies config field by field
-
-Sites: `App::new` builds `PaneGeometry` from `config.ui.*` directly while
-`AppState::pane_geometry_in` builds it from copied state fields; `AppState`
-copies ~20 config fields one by one and `test_new` repeats defaults by hand,
-which can drift from `Config::default()`. The client has the same shape:
-`ClientLoopConfig` fields copied into `ClientState` (mouse_scroll_lines,
-redraw_on_focus_gained, pixel_geometry_enabled, mouse_capture_active) plus
-positional arguments.
-
-Proposed owner: a `UiSettings` (server) / `ClientSettings` (client) built once from
-`Config`, used by `test_new` too.
-
-Reported by: app-state, client.
-
-## CON-031 - Config diagnostics are classified by substring and selected per client
-
-Sites: `is_keybinding_config_diagnostic` (looks for `"keybinding"` / `"keys."`,
-excludes `"config parse error:"` / `"config read error:"`);
-`config_diagnostic_summary` (`"using defaults"`, `"unknown config key "`);
-`collect_diagnostics` post-edits with `.replace("using cyan", ...)`; the server
-precomputes `server_config_diagnostic` and `_without_keybindings`.
-
-Proposed owner: typed `ConfigDiagnostic { key, kind, message }`; the per-client
-choice becomes a function of `(diagnostics, KeybindingSource)`.
-
-Reported by: config-cli, server.
-
 ## CON-040 - Which role is this client process?
 
 Sites: `is_remote_client_process()` called in `run_client_with_mode`,
@@ -112,44 +62,6 @@ Sites: `is_remote_client_process()` called in `run_client_with_mode`,
 Proposed owner: a typed `ClientProcessRole` resolved once at startup.
 
 Reported by: client.
-
-## CON-045 - Config keys, defaults and validation
-
-Progress (wave B): default config moved to `src/config/default.toml`;
-keybinding validation cached at load. The fixer stopped at the model fork noted
-in `config/model.rs`.
-
-Decision (owner): boot resolves the whole config surface once - config file,
-environment, CLI flags, paths - into an immutable, typed `ValidatedConfig`; at
-runtime nothing is parsed, looked up by name or re-validated. Provenance is part
-of the type, not a side structure: every resolved value records where it came
-from (default, config file key, environment variable, CLI flag), so "did the
-user set this" and "why is this the value" can be interrogated
-deterministically, e.g. by `config check`. `KeysConfigOverlay`, the `user_fields`
-string sets and the second TOML parse go. Runtime preferences (sidebar drag
-etc.) stay separate mutable state. A single-agent wave of its own.
-
-The same type goes on the wire: a server publishes its whole resolved and
-validated config, provenance included, as a positional-codec wire type, instead
-of the ad hoc keybinding profile TOML (`local_keybindings_profile_toml`,
-`keybindings_from_profile_toml` and the profile publishing path go). A client
-decides what of a remote config applies by interrogating that typed value; no
-side channel re-serialises a subset of config.
-
-Sites: `Config` structs (serde source); `KNOWN_TOP_LEVEL_CONFIG_KEYS` (hand
-list; `serde_ignored` already reports unknown keys); `KeysConfig` and the
-parallel `KeysConfigOverlay`; `DEFAULT_CONFIG` text in `main.rs` (a test checks
-keybindings only); `Default` impls; `ui.user_fields: BTreeSet<String>` /
-`keys.user_fields: BTreeSet<&'static str>` with string lookups
-(`is_user_configured("sidebar_width")`), obtained by re-parsing the document;
-validators re-run on every accessor call (`keybinds()` re-runs
-`validated_keybinds()`); `validated_sidebar_bounds` at config time and
-presumably again at clamp sites.
-
-Proposed owner: a `ValidatedConfig` built once at load, `Option<T>` for
-user-overridable fields, overlay generated or removed.
-
-Reported by: config-cli.
 
 ## CON-046 - Does this process own the data dir?
 
@@ -170,14 +82,6 @@ Sites: `pathutil::home_dir()` (rejects empty `HOME`); `config/io.rs`
 
 Reported by: config-cli.
 
-## CON-055 - The reconnect retry promise
-
-Sites: `cli/machine.rs` `reconnect` output string ("within 30 seconds");
-`MAX_RETRY_DELAY`, `ATTENTION_RETRY_DELAY`, `ATTEMPT_BUDGET < MAX_RETRY_DELAY`
-(tested in the supervisor; the CLI text is a literal).
-
-Reported by: remote.
-
 ## CON-057 - Workspace and agent row presentation in two sidebars
 
 Sites: `client/shell/sidebar.rs` (local) and `client/shell/endpoint_sidebar.rs`
@@ -192,24 +96,3 @@ is the one-endpoint case of the endpoint sidebar; delete `sidebar.rs`'s row
 rendering.
 
 Reported by: ui.
-
-## CON-058 - What to do on a poisoned lock
-
-Sites: `pane.rs` `active_pending_release` returns `None` on poison; other pane
-sites use `unwrap_or_else(into_inner)`; ghostty `Listener` recovers with
-`PoisonError::into_inner` everywhere while the PTY actor treats a poisoned core as
-fatal.
-
-Reported by: pane-detection, terminal-core.
-
-## CON-059 - Character width
-
-Sites: the core grid uses unicode-width plus the U+FF9E/U+FF9F special case;
-`copy_mode.rs` counts cells with `ghostty::unicode_codepoint_width`;
-`agent_sidebar.rs:358` `put_text` iterates `chars()` and redefines
-`display_width` locally although `render::display_width` exists. See BUG-003,
-BUG-027.
-
-Proposed owner: one width rule in the vt module.
-
-Reported by: terminal-core, ui.

@@ -1,19 +1,13 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::{CONFIG_PATH_ENV_VAR, Config, NewTerminalCwdConfig, model::LoadedConfig};
+use serde::{Deserialize, Serialize};
 
-const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
-    "advanced",
-    "experimental",
-    "keys",
-    "remote",
-    "server",
-    "session",
-    "terminal",
-    "theme",
-    "ui",
-];
+use super::{
+    CONFIG_PATH_ENV_VAR, Config, ConfigProvenance, ConfigSource, NewTerminalCwdConfig,
+    ValidatedConfig,
+    model::{ConfigDocumentState, LoadedConfig},
+};
 
 pub fn app_dir_name() -> &'static str {
     // Unit tests get a directory name of their own in every profile. `brokkr
@@ -34,7 +28,7 @@ pub fn app_dir_name() -> &'static str {
 /// Paths and the local target resolved once at the process boundary and
 /// passed to consumers. Production constructors reject unresolved path inputs
 /// that would put files relative to the working directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(Default))]
 pub struct AppPaths {
     config_dir: PathBuf,
@@ -44,6 +38,19 @@ pub struct AppPaths {
     current_dir: Option<PathBuf>,
     session_id: crate::session::SessionId,
     server_address: crate::server::socket_paths::ServerAddress,
+    provenance: PathProvenance,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PathProvenance {
+    pub config_dir: ConfigSource,
+    pub state_dir: ConfigSource,
+    pub config_file: ConfigSource,
+    pub home_dir: ConfigSource,
+    pub current_dir: ConfigSource,
+    pub session_id: ConfigSource,
+    pub api_socket: ConfigSource,
+    pub client_socket: ConfigSource,
 }
 
 impl AppPaths {
@@ -75,10 +82,14 @@ impl AppPaths {
         &self.server_address
     }
 
+    pub fn provenance(&self) -> &PathProvenance {
+        &self.provenance
+    }
+
     /// Resolve XDG directories, session identity and socket target once from
     /// the inherited process environment.
     pub fn resolve() -> Result<Self, Vec<String>> {
-        resolve_paths_from_env(None)
+        resolve_paths_from_env(None, None)
     }
 
     /// Resolve paths and the local session/socket target from one environment
@@ -87,13 +98,16 @@ impl AppPaths {
     pub fn resolve_with_session(
         requested_session: Option<crate::session::SessionId>,
     ) -> Result<Self, Vec<String>> {
-        resolve_paths_from_env(requested_session)
+        let session_source = requested_session
+            .as_ref()
+            .map(|_| ConfigSource::CliFlag("--session".to_owned()));
+        resolve_paths_from_env(requested_session, session_source)
     }
 
     /// Resolve only the machine catalog's local paths, without allowing local
     /// session or socket environment values to affect a remote command.
     pub(crate) fn resolve_for_machine() -> Result<Self, Vec<String>> {
-        resolve_paths_from_env(Some(crate::session::SessionId::Default))
+        resolve_paths_from_env(Some(crate::session::SessionId::Default), None)
     }
 
     #[cfg(test)]
@@ -121,6 +135,16 @@ impl AppPaths {
                 None,
                 None,
             ),
+            provenance: PathProvenance {
+                config_dir: ConfigSource::Default,
+                state_dir: ConfigSource::Default,
+                config_file: ConfigSource::Default,
+                home_dir: ConfigSource::Default,
+                current_dir: ConfigSource::Default,
+                session_id: ConfigSource::Default,
+                api_socket: ConfigSource::Default,
+                client_socket: ConfigSource::Default,
+            },
         }
     }
 }
@@ -129,30 +153,41 @@ fn platform_xdg_dir(
     variable: &str,
     home_suffix: &str,
     home_dir: Option<&Path>,
-) -> io::Result<PathBuf> {
+) -> io::Result<(PathBuf, ConfigSource)> {
     if let Some(value) = std::env::var_os(variable) {
         let directory = PathBuf::from(value);
         // The XDG base directory specification says to ignore empty and
         // relative values. In that case, use the corresponding location under
         // HOME, which must itself be an absolute path.
         if directory.is_absolute() {
-            return Ok(directory.join(app_dir_name()));
+            return Ok((
+                directory.join(app_dir_name()),
+                ConfigSource::EnvironmentVariable(variable.to_owned()),
+            ));
         }
     }
 
     let home_dir = home_dir.ok_or_else(|| {
         io::Error::other("HOME must be set to a non-empty absolute path to locate home directory")
     })?;
-    Ok(home_dir.join(home_suffix).join(app_dir_name()))
+    Ok((
+        home_dir.join(home_suffix).join(app_dir_name()),
+        ConfigSource::Default,
+    ))
 }
 
 fn resolve_paths_from_env(
     requested_session: Option<crate::session::SessionId>,
+    requested_session_source: Option<ConfigSource>,
 ) -> Result<AppPaths, Vec<String>> {
+    let session_selection_was_forced = requested_session.is_some();
     let api_socket_override = std::env::var(crate::api::SOCKET_PATH_ENV_VAR).ok();
     let client_socket_override =
         std::env::var(crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR).ok();
     let inherited_session = std::env::var(crate::session::SESSION_ENV_VAR).ok();
+    let inherited_session_accepted = inherited_session
+        .as_deref()
+        .is_some_and(|name| crate::session::SessionId::parse(name).is_ok());
     let (session_id, session_was_requested) = crate::session::SessionId::resolve(
         requested_session,
         inherited_session.as_deref(),
@@ -162,10 +197,22 @@ fn resolve_paths_from_env(
 
     let home_dir = crate::pathutil::home_dir().ok();
     let current_dir = std::env::current_dir().ok();
-    let config_dir = platform_xdg_dir("XDG_CONFIG_HOME", ".config", home_dir.as_deref());
-    let state_dir = platform_xdg_dir("XDG_STATE_HOME", ".local/state", home_dir.as_deref());
+    let (config_dir, config_dir_source) =
+        platform_xdg_dir("XDG_CONFIG_HOME", ".config", home_dir.as_deref())
+            .map(|(path, source)| (Ok(path), source))
+            .unwrap_or_else(|error| (Err(error), ConfigSource::Default));
+    let (state_dir, state_dir_source) =
+        platform_xdg_dir("XDG_STATE_HOME", ".local/state", home_dir.as_deref())
+            .map(|(path, source)| (Ok(path), source))
+            .unwrap_or_else(|error| (Err(error), ConfigSource::Default));
 
-    let config_file = match std::env::var_os(CONFIG_PATH_ENV_VAR) {
+    let config_path_override = std::env::var_os(CONFIG_PATH_ENV_VAR);
+    let config_file_source = if config_path_override.is_some() {
+        ConfigSource::EnvironmentVariable(CONFIG_PATH_ENV_VAR.to_owned())
+    } else {
+        config_dir_source.clone()
+    };
+    let config_file = match config_path_override {
         Some(path) if path.is_empty() => Err(io::Error::other(format!(
             "{CONFIG_PATH_ENV_VAR} must not be empty"
         ))),
@@ -222,6 +269,40 @@ fn resolve_paths_from_env(
                 api_socket_override.as_deref(),
                 client_socket_override.as_deref(),
             );
+            let home_dir_source = if home_dir.is_some() {
+                ConfigSource::EnvironmentVariable("HOME".to_owned())
+            } else {
+                ConfigSource::Default
+            };
+            let session_source = if let Some(source) = requested_session_source {
+                source
+            } else if inherited_session_accepted && !session_selection_was_forced {
+                ConfigSource::EnvironmentVariable(crate::session::SESSION_ENV_VAR.to_owned())
+            } else {
+                ConfigSource::Default
+            };
+            let api_socket_source = if session_selection_was_forced {
+                session_source.clone()
+            } else if api_socket_override.is_some() {
+                ConfigSource::EnvironmentVariable(crate::api::SOCKET_PATH_ENV_VAR.to_owned())
+            } else if inherited_session_accepted {
+                session_source.clone()
+            } else {
+                config_dir_source.clone()
+            };
+            let client_socket_source = if session_selection_was_forced {
+                session_source.clone()
+            } else if api_socket_override.is_some() {
+                ConfigSource::EnvironmentVariable(crate::api::SOCKET_PATH_ENV_VAR.to_owned())
+            } else if client_socket_override.is_some() {
+                ConfigSource::EnvironmentVariable(
+                    crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR.to_owned(),
+                )
+            } else if inherited_session_accepted {
+                session_source.clone()
+            } else {
+                config_dir_source.clone()
+            };
             Ok(AppPaths {
                 config_dir,
                 state_dir,
@@ -230,6 +311,16 @@ fn resolve_paths_from_env(
                 current_dir,
                 session_id,
                 server_address,
+                provenance: PathProvenance {
+                    config_dir: config_dir_source,
+                    state_dir: state_dir_source,
+                    config_file: config_file_source,
+                    home_dir: home_dir_source,
+                    current_dir: ConfigSource::Default,
+                    session_id: session_source,
+                    api_socket: api_socket_source,
+                    client_socket: client_socket_source,
+                },
             })
         }
         _ if diagnostics.is_empty() => {
@@ -293,10 +384,7 @@ impl Config {
     /// so `config check` passes exactly when a launch would accept the config.
     pub fn load_for_check(paths: &AppPaths) -> LoadedConfig {
         let mut loaded = Self::load_from_path(paths.config_file());
-        let config_unavailable = loaded.diagnostics.iter().any(|diagnostic| {
-            diagnostic.starts_with("config read error:")
-                || diagnostic.starts_with("config parse error:")
-        });
+        let config_unavailable = loaded.document_state == ConfigDocumentState::Unavailable;
         if !config_unavailable
             && let Some(error) = configured_home_path_error(&loaded.config, paths.home_dir())
         {
@@ -308,10 +396,8 @@ impl Config {
     /// Load a config for an application launch. Every path or validation
     /// problem is fatal, so a default config from an unsuccessful parse is
     /// never returned to runtime callers.
-    pub fn load_validated(paths: &AppPaths) -> Result<Self, Vec<String>> {
-        let mut config = Self::load_for_check(paths).into_validated()?;
-        config.resolve_palette()?;
-        Ok(config)
+    pub fn load_validated(paths: &AppPaths) -> Result<ValidatedConfig, Vec<String>> {
+        Self::load_for_check(paths).into_validated(paths.clone())
     }
 
     fn load_from_path(path: &Path) -> LoadedConfig {
@@ -319,45 +405,77 @@ impl Config {
             Ok(Some(content)) => Self::load_from_str(&content),
             Ok(None) => {
                 let config = Self::default();
-                config.cache_keybind_validation();
+                let provenance = ConfigProvenance::defaults(&config);
+                let keybind_validation = config.compute_keybind_validation(|_| false);
                 LoadedConfig {
+                    provenance,
                     config,
+                    keybind_validation,
                     diagnostics: Vec::new(),
+                    document_state: ConfigDocumentState::Missing,
                 }
             }
-            Err(err) => LoadedConfig {
-                config: Self::default(),
-                diagnostics: vec![format!("config read error: {err}")],
-            },
+            Err(err) => default_loaded_config(vec![format!("config read error: {err}")]),
         }
     }
 
     fn load_from_str(content: &str) -> LoadedConfig {
-        match toml::Deserializer::parse(content).and_then(deserialize_with_ignored::<Config, _>) {
-            Ok((mut config, ignored_keys)) => {
-                config.ui.user_fields = ui_user_fields(content);
-                config.cache_keybind_validation();
-                let (unknown_sections, mut diagnostics) =
-                    unknown_top_level_sections_from_str(content);
-                diagnostics.extend(unknown_config_key_diagnostics(
-                    ignored_keys
-                        .into_iter()
-                        .filter(|path| {
-                            !matches!(path.as_slice(), [ConfigKeyPathSegment::Key(key)] if unknown_sections.contains(key))
-                        })
-                        .collect(),
-                ));
-                diagnostics.extend(config.collect_diagnostics());
-                LoadedConfig {
-                    config,
-                    diagnostics,
+        match content.parse::<toml::Table>() {
+            Ok(table) => {
+                let document = toml::Value::Table(table);
+                match deserialize_with_ignored::<Config, _>(document.clone()) {
+                    Ok((config, ignored_keys)) => {
+                        let provenance =
+                            match ConfigProvenance::from_config(&config, Some(&document)) {
+                                Ok(provenance) => provenance,
+                                Err(error) => {
+                                    return default_loaded_config(vec![format!(
+                                        "config provenance error: {error}"
+                                    )]);
+                                }
+                            };
+                        let keybind_validation = config.compute_keybind_validation(|field| {
+                            provenance.key_is_configured(&format!("keys.{field}"))
+                        });
+                        let (unknown_sections, mut diagnostics) =
+                            unknown_top_level_sections(&document, &ignored_keys);
+                        diagnostics.extend(unknown_config_key_diagnostics(
+                            ignored_keys
+                                .into_iter()
+                                .filter(|path| {
+                                    !matches!(path.as_slice(), [ConfigKeyPathSegment::Key(key)] if unknown_sections.contains(key))
+                                })
+                                .collect(),
+                        ));
+                        diagnostics.extend(
+                            config.collect_diagnostics_with_keybind_validation(&keybind_validation),
+                        );
+                        LoadedConfig {
+                            config,
+                            provenance,
+                            keybind_validation,
+                            diagnostics,
+                            document_state: ConfigDocumentState::Loaded,
+                        }
+                    }
+                    Err(err) => default_loaded_config(vec![format!("config parse error: {err}")]),
                 }
             }
-            Err(err) => LoadedConfig {
-                config: Self::default(),
-                diagnostics: vec![format!("config parse error: {err}")],
-            },
+            Err(err) => default_loaded_config(vec![format!("config parse error: {err}")]),
         }
+    }
+}
+
+fn default_loaded_config(diagnostics: Vec<String>) -> LoadedConfig {
+    let config = Config::default();
+    let provenance = ConfigProvenance::defaults(&config);
+    let keybind_validation = config.compute_keybind_validation(|_| false);
+    LoadedConfig {
+        config,
+        provenance,
+        keybind_validation,
+        diagnostics,
+        document_state: ConfigDocumentState::Unavailable,
     }
 }
 
@@ -378,42 +496,31 @@ fn configured_home_path_error(config: &Config, home_dir: Option<&Path>) -> Optio
         .map(|err| format!("terminal.new_cwd cannot be resolved: {err}"))
 }
 
-/// The keys written under `[ui]`, whatever their value. Serde fills unset keys
-/// with defaults, so this is the only record of which ones the user chose.
-fn ui_user_fields(content: &str) -> std::collections::BTreeSet<String> {
-    content
-        .parse::<toml::Table>()
-        .ok()
-        .and_then(|table| {
-            table
-                .get("ui")
-                .and_then(toml::Value::as_table)
-                .map(|ui| ui.keys().cloned().collect())
-        })
-        .unwrap_or_default()
-}
-
-fn unknown_top_level_sections_from_str(content: &str) -> (Vec<String>, Vec<String>) {
-    let Ok(table) = content.parse::<toml::Table>() else {
-        return (Vec::new(), Vec::new());
+fn unknown_top_level_sections(
+    document: &toml::Value,
+    ignored_paths: &[Vec<ConfigKeyPathSegment>],
+) -> (std::collections::BTreeSet<String>, Vec<String>) {
+    let Some(table) = document.as_table() else {
+        return (std::collections::BTreeSet::new(), Vec::new());
     };
-
     let mut keys = Vec::new();
     let mut diagnostics = Vec::new();
-    for (key, value) in &table {
+    for path in ignored_paths {
+        let [ConfigKeyPathSegment::Key(key)] = path.as_slice() else {
+            continue;
+        };
+        let Some(value) = table.get(key) else {
+            continue;
+        };
         if let Some(diagnostic) = unknown_top_level_section_diagnostic(key, value) {
             keys.push(key.clone());
             diagnostics.push(diagnostic);
         }
     }
-    (keys, diagnostics)
+    (keys.into_iter().collect(), diagnostics)
 }
 
 fn unknown_top_level_section_diagnostic(key: &str, value: &toml::Value) -> Option<String> {
-    if KNOWN_TOP_LEVEL_CONFIG_KEYS.contains(&key) {
-        return None;
-    }
-
     let header = if value.is_table() {
         format!("[{key}]")
     } else if value
@@ -544,7 +651,7 @@ mod tests {
         ] {
             let loaded = Config::load_from_str(content);
             let errors = loaded
-                .into_validated()
+                .into_validated(AppPaths::default())
                 .expect_err("invalid config must not be returned for launch");
             assert!(
                 errors.iter().any(|diagnostic| diagnostic.contains(message)),
@@ -553,7 +660,7 @@ mod tests {
         }
 
         let parse_error = Config::load_from_str("[server]\nheadless_cols = \"wide\"\n");
-        assert!(parse_error.into_validated().is_err());
+        assert!(parse_error.into_validated(AppPaths::default()).is_err());
     }
 
     #[test]
@@ -569,10 +676,10 @@ mod tests {
 
         std::fs::remove_file(path).expect("remove config fixture");
         let defaults = Config::load_validated(&paths).expect("missing config uses defaults");
-        assert!(defaults.validated_keybinds.get().is_some());
+        assert!(defaults.validated_live_keybinds().is_ok());
         assert_eq!(
-            defaults.resolved_palette,
-            crate::app::state::Palette::catppuccin()
+            defaults.palette(),
+            &crate::app::state::Palette::catppuccin()
         );
 
         std::fs::write(
@@ -581,10 +688,7 @@ mod tests {
         )
         .expect("write valid themed config");
         let themed = Config::load_validated(&paths).expect("valid theme loads");
-        assert_eq!(
-            themed.resolved_palette.accent,
-            ratatui::style::Color::Rgb(1, 2, 3)
-        );
+        assert_eq!(themed.palette().accent, ratatui::style::Color::Rgb(1, 2, 3));
     }
 
     #[test]
@@ -644,6 +748,54 @@ mod tests {
     }
 
     #[test]
+    fn socket_path_provenance_is_tracked_independently() {
+        let env = crate::test_support::IsolatedEnv::new();
+        env.remove(crate::api::SOCKET_PATH_ENV_VAR);
+        env.remove(crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR);
+
+        env.set(crate::api::SOCKET_PATH_ENV_VAR, env.path().join("api.sock"));
+        let paths = AppPaths::resolve().expect("API socket override resolves");
+        assert_eq!(
+            paths.provenance().api_socket,
+            ConfigSource::EnvironmentVariable(crate::api::SOCKET_PATH_ENV_VAR.to_owned())
+        );
+        assert_eq!(
+            paths.provenance().client_socket,
+            ConfigSource::EnvironmentVariable(crate::api::SOCKET_PATH_ENV_VAR.to_owned())
+        );
+
+        env.remove(crate::api::SOCKET_PATH_ENV_VAR);
+        env.set(
+            crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR,
+            env.path().join("client.sock"),
+        );
+        let paths = AppPaths::resolve().expect("client socket override resolves");
+        assert_eq!(paths.provenance().api_socket, ConfigSource::Default);
+        assert_eq!(
+            paths.provenance().client_socket,
+            ConfigSource::EnvironmentVariable(
+                crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR.to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn path_provenance_distinguishes_cli_and_internal_session_selection() {
+        let env = crate::test_support::IsolatedEnv::new();
+        env.set(crate::session::SESSION_ENV_VAR, "inherited");
+
+        let cli = AppPaths::resolve_with_session(Some(crate::session::SessionId::Default))
+            .expect("CLI session paths resolve");
+        assert_eq!(
+            cli.provenance().session_id,
+            ConfigSource::CliFlag("--session".to_owned())
+        );
+
+        let machine = AppPaths::resolve_for_machine().expect("machine paths resolve");
+        assert_eq!(machine.provenance().session_id, ConfigSource::Default);
+    }
+
+    #[test]
     fn config_load_reports_unknown_keys_and_parses_known_siblings() {
         let loaded = Config::load_from_str(
             r##"
@@ -681,7 +833,7 @@ mouse_captur = true
     }
 
     #[test]
-    fn config_load_records_which_ui_keys_the_user_set() {
+    fn config_load_records_provenance_for_ui_values() {
         let loaded = Config::load_from_str(
             r#"
 [ui]
@@ -689,18 +841,39 @@ sidebar_width = 26
 agent_panel_sort = "priority"
 "#,
         );
-        assert!(loaded.config.validated_keybinds.get().is_some());
-        assert!(loaded.config.ui.is_user_configured("sidebar_width"));
-        assert!(loaded.config.ui.is_user_configured("agent_panel_sort"));
+        assert!(loaded.keybind_validation.prefix_diag.is_none());
+        assert!(
+            loaded
+                .provenance
+                .is_explicit(super::super::UiPreferenceKey::SidebarWidth)
+        );
+        assert!(
+            loaded
+                .provenance
+                .is_explicit(super::super::UiPreferenceKey::AgentPanelSort)
+        );
         assert!(
             !loaded
-                .config
-                .ui
-                .is_user_configured("sidebar_start_collapsed")
+                .provenance
+                .is_explicit(super::super::UiPreferenceKey::SidebarStartCollapsed)
         );
 
         let empty = Config::load_from_str("[terminal]\n");
-        assert!(!empty.config.ui.is_user_configured("sidebar_width"));
+        assert!(
+            !empty
+                .provenance
+                .is_explicit(super::super::UiPreferenceKey::SidebarWidth)
+        );
+    }
+
+    #[test]
+    fn config_provenance_queries_array_fields_by_their_parent_key() {
+        let configured =
+            Config::load_from_str("[keys]\nfocus_agent = [\"prefix+1\", \"prefix+2\"]\n");
+        assert!(configured.provenance.key_is_configured("keys.focus_agent"));
+
+        let defaults = Config::load_from_str("[keys]\n");
+        assert!(!defaults.provenance.key_is_configured("keys.focus_agent"));
     }
 
     #[test]

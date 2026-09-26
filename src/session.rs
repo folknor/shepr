@@ -2,6 +2,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
+
 use interprocess::local_socket::traits::Stream as _;
 
 use crate::ipc::LocalStream;
@@ -20,7 +22,7 @@ const STOP_WAIT_POLL: Duration = Duration::from_millis(25);
 const MIN_SOCKET_TIMEOUT: Duration = Duration::from_millis(1);
 
 /// A validated non-default session name.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SessionName(String);
 
 impl SessionName {
@@ -39,7 +41,7 @@ impl SessionName {
 
 /// The session identity selected for this process. The default session has no
 /// directory component; named sessions live below `sessions/<name>`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SessionId {
     #[default]
     Default,

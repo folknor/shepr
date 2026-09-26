@@ -54,7 +54,7 @@
 //! than reach `Term`. When bumping `alacritty_terminal`, diff vte's `Handler`
 //! trait against this impl.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::Dimensions;
@@ -187,10 +187,7 @@ impl<T: EventListener> CoreHandler<'_, T> {
     }
 
     fn reply(&self, text: String) {
-        self.events
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(Event::PtyWrite(text));
+        super::lock_auxiliary(self.events).push(Event::PtyWrite(text));
     }
 
     /// The adapter-modelled state of a private mode alacritty does not know
@@ -426,10 +423,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
         };
         // alacritty clears its title (and title stack) here without sending
         // an event; report the reset so the pane's title follows.
-        self.events
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(Event::ResetTitle);
+        super::lock_auxiliary(self.events).push(Event::ResetTitle);
     }
 
     fn reverse_index(&mut self) {

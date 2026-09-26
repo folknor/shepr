@@ -157,7 +157,6 @@ pub enum EventKind {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventEnvelope {
-    pub event: EventKind,
     pub data: EventData,
 }
 
@@ -326,4 +325,32 @@ pub enum EventData {
     LayoutUpdated {
         layout: super::panes::PaneLayoutSnapshot,
     },
+}
+
+impl EventData {
+    pub fn kind(&self) -> EventKind {
+        match self {
+            Self::WorkspaceCreated { .. } => EventKind::WorkspaceCreated,
+            Self::WorkspaceMetadataUpdated { .. } => EventKind::WorkspaceMetadataUpdated,
+            Self::WorkspaceClosed { .. } => EventKind::WorkspaceClosed,
+            Self::WorkspaceRenamed { .. } => EventKind::WorkspaceRenamed,
+            Self::WorkspaceMoved { .. } => EventKind::WorkspaceMoved,
+            Self::WorkspaceReordered { .. } => EventKind::WorkspaceReordered,
+            Self::WorkspaceFocused { .. } => EventKind::WorkspaceFocused,
+            Self::TabCreated { .. } => EventKind::TabCreated,
+            Self::TabClosed { .. } => EventKind::TabClosed,
+            Self::TabRenamed { .. } => EventKind::TabRenamed,
+            Self::TabMoved { .. } => EventKind::TabMoved,
+            Self::TabFocused { .. } => EventKind::TabFocused,
+            Self::PaneCreated { .. } => EventKind::PaneCreated,
+            Self::PaneClosed { .. } => EventKind::PaneClosed,
+            Self::PaneUpdated { .. } => EventKind::PaneUpdated,
+            Self::PaneFocused { .. } => EventKind::PaneFocused,
+            Self::PaneMoved { .. } => EventKind::PaneMoved,
+            Self::PaneExited { .. } => EventKind::PaneExited,
+            Self::PaneAgentDetected { .. } => EventKind::PaneAgentDetected,
+            Self::PaneAgentStatusChanged { .. } => EventKind::PaneAgentStatusChanged,
+            Self::LayoutUpdated { .. } => EventKind::LayoutUpdated,
+        }
+    }
 }
