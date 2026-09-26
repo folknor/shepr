@@ -1,6 +1,5 @@
 mod activation;
 pub(crate) mod commands;
-mod control;
 mod health;
 mod local_failure;
 mod message_policy;
@@ -13,7 +12,6 @@ pub(crate) use crate::machine::{
     EndpointCatalog, EndpointCatalogChanges, EndpointCatalogWatch, ProfileId, SavedSshEndpoint,
 };
 pub(crate) use activation::*;
-pub(crate) use control::*;
 pub(crate) use local_failure::*;
 pub(crate) use message_policy::*;
 pub(crate) use registry::*;

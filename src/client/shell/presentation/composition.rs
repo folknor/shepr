@@ -89,25 +89,14 @@ impl ClientShellState {
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
         };
-        if let Some(snapshot) = local_snapshot {
-            render::render_sidebar(
-                &mut buffer,
-                sidebar,
-                snapshot,
-                &self.config,
-                &mut render_state,
-                &mut self.hits,
-            );
-        } else {
-            super::endpoint_sidebar::render_expanded(
-                &mut buffer,
-                sidebar,
-                self.snapshot.as_deref(),
-                &self.config,
-                &mut render_state,
-                &mut self.hits,
-            );
-        }
+        super::endpoint_sidebar::render_expanded(
+            &mut buffer,
+            sidebar,
+            local_snapshot.or(self.snapshot.as_deref()),
+            &self.config,
+            &mut render_state,
+            &mut self.hits,
+        );
         if !self.config.mouse_capture {
             self.hits = ShellHitMap::default();
         }
@@ -425,7 +414,7 @@ impl ClientShellState {
                         hit.inner_rect,
                         hit.scroll,
                         &self.config.palette,
-                        crate::terminal_theme::TerminalTheme {
+                        crate::host_term::theme::TerminalTheme {
                             background: self.host_background,
                             ..Default::default()
                         },

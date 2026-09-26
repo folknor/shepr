@@ -273,7 +273,7 @@ mod tests {
         let client = ApiClient::local(&paths);
         let socket = client.socket_path();
         assert!(socket.ends_with("sessions/work/shepr.sock"), "{socket:?}");
-        assert!(socket.starts_with(paths.config_dir()), "{socket:?}");
+        assert!(socket.starts_with(paths.runtime_dir()), "{socket:?}");
     }
 
     #[test]

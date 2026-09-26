@@ -191,7 +191,7 @@ pub(super) fn resize_pane_infos(
     ws_idx: usize,
     tab_idx: usize,
     pane_infos: &[PaneInfo],
-    cell_size: crate::terminal_cell_size::HostCellSize,
+    cell_size: crate::host_term::cell_size::HostCellSize,
 ) {
     let Some(tab) = app
         .workspaces
@@ -572,7 +572,7 @@ pub(crate) fn render_selection_highlight<P: PartialEq>(
     inner: Rect,
     scroll_metrics: Option<crate::pane::ScrollMetrics>,
     p: &Palette,
-    host_theme: crate::terminal_theme::TerminalTheme,
+    host_theme: crate::host_term::theme::TerminalTheme,
 ) {
     let Some(selection) =
         selection.filter(|selection| selection.is_visible() && &selection.pane_id == pane_id)
@@ -610,13 +610,16 @@ type Rgb = (u8, u8, u8);
 
 fn automatic_selection_style(
     p: &Palette,
-    host_theme: crate::terminal_theme::TerminalTheme,
+    host_theme: crate::host_term::theme::TerminalTheme,
 ) -> Style {
     let bg = automatic_selection_bg(p, host_theme);
     Style::reset().fg(selection_fg_for_bg(bg, p)).bg(bg)
 }
 
-fn automatic_selection_bg(p: &Palette, host_theme: crate::terminal_theme::TerminalTheme) -> Color {
+fn automatic_selection_bg(
+    p: &Palette,
+    host_theme: crate::host_term::theme::TerminalTheme,
+) -> Color {
     let fallback = selection_palette_background(p);
     let Some(background) = host_theme
         .background
@@ -1370,9 +1373,9 @@ mod tests {
     #[test]
     fn selection_highlight_uses_one_uniform_style() {
         let palette = Palette::catppuccin();
-        let host_theme = crate::terminal_theme::TerminalTheme {
+        let host_theme = crate::host_term::theme::TerminalTheme {
             foreground: None,
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 12,
                 g: 14,
                 b: 16,
@@ -1437,7 +1440,7 @@ mod tests {
         // The client can compose a pane surface produced for another layout, so the
         // pane's inner rect may reach past the frame. Painting must clip, not panic.
         let palette = Palette::catppuccin();
-        let host_theme = crate::terminal_theme::TerminalTheme::default();
+        let host_theme = crate::host_term::theme::TerminalTheme::default();
         let expected = automatic_selection_style(&palette, host_theme);
         let selection = Some(Selection::range(
             PaneId::from_raw(1),
@@ -1482,13 +1485,13 @@ mod tests {
     fn automatic_selection_background_uses_host_background() {
         let bg = automatic_selection_bg(
             &Palette::terminal(),
-            crate::terminal_theme::TerminalTheme {
-                foreground: Some(crate::terminal_theme::RgbColor {
+            crate::host_term::theme::TerminalTheme {
+                foreground: Some(crate::host_term::theme::RgbColor {
                     r: 230,
                     g: 230,
                     b: 230,
                 }),
-                background: Some(crate::terminal_theme::RgbColor {
+                background: Some(crate::host_term::theme::RgbColor {
                     r: 12,
                     g: 14,
                     b: 16,
@@ -1524,8 +1527,8 @@ mod tests {
             assert_eq!(
                 automatic_selection_style(
                     &Palette::terminal(),
-                    crate::terminal_theme::TerminalTheme {
-                        background: Some(crate::terminal_theme::RgbColor { r, g, b }),
+                    crate::host_term::theme::TerminalTheme {
+                        background: Some(crate::host_term::theme::RgbColor { r, g, b }),
                         ..Default::default()
                     },
                 ),

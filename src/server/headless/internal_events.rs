@@ -76,7 +76,7 @@ impl HeadlessServer {
 
                 true
             }
-            _ => self.app.handle_internal_event_with_render_impact(ev),
+            _ => self.app.handle_internal_event_with_render_demand(ev) != RenderDemand::None,
         }
     }
 

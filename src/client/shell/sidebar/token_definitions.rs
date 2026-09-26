@@ -61,7 +61,26 @@ pub(crate) struct AgentTokenContext<'a> {
     pub(crate) terminal_title: Option<&'a str>,
     pub(crate) terminal_title_stripped: Option<&'a str>,
     pub(crate) canonical_agent: Option<crate::detect::Agent>,
-    pub(crate) tokens: &'a std::collections::HashMap<String, String>,
+    pub(crate) tokens: &'a dyn TokenValues,
+}
+
+pub(crate) trait TokenValues {
+    fn value(&self, key: &str) -> Option<&str>;
+}
+
+impl TokenValues for Vec<(String, String)> {
+    fn value(&self, key: &str) -> Option<&str> {
+        self.iter()
+            .rev()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+impl TokenValues for std::collections::HashMap<String, String> {
+    fn value(&self, key: &str) -> Option<&str> {
+        self.get(key).map(String::as_str)
+    }
 }
 
 pub(crate) fn agent_rows(
@@ -105,8 +124,8 @@ pub(crate) fn agent_rows(
                             .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
                         AgentSidebarToken::Custom(name) => context
                             .tokens
-                            .get(name)
-                            .cloned()
+                            .value(name)
+                            .map(str::to_owned)
                             .map(ResolvedTokenKind::Custom),
                         AgentSidebarToken::Styled { .. } => None,
                     }?;
@@ -126,7 +145,7 @@ pub(crate) struct SpaceTokenContext<'a> {
     pub(crate) branch: Option<&'a str>,
     pub(crate) state_text: &'a str,
     pub(crate) ahead_behind: Option<(usize, usize)>,
-    pub(crate) tokens: &'a std::collections::HashMap<String, String>,
+    pub(crate) tokens: &'a dyn TokenValues,
 }
 
 pub(crate) fn space_rows(
@@ -158,8 +177,8 @@ pub(crate) fn space_rows(
                             .map(|(ahead, behind)| ResolvedTokenKind::GitStatus { ahead, behind }),
                         SpaceSidebarToken::Custom(name) => context
                             .tokens
-                            .get(name)
-                            .cloned()
+                            .value(name)
+                            .map(str::to_owned)
                             .map(ResolvedTokenKind::Custom),
                         SpaceSidebarToken::Styled { .. } => None,
                     }?;
@@ -279,10 +298,12 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
                     &crate::app::state::Palette::catppuccin(),
                     false,
                 ),
-                theme,
-                theme,
-                theme,
-                theme,
+                super::super::TokenStyles {
+                    state_text: theme,
+                    primary: theme,
+                    secondary: theme,
+                    custom: theme,
+                },
                 &super::super::Palette::catppuccin(),
                 width,
             );

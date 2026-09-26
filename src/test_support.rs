@@ -11,8 +11,9 @@
 //!   explicit-session flag) that another test changes, holds an
 //!   [`IsolatedEnv`] for its whole body. There is one lock for the whole
 //!   crate, so these tests exclude each other whichever module they live in.
-//!   The guard also points `HOME` at scratch and clears the XDG base
-//!   directories and every inherited `SHEPR_*` variable, so nothing under test
+//!   The guard also points `HOME` and `XDG_RUNTIME_DIR` at scratch and clears
+//!   the other XDG base directories and every inherited `SHEPR_*` variable,
+//!   so nothing under test
 //!   can reach the user's real config, state or agent directories, or the live
 //!   shepr server a test run was started from. It restores the whole
 //!   environment when dropped, including on panic.
@@ -175,6 +176,7 @@ impl IsolatedEnv {
         for key in XDG_BASE_DIR_VARS {
             env.remove(key);
         }
+        env.set("XDG_RUNTIME_DIR", env.path().join("runtime"));
         let inherited_shepr: Vec<OsString> = env
             .saved
             .iter()
@@ -260,6 +262,7 @@ mod tests {
         let paths = crate::config::AppPaths::resolve().expect("isolated directories resolve");
         assert!(paths.config_dir().starts_with(env.path()));
         assert!(paths.state_dir().starts_with(env.path()));
+        assert!(paths.runtime_dir().starts_with(env.path()));
         env.set(PROBE, "set");
         let scratch = env.path().to_path_buf();
         drop(env);

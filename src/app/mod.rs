@@ -13,6 +13,7 @@ pub(crate) use api::test_support::exiting_test_command;
 pub(crate) mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
 mod creation;
+mod events;
 mod git_refresh;
 mod host_theme;
 mod ids;
@@ -132,12 +133,15 @@ impl App {
             None,
             paths.clone(),
         );
-        Self::with_paths(&config, &paths, policy, api_rx, event_hub)
+        let lease = crate::persist::DataDirLease::acquire(&crate::session::data_dir(&paths))
+            .expect("test session lease");
+        Self::with_paths(&config, &paths, lease, policy, api_rx, event_hub)
     }
 
-    pub fn with_paths(
+    pub(crate) fn with_paths(
         config: &crate::config::ValidatedConfig,
         paths: &crate::config::AppPaths,
+        lease: crate::persist::DataDirLease,
         policy: AppPolicy,
         api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
         event_hub: crate::api::EventHub,
@@ -162,7 +166,7 @@ impl App {
             .map(|snapshot| snapshot.host_theme.to_theme())
             .unwrap_or_default();
         let session_writer = Arc::new(std::sync::Mutex::new(crate::persist::SessionWriter::new(
-            &session_data_dir,
+            lease,
             policy.restore_session && snapshot.is_none(),
         )));
         let (workspaces, active, selected) = if let Some(snap) = snapshot {
@@ -253,7 +257,7 @@ impl App {
             host_terminal_appearance_explicit: false,
             agent_manifest_summaries,
             host_terminal_theme: restored_host_theme,
-            host_cell_size: crate::terminal_cell_size::HostCellSize::default(),
+            host_cell_size: crate::host_term::cell_size::HostCellSize::default(),
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
         };
@@ -672,12 +676,12 @@ mod tests {
                 amount: Some(0.05),
             }),
         };
-        assert!(!crate::api::request_changes_ui(&read_only));
-        assert!(crate::api::request_changes_ui(&mutating));
-        assert!(crate::api::request_changes_ui(&pane_rename));
-        assert!(crate::api::request_changes_ui(&pane_swap));
-        assert!(crate::api::request_changes_ui(&pane_focus_direction));
-        assert!(crate::api::request_changes_ui(&pane_resize));
+        assert!(!read_only.method.traits().mutates_ui);
+        assert!(mutating.method.traits().mutates_ui);
+        assert!(pane_rename.method.traits().mutates_ui);
+        assert!(pane_swap.method.traits().mutates_ui);
+        assert!(pane_focus_direction.method.traits().mutates_ui);
+        assert!(pane_resize.method.traits().mutates_ui);
     }
 
     #[test]

@@ -1142,12 +1142,12 @@ mod tests {
     }
 
     #[test]
-    fn socket_path_defaults_to_config_dir_even_when_xdg_runtime_dir_is_set() {
+    fn socket_path_defaults_to_runtime_dir() {
         let env = IsolatedEnv::new();
         env.set("XDG_RUNTIME_DIR", env.path().join("runtime"));
         let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
 
-        assert_eq!(socket_path(&paths), paths.config_dir().join("shepr.sock"));
+        assert_eq!(socket_path(&paths), paths.runtime_dir().join("shepr.sock"));
     }
 
     #[test]
@@ -1157,7 +1157,7 @@ mod tests {
         let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
 
         let expected = paths
-            .config_dir()
+            .runtime_dir()
             .join("sessions")
             .join("work")
             .join("shepr.sock");

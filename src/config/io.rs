@@ -33,6 +33,7 @@ pub fn app_dir_name() -> &'static str {
 pub struct AppPaths {
     config_dir: PathBuf,
     state_dir: PathBuf,
+    runtime_dir: PathBuf,
     config_file: PathBuf,
     home_dir: Option<PathBuf>,
     current_dir: Option<PathBuf>,
@@ -45,6 +46,7 @@ pub struct AppPaths {
 pub struct PathProvenance {
     pub config_dir: ConfigSource,
     pub state_dir: ConfigSource,
+    pub runtime_dir: ConfigSource,
     pub config_file: ConfigSource,
     pub home_dir: ConfigSource,
     pub current_dir: ConfigSource,
@@ -60,6 +62,10 @@ impl AppPaths {
 
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
+    }
+
+    pub fn runtime_dir(&self) -> &Path {
+        &self.runtime_dir
     }
 
     pub fn config_file(&self) -> &Path {
@@ -124,12 +130,13 @@ impl AppPaths {
         Self {
             config_dir: root.join("config"),
             state_dir: root.join("state"),
+            runtime_dir: root.join("runtime"),
             config_file: root.join("config/config.toml"),
             home_dir: home_dir.map(Path::to_path_buf),
             current_dir: current_dir.map(Path::to_path_buf),
             session_id: crate::session::SessionId::Default,
             server_address: crate::server::socket_paths::ServerAddress::resolve(
-                &root.join("config"),
+                &root.join("runtime"),
                 &crate::session::SessionId::Default,
                 false,
                 None,
@@ -138,6 +145,7 @@ impl AppPaths {
             provenance: PathProvenance {
                 config_dir: ConfigSource::Default,
                 state_dir: ConfigSource::Default,
+                runtime_dir: ConfigSource::Default,
                 config_file: ConfigSource::Default,
                 home_dir: ConfigSource::Default,
                 current_dir: ConfigSource::Default,
@@ -156,15 +164,15 @@ fn platform_xdg_dir(
 ) -> io::Result<(PathBuf, ConfigSource)> {
     if let Some(value) = std::env::var_os(variable) {
         let directory = PathBuf::from(value);
-        // The XDG base directory specification says to ignore empty and
-        // relative values. In that case, use the corresponding location under
-        // HOME, which must itself be an absolute path.
-        if directory.is_absolute() {
-            return Ok((
-                directory.join(app_dir_name()),
-                ConfigSource::EnvironmentVariable(variable.to_owned()),
-            ));
+        if !directory.is_absolute() {
+            return Err(io::Error::other(format!(
+                "{variable} must be an absolute path"
+            )));
         }
+        return Ok((
+            directory.join(app_dir_name()),
+            ConfigSource::EnvironmentVariable(variable.to_owned()),
+        ));
     }
 
     let home_dir = home_dir.ok_or_else(|| {
@@ -195,16 +203,21 @@ fn resolve_paths_from_env(
     )
     .map_err(|error| vec![format!("session selection error: {error}")])?;
 
-    let home_dir = crate::pathutil::home_dir().ok();
+    let home_dir = crate::pathutil::home_dir().map_err(|error| vec![error.to_string()])?;
     let current_dir = std::env::current_dir().ok();
     let (config_dir, config_dir_source) =
-        platform_xdg_dir("XDG_CONFIG_HOME", ".config", home_dir.as_deref())
+        platform_xdg_dir("XDG_CONFIG_HOME", ".config", Some(&home_dir))
             .map(|(path, source)| (Ok(path), source))
             .unwrap_or_else(|error| (Err(error), ConfigSource::Default));
     let (state_dir, state_dir_source) =
-        platform_xdg_dir("XDG_STATE_HOME", ".local/state", home_dir.as_deref())
+        platform_xdg_dir("XDG_STATE_HOME", ".local/state", Some(&home_dir))
             .map(|(path, source)| (Ok(path), source))
             .unwrap_or_else(|error| (Err(error), ConfigSource::Default));
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join(app_dir_name()))
+        .ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR must be set to an absolute path"));
 
     let config_path_override = std::env::var_os(CONFIG_PATH_ENV_VAR);
     let config_file_source = if config_path_override.is_some() {
@@ -259,21 +272,28 @@ fn resolve_paths_from_env(
             None
         }
     };
+    let runtime_dir = match runtime_dir {
+        Ok(path) => Some(path),
+        Err(error) => {
+            diagnostics.push(format!("runtime directory error: {error}"));
+            None
+        }
+    };
 
-    match (config_dir, state_dir, config_file) {
-        (Some(config_dir), Some(state_dir), Some(config_file)) if diagnostics.is_empty() => {
+    match (config_dir, state_dir, runtime_dir, config_file) {
+        (Some(config_dir), Some(state_dir), Some(runtime_dir), Some(config_file))
+            if diagnostics.is_empty() =>
+        {
             let server_address = crate::server::socket_paths::ServerAddress::resolve(
-                &config_dir,
+                &runtime_dir,
                 &session_id,
                 session_was_requested,
                 api_socket_override.as_deref(),
                 client_socket_override.as_deref(),
             );
-            let home_dir_source = if home_dir.is_some() {
-                ConfigSource::EnvironmentVariable("HOME".to_owned())
-            } else {
-                ConfigSource::Default
-            };
+            let home_dir_source = ConfigSource::EnvironmentVariable("HOME".to_owned());
+            let runtime_dir_source =
+                ConfigSource::EnvironmentVariable("XDG_RUNTIME_DIR".to_owned());
             let session_source = if let Some(source) = requested_session_source {
                 source
             } else if inherited_session_accepted && !session_selection_was_forced {
@@ -288,7 +308,7 @@ fn resolve_paths_from_env(
             } else if inherited_session_accepted {
                 session_source.clone()
             } else {
-                config_dir_source.clone()
+                runtime_dir_source.clone()
             };
             let client_socket_source = if session_selection_was_forced {
                 session_source.clone()
@@ -301,19 +321,21 @@ fn resolve_paths_from_env(
             } else if inherited_session_accepted {
                 session_source.clone()
             } else {
-                config_dir_source.clone()
+                runtime_dir_source.clone()
             };
             Ok(AppPaths {
                 config_dir,
                 state_dir,
+                runtime_dir,
                 config_file,
-                home_dir,
+                home_dir: Some(home_dir),
                 current_dir,
                 session_id,
                 server_address,
                 provenance: PathProvenance {
                     config_dir: config_dir_source,
                     state_dir: state_dir_source,
+                    runtime_dir: runtime_dir_source,
                     config_file: config_file_source,
                     home_dir: home_dir_source,
                     current_dir: ConfigSource::Default,
@@ -608,7 +630,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
 
     #[test]
     fn config_load_reports_unreadable_path() {
@@ -770,7 +791,10 @@ mod tests {
             env.path().join("client.sock"),
         );
         let paths = AppPaths::resolve().expect("client socket override resolves");
-        assert_eq!(paths.provenance().api_socket, ConfigSource::Default);
+        assert_eq!(
+            paths.provenance().api_socket,
+            ConfigSource::EnvironmentVariable("XDG_RUNTIME_DIR".to_owned())
+        );
         assert_eq!(
             paths.provenance().client_socket,
             ConfigSource::EnvironmentVariable(
@@ -892,33 +916,39 @@ id = "example"
     }
 
     #[test]
-    fn xdg_paths_ignore_empty_or_relative_values_and_require_absolute_home() {
+    fn xdg_paths_use_separate_roots_and_reject_invalid_locations() {
         let env = crate::test_support::IsolatedEnv::new();
-        let expected_config = env.home().join(".config").join(app_dir_name());
-        let expected_state = env.home().join(".local/state").join(app_dir_name());
+        let paths = AppPaths::resolve().expect("default paths resolve");
+        assert_eq!(
+            paths.config_dir(),
+            env.home().join(".config").join(app_dir_name())
+        );
+        assert_eq!(
+            paths.state_dir(),
+            env.home().join(".local/state").join(app_dir_name())
+        );
+        assert_eq!(
+            paths.runtime_dir(),
+            env.path().join("runtime").join(app_dir_name())
+        );
 
-        for invalid in [OsString::new(), OsString::from("relative/config")] {
-            env.set("XDG_CONFIG_HOME", &invalid);
-            env.set("XDG_STATE_HOME", &invalid);
-            let paths = AppPaths::resolve().expect("home fallback");
-            assert_eq!(paths.config_dir(), expected_config);
-            assert_eq!(paths.state_dir(), expected_state);
+        for key in ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"] {
+            for invalid in ["", "relative/path"] {
+                env.set(key, invalid);
+                assert!(AppPaths::resolve().is_err(), "{key}={invalid:?}");
+            }
+            env.remove(key);
+            if key == "XDG_RUNTIME_DIR" {
+                assert!(AppPaths::resolve().is_err());
+            } else {
+                assert!(AppPaths::resolve().is_ok());
+            }
+            env.set(key, env.path().join(key));
         }
-
-        let xdg_config = env.path().join("xdg-config");
-        let xdg_state = env.path().join("xdg-state");
-        env.set("XDG_CONFIG_HOME", &xdg_config);
-        env.set("XDG_STATE_HOME", &xdg_state);
-        env.set("HOME", "relative/home");
-        let paths = AppPaths::resolve().expect("absolute XDG paths");
-        assert_eq!(paths.config_dir(), xdg_config.join(app_dir_name()));
-        assert_eq!(paths.state_dir(), xdg_state.join(app_dir_name()));
-
-        env.remove("XDG_CONFIG_HOME");
-        env.remove("XDG_STATE_HOME");
-        assert!(AppPaths::resolve().is_err());
-        env.set("HOME", "");
-        assert!(AppPaths::resolve().is_err());
+        for invalid in ["", "relative/home"] {
+            env.set("HOME", invalid);
+            assert!(AppPaths::resolve().is_err());
+        }
         env.remove("HOME");
         assert!(AppPaths::resolve().is_err());
     }

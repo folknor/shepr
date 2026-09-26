@@ -1,19 +1,8 @@
-//! JSON handshake and named controls for client-owned shells.
-//!
-//! Client and server are always the same build; the connection preamble checks
-//! that identity before either side decodes this JSON control envelope.
+//! Typed handshake data for client-owned shells.
 
 use serde::{Deserialize, Serialize};
 
 use super::{ClientShellSnapshot, ClientSurfaceSize, ServerMessage};
-
-pub const ENDPOINT_HELLO_KIND: &str = "endpoint.hello.v1";
-pub const ENDPOINT_WELCOME_KIND: &str = "endpoint.welcome.v1";
-pub const ENDPOINT_SNAPSHOT_KIND: &str = "shell.snapshot.v1";
-pub const PRESENTATION_EFFECTS_SYNC_KIND: &str = "endpoint.presentation.sync.v1";
-pub const PRESENTATION_EFFECTS_READY_KIND: &str = "endpoint.presentation.ready.v1";
-pub const HEALTH_PING_KIND: &str = "endpoint.health.ping.v1";
-pub const HEALTH_PONG_KIND: &str = "endpoint.health.pong.v1";
 
 /// Client-owned shell hello.
 ///
@@ -42,11 +31,8 @@ pub struct EndpointServerWelcome {
     pub error: Option<EndpointHandshakeError>,
 }
 
-pub fn snapshot_message(snapshot: &ClientShellSnapshot) -> serde_json::Result<ServerMessage> {
-    Ok(ServerMessage::EndpointControl {
-        kind: ENDPOINT_SNAPSHOT_KIND.into(),
-        data: serde_json::to_string(snapshot)?,
-    })
+pub fn snapshot_message(snapshot: &ClientShellSnapshot) -> ServerMessage {
+    ServerMessage::EndpointSnapshot(Box::new(snapshot.clone()))
 }
 
 impl EndpointServerWelcome {
@@ -86,24 +72,28 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_message_uses_named_json_control() {
+    fn snapshot_message_carries_typed_snapshot() {
         let snapshot = snapshot();
-        let ServerMessage::EndpointControl { kind, data } =
-            snapshot_message(&snapshot).expect("test precondition")
-        else {
-            panic!("snapshot should use endpoint control");
+        let message = snapshot_message(&snapshot);
+        let mut bytes = Vec::new();
+        crate::protocol::write_message(&mut bytes, &message).expect("test precondition");
+        let decoded: ServerMessage =
+            crate::protocol::read_message(&mut bytes.as_slice(), crate::protocol::MAX_FRAME_SIZE)
+                .expect("test precondition");
+        let ServerMessage::EndpointSnapshot(decoded) = decoded else {
+            panic!("snapshot should use typed endpoint message");
         };
-        assert_eq!(kind, ENDPOINT_SNAPSHOT_KIND);
-        let decoded: ClientShellSnapshot = serde_json::from_str(&data).expect("test precondition");
-        assert_eq!(decoded, snapshot);
+        assert_eq!(*decoded, snapshot);
     }
 
     #[test]
-    fn welcome_roundtrips_through_json() {
-        let welcome = EndpointServerWelcome::compatible();
-        let json = serde_json::to_string(&welcome).expect("test precondition");
-        let decoded: EndpointServerWelcome =
-            serde_json::from_str(&json).expect("test precondition");
+    fn welcome_roundtrips_through_the_wire() {
+        let welcome = ServerMessage::EndpointWelcome(EndpointServerWelcome::compatible());
+        let mut bytes = Vec::new();
+        crate::protocol::write_message(&mut bytes, &welcome).expect("test precondition");
+        let decoded: ServerMessage =
+            crate::protocol::read_message(&mut bytes.as_slice(), crate::protocol::MAX_FRAME_SIZE)
+                .expect("test precondition");
         assert_eq!(decoded, welcome);
     }
 }

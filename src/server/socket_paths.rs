@@ -40,13 +40,13 @@ enum AddressSource {
 
 impl ServerAddress {
     pub(crate) fn resolve(
-        config_dir: &Path,
+        runtime_dir: &Path,
         session: &crate::session::SessionId,
         session_was_requested: bool,
         api_socket_override: Option<&str>,
         client_socket_override: Option<&str>,
     ) -> Self {
-        let session_api = session.api_socket_path_under(config_dir);
+        let session_api = session.api_socket_path_under(runtime_dir);
         if session_was_requested {
             return Self::for_session(session_api);
         }
@@ -181,8 +181,8 @@ pub(crate) fn derive_client_socket_from_api_socket(api_socket_path: &Path) -> Pa
 ///
 /// This only keeps two servers off one socket. Session files follow the
 /// session name, not the socket, so a server on an overridden socket can share
-/// another server's data directory; the persistence layer guards that with a
-/// lock of its own (`persist/lock.rs`).
+/// another server's data directory; the server claims that directory with a
+/// persistence lease before it opens either socket.
 pub(crate) fn prepare_socket_path(path: &Path) -> io::Result<()> {
     crate::ipc::prepare_socket_path(path, |path| {
         format!(
@@ -232,7 +232,7 @@ mod tests {
     fn explicit_session_address_ignores_both_socket_overrides() {
         let session = crate::session::SessionId::parse("work").expect("test precondition");
         let address = ServerAddress::resolve(
-            Path::new("/tmp/config"),
+            Path::new("/tmp/runtime"),
             &session,
             true,
             Some("/tmp/other-api.sock"),
@@ -241,11 +241,11 @@ mod tests {
 
         assert_eq!(
             address.api_socket(),
-            Path::new("/tmp/config/sessions/work/shepr.sock")
+            Path::new("/tmp/runtime/sessions/work/shepr.sock")
         );
         assert_eq!(
             address.client_socket(),
-            Path::new("/tmp/config/sessions/work/shepr-client.sock")
+            Path::new("/tmp/runtime/sessions/work/shepr-client.sock")
         );
         assert_eq!(
             address.attach_command(&session),
@@ -275,25 +275,26 @@ mod tests {
     }
 
     #[test]
-    fn client_socket_path_defaults_to_config_dir() {
+    fn client_socket_path_defaults_to_runtime_dir() {
         let session = crate::session::SessionId::Default;
-        let address = ServerAddress::resolve(Path::new("/tmp/config"), &session, false, None, None);
+        let address =
+            ServerAddress::resolve(Path::new("/tmp/runtime"), &session, false, None, None);
         assert_eq!(
             address.client_socket(),
-            Path::new("/tmp/config/shepr-client.sock")
+            Path::new("/tmp/runtime/shepr-client.sock")
         );
     }
 
     #[test]
     fn named_session_client_socket_matches_derived_api_socket_name() {
         let session = crate::session::SessionId::parse("work").expect("test precondition");
-        let api = session.api_socket_path_under(Path::new("/tmp/config"));
-        let client = session.client_socket_path_under(Path::new("/tmp/config"));
+        let api = session.api_socket_path_under(Path::new("/tmp/runtime"));
+        let client = session.client_socket_path_under(Path::new("/tmp/runtime"));
         let derived = derive_client_socket_from_api_socket(&api);
         assert_eq!(client, derived);
         assert_eq!(
             client,
-            Path::new("/tmp/config/sessions/work/shepr-client.sock")
+            Path::new("/tmp/runtime/sessions/work/shepr-client.sock")
         );
     }
 

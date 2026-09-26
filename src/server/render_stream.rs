@@ -4,7 +4,7 @@ use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
 use ratatui::layout::{Position, Rect, Size};
 
 use crate::app::state::AppState;
-use crate::protocol::render_ansi::{BlitEncoder, EncodedBlit};
+use crate::blit::{BlitEncoder, EncodedBlit};
 use crate::protocol::{
     CursorState, FrameData, PaneSurfaceFrame, PaneSurfacePatch, RenderEncoding, ServerMessage,
     TerminalFrame,
@@ -149,12 +149,7 @@ impl ClientRenderState {
                 .then_some(last_surface.as_deref())
                 .flatten()
                 .filter(|last| last.frame == surface.frame)
-                .and_then(|last| {
-                    crate::protocol::surface_reuse::message(last, surface)
-                        .map_err(|error| tracing::warn!(%error, "failed to encode surface reuse"))
-                        .ok()
-                        .flatten()
-                })
+                .and_then(|last| crate::protocol::surface_reuse::message(last, surface))
         } else {
             None
         };
@@ -190,16 +185,38 @@ impl ClientRenderState {
             &patch.boot_id,
             patch.base_surface_revision,
             next_revision,
-            &crate::protocol::surface_reuse::ProjectionUpdate::Patch {
-                revision: patch.projection_revision,
-            },
-        ) {
+            last.projection_revision,
+            patch.projection_revision,
+        ) || patch.projection_revision != last.projection_revision
+        {
             return None;
         }
         patch.surface_revision = next_revision;
-        Some(PreparedRender::SemanticPatch {
-            message: ServerMessage::PaneSurfacePatch(patch),
-        })
+        crate::protocol::validate_patch_rows(last.frame.width, last.frame.height, &patch.rows)
+            .ok()?;
+        let mut meta = crate::protocol::SurfaceMeta::from(last);
+        meta.frame.cursor.clone_from(&patch.cursor);
+        for updated in &patch.panes {
+            let pane = meta
+                .panes
+                .iter_mut()
+                .find(|pane| pane.pane_id == updated.pane_id)?;
+            pane.clone_from(updated);
+        }
+        let message = ServerMessage::SurfaceUpdate(crate::protocol::SurfaceUpdate {
+            boot_id: patch.boot_id.clone(),
+            base_projection_revision: last.projection_revision,
+            base_surface_revision: patch.base_surface_revision,
+            surface_revision: patch.surface_revision,
+            projection_revision: patch.projection_revision,
+            meta: Some(meta),
+            spans: patch.rows.clone(),
+        });
+        let size = crate::protocol::codec::encoded_len(&message).ok()?;
+        if !crate::protocol::frame_payload_fits(size) {
+            return None;
+        }
+        Some(PreparedRender::SemanticPatch { message, patch })
     }
 
     pub(crate) fn commit_sent_frame(&mut self, prepared: PreparedRender) {
@@ -225,9 +242,7 @@ impl ClientRenderState {
                     surface_revision,
                     ..
                 },
-                PreparedRender::SemanticPatch {
-                    message: ServerMessage::PaneSurfacePatch(patch),
-                },
+                PreparedRender::SemanticPatch { patch, .. },
             ) => {
                 // Planning checked the baseline and the server does not yield
                 // between planning and commit, so neither branch below should
@@ -279,21 +294,18 @@ pub(super) fn apply_pane_surface_patch(
         &patch.boot_id,
         patch.base_surface_revision,
         patch.surface_revision,
-        &crate::protocol::surface_reuse::ProjectionUpdate::Patch {
-            revision: patch.projection_revision,
-        },
-    ) {
+        surface.projection_revision,
+        patch.projection_revision,
+    ) || patch.projection_revision != surface.projection_revision
+    {
         return Err("patch revision does not match the surface baseline");
     }
+    crate::protocol::validate_patch_rows(surface.frame.width, surface.frame.height, &patch.rows)?;
     let width = usize::from(surface.frame.width);
-    let cell_count = surface.frame.cells.len();
-    let row_fits = |row: &crate::protocol::PaneSurfacePatchRow| {
-        let start = usize::from(row.y) * width + usize::from(row.x);
-        usize::from(row.x) + row.cells.len() <= width
-            && start.saturating_add(row.cells.len()) <= cell_count
-    };
-    if !patch.rows.iter().all(row_fits) {
-        return Err("patch row exceeds the surface grid");
+    if crate::protocol::surface_grid_size(surface.frame.width, surface.frame.height)
+        != Some(surface.frame.cells.len())
+    {
+        return Err("surface cell grid does not match its size");
     }
     if !patch.panes.iter().all(|updated| {
         surface
@@ -335,6 +347,7 @@ pub(crate) enum PreparedRender {
     },
     SemanticPatch {
         message: ServerMessage,
+        patch: PaneSurfacePatch,
     },
     TerminalAnsi {
         message: ServerMessage,
@@ -347,7 +360,7 @@ impl PreparedRender {
     pub(crate) fn message(&self) -> &ServerMessage {
         match self {
             Self::Semantic { message, .. }
-            | Self::SemanticPatch { message }
+            | Self::SemanticPatch { message, .. }
             | Self::TerminalAnsi { message, .. } => message,
         }
     }
@@ -540,10 +553,7 @@ mod tests {
         let fresh = state
             .prepare_pane_surface(surface.clone())
             .expect("test precondition");
-        assert!(
-            matches!(fresh.message(), ServerMessage::EndpointControl { kind, .. }
-            if kind == crate::protocol::surface_delta::MESSAGE_KIND)
-        );
+        assert!(matches!(fresh.message(), ServerMessage::SurfaceUpdate(_)));
         assert!(state.requires_recompute(), "prepare must not commit");
         state.commit_sent_frame(fresh);
         assert!(!state.requires_recompute());
@@ -586,12 +596,7 @@ mod tests {
         let mut bytes = Vec::new();
         crate::protocol::write_message(&mut bytes, update.message()).expect("test precondition");
 
-        assert!(matches!(
-            update.message(),
-            ServerMessage::EndpointControl { kind, .. }
-                if kind == crate::protocol::surface_reuse::MESSAGE_KIND
-                    || kind == crate::protocol::surface_delta::MESSAGE_KIND
-        ));
+        assert!(matches!(update.message(), ServerMessage::SurfaceUpdate(_)));
         assert!(
             bytes.len() < 2000,
             "metadata update was {} bytes",
@@ -650,12 +655,14 @@ mod tests {
         let changed = state
             .prepare_pane_surface(surface.clone())
             .expect("test precondition");
-        let ServerMessage::PaneSurface(decoded) = decoder
-            .decode(changed.message().clone())
-            .expect("test precondition")
-        else {
-            panic!("changed full surface");
-        };
+        assert!(matches!(changed.message(), ServerMessage::SurfaceUpdate(_)));
+        assert!(matches!(
+            decoder
+                .decode(changed.message().clone())
+                .expect("test precondition"),
+            ServerMessage::PaneSurfacePatch(_)
+        ));
+        let decoded = decoder.current_surface().expect("decoded changed surface");
         assert_eq!(decoded.frame, surface.frame);
         state.commit_sent_frame(changed);
 
@@ -670,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn surface_reuse_falls_back_when_json_metadata_exceeds_the_frame_limit() {
+    fn surface_update_keeps_large_metadata_within_the_frame_limit() {
         let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
         let mut surface = test_surface("popup");
         surface.frame.hyperlinks = vec!["\"".repeat(crate::protocol::MAX_FRAME_SIZE / 2)];
@@ -682,7 +689,7 @@ mod tests {
         let update = state
             .prepare_pane_surface(surface)
             .expect("test precondition");
-        assert!(matches!(update.message(), ServerMessage::PaneSurface(_)));
+        assert!(matches!(update.message(), ServerMessage::SurfaceUpdate(_)));
         let mut bytes = Vec::new();
         crate::protocol::write_message(&mut bytes, update.message()).expect("test precondition");
         assert!(bytes.len() < crate::protocol::MAX_FRAME_SIZE);
@@ -719,12 +726,14 @@ mod tests {
         state.commit_sent_frame(initial);
         state.commit_sent_frame(PreparedRender::SemanticPatch {
             message: ServerMessage::PaneSurfacePatch(patch.clone()),
+            patch: patch.clone(),
         });
         assert!(state.last_pane_surface().is_none());
 
         // Committing with no baseline at all is also survivable.
         state.commit_sent_frame(PreparedRender::SemanticPatch {
-            message: ServerMessage::PaneSurfacePatch(patch),
+            message: ServerMessage::PaneSurfacePatch(patch.clone()),
+            patch,
         });
         assert!(state.last_pane_surface().is_none());
     }

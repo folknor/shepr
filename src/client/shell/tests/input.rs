@@ -5,8 +5,8 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
 
     let inferred = state.handle_raw_events(vec![RawInputEvent::HostDefaultColor {
-        kind: crate::terminal_theme::DefaultColorKind::Background,
-        color: crate::terminal_theme::RgbColor {
+        kind: crate::host_term::theme::DefaultColorKind::Background,
+        color: crate::host_term::theme::RgbColor {
             r: 255,
             g: 255,
             b: 255,
@@ -24,7 +24,7 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     ));
     assert_eq!(
         state.host_background,
-        Some(crate::terminal_theme::RgbColor {
+        Some(crate::host_term::theme::RgbColor {
             r: 255,
             g: 255,
             b: 255,
@@ -32,7 +32,7 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     );
 
     let explicit = state.handle_raw_events(vec![RawInputEvent::HostColorSchemeChanged(
-        crate::terminal_theme::HostAppearance::Dark,
+        crate::host_term::theme::HostAppearance::Dark,
     )]);
     assert!(matches!(
         explicit.requests.as_slice(),
@@ -44,8 +44,8 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     ));
 
     let repeated = state.handle_raw_events(vec![RawInputEvent::HostDefaultColor {
-        kind: crate::terminal_theme::DefaultColorKind::Background,
-        color: crate::terminal_theme::RgbColor {
+        kind: crate::host_term::theme::DefaultColorKind::Background,
+        color: crate::host_term::theme::RgbColor {
             r: 255,
             g: 255,
             b: 255,
@@ -59,8 +59,8 @@ fn host_theme_updates_are_forwarded_to_the_server() {
 fn host_appearance_switch_requeries_the_host_theme() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     for appearance in [
-        crate::terminal_theme::HostAppearance::Dark,
-        crate::terminal_theme::HostAppearance::Light,
+        crate::host_term::theme::HostAppearance::Dark,
+        crate::host_term::theme::HostAppearance::Light,
     ] {
         let outcome =
             state.handle_raw_events(vec![RawInputEvent::HostColorSchemeChanged(appearance)]);

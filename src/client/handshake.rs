@@ -5,9 +5,7 @@ use interprocess::local_socket::traits::Stream as _;
 use tracing::info;
 
 use crate::ipc::LocalStream;
-use crate::protocol::endpoint::{
-    ENDPOINT_HELLO_KIND, ENDPOINT_WELCOME_KIND, EndpointClientHello, EndpointServerWelcome,
-};
+use crate::protocol::endpoint::EndpointClientHello;
 use crate::protocol::{self, ClientMessage, MAX_FRAME_SIZE, ServerMessage};
 
 use super::{ClientError, shell};
@@ -127,12 +125,7 @@ pub(super) fn do_handshake(
             mouse_capture,
             surface_active,
         };
-        ClientMessage::EndpointControl {
-            kind: ENDPOINT_HELLO_KIND.into(),
-            data: serde_json::to_string(&hello).map_err(|error| {
-                ClientError::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
-            })?,
-        }
+        ClientMessage::EndpointHello(hello)
     } else {
         ClientMessage::TerminalHello {
             cols,
@@ -183,22 +176,11 @@ pub(super) fn do_handshake(
     };
 
     if endpoint_shell {
-        let ServerMessage::EndpointControl { kind, data } = welcome else {
+        let ServerMessage::EndpointWelcome(welcome) = welcome else {
             return Err(ClientError::Protocol(protocol::FramingError::Io(
                 io::Error::new(io::ErrorKind::InvalidData, "expected endpoint welcome"),
             )));
         };
-        if kind != ENDPOINT_WELCOME_KIND {
-            return Err(ClientError::Protocol(protocol::FramingError::Io(
-                io::Error::new(io::ErrorKind::InvalidData, "expected endpoint welcome"),
-            )));
-        }
-        let welcome: EndpointServerWelcome = serde_json::from_str(&data).map_err(|error| {
-            ClientError::Protocol(protocol::FramingError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid endpoint welcome: {error}"),
-            )))
-        })?;
         if let Some(error) = welcome.error {
             return Err(ClientError::HandshakeRejected {
                 error: error.message,

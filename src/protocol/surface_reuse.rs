@@ -1,20 +1,11 @@
 //! Optional endpoint encoding that retains unchanged terminal cells across projections.
 
 use super::{CellData, PaneSurfaceFrame, ServerMessage};
-use serde::{Deserialize, Serialize};
-
-pub(crate) const MESSAGE_KIND: &str = "endpoint.surface-reuse.v1";
-
-#[derive(Serialize, Deserialize)]
-struct SurfaceReuse<S> {
-    base_surface_revision: u64,
-    surface: S,
-}
 
 pub(crate) fn message(
     last: &PaneSurfaceFrame,
     surface: &mut PaneSurfaceFrame,
-) -> serde_json::Result<Option<ServerMessage>> {
+) -> Option<ServerMessage> {
     if !Baseline::new(
         &last.boot_id,
         last.projection_revision,
@@ -24,29 +15,26 @@ pub(crate) fn message(
         &surface.boot_id,
         last.surface_revision,
         surface.surface_revision,
-        &ProjectionUpdate::Reuse {
-            next: surface.projection_revision,
-        },
+        last.projection_revision,
+        surface.projection_revision,
     ) {
-        return Ok(None);
+        return None;
     }
-    let cells = std::mem::take(&mut surface.frame.cells);
-    let data = serde_json::to_string(&SurfaceReuse {
+    let message = ServerMessage::SurfaceUpdate(super::SurfaceUpdate {
+        boot_id: surface.boot_id.clone(),
+        base_projection_revision: last.projection_revision,
         base_surface_revision: last.surface_revision,
-        surface: &*surface,
+        surface_revision: surface.surface_revision,
+        projection_revision: surface.projection_revision,
+        meta: Some(super::surface::SurfaceMeta::from(&*surface)),
+        spans: Vec::new(),
     });
-    surface.frame.cells = cells;
-    let message = ServerMessage::EndpointControl {
-        kind: MESSAGE_KIND.into(),
-        data: data?,
-    };
-    // JSON can expand non-cell data (for example escaped hyperlink URLs). A
-    // failed compact encoding must fall back, not strand a newer snapshot.
+    // A failed compact encoding must fall back to a full surface.
     match super::codec::encoded_len(&message) {
-        Ok(size) => Ok(super::frame_payload_fits(size).then_some(message)),
+        Ok(size) => super::frame_payload_fits(size).then_some(message),
         Err(error) => {
             tracing::warn!(%error, "failed to size surface reuse");
-            Ok(None)
+            None
         }
     }
 }
@@ -59,12 +47,7 @@ struct CellBaseline {
     width: u16,
     height: u16,
     cells: Vec<CellData>,
-}
-
-pub(crate) enum ProjectionUpdate {
-    Reuse { next: u64 },
-    Patch { revision: u64 },
-    Delta { base: u64, next: u64 },
+    meta: Option<super::surface::SurfaceMeta>,
 }
 
 pub(crate) struct Baseline<'a> {
@@ -87,7 +70,8 @@ impl<'a> Baseline<'a> {
         boot_id: &str,
         base_surface_revision: u64,
         surface_revision: u64,
-        projection: &ProjectionUpdate,
+        base_projection_revision: u64,
+        projection_revision: u64,
     ) -> bool {
         if self.boot_id != boot_id
             || base_surface_revision != self.surface_revision
@@ -95,13 +79,8 @@ impl<'a> Baseline<'a> {
         {
             return false;
         }
-        match *projection {
-            ProjectionUpdate::Reuse { next } => next >= self.projection_revision,
-            ProjectionUpdate::Patch { revision } => revision == self.projection_revision,
-            ProjectionUpdate::Delta { base, next } => {
-                base == self.projection_revision && next >= self.projection_revision
-            }
-        }
+        base_projection_revision == self.projection_revision
+            && projection_revision >= self.projection_revision
     }
 }
 
@@ -124,34 +103,106 @@ pub(crate) struct Decoder {
 }
 
 impl Decoder {
+    #[cfg(test)]
+    pub(crate) fn current_surface(&self) -> Option<PaneSurfaceFrame> {
+        let base = self.baseline.as_ref()?;
+        Some(base.meta.clone()?.into_surface(
+            base.boot_id.clone(),
+            base.projection_revision,
+            base.surface_revision,
+            base.cells.clone(),
+        ))
+    }
+
     pub(crate) fn decode(&mut self, message: ServerMessage) -> Result<ServerMessage, String> {
         let message = match message {
-            ServerMessage::EndpointControl { kind, data }
-                if kind == super::surface_delta::MESSAGE_KIND =>
-            {
-                return self.decode_delta(&data).map(ServerMessage::PaneSurface);
-            }
-            ServerMessage::EndpointControl { kind, data } if kind == MESSAGE_KIND => {
-                let reuse: SurfaceReuse<PaneSurfaceFrame> = serde_json::from_str(&data)
-                    .map_err(|error| format!("invalid surface reuse: {error}"))?;
+            ServerMessage::SurfaceUpdate(update) => {
                 let Some(base) = &mut self.baseline else {
-                    return Err("surface reuse without a baseline".into());
+                    return Err("surface update without a baseline".into());
                 };
-                let mut surface = reuse.surface;
                 if !base.revisions().accepts(
-                    &surface.boot_id,
-                    reuse.base_surface_revision,
-                    surface.surface_revision,
-                    &ProjectionUpdate::Reuse {
-                        next: surface.projection_revision,
-                    },
-                ) || base.width != surface.frame.width
-                    || base.height != surface.frame.height
-                    || !surface.frame.cells.is_empty()
+                    &update.boot_id,
+                    update.base_surface_revision,
+                    update.surface_revision,
+                    update.base_projection_revision,
+                    update.projection_revision,
+                ) || super::surface_grid_size(base.width, base.height) != Some(base.cells.len())
                 {
-                    return Err("surface reuse does not match its baseline".into());
+                    return Err("surface update does not match its baseline".into());
                 }
-                surface.frame.cells.clone_from(&base.cells);
+                let Some(meta) = update.meta.or_else(|| base.meta.clone()) else {
+                    return Err("surface update is missing projection metadata".into());
+                };
+                if meta.frame.width != base.width || meta.frame.height != base.height {
+                    return Err("surface metadata does not match its baseline".into());
+                }
+                // When topology and hyperlink indices are stable, forward an
+                // internal patch so the client shell can update only touched
+                // cells. Validate everything before changing the baseline.
+                if update.projection_revision == base.projection_revision
+                    && let Some(previous) = &base.meta
+                    && meta.splits == previous.splits
+                    && meta.frame.hyperlinks == previous.frame.hyperlinks
+                    && meta.panes.len() == previous.panes.len()
+                    && meta
+                        .panes
+                        .iter()
+                        .zip(&previous.panes)
+                        .all(|(next, old)| next.pane_id == old.pane_id)
+                {
+                    super::validate_patch_rows(base.width, base.height, &update.spans)?;
+                    if update.spans.iter().flat_map(|row| &row.cells).any(|cell| {
+                        cell.hyperlink
+                            .is_some_and(|index| index as usize >= meta.frame.hyperlinks.len())
+                    }) {
+                        return Err("surface update has an invalid hyperlink index".into());
+                    }
+                    let changed_panes = meta
+                        .panes
+                        .iter()
+                        .zip(&previous.panes)
+                        .filter(|(next, old)| next != old)
+                        .map(|(next, _)| next.clone())
+                        .collect();
+                    let patch = super::PaneSurfacePatch {
+                        boot_id: update.boot_id,
+                        projection_revision: update.projection_revision,
+                        base_surface_revision: update.base_surface_revision,
+                        surface_revision: update.surface_revision,
+                        rows: update.spans,
+                        panes: changed_panes,
+                        cursor: meta.frame.cursor.clone(),
+                    };
+                    super::surface_delta::apply_rows(
+                        &mut base.cells,
+                        base.width,
+                        base.height,
+                        &patch.rows,
+                    )?;
+                    base.meta = Some(meta);
+                    base.surface_revision = patch.surface_revision;
+                    return Ok(ServerMessage::PaneSurfacePatch(patch));
+                }
+                let mut surface = meta.clone().into_surface(
+                    update.boot_id,
+                    update.projection_revision,
+                    update.surface_revision,
+                    base.cells.clone(),
+                );
+                super::surface_delta::apply_rows(
+                    &mut surface.frame.cells,
+                    base.width,
+                    base.height,
+                    &update.spans,
+                )?;
+                if surface.frame.cells.iter().any(|cell| {
+                    cell.hyperlink
+                        .is_some_and(|index| index as usize >= surface.frame.hyperlinks.len())
+                }) {
+                    return Err("surface update has an invalid hyperlink index".into());
+                }
+                base.cells.clone_from(&surface.frame.cells);
+                base.meta = Some(meta);
                 base.projection_revision = surface.projection_revision;
                 base.surface_revision = surface.surface_revision;
                 return Ok(ServerMessage::PaneSurface(surface));
@@ -176,6 +227,12 @@ impl Decoder {
                 if surface.frame.cells.len() != expected {
                     return Err("pane surface cell count does not match its size".into());
                 }
+                if surface.frame.cells.iter().any(|cell| {
+                    cell.hyperlink
+                        .is_some_and(|index| index as usize >= surface.frame.hyperlinks.len())
+                }) {
+                    return Err("pane surface has an invalid hyperlink index".into());
+                }
                 let base = self.baseline.get_or_insert_with(CellBaseline::default);
                 base.boot_id.clone_from(&surface.boot_id);
                 base.projection_revision = surface.projection_revision;
@@ -183,6 +240,7 @@ impl Decoder {
                 base.width = surface.frame.width;
                 base.height = surface.frame.height;
                 base.cells.clone_from(&surface.frame.cells);
+                base.meta = Some(surface.into());
             }
             ServerMessage::PaneSurfacePatch(patch) => {
                 let Some(base) = &mut self.baseline else {
@@ -192,9 +250,8 @@ impl Decoder {
                     &patch.boot_id,
                     patch.base_surface_revision,
                     patch.surface_revision,
-                    &ProjectionUpdate::Patch {
-                        revision: patch.projection_revision,
-                    },
+                    base.projection_revision,
+                    patch.projection_revision,
                 ) {
                     return Err("surface patch does not match its baseline".into());
                 }
@@ -215,53 +272,12 @@ impl Decoder {
         }
         Ok(message)
     }
-
-    fn decode_delta(&mut self, data: &str) -> Result<PaneSurfaceFrame, String> {
-        use super::surface_delta;
-        let Some(base) = &mut self.baseline else {
-            return Err("surface delta without a baseline".into());
-        };
-        let delta = surface_delta::decode_for(data, (base.width, base.height))?;
-        let metadata = delta.surface;
-        if !base.revisions().accepts(
-            &metadata.boot_id,
-            delta.base_surface_revision,
-            metadata.surface_revision,
-            &ProjectionUpdate::Delta {
-                base: delta.base_projection_revision,
-                next: metadata.projection_revision,
-            },
-        ) || super::surface_grid_size(base.width, base.height) != Some(base.cells.len())
-        {
-            return Err("surface delta does not match its baseline".into());
-        }
-        let mut surface = metadata.into_surface(base.cells.clone());
-        surface_delta::apply_rows(
-            &mut surface.frame.cells,
-            base.width,
-            base.height,
-            &delta.rows,
-        )?;
-        if surface.frame.cells.iter().any(|cell| {
-            cell.hyperlink
-                .is_some_and(|index| index as usize >= surface.frame.hyperlinks.len())
-        }) {
-            return Err("surface delta has an invalid hyperlink index".into());
-        }
-        // Validate the entire update before advancing either grid or revision.
-        // The same spans already applied to an identically sized copy above,
-        // so this cannot fail partway through the baseline.
-        surface_delta::apply_rows(&mut base.cells, base.width, base.height, &delta.rows)?;
-        base.projection_revision = surface.projection_revision;
-        base.surface_revision = surface.surface_revision;
-        Ok(surface)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{FrameData, PaneSurfacePatch, PaneSurfacePatchRow, WireColor, WireStyle};
+    use crate::protocol::{FrameData, PaneSurfacePatchRow, SurfaceUpdate, WireColor, WireStyle};
 
     fn cell(symbol: &str) -> CellData {
         CellData {
@@ -274,15 +290,15 @@ mod tests {
         }
     }
 
-    fn surface(width: u16, height: u16) -> PaneSurfaceFrame {
+    fn surface() -> PaneSurfaceFrame {
         PaneSurfaceFrame {
             boot_id: "boot".into(),
             projection_revision: 1,
             surface_revision: 1,
             frame: FrameData {
-                cells: vec![cell(" "); usize::from(width) * usize::from(height)],
-                width,
-                height,
+                cells: vec![cell("a"), cell("b")],
+                width: 2,
+                height: 1,
                 cursor: None,
                 hyperlinks: Vec::new(),
             },
@@ -291,193 +307,91 @@ mod tests {
         }
     }
 
-    fn patch(base: u64, next: u64, rows: Vec<PaneSurfacePatchRow>) -> ServerMessage {
-        ServerMessage::PaneSurfacePatch(PaneSurfacePatch {
-            boot_id: "boot".into(),
-            projection_revision: 1,
-            base_surface_revision: base,
-            surface_revision: next,
-            rows,
-            panes: Vec::new(),
-            cursor: None,
-        })
-    }
-
-    fn row(x: u16, y: u16, symbol: &str) -> PaneSurfacePatchRow {
-        PaneSurfacePatchRow {
-            x,
-            y,
-            cells: vec![cell(symbol)],
-        }
-    }
-
-    fn reuse_after(decoder: &mut Decoder, base_revision: u64) -> Result<PaneSurfaceFrame, String> {
-        let mut last = surface(2, 2);
-        last.surface_revision = base_revision;
-        let mut next = surface(2, 2);
-        next.surface_revision = base_revision + 1;
-        let message = message(&last, &mut next)
-            .map_err(|error| error.to_string())?
-            .ok_or("reuse fits in a frame")?;
-        match decoder.decode(message)? {
-            ServerMessage::PaneSurface(surface) => Ok(surface),
-            other => Err(format!("expected a pane surface, got {other:?}")),
-        }
-    }
-
     #[test]
-    fn baseline_accepts_each_update_projection_rule_in_one_place() {
-        let baseline = Baseline::new("boot", 4, 9);
-
-        let accepts = |base_surface_revision, surface_revision, projection: ProjectionUpdate| {
-            baseline.accepts("boot", base_surface_revision, surface_revision, &projection)
-        };
-        assert!(accepts(9, 10, ProjectionUpdate::Reuse { next: 4 }));
-        assert!(accepts(9, 10, ProjectionUpdate::Reuse { next: 5 }));
-        assert!(!accepts(9, 10, ProjectionUpdate::Reuse { next: 3 }));
-        assert!(accepts(9, 10, ProjectionUpdate::Patch { revision: 4 }));
-        assert!(!accepts(9, 10, ProjectionUpdate::Patch { revision: 5 }));
-        assert!(accepts(9, 10, ProjectionUpdate::Delta { base: 4, next: 5 }));
-        assert!(!accepts(
-            9,
-            10,
-            ProjectionUpdate::Delta { base: 3, next: 5 }
-        ));
-        assert!(!accepts(
-            9,
-            10,
-            ProjectionUpdate::Delta { base: 4, next: 3 }
-        ));
-        assert!(!baseline.accepts("another-boot", 9, 10, &ProjectionUpdate::Reuse { next: 4 },));
-        assert!(!accepts(8, 10, ProjectionUpdate::Reuse { next: 4 }));
-        assert!(!accepts(9, 9, ProjectionUpdate::Reuse { next: 4 }));
-
-        let exhausted = Baseline::new("boot", 4, u64::MAX);
-        assert!(!exhausted.accepts(
-            "boot",
-            u64::MAX,
-            u64::MAX,
-            &ProjectionUpdate::Reuse { next: 4 },
-        ));
-    }
-
-    #[test]
-    fn full_surface_with_a_short_grid_is_rejected_and_not_stored() {
+    fn surface_update_applies_cells_and_projection_atomically() {
         let mut decoder = Decoder::default();
-        let mut short = surface(2, 2);
-        short.frame.cells.pop();
-        let error = decoder
-            .decode(ServerMessage::PaneSurface(short))
-            .expect_err("a grid that does not fill its size is a protocol error");
-        assert!(error.contains("cell count"), "{error}");
+        let first = surface();
+        decoder
+            .decode(ServerMessage::PaneSurface(first.clone()))
+            .expect("baseline");
+        let update = SurfaceUpdate {
+            boot_id: first.boot_id.clone(),
+            base_surface_revision: 1,
+            surface_revision: 2,
+            base_projection_revision: 1,
+            projection_revision: 2,
+            meta: None,
+            spans: vec![PaneSurfacePatchRow {
+                x: 1,
+                y: 0,
+                cells: vec![cell("c")],
+            }],
+        };
+        let mut bad = update.clone();
+        bad.spans.push(bad.spans[0].clone());
+        assert!(decoder.decode(ServerMessage::SurfaceUpdate(bad)).is_err());
+        let ServerMessage::PaneSurface(applied) = decoder
+            .decode(ServerMessage::SurfaceUpdate(update))
+            .expect("valid update after rejection")
+        else {
+            panic!("expected surface");
+        };
+        assert_eq!(applied.frame.cells[1], cell("c"));
+        assert_eq!(applied.projection_revision, 2);
+        assert_eq!(applied.surface_revision, 2);
+    }
+
+    #[test]
+    fn surface_update_rejects_a_stale_baseline() {
+        let mut decoder = Decoder::default();
+        decoder
+            .decode(ServerMessage::PaneSurface(surface()))
+            .expect("baseline");
+        let update = SurfaceUpdate {
+            boot_id: "boot".into(),
+            base_surface_revision: 0,
+            surface_revision: 2,
+            base_projection_revision: 1,
+            projection_revision: 1,
+            meta: None,
+            spans: Vec::new(),
+        };
         assert!(
-            reuse_after(&mut decoder, 1).is_err(),
-            "no baseline was kept"
+            decoder
+                .decode(ServerMessage::SurfaceUpdate(update))
+                .is_err()
         );
     }
 
     #[test]
-    fn patch_without_a_full_surface_baseline_is_rejected() {
-        let mut decoder = Decoder::default();
-        let error = decoder
-            .decode(patch(1, 2, vec![row(0, 0, "x")]))
-            .expect_err("a patch cannot establish its own baseline");
-        assert!(error.contains("without a baseline"), "{error}");
-
-        decoder
-            .decode(ServerMessage::PaneSurface(surface(2, 2)))
-            .expect("a later full surface establishes the baseline");
-        decoder
-            .decode(patch(1, 2, vec![row(0, 0, "x")]))
-            .expect("patch applies after a full surface");
-    }
-
-    #[test]
-    fn mismatched_patch_fails_with_its_own_reason_and_keeps_the_baseline() {
+    fn surface_update_keeps_same_projection_as_an_internal_patch() {
         let mut decoder = Decoder::default();
         decoder
-            .decode(ServerMessage::PaneSurface(surface(2, 2)))
-            .expect("test precondition");
-
-        let error = decoder
-            .decode(patch(7, 8, vec![row(0, 0, "x")]))
-            .expect_err("a patch against another revision is a protocol error");
-        assert!(error.contains("does not match its baseline"), "{error}");
-
-        let error = decoder
-            .decode(patch(1, 2, vec![row(0, 0, "x"), row(0, 2, "y")]))
-            .expect_err("a patch outside the grid is a protocol error");
-        assert!(error.contains("against the cell baseline"), "{error}");
-
-        // Patches obey the same span rule as deltas: sorted, disjoint, non-empty.
-        for rows in [
-            vec![row(0, 1, "x"), row(0, 0, "y")],
-            vec![row(0, 0, "x"), row(0, 0, "y")],
-            vec![PaneSurfacePatchRow {
+            .decode(ServerMessage::PaneSurface(surface()))
+            .expect("baseline");
+        let update = SurfaceUpdate {
+            boot_id: "boot".into(),
+            base_surface_revision: 1,
+            surface_revision: 2,
+            base_projection_revision: 1,
+            projection_revision: 1,
+            meta: None,
+            spans: vec![PaneSurfacePatchRow {
                 x: 0,
                 y: 0,
-                cells: Vec::new(),
+                cells: vec![cell("z")],
             }],
-        ] {
-            let error = decoder
-                .decode(patch(1, 2, rows))
-                .expect_err("a patch breaking the span rule is a protocol error");
-            assert!(error.contains("against the cell baseline"), "{error}");
-        }
-
-        // No failure touched the baseline: its first row was not
-        // half-applied, and revision 1 still anchors the next update.
-        let reused = reuse_after(&mut decoder, 1).expect("baseline intact");
-        assert_eq!(reused.frame.cells, surface(2, 2).frame.cells);
-    }
-
-    #[test]
-    fn matching_patch_advances_the_baseline() {
-        let mut decoder = Decoder::default();
-        decoder
-            .decode(ServerMessage::PaneSurface(surface(2, 2)))
-            .expect("test precondition");
-        decoder
-            .decode(patch(1, 2, vec![row(1, 1, "z")]))
-            .expect("matching patch");
-        let reused = reuse_after(&mut decoder, 2).expect("reuse after patch");
-        assert_eq!(reused.frame.cells[3], cell("z"));
-    }
-
-    #[test]
-    fn reuse_cannot_move_the_projection_revision_backwards() {
-        let mut decoder = Decoder::default();
-        decoder
-            .decode(ServerMessage::PaneSurface(surface(2, 2)))
-            .expect("test precondition");
-
-        let last = surface(2, 2);
-        let mut regressed = last.clone();
-        regressed.projection_revision = 0;
-        regressed.surface_revision = 2;
-        assert!(
-            message(&last, &mut regressed)
-                .expect("test precondition")
-                .is_none()
-        );
-
-        let mut mismatched_projection = last.clone();
-        mismatched_projection.projection_revision = 0;
-        mismatched_projection.surface_revision = 2;
-        let reuse = ServerMessage::EndpointControl {
-            kind: MESSAGE_KIND.into(),
-            data: serde_json::to_string(&SurfaceReuse {
-                base_surface_revision: 1,
-                surface: &mismatched_projection,
-            })
-            .expect("test precondition"),
         };
-        let error = decoder
-            .decode(reuse)
-            .expect_err("reuse cannot regress the projection revision");
-        assert!(error.contains("does not match its baseline"), "{error}");
-
-        let reused = reuse_after(&mut decoder, 1).expect("failed update left baseline intact");
-        assert_eq!(reused.projection_revision, 1);
+        let ServerMessage::PaneSurfacePatch(patch) = decoder
+            .decode(ServerMessage::SurfaceUpdate(update))
+            .expect("valid update")
+        else {
+            panic!("expected patch");
+        };
+        assert_eq!(patch.rows.len(), 1);
+        assert_eq!(
+            decoder.current_surface().expect("baseline").frame.cells[0],
+            cell("z")
+        );
     }
 }

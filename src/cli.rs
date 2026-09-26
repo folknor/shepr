@@ -1175,7 +1175,7 @@ mod tests {
         let scratch = crate::test_support::ScratchDir::new("cli-socket-classifier");
         let paths =
             super::target::CliContext::test_local(crate::config::AppPaths::test_at(scratch.path()));
-        std::fs::create_dir_all(paths.config_dir()).expect("create test config directory");
+        std::fs::create_dir_all(paths.runtime_dir()).expect("create test runtime directory");
         let client = ApiClient::local(&paths);
         let _listener = crate::ipc::bind_local_listener(&client.socket_path())
             .expect("bind test server socket");

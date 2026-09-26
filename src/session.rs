@@ -96,31 +96,31 @@ impl SessionId {
     }
 
     pub fn data_dir(&self, paths: &crate::config::AppPaths) -> PathBuf {
-        self.data_dir_under(paths.config_dir())
+        self.data_dir_under(paths.state_dir())
     }
 
-    pub(crate) fn data_dir_under(&self, config_dir: &Path) -> PathBuf {
+    pub(crate) fn data_dir_under(&self, state_dir: &Path) -> PathBuf {
         match self {
-            Self::Default => config_dir.to_path_buf(),
-            Self::Named(name) => sessions_dir_under(config_dir).join(name.as_str()),
+            Self::Default => state_dir.to_path_buf(),
+            Self::Named(name) => sessions_dir_under(state_dir).join(name.as_str()),
         }
     }
 
     pub fn api_socket_path(&self, paths: &crate::config::AppPaths) -> PathBuf {
-        self.api_socket_path_under(paths.config_dir())
+        self.api_socket_path_under(paths.runtime_dir())
     }
 
-    pub(crate) fn api_socket_path_under(&self, config_dir: &Path) -> PathBuf {
-        self.data_dir_under(config_dir).join("shepr.sock")
+    pub(crate) fn api_socket_path_under(&self, runtime_dir: &Path) -> PathBuf {
+        self.data_dir_under(runtime_dir).join("shepr.sock")
     }
 
     pub fn client_socket_path(&self, paths: &crate::config::AppPaths) -> PathBuf {
-        self.client_socket_path_under(paths.config_dir())
+        self.client_socket_path_under(paths.runtime_dir())
     }
 
-    pub(crate) fn client_socket_path_under(&self, config_dir: &Path) -> PathBuf {
+    pub(crate) fn client_socket_path_under(&self, runtime_dir: &Path) -> PathBuf {
         crate::server::socket_paths::derive_client_socket_from_api_socket(
-            &self.api_socket_path_under(config_dir),
+            &self.api_socket_path_under(runtime_dir),
         )
     }
 
@@ -186,11 +186,11 @@ pub fn data_dir_for(paths: &crate::config::AppPaths, session: &SessionId) -> Pat
 }
 
 pub fn sessions_dir(paths: &crate::config::AppPaths) -> PathBuf {
-    sessions_dir_under(paths.config_dir())
+    sessions_dir_under(paths.state_dir())
 }
 
-fn sessions_dir_under(config_dir: &Path) -> PathBuf {
-    config_dir.join("sessions")
+fn sessions_dir_under(state_dir: &Path) -> PathBuf {
+    state_dir.join("sessions")
 }
 
 pub fn api_socket_path_for(paths: &crate::config::AppPaths, session: &SessionId) -> PathBuf {
@@ -739,7 +739,7 @@ mod tests {
         assert_eq!(paths.session_id(), &SessionId::Default);
         assert_eq!(
             active_api_socket_path(&paths),
-            paths.config_dir().join("shepr.sock")
+            paths.runtime_dir().join("shepr.sock")
         );
         assert_eq!(
             std::env::var(SESSION_ENV_VAR).as_deref(),
@@ -758,10 +758,29 @@ mod tests {
         assert_eq!(
             active_api_socket_path(&paths),
             paths
-                .config_dir()
+                .runtime_dir()
                 .join("sessions")
                 .join("env-session")
                 .join("shepr.sock")
+        );
+    }
+
+    #[test]
+    fn session_files_and_sockets_use_separate_xdg_roots() {
+        let (_env, paths) = isolated_config_env();
+        let named = SessionId::parse("work").expect("valid name");
+        assert_eq!(data_dir(&paths), paths.state_dir());
+        assert_eq!(
+            data_dir_for(&paths, &named),
+            paths.state_dir().join("sessions/work")
+        );
+        assert_eq!(
+            api_socket_path_for(&paths, &named),
+            paths.runtime_dir().join("sessions/work/shepr.sock")
+        );
+        assert_eq!(
+            client_socket_path_for(&paths, &named),
+            paths.runtime_dir().join("sessions/work/shepr-client.sock")
         );
     }
 
@@ -774,7 +793,7 @@ mod tests {
         assert_eq!(paths.session_id(), &SessionId::Default);
         assert_eq!(
             active_api_socket_path(&paths),
-            paths.config_dir().join("shepr.sock")
+            paths.runtime_dir().join("shepr.sock")
         );
         assert_eq!(
             std::env::var(SESSION_ENV_VAR).as_deref(),
@@ -846,7 +865,7 @@ mod tests {
         assert_eq!(
             path,
             paths
-                .config_dir()
+                .runtime_dir()
                 .join("sessions")
                 .join("work")
                 .join("shepr.sock")
@@ -985,7 +1004,7 @@ mod tests {
     #[test]
     fn list_sessions_skips_reserved_default_directory() {
         let (_env, paths) = isolated_config_env();
-        let sessions_dir = paths.config_dir().join("sessions");
+        let sessions_dir = paths.state_dir().join("sessions");
         std::fs::create_dir_all(sessions_dir.join(DEFAULT_SESSION_NAME))
             .expect("test precondition");
         std::fs::create_dir_all(sessions_dir.join("work")).expect("test precondition");

@@ -1,16 +1,15 @@
 use super::*;
 
-#[path = "../shell/overlays.rs"]
+#[path = "../overlays/overlays.rs"]
 mod overlays;
-#[path = "../shell/sidebar.rs"]
+#[path = "../sidebar/sidebar.rs"]
 pub(in crate::client::shell) mod sidebar;
-#[path = "../shell/tabs.rs"]
+#[path = "tabs.rs"]
 mod tabs;
 
-pub(super) use super::agent_sidebar::render_agent_panel;
 pub(super) use super::aggregate_navigation::navigator_rows as client_navigator_rows;
 pub(super) use overlays::{render_client_overlay, render_context_menu, render_global_menu};
-pub(super) use sidebar::{render_collapsed_sidebar, render_sidebar, workspace_entries};
+pub(super) use sidebar::workspace_entries;
 pub(super) use tabs::{render_tab_bar, tab_bar_status_width};
 
 pub(in crate::client::shell) fn render_sidebar_background(
@@ -247,39 +246,19 @@ pub(super) fn render_shell(
 ) -> ShellHitMap {
     let mut hits = ShellHitMap::default();
     if layout.sidebar.width > 0 {
-        if state.endpoints.len() > 1 {
-            if state.sidebar_collapsed {
-                super::endpoint_sidebar::render_collapsed(
-                    buffer,
-                    layout.sidebar,
-                    config,
-                    &mut state,
-                    &mut hits,
-                );
-            } else {
-                super::endpoint_sidebar::render_expanded(
-                    buffer,
-                    layout.sidebar,
-                    Some(snapshot),
-                    config,
-                    &mut state,
-                    &mut hits,
-                );
-            }
-        } else if state.sidebar_collapsed {
-            render_collapsed_sidebar(
+        if state.sidebar_collapsed {
+            super::endpoint_sidebar::render_collapsed(
                 buffer,
                 layout.sidebar,
-                snapshot,
                 config,
                 &mut state,
                 &mut hits,
             );
         } else {
-            render_sidebar(
+            super::endpoint_sidebar::render_expanded(
                 buffer,
                 layout.sidebar,
-                snapshot,
+                Some(snapshot),
                 config,
                 &mut state,
                 &mut hits,

@@ -50,7 +50,7 @@ pub(super) fn setup_terminal_with_capabilities(
         restore_claimed: Arc::new(AtomicBool::new(false)),
         restored: false,
     };
-    crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
+    crate::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let host_color_scheme_reports =
         should_enable_host_color_scheme_reports(enable_client_protocols);
 
@@ -182,9 +182,9 @@ pub(super) fn write_host_color_scheme_report_mode(
     enabled: bool,
 ) -> io::Result<()> {
     let sequence = if enabled {
-        crate::terminal_theme::HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE
+        crate::host_term::theme::HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE
     } else {
-        crate::terminal_theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE
+        crate::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE
     };
     writer.write_all(sequence.as_bytes())?;
     writer.flush()
@@ -196,7 +196,7 @@ pub(super) fn write_terminal_restore_postlude(
 ) -> io::Result<()> {
     if reset_host_color_scheme_reports {
         writer.write_all(
-            crate::terminal_theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
+            crate::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
         )?;
     }
     // Restore a visible cursor and reset DECSCUSR back to the terminal default.
@@ -352,7 +352,7 @@ pub(super) fn host_mouse_capture_update(
 }
 
 pub(super) fn set_mouse_capture(enabled: bool, sgr_pixels: bool) -> io::Result<()> {
-    crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
+    crate::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
     if enabled {
         execute!(io::stdout(), EnableMouseCapture)?;
         if sgr_pixels {

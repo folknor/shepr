@@ -159,10 +159,7 @@ impl EndpointRegistry {
             match action {
                 HealthAction::None => {}
                 HealthAction::Ping => {
-                    let ping = ClientMessage::EndpointControl {
-                        kind: crate::protocol::endpoint::HEALTH_PING_KIND.into(),
-                        data: String::new(),
-                    };
+                    let ping = ClientMessage::HealthPing(String::new());
                     if self.send_to(&endpoint_id, &ping) == EndpointSendOutcome::Sent
                         && let Some(health) = self
                             .connections
@@ -460,8 +457,7 @@ mod tests {
         registry.tick_health(now + super::super::health::HEARTBEAT_INTERVAL);
         assert!(matches!(
             sent.lock().expect("test precondition").as_slice(),
-            [ClientMessage::EndpointControl { kind, .. }]
-                if kind == crate::protocol::endpoint::HEALTH_PING_KIND
+            [ClientMessage::HealthPing(_)]
         ));
 
         registry.tick_health(

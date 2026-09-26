@@ -17,9 +17,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::ipc::LocalStream;
-use crate::protocol::endpoint::{
-    ENDPOINT_HELLO_KIND, ENDPOINT_WELCOME_KIND, EndpointClientHello, EndpointServerWelcome,
-};
+use crate::protocol::endpoint::EndpointServerWelcome;
 use crate::protocol::{
     self, AttachScrollDirection, AttachScrollSource, ClientMessage, ClientPaneInputEvent,
     MAX_FRAME_SIZE, MAX_INPUT_PAYLOAD, ServerMessage,
@@ -135,10 +133,7 @@ enum DecodedEndpointRequest {
 
 fn write_endpoint_rejection(stream: &mut LocalStream, code: &str, message: impl Into<String>) {
     let welcome = EndpointServerWelcome::incompatible(code, message);
-    let response = ServerMessage::EndpointControl {
-        kind: ENDPOINT_WELCOME_KIND.into(),
-        data: serde_json::to_string(&welcome).unwrap_or_else(|_| "{}".into()),
-    };
+    let response = ServerMessage::EndpointWelcome(welcome);
     let _ = protocol::write_message(stream, &response);
 }
 
@@ -682,18 +677,7 @@ pub(crate) fn handle_client_handshake(
                 None,
             )
         }
-        ClientMessage::EndpointControl { kind, data } if kind == ENDPOINT_HELLO_KIND => {
-            let hello: EndpointClientHello = match serde_json::from_str(&data) {
-                Ok(hello) => hello,
-                Err(error) => {
-                    write_endpoint_rejection(
-                        &mut stream,
-                        "invalid_hello",
-                        format!("invalid endpoint hello: {error}"),
-                    );
-                    return Ok(());
-                }
-            };
+        ClientMessage::EndpointHello(hello) => {
             let incompatibility = client_shell_geometry_error(
                 hello.surface_size,
                 hello.cell_width_px,
@@ -728,11 +712,7 @@ pub(crate) fn handle_client_handshake(
     }
 
     let welcome = if shell_options.is_some() {
-        let welcome = EndpointServerWelcome::compatible();
-        ServerMessage::EndpointControl {
-            kind: ENDPOINT_WELCOME_KIND.into(),
-            data: serde_json::to_string(&welcome).map_err(io::Error::other)?,
-        }
+        ServerMessage::EndpointWelcome(EndpointServerWelcome::compatible())
     } else {
         ServerMessage::Welcome { error: None }
     };
@@ -1092,20 +1072,12 @@ fn client_read_loop_with_endpoint_controls(
                     },
                 }
             }
-            ClientMessage::EndpointControl { kind, data }
-                if kind == crate::protocol::endpoint::PRESENTATION_EFFECTS_SYNC_KIND =>
-            {
-                ServerEvent::ClientShellPresentationSync {
-                    client_id,
-                    token: data,
-                }
-            }
-            ClientMessage::EndpointControl { kind, data } => {
-                let Some(response) = crate::server::client_endpoint_control::response(&kind, data)
-                else {
-                    debug!(client_id, %kind, "ignoring unknown endpoint control message");
-                    continue;
-                };
+            ClientMessage::PresentationSync(data) => ServerEvent::ClientShellPresentationSync {
+                client_id,
+                token: data,
+            },
+            ClientMessage::HealthPing(data) => {
+                let response = ServerMessage::HealthPong(data);
                 let Some(writer) = endpoint_control_writer else {
                     continue;
                 };
@@ -1159,7 +1131,7 @@ fn client_read_loop_with_endpoint_controls(
                 modifiers,
                 lines,
             },
-            ClientMessage::TerminalHello { .. } => {
+            ClientMessage::TerminalHello { .. } | ClientMessage::EndpointHello(_) => {
                 // Duplicate handshake - ignore.
                 continue;
             }
@@ -1207,7 +1179,7 @@ mod tests {
     }
 
     fn endpoint_hello(surface_cols: u16, surface_rows: u16) -> ClientMessage {
-        let hello = EndpointClientHello {
+        let hello = crate::protocol::endpoint::EndpointClientHello {
             cell_width_px: 8,
             cell_height_px: 16,
             surface_size: crate::protocol::ClientSurfaceSize {
@@ -1218,10 +1190,7 @@ mod tests {
             mouse_capture: true,
             surface_active: true,
         };
-        ClientMessage::EndpointControl {
-            kind: ENDPOINT_HELLO_KIND.into(),
-            data: serde_json::to_string(&hello).expect("test precondition"),
-        }
+        ClientMessage::EndpointHello(hello)
     }
 
     /// Plays the client side of the opening: sends this build's preamble and
@@ -1233,11 +1202,10 @@ mod tests {
     }
 
     fn endpoint_welcome(message: ServerMessage) -> EndpointServerWelcome {
-        let ServerMessage::EndpointControl { kind, data } = message else {
+        let ServerMessage::EndpointWelcome(welcome) = message else {
             panic!("expected endpoint welcome");
         };
-        assert_eq!(kind, ENDPOINT_WELCOME_KIND);
-        serde_json::from_str(&data).expect("test precondition")
+        welcome
     }
 
     fn recv_server_event(receiver: &mut mpsc::Receiver<ServerEvent>, context: &str) -> ServerEvent {
@@ -1883,9 +1851,9 @@ mod tests {
     }
 
     #[test]
-    fn client_read_loop_ignores_unknown_endpoint_control() {
+    fn client_read_loop_consumes_health_ping_before_detach() {
         let (mut client_stream, server_stream, _path) =
-            local_stream_pair("client-read-future-control");
+            local_stream_pair("client-read-health-ping");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
         let read_quit = Arc::clone(&should_quit);
@@ -1895,17 +1863,14 @@ mod tests {
 
         protocol::write_message(
             &mut client_stream,
-            &ClientMessage::EndpointControl {
-                kind: "future.optional.v1".into(),
-                data: "{}".into(),
-            },
+            &ClientMessage::HealthPing(String::new()),
         )
         .expect("test precondition");
         protocol::write_message(&mut client_stream, &ClientMessage::Detach)
             .expect("test precondition");
 
         assert!(matches!(
-            recv_server_event(&mut server_event_rx, "detach after future control"),
+            recv_server_event(&mut server_event_rx, "detach after health ping"),
             ServerEvent::ClientDetach { client_id: 7 }
         ));
         handle

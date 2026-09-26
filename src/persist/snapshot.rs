@@ -26,14 +26,14 @@ pub struct SessionSnapshot {
 /// Last observed physical terminal colours, retained for headless resumes.
 #[derive(Default, Serialize, Deserialize)]
 pub struct SavedHostTheme {
-    pub foreground: Option<crate::terminal_theme::RgbColor>,
-    pub background: Option<crate::terminal_theme::RgbColor>,
+    pub foreground: Option<crate::host_term::theme::RgbColor>,
+    pub background: Option<crate::host_term::theme::RgbColor>,
     #[serde(default)]
-    pub palette: Vec<Option<crate::terminal_theme::RgbColor>>,
+    pub palette: Vec<Option<crate::host_term::theme::RgbColor>>,
 }
 
-impl From<crate::terminal_theme::TerminalTheme> for SavedHostTheme {
-    fn from(theme: crate::terminal_theme::TerminalTheme) -> Self {
+impl From<crate::host_term::theme::TerminalTheme> for SavedHostTheme {
+    fn from(theme: crate::host_term::theme::TerminalTheme) -> Self {
         Self {
             foreground: theme.foreground,
             background: theme.background,
@@ -43,8 +43,8 @@ impl From<crate::terminal_theme::TerminalTheme> for SavedHostTheme {
 }
 
 impl SavedHostTheme {
-    pub fn to_theme(&self) -> crate::terminal_theme::TerminalTheme {
-        let mut theme = crate::terminal_theme::TerminalTheme {
+    pub fn to_theme(&self) -> crate::host_term::theme::TerminalTheme {
+        let mut theme = crate::host_term::theme::TerminalTheme {
             foreground: self.foreground,
             background: self.background,
             ..Default::default()
@@ -167,7 +167,7 @@ pub fn capture(
     fallback_cwd: &std::path::Path,
     active: Option<usize>,
     selected: usize,
-    host_theme: crate::terminal_theme::TerminalTheme,
+    host_theme: crate::host_term::theme::TerminalTheme,
 ) -> SessionSnapshot {
     SessionSnapshot {
         version: SNAPSHOT_VERSION,
@@ -738,12 +738,12 @@ mod tests {
 
     #[test]
     fn saved_host_theme_round_trips_and_old_snapshots_default_to_empty() {
-        let color = crate::terminal_theme::RgbColor {
+        let color = crate::host_term::theme::RgbColor {
             r: 12,
             g: 34,
             b: 56,
         };
-        let mut theme = crate::terminal_theme::TerminalTheme {
+        let mut theme = crate::host_term::theme::TerminalTheme {
             background: Some(color),
             ..Default::default()
         };
@@ -761,7 +761,7 @@ mod tests {
     #[test]
     fn capture_keeps_the_theme_for_a_headless_resume() {
         let mut state = AppState::test_new();
-        let color = crate::terminal_theme::RgbColor { r: 2, g: 4, b: 8 };
+        let color = crate::host_term::theme::RgbColor { r: 2, g: 4, b: 8 };
         state.host_terminal_theme.background = Some(color);
         let snapshot = capture_from_state(&state);
         assert_eq!(snapshot.host_theme.to_theme().background, Some(color));

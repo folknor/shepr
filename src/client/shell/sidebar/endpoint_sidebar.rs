@@ -9,27 +9,35 @@ pub(super) fn render_collapsed(
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
+    let single_endpoint = state.endpoints.len() == 1;
     super::render::render_sidebar_background(buffer, area, palette);
     let (workspace_area, divider_y, detail_area) = super::sidebar::collapsed_sidebar_sections(area);
+    hits.workspace_body = workspace_area;
     let mut total_rows = 0usize;
     let mut selected_row = None;
     let reveal = std::mem::take(state.reveal_navigation_workspace);
+    let reveal_focus = std::mem::take(state.reveal_focused_workspace);
     for endpoint in state.endpoints {
-        total_rows += 1;
+        total_rows += usize::from(!single_endpoint);
         if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
             continue;
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
-            if reveal
-                && let Some(target) = state
-                    .selected_workspace_id
-                    .filter(|target| target.endpoint_id == endpoint.endpoint_id)
-            {
-                selected_row = snapshot
+            if reveal || reveal_focus {
+                let candidate = snapshot
                     .workspaces
                     .iter()
-                    .position(|workspace| workspace.workspace_id == target.workspace_id)
+                    .position(|workspace| {
+                        if reveal {
+                            state.selected_workspace_id.is_some_and(|target| {
+                                target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
+                            })
+                        } else {
+                            &endpoint.endpoint_id == state.active_endpoint_id && workspace.focused
+                        }
+                    })
                     .map(|index| total_rows + index);
+                selected_row = candidate.or(selected_row);
             }
             total_rows += snapshot.workspaces.len();
         }
@@ -51,12 +59,12 @@ pub(super) fn render_collapsed(
         if y >= workspace_area.bottom() {
             break;
         }
-        let rect = Rect::new(workspace_area.x, y, workspace_area.width, 1);
         let active = &endpoint.endpoint_id == state.active_endpoint_id;
         let collapsed = state.collapsed_endpoints.contains(&endpoint.endpoint_id);
-        if skip > 0 {
+        if !single_endpoint && skip > 0 {
             skip -= 1;
-        } else {
+        } else if !single_endpoint {
+            let rect = Rect::new(workspace_area.x, y, workspace_area.width, 1);
             if active && collapsed {
                 buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
             }
@@ -145,7 +153,11 @@ pub(super) fn render_collapsed(
                 palette,
                 stale,
             );
-            let number = format!(" {}", workspace.number);
+            let number = if single_endpoint {
+                format!("{:<2}", workspace.number)
+            } else {
+                format!(" {}", workspace.number)
+            };
             let number_width = super::render::display_width(&number).min(rect.width);
             let dim = if stale {
                 Modifier::DIM
@@ -197,6 +209,7 @@ pub(super) fn render_collapsed(
         detail_area,
         state.endpoints,
         state.active_endpoint_id,
+        single_endpoint,
         config,
         hits,
     );
@@ -229,6 +242,7 @@ pub(super) fn render_expanded(
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
+    let single_endpoint = state.endpoints.len() == 1;
     super::render::render_sidebar_background(buffer, area, palette);
     hits.sidebar_divider = if area.is_empty() {
         Rect::default()
@@ -243,7 +257,11 @@ pub(super) fn render_expanded(
         workspace_area.x,
         workspace_area.y,
         workspace_area.width,
-        " machines",
+        if single_endpoint {
+            " spaces"
+        } else {
+            " machines"
+        },
         Style::default()
             .fg(palette.overlay0)
             .add_modifier(Modifier::BOLD),
@@ -258,7 +276,9 @@ pub(super) fn render_expanded(
     }
     let mut rows = Vec::new();
     for (endpoint_index, endpoint) in state.endpoints.iter().enumerate() {
-        rows.push(Row::Endpoint(endpoint_index));
+        if !single_endpoint {
+            rows.push(Row::Endpoint(endpoint_index));
+        }
         if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
             continue;
         }
@@ -421,12 +441,16 @@ pub(super) fn render_expanded(
                     break;
                 }
                 let rect = Rect::new(body.x, y, content_width, height);
-                let nested = Rect::new(
-                    rect.x.saturating_add(2),
-                    rect.y,
-                    rect.width.saturating_sub(2),
-                    rect.height,
-                );
+                let nested = if single_endpoint {
+                    rect
+                } else {
+                    Rect::new(
+                        rect.x.saturating_add(2),
+                        rect.y,
+                        rect.width.saturating_sub(2),
+                        rect.height,
+                    )
+                };
                 let endpoint_active = &endpoint.endpoint_id == state.active_endpoint_id;
                 let selected = state.selected_workspace_id.is_some_and(|target| {
                     target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
@@ -489,7 +513,11 @@ pub(super) fn render_expanded(
 
     let footer_y = workspace_area.bottom().saturating_sub(1);
     if config.mouse_capture {
-        let label = format!(" new · {}", active_endpoint_label(state));
+        let label = if single_endpoint {
+            " new".to_owned()
+        } else {
+            format!(" new · {}", active_endpoint_label(state))
+        };
         hits.new_workspace = Rect::new(
             workspace_area.x,
             footer_y,
@@ -524,6 +552,7 @@ pub(super) fn render_expanded(
         detail_area,
         state.endpoints,
         state.active_endpoint_id,
+        single_endpoint,
         config,
         state.agent_scroll,
         hits,

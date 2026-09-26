@@ -19,8 +19,33 @@ use crate::api::schema::Request;
 
 pub const SOCKET_PATH_ENV_VAR: &str = "SHEPR_SOCKET_PATH";
 
-pub(crate) fn request_changes_ui(request: &Request) -> bool {
-    request.method.traits().mutates_ui
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum RenderDemand {
+    #[default]
+    None,
+    Partial,
+    Full,
+}
+
+impl RenderDemand {
+    pub(crate) fn join(&mut self, other: Self) {
+        *self = (*self).max(other);
+    }
+}
+
+pub(crate) struct Outcome {
+    pub(crate) response: String,
+    pub(crate) render: RenderDemand,
+}
+
+pub(crate) fn handle(app: &mut crate::app::App, request: Request) -> Outcome {
+    let render = if request.method.traits().mutates_ui {
+        RenderDemand::Full
+    } else {
+        RenderDemand::None
+    };
+    let response = app.handle_api_request_after_internal_events_drained(request);
+    Outcome { response, render }
 }
 
 pub(crate) fn serialize_response_or_error<T: serde::Serialize>(
@@ -68,6 +93,17 @@ mod tests {
     use super::*;
     use crate::api::schema::Method;
 
+    #[test]
+    fn render_demand_join_keeps_strongest_request() {
+        let mut demand = RenderDemand::None;
+        demand.join(RenderDemand::Partial);
+        assert_eq!(demand, RenderDemand::Partial);
+        demand.join(RenderDemand::None);
+        assert_eq!(demand, RenderDemand::Partial);
+        demand.join(RenderDemand::Full);
+        assert_eq!(demand, RenderDemand::Full);
+    }
+
     struct FailingResponse;
 
     impl serde::Serialize for FailingResponse {
@@ -97,27 +133,38 @@ mod tests {
             method,
         };
 
-        assert!(request_changes_ui(&request(Method::ClientWindowTitleSet(
-            crate::api::schema::ClientWindowTitleSetParams {
-                title: "title".into(),
-            },
-        ))));
-        assert!(request_changes_ui(&request(Method::PaneRename(
-            crate::api::schema::PaneRenameParams {
+        assert!(
+            request(Method::ClientWindowTitleSet(
+                crate::api::schema::ClientWindowTitleSetParams {
+                    title: "title".into(),
+                },
+            ))
+            .method
+            .traits()
+            .mutates_ui
+        );
+        assert!(
+            request(Method::PaneRename(crate::api::schema::PaneRenameParams {
                 pane_id: "pane_1".into(),
                 label: Some("name".into()),
-            },
-        ))));
-        assert!(!request_changes_ui(&request(Method::PaneRead(
-            crate::api::schema::PaneReadParams {
+            },))
+            .method
+            .traits()
+            .mutates_ui
+        );
+        assert!(
+            !request(Method::PaneRead(crate::api::schema::PaneReadParams {
                 pane_id: "pane_1".into(),
                 source: crate::api::schema::ReadSource::Recent,
                 format: crate::api::schema::ReadFormat::Text,
                 lines: None,
                 strip_ansi: false,
                 intent: crate::api::schema::ReadIntent::Passive,
-            },
-        ))));
+            },))
+            .method
+            .traits()
+            .mutates_ui
+        );
     }
 
     #[test]

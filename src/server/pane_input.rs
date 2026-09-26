@@ -141,7 +141,7 @@ pub(super) fn downgrade_ineligible_pixel_mouse(
 pub(super) fn terminal_attach_mouse_position(
     runtime: &crate::terminal::TerminalRuntime,
     terminal_size: (u16, u16),
-    cell_size: crate::terminal_cell_size::HostCellSize,
+    cell_size: crate::host_term::cell_size::HostCellSize,
     pixel_mouse: bool,
     host_sgr_pixels_active: bool,
     position: crate::protocol::ClientMousePosition,
@@ -522,7 +522,7 @@ mod tests {
             terminal_attach_mouse_position(
                 &runtime,
                 (20, 5),
-                crate::terminal_cell_size::HostCellSize {
+                crate::host_term::cell_size::HostCellSize {
                     width_px: 10,
                     height_px: 20,
                 },
@@ -542,7 +542,7 @@ mod tests {
             terminal_attach_mouse_position(
                 &runtime,
                 (20, 5),
-                crate::terminal_cell_size::HostCellSize {
+                crate::host_term::cell_size::HostCellSize {
                     width_px: 10,
                     height_px: 20,
                 },
@@ -567,7 +567,7 @@ mod tests {
             terminal_attach_mouse_position(
                 &runtime,
                 (80, 24),
-                crate::terminal_cell_size::HostCellSize::default(),
+                crate::host_term::cell_size::HostCellSize::default(),
                 false,
                 false,
                 crate::protocol::ClientMousePosition::Cell { column: 12, row: 4 },

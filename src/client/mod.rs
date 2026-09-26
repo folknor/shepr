@@ -19,7 +19,9 @@ mod events;
 mod frame_output;
 mod handshake;
 mod input;
+mod input_wire;
 mod loop_config;
+mod render_wire;
 mod shell;
 mod shell_runtime;
 mod startup;
@@ -83,8 +85,8 @@ use interprocess::TryClone as _;
 use interprocess::local_socket::traits::Stream as _;
 use tracing::{debug, info, warn};
 
+use crate::blit as render_ansi;
 use crate::ipc::LocalStream;
-use crate::protocol::render_ansi;
 use crate::protocol::{self, ClientMessage, MAX_FRAME_SIZE, ServerMessage};
 use crate::server::socket_paths::client_socket_path;
 
@@ -105,7 +107,7 @@ fn run_client_with_mode(
 ) -> io::Result<()> {
     crate::logging::init_file_logging(paths, crate::logging::CLIENT_LOG_FILE);
 
-    crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
+    crate::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let client_rendered_shell = attach_request.is_none();
     let socket_path = client_socket_path(paths);
     let keybinding_source = client_shell_keybinding_source().map_err(io::Error::other)?;
@@ -337,7 +339,7 @@ async fn run_client_loop(
             config.settings.mouse_capture_active,
         ),
         host_theme_updates: Vec::new(),
-        direct_keyboard_protocol: crate::terminal_modes::DirectHostKeyboardState::default(),
+        direct_keyboard_protocol: crate::host_term::modes::DirectHostKeyboardState::default(),
         pane_keyboard_report_all: false,
         keyboard_report_all_active: false,
         reported_size: (cols, rows),
@@ -1075,7 +1077,6 @@ impl ClientLoop<'_> {
             scheduled_activation,
             direct_notices,
             local_failure_policy,
-            supervisors,
             selection,
             ..
         } = self;
@@ -1316,7 +1317,7 @@ impl ClientLoop<'_> {
                 // resets to Shepr's default. A disabled `ui.window_title`
                 // never reaches here: the server sends nothing at all.
                 state.window_title_written = true;
-                let _ = crate::terminal_effects::write_window_title(
+                let _ = crate::host_term::title::write_window_title(
                     &mut io::stdout(),
                     title.as_deref(),
                 );
@@ -1338,7 +1339,7 @@ impl ClientLoop<'_> {
                 modify_other_keys_level,
             } => {
                 if state.mode.is_escape_attach() {
-                    crate::terminal_modes::set_direct_host_keyboard_protocol(
+                    crate::host_term::modes::set_direct_host_keyboard_protocol(
                         &mut io::stdout(),
                         &mut state.direct_keyboard_protocol,
                         flags,
@@ -1353,58 +1354,25 @@ impl ClientLoop<'_> {
                     sync_client_shell_keyboard_report_all(state)?;
                 }
             }
-            ServerMessage::EndpointControl { kind, data } => {
-                if kind == crate::protocol::endpoint::PRESENTATION_EFFECTS_READY_KIND {
-                    let progress = pending_activation.as_mut().map(|activation| {
-                        activation.receive_presentation_effects_ready(
-                            endpoint_id,
-                            generation,
-                            &data,
-                        )
-                    });
-                    if matches!(progress, Some(endpoint::SurfaceActivationProgress::Ready))
-                        && let Some(event) = complete_endpoint_activation(
-                            state,
-                            write_stream,
-                            pending_activation,
-                            endpoint_commands,
-                        )?
-                    {
-                        *scheduled_activation = Some(event);
-                    }
-                    return Ok(ClientLoopAction::NextEvent);
+            ServerMessage::PresentationReady(data) => {
+                let progress = pending_activation.as_mut().map(|activation| {
+                    activation.receive_presentation_effects_ready(endpoint_id, generation, &data)
+                });
+                if matches!(progress, Some(endpoint::SurfaceActivationProgress::Ready))
+                    && let Some(event) = complete_endpoint_activation(
+                        state,
+                        write_stream,
+                        pending_activation,
+                        endpoint_commands,
+                    )?
+                {
+                    *scheduled_activation = Some(event);
                 }
-                let snapshot = match endpoint::decode_endpoint_control(&kind, &data) {
-                    Ok(endpoint::EndpointControlMessage::HealthPong) => {
-                        return Ok(ClientLoopAction::NextEvent);
-                    }
-                    Ok(endpoint::EndpointControlMessage::Ignored) => {
-                        debug!(%kind, "ignoring unknown endpoint control message");
-                        return Ok(ClientLoopAction::NextEvent);
-                    }
-                    Ok(endpoint::EndpointControlMessage::Snapshot(snapshot)) => snapshot,
-                    Err(message) if !local_failure_policy.ends_client_for(endpoint_id) => {
-                        if handle_endpoint_attention(
-                            state,
-                            write_stream,
-                            endpoint_commands,
-                            supervisors,
-                            pending_activation,
-                            endpoint_id,
-                            generation,
-                            now,
-                            &message,
-                        ) {
-                            clear_endpoint_host_effects(state);
-                        }
-                        return Ok(ClientLoopAction::NextEvent);
-                    }
-                    Err(message) => {
-                        return Err(ClientError::Protocol(protocol::FramingError::Io(
-                            io::Error::new(io::ErrorKind::InvalidData, message),
-                        )));
-                    }
-                };
+                return Ok(ClientLoopAction::NextEvent);
+            }
+            ServerMessage::HealthPong(_) => return Ok(ClientLoopAction::NextEvent),
+            ServerMessage::EndpointWelcome(_) => return Ok(ClientLoopAction::NextEvent),
+            ServerMessage::EndpointSnapshot(snapshot) => {
                 let projection_pending = activation_message;
                 let activation_progress = activation_message
                     .then(|| {
@@ -1470,6 +1438,14 @@ impl ClientLoop<'_> {
             }
             ServerMessage::Welcome { .. } => {
                 debug!("received unexpected Welcome in main loop");
+            }
+            ServerMessage::SurfaceUpdate(_) => {
+                return Err(ClientError::Protocol(protocol::FramingError::Io(
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "surface update reached presentation before decoding",
+                    ),
+                )));
             }
         }
         Ok(ClientLoopAction::NextEvent)

@@ -6,6 +6,7 @@ pub(super) fn render_collapsed(
     area: Rect,
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
+    single_endpoint: bool,
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
 ) {
@@ -20,23 +21,47 @@ pub(super) fn render_collapsed(
         if row.agent.focused {
             buffer.set_style(rect, Style::default().bg(config.palette.active_row_bg));
         }
-        let initial = row.machine_label.chars().next().unwrap_or('?');
         let glyph = status_glyph(
             row.agent.status,
             config.status_indicators,
             &config.palette,
             row.stale,
         );
-        put_text(
-            buffer,
-            rect.x,
-            rect.y,
-            rect.width,
-            &format!("{initial}{}", glyph.text),
-            glyph.style,
-        );
-        hits.endpoint_agents
-            .push((rect, row.endpoint_id, row.agent.pane_id));
+        if single_endpoint {
+            put_text(
+                buffer,
+                rect.x,
+                rect.y,
+                rect.width.min(2),
+                &format!("{:<2}", index + 1),
+                Style::default().fg(if row.agent.focused {
+                    config.palette.text
+                } else {
+                    config.palette.overlay0
+                }),
+            );
+            put_text(
+                buffer,
+                rect.x.saturating_add(2),
+                rect.y,
+                rect.width.saturating_sub(2),
+                glyph.text,
+                glyph.style,
+            );
+            hits.agents.push((rect, row.agent.pane_id));
+        } else {
+            let initial = row.machine_label.chars().next().unwrap_or('?');
+            put_text(
+                buffer,
+                rect.x,
+                rect.y,
+                rect.width,
+                &format!("{initial}{}", glyph.text),
+                glyph.style,
+            );
+            hits.endpoint_agents
+                .push((rect, row.endpoint_id, row.agent.pane_id));
+        }
     }
 }
 
@@ -45,6 +70,7 @@ pub(super) fn render_expanded(
     area: Rect,
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
+    single_endpoint: bool,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
@@ -72,8 +98,15 @@ pub(super) fn render_expanded(
                         .add_modifier(Modifier::DIM),
                 );
             }
-            hits.endpoint_agents
-                .push((rect, row.endpoint_id.clone(), row.agent.pane_id.clone()));
+            if single_endpoint {
+                hits.agents.push((rect, row.agent.pane_id.clone()));
+            } else {
+                hits.endpoint_agents.push((
+                    rect,
+                    row.endpoint_id.clone(),
+                    row.agent.pane_id.clone(),
+                ));
+            }
         },
     );
 }
@@ -129,10 +162,14 @@ fn agent_rows(
         .iter()
         .filter_map(|endpoint| {
             endpoint.snapshot.as_deref().map(|snapshot| {
-                super::agent_sidebar::agent_rows(snapshot, config, Some(&endpoint.label))
-                    .into_iter()
-                    .map(|agent| ((endpoint.endpoint_id.clone(), agent.pane_id.clone()), agent))
-                    .collect::<Vec<_>>()
+                super::agent_sidebar::agent_rows(
+                    snapshot,
+                    config,
+                    (endpoints.len() > 1).then_some(endpoint.label.as_str()),
+                )
+                .into_iter()
+                .map(|agent| ((endpoint.endpoint_id.clone(), agent.pane_id.clone()), agent))
+                .collect::<Vec<_>>()
             })
         })
         .flatten()

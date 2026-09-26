@@ -246,7 +246,7 @@ pub(super) fn render_pane_surface(
     app: &mut app::App,
     target: Option<crate::ui::TabSurfaceTarget>,
     area: Rect,
-    cell_size: crate::terminal_cell_size::HostCellSize,
+    cell_size: crate::host_term::cell_size::HostCellSize,
 ) -> Result<RenderedPaneSurface, SurfaceRenderDeferred> {
     let layout =
         crate::ui::compute_tab_surface_for(&app.state, &app.terminal_runtimes, target, area);

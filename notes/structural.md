@@ -139,21 +139,6 @@ exit-code mapping and printer, `SessionError`, `PathBuf` in the domain type.
 
 Reported by: config-cli.
 
-## STR-013 - EndpointControl is a stringly side channel inside the typed protocol
-
-`EndpointControl { kind: String, data: String }` with nine or more `kind`
-constants (eight in `endpoint.rs`, one each in `surface_delta.rs` and
-`surface_reuse.rs`); payloads are JSON or base64 of the positional codec; the
-client compares against `PRESENTATION_EFFECTS_READY_KIND` (`client/mod.rs:1244`)
-and `ENDPOINT_WELCOME_KIND`. Costs listed: JSON encode of `ClientShellSnapshot`,
-codec + base64 + codec string for surface delta, a string compare per dispatch,
-"unknown kind" as a runtime condition. Proposed: real `ServerMessage` /
-`ClientMessage` variants for hello, welcome, snapshot, health ping/pong,
-presentation sync/ready, agent completions, surface delta, surface reuse; most
-of `endpoint.rs` then disappears.
-
-Reported by: protocol, client.
-
 ## STR-017 - App-state flags and snapshots
 
 `cjk_ime_agent_filter_configured: bool` plus `cjk_ime_agents: Vec<Agent>`
@@ -189,21 +174,6 @@ Option<AttachEscapeState>)` discards the passed state (proposed
 
 Reported by: client.
 
-## STR-021 - Sidebar and token primitives
-
-`metadata_tokens::accept_sequence -> Result<bool, ()>` hides three outcomes
-(proposed `SequenceOutcome { Accepted, Stale, TooManySources }`);
-`resolved_token_spans` takes 5 positional `Style` parameters and call sites pass
-`secondary` twice (proposed `TokenStyles`); `acknowledge_surface(…,
-outer_focused: Option<bool>)` tri-state; `contains(rect, (u16, u16))`;
-`state_labels` and `tokens` as `Vec<(String, String)>`, rebuilt into a `HashMap`
-per row per frame (`agent_sidebar.rs:255-260`, `sidebar.rs:488`) and keyed by
-status text (proposed: keyed by the status enum). Wire `tokens`/`state_labels`
-and `ClientHostThemeUpdate::PaletteColors(Vec<(u8, ClientHostColor)>)` are the
-same shape.
-
-Reported by: ui, protocol.
-
 # Moves, splits and rewrites
 
 ## STR-024 - Rename src/ghostty to vt and split it
@@ -215,45 +185,6 @@ still holds the colour model, palette, cell/style types, `Terminal`, the
 `src/ghostty` to `vt`. Several accessors are now `#[cfg(test)]`-only.
 
 Reported by: terminal-core.
-
-## STR-025 - Host-terminal files are loose top-level modules
-
-`terminal_theme.rs`, `terminal_modes.rs`, `terminal_effects.rs`,
-`terminal_cell_size.rs` concern the outer (host) terminal, and their names
-collide with pane-terminal concepts in `ghostty/`. Proposed
-`host_term/{theme,modes,title,cell_size}.rs`; the OSC colour-response parsing in
-`terminal_theme` is client input-side parsing; host and pane colours share one
-`Rgb` from vt (CON-008). Theme merging on `ClientConnection` belongs in
-`terminal_theme`.
-
-Reported by: terminal-core, server.
-
-## STR-026 - src/terminal wraps PaneRuntime and inverts the layering
-
-`src/terminal/` holds server-side terminal identity, state and registry plus
-`TerminalRuntime`, a pass-through newtype over `crate::pane::PaneRuntime` ("still
-delegates to the legacy pane runtime while the migration proceeds"), giving a
-`terminal -> pane` edge while `pane` consumes `ghostty`. The three `spawn*`
-pass-throughs with `too_many_arguments` exist only because of the wrapper.
-Proposed: finish the migration (move `PaneRuntime`'s body into `terminal`) or
-delete the wrapper; `title.rs` belongs in detection (CON-001).
-
-Reported by: terminal-core.
-
-## STR-032 - API request handling has no single home
-
-`app/api.rs` is mostly internal `AppEvent` handling (PaneDied checkpointing, git
-refresh results, graceful release, detection pauses; proposed `app/events.rs`).
-`api/panes.rs` does ~15 jobs (split, read, copy-mode, metadata, agent reports,
-move, resize, zoom...; proposed split by domain). `src/api/` holds schema and
-socket server while execution lives in `src/app/api/` and partly
-`server/headless.rs`; `api::request_changes_ui` is tested from `app/`; `api`
-knows `crate::session::active_api_socket_path`. Proposed: `api/` is pure schema
-plus transport, with one `api::handle(&mut App, Request) -> Outcome`. The
-`(Ansi, Detection)` fallback arm in `read_validated_terminal_snapshot` exists
-only because validation and read are split (proposed `ValidatedRead`).
-
-Reported by: app-state, server.
 
 ## STR-033 - Palette and theme catalogue live in app/state.rs
 
@@ -280,19 +211,6 @@ deadline logic.
 
 Reported by: app-state.
 
-## STR-037 - session.rs and socket paths
-
-`session.rs` does identity/selection, path layout, a raw-socket stop RPC client
-with its own deadline arithmetic, and user-facing command text. Socket-path
-ownership is split between `api::socket_path()` (delegates to `session`),
-`server/socket_paths.rs` and `api::SOCKET_PATH_ENV_VAR`;
-`session::stop_active_server` calls `crate::server::socket_paths` (CLI-side
-module depending on the server layer). Proposed: identity and layout in a
-`ServerAddress` module absorbing `socket_paths.rs` (STR-022); the stop RPC as
-`ApiClient::stop_unchecked(deadline)`; guidance text to `cli`.
-
-Reported by: config-cli, server.
-
 ## STR-039 - Config: validate once, move DEFAULT_CONFIG, move profile TOML
 
 `ValidatedConfig` built once at load with typed diagnostics (CON-031, CON-045).
@@ -304,44 +222,6 @@ keybinding wire concern) and diagnostic filtering; the profile code belongs with
 the remote keybindings feature or `keybinds.rs`.
 
 Reported by: config-cli.
-
-## STR-040 - The config dir is also the data root
-
-`session::data_dir_for(None)` equals `config_dir()`, so sockets, `session.json`,
-history, locks and logs live in `~/.config/shepr`. `state_dir()` exists and is
-exported but unused for session data. Proposed: sockets in `$XDG_RUNTIME_DIR`,
-session files in the state dir - a breaking layout change.
-
-Reported by: config-cli.
-
-## STR-042 - Collapse the three surface update encodings into one
-
-Today: typed `PaneSurfacePatch` ("legacy" in tests), `surface_delta` (base64 of
-codec in `EndpointControl`), `surface_reuse` (JSON in `EndpointControl`), with
-three baseline rule sets (CON-032), a hand decoder (CON-035) and a pairwise
-mirror (CON-034). Proposed single `ServerMessage::SurfaceUpdate { base, next,
-projection, meta: Option<SurfaceMeta>, spans: Spans }`, empty spans meaning
-reuse, full grids still `PaneSurface`. Removes most of `surface_delta.rs`,
-`decode.rs` and `surface_reuse.rs`. The protocol hunter's headline
-recommendation.
-
-Reported by: protocol.
-
-## STR-043 - Protocol modules should be leaves
-
-`wire.rs` holds limits, input event types plus crossterm conversions (depending
-on `crate::input`, `crate::raw_input`), ClientShell projection types (depending
-on `crate::api::schema::AgentStatus`), frame/cell/ratatui conversion, framing and
-the version check. Proposed split into `limits`, `input`, `projection`,
-`surface`/`frame`, `style`, `framing`, with conversions living in client and
-server. `render_ansi.rs` (`BlitEncoder`, a stateful ANSI diff renderer) belongs
-in a `term_out`/`blit` module. `render_signal.rs` is a server render-scheduling
-primitive keyed by `layout::PaneId` and belongs in `server/`. Hyperlinks are
-passed as `&[((u16,u16), String, String)]`, matched by symbol equality, and the
-position map is rebuilt per frame (two HashMaps, clones of every linked symbol
-and URI) on the render hot path.
-
-Reported by: protocol.
 
 ## STR-045 - Client input plumbing
 
@@ -365,20 +245,6 @@ making messages nondeterministic in tests. Proposed: build the message at
 construction time.
 
 Reported by: client.
-
-## STR-048 - Restructure client/shell
-
-`client/shell.rs` mixes pane-input batching, an inline FNV topology hash, the
-status presentation table and frame blitting. `client/shell/` has ~27 flat
-modules on overlapping axes (`endpoint_*` × {agents, sidebar, navigation,
-notices, agent_state} beside `agent_sidebar`, `sidebar`,
-`aggregate_navigation`); the local/endpoint split mirrors history. Proposed
-`presentation/`, `sidebar/` (one implementation over N endpoints, CON-057),
-`navigation/`, `input/`, `overlays/`. `pub(crate) use state::*` re-exports make
-the boundary porous. The client hunter raised whether `client/shell/`
-duplicates `app/` rendering and copy-mode logic; not yet reviewed.
-
-Reported by: ui, client.
 
 ## STR-054 - Vestiges of removed platforms and features
 
@@ -407,11 +273,3 @@ only; the `saved.rs` "rejects invalid profiles" test becomes moot with typed
 `ProfileId` (CON-052).
 
 Reported by: app-state, server, pane-detection, config-cli, client, remote.
-
-## STR-056 - Accept loop polls every 250ms
-
-`CLIENT_ACCEPT_POLL_INTERVAL` polls the listener because it is not wired into
-`tokio::select!` - a steady idle wakeup. Proposed: tokio `UnixListener` or
-`AsyncFd` on the listener fd.
-
-Reported by: server.

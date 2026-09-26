@@ -1,3 +1,4 @@
+#[path = "token_definitions.rs"]
 mod tokens;
 
 use ratatui::{
@@ -93,13 +94,18 @@ pub(super) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect
     Rect::new(content.x, content.y + workspace_height, content.width, 1)
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct TokenStyles {
+    pub(super) state_text: Style,
+    pub(super) primary: Style,
+    pub(super) secondary: Style,
+    pub(super) custom: Style,
+}
+
 pub(super) fn resolved_token_spans(
     resolved: &[ResolvedToken],
     state_glyph: super::StatusGlyph,
-    state_text_style: Style,
-    workspace_style: Style,
-    secondary_style: Style,
-    custom_style: Style,
+    styles: TokenStyles,
     palette: &Palette,
     max_width: usize,
 ) -> Vec<Span<'static>> {
@@ -219,11 +225,11 @@ pub(super) fn resolved_token_spans(
             )),
             ResolvedTokenKind::StateText(text) => spans.push(Span::styled(
                 truncate_end(text, budgets[index]),
-                apply_token_style(state_text_style, token.style),
+                apply_token_style(styles.state_text, token.style),
             )),
             ResolvedTokenKind::Workspace(text) => spans.push(Span::styled(
                 truncate_end(text, budgets[index]),
-                apply_token_style(workspace_style, token.style),
+                apply_token_style(styles.primary, token.style),
             )),
             ResolvedTokenKind::Machine(text)
             | ResolvedTokenKind::Tab(text)
@@ -231,7 +237,7 @@ pub(super) fn resolved_token_spans(
             | ResolvedTokenKind::Agent(text)
             | ResolvedTokenKind::Branch(text) => spans.push(Span::styled(
                 truncate_end(text, budgets[index]),
-                apply_token_style(secondary_style, token.style),
+                apply_token_style(styles.secondary, token.style),
             )),
             ResolvedTokenKind::GitStatus { ahead, behind } => {
                 if *ahead > 0 {
@@ -256,7 +262,7 @@ pub(super) fn resolved_token_spans(
             ResolvedTokenKind::TerminalTitle(text) | ResolvedTokenKind::Custom(text) => {
                 spans.push(Span::styled(
                     truncate_end(text, budgets[index]),
-                    apply_token_style(custom_style, token.style),
+                    apply_token_style(styles.custom, token.style),
                 ));
             }
         }

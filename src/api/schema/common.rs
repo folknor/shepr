@@ -82,13 +82,7 @@ pub enum PaneAgentState {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentStatus {
-    Idle,
-    Working,
-    Blocked,
-}
+pub use crate::agent_status::AgentStatus;
 
 pub(crate) fn default_true() -> bool {
     true

@@ -268,13 +268,13 @@ impl PaneRuntime {
         self.preserve_processes_on_drop = false;
     }
 
-    pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
+    pub fn apply_host_terminal_theme(&self, theme: crate::host_term::theme::TerminalTheme) {
         self.terminal.apply_host_terminal_theme(theme);
     }
 
     pub fn apply_host_terminal_appearance(
         &self,
-        appearance: Option<crate::terminal_theme::HostAppearance>,
+        appearance: Option<crate::host_term::theme::HostAppearance>,
     ) {
         self.io
             .write_terminal_response(|| self.terminal.apply_host_terminal_appearance(appearance));
@@ -288,8 +288,8 @@ impl PaneRuntime {
         cols: u16,
         cwd: &std::path::Path,
         scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        host_terminal_theme: crate::host_term::theme::TerminalTheme,
+        host_terminal_appearance: Option<crate::host_term::theme::HostAppearance>,
         shell_config: PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
         events: &mpsc::Sender<AppEvent>,
@@ -321,8 +321,8 @@ impl PaneRuntime {
         cols: u16,
         cwd: &std::path::Path,
         scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        host_terminal_theme: crate::host_term::theme::TerminalTheme,
+        host_terminal_appearance: Option<crate::host_term::theme::HostAppearance>,
         shell_config: PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
         initial_history_ansi: Option<&str>,
@@ -361,8 +361,8 @@ impl PaneRuntime {
         argv: &[String],
         launch_env: &PaneLaunchEnv,
         scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        host_terminal_theme: crate::host_term::theme::TerminalTheme,
+        host_terminal_appearance: Option<crate::host_term::theme::HostAppearance>,
         events: &mpsc::Sender<AppEvent>,
         render_notify: &Arc<Notify>,
         render_dirty: &Arc<RenderSignal>,
@@ -402,8 +402,8 @@ impl PaneRuntime {
         rows: u16,
         cols: u16,
         scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        host_terminal_theme: crate::host_term::theme::TerminalTheme,
+        host_terminal_appearance: Option<crate::host_term::theme::HostAppearance>,
         events: &mpsc::Sender<AppEvent>,
         render_notify: &Arc<Notify>,
         render_dirty: &Arc<RenderSignal>,
@@ -1270,10 +1270,36 @@ impl PaneRuntime {
         &self,
     ) -> Option<(
         crate::ghostty::ActiveScreen,
-        u16,
-        Vec<crate::ghostty::ScreenTextRow>,
+        crate::terminal::ScreenSnapshot,
     )> {
-        self.terminal.screen_text_snapshot()
+        let (screen, cols, rows) = self.terminal.screen_text_snapshot()?;
+        Some((screen, crate::terminal::ScreenSnapshot { cols, rows }))
+    }
+
+    pub(crate) fn screen_text_snapshot_with_seq(
+        &self,
+    ) -> Option<(
+        crate::ghostty::ActiveScreen,
+        crate::terminal::ScreenSnapshot,
+        u64,
+    )> {
+        for _ in 0..3 {
+            let before = self.content_seq();
+            if !before.is_multiple_of(2) {
+                continue;
+            }
+            let (screen, snapshot) = self.screen_text_snapshot()?;
+            let after = self.content_seq();
+            if before == after {
+                return Some((screen, snapshot, after));
+            }
+        }
+        None
+    }
+
+    #[cfg(test)]
+    pub fn recent_unwrapped_text(&self, lines: usize) -> String {
+        self.recent_unwrapped_text_snapshot(lines).text
     }
 
     pub fn encode_mouse_button(
@@ -2147,10 +2173,11 @@ mod tests {
     #[tokio::test]
     async fn subscribed_idle_child_receives_color_scheme_transition() {
         let (runtime, mut rx) = PaneRuntime::test_with_channel(80, 24);
-        runtime.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Dark));
+        runtime.apply_host_terminal_appearance(Some(crate::host_term::theme::HostAppearance::Dark));
         runtime.test_process_pty_bytes(b"\x1b[?2031h");
 
-        runtime.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Light));
+        runtime
+            .apply_host_terminal_appearance(Some(crate::host_term::theme::HostAppearance::Light));
 
         assert_eq!(rx.recv().await, Some(Bytes::from_static(b"\x1b[?997;2n")));
     }

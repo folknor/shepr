@@ -58,7 +58,7 @@ pub(crate) fn resize_all_tab_surfaces(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
     area: Rect,
-    cell_size: crate::terminal_cell_size::HostCellSize,
+    cell_size: crate::host_term::cell_size::HostCellSize,
 ) {
     for (workspace_index, workspace) in app.workspaces.iter().enumerate() {
         for tab_index in 0..workspace.tabs.len() {

@@ -1,10 +1,10 @@
 //! Session persistence - save/restore workspaces, layouts, and working directories.
 //!
 //! Files live in the session data directory passed by the runtime:
-//! the config directory itself for the default session, `sessions/<name>/`
+//! the state directory itself for the default session, `sessions/<name>/`
 //! under it for a named one. The layout is `session.json`; optional pane
 //! screen history is stored separately in `session-history.json`. One server
-//! at a time owns a data directory, enforced by a lock on `session.lock`
+//! at a time owns a data directory, enforced by a lease on `session.lock`
 //! there (see `lock`).
 
 mod io;
@@ -14,6 +14,7 @@ mod snapshot;
 mod writer;
 
 pub use self::io::{load, load_history};
+pub(crate) use self::lock::DataDirLease;
 pub use self::restore::restore;
 #[cfg(test)]
 pub use self::snapshot::capture_history;

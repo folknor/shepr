@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::ops::Range;
 
 use crate::protocol::{ClientShellAgent, ClientShellPane};
@@ -31,15 +30,6 @@ pub(super) fn ordered_agent_pane_ids(
         .collect()
 }
 
-pub(super) fn ordered_agent_refs(
-    snapshot: &ClientShellSnapshot,
-    sort: crate::config::AgentPanelSortConfig,
-) -> Vec<&ClientShellAgent> {
-    let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
-    sort_agent_refs(&mut agents, sort);
-    agents
-}
-
 fn sort_agent_refs(agents: &mut [&ClientShellAgent], sort: crate::config::AgentPanelSortConfig) {
     if sort == crate::config::AgentPanelSortConfig::Priority {
         agents.sort_by_key(|agent| {
@@ -49,35 +39,6 @@ fn sort_agent_refs(agents: &mut [&ClientShellAgent], sort: crate::config::AgentP
             )
         });
     }
-}
-
-pub(super) fn render_agent_panel(
-    buffer: &mut Buffer,
-    area: Rect,
-    snapshot: &ClientShellSnapshot,
-    config: &ClientShellConfig,
-    agent_scroll: &mut usize,
-    hits: &mut ShellHitMap,
-) {
-    if !render_agent_panel_header(buffer, area, config, hits) {
-        return;
-    }
-
-    let rows = agent_rows(snapshot, config, None);
-    render_agent_list(
-        buffer,
-        area,
-        &rows,
-        None,
-        config,
-        agent_scroll,
-        hits,
-        |row| row.rows.len(),
-        |buffer, rect, row, hits| {
-            hits.agents.push((rect, row.pane_id.clone()));
-            render_agent_row(buffer, rect, row, config);
-        },
-    );
 }
 
 pub(super) fn render_agent_panel_header(
@@ -446,15 +407,12 @@ impl<'a> AgentRowIndex<'a> {
             .or(agent.name.as_deref())
             .or(agent.agent.as_deref())
             .or(agent.title.as_deref());
-        let labels = agent
+        let state_text = agent
             .state_labels
             .iter()
-            .cloned()
-            .collect::<HashMap<_, _>>();
-        let tokens = agent.tokens.iter().cloned().collect::<HashMap<_, _>>();
-        let state_text = labels
-            .get(status_text(agent.agent_status))
-            .map(String::as_str)
+            .rev()
+            .find(|(state, _)| state == status_text(agent.agent_status))
+            .map(|(_, label)| label.as_str())
             .unwrap_or_else(|| status_text(agent.agent_status));
         let canonical_agent = agent
             .agent
@@ -474,7 +432,7 @@ impl<'a> AgentRowIndex<'a> {
                 terminal_title: agent.terminal_title.as_deref(),
                 terminal_title_stripped: agent.terminal_title_stripped.as_deref(),
                 canonical_agent,
-                tokens: &tokens,
+                tokens: &agent.tokens,
             },
             state_text,
         );
@@ -525,10 +483,12 @@ pub(super) fn render_agent_row(
         spans.extend(resolved_token_spans(
             tokens,
             glyph,
-            status_style,
-            name_style,
-            secondary,
-            secondary,
+            TokenStyles {
+                state_text: status_style,
+                primary: name_style,
+                secondary,
+                custom: secondary,
+            },
             palette,
             usize::from(
                 rect.width

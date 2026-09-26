@@ -440,7 +440,7 @@ mod tests {
 
     fn pane_default_theme(
         pane: &super::super::GhosttyPaneTerminal,
-    ) -> crate::terminal_theme::TerminalTheme {
+    ) -> crate::host_term::theme::TerminalTheme {
         let mut core = crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
         let super::super::terminal::GhosttyPaneCore {
             terminal,
@@ -449,13 +449,13 @@ mod tests {
         } = &mut *core;
         render_state.update(terminal);
         let colors = render_state.colors();
-        crate::terminal_theme::TerminalTheme {
-            foreground: Some(crate::terminal_theme::RgbColor {
+        crate::host_term::theme::TerminalTheme {
+            foreground: Some(crate::host_term::theme::RgbColor {
                 r: colors.foreground.r,
                 g: colors.foreground.g,
                 b: colors.foreground.b,
             }),
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: colors.background.r,
                 g: colors.background.g,
                 b: colors.background.b,
@@ -916,13 +916,13 @@ mod tests {
         let pane = super::super::GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
         let shell_pid = 7;
-        let host_theme = crate::terminal_theme::TerminalTheme {
-            foreground: Some(crate::terminal_theme::RgbColor {
+        let host_theme = crate::host_term::theme::TerminalTheme {
+            foreground: Some(crate::host_term::theme::RgbColor {
                 r: 0xaa,
                 g: 0xbb,
                 b: 0xcc,
             }),
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -940,7 +940,7 @@ mod tests {
         }
         assert_eq!(
             pane_default_theme(&pane).background,
-            Some(crate::terminal_theme::RgbColor {
+            Some(crate::host_term::theme::RgbColor {
                 r: 0xdd,
                 g: 0xee,
                 b: 0xff,

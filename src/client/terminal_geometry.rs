@@ -214,7 +214,7 @@ pub(super) fn query_host_terminal_appearance() {
 }
 
 pub(super) fn write_host_terminal_appearance_query(mut writer: impl io::Write) -> io::Result<()> {
-    writer.write_all(crate::terminal_theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes())?;
+    writer.write_all(crate::host_term::theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes())?;
     writer.flush()
 }
 
@@ -227,7 +227,7 @@ pub(super) fn should_query_host_terminal_theme() -> bool {
 }
 
 pub(super) fn write_host_terminal_theme_query(mut writer: impl io::Write) -> io::Result<()> {
-    let query = crate::terminal_theme::host_terminal_theme_query_sequence(
+    let query = crate::host_term::theme::host_terminal_theme_query_sequence(
         crate::platform::should_query_host_terminal_palette(),
     );
     writer.write_all(query.as_bytes())?;

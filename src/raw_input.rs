@@ -12,11 +12,11 @@ pub fn parse_raw_input_bytes_sync(data: &[u8]) -> Vec<RawInputEvent> {
     events
 }
 
-use crate::input::{TerminalKey, parse_terminal_key_sequence};
-use crate::terminal_theme::{
+use crate::host_term::theme::{
     DefaultColorKind, HostAppearance, RgbColor, parse_default_color_response,
     parse_palette_color_response,
 };
+use crate::input::{TerminalKey, parse_terminal_key_sequence};
 
 const ESC: u8 = 0x1b;
 pub(crate) const RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS: i32 = 10;

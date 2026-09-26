@@ -6,7 +6,7 @@ use ratatui::style::Color;
 
 use crate::layout::{PaneId, PaneInfo};
 
-use crate::terminal_theme::{HostAppearance, TerminalTheme};
+use crate::host_term::theme::{HostAppearance, TerminalTheme};
 use crate::workspace::Workspace;
 
 // ---------------------------------------------------------------------------
@@ -666,7 +666,7 @@ pub struct AppState {
     /// Resolved host terminal default colors for theming embedded panes.
     pub host_terminal_theme: TerminalTheme,
     /// Last known foreground host terminal cell size in pixels.
-    pub(crate) host_cell_size: crate::terminal_cell_size::HostCellSize,
+    pub(crate) host_cell_size: crate::host_term::cell_size::HostCellSize,
     /// Set when a persisted session snapshot would change.
     pub session_dirty: bool,
     /// Terminal runtimes that should be shut down by the app/runtime layer
@@ -819,7 +819,7 @@ impl AppState {
             host_terminal_appearance_explicit: false,
             agent_manifest_summaries: Vec::new(),
             host_terminal_theme: TerminalTheme::default(),
-            host_cell_size: crate::terminal_cell_size::HostCellSize::default(),
+            host_cell_size: crate::host_term::cell_size::HostCellSize::default(),
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
         }

@@ -671,7 +671,7 @@ pub(crate) struct ClientShellState {
     pub(super) endpoint_notice_deadline:
         Option<(ClientEndpointNoticeKey, String, std::time::Instant)>,
     pub(super) outer_focused: Option<bool>,
-    pub(super) host_background: Option<crate::terminal_theme::RgbColor>,
+    pub(super) host_background: Option<crate::host_term::theme::RgbColor>,
     pub(super) endpoint_error: Option<String>,
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
 }

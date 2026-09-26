@@ -123,8 +123,8 @@ pub(super) fn publish_private_file(
 // behind, and the exclusive create in `publish_private_file` would then refuse
 // every later save. Unlinking a directory fails, so anything other than a
 // leftover file in the way still fails the save. Removing it is safe because
-// only one server writes a data directory: `SessionWriter` holds the
-// directory's lock (`lock.rs`) before any write.
+// only one server writes a data directory: `SessionWriter` owns the
+// directory lease (`lock.rs`) before any write.
 fn remove_stale_temporary(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -199,28 +199,10 @@ pub(super) fn clear_path(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Reads the saved layout for restore. Restoring resumes native agent
-/// sessions, so a server that does not own the data directory must not do it:
-/// the directory's lock is claimed first, and while another server holds it
-/// nothing is restored.
+/// Reads the saved layout for restore. The server acquires a DataDirLease
+/// before calling this, so native agent sessions cannot be restored twice.
 pub fn load(data_dir: &Path) -> Option<SessionSnapshot> {
     let path = session_path(data_dir);
-    if let Err(err) = super::lock::claim(containing_directory(&path)) {
-        if super::lock::is_owned_elsewhere(&err) {
-            tracing::error!(
-                event = "persist.restore", subsystem = "persist", outcome = "owned_elsewhere",
-                path = %path.display(), err = %err,
-                "another server owns this session's files; not restoring or saving them"
-            );
-            return None;
-        }
-        warn!(
-            event = "persist.restore", subsystem = "persist", outcome = "lock_error",
-            path = %path.display(), err = %err,
-            "could not lock the session directory; session was not restored"
-        );
-        return None;
-    }
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -252,22 +234,6 @@ pub fn load(data_dir: &Path) -> Option<SessionSnapshot> {
 
 pub fn load_history(data_dir: &Path) -> Option<SessionHistorySnapshot> {
     let path = session_history_path(data_dir);
-    if let Err(err) = super::lock::claim(containing_directory(&path)) {
-        if super::lock::is_owned_elsewhere(&err) {
-            tracing::error!(
-                event = "persist.restore", subsystem = "persist", outcome = "owned_elsewhere",
-                path = %path.display(), err = %err,
-                "another server owns this session's files; history was not restored"
-            );
-        } else {
-            warn!(
-                event = "persist.restore", subsystem = "persist", outcome = "lock_error",
-                path = %path.display(), err = %err,
-                "could not lock the session directory; history was not restored"
-            );
-        }
-        return None;
-    }
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
@@ -360,59 +326,6 @@ mod tests {
 
         assert!(session_path.exists());
         assert!(!history_path.exists());
-    }
-
-    #[test]
-    fn load_refuses_a_session_another_server_owns() {
-        let scratch = crate::test_support::ScratchDir::new("load-owned");
-        let data_dir = scratch.path().join("config");
-        let path = session_path(&data_dir);
-        save_to_path(&path, &empty_snapshot()).expect("test precondition");
-        let directory = containing_directory(&path).to_path_buf();
-        let other_server = std::fs::File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(directory.join(super::super::lock::LOCK_FILE_NAME))
-            .expect("test precondition");
-        other_server.try_lock().expect("test precondition");
-
-        assert!(
-            load(&data_dir).is_none(),
-            "another server's session is not restored"
-        );
-
-        drop(other_server);
-        assert!(load(&data_dir).is_some());
-        super::super::lock::release(&directory);
-    }
-
-    #[test]
-    fn load_history_refuses_a_session_another_server_owns() {
-        let scratch = crate::test_support::ScratchDir::new("load-history-owned");
-        let data_dir = scratch.path().join("config");
-        let path = session_history_path(&data_dir);
-        save_history_to_path(&path, Some(&history_snapshot("history-secret")))
-            .expect("test precondition");
-        let directory = containing_directory(&path).to_path_buf();
-        let other_server = std::fs::File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(directory.join(super::super::lock::LOCK_FILE_NAME))
-            .expect("test precondition");
-        other_server.try_lock().expect("test precondition");
-
-        assert!(
-            load_history(&data_dir).is_none(),
-            "another server's history is not restored"
-        );
-
-        drop(other_server);
-        assert!(load_history(&data_dir).is_some());
-        super::super::lock::release(&directory);
     }
 
     #[test]

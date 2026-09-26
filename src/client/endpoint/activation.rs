@@ -1061,10 +1061,7 @@ impl PendingEndpointActivation {
             completion: Box::new(completion),
         };
         self.deadline = Instant::now() + ACTIVATION_TIMEOUT;
-        let message = crate::protocol::ClientMessage::EndpointControl {
-            kind: crate::protocol::endpoint::PRESENTATION_EFFECTS_SYNC_KIND.into(),
-            data: token,
-        };
+        let message = crate::protocol::ClientMessage::PresentationSync(token);
         if endpoints.send_to(&lease.endpoint_id, &message) != EndpointSendOutcome::Sent {
             return Err("endpoint presentation effects fence could not be sent".into());
         }

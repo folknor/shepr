@@ -227,7 +227,7 @@ pub(crate) struct GhosttyPaneCore {
     pub render_state: crate::ghostty::RenderState,
     pub initial_default_foreground: Option<crate::ghostty::RgbColor>,
     pub initial_default_background: Option<crate::ghostty::RgbColor>,
-    pub host_terminal_theme: crate::terminal_theme::TerminalTheme,
+    pub host_terminal_theme: crate::host_term::theme::TerminalTheme,
     /// Process group of the foreground program that last overrode a default
     /// colour (OSC 10/11); its overrides are dropped once the shell is back
     /// in the foreground. `None` while no override is in effect.
@@ -506,13 +506,13 @@ impl PaneTerminal {
         self.ghostty.visible_hyperlinks(area)
     }
 
-    pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
+    pub fn apply_host_terminal_theme(&self, theme: crate::host_term::theme::TerminalTheme) {
         self.ghostty.apply_host_terminal_theme(theme);
     }
 
     pub fn apply_host_terminal_appearance(
         &self,
-        appearance: Option<crate::terminal_theme::HostAppearance>,
+        appearance: Option<crate::host_term::theme::HostAppearance>,
     ) -> Option<Bytes> {
         self.ghostty.apply_host_terminal_appearance(appearance)
     }
@@ -1435,7 +1435,7 @@ impl GhosttyPaneTerminal {
                 render_state,
                 initial_default_foreground,
                 initial_default_background,
-                host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
+                host_terminal_theme: crate::host_term::theme::TerminalTheme::default(),
                 transient_default_color_owner_pgid: None,
                 default_color_generation: 0,
                 osc_debug_tracker: OscDebugTracker::default(),
@@ -1447,7 +1447,7 @@ impl GhosttyPaneTerminal {
     /// Installs the host theme as the pane's default palette and default
     /// colours. They sit under whatever the child set itself (OSC 4/10/11),
     /// which stays in effect; nothing is written into the child's stream.
-    pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
+    pub fn apply_host_terminal_theme(&self, theme: crate::host_term::theme::TerminalTheme) {
         if let Ok(mut core) = crate::ghostty::lock_terminal_core(&self.core) {
             core.host_terminal_theme = theme;
             if !has_default_color_override(&core.terminal) {
@@ -1457,30 +1457,21 @@ impl GhosttyPaneTerminal {
             let mut palette = crate::ghostty::default_palette();
             for (index, color) in theme.palette.iter().enumerate() {
                 if let Some(color) = color {
-                    palette[index] = crate::ghostty::RgbColor {
-                        r: color.r,
-                        g: color.g,
-                        b: color.b,
-                    };
+                    palette[index] = *color;
                 }
             }
             core.terminal.set_default_palette(&palette);
-            core.terminal.set_default_colors(
-                theme.foreground.map(host_theme_color_to_ghostty),
-                theme.background.map(host_theme_color_to_ghostty),
-            );
+            core.terminal
+                .set_default_colors(theme.foreground, theme.background);
         }
     }
 
     pub fn apply_host_terminal_appearance(
         &self,
-        appearance: Option<crate::terminal_theme::HostAppearance>,
+        appearance: Option<crate::host_term::theme::HostAppearance>,
     ) -> Option<Bytes> {
         let mut core = crate::ghostty::lock_terminal_core(&self.core).ok()?;
-        let color_scheme = appearance.map(|appearance| match appearance {
-            crate::terminal_theme::HostAppearance::Dark => crate::ghostty::ColorScheme::Dark,
-            crate::terminal_theme::HostAppearance::Light => crate::ghostty::ColorScheme::Light,
-        });
+        let color_scheme = appearance;
         let previous = core.terminal.set_color_scheme(color_scheme);
 
         let transitioned = matches!(
@@ -1494,7 +1485,7 @@ impl GhosttyPaneTerminal {
         {
             return None;
         }
-        appearance.map(|appearance| Bytes::from_static(appearance.color_scheme_report()))
+        appearance.map(|appearance| Bytes::from_static(appearance.report()))
     }
 
     pub fn has_transient_default_color_override(&self) -> bool {
@@ -3205,21 +3196,13 @@ fn osc_rgb_response(command: &str, r: u8, g: u8, b: u8) -> Bytes {
     Bytes::from(format!("\x1b]{command};rgb:{r:04x}/{g:04x}/{b:04x}\x1b\\"))
 }
 
-fn host_theme_color_to_ghostty(color: crate::terminal_theme::RgbColor) -> crate::ghostty::RgbColor {
-    crate::ghostty::RgbColor {
-        r: color.r,
-        g: color.g,
-        b: color.b,
-    }
-}
-
 fn ghostty_default_fg(
     color: crate::ghostty::RgbColor,
-    host_theme: crate::terminal_theme::TerminalTheme,
+    host_theme: crate::host_term::theme::TerminalTheme,
     initial_default_foreground: Option<crate::ghostty::RgbColor>,
 ) -> Option<Color> {
     if let Some(host_foreground) = host_theme.foreground {
-        if host_foreground == terminal_theme_color(color) {
+        if host_foreground == color {
             None
         } else {
             Some(ghostty_color(color))
@@ -3233,11 +3216,11 @@ fn ghostty_default_fg(
 
 fn ghostty_default_bg(
     color: crate::ghostty::RgbColor,
-    host_theme: crate::terminal_theme::TerminalTheme,
+    host_theme: crate::host_term::theme::TerminalTheme,
     initial_default_background: Option<crate::ghostty::RgbColor>,
 ) -> Option<Color> {
     if let Some(host_background) = host_theme.background {
-        if host_background == terminal_theme_color(color) {
+        if host_background == color {
             None
         } else {
             Some(ghostty_color(color))
@@ -3246,14 +3229,6 @@ fn ghostty_default_bg(
         Some(ghostty_color(color))
     } else {
         None
-    }
-}
-
-fn terminal_theme_color(color: crate::ghostty::RgbColor) -> crate::terminal_theme::RgbColor {
-    crate::terminal_theme::RgbColor {
-        r: color.r,
-        g: color.g,
-        b: color.b,
     }
 }
 
@@ -4130,8 +4105,8 @@ mod tests {
         let pane_id = PaneId::from_raw(1);
 
         pane.process_pty_bytes(pane_id, 0, b"\x1b[3");
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
-            foreground: Some(crate::terminal_theme::RgbColor {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+            foreground: Some(crate::host_term::theme::RgbColor {
                 r: 0xaa,
                 g: 0xbb,
                 b: 0xcc,
@@ -4255,13 +4230,13 @@ mod tests {
             let mut core =
                 crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.transient_default_color_owner_pgid = Some(42);
-            core.host_terminal_theme = crate::terminal_theme::TerminalTheme {
-                foreground: Some(crate::terminal_theme::RgbColor {
+            core.host_terminal_theme = crate::host_term::theme::TerminalTheme {
+                foreground: Some(crate::host_term::theme::RgbColor {
                     r: 0xaa,
                     g: 0xbb,
                     b: 0xcc,
                 }),
-                background: Some(crate::terminal_theme::RgbColor {
+                background: Some(crate::host_term::theme::RgbColor {
                     r: 0x11,
                     g: 0x22,
                     b: 0x33,
@@ -4282,13 +4257,13 @@ mod tests {
             let mut core =
                 crate::ghostty::lock_terminal_core(&pane.core).expect("test precondition");
             core.transient_default_color_owner_pgid = Some(42);
-            core.host_terminal_theme = crate::terminal_theme::TerminalTheme {
-                foreground: Some(crate::terminal_theme::RgbColor {
+            core.host_terminal_theme = crate::host_term::theme::TerminalTheme {
+                foreground: Some(crate::host_term::theme::RgbColor {
                     r: 0xaa,
                     g: 0xbb,
                     b: 0xcc,
                 }),
-                background: Some(crate::terminal_theme::RgbColor {
+                background: Some(crate::host_term::theme::RgbColor {
                     r: 0x11,
                     g: 0x22,
                     b: 0x33,
@@ -5774,8 +5749,10 @@ mod tests {
         let pane_id = PaneId::from_raw(1);
 
         assert!(
-            pane.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Dark))
-                .is_none()
+            pane.apply_host_terminal_appearance(Some(
+                crate::host_term::theme::HostAppearance::Dark
+            ))
+            .is_none()
         );
         let query = pane.process_pty_bytes(pane_id, 0, b"\x1b[?996n");
         assert_eq!(
@@ -5785,11 +5762,15 @@ mod tests {
 
         pane.process_pty_bytes(pane_id, 0, b"\x1b[?2031h");
         assert!(
-            pane.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Dark))
-                .is_none()
+            pane.apply_host_terminal_appearance(Some(
+                crate::host_term::theme::HostAppearance::Dark
+            ))
+            .is_none()
         );
         assert_eq!(
-            pane.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Light)),
+            pane.apply_host_terminal_appearance(Some(
+                crate::host_term::theme::HostAppearance::Light
+            )),
             Some(Bytes::from_static(b"\x1b[?997;2n"))
         );
 
@@ -5797,14 +5778,18 @@ mod tests {
         let unknown_query = pane.process_pty_bytes(pane_id, 0, b"\x1b[?996n");
         assert!(unknown_query.terminal_responses.is_empty());
         assert!(
-            pane.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Dark))
-                .is_none()
+            pane.apply_host_terminal_appearance(Some(
+                crate::host_term::theme::HostAppearance::Dark
+            ))
+            .is_none()
         );
 
         pane.process_pty_bytes(pane_id, 0, b"\x1bc");
         assert!(
-            pane.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Light))
-                .is_none()
+            pane.apply_host_terminal_appearance(Some(
+                crate::host_term::theme::HostAppearance::Light
+            ))
+            .is_none()
         );
     }
 
@@ -5845,8 +5830,8 @@ mod tests {
                 let terminal = crate::ghostty::Terminal::new(20, 5, 0);
                 let pane = GhosttyPaneTerminal::new(terminal);
                 let pane_id = PaneId::from_raw(1);
-                pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
-                    background: Some(crate::terminal_theme::RgbColor {
+                pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+                    background: Some(crate::host_term::theme::RgbColor {
                         r: 0,
                         g: 0x2b,
                         b: 0x36,
@@ -5948,9 +5933,9 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
             foreground: None,
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0x00,
                 g: 0x2b,
                 b: 0x36,
@@ -5978,9 +5963,9 @@ mod tests {
         let result = pane.process_pty_bytes(pane_id, 0, b"\x1b]11;#112233\x07");
         assert!(result.terminal_responses.is_empty());
 
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
             foreground: None,
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0xaa,
                 g: 0xbb,
                 b: 0xcc,
@@ -6002,9 +5987,9 @@ mod tests {
         let pane_id = PaneId::from_raw(1);
 
         pane.process_pty_bytes(pane_id, 0, b"\x1b]11;#112233\x07");
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
             foreground: None,
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0xaa,
                 g: 0xbb,
                 b: 0xcc,
@@ -6040,8 +6025,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
-            background: Some(crate::terminal_theme::RgbColor {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0x00,
                 g: 0x2b,
                 b: 0x36,
@@ -6149,9 +6134,9 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
             foreground: None,
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0x00,
                 g: 0x2b,
                 b: 0x36,
@@ -6175,9 +6160,9 @@ mod tests {
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(
-            crate::terminal_theme::TerminalTheme::default().with_palette_color(
+            crate::host_term::theme::TerminalTheme::default().with_palette_color(
                 0,
-                crate::terminal_theme::RgbColor {
+                crate::host_term::theme::RgbColor {
                     r: 0x11,
                     g: 0x22,
                     b: 0x33,
@@ -6200,12 +6185,12 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        let mut theme = crate::terminal_theme::TerminalTheme::default();
+        let mut theme = crate::host_term::theme::TerminalTheme::default();
         let mut queries = String::new();
         for index in 0..=u8::MAX {
             theme = theme.with_palette_color(
                 index,
-                crate::terminal_theme::RgbColor {
+                crate::host_term::theme::RgbColor {
                     r: index,
                     g: 0x22,
                     b: 0x33,
@@ -6234,9 +6219,9 @@ mod tests {
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
         pane.apply_host_terminal_theme(
-            crate::terminal_theme::TerminalTheme::default().with_palette_color(
+            crate::host_term::theme::TerminalTheme::default().with_palette_color(
                 7,
-                crate::terminal_theme::RgbColor {
+                crate::host_term::theme::RgbColor {
                     r: 0x11,
                     g: 0x22,
                     b: 0x33,
@@ -6246,9 +6231,9 @@ mod tests {
         pane.process_pty_bytes(pane_id, 0, b"\x1b]4;7;rgb:aa/bb/cc\x1b\\");
 
         pane.apply_host_terminal_theme(
-            crate::terminal_theme::TerminalTheme::default().with_palette_color(
+            crate::host_term::theme::TerminalTheme::default().with_palette_color(
                 7,
-                crate::terminal_theme::RgbColor {
+                crate::host_term::theme::RgbColor {
                     r: 0x44,
                     g: 0x55,
                     b: 0x66,
@@ -6313,9 +6298,9 @@ mod tests {
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
         let color = current_palette_color(&pane, 0);
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
             foreground: None,
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0x00,
                 g: 0x2b,
                 b: 0x36,
@@ -6342,9 +6327,9 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
             foreground: None,
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0x00,
                 g: 0x2b,
                 b: 0x36,
@@ -6365,13 +6350,13 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
-            foreground: Some(crate::terminal_theme::RgbColor {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+            foreground: Some(crate::host_term::theme::RgbColor {
                 r: 0x65,
                 g: 0x7b,
                 b: 0x83,
             }),
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0xfd,
                 g: 0xf6,
                 b: 0xe3,
@@ -6462,8 +6447,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
-            foreground: Some(crate::terminal_theme::RgbColor {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+            foreground: Some(crate::host_term::theme::RgbColor {
                 r: 0x65,
                 g: 0x7b,
                 b: 0x83,
@@ -6485,8 +6470,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
-            foreground: Some(crate::terminal_theme::RgbColor {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+            foreground: Some(crate::host_term::theme::RgbColor {
                 r: 0x65,
                 g: 0x7b,
                 b: 0x83,
@@ -6509,8 +6494,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
-            foreground: Some(crate::terminal_theme::RgbColor {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+            foreground: Some(crate::host_term::theme::RgbColor {
                 r: 0x65,
                 g: 0x7b,
                 b: 0x83,
@@ -6533,13 +6518,13 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
-            foreground: Some(crate::terminal_theme::RgbColor {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+            foreground: Some(crate::host_term::theme::RgbColor {
                 r: 0x65,
                 g: 0x7b,
                 b: 0x83,
             }),
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0xfd,
                 g: 0xf6,
                 b: 0xe3,
@@ -6564,9 +6549,9 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
             foreground: None,
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0xfd,
                 g: 0xf6,
                 b: 0xe3,
@@ -6591,8 +6576,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
-            foreground: Some(crate::terminal_theme::RgbColor {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
+            foreground: Some(crate::host_term::theme::RgbColor {
                 r: 0xfd,
                 g: 0xf6,
                 b: 0xe3,
@@ -6618,9 +6603,9 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
+        pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
             foreground: None,
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0xfd,
                 g: 0xf6,
                 b: 0xe3,
@@ -6645,13 +6630,13 @@ mod tests {
     fn render_leaves_host_default_background_transparent() {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
-        let host_theme = crate::terminal_theme::TerminalTheme {
-            foreground: Some(crate::terminal_theme::RgbColor {
+        let host_theme = crate::host_term::theme::TerminalTheme {
+            foreground: Some(crate::host_term::theme::RgbColor {
                 r: 0xaa,
                 g: 0xbb,
                 b: 0xcc,
             }),
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -6684,13 +6669,13 @@ mod tests {
     fn render_keeps_explicit_default_foreground_when_it_differs_from_host() {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
-        let host_theme = crate::terminal_theme::TerminalTheme {
-            foreground: Some(crate::terminal_theme::RgbColor {
+        let host_theme = crate::host_term::theme::TerminalTheme {
+            foreground: Some(crate::host_term::theme::RgbColor {
                 r: 0xaa,
                 g: 0xbb,
                 b: 0xcc,
             }),
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -6722,13 +6707,13 @@ mod tests {
     fn render_keeps_explicit_default_background_when_it_differs_from_host() {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
-        let host_theme = crate::terminal_theme::TerminalTheme {
-            foreground: Some(crate::terminal_theme::RgbColor {
+        let host_theme = crate::host_term::theme::TerminalTheme {
+            foreground: Some(crate::host_term::theme::RgbColor {
                 r: 0xaa,
                 g: 0xbb,
                 b: 0xcc,
             }),
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -6760,13 +6745,13 @@ mod tests {
     fn render_inverse_text_swaps_fg_and_resolved_bg_when_bg_is_transparent() {
         let terminal = crate::ghostty::Terminal::new(20, 5, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
-        let host_theme = crate::terminal_theme::TerminalTheme {
-            foreground: Some(crate::terminal_theme::RgbColor {
+        let host_theme = crate::host_term::theme::TerminalTheme {
+            foreground: Some(crate::host_term::theme::RgbColor {
                 r: 0xaa,
                 g: 0xbb,
                 b: 0xcc,
             }),
-            background: Some(crate::terminal_theme::RgbColor {
+            background: Some(crate::host_term::theme::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,

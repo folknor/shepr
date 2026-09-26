@@ -2,7 +2,6 @@ mod alt_screen_read;
 pub mod autodetect;
 pub(crate) mod client_accept;
 pub(crate) mod client_commands;
-mod client_endpoint_control;
 pub(crate) mod client_shell;
 pub(crate) mod client_transport;
 pub(crate) mod clients;

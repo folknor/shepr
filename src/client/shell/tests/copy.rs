@@ -127,7 +127,7 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
 
 #[test]
 fn client_selection_uses_host_background_and_repaints_when_it_changes() {
-    use crate::terminal_theme::{DefaultColorKind, HostAppearance, RgbColor};
+    use crate::host_term::theme::{DefaultColorKind, HostAppearance, RgbColor};
     use ratatui::style::Color;
 
     for explicit_appearance in [false, true] {

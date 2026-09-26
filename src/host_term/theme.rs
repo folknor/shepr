@@ -1,35 +1,6 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub struct RgbColor {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostAppearance {
-    Dark,
-    Light,
-}
-
-impl HostAppearance {
-    pub const fn color_scheme_report(self) -> &'static [u8] {
-        match self {
-            Self::Dark => b"\x1b[?997;1n",
-            Self::Light => b"\x1b[?997;2n",
-        }
-    }
-}
-
-impl RgbColor {
-    pub fn inferred_appearance(self) -> HostAppearance {
-        let luminance = u32::from(self.r) * 299 + u32::from(self.g) * 587 + u32::from(self.b) * 114;
-        if luminance >= 128_000 {
-            HostAppearance::Light
-        } else {
-            HostAppearance::Dark
-        }
-    }
-}
+pub use crate::ghostty::{
+    ColorScheme as HostAppearance, DefaultColor as DefaultColorKind, RgbColor,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalTheme {
@@ -46,12 +17,6 @@ impl Default for TerminalTheme {
             palette: [None; 256],
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DefaultColorKind {
-    Foreground,
-    Background,
 }
 
 pub const HOST_COLOR_QUERY_SEQUENCE: &str = "\x1b]10;?\x1b\\\x1b]11;?\x1b\\";

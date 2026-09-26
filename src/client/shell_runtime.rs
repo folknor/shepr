@@ -24,7 +24,7 @@ pub(super) fn dispatch_client_shell_actions(
                 }
             }
             shell::ClientShellAction::ClipboardWrite(bytes) => {
-                crate::terminal_effects::write_clipboard_bytes(&bytes);
+                crate::host_term::title::write_clipboard_bytes(&bytes);
             }
             shell::ClientShellAction::ActivateEndpoint {
                 endpoint_id,
@@ -81,7 +81,7 @@ pub(super) fn sync_client_shell_keyboard_report_all(
     if desired == state.keyboard_report_all_active {
         return Ok(());
     }
-    crate::terminal_modes::set_host_kitty_keyboard_report_all(&mut io::stdout(), desired)
+    crate::host_term::modes::set_host_kitty_keyboard_report_all(&mut io::stdout(), desired)
         .map_err(ClientError::HostTerminal)?;
     state.keyboard_report_all_active = desired;
     Ok(())
@@ -103,7 +103,7 @@ pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) {
 /// must stay.
 fn reset_window_title(state: &mut ClientState, writer: &mut impl io::Write) -> io::Result<()> {
     if std::mem::take(&mut state.window_title_written) {
-        crate::terminal_effects::write_window_title(writer, None)?;
+        crate::host_term::title::write_window_title(writer, None)?;
     }
     Ok(())
 }
@@ -534,61 +534,6 @@ pub(super) fn handle_endpoint_disconnect(
         .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
     {
         // A non-active machine going offline only changes its machine-list status.
-        state.present_chrome(frame, pending_activation.is_some());
-    }
-    endpoint_was_active
-}
-
-pub(super) fn handle_endpoint_attention(
-    state: &mut ClientState,
-    endpoints: &mut endpoint::EndpointRegistry,
-    endpoint_commands: &mut endpoint::commands::EndpointCommands,
-    supervisors: &mut endpoint::EndpointSupervisors,
-    pending_activation: &mut Option<endpoint::PendingEndpointActivation>,
-    endpoint_id: &endpoint::ClientEndpointId,
-    generation: u64,
-    now: std::time::Instant,
-    message: &str,
-) -> bool {
-    endpoints.disconnect(endpoint_id);
-    supervisors.record_status(
-        endpoint_id,
-        generation,
-        endpoint::ClientEndpointStatus::Attention,
-        now,
-    );
-    if let Some(pending) = pending_activation
-        .as_mut()
-        .filter(|pending| pending.involves_endpoint(endpoint_id))
-    {
-        let outcome = pending.endpoint_disconnected(
-            endpoints,
-            endpoint_id,
-            "endpoint reported attention while activating".into(),
-        );
-        if let endpoint::ActivationRollback::Unavailable(error) = outcome {
-            *pending_activation = None;
-            present_handoff_unavailable(state, error);
-        }
-    }
-    let endpoint_was_active = endpoints.active_id() == endpoint_id;
-    let cancelled = endpoint_commands.disconnect(endpoint_id);
-    let unavailable = state.mode.shell_mut().and_then(|shell| {
-        for request_id in cancelled {
-            shell.cancel_endpoint_request(&request_id);
-        }
-        shell.set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Attention);
-        shell.set_machine_diagnostic(endpoint_id, message);
-        endpoint_was_active.then(|| format!("{}: {message}", shell.endpoint_label(endpoint_id)))
-    });
-    if let Some(message) = unavailable {
-        present_handoff_unavailable(state, message);
-    } else if let Some(frame) = state
-        .mode
-        .shell_mut()
-        .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
-    {
-        // A non-active machine needing attention only changes its machine-list status.
         state.present_chrome(frame, pending_activation.is_some());
     }
     endpoint_was_active

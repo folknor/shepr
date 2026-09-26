@@ -77,21 +77,12 @@ pub(super) fn is_modal_paste_shortcut(key: &crate::input::TerminalKey) -> bool {
 }
 
 fn host_theme_update(event: &RawInputEvent) -> Option<crate::protocol::ClientHostThemeUpdate> {
-    use crate::protocol::{
-        ClientHostAppearance, ClientHostDefaultColorKind, ClientHostThemeUpdate,
-    };
+    use crate::protocol::ClientHostThemeUpdate;
 
     match event {
         RawInputEvent::HostDefaultColor { kind, color } => {
             Some(ClientHostThemeUpdate::DefaultColor {
-                kind: match kind {
-                    crate::terminal_theme::DefaultColorKind::Foreground => {
-                        ClientHostDefaultColorKind::Foreground
-                    }
-                    crate::terminal_theme::DefaultColorKind::Background => {
-                        ClientHostDefaultColorKind::Background
-                    }
-                },
+                kind: (*kind).into(),
                 color: (*color).into(),
             })
         }
@@ -102,10 +93,7 @@ fn host_theme_update(event: &RawInputEvent) -> Option<crate::protocol::ClientHos
                 .collect(),
         )),
         RawInputEvent::HostColorSchemeChanged(appearance) => {
-            Some(ClientHostThemeUpdate::Appearance(match appearance {
-                crate::terminal_theme::HostAppearance::Dark => ClientHostAppearance::Dark,
-                crate::terminal_theme::HostAppearance::Light => ClientHostAppearance::Light,
-            }))
+            Some(ClientHostThemeUpdate::Appearance((*appearance).into()))
         }
         _ => None,
     }
@@ -250,7 +238,7 @@ impl ClientShellState {
                     .push(ClientMessage::ClientShellFocus { focused: false });
             }
             RawInputEvent::HostDefaultColor {
-                kind: crate::terminal_theme::DefaultColorKind::Background,
+                kind: crate::host_term::theme::DefaultColorKind::Background,
                 color,
             } => {
                 if self.host_background != Some(color) {

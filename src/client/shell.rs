@@ -1,39 +1,63 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
+#[path = "shell/navigation/actions.rs"]
 mod actions;
+#[path = "shell/sidebar/agent_sidebar.rs"]
 mod agent_sidebar;
+#[path = "shell/navigation/aggregate_navigation.rs"]
 mod aggregate_navigation;
+#[path = "shell/overlays/machine_diagnostics.rs"]
 mod machine_diagnostics;
+#[path = "shell/navigation/workspace_navigation.rs"]
 mod workspace_navigation;
 use workspace_navigation::{PendingWorkspaceHighlight, WorkspaceNavigationTarget};
+#[path = "shell/presentation/composition.rs"]
 mod composition;
+#[path = "shell/presentation/config.rs"]
 mod config;
+#[path = "shell/overlays/context_menu.rs"]
 mod context_menu;
+#[path = "shell/input/copy_mode.rs"]
 mod copy_mode;
+#[path = "shell/sidebar/endpoint_agents.rs"]
 mod endpoint_agents;
+#[path = "shell/navigation/endpoint_navigation.rs"]
 mod endpoint_navigation;
+#[path = "shell/overlays/endpoint_notices.rs"]
 mod endpoint_notices;
+#[path = "shell/sidebar/endpoint_sidebar.rs"]
 mod endpoint_sidebar;
 mod endpoints;
 pub(super) use endpoints::*;
+#[path = "shell/overlays/global_menu.rs"]
 mod global_menu;
+#[path = "shell/input/input.rs"]
 mod input;
+#[path = "shell/input/mouse.rs"]
 mod mouse;
+#[path = "shell/overlays/overlay_input.rs"]
 mod overlay_input;
+#[path = "shell/overlays/preferences.rs"]
 mod preferences;
+#[path = "shell/presentation/render.rs"]
 mod render;
+#[path = "shell/navigation/scroll.rs"]
 mod scroll;
+#[path = "shell/sidebar/sidebar_tokens.rs"]
 mod sidebar_tokens;
 mod state;
+#[path = "shell/presentation/surface_patch.rs"]
 mod surface_patch;
+#[path = "shell/overlays/text_editor.rs"]
 mod text_editor;
+#[path = "shell/input/word_selection.rs"]
 mod word_selection;
 use text_editor::TextEditor;
 use word_selection::ClientWordSelection;
 
 pub(in crate::client::shell) use render::sidebar;
 use sidebar_tokens::{
-    AgentTokenContext, ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
+    AgentTokenContext, ResolvedToken, ResolvedTokenKind, SpaceTokenContext, TokenStyles,
     expanded_sidebar_sections, resolved_token_spans, sidebar_agent_rows,
     sidebar_section_divider_rect, sidebar_space_rows,
 };
@@ -61,193 +85,25 @@ use crate::protocol::{
 #[cfg(test)]
 use crate::raw_input::RawInputEvent;
 
-fn target_event_message(target: ClientInputTarget, event: ClientPaneInputEvent) -> ClientMessage {
-    match target {
-        ClientInputTarget::Pane(pane_id) => ClientMessage::ClientShellPaneInput {
-            pane_id,
-            events: vec![event],
-        },
-    }
-}
+#[path = "shell/input/events.rs"]
+mod input_events;
+use input_events::*;
 
-fn push_target_event(
-    target: ClientInputTarget,
-    event: ClientPaneInputEvent,
-    outcome: &mut ClientShellInput,
-) {
-    match target {
-        ClientInputTarget::Pane(pane_id) => {
-            if let Some(ClientMessage::ClientShellPaneInput {
-                pane_id: pending_pane,
-                events,
-            }) = outcome.requests.last_mut()
-                && *pending_pane == pane_id
-            {
-                events.push(event);
-                return;
-            }
-            outcome.requests.push(target_event_message(
-                ClientInputTarget::Pane(pane_id),
-                event,
-            ));
-        }
-    }
-}
+#[path = "shell/input/hit_test.rs"]
+mod hit_test;
+use hit_test::*;
 
-fn contains(rect: Rect, point: (u16, u16)) -> bool {
-    rect.width > 0
-        && rect.height > 0
-        && point.0 >= rect.x
-        && point.0 < rect.right()
-        && point.1 >= rect.y
-        && point.1 < rect.bottom()
-}
+#[path = "shell/presentation/topology.rs"]
+mod topology;
+use topology::*;
 
-fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64 {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
+#[path = "shell/presentation/status.rs"]
+mod status_presentation;
+use status_presentation::*;
 
-    fn write(hash: &mut u64, bytes: &[u8]) {
-        for byte in bytes {
-            *hash ^= u64::from(*byte);
-            *hash = hash.wrapping_mul(PRIME);
-        }
-        *hash ^= 0xff;
-        *hash = hash.wrapping_mul(PRIME);
-    }
-
-    let mut pane_ids = surface
-        .panes
-        .iter()
-        .map(|pane| pane.pane_id.as_bytes())
-        .collect::<Vec<_>>();
-    pane_ids.sort_unstable();
-    let mut hash = OFFSET;
-    for pane_id in pane_ids {
-        write(&mut hash, pane_id);
-    }
-    let mut splits = surface.splits.iter().collect::<Vec<_>>();
-    splits.sort_by(|left, right| left.path.cmp(&right.path));
-    for split in splits {
-        write(
-            &mut hash,
-            &[match split.direction {
-                crate::protocol::PaneSurfaceSplitDirection::Horizontal => 0,
-                crate::protocol::PaneSurfaceSplitDirection::Vertical => 1,
-            }],
-        );
-        write(
-            &mut hash,
-            &split
-                .path
-                .iter()
-                .map(|right| u8::from(*right))
-                .collect::<Vec<_>>(),
-        );
-    }
-    hash
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct StatusGlyph {
-    pub(super) text: &'static str,
-    pub(super) style: Style,
-}
-
-fn status_glyph(
-    status: crate::api::schema::AgentStatus,
-    indicator_style: crate::config::StatusIndicatorStyle,
-    palette: &Palette,
-    stale: bool,
-) -> StatusGlyph {
-    use crate::api::schema::AgentStatus;
-    use crate::config::StatusIndicatorStyle;
-    let text = match (indicator_style, status) {
-        (StatusIndicatorStyle::Dots, AgentStatus::Working | AgentStatus::Blocked) => "●",
-        (StatusIndicatorStyle::Dots, AgentStatus::Idle) => "○",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Blocked) => "×",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Working) => "◐",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Idle) => "○",
-    };
-    let color = if stale {
-        palette.overlay0
-    } else {
-        match status {
-            AgentStatus::Working => palette.yellow,
-            AgentStatus::Blocked => palette.red,
-            AgentStatus::Idle => palette.green,
-        }
-    };
-    StatusGlyph {
-        text,
-        style: Style::default().fg(color).add_modifier(if stale {
-            Modifier::DIM
-        } else {
-            Modifier::empty()
-        }),
-    }
-}
-
-fn status_priority(status: crate::api::schema::AgentStatus) -> u8 {
-    use crate::api::schema::AgentStatus;
-    let state = match status {
-        AgentStatus::Blocked => crate::detect::AgentState::Blocked,
-        AgentStatus::Working => crate::detect::AgentState::Working,
-        AgentStatus::Idle => crate::detect::AgentState::Idle,
-    };
-    state.attention_rank()
-}
-
-fn status_text(status: crate::api::schema::AgentStatus) -> &'static str {
-    use crate::api::schema::AgentStatus;
-    match status {
-        AgentStatus::Working => "working",
-        AgentStatus::Blocked => "blocked",
-        AgentStatus::Idle => "idle",
-    }
-}
-
-fn panel_contrast_fg(palette: &Palette) -> ratatui::style::Color {
-    match palette.panel_bg {
-        ratatui::style::Color::Reset => palette.surface_dim,
-        color => color,
-    }
-}
-
-fn blit_pane_surface(target: &mut FrameData, source: &FrameData, area: Rect) {
-    let copy_width = source.width.min(area.width);
-    let copy_height = source.height.min(area.height);
-    let hyperlink_base = u32::try_from(target.hyperlinks.len()).unwrap_or(u32::MAX);
-    target.hyperlinks.extend(source.hyperlinks.iter().cloned());
-
-    for row in 0..copy_height {
-        for col in 0..copy_width {
-            let source_index = row as usize * source.width as usize + col as usize;
-            let target_x = area.x + col;
-            let target_y = area.y + row;
-            let target_index = target_y as usize * target.width as usize + target_x as usize;
-            let (Some(source_cell), Some(target_cell)) = (
-                source.cells.get(source_index),
-                target.cells.get_mut(target_index),
-            ) else {
-                continue;
-            };
-            *target_cell = source_cell.clone();
-            target_cell.hyperlink = source_cell.hyperlink.and_then(|index| {
-                ((index as usize) < source.hyperlinks.len()).then_some(hyperlink_base + index)
-            });
-        }
-    }
-
-    target.cursor = source.cursor.as_ref().and_then(|cursor| {
-        (cursor.x < copy_width && cursor.y < copy_height).then(|| crate::protocol::CursorState {
-            x: area.x + cursor.x,
-            y: area.y + cursor.y,
-            visible: cursor.visible,
-            shape: cursor.shape,
-        })
-    });
-}
+#[path = "shell/presentation/blit.rs"]
+mod blit;
+use blit::*;
 
 #[cfg(test)]
 mod tests;

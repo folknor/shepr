@@ -5,27 +5,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{SessionHistorySnapshot, SessionSnapshot};
 
-/// Whether this writer may touch its data directory's session files.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ownership {
-    /// No write attempted yet, or the last claim failed for a reason other
-    /// than another owner (the lock file was unusable); claim on next write.
-    Unclaimed,
-    /// This process holds the data directory's lock.
-    Owned,
-    /// Another server held the lock when this one first tried to write. The
-    /// session files are that server's, and this one never loaded them, so it
-    /// stays out for its whole life rather than overwrite them later.
-    Refused,
-    /// The final shutdown save is done and the lock is released.
-    Retired,
-}
-
 /// Shared by autosave, pane-exit checkpoints, and shutdown.
 pub(crate) struct SessionWriter {
     path: PathBuf,
     protect_unloaded: bool,
-    ownership: Ownership,
+    lease: Option<super::lock::DataDirLease>,
     /// Digest of the history JSON this writer last put on disk. History is
     /// the bulk of a save (full scrollback per pane) and is rewritten and
     /// fsynced on every save otherwise, even when no pane printed anything.
@@ -33,62 +17,26 @@ pub(crate) struct SessionWriter {
 }
 
 impl SessionWriter {
-    pub(crate) fn new(data_dir: &Path, protect_unloaded: bool) -> Self {
-        Self::at(super::io::session_path(data_dir), protect_unloaded)
-    }
-
-    fn at(path: PathBuf, protect_unloaded: bool) -> Self {
+    pub(crate) fn new(lease: super::lock::DataDirLease, protect_unloaded: bool) -> Self {
+        let path = super::io::session_path(lease.directory());
         Self {
             path,
             protect_unloaded,
-            ownership: Ownership::Unclaimed,
+            lease: Some(lease),
             written_history: None,
         }
     }
 
-    fn directory(&self) -> &Path {
-        super::io::containing_directory(&self.path)
+    fn may_write(&self) -> bool {
+        self.lease.is_some()
     }
 
-    /// Claims the data directory before the first write; see `lock.rs`.
-    fn may_write(&mut self) -> bool {
-        match self.ownership {
-            Ownership::Owned => true,
-            Ownership::Refused | Ownership::Retired => false,
-            Ownership::Unclaimed => match super::lock::claim(self.directory()) {
-                Ok(()) => {
-                    self.ownership = Ownership::Owned;
-                    true
-                }
-                Err(err) if super::lock::is_owned_elsewhere(&err) => {
-                    tracing::error!(
-                        event = "persist.lock", subsystem = "persist", outcome = "owned_elsewhere",
-                        path = %self.path.display(), err = %err,
-                        "another server owns this session's files; this server will not save them"
-                    );
-                    self.ownership = Ownership::Refused;
-                    false
-                }
-                Err(err) => {
-                    tracing::error!(
-                        event = "persist.lock", subsystem = "persist", outcome = "error",
-                        path = %self.path.display(), err = %err,
-                        "could not lock the session directory; session files were not written"
-                    );
-                    false
-                }
-            },
-        }
-    }
-
-    /// Ends this writer's ownership after the final shutdown save, releasing
-    /// the data directory for the next server before this process finishes
-    /// tearing down. Later saves and clears are ignored.
+    /// Release ownership after the final shutdown save. Later saves and
+    /// clears are ignored.
     pub(crate) fn retire(&mut self) {
-        // Also drops a claim `load` took for restore; a no-op when this
-        // process never held one.
-        super::lock::release(self.directory());
-        self.ownership = Ownership::Retired;
+        if let Some(mut lease) = self.lease.take() {
+            lease.release();
+        }
     }
 
     fn preserve_unloaded(&mut self) -> io::Result<()> {
@@ -388,7 +336,10 @@ mod tests {
 
     fn writer(protect_unloaded: bool) -> SessionWriter {
         let directory = crate::test_support::ScratchDir::new("session-recovery").keep_until_exit();
-        SessionWriter::at(directory.join("session.json"), protect_unloaded)
+        SessionWriter::new(
+            super::super::lock::DataDirLease::acquire(&directory).expect("lease"),
+            protect_unloaded,
+        )
     }
 
     fn snapshot() -> SessionSnapshot {
@@ -446,7 +397,13 @@ mod tests {
             let mut shrinking = snapshot();
             shrinking.workspaces[0].custom_name = Some(format!("remaining pane {i}"));
             writer.save(&shrinking, None);
-            writer = SessionWriter::at(writer.path.clone(), false);
+            let path = writer.path.clone();
+            drop(writer);
+            writer = SessionWriter::new(
+                super::super::lock::DataDirLease::acquire(path.parent().expect("directory"))
+                    .expect("lease"),
+                false,
+            );
         }
         writer.clear();
         assert!(
@@ -534,7 +491,13 @@ mod tests {
         changed.workspaces[0].custom_name = Some("after clock rollback".into());
         writer.save(&changed, None);
         assert_eq!(snapshots(&writer).len(), 2);
-        writer = SessionWriter::at(writer.path.clone(), false);
+        let path = writer.path.clone();
+        drop(writer);
+        writer = SessionWriter::new(
+            super::super::lock::DataDirLease::acquire(path.parent().expect("directory"))
+                .expect("lease"),
+            false,
+        );
         changed.workspaces[0].custom_name = Some("after restart".into());
         writer.save(&changed, None);
         assert_eq!(
@@ -677,7 +640,13 @@ mod tests {
         assert!(history_path.exists(), "history pairs with the new layout");
 
         // A save that never reached the target changes nothing else.
-        let mut failed = SessionWriter::at(writer.path.clone(), true);
+        let path = writer.path.clone();
+        drop(writer);
+        let mut failed = SessionWriter::new(
+            super::super::lock::DataDirLease::acquire(path.parent().expect("directory"))
+                .expect("lease"),
+            true,
+        );
         std::fs::remove_file(&history_path).expect("test precondition");
         failed.finish_save(
             Err(io::Error::other("write failed")),
@@ -686,60 +655,31 @@ mod tests {
         );
         assert!(failed.protect_unloaded);
         assert!(!history_path.exists());
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+        std::fs::remove_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
-    }
-
-    /// Holds `writer`'s data directory the way another server process would:
-    /// through its own open file description.
-    fn foreign_lock(writer: &SessionWriter) -> File {
-        let file = File::options()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(
-                writer
-                    .path
-                    .with_file_name(super::super::lock::LOCK_FILE_NAME),
-            )
-            .expect("test precondition");
-        file.try_lock().expect("test precondition");
-        file
     }
 
     #[test]
-    fn a_directory_owned_by_another_server_is_never_written() {
-        let mut writer = writer(true);
-        std::fs::write(&writer.path, b"other server's layout").expect("test precondition");
-        let other = foreign_lock(&writer);
-
-        writer.save(&snapshot(), None);
-        writer.clear();
-        assert_eq!(writer.ownership, Ownership::Refused);
-        assert_eq!(
-            std::fs::read(&writer.path).expect("test precondition"),
-            b"other server's layout"
+    fn writer_requires_an_acquired_lease() {
+        let scratch = crate::test_support::ScratchDir::new("writer-lease");
+        let directory = scratch.join("data");
+        let _writer = SessionWriter::new(
+            super::super::lock::DataDirLease::acquire(&directory).expect("lease"),
+            false,
         );
-
-        // The other server going away does not hand its files to this one,
-        // which never loaded them.
-        drop(other);
-        writer.save(&snapshot(), None);
         assert_eq!(
-            std::fs::read(&writer.path).expect("test precondition"),
-            b"other server's layout"
+            super::super::lock::DataDirLease::acquire(&directory)
+                .err()
+                .map(|err| err.kind()),
+            Some(io::ErrorKind::ResourceBusy)
         );
-        assert!(backups(&writer).is_empty());
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
     }
 
     #[test]
     fn retiring_releases_the_directory_and_ignores_later_saves() {
         let mut writer = writer(false);
         writer.save(&snapshot(), None);
-        assert_eq!(writer.ownership, Ownership::Owned);
+        assert!(writer.may_write());
         let lock = File::open(
             writer
                 .path

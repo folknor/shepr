@@ -230,7 +230,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
             ServerMessage::ClientShellEndpointResponseChunk {
                 request_id, data, ..
             } if request_id == "reactivate-surface" => break data,
-            ServerMessage::EndpointControl { .. }
+            ServerMessage::EndpointSnapshot(_)
             | ServerMessage::ClientShellEndpointResponseChunk { .. } => continue,
             other => panic!("unexpected surface reactivation message: {other:?}"),
         }
@@ -623,7 +623,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             ServerMessage::ClientShellEndpointResponseChunk {
                 request_id, data, ..
             } if request_id == source_release_request_id => break data,
-            ServerMessage::EndpointControl { .. }
+            ServerMessage::EndpointSnapshot(_)
             | ServerMessage::MouseCapture { .. }
             | ServerMessage::ClientShellKeyboardReportAll { .. }
             | ServerMessage::WindowTitle { .. }
@@ -740,11 +740,8 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let sync_snapshot = loop {
         let message =
             read_server_message(target_control.recv().expect("presentation sync snapshot"));
-        if let ServerMessage::EndpointControl { kind, data } = message
-            && kind == crate::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND
-        {
-            break serde_json::from_str::<crate::protocol::ClientShellSnapshot>(&data)
-                .expect("test precondition");
+        if let ServerMessage::EndpointSnapshot(snapshot) = message {
+            break *snapshot;
         }
     };
     let sync_progress = activation.receive_snapshot(&target_id, 7, &sync_snapshot);
@@ -771,11 +768,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         .expect("test precondition")
         .iter()
         .find_map(|message| match message {
-            crate::protocol::ClientMessage::EndpointControl { kind, data }
-                if kind == crate::protocol::endpoint::PRESENTATION_EFFECTS_SYNC_KIND =>
-            {
-                Some(data.clone())
-            }
+            crate::protocol::ClientMessage::PresentationSync(data) => Some(data.clone()),
             _ => None,
         })
         .expect("client presentation effects fence");
@@ -791,9 +784,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
         match read_server_message(target_control.recv().expect("presentation effect or fence")) {
             ServerMessage::MouseCapture { .. } => replayed_mouse = true,
             ServerMessage::ClientShellKeyboardReportAll { .. } => replayed_keyboard = true,
-            ServerMessage::EndpointControl { kind, data }
-                if kind == crate::protocol::endpoint::PRESENTATION_EFFECTS_READY_KIND =>
-            {
+            ServerMessage::PresentationReady(data) => {
                 assert_eq!(data, effects_token);
                 assert_eq!(
                     activation.receive_presentation_effects_ready(&target_id, 7, &data),

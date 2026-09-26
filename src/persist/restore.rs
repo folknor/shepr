@@ -550,7 +550,7 @@ fn restore_tab(
             cols,
             &saved_pane.cwd,
             runtime_context.scrollback_limit_bytes,
-            crate::terminal_theme::TerminalTheme::default(),
+            crate::host_term::theme::TerminalTheme::default(),
             None,
             runtime_context.shell_config,
             &launch_env,

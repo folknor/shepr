@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Index;
 
+use crate::api::RenderDemand;
 use crate::protocol::{
     ClientKeyCode, ClientKeyKind, ClientMouseButton, ClientMouseKind, ClientPaneInputEvent,
     RenderEncoding,
@@ -25,9 +26,9 @@ pub(crate) struct ClientShellState {
     /// Whether this shell wants host mouse capture without pane demand.
     pub(crate) mouse_capture: bool,
     /// Last host terminal default colors reported by this shell.
-    pub(crate) host_terminal_theme: crate::terminal_theme::TerminalTheme,
+    pub(crate) host_terminal_theme: crate::host_term::theme::TerminalTheme,
     /// Last host light/dark appearance reported by this shell.
-    pub(crate) host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+    pub(crate) host_terminal_appearance: Option<crate::host_term::theme::HostAppearance>,
     /// Whether appearance came from an explicit host color-scheme report.
     pub(crate) host_terminal_appearance_explicit: bool,
     /// Last reported focus state for this shell's outer terminal.
@@ -60,17 +61,10 @@ impl ClientShellState {
 
         match update {
             crate::protocol::ClientHostThemeUpdate::DefaultColor { kind, color } => {
-                let kind = match kind {
-                    crate::protocol::ClientHostDefaultColorKind::Foreground => {
-                        crate::terminal_theme::DefaultColorKind::Foreground
-                    }
-                    crate::protocol::ClientHostDefaultColorKind::Background => {
-                        crate::terminal_theme::DefaultColorKind::Background
-                    }
-                };
+                let kind: crate::host_term::theme::DefaultColorKind = (*kind).into();
                 let color = (*color).into();
                 next_theme = next_theme.with_color(kind, color);
-                if matches!(kind, crate::terminal_theme::DefaultColorKind::Background)
+                if matches!(kind, crate::host_term::theme::DefaultColorKind::Background)
                     && !self.host_terminal_appearance_explicit
                 {
                     changed |= self.set_host_appearance(Some(color.inferred_appearance()), false);
@@ -82,14 +76,7 @@ impl ClientShellState {
                 }
             }
             crate::protocol::ClientHostThemeUpdate::Appearance(appearance) => {
-                let appearance = match appearance {
-                    crate::protocol::ClientHostAppearance::Dark => {
-                        crate::terminal_theme::HostAppearance::Dark
-                    }
-                    crate::protocol::ClientHostAppearance::Light => {
-                        crate::terminal_theme::HostAppearance::Light
-                    }
-                };
+                let appearance = (*appearance).into();
                 changed |= self.set_host_appearance(Some(appearance), true);
             }
         }
@@ -103,7 +90,7 @@ impl ClientShellState {
 
     fn set_host_appearance(
         &mut self,
-        appearance: Option<crate::terminal_theme::HostAppearance>,
+        appearance: Option<crate::host_term::theme::HostAppearance>,
         explicit: bool,
     ) -> bool {
         if self.host_terminal_appearance_explicit && !explicit {
@@ -151,7 +138,7 @@ pub(crate) enum RenderTargetMode {
 pub(crate) struct RenderTarget {
     pub(crate) client_id: u64,
     pub(crate) terminal_size: (u16, u16),
-    pub(crate) cell_size: crate::terminal_cell_size::HostCellSize,
+    pub(crate) cell_size: crate::host_term::cell_size::HostCellSize,
     pub(crate) is_foreground: bool,
     pub(crate) mode: RenderTargetMode,
 }
@@ -434,13 +421,6 @@ pub(crate) struct ClientShellHeldInput {
     pub(crate) release: ClientPaneInputEvent,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum DeferredRender {
-    #[default]
-    None,
-    Full,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ClientShellLocation {
     pub(crate) focused_workspace_id: Option<String>,
@@ -517,7 +497,7 @@ pub(crate) struct ClientConnection {
     /// The client's terminal size after clamping.
     pub(crate) terminal_size: (u16, u16),
     /// Pixel size of one client terminal cell.
-    pub(crate) cell_size: crate::terminal_cell_size::HostCellSize,
+    pub(crate) cell_size: crate::host_term::cell_size::HostCellSize,
     /// Monotonic activity stamp used to choose the fallback foreground client.
     pub(crate) last_activity: u64,
     /// Render baseline for the negotiated client encoding.
@@ -525,7 +505,7 @@ pub(crate) struct ClientConnection {
     /// Whether this frontend preserves exact SGR pixel reports.
     pub(crate) pixel_mouse: bool,
     /// Whether an ordinary render was skipped because the render channel was full.
-    pub(crate) render_pending: bool,
+    pub(crate) render_pending: RenderDemand,
     /// Whether the client has been told that its current frame is too large to
     /// send. Set on the first oversized frame, cleared once a frame goes out, so
     /// a client whose frames keep failing is warned once rather than per render.
@@ -549,7 +529,7 @@ impl ClientConnection {
     #[cfg(test)]
     pub(crate) fn new(
         terminal_size: (u16, u16),
-        cell_size: crate::terminal_cell_size::HostCellSize,
+        cell_size: crate::host_term::cell_size::HostCellSize,
         last_activity: u64,
         render_encoding: RenderEncoding,
         writer: Option<ClientWriter>,
@@ -567,7 +547,7 @@ impl ClientConnection {
     pub(crate) fn new_with_mode(
         mode: ClientConnectionMode,
         terminal_size: (u16, u16),
-        cell_size: crate::terminal_cell_size::HostCellSize,
+        cell_size: crate::host_term::cell_size::HostCellSize,
         last_activity: u64,
         render_encoding: RenderEncoding,
         writer: Option<ClientWriter>,
@@ -579,7 +559,7 @@ impl ClientConnection {
             last_activity,
             render_state: ClientRenderState::new(render_encoding),
             pixel_mouse: false,
-            render_pending: false,
+            render_pending: RenderDemand::None,
             oversized_frame_reported: false,
             host_mouse_capture_active: None,
             host_sgr_pixels_active: None,
@@ -747,23 +727,19 @@ impl ClientConnection {
             .is_some_and(|shell| shell.update_host_theme(update))
     }
 
-    pub(crate) fn deferred_render(&self) -> DeferredRender {
-        if self.render_pending {
-            DeferredRender::Full
-        } else {
-            DeferredRender::None
-        }
+    pub(crate) fn deferred_render(&self) -> RenderDemand {
+        self.render_pending
     }
 
     pub(crate) fn clear_deferred_render(&mut self) {
-        self.render_pending = false;
+        self.render_pending = RenderDemand::None;
     }
 
     pub(crate) fn defer_full_render(&mut self) {
-        self.render_pending = true;
+        self.render_pending.join(RenderDemand::Full);
     }
 
-    pub(crate) fn take_deferred_render(&mut self) -> DeferredRender {
+    pub(crate) fn take_deferred_render(&mut self) -> RenderDemand {
         let deferred = self.deferred_render();
         self.clear_deferred_render();
         deferred
@@ -841,7 +817,7 @@ mod tests {
     fn shell_client() -> ClientConnection {
         ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             crate::protocol::RenderEncoding::SemanticFrame,
             None,
@@ -854,7 +830,7 @@ mod tests {
             ClientConnection::new_with_mode(
                 mode,
                 (80, 24),
-                crate::terminal_cell_size::HostCellSize::default(),
+                crate::host_term::cell_size::HostCellSize::default(),
                 1,
                 crate::protocol::RenderEncoding::TerminalAnsi,
                 None,
@@ -880,7 +856,7 @@ mod tests {
         assert_eq!((first_id, second_id), (1, 2));
         let first = ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             registry.allocate_activity_stamp(),
             crate::protocol::RenderEncoding::SemanticFrame,
             None,
@@ -888,7 +864,7 @@ mod tests {
         let second = ClientConnection::new_with_mode(
             ClientConnectionMode::TerminalPending,
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             registry.allocate_activity_stamp(),
             crate::protocol::RenderEncoding::TerminalAnsi,
             None,

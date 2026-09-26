@@ -1,4 +1,5 @@
 use super::*;
+
 use bytes::Bytes;
 
 #[path = "pane_move.rs"]
@@ -8,18 +9,39 @@ mod surface_delta_tests;
 #[path = "surface_interest.rs"]
 mod surface_interest_tests;
 
+#[tokio::test]
+async fn client_listener_readiness_wakes_for_new_connection() {
+    let socket_path = crate::test_support::ScratchDir::new("listener-ready")
+        .keep_until_exit()
+        .join("client.sock");
+    let listener = bind_local_listener(&socket_path).expect("bind test listener");
+    listener
+        .set_nonblocking(ListenerNonblockingMode::Accept)
+        .expect("set listener nonblocking");
+    let listener_fd = match &listener {
+        LocalListener::UdSocket(socket) => socket.as_fd().as_raw_fd(),
+    };
+    let ready = tokio::io::unix::AsyncFd::new(ListenerFd(listener_fd)).expect("register listener");
+    let _client = crate::ipc::connect_local_stream(&socket_path).expect("connect client");
+    let readiness = tokio::time::timeout(Duration::from_millis(500), ready.readable())
+        .await
+        .expect("listener should become readable")
+        .expect("listener readiness failed");
+    drop(readiness);
+    assert!(listener.accept().is_ok());
+}
+
 fn client_shell_snapshot(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
 ) -> Box<protocol::ClientShellSnapshot> {
-    let ServerMessage::EndpointControl { kind, data } = read_server_message(
+    let ServerMessage::EndpointSnapshot(snapshot) = read_server_message(
         receiver
             .recv_timeout(Duration::from_secs(1))
             .expect("endpoint snapshot"),
     ) else {
-        panic!("expected endpoint snapshot control");
+        panic!("expected endpoint snapshot");
     };
-    assert_eq!(kind, protocol::endpoint::ENDPOINT_SNAPSHOT_KIND);
-    serde_json::from_str(&data).expect("test precondition")
+    snapshot
 }
 
 fn test_headless_server() -> HeadlessServer {
@@ -338,7 +360,7 @@ fn window_title_test_server() -> (HeadlessServer, std::sync::mpsc::Receiver<Vec<
         1,
         ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             Some(client_tx),
@@ -394,7 +416,7 @@ fn window_title_waits_for_a_foreground_client_to_exist() {
         1,
         ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             Some(client_tx),
@@ -428,7 +450,7 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
         2,
         ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             2,
             RenderEncoding::SemanticFrame,
             Some(client_tx),
@@ -612,7 +634,7 @@ fn a_newly_promoted_client_gets_the_window_title_again() {
         2,
         ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             2,
             RenderEncoding::SemanticFrame,
             Some(client_tx),
@@ -1013,17 +1035,17 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     let sources = std::collections::HashSet::from([pane_id]);
     assert!(server.render_retained_pane_surface_and_stream(&sources));
     match read_server_message(render_rx.recv().expect("pane surface patch")) {
-        ServerMessage::PaneSurfacePatch(patch) => {
+        ServerMessage::SurfaceUpdate(patch) => {
             assert_eq!(
                 patch.base_surface_revision,
                 initial_surface.surface_revision
             );
             assert_eq!(patch.surface_revision, initial_surface.surface_revision + 1);
-            assert_eq!(patch.panes.len(), 1);
-            assert!(!patch.rows.is_empty());
+            assert_eq!(patch.meta.as_ref().expect("metadata").panes.len(), 1);
+            assert!(!patch.spans.is_empty());
             assert!(
                 patch
-                    .rows
+                    .spans
                     .iter()
                     .flat_map(|row| &row.cells)
                     .any(|cell| cell.symbol == "P")
@@ -1057,11 +1079,12 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
         .test_process_pty_bytes(b"\x1b[?1003l\x1b[?1006l\x1b[?1016l");
     assert!(server.render_retained_pane_surface_and_stream(&sources));
     match read_server_message(render_rx.recv().expect("metadata-only pane surface patch")) {
-        ServerMessage::PaneSurfacePatch(patch) => {
-            assert!(patch.rows.is_empty(), "mouse modes only change metadata");
-            assert_eq!(patch.panes.len(), 1);
-            assert!(!patch.panes[0].mouse_reporting);
-            assert!(!patch.panes[0].sgr_pixel_mouse);
+        ServerMessage::SurfaceUpdate(patch) => {
+            assert!(patch.spans.is_empty(), "mouse modes only change metadata");
+            let panes = &patch.meta.as_ref().expect("metadata").panes;
+            assert_eq!(panes.len(), 1);
+            assert!(!panes[0].mouse_reporting);
+            assert!(!panes[0].sgr_pixel_mouse);
         }
         other => panic!("expected metadata-only pane surface patch, got {other:?}"),
     }
@@ -1201,6 +1224,7 @@ fn recv_pane_surface(
 ) -> crate::protocol::PaneSurfaceFrame {
     match receiver.recv(context) {
         ServerMessage::PaneSurface(surface) => surface,
+        ServerMessage::PaneSurfacePatch(_) => receiver.decoder.current_surface().expect("baseline"),
         other => panic!("{context}: expected pane surface, got {other:?}"),
     }
 }
@@ -1208,9 +1232,19 @@ fn recv_pane_surface(
 fn recv_pane_surface_patch(
     receiver: &mut PaneSurfaceReceiver,
     context: &str,
-) -> crate::protocol::PaneSurfacePatch {
-    match receiver.recv(context) {
-        ServerMessage::PaneSurfacePatch(patch) => patch,
+) -> crate::protocol::SurfaceUpdate {
+    let message = read_server_message(
+        receiver
+            .receiver
+            .recv()
+            .unwrap_or_else(|error| panic!("{context}: {error}")),
+    );
+    receiver
+        .decoder
+        .decode(message.clone())
+        .expect("valid surface update");
+    match message {
+        ServerMessage::SurfaceUpdate(patch) => patch,
         other => panic!("{context}: expected pane surface patch, got {other:?}"),
     }
 }
@@ -1368,9 +1402,12 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
         "writer must wait before announcing a new revision"
     );
     let patch = recv_pane_surface_patch(&mut render, "snapshot before waiting write");
-    assert_eq!(patch.panes[0].content_revision, revision);
+    assert_eq!(
+        patch.meta.as_ref().expect("metadata").panes[0].content_revision,
+        revision
+    );
     assert!(revision.is_multiple_of(2));
-    assert!(patch.panes[0].mouse_reporting);
+    assert!(patch.meta.as_ref().expect("metadata").panes[0].mouse_reporting);
     let surface = server.clients[&7]
         .render_state
         .last_pane_surface()
@@ -1380,8 +1417,11 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
 
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
     let next = recv_pane_surface_patch(&mut render, "waiting write remains dirty");
-    assert_eq!(next.panes[0].content_revision, revision + 2);
-    assert!(!next.panes[0].mouse_reporting);
+    assert_eq!(
+        next.meta.as_ref().expect("metadata").panes[0].content_revision,
+        revision + 2
+    );
+    assert!(!next.meta.as_ref().expect("metadata").panes[0].mouse_reporting);
     let surface = server.clients[&7]
         .render_state
         .last_pane_surface()
@@ -1450,22 +1490,22 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
         small_patch.base_surface_revision,
         small_initial.surface_revision
     );
-    assert!(large_patch.rows.iter().all(|row| {
+    assert!(large_patch.spans.iter().all(|row| {
         row.x
             .saturating_add(u16::try_from(row.cells.len()).unwrap_or(u16::MAX))
             <= large_initial.frame.width
             && row.y < large_initial.frame.height
     }));
-    assert!(small_patch.rows.iter().all(|row| {
+    assert!(small_patch.spans.iter().all(|row| {
         row.x
             .saturating_add(u16::try_from(row.cells.len()).unwrap_or(u16::MAX))
             <= small_initial.frame.width
             && row.y < small_initial.frame.height
     }));
-    assert_eq!(large_patch.rows, small_patch.rows);
+    assert_eq!(large_patch.spans, small_patch.spans);
     assert_ne!(
-        large_patch.panes[0].inner_rect,
-        small_patch.panes[0].inner_rect
+        large_patch.meta.as_ref().expect("metadata").panes[0].inner_rect,
+        small_patch.meta.as_ref().expect("metadata").panes[0].inner_rect
     );
     assert!(
         frame_text(
@@ -1577,7 +1617,7 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_tab() {
         .test_process_pty_bytes(b"\rFIRST_PATCH");
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([first_pane])));
     let first_patch = recv_pane_surface_patch(&mut first_render, "first patch");
-    assert_eq!(first_patch.panes.len(), 1);
+    assert_eq!(first_patch.meta.as_ref().expect("metadata").panes.len(), 1);
     assert!(second_render.try_recv().is_err());
 
     server
@@ -1586,7 +1626,7 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_tab() {
         .test_process_pty_bytes(b"\rSECOND_PATCH");
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([second_pane])));
     let second_patch = recv_pane_surface_patch(&mut second_render, "second patch");
-    assert_eq!(second_patch.panes.len(), 1);
+    assert_eq!(second_patch.meta.as_ref().expect("metadata").panes.len(), 1);
     assert!(first_render.try_recv().is_err());
 
     shutdown_test_runtimes(&mut server);
@@ -1659,7 +1699,7 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
     assert!(server.render_retained_pane_surface_and_stream(&sources));
     assert!(matches!(
         read_server_message(responsive_render.recv().expect("responsive first patch")),
-        ServerMessage::PaneSurfacePatch(_)
+        ServerMessage::SurfaceUpdate(_)
     ));
 
     let slow_baseline = server.clients[&8]
@@ -1671,9 +1711,9 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
     assert!(server.render_retained_pane_surface_and_stream(&sources));
     assert!(matches!(
         read_server_message(responsive_render.recv().expect("responsive second patch")),
-        ServerMessage::PaneSurfacePatch(_)
+        ServerMessage::SurfaceUpdate(_)
     ));
-    assert_eq!(server.clients[&8].deferred_render(), DeferredRender::Full);
+    assert_eq!(server.clients[&8].deferred_render(), RenderDemand::Full);
     assert_eq!(
         server.clients[&8].render_state.last_pane_surface(),
         Some(&slow_baseline),
@@ -1684,7 +1724,7 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
     assert!(server.render_retained_pane_surface_and_stream(&sources));
     assert!(matches!(
         read_server_message(responsive_render.recv().expect("responsive third patch")),
-        ServerMessage::PaneSurfacePatch(_)
+        ServerMessage::SurfaceUpdate(_)
     ));
 
     assert!(matches!(
@@ -1695,7 +1735,7 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
     server.render_and_stream();
     assert!(matches!(
         slow_render.recv("slow full recovery surface"),
-        ServerMessage::PaneSurface(_)
+        ServerMessage::PaneSurface(_) | ServerMessage::PaneSurfacePatch(_)
     ));
 
     shutdown_test_runtimes(&mut server);
@@ -1730,14 +1770,14 @@ async fn full_render_backpressure_does_not_disable_responsive_peer_patches() {
     let _ = responsive_render
         .recv()
         .expect("responsive full replacement");
-    assert_eq!(server.clients[&8].deferred_render(), DeferredRender::Full);
+    assert_eq!(server.clients[&8].deferred_render(), RenderDemand::Full);
     assert!(!server.app.full_redraw_pending);
 
     write_shared_test_pane(&mut server, pane_id, b"\rPATCH");
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
     assert!(matches!(
         read_server_message(responsive_render.recv().expect("responsive retained patch")),
-        ServerMessage::PaneSurfacePatch(_)
+        ServerMessage::SurfaceUpdate(_)
     ));
 
     let _ = slow_render.recv().expect("slow queued initial surface");
@@ -2632,7 +2672,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
         ClientConnection::new_with_mode(
             ClientConnectionMode::shell(),
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -2744,7 +2784,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
         11,
         ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -2812,7 +2852,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
         ClientConnection::new_with_mode(
             ClientConnectionMode::shell(),
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -2829,7 +2869,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
             )],
         });
 
-    assert_eq!(render_impact, RenderImpact::Full);
+    assert_eq!(render_impact, RenderDemand::Full);
     assert_eq!(
         input_rx.try_recv().expect("text must reach the PTY"),
         Bytes::from_static(b"x")
@@ -2852,7 +2892,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
                 "y".to_owned(),
             )],
         });
-    assert_eq!(render_impact, RenderImpact::None);
+    assert_eq!(render_impact, RenderDemand::None);
     assert_eq!(
         input_rx.try_recv().expect("second text must reach the PTY"),
         Bytes::from_static(b"y")
@@ -2874,7 +2914,7 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
         ClientConnection::new_with_mode(
             ClientConnectionMode::shell(),
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -2896,7 +2936,7 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
             }],
         });
 
-    assert_eq!(render_impact, RenderImpact::None);
+    assert_eq!(render_impact, RenderDemand::None);
     assert!(
         input_rx.try_recv().is_ok(),
         "motion must still reach the PTY"
@@ -2918,7 +2958,7 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
         ClientConnection::new_with_mode(
             ClientConnectionMode::shell(),
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -2938,7 +2978,7 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
             }],
         });
 
-    assert_eq!(render_impact, RenderImpact::Full);
+    assert_eq!(render_impact, RenderDemand::Full);
     assert_eq!(server.clients.foreground_client_id(), Some(11));
     assert!(
         input_rx.try_recv().is_ok(),
@@ -2962,7 +3002,7 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
         11,
         ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             Some(writer),
@@ -3049,7 +3089,7 @@ fn retained_test_server_with_control(
         1,
         ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             Some(client_tx),
@@ -3069,7 +3109,7 @@ fn client_shell_host_theme_follows_foreground_client() {
         1,
         ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -3079,7 +3119,7 @@ fn client_shell_host_theme_follows_foreground_client() {
         2,
         ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             2,
             RenderEncoding::SemanticFrame,
             None,
@@ -3126,7 +3166,7 @@ fn client_shell_host_theme_follows_foreground_client() {
     );
     assert_eq!(
         server.app.state.host_terminal_appearance,
-        Some(crate::terminal_theme::HostAppearance::Dark)
+        Some(crate::host_term::theme::HostAppearance::Dark)
     );
     assert!(server.app.state.host_terminal_appearance_explicit);
 
@@ -3157,7 +3197,7 @@ fn client_shell_host_theme_follows_foreground_client() {
     );
     assert_eq!(
         server.app.state.host_terminal_appearance,
-        Some(crate::terminal_theme::HostAppearance::Light)
+        Some(crate::host_term::theme::HostAppearance::Light)
     );
     assert!(!server.app.state.host_terminal_appearance_explicit);
 }
@@ -3179,7 +3219,7 @@ fn terminal_clients_store_known_cell_geometry_independently_of_pixel_mouse() {
     assert!(!server.clients[&7].pixel_mouse);
     assert_eq!(
         server.clients[&7].cell_size,
-        crate::terminal_cell_size::HostCellSize::default()
+        crate::host_term::cell_size::HostCellSize::default()
     );
 
     let (writer, _control_rx, _render_rx) = test_client_writer();
@@ -3195,7 +3235,7 @@ fn terminal_clients_store_known_cell_geometry_independently_of_pixel_mouse() {
     assert!(!server.clients[&8].pixel_mouse);
     assert_eq!(
         server.clients[&8].cell_size,
-        crate::terminal_cell_size::HostCellSize {
+        crate::host_term::cell_size::HostCellSize {
             width_px: 10,
             height_px: 20,
         }
@@ -3376,7 +3416,7 @@ fn terminal_attach_disconnect_restores_client_shell_pane_size() {
         1,
         ClientConnection::new(
             (120, 40),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -4835,7 +4875,7 @@ fn terminal_attach_resize_uses_known_cell_geometry_without_pixel_mouse() {
     with_terminal_session_test_server(|server, _other_terminal_id, terminal_id, _pane_id| {
         let mut client = ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             None,
@@ -4860,7 +4900,7 @@ fn terminal_attach_resize_uses_known_cell_geometry_without_pixel_mouse() {
         );
         assert_eq!(
             server.clients[&1].cell_size,
-            crate::terminal_cell_size::HostCellSize {
+            crate::host_term::cell_size::HostCellSize {
                 width_px: 8,
                 height_px: 16,
             }
@@ -4884,7 +4924,7 @@ fn terminal_attach_resize_uses_known_cell_geometry_without_pixel_mouse() {
         );
         assert_eq!(
             server.clients[&1].cell_size,
-            crate::terminal_cell_size::HostCellSize::default()
+            crate::host_term::cell_size::HostCellSize::default()
         );
         assert!(!server.clients[&1].pixel_mouse);
     });
@@ -4897,7 +4937,7 @@ fn pending_terminal_resize_does_not_take_shell_foreground_or_geometry() {
         1,
         ClientConnection::new(
             (100, 30),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             2,
             RenderEncoding::SemanticFrame,
             None,
@@ -4908,7 +4948,7 @@ fn pending_terminal_resize_does_not_take_shell_foreground_or_geometry() {
         ClientConnection::new_with_mode(
             ClientConnectionMode::TerminalPending,
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::TerminalAnsi,
             None,
@@ -4945,7 +4985,7 @@ async fn direct_terminal_clients_never_become_foreground_or_claim_tab_geometry()
             ClientConnection::new_with_mode(
                 mode,
                 (80, 24),
-                crate::terminal_cell_size::HostCellSize::default(),
+                crate::host_term::cell_size::HostCellSize::default(),
                 1,
                 RenderEncoding::TerminalAnsi,
                 None,
@@ -4969,7 +5009,7 @@ fn client_shell_streams_focused_pane_report_all_demand() {
             1,
             ClientConnection::new(
                 (80, 24),
-                crate::terminal_cell_size::HostCellSize::default(),
+                crate::host_term::cell_size::HostCellSize::default(),
                 1,
                 RenderEncoding::SemanticFrame,
                 Some(client_tx),
@@ -5008,7 +5048,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
             client_id,
             ClientConnection::new(
                 (80, 24),
-                crate::terminal_cell_size::HostCellSize::default(),
+                crate::host_term::cell_size::HostCellSize::default(),
                 client_id,
                 RenderEncoding::SemanticFrame,
                 None,
@@ -5079,7 +5119,7 @@ fn client_shell_mouse_capture_combines_local_preference_with_endpoint_demand() {
         1,
         ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             Some(writer),
@@ -5131,7 +5171,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
             1,
             ClientConnection::new(
                 (80, 24),
-                crate::terminal_cell_size::HostCellSize::default(),
+                crate::host_term::cell_size::HostCellSize::default(),
                 1,
                 RenderEncoding::SemanticFrame,
                 None,
@@ -5141,7 +5181,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
             2,
             ClientConnection::new(
                 (100, 30),
-                crate::terminal_cell_size::HostCellSize::default(),
+                crate::host_term::cell_size::HostCellSize::default(),
                 2,
                 RenderEncoding::SemanticFrame,
                 None,
@@ -5217,7 +5257,7 @@ fn direct_terminal_streams_child_keyboard_and_mouse_modes() {
             ClientConnection::new_with_mode(
                 ClientConnectionMode::terminal_attach(terminal_id.clone()),
                 (80, 24),
-                crate::terminal_cell_size::HostCellSize::default(),
+                crate::host_term::cell_size::HostCellSize::default(),
                 1,
                 RenderEncoding::TerminalAnsi,
                 Some(client_tx),
@@ -5366,7 +5406,7 @@ fn direct_terminal_mouse_uses_runtime_protocol_encoding() {
             ClientConnection::new_with_mode(
                 ClientConnectionMode::terminal_attach(terminal_id.clone()),
                 (80, 24),
-                crate::terminal_cell_size::HostCellSize::default(),
+                crate::host_term::cell_size::HostCellSize::default(),
                 1,
                 RenderEncoding::TerminalAnsi,
                 None,
@@ -5409,7 +5449,7 @@ fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
             ClientConnection::new_with_mode(
                 ClientConnectionMode::terminal_attach(terminal_id.clone()),
                 (80, 24),
-                crate::terminal_cell_size::HostCellSize {
+                crate::host_term::cell_size::HostCellSize {
                     width_px: 10,
                     height_px: 20,
                 },
@@ -5524,7 +5564,7 @@ fn clipboard_write_targets_foreground_client_only() {
         1,
         ClientConnection::new(
             (120, 40),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             Some(background_tx),
@@ -5534,7 +5574,7 @@ fn clipboard_write_targets_foreground_client_only() {
         2,
         ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             2,
             RenderEncoding::SemanticFrame,
             Some(foreground_tx),
@@ -5587,7 +5627,7 @@ fn clipboard_write_failed_foreground_send_removes_client_without_visual_change()
         1,
         ClientConnection::new(
             (80, 24),
-            crate::terminal_cell_size::HostCellSize::default(),
+            crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
             Some(foreground_tx),

@@ -537,7 +537,7 @@ impl HeadlessServer {
         let cell_size = if client.cell_size.is_known() {
             client.cell_size
         } else {
-            crate::terminal_cell_size::HostCellSize::default()
+            crate::host_term::cell_size::HostCellSize::default()
         };
         let area = Rect::new(0, 0, cols, rows);
         if self.app_client_count() == 1 {

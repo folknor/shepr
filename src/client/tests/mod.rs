@@ -156,16 +156,16 @@ fn write_host_terminal_theme_query_emits_osc_queries() {
     write_host_terminal_theme_query(&mut output).expect("test precondition");
     assert_eq!(
         output,
-        crate::terminal_theme::host_terminal_theme_query_sequence(
+        crate::host_term::theme::host_terminal_theme_query_sequence(
             crate::platform::should_query_host_terminal_palette(),
         )
         .as_bytes()
     );
     assert!(
         !output
-            .windows(crate::terminal_theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.len())
+            .windows(crate::host_term::theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.len())
             .any(|window| window
-                == crate::terminal_theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes())
+                == crate::host_term::theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes())
     );
 }
 
@@ -177,10 +177,10 @@ fn write_host_color_scheme_report_mode_emits_mode_sequences() {
 
     let mut expected = Vec::new();
     expected.extend_from_slice(
-        crate::terminal_theme::HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE.as_bytes(),
+        crate::host_term::theme::HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE.as_bytes(),
     );
     expected.extend_from_slice(
-        crate::terminal_theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
+        crate::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
     );
     assert_eq!(output, expected);
 }
@@ -268,7 +268,7 @@ fn terminal_restore_postlude_disables_color_scheme_reports_when_enabled() {
 
     let mut expected = Vec::new();
     expected.extend_from_slice(
-        crate::terminal_theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
+        crate::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
     );
     expected.extend_from_slice(b"\x1b[?25h\x1b[0 q");
     assert_eq!(output, expected);

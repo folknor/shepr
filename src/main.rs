@@ -12,9 +12,11 @@ const NESTED_SHEPR_MESSAGES: [&str; 6] = [
 ];
 
 mod agent_resume;
+mod agent_status;
 mod agents;
 mod api;
 mod app;
+mod blit;
 mod build_info;
 mod cli;
 mod client;
@@ -23,6 +25,7 @@ mod copy_mode;
 mod detect;
 mod events;
 mod ghostty;
+mod host_term;
 mod input;
 mod integration;
 mod ipc;
@@ -37,15 +40,12 @@ mod protocol;
 mod pty;
 mod raw_input;
 mod remote;
+#[path = "server/render_signal.rs"]
 mod render_signal;
 mod selection;
 mod server;
 mod session;
 mod terminal;
-mod terminal_cell_size;
-mod terminal_effects;
-mod terminal_modes;
-mod terminal_theme;
 #[cfg(test)]
 mod test_support;
 mod ui;

@@ -10,10 +10,7 @@ pub fn run_server(config: &config::ValidatedConfig, paths: &config::AppPaths) ->
     let startup_cwd = take_startup_cwd();
 
     let session_data_dir = crate::session::data_dir(paths);
-    if let Err(err) = crate::persist::lock::claim(&session_data_dir) {
-        eprintln!("error: cannot claim shepr session directory: {err}");
-        std::process::exit(1);
-    }
+    let lease = crate::persist::DataDirLease::acquire(&session_data_dir)?;
 
     crate::logging::init_file_logging(paths, crate::logging::SERVER_LOG_FILE);
 
@@ -44,8 +41,14 @@ pub fn run_server(config: &config::ValidatedConfig, paths: &config::AppPaths) ->
 
     let result = rt.block_on(async {
         // Create the App (with AppState, event channels, etc.).
-        let mut app =
-            app::App::with_paths(config, paths, app::AppPolicy::PRODUCTION, api_rx, event_hub);
+        let mut app = app::App::with_paths(
+            config,
+            paths,
+            lease,
+            app::AppPolicy::PRODUCTION,
+            api_rx,
+            event_hub,
+        );
         seed_startup_workspace_if_empty(&mut app, startup_cwd);
 
         // Create the headless server.

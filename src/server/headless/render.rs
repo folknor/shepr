@@ -230,8 +230,12 @@ impl HeadlessServer {
         }
     }
 
-    pub(super) fn has_pending_presentation_work(&self, needs_full_render: bool) -> bool {
-        needs_full_render || self.app.render_dirty.has_immediate_work()
+    pub(super) fn has_pending_presentation_work(
+        &self,
+        render_demand: crate::api::RenderDemand,
+    ) -> bool {
+        render_demand == crate::api::RenderDemand::Full
+            || self.app.render_dirty.has_immediate_work()
     }
 
     pub(super) fn sync_immediate_pty_sources(&self) {
@@ -373,7 +377,7 @@ impl HeadlessServer {
                     &self.app.state,
                     &self.app.terminal_runtimes,
                     area,
-                    crate::terminal_cell_size::HostCellSize::default(),
+                    crate::host_term::cell_size::HostCellSize::default(),
                 );
             }
             self.app.full_redraw_pending = false;
@@ -451,7 +455,7 @@ impl HeadlessServer {
                     if cell_size.is_known() {
                         cell_size
                     } else {
-                        crate::terminal_cell_size::HostCellSize::default()
+                        crate::host_term::cell_size::HostCellSize::default()
                     },
                 );
             }
@@ -491,7 +495,7 @@ impl HeadlessServer {
                 let render_cell_size = if cell_size.is_known() {
                     cell_size
                 } else {
-                    crate::terminal_cell_size::HostCellSize::default()
+                    crate::host_term::cell_size::HostCellSize::default()
                 };
                 let result = render_client_shell_pane_surface(
                     &mut self.app,
@@ -551,15 +555,7 @@ impl HeadlessServer {
                     };
                     shell.projection_revision = shell.projection_revision.saturating_add(1);
                     candidate.revision = shell.projection_revision;
-                    let snapshot_message =
-                        match crate::protocol::endpoint::snapshot_message(&candidate) {
-                            Ok(message) => message,
-                            Err(err) => {
-                                warn!(client_id, err = %err, "failed to encode endpoint snapshot");
-                                broken_clients.push(client_id);
-                                continue;
-                            }
-                        };
+                    let snapshot_message = crate::protocol::endpoint::snapshot_message(&candidate);
                     let snapshot_framed = match Self::frame_server_message(&snapshot_message) {
                         Ok(framed) => framed,
                         Err(err) => {

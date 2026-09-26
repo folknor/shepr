@@ -50,11 +50,7 @@ async fn surface_delta_reconstructs_metadata_text_and_hyperlinks() {
     server.render_and_stream();
     let (delta_bytes, delta_message) = receive_message(&render_rx);
     assert!(delta_bytes.len() < initial_bytes.len());
-    assert!(matches!(
-        &delta_message,
-        ServerMessage::EndpointControl { kind, .. }
-            if kind == protocol::surface_delta::MESSAGE_KIND
-    ));
+    assert!(matches!(&delta_message, ServerMessage::SurfaceUpdate(_)));
     let decoded = decode_surface_message(&mut decoder, delta_message);
     assert_eq!(
         &decoded,

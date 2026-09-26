@@ -34,7 +34,10 @@ impl PresentationGate {
     pub(crate) fn decide(&self, message: &ServerMessage) -> PresentationDecision {
         if matches!(
             message,
-            ServerMessage::EndpointControl { .. }
+            ServerMessage::EndpointWelcome(_)
+                | ServerMessage::EndpointSnapshot(_)
+                | ServerMessage::PresentationReady(_)
+                | ServerMessage::HealthPong(_)
                 | ServerMessage::ServerShutdown { .. }
                 | ServerMessage::Welcome { .. }
         ) {
@@ -131,10 +134,7 @@ mod tests {
     #[test]
     fn inactive_endpoint_control_applies_but_presentation_effects_drop() {
         assert_eq!(
-            gate(false, false, false, false).decide(&ServerMessage::EndpointControl {
-                kind: "snapshot".into(),
-                data: "{}".into(),
-            }),
+            gate(false, false, false, false).decide(&ServerMessage::HealthPong(String::new())),
             PresentationDecision::Apply
         );
         assert_eq!(

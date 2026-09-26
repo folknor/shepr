@@ -98,7 +98,7 @@ pub enum ColorScheme {
 }
 
 impl ColorScheme {
-    fn report(self) -> &'static [u8] {
+    pub const fn report(self) -> &'static [u8] {
         match self {
             Self::Dark => b"\x1b[?997;1n",
             Self::Light => b"\x1b[?997;2n",
@@ -186,11 +186,22 @@ pub struct RenderCursor {
     pub visual_style: CursorVisualStyle,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct RgbColor {
     pub r: u8,
     pub g: u8,
     pub b: u8,
+}
+
+impl RgbColor {
+    pub fn inferred_appearance(self) -> ColorScheme {
+        let luminance = u32::from(self.r) * 299 + u32::from(self.g) * 587 + u32::from(self.b) * 114;
+        if luminance >= 128_000 {
+            ColorScheme::Light
+        } else {
+            ColorScheme::Dark
+        }
+    }
 }
 
 impl From<Rgb> for RgbColor {
