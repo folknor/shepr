@@ -11,6 +11,6 @@
 4. Once all findings are resolved, the file gets deleted.
 ```
 
-## EP-020 - A hung SSH attempt can outlast the 30-second reconnect promise
+## EP-021 - Slow links may never finish full discovery within an attempt
 
-- Reconnect backoff is capped at 30 s, so `shepr machine reconnect`'s "retry within 30 seconds" holds, except that an SSH attempt already in flight finishes on its own schedule first; a hung ssh attempt can push past 30 s.
+- Saved-machine attempts are capped at 25 s (`ATTEMPT_BUDGET`). On a very slow link with no ControlMaster and no cached metadata, full discovery (three commands plus a status probe per candidate, each a cold connect) could exceed that every time and never connect. `shepr machine add` normally seeds the metadata cache, which avoids discovery.

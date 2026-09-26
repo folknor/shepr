@@ -78,8 +78,14 @@ impl SavedSshConnector {
     /// Starts a bridge and hands its stream to `establish`, which runs the endpoint
     /// handshake. The handshake is part of the attempt so that a failure there can
     /// still send the attempt back through discovery.
+    ///
+    /// Nothing SSH runs past `deadline`: discovery commands are cut short by it and no
+    /// step starts once it has passed (the caller holds `establish` to it too). Without
+    /// it, discovery and a remembered-executable retry could add up to minutes against
+    /// a host that hangs, and the next attempt waits for this one.
     pub(crate) fn connect<T>(
         &self,
+        deadline: std::time::Instant,
         mut establish: impl FnMut(SavedSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
         validate_profile_path_id(&self.profile_id)?;
@@ -117,12 +123,14 @@ impl SavedSshConnector {
         let ConnectorState {
             ssh, remote_shepr, ..
         } = &mut *state;
-        let Some(ssh) = ssh.as_ref() else {
+        let Some(ssh) = ssh.as_mut() else {
             return Err(io::Error::other("saved SSH transport is unavailable"));
         };
+        ssh.set_attempt_deadline(Some(deadline));
+        let ssh = &*ssh;
 
         if let Some(known) = remote_shepr.clone() {
-            match self.attempt(ssh, &known, &mut establish) {
+            match self.attempt(ssh, &known, deadline, &mut establish) {
                 Ok(connected) => return Ok(connected),
                 Err(error) if super::attach::is_ssh_link_failure(&error) => return Err(error),
                 Err(error) => {
@@ -137,7 +145,7 @@ impl SavedSshConnector {
         }
 
         let discovered = find_installed_remote_shepr(ssh)?;
-        let connected = self.attempt(ssh, &discovered, &mut establish)?;
+        let connected = self.attempt(ssh, &discovered, deadline, &mut establish)?;
         if let Some(metadata) = discovered.machine_metadata() {
             metadata_cache.store(&metadata);
         }
@@ -149,8 +157,12 @@ impl SavedSshConnector {
         &self,
         ssh: &RemoteSsh,
         remote_shepr: &RemoteShepr,
+        deadline: std::time::Instant,
         establish: &mut impl FnMut(SavedSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
+        if std::time::Instant::now() >= deadline {
+            return Err(super::attach::attempt_deadline_passed());
+        }
         let path = saved_bridge_path(&self.profile_id);
         let bridge = SshStdioBridge::start(
             self.target.clone(),
@@ -328,7 +340,10 @@ mod tests {
         ] {
             let connector = SavedSshConnector::new(profile_id, "build", session, settings);
             let error = connector
-                .connect(|_| -> io::Result<()> { panic!("no attempt may start") })
+                .connect(
+                    std::time::Instant::now() + std::time::Duration::from_secs(30),
+                    |_| -> io::Result<()> { panic!("no attempt may start") },
+                )
                 .expect_err("test precondition");
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         }

@@ -26,6 +26,10 @@ use super::ClientLoopEvent;
 /// This runs on a dedicated thread because stdin reading is blocking.
 /// The main loop receives the raw bytes and forwards them as
 /// `ClientMessage::Input` to the server.
+///
+/// These bytes are keystrokes and paste contents (passwords included). Neither this loop
+/// nor the client loop that consumes them logs them; keep it that way, and log sizes or
+/// errors only (the oversized-paste warning in `attach::forward_input` logs the length).
 pub fn stdin_reader_loop(
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,

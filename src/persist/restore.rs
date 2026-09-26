@@ -406,6 +406,14 @@ fn restored_terminal(
                 // released instead of sticking to a plain shell.
                 terminal.restore_managed_agent_for_resume(name, agent);
             }
+            // Seeded so the sidebar shows the agent while its resume waits to
+            // launch. The seed does not outlive a failed resume: once the
+            // shell runs, the pane's detector starts from "no agent, Idle"
+            // and its first screen read publishes a no-agent `Unknown`
+            // update (a differing state always publishes), which replaces
+            // the seed within a tick unless the agent's process was found
+            // first. A resume that can never launch leaves no detector, so
+            // abandoning it withdraws the seed (`abandon_agent_resume`).
             if let Some(agent) = resumed_agent {
                 let _ = terminal.set_detected_state_with_screen_signals_at(
                     Some(agent),
@@ -653,6 +661,9 @@ fn pane_restore_startup<'a>(
             .insert(plan.dedupe_key.clone())
     });
     let restore_plan = if duplicate_agent_session {
+        // The duplicate is accidental saved state. Nothing resumes in this
+        // pane; it starts as a plain shell, so dropping its old agent screen
+        // is acceptable and avoids showing a conversation it cannot own.
         None
     } else {
         restore_plan
@@ -967,7 +978,14 @@ mod tests {
         assert_eq!(tab.panes.len(), 1);
         assert_eq!(terminals.len(), 1);
         let mut runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
-        let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+        let captured = crate::persist::capture(
+            &workspaces,
+            &terminals,
+            &runtimes,
+            Some(0),
+            0,
+            Default::default(),
+        );
         let panes = &captured.workspaces[0].tabs[0].panes;
         assert_eq!(panes.len(), 1);
         assert!(panes.values().all(|pane| pane.cwd == cwd));
@@ -1036,7 +1054,14 @@ mod tests {
             let runtimeless = resume || missing_cwd || missing_shell;
             assert_eq!(runtimes.is_empty(), runtimeless, "{case}");
             let mut runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
-            let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+            let captured = crate::persist::capture(
+                &workspaces,
+                &terminals,
+                &runtimes,
+                Some(0),
+                0,
+                Default::default(),
+            );
             let pane = captured.workspaces[0].tabs[0]
                 .panes
                 .values()
@@ -1200,6 +1225,7 @@ mod tests {
     fn dropped_workspaces_and_tabs_do_not_shift_the_saved_selection() {
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
+            host_theme: Default::default(),
             workspaces: vec![
                 // No tab survives: the layout names a pane with no saved state.
                 workspace_snapshot(
@@ -1251,6 +1277,7 @@ mod tests {
     fn a_dropped_active_workspace_falls_back_to_its_neighbour() {
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
+            host_theme: Default::default(),
             workspaces: vec![
                 workspace_snapshot(
                     Some("w1"),
@@ -1304,6 +1331,7 @@ mod tests {
             tab.focused = Some(focused);
             let snapshot = SessionSnapshot {
                 version: super::super::snapshot::SNAPSHOT_VERSION,
+                host_theme: Default::default(),
                 workspaces: vec![workspace_snapshot(Some("w1"), "ws", vec![tab], 0)],
                 active: Some(0),
                 selected: 0,
@@ -1327,6 +1355,7 @@ mod tests {
         let tab = |id: u32| vec![tab_snapshot("t", LayoutSnapshot::Pane(id), &[id])];
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
+            host_theme: Default::default(),
             workspaces: vec![
                 workspace_snapshot(None, "unsaved id", tab(1), 0),
                 workspace_snapshot(Some(&taken), "owner", tab(2), 0),
@@ -1635,7 +1664,14 @@ mod tests {
                 &Arc::new(RenderSignal::new()),
             );
             let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
-            let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+            let captured = crate::persist::capture(
+                &workspaces,
+                &terminals,
+                &runtimes,
+                Some(0),
+                0,
+                Default::default(),
+            );
             assert_eq!(
                 captured.workspaces.len(),
                 2,
@@ -1685,6 +1721,7 @@ mod tests {
         let cwd = std::env::current_dir().expect("test precondition");
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
+            host_theme: Default::default(),
             workspaces: vec![WorkspaceSnapshot {
                 id: Some("workspace".into()),
                 custom_name: None,
@@ -1762,6 +1799,7 @@ mod tests {
         let cwd = std::env::current_dir().expect("test precondition");
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
+            host_theme: Default::default(),
             workspaces: vec![WorkspaceSnapshot {
                 id: Some("w1".into()),
                 custom_name: None,
@@ -1928,6 +1966,7 @@ mod tests {
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
+            host_theme: Default::default(),
             workspaces: vec![WorkspaceSnapshot {
                 id: Some("w1".into()),
                 custom_name: None,
@@ -2011,6 +2050,7 @@ mod tests {
         let cwd = std::env::current_dir().expect("test precondition");
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
+            host_theme: Default::default(),
             workspaces: vec![WorkspaceSnapshot {
                 id: Some("workspace".into()),
                 custom_name: None,
@@ -2256,6 +2296,7 @@ mod tests {
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
+            host_theme: Default::default(),
             workspaces: vec![WorkspaceSnapshot {
                 id: Some("workspace".into()),
                 custom_name: None,

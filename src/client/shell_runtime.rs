@@ -471,6 +471,14 @@ pub(super) fn present_handoff_unavailable(state: &mut ClientState, message: Stri
     }
 }
 
+/// The rollback reason when an endpoint a machine switch involves disconnects mid-switch.
+/// `notice` is the same predicate the active-endpoint path shows after the label ("connection
+/// was lost; reconnecting", "is no longer an enabled saved machine"), so both read as one
+/// sentence about the named machine.
+fn handoff_interrupted_notice(label: &str, notice: &str) -> String {
+    format!("machine switch interrupted: {label} {notice}")
+}
+
 pub(super) fn rollback_endpoint_activation(
     state: &mut ClientState,
     endpoints: &mut endpoint::EndpointRegistry,
@@ -508,10 +516,14 @@ pub(super) fn handle_endpoint_disconnect(
         .as_mut()
         .filter(|pending| pending.involves_endpoint(endpoint_id))
     {
+        let label = state
+            .shell
+            .as_ref()
+            .map_or("Endpoint", |shell| shell.endpoint_label(endpoint_id));
         let outcome = pending.endpoint_disconnected(
             endpoints,
             endpoint_id,
-            format!("endpoint connection was lost while activating {notice}"),
+            handoff_interrupted_notice(label, notice),
         );
         match outcome {
             endpoint::ActivationRollback::Pending => {}
@@ -949,6 +961,18 @@ mod tests {
             }
             other => panic!("expected a corrective resize, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_interrupted_machine_switch_names_the_machine_and_reads_as_one_sentence() {
+        assert_eq!(
+            handoff_interrupted_notice("buildbox", "connection was lost; reconnecting"),
+            "machine switch interrupted: buildbox connection was lost; reconnecting"
+        );
+        assert_eq!(
+            handoff_interrupted_notice("buildbox", "is no longer an enabled saved machine"),
+            "machine switch interrupted: buildbox is no longer an enabled saved machine"
+        );
     }
 
     struct NullTransport;

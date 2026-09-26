@@ -26,6 +26,34 @@ pub use metadata::{AgentMetadata, AgentMetadataReport, EffectivePresentation};
 /// source's sequence.
 const HOOK_SEQUENCE_REANCHOR_AFTER: Duration = Duration::from_secs(5);
 
+/// Whether a report carrying `seq` is older than the source's last accepted
+/// `last_seq` (accepted at `last_accepted_at`). The one ordering rule for
+/// every per-source report sequence (hook state and session reports,
+/// metadata reports): a non-increasing `seq` is a straggler unless it
+/// arrives [`HOOK_SEQUENCE_REANCHOR_AFTER`] or more after the last
+/// acceptance, when it is taken as a clock step and re-anchors the source.
+fn report_seq_superseded(
+    last_seq: u64,
+    last_accepted_at: Option<Instant>,
+    seq: u64,
+    now: Instant,
+) -> bool {
+    if seq > last_seq {
+        return false;
+    }
+    !last_accepted_at.is_some_and(|accepted_at| {
+        now.saturating_duration_since(accepted_at) >= HOOK_SEQUENCE_REANCHOR_AFTER
+    })
+}
+
+/// The last accepted sequence of one metadata report source, and when it was
+/// accepted (for [`report_seq_superseded`]'s re-anchoring).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MetadataReportSeq {
+    seq: u64,
+    accepted_at: Instant,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HookAuthority {
     pub source: String,
@@ -171,7 +199,7 @@ pub struct TerminalState {
     hook_report_accepted_at: HashMap<String, Instant>,
     suppressed_full_lifecycle_hook_reports: HashMap<String, SuppressedFullLifecycleHookReport>,
     stale_full_lifecycle_hook_sessions: HashMap<String, Vec<StaleFullLifecycleHookSession>>,
-    metadata_report_sequences: HashMap<String, u64>,
+    metadata_report_sequences: HashMap<String, MetadataReportSeq>,
     metadata_report_agents: HashMap<String, Agent>,
     metadata_token_sequence_sources: std::collections::HashSet<String>,
     pub state: AgentState,
@@ -289,6 +317,29 @@ impl TerminalState {
     ) -> Self {
         self.pending_agent_resume_plan = Some(plan);
         self
+    }
+
+    /// The deferred resume can never run (its directory is gone, its shell
+    /// will not start), so the pane stays without any process. Drops the
+    /// plan, records why, and withdraws the detection `restored_terminal`
+    /// seeded for the resumed agent: no runtime ever existed here, so that
+    /// detection is only the seed, and with no detector to ever report the
+    /// pane empty it would show an idle agent on a dead pane indefinitely.
+    /// The managed name and saved session stay, as for any unavailable
+    /// restored pane, so a later save writes them back.
+    pub fn abandon_agent_resume(&mut self, error: String, now: Instant) {
+        self.pending_agent_resume_plan = None;
+        self.restore_error = Some(error);
+        if self.detected_agent.is_some() {
+            let _ = self.set_detected_state_with_screen_signals_at(
+                None,
+                AgentState::Unknown,
+                false,
+                false,
+                now,
+            );
+        }
+        self.revision = self.revision.saturating_add(1);
     }
 
     #[cfg(test)]
@@ -1718,15 +1769,12 @@ impl TerminalState {
         let Some(last_seq) = self.hook_report_sequences.get(source) else {
             return false;
         };
-        if seq > *last_seq {
-            return false;
-        }
-        !self
-            .hook_report_accepted_at
-            .get(source)
-            .is_some_and(|accepted_at| {
-                now.saturating_duration_since(*accepted_at) >= HOOK_SEQUENCE_REANCHOR_AFTER
-            })
+        report_seq_superseded(
+            *last_seq,
+            self.hook_report_accepted_at.get(source).copied(),
+            seq,
+            now,
+        )
     }
 
     fn record_hook_seq(&mut self, source: String, seq: u64, now: Instant) {

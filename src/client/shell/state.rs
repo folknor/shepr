@@ -1042,6 +1042,8 @@ impl ClientShellState {
                 .any(|pane| pane.pane_id == copy_pane_id);
             let pane_focused = snapshot.focused_pane_id.as_deref() == Some(copy_pane_id.as_str());
             if !pane_exists {
+                // Queued copy-mode keys belonged to this removed pane. Replaying
+                // them as input into another pane would be dangerous.
                 self.copy_mode = None;
                 self.reset_copy_pipeline();
                 if self

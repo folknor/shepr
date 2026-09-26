@@ -204,6 +204,7 @@ fn run_client_with_mode(
                 endpoint_keybindings,
                 loop_config.mouse_capture_active,
                 true,
+                None,
             )
             .map_err(|error| io::Error::other(error.to_string()))?;
             if let Some((terminal_id, takeover)) = attach_request {
@@ -810,13 +811,16 @@ async fn run_client_loop(
                     write_stream.send(&msg);
                 }
                 // The host has already reflowed the old frame; redraw the chrome at the new
-                // size now rather than on the next input or surface.
+                // size now rather than on the next input or surface. The pane cells are still
+                // the retained surface (clipped), so this is chrome and passes a freeze left by
+                // an unavailable handoff; otherwise the wrongly sized frame would stay up until
+                // that freeze ended.
                 if let Some(frame) = state
                     .shell
                     .as_mut()
                     .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
                 {
-                    state.present_frame(frame);
+                    state.present_chrome(frame, pending_activation.is_some());
                 }
             }
             ClientLoopEvent::EndpointSupervisor(event) => match event {
@@ -1050,7 +1054,9 @@ async fn run_client_loop(
                             && let Some(frame) =
                                 shell.compose(state.reported_size.0, state.reported_size.1)
                         {
-                            state.present_frame(frame);
+                            // The error banner is chrome; it must show through an
+                            // unavailable-handoff freeze like machine statuses do.
+                            state.present_chrome(frame, pending_activation.is_some());
                         }
                     }
                     ServerMessage::ClientShellEndpointResponseChunk {

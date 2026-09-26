@@ -24,10 +24,3 @@ Surfaced in three scopes: persistence, terminal core, pane/terminal state.
 - Carried history (restored screens for runtime-less panes, and each live pane's last primary history for saves taken on the alternate screen) is owned per app as `HistoryCarry` (`src/persist/snapshot.rs`, `App.pane_history_carry`); an actor would own it.
 - `persist::restore` takes one size for every pane in the session; restored panes start at that size, not their own layout size, until the first resize.
 
-## PER-017 - Duplicate-session panes lose their saved screen on the first save
-
-- Panes skipped as duplicate agent sessions get a runtime with history replay turned off, so their saved screen is overwritten by the (empty) live history on the first save. Possibly intentional; undecided.
-
-## PER-020 - Agents resumed with no client start with an empty theme (decision)
-
-- With no client attached, pending resumes start 750 ms after startup at the headless size with an empty host theme (asserted by `headless_scheduled_tasks_start_pending_agent_resume_without_foreground_client`). Some agents pick colours once at startup and won't pick up the real theme when a client attaches. Deliberate today; worth deciding whether to wait for a client's theme.

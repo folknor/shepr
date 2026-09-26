@@ -30,10 +30,13 @@ pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<
         return bytes;
     }
 
-    // Text the client committed is sent as that text. This currently holds
-    // under REPORT_ALL_KEYS too, although that mode asks for text keys as
-    // CSI u; whether a committed key should be re-encoded there is open.
+    // Text the client committed is sent as that text, except under kitty
+    // REPORT_ALL_KEYS: that mode reports every key, text-producing ones
+    // included, as an escape code and sends no plain text at all. The child
+    // gets the text back only through REPORT_ASSOCIATED_TEXT, which the CSI u
+    // encoder below fills from the committed text.
     if key.kind != crossterm::event::KeyEventKind::Release
+        && !protocol.reports_all_keys()
         && let Some(text) = &key.generated_text
     {
         return text.as_bytes().to_vec();
@@ -56,6 +59,14 @@ pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<
         && let Some(bytes) = try_encode_csi_u(&key, flags)
     {
         return bytes;
+    }
+
+    // A committed key the CSI u encoder has no form for keeps its text rather
+    // than being dropped.
+    if key.kind != crossterm::event::KeyEventKind::Release
+        && let Some(text) = &key.generated_text
+    {
+        return text.as_bytes().to_vec();
     }
 
     if let Some(bytes) = encode_text_input(&key) {
@@ -274,10 +285,10 @@ fn try_encode_csi_u(key: &TerminalKey, flags: u16) -> Option<Vec<u8>> {
     if let Some(event) = event_suffix {
         write!(&mut sequence, ":{event}").ok()?;
     }
-    if flags & KITTY_FLAG_REPORT_ASSOCIATED_TEXT != 0
-        && let Some(text) = text_codepoint_for_key(key)
-    {
-        write!(&mut sequence, ";{text}").ok()?;
+    // Associated text depends on REPORT_ALL_KEYS; the spec says the flag is
+    // ignored without it.
+    if report_all_keys && flags & KITTY_FLAG_REPORT_ASSOCIATED_TEXT != 0 {
+        write_associated_text(&mut sequence, key).ok()?;
     }
     sequence.push('u');
 
@@ -488,6 +499,28 @@ pub(crate) fn encode_mouse_event(
 fn text_codepoint_for_key(key: &TerminalKey) -> Option<u32> {
     let ch = text_char_for_key(key)?;
     (!ch.is_control()).then_some(ch as u32)
+}
+
+/// The kitty associated-text field, `;cp[:cp...]`: the text the key
+/// produced, as codepoints, with control characters left out (the spec
+/// forbids them). Text the client committed wins over text inferred from the
+/// key. Releases carry no text; nothing is written when there is none.
+fn write_associated_text(sequence: &mut String, key: &TerminalKey) -> std::fmt::Result {
+    if key.kind == crossterm::event::KeyEventKind::Release {
+        return Ok(());
+    }
+    let Some(text) = &key.generated_text else {
+        if let Some(codepoint) = text_codepoint_for_key(key) {
+            write!(sequence, ";{codepoint}")?;
+        }
+        return Ok(());
+    };
+    let mut separator = ';';
+    for ch in text.chars().filter(|ch| !ch.is_control()) {
+        write!(sequence, "{separator}{}", u32::from(ch))?;
+        separator = ':';
+    }
+    Ok(())
 }
 
 /// Legacy terminal encoding (standard escape sequences).
@@ -797,6 +830,85 @@ mod tests {
                 "{protocol:?}"
             );
         }
+    }
+
+    #[test]
+    fn report_all_keys_encodes_committed_text_as_csi_u() {
+        let committed = |text: &str| {
+            parse_terminal_key_sequence(text)
+                .expect("test precondition")
+                .with_text_commit()
+        };
+        let lower = committed("a");
+        let upper = committed("A");
+        assert_eq!(lower.generated_text.as_deref(), Some("a"));
+        assert_eq!(upper.generated_text.as_deref(), Some("A"));
+
+        for (key, flags, expected) in [
+            (&lower, 8, b"\x1b[97;1u".as_slice()),
+            (&lower, 9, b"\x1b[97;1u".as_slice()),
+            (&lower, 24, b"\x1b[97;1;97u".as_slice()),
+            (&lower, 11, b"\x1b[97;1:1u".as_slice()),
+            (&upper, 24, b"\x1b[97;2;65u".as_slice()),
+            (&upper, 28, b"\x1b[97:65;2;65u".as_slice()),
+            (&upper, 31, b"\x1b[97:65;2:1;65u".as_slice()),
+        ] {
+            assert_eq!(
+                encode_terminal_key(key.clone(), KeyboardProtocol::Kitty { flags }),
+                expected,
+                "flags={flags} key={key:?}"
+            );
+        }
+
+        // Without REPORT_ALL_KEYS committed text stays plain text.
+        for flags in [1, 3, 7, 17, 23] {
+            assert_eq!(
+                encode_terminal_key(upper.clone(), KeyboardProtocol::Kitty { flags }),
+                b"A",
+                "flags={flags}"
+            );
+        }
+    }
+
+    #[test]
+    fn report_all_keys_encodes_committed_repeats_with_event_type() {
+        let key = TerminalKey::new(KeyCode::Char('j'), KeyModifiers::empty())
+            .with_text_commit()
+            .with_kind(crossterm::event::KeyEventKind::Repeat);
+        assert_eq!(key.generated_text.as_deref(), Some("j"));
+        assert_eq!(
+            encode_terminal_key(key, KeyboardProtocol::Kitty { flags: 27 }),
+            b"\x1b[106;1:2;106u"
+        );
+    }
+
+    #[test]
+    fn associated_text_carries_every_committed_codepoint() {
+        let key = TerminalKey::new(KeyCode::Char('e'), KeyModifiers::empty())
+            .with_generated_text(Some("e\u{301}".to_owned()));
+        assert_eq!(
+            encode_terminal_key(key, KeyboardProtocol::Kitty { flags: 24 }),
+            b"\x1b[101;1;101:769u"
+        );
+
+        // Control characters are forbidden in the field and are left out;
+        // text made only of them leaves no field at all.
+        let control_only = TerminalKey::new(KeyCode::Char('x'), KeyModifiers::empty())
+            .with_generated_text(Some("\u{7}".to_owned()));
+        assert_eq!(
+            encode_terminal_key(control_only, KeyboardProtocol::Kitty { flags: 24 }),
+            b"\x1b[120;1u"
+        );
+    }
+
+    #[test]
+    fn report_all_keys_keeps_text_of_a_committed_key_with_no_csi_u_form() {
+        let key = TerminalKey::new(KeyCode::Null, KeyModifiers::empty())
+            .with_generated_text(Some("x".to_owned()));
+        assert_eq!(
+            encode_terminal_key(key, KeyboardProtocol::Kitty { flags: 24 }),
+            b"x"
+        );
     }
 
     #[test]

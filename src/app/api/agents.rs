@@ -7,6 +7,7 @@ use crate::api::schema::{
     PaneReadResult, ResponseResult,
 };
 use crate::app::App;
+use crate::pty::actor::{QueuedSubmission, SubmissionCancelOutcome};
 
 use super::responses::{encode_error, encode_error_body, encode_success};
 
@@ -67,21 +68,20 @@ impl App {
         let crate::api::schema::Method::AgentPrompt(params) = request.method else {
             return false;
         };
-        // `agent.prompt --wait --timeout` sets this; a plain prompt has no bound.
+        // `agent.prompt --wait --timeout` sets this. A plain prompt has no
+        // caller deadline, so it waits until the PTY accepts the submission.
         let submission_deadline = params
             .wait
             .as_ref()
             .and_then(|wait| wait.submission_deadline);
         match self.queue_agent_prompt(request.id, &params) {
-            Ok((id, agent, completion)) => {
+            Ok((id, agent, queued)) => {
                 std::thread::spawn(move || {
-                    let response = match await_prompt_submission(&completion, submission_deadline) {
+                    let response = match await_prompt_submission(&queued, submission_deadline) {
                         Ok(()) => encode_success(id, ResponseResult::AgentPrompted { agent }),
-                        Err(PromptSubmissionError::TimedOut) => encode_error(
-                            id,
-                            "timeout",
-                            "timed out submitting the agent prompt; the pane is not reading input",
-                        ),
+                        Err(PromptSubmissionError::TimedOut(outcome)) => {
+                            encode_error(id, "timeout", prompt_timeout_message(outcome))
+                        }
                         Err(PromptSubmissionError::Failed(message)) => {
                             encode_error(id, "agent_prompt_failed", message)
                         }
@@ -104,7 +104,7 @@ impl App {
         (
             String,
             crate::api::schema::AgentInfo,
-            std::sync::mpsc::Receiver<std::io::Result<()>>,
+            crate::pty::actor::QueuedSubmission,
         ),
         String,
     > {
@@ -177,14 +177,14 @@ impl App {
         let Some(agent) = self.agent_info(resolved.ws_idx, resolved.pane_id) else {
             return Err(agent_not_found(id, &params.target));
         };
-        let completion = runtime
+        let queued = runtime
             .queue_user_input_submission(
                 Bytes::from(text),
                 Bytes::from(enter),
                 AGENT_PROMPT_SUBMIT_DELAY,
             )
             .map_err(|err| encode_error(id.clone(), "agent_prompt_failed", err.to_string()))?;
-        Ok((id, agent, completion))
+        Ok((id, agent, queued))
     }
 
     pub(super) fn handle_agent_read(
@@ -352,33 +352,60 @@ impl App {
 }
 
 enum PromptSubmissionError {
-    TimedOut,
+    /// The caller's deadline passed; carries how far the prompt had got when
+    /// it was withdrawn.
+    TimedOut(SubmissionCancelOutcome),
     Failed(String),
 }
 
 /// Wait for the PTY actor to finish writing a queued prompt. The actor never
 /// gives up on its own: an agent that stops reading stdin leaves the write
-/// pending forever, so a caller's timeout has to be enforced here. A prompt
-/// abandoned at the deadline stays queued in the actor and may still be typed
-/// later if the pane starts reading again.
+/// pending forever, so a caller's timeout has to be enforced here. At the
+/// deadline the submission is cancelled in the actor, so a prompt the caller
+/// was told timed out is not typed and submitted later when the pane starts
+/// reading again. Text already partly written is finished (cutting a paste in
+/// half would wedge the agent's input), but its Enter is never sent.
 fn await_prompt_submission(
-    completion: &std::sync::mpsc::Receiver<std::io::Result<()>>,
+    queued: &QueuedSubmission,
     deadline: Option<std::time::Instant>,
 ) -> Result<(), PromptSubmissionError> {
+    let closed = || PromptSubmissionError::Failed("pty actor closed".into());
     let received = match deadline {
-        Some(deadline) => completion
+        Some(deadline) => match queued
+            .completion
             .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
-            .map_err(|err| match err {
-                std::sync::mpsc::RecvTimeoutError::Timeout => PromptSubmissionError::TimedOut,
-                std::sync::mpsc::RecvTimeoutError::Disconnected => {
-                    PromptSubmissionError::Failed("pty actor closed".into())
+        {
+            Ok(received) => received,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(closed()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => match queued.cancel.cancel() {
+                // The actor finished it as the deadline passed; its reply is
+                // sent right after it marks the submission finished.
+                SubmissionCancelOutcome::Finished => {
+                    queued.completion.recv().map_err(|_| closed())?
                 }
-            })?,
-        None => completion
-            .recv()
-            .map_err(|_| PromptSubmissionError::Failed("pty actor closed".into()))?,
+                outcome => return Err(PromptSubmissionError::TimedOut(outcome)),
+            },
+        },
+        None => queued.completion.recv().map_err(|_| closed())?,
     };
     received.map_err(|err| PromptSubmissionError::Failed(err.to_string()))
+}
+
+fn prompt_timeout_message(outcome: SubmissionCancelOutcome) -> &'static str {
+    match outcome {
+        SubmissionCancelOutcome::Withdrawn | SubmissionCancelOutcome::Finished => {
+            "timed out submitting the agent prompt; the pane is not reading input, and the \
+             prompt was withdrawn without typing any of it"
+        }
+        SubmissionCancelOutcome::TextUnsubmitted => {
+            "timed out submitting the agent prompt; the pane is not reading input, and some \
+             of the prompt text was already typed into it, but it will not be submitted"
+        }
+        SubmissionCancelOutcome::AlreadySubmitting => {
+            "timed out submitting the agent prompt; the pane is not reading input, and the \
+             prompt was already being submitted, so it may still arrive"
+        }
+    }
 }
 
 fn agent_not_ready(id: String, target: &str) -> String {
@@ -604,26 +631,60 @@ mod tests {
 
     #[test]
     fn prompt_submission_wait_honours_the_callers_deadline() {
+        use crate::pty::actor::SubmissionCancel;
         // A sender that never replies stands in for a pane that stopped
-        // reading stdin.
+        // reading stdin; at the deadline the submission is withdrawn.
         let (_stalled_tx, stalled) = std::sync::mpsc::channel::<std::io::Result<()>>();
+        let stalled = QueuedSubmission {
+            completion: stalled,
+            cancel: SubmissionCancel::never_started(),
+        };
         let started = std::time::Instant::now();
         assert!(matches!(
             await_prompt_submission(&stalled, Some(started + Duration::from_millis(20))),
-            Err(PromptSubmissionError::TimedOut)
+            Err(PromptSubmissionError::TimedOut(
+                SubmissionCancelOutcome::Withdrawn
+            ))
         ));
         assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(
+            stalled.cancel.cancel(),
+            SubmissionCancelOutcome::Withdrawn,
+            "the timed-out prompt was cancelled"
+        );
 
         let (done_tx, done) = std::sync::mpsc::channel();
         done_tx.send(Ok(())).expect("test precondition");
+        let done = QueuedSubmission {
+            completion: done,
+            cancel: SubmissionCancel::never_started(),
+        };
         assert!(await_prompt_submission(&done, Some(started)).is_ok());
 
         let (closed_tx, closed) = std::sync::mpsc::channel::<std::io::Result<()>>();
         drop(closed_tx);
+        let closed = QueuedSubmission {
+            completion: closed,
+            cancel: SubmissionCancel::never_started(),
+        };
         assert!(matches!(
             await_prompt_submission(&closed, None),
             Err(PromptSubmissionError::Failed(_))
         ));
+
+        // A submission the actor finished just as the deadline passed
+        // reports its real result rather than a timeout.
+        let (late_tx, late) = std::sync::mpsc::channel();
+        let late = QueuedSubmission {
+            completion: late,
+            cancel: SubmissionCancel::untracked(),
+        };
+        let reply = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            late_tx.send(Ok(())).expect("test precondition");
+        });
+        assert!(await_prompt_submission(&late, Some(started)).is_ok());
+        reply.join().expect("test precondition");
     }
 
     #[tokio::test]

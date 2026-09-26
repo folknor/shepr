@@ -2,14 +2,10 @@ use crossterm::event::KeyboardEnhancementFlags;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
 
-/// Where a key came from. A Linux host terminal reports keys as VT bytes and
-/// never a physical key identity, so a key is identified by its code alone.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum KeySource {
-    Synthesized,
-    Vt { bytes: Vec<u8> },
-}
-
+/// A key as shepr understands it. A Linux host terminal reports keys as VT
+/// bytes and never a physical key identity, so a key is identified by these
+/// semantic fields alone; the bytes it was parsed from are not kept, and two
+/// keys that decode alike compare equal whatever bytes produced them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalKey {
     pub code: KeyCode,
@@ -18,7 +14,6 @@ pub struct TerminalKey {
     pub repeat_count: u16,
     pub shifted_codepoint: Option<u32>,
     pub generated_text: Option<String>,
-    source: KeySource,
 }
 
 impl TerminalKey {
@@ -30,7 +25,6 @@ impl TerminalKey {
             repeat_count: 1,
             shifted_codepoint: None,
             generated_text: None,
-            source: KeySource::Synthesized,
         }
     }
 
@@ -68,11 +62,6 @@ impl TerminalKey {
         } else {
             text
         };
-        self
-    }
-
-    pub(crate) fn with_vt_bytes(mut self, bytes: Vec<u8>) -> Self {
-        self.source = KeySource::Vt { bytes };
         self
     }
 

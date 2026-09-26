@@ -8,6 +8,13 @@ import net from "node:net";
 
 const SOURCE = "shepr:kilo";
 const AGENT = "kilo";
+// Seqs are microseconds since the epoch plus one per report, while the shell
+// and Python hooks send nanoseconds. The units never meet: shepr orders seqs
+// per source string, and nothing else reports under this source. Nanoseconds
+// are not an option here: they exceed 2^53, where a JS number stops being
+// exact, so `+= 1` would round away. The wall-clock seed puts a restarted
+// process above its predecessor's last seq; after a backwards clock step,
+// shepr accepts any seq from a source that has been silent for a few seconds.
 let reportSeq = Date.now() * 1000;
 let requestChain = Promise.resolve();
 
@@ -120,7 +127,11 @@ function reportSession(sessionID) {
     return Promise.resolve();
   }
   // Kilo's session events carry no start source, so a resumed session cannot
-  // be told apart from a new one here; "startup" is reported for both.
+  // be told apart from a new one here; "startup" is reported for both. The
+  // plugin API offers nothing better: `session.created`/`session.updated`
+  // carry only the session info, and `updated` also fires for new sessions.
+  // shepr treats Kilo's "startup" and "resume" alike anyway: both are
+  // recognized start sources, and neither lets Kilo replace a session.
   return request("pane.report_agent_session", {
     agent_session_id: sessionID,
     session_start_source: "startup",

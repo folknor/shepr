@@ -138,10 +138,10 @@ impl RawInputFramer {
             .into_iter()
             .filter_map(|chunk| {
                 if chunk.as_slice() == [ESC] {
-                    return Some(RawInputEvent::Key(
-                        TerminalKey::new(crossterm::event::KeyCode::Esc, KeyModifiers::empty())
-                            .with_vt_bytes(chunk),
-                    ));
+                    return Some(RawInputEvent::Key(TerminalKey::new(
+                        crossterm::event::KeyCode::Esc,
+                        KeyModifiers::empty(),
+                    )));
                 }
                 extract_one_event(&chunk).map(|(event, _consumed)| {
                     // Length and kind only: the bytes and the parsed key are
@@ -791,10 +791,7 @@ fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
         }
 
         if let Some(key) = parse_terminal_key_sequence(seq) {
-            return Some((
-                RawInputEvent::Key(key.with_vt_bytes(buffer[..seq_len].to_vec())),
-                seq_len,
-            ));
+            return Some((RawInputEvent::Key(key), seq_len));
         }
 
         tracing::debug!(sequence = ?seq, "dropping unsupported escape sequence");
@@ -803,9 +800,7 @@ fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
 
     let consumed = first_complete_utf8_char_len(buffer)?;
     let text = std::str::from_utf8(&buffer[..consumed]).ok()?;
-    let key = parse_terminal_key_sequence(text)?
-        .with_text_commit()
-        .with_vt_bytes(buffer[..consumed].to_vec());
+    let key = parse_terminal_key_sequence(text)?.with_text_commit();
     Some((RawInputEvent::Key(key), consumed))
 }
 
@@ -1363,6 +1358,35 @@ mod tests {
         assert_eq!(key.modifiers, KeyModifiers::SHIFT);
         assert_eq!(key.kind, KeyEventKind::Release);
         assert_eq!(key.shifted_codepoint, Some('L' as u32));
+    }
+
+    #[test]
+    fn parsed_keys_equal_their_synthesized_twins() {
+        // Keys are semantic: the bytes a key was parsed from are not part of
+        // its identity, so a parsed key equals one built from the same fields.
+        let (RawInputEvent::Key(text), _) = extract_one_event(b"a").expect("test precondition")
+        else {
+            panic!("expected key");
+        };
+        assert_eq!(
+            text,
+            TerminalKey::new(KeyCode::Char('a'), KeyModifiers::empty()).with_text_commit()
+        );
+
+        let (RawInputEvent::Key(csi), _) =
+            extract_one_event(b"\x1b[1;5A").expect("test precondition")
+        else {
+            panic!("expected key");
+        };
+        assert_eq!(csi, TerminalKey::new(KeyCode::Up, KeyModifiers::CONTROL));
+
+        let mut framer = RawInputFramer::default();
+        assert!(framer.push(b"\x1b").is_empty());
+        let events = framer.flush_timeout();
+        let [RawInputEvent::Key(esc)] = events.as_slice() else {
+            panic!("expected one key");
+        };
+        assert_eq!(esc, &TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()));
     }
 
     #[test]

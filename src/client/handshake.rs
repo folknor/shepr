@@ -88,6 +88,10 @@ fn preamble_error(error: protocol::preamble::PreambleError) -> ClientError {
 /// reported as a mismatch before either side decodes a codec frame. Direct
 /// terminal clients then send `TerminalHello`; client-owned shells send a JSON
 /// endpoint hello. Both still carry `PROTOCOL_VERSION`.
+///
+/// `deadline`, when given, caps the wait for the reply below the usual read timeout: an
+/// saved-machine endpoint supervisor bounds its whole connection attempt to 25 s.
+/// The usual 60 s remote read budget applies to `shepr --remote`.
 pub(super) fn do_handshake(
     stream: &mut LocalStream,
     cols: u16,
@@ -99,6 +103,7 @@ pub(super) fn do_handshake(
     endpoint_keybindings: bool,
     mouse_capture: bool,
     surface_active: bool,
+    deadline: Option<std::time::Instant>,
 ) -> Result<HandshakeResult, ClientError> {
     let exact_cell_size = exact_cell_size
         && cell_width_px <= protocol::MAX_CELL_SIZE_PX
@@ -157,8 +162,9 @@ pub(super) fn do_handshake(
     };
     // One deadline for the preamble and the whole Welcome frame together, not a
     // per-read idle timeout.
-    let mut reader =
-        crate::ipc::DeadlineReader::new(stream, std::time::Instant::now() + read_timeout);
+    let read_deadline = std::time::Instant::now() + read_timeout;
+    let read_deadline = deadline.map_or(read_deadline, |deadline| deadline.min(read_deadline));
+    let mut reader = crate::ipc::DeadlineReader::new(stream, read_deadline);
     protocol::preamble::read_preamble(&mut reader).map_err(preamble_error)?;
     let welcome = protocol::read_message::<_, ServerMessage>(&mut reader, MAX_FRAME_SIZE)?;
     set_handshake_recv_timeout(
@@ -287,6 +293,7 @@ mod tests {
             false,
             false,
             true,
+            None,
         )
         .expect_err("a shutdown notice is not a welcome");
         peer.join().expect("test precondition");
@@ -329,11 +336,47 @@ mod tests {
             false,
             false,
             true,
+            None,
         )
         .expect_err("the opening is not this build");
         peer.join().expect("test precondition");
         let _ = std::fs::remove_file(path);
         error
+    }
+
+    #[test]
+    fn an_attempt_deadline_caps_a_silent_peer_below_the_read_timeout() {
+        let (mut client, server, path) = socket_pair("deadline-silent-peer");
+        // A saved-machine handshake (endpoint shell, surface off) would otherwise wait the
+        // full remote read timeout for a peer that never answers.
+        let started = std::time::Instant::now();
+        let error = do_handshake(
+            &mut client,
+            80,
+            24,
+            8,
+            16,
+            false,
+            Some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
+            false,
+            false,
+            false,
+            Some(started + Duration::from_millis(200)),
+        )
+        .expect_err("a silent peer never welcomes");
+        let elapsed = started.elapsed();
+        drop(server);
+        let _ = std::fs::remove_file(path);
+        assert!(
+            elapsed < REMOTE_HANDSHAKE_READ_TIMEOUT / 4,
+            "deadline ignored: {elapsed:?}"
+        );
+        match error {
+            ClientError::ConnectionLost(error) => {
+                assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            }
+            other => panic!("expected a timeout, got {other}"),
+        }
     }
 
     #[test]

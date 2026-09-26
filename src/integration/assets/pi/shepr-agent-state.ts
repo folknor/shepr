@@ -60,6 +60,13 @@ type QueuedState = {
   seq: number;
 };
 
+// Seqs are microseconds since the epoch plus one per report, while the shell
+// and Python hooks send nanoseconds. The units never meet: shepr orders seqs
+// per source string, and nothing else reports under this source. Nanoseconds
+// are not an option here: they exceed 2^53, where a JS number stops being
+// exact, so `+= 1` would round away. The wall-clock seed puts a restarted
+// process above its predecessor's last seq; after a backwards clock step,
+// shepr accepts any seq from a source that has been silent for a few seconds.
 let reportSeq = Date.now() * 1000;
 let currentAgentSessionId: string | undefined;
 let currentAgentSessionPath: string | undefined;

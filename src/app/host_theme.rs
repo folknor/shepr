@@ -27,6 +27,7 @@ impl App {
             return false;
         }
         self.state.host_terminal_theme = theme;
+        self.schedule_session_save();
         for runtime in self.terminal_runtimes.values() {
             runtime.apply_host_terminal_theme(theme);
         }

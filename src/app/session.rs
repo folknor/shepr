@@ -49,6 +49,7 @@ impl App {
                 &self.terminal_runtimes,
                 self.state.active,
                 self.state.selected,
+                self.state.host_terminal_theme,
             );
             let history = self.persist_pane_history.then(|| {
                 crate::persist::capture_pending_history(

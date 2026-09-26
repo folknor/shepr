@@ -206,6 +206,13 @@ pub(crate) struct TerminalReadSnapshot {
 }
 
 pub(crate) struct GhosttyPaneTerminal {
+    /// Poisoned for good once anything panics while holding it. The readers
+    /// below then answer empty or default values rather than error: the PTY
+    /// actor checks `is_poisoned` on every loop (idle polls included, so at
+    /// least once a second) and ends the pane, which is reported dead and
+    /// removed, so those answers only cover that short window. Turning every
+    /// reader into a fallible one would push a `Result` through render,
+    /// detection and the API for a state that lasts under a second.
     pub core: Mutex<GhosttyPaneCore>,
 }
 
@@ -234,6 +241,12 @@ pub(crate) struct PaneTerminal {
 impl PaneTerminal {
     pub(crate) fn new(ghostty: GhosttyPaneTerminal) -> Self {
         Self { ghostty }
+    }
+
+    /// Whether a panic while holding the core lock has broken the core. A
+    /// single atomic load, taking no lock: the PTY actor asks on every loop.
+    pub(crate) fn core_poisoned(&self) -> bool {
+        self.ghostty.core.is_poisoned()
     }
 
     pub fn process_pty_bytes(
@@ -1673,8 +1686,9 @@ impl GhosttyPaneTerminal {
         _shell_pid: u32,
     ) -> ProcessBytesResult {
         let Ok(mut core) = self.core.lock() else {
-            // A poisoned core is reported by the reader's next read, which
-            // ends the pane; this timer has no loop to stop.
+            // A poisoned core is noticed by the PTY actor (its per-loop
+            // `core_poisoned` check, or its next read), which ends the pane;
+            // this timer has no loop to stop.
             return ProcessBytesResult {
                 core_poisoned: true,
                 ..ProcessBytesResult::default()
@@ -4724,13 +4738,30 @@ mod tests {
             pane.encode_terminal_key(shifted.clone(), crate::input::KeyboardProtocol::Legacy,),
             legacy_expected
         );
+        // Flags 15 (disambiguate + event types + alternate keys + report all
+        // keys) reports every key as CSI u but, without flag 16
+        // (REPORT_ASSOCIATED_TEXT), carries no committed text: the repeat
+        // still has to expand to three identical CSI u sequences rather than
+        // three literal slashes.
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
         terminal.write(b"\x1b[>15u");
         let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
-        assert_eq!(
-            pane.encode_terminal_key(shifted, crate::input::KeyboardProtocol::Kitty { flags: 15 },),
-            b"///"
+        let kitty_protocol = crate::input::KeyboardProtocol::Kitty { flags: 15 };
+        let pressed =
+            pane.encode_terminal_key_once(shifted.clone().with_repeat_count(1), kitty_protocol);
+        assert!(
+            !pressed.is_empty() && pressed != b"/",
+            "flags 15 without REPORT_ASSOCIATED_TEXT should encode as CSI u, not plain text"
         );
+        let repeated_key = shifted
+            .clone()
+            .with_repeat_count(1)
+            .with_kind(crossterm::event::KeyEventKind::Repeat);
+        let repeated = pane.encode_terminal_key_once(repeated_key, kitty_protocol);
+        let mut expected = pressed;
+        expected.extend_from_slice(&repeated);
+        expected.extend_from_slice(&repeated);
+        assert_eq!(pane.encode_terminal_key(shifted, kitty_protocol), expected);
     }
 
     #[test]
@@ -7249,6 +7280,7 @@ mod tests {
         ));
         let pane_id = PaneId::from_raw(1);
         assert!(!pane.process_pty_bytes(pane_id, 0, b"before").core_poisoned);
+        assert!(!pane.core_poisoned());
 
         // A render or API read panicking while it holds the core lock.
         let poisoner = std::sync::Arc::clone(&pane);
@@ -7259,6 +7291,8 @@ mod tests {
         .join();
         assert!(joined.is_err(), "test precondition");
 
+        // Visible without any output, for the actor's idle check.
+        assert!(pane.core_poisoned());
         assert!(pane.process_pty_bytes(pane_id, 0, b"after").core_poisoned);
     }
 }

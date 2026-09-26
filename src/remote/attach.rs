@@ -485,6 +485,10 @@ pub(super) struct RemoteSsh {
     session_name: String,
     managed_config: Option<ManagedSshConfig>,
     noninteractive: bool,
+    /// When set, no noninteractive command runs past it: each one gets the shorter of its
+    /// own timeout and the time left, and none starts once it has passed. A saved-machine
+    /// connection attempt sets it so discovery cannot outlast the attempt's budget.
+    attempt_deadline: Option<Instant>,
 }
 
 impl RemoteSsh {
@@ -504,6 +508,7 @@ impl RemoteSsh {
             session_name,
             managed_config,
             noninteractive: false,
+            attempt_deadline: None,
         }
     }
 
@@ -530,6 +535,23 @@ impl RemoteSsh {
     /// Whether this was built to use a managed ssh config but writing it failed.
     pub(super) fn missing_managed_config(&self, manage_ssh_config: bool) -> bool {
         manage_ssh_config && self.managed_config.is_none()
+    }
+
+    pub(super) fn set_attempt_deadline(&mut self, deadline: Option<Instant>) {
+        self.attempt_deadline = deadline;
+    }
+
+    /// The timeout for the next noninteractive command, or `TimedOut` when the attempt
+    /// deadline has already passed and no further command may start.
+    fn noninteractive_timeout(&self) -> io::Result<Duration> {
+        let Some(deadline) = self.attempt_deadline else {
+            return Ok(NONINTERACTIVE_SSH_COMMAND_TIMEOUT);
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(attempt_deadline_passed());
+        }
+        Ok(remaining.min(NONINTERACTIVE_SSH_COMMAND_TIMEOUT))
     }
 
     fn target(&self) -> &str {
@@ -561,6 +583,7 @@ impl RemoteSsh {
 
     fn sh_output(&self, script: &str) -> io::Result<Output> {
         let script = posix_remote_output_command(script);
+        let timeout = self.noninteractive_timeout()?;
         let mut child = self
             .command()
             .arg("/bin/sh -s")
@@ -584,7 +607,7 @@ impl RemoteSsh {
                 "ssh bootstrap stdin missing",
             ))
         };
-        let output = wait_with_output_timeout(child, NONINTERACTIVE_SSH_COMMAND_TIMEOUT)?;
+        let output = wait_with_output_timeout(child, timeout)?;
         write_result?;
         normalize_remote_output(output)
     }
@@ -597,7 +620,8 @@ impl RemoteSsh {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let output = if self.noninteractive {
-            wait_with_output_timeout(command.spawn()?, NONINTERACTIVE_SSH_COMMAND_TIMEOUT)
+            let timeout = self.noninteractive_timeout()?;
+            wait_with_output_timeout(command.spawn()?, timeout)
         } else {
             output_with_forwarded_stderr(command.spawn()?, None)
         }?;
@@ -1684,6 +1708,15 @@ impl std::fmt::Display for SshBridgeExit {
 
 impl std::error::Error for SshBridgeExit {}
 
+/// A connection attempt that ran out of its time budget. `TimedOut`, so it counts as a link
+/// failure (no rediscovery) and a transient one (a retry, not attention).
+pub(super) fn attempt_deadline_passed() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        "SSH connection attempt ran out of time",
+    )
+}
+
 /// OpenSSH exits with 255 when ssh itself fails (resolve, connect, host key,
 /// authentication, a dropped link); any other code came from the remote command.
 const SSH_OWN_FAILURE_EXIT_CODE: i32 = 255;
@@ -1795,6 +1828,9 @@ fn copy_reader_to_local_stream<R: io::Read>(
     }
 }
 
+/// The upload half of the SSH bridge: everything the client types or pastes passes through
+/// here on its way to the remote host. Like the download half above, it never logs the
+/// bytes it copies; bridge diagnostics carry errors and ssh's own stderr only.
 fn copy_local_stream_to_writer<W: io::Write>(
     mut stream: crate::ipc::LocalStream,
     writer: &mut W,
@@ -2336,6 +2372,7 @@ mod tests {
             session_name: crate::session::DEFAULT_SESSION_NAME.into(),
             managed_config: Some(managed_config),
             noninteractive: false,
+            attempt_deadline: None,
         };
 
         let command = ssh.command();
@@ -2540,6 +2577,7 @@ mod tests {
             session_name: crate::session::DEFAULT_SESSION_NAME.into(),
             managed_config: None,
             noninteractive: false,
+            attempt_deadline: None,
         };
 
         let command = ssh.command();
@@ -2549,6 +2587,37 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(args, vec!["-C", "-T", "example"]);
+    }
+
+    #[test]
+    fn an_attempt_deadline_shortens_and_then_refuses_noninteractive_commands() {
+        let mut ssh = RemoteSsh {
+            target: "example".to_string(),
+            session_name: crate::session::DEFAULT_SESSION_NAME.into(),
+            managed_config: None,
+            noninteractive: true,
+            attempt_deadline: None,
+        };
+        assert_eq!(
+            ssh.noninteractive_timeout().expect("no deadline"),
+            NONINTERACTIVE_SSH_COMMAND_TIMEOUT
+        );
+
+        ssh.set_attempt_deadline(Some(Instant::now() + Duration::from_secs(2)));
+        let timeout = ssh.noninteractive_timeout().expect("time is left");
+        assert!(timeout <= Duration::from_secs(2), "{timeout:?}");
+
+        ssh.set_attempt_deadline(Some(Instant::now()));
+        let error = ssh
+            .noninteractive_timeout()
+            .expect_err("no command may start past the deadline");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        // Treated as a dropped link: no rediscovery, and a retry rather than attention.
+        assert!(is_ssh_link_failure(&error));
+        assert!(!crate::remote::saved_ssh_failure_needs_attention(&error));
+        // The refusal happens before ssh is spawned.
+        let error = ssh.sh_output("true\n").expect_err("refused");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     }
 
     #[test]

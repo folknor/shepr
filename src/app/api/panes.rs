@@ -546,6 +546,8 @@ impl App {
         id: String,
         params: &PaneNeighborParams,
     ) -> String {
+        // Direction and edges use the tiled layout even when this tab is zoomed,
+        // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
@@ -579,6 +581,8 @@ impl App {
     }
 
     pub(super) fn handle_pane_edges(&mut self, id: String, params: &PaneEdgesParams) -> String {
+        // Direction and edges use the tiled layout even when this tab is zoomed,
+        // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
@@ -635,6 +639,8 @@ impl App {
         id: String,
         params: &PaneFocusDirectionParams,
     ) -> String {
+        // Direction and edges use the tiled layout even when this tab is zoomed,
+        // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, source_pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref())
         else {
             return encode_error(id, "pane_not_found", "pane not found");
@@ -687,6 +693,8 @@ impl App {
     }
 
     pub(super) fn handle_pane_resize(&mut self, id: String, params: &PaneResizeParams) -> String {
+        // Direction and edges use the tiled layout even when this tab is zoomed,
+        // matching TUI navigation. The layout snapshot signals zoom separately.
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
@@ -741,6 +749,8 @@ impl App {
     }
 
     pub(super) fn handle_pane_swap(&mut self, id: String, params: PaneSwapParams) -> String {
+        // Direction and edges use the tiled layout even when this tab is zoomed,
+        // matching TUI navigation. The layout snapshot signals zoom separately.
         let directional = params.direction.is_some();
         let explicit = params.source_pane_id.is_some() || params.target_pane_id.is_some();
         if directional == explicit {

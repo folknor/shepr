@@ -896,7 +896,7 @@ impl PaneRuntimeIo {
         text: Bytes,
         enter: Bytes,
         delay: std::time::Duration,
-    ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
+    ) -> std::io::Result<crate::pty::actor::QueuedSubmission> {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.queue_user_input_submission(text, enter, delay),
             #[cfg(test)]
@@ -913,7 +913,10 @@ impl PaneRuntimeIo {
                         });
                     let _ = reply_tx.send(result);
                 });
-                Ok(reply_rx)
+                Ok(crate::pty::actor::QueuedSubmission {
+                    completion: reply_rx,
+                    cancel: crate::pty::actor::SubmissionCancel::untracked(),
+                })
             }
         }
     }
@@ -1484,6 +1487,7 @@ impl PaneRuntime {
 
         let io = {
             let timer_writer = Arc::new(std::sync::OnceLock::<PtyIoActorHandle>::new());
+            let health_terminal = Arc::clone(&terminal);
             let terminal = Arc::clone(&terminal);
             let render_notify = Arc::clone(render_notify);
             let render_dirty = Arc::clone(render_dirty);
@@ -1620,8 +1624,8 @@ impl PaneRuntime {
             // A normal reader exit needs no report: the child watcher above
             // sends PaneDied once the child is reaped. A panic in the terminal
             // core is different, whether it hit this reader or another thread
-            // holding the core lock (the next read then finds the lock
-            // poisoned and reports the core broken). The PTY actor closes the
+            // holding the core lock (the actor's `core_broken` check, or the
+            // next read, then finds the lock poisoned). The PTY actor closes the
             // master, but a child that ignores SIGHUP keeps running and is
             // never reaped, and the poisoned core leaves the pane frozen.
             // Report the pane dead so the app removes it and tears down its
@@ -1651,6 +1655,10 @@ impl PaneRuntime {
                 master_fd: spawned.master_fd,
                 on_read,
                 on_reader_exit: Some(on_reader_exit),
+                // A render, detection or API read that panicked while holding
+                // the core lock breaks it for good; end the pane within the
+                // actor's idle poll even if the child never prints again.
+                core_broken: Some(Box::new(move || health_terminal.core_poisoned())),
             })?;
             let _ = timer_writer.set(actor.clone());
             PaneRuntimeIo::Actor(actor)
@@ -2399,7 +2407,7 @@ impl PaneRuntime {
         text: Bytes,
         enter: Bytes,
         delay: std::time::Duration,
-    ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
+    ) -> std::io::Result<crate::pty::actor::QueuedSubmission> {
         self.io.queue_user_input_submission(text, enter, delay)
     }
 

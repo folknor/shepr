@@ -23,10 +23,6 @@
 
 - Tests that change `PATH`, `HOME` or `XDG_*` each take their own module's lock (`server/autodetect.rs`, `api/server.rs`, `session.rs`, `client/tests/mod.rs`, `app/mod.rs`, `integration/env.rs`, `integration/mod.rs`, `remote/attach.rs`, `config.rs`). The locks don't exclude each other, so those tests can race. Needs one crate-wide lock, or no environment mutation in tests.
 
-## PLAT-015 - Keystroke logging in the client stdin loop and `remote/` is unaudited
+## PLAT-015 - Two places not yet audited for keystroke logging
 
-- Server input handling, `api/server.rs`, `logging.rs` and `client/shell/input.rs` were checked: none log typed text or paste contents (a comment on `PaneInputError` and a test guard it). The rest of the client (the stdin loop) and `src/remote/` were not audited.
-
-## PLAT-019 - `KeySource::Vt { bytes }` is dead data
-
-- After the Windows key path was removed, nothing reads `KeySource::Vt { bytes }` except the derived `PartialEq`/`Debug`. It is set in `raw_input.rs`; either dead data or it makes otherwise-equal keys compare unequal.
+- Server input handling, the client loop, `client/shell/input.rs`, `actions.rs`, `text_editor.rs` and `src/remote/` log no typed text or paste contents (comments mark the audited sites). Not yet read: `crate::platform::forward_remote_bridge_stdio`, which carries every remote keystroke on the host side, and the other `src/client/shell/*` files (search them for `tracing::`).

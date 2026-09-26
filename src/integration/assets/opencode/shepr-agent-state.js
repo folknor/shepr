@@ -8,6 +8,15 @@ import net from "node:net";
 
 const SOURCE = "shepr:opencode";
 const AGENT = "opencode";
+// Seqs are microseconds since the epoch plus one per report, while the shell
+// and Python hooks send nanoseconds. The units never meet: shepr orders seqs
+// per source string, and the only other reporter under this source, the TUI
+// plugin, uses the same unit (and never runs alongside this server plugin; see
+// `ownsLocalLifecycle`). Nanoseconds are not an option here: they exceed 2^53,
+// where a JS number stops being exact, so `+= 1` would round away. The
+// wall-clock seed puts a restarted process above its predecessor's last seq;
+// after a backwards clock step, shepr accepts any seq from a source that has
+// been silent for a few seconds.
 let reportSeq = Date.now() * 1000;
 let requestChain = Promise.resolve();
 let reportedRootSessionID;

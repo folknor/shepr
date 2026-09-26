@@ -16,9 +16,44 @@ pub(super) const SNAPSHOT_VERSION: u32 = 1;
 pub struct SessionSnapshot {
     /// Format version - used to detect incompatible changes.
     pub version: u32,
+    #[serde(default)]
+    pub host_theme: SavedHostTheme,
     pub workspaces: Vec<WorkspaceSnapshot>,
     pub active: Option<usize>,
     pub selected: usize,
+}
+
+/// Last observed physical terminal colours, retained for headless resumes.
+#[derive(Default, Serialize, Deserialize)]
+pub struct SavedHostTheme {
+    pub foreground: Option<crate::terminal_theme::RgbColor>,
+    pub background: Option<crate::terminal_theme::RgbColor>,
+    #[serde(default)]
+    pub palette: Vec<Option<crate::terminal_theme::RgbColor>>,
+}
+
+impl From<crate::terminal_theme::TerminalTheme> for SavedHostTheme {
+    fn from(theme: crate::terminal_theme::TerminalTheme) -> Self {
+        Self {
+            foreground: theme.foreground,
+            background: theme.background,
+            palette: theme.palette.into(),
+        }
+    }
+}
+
+impl SavedHostTheme {
+    pub fn to_theme(&self) -> crate::terminal_theme::TerminalTheme {
+        let mut theme = crate::terminal_theme::TerminalTheme {
+            foreground: self.foreground,
+            background: self.background,
+            ..Default::default()
+        };
+        for (index, color) in self.palette.iter().take(256).enumerate() {
+            theme.palette[index] = *color;
+        }
+        theme
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -131,9 +166,11 @@ pub fn capture(
     terminal_runtimes: &TerminalRuntimeRegistry,
     active: Option<usize>,
     selected: usize,
+    host_theme: crate::terminal_theme::TerminalTheme,
 ) -> SessionSnapshot {
     SessionSnapshot {
         version: SNAPSHOT_VERSION,
+        host_theme: host_theme.into(),
         workspaces: workspaces
             .iter()
             .map(|workspace| capture_workspace(workspace, terminals, terminal_runtimes))
@@ -606,6 +643,7 @@ mod tests {
             terminal_runtimes,
             state.active,
             state.selected,
+            state.host_terminal_theme,
         )
     }
 
@@ -676,6 +714,7 @@ mod tests {
     fn round_trip_empty_session() {
         let snap = SessionSnapshot {
             version: SNAPSHOT_VERSION,
+            host_theme: Default::default(),
             workspaces: vec![],
             active: None,
             selected: 0,
@@ -684,6 +723,37 @@ mod tests {
         let restored = parse_snapshot(&json).expect("test precondition");
         assert!(restored.workspaces.is_empty());
         assert_eq!(restored.active, None);
+    }
+
+    #[test]
+    fn saved_host_theme_round_trips_and_old_snapshots_default_to_empty() {
+        let color = crate::terminal_theme::RgbColor {
+            r: 12,
+            g: 34,
+            b: 56,
+        };
+        let mut theme = crate::terminal_theme::TerminalTheme {
+            background: Some(color),
+            ..Default::default()
+        };
+        theme.palette[240] = Some(color);
+        let saved = SavedHostTheme::from(theme);
+        let json = serde_json::to_string(&saved).expect("test precondition");
+        let loaded: SavedHostTheme = serde_json::from_str(&json).expect("test precondition");
+        assert_eq!(loaded.to_theme(), theme);
+
+        let old = r#"{"version":1,"workspaces":[],"active":null,"selected":0}"#;
+        let loaded = parse_snapshot(old).expect("old snapshot remains readable");
+        assert!(loaded.host_theme.to_theme().is_empty());
+    }
+
+    #[test]
+    fn capture_keeps_the_theme_for_a_headless_resume() {
+        let mut state = AppState::test_new();
+        let color = crate::terminal_theme::RgbColor { r: 2, g: 4, b: 8 };
+        state.host_terminal_theme.background = Some(color);
+        let snapshot = capture_from_state(&state);
+        assert_eq!(snapshot.host_theme.to_theme().background, Some(color));
     }
 
     #[test]
@@ -735,6 +805,7 @@ mod tests {
         );
 
         let snap = SessionSnapshot {
+            host_theme: Default::default(),
             workspaces: vec![WorkspaceSnapshot {
                 id: Some("wproj".to_string()),
                 custom_name: Some("pi-mono".to_string()),
@@ -1406,6 +1477,7 @@ mod tests {
 
         let snap = SessionSnapshot {
             version: SNAPSHOT_VERSION,
+            host_theme: Default::default(),
             workspaces: vec![WorkspaceSnapshot {
                 id: Some("test-ws".to_string()),
                 custom_name: Some("fallback test".to_string()),

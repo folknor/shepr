@@ -411,9 +411,10 @@ impl App {
 
         if !cwd.is_dir() {
             if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
-                terminal.pending_agent_resume_plan = None;
-                terminal.restore_error = Some("Saved directory is unavailable. Restore the directory and restart this session.".into());
-                terminal.revision = terminal.revision.saturating_add(1);
+                terminal.abandon_agent_resume(
+                    "Saved directory is unavailable. Restore the directory and restart this session.".into(),
+                    Instant::now(),
+                );
             }
             return true;
         }
@@ -442,11 +443,12 @@ impl App {
                     "failed to start shell for deferred agent resume"
                 );
                 if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
-                    terminal.pending_agent_resume_plan = None;
-                    terminal.restore_error = Some(format!(
-                        "Could not start the saved shell: {err}. Fix the shell configuration and restart this session."
-                    ));
-                    terminal.revision = terminal.revision.saturating_add(1);
+                    terminal.abandon_agent_resume(
+                        format!(
+                            "Could not start the saved shell: {err}. Fix the shell configuration and restart this session."
+                        ),
+                        Instant::now(),
+                    );
                 }
                 return true;
             }
@@ -770,12 +772,26 @@ mod tests {
                 argv: long_running_test_argv(),
                 dedupe_key: "resume-test".into(),
             });
+            // Restore seeds the resumed agent as detected and names it.
+            terminal.restore_managed_agent_for_resume("worker".into(), crate::detect::Agent::Codex);
+            let _ = terminal.set_detected_state_with_screen_signals_at(
+                Some(crate::detect::Agent::Codex),
+                crate::detect::AgentState::Idle,
+                false,
+                false,
+                Instant::now(),
+            );
             app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80, true);
             assert!(app.terminal_runtimes.get(&terminal_id).is_none());
             let terminal = &app.state.terminals[&terminal_id];
             assert!(terminal.pending_agent_resume_plan.is_none());
             assert_eq!(terminal.persisted_agent_session.as_ref(), Some(&session));
             assert!(terminal.restore_error.is_some());
+            // No process will ever run here: the seeded detection goes, the
+            // name stays for the next save.
+            assert_eq!(terminal.detected_agent, None);
+            assert_eq!(terminal.effective_known_agent(), None);
+            assert_eq!(terminal.agent_name.as_deref(), Some("worker"));
             assert!(!app.has_pending_agent_resumes());
             assert!(!app.start_pending_agent_resume_for_terminal(&terminal_id, 24, 80, true));
         }

@@ -12,10 +12,25 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
 /// Every endpoint, Local or saved machine, retries at least this often. `shepr machine
 /// reconnect` tells the user that open clients retry within 30 seconds once the machine is
 /// reachable again; a longer backoff for a reconnecting machine would make that untrue.
+///
+/// An attempt's own failure schedules the next one from when that attempt started, not
+/// from when it gave up, and no attempt runs longer than `ATTEMPT_BUDGET`. Together they
+/// keep the promise with an attempt already in flight: from any moment, the next attempt
+/// starts once the current one ends or its retry delay (counted from its start) is up,
+/// whichever is later, and both fall within 30 seconds.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
 /// Same bound as `MAX_RETRY_DELAY`, for the same `shepr machine reconnect` promise.
 const ATTENTION_RETRY_DELAY: Duration = Duration::from_secs(30);
+/// The longest one connection attempt may run: the SSH discovery commands, the bridge and
+/// the endpoint handshake all stop at this deadline. Without it an attempt against a host
+/// that hangs ran for minutes (each discovery command may take 15 seconds, the handshake
+/// 60), and the next attempt waited for it, which broke the 30-second reconnect promise.
+///
+/// A healthy attempt needs far less: every noninteractive discovery command already had
+/// to fit a cold SSH connect into 15 seconds. It stays below `MAX_RETRY_DELAY` to leave
+/// room for tearing a timed-out bridge down.
+const ATTEMPT_BUDGET: Duration = Duration::from_secs(25);
 
 #[derive(Clone, Copy)]
 pub(crate) struct EndpointConnectOptions {
@@ -59,6 +74,8 @@ struct ReconnectState {
     attempts: u32,
     next_attempt: Option<Instant>,
     in_flight: bool,
+    /// When the attempt in flight started; its failure schedules the retry from here.
+    attempt_started: Option<Instant>,
     generation: Option<u64>,
     online_since: Option<Instant>,
 }
@@ -70,6 +87,7 @@ impl ReconnectState {
             attempts: 0,
             next_attempt: Some(now),
             in_flight: false,
+            attempt_started: None,
             generation: None,
             online_since: None,
         }
@@ -164,6 +182,7 @@ impl EndpointSupervisors {
                 continue;
             }
             state.in_flight = true;
+            state.attempt_started = Some(now);
             state.next_attempt = None;
             let generation = self.next_generation;
             state.generation = Some(generation);
@@ -172,13 +191,14 @@ impl EndpointSupervisors {
             let target = state.target.clone();
             let event_tx = event_tx.clone();
             let shutdown = Arc::clone(&self.shutdown);
+            let deadline = now + ATTEMPT_BUDGET;
             tokio::spawn(async move {
                 if shutdown.load(Ordering::Acquire) {
                     return;
                 }
                 let task_endpoint_id = endpoint_id.clone();
                 let result = tokio::task::spawn_blocking(move || {
-                    connect_once(&target, options, endpoint_id, generation)
+                    connect_once(&target, options, endpoint_id, generation, deadline)
                 })
                 .await;
                 let event = match result {
@@ -233,6 +253,15 @@ impl EndpointSupervisors {
         if state.generation != Some(generation) {
             return false;
         }
+        // An attempt's own outcome counts its retry delay from when it started, so time
+        // spent inside a slow attempt is not waited out a second time. A connection that
+        // was established and later dropped counts from now.
+        let attempt_started = state.attempt_started.take();
+        let retry_base = if state.in_flight {
+            attempt_started.map_or(now, |started| started.min(now))
+        } else {
+            now
+        };
         state.in_flight = false;
         match status {
             ClientEndpointStatus::Online => {
@@ -248,7 +277,7 @@ impl EndpointSupervisors {
                 // this client, and the client UI has no manual reconnect. Local is included:
                 // restarting or upgrading its server is exactly such a repair, and with no
                 // retry a Local in attention stayed dead until the client restarted.
-                state.next_attempt = Some(now + ATTENTION_RETRY_DELAY);
+                state.next_attempt = Some(retry_base + ATTENTION_RETRY_DELAY);
             }
             ClientEndpointStatus::Disabled => {
                 state.online_since = None;
@@ -262,7 +291,7 @@ impl EndpointSupervisors {
                     state.attempts = 0;
                 }
                 state.attempts = state.attempts.saturating_add(1);
-                state.next_attempt = Some(now + retry_delay(state.attempts));
+                state.next_attempt = Some(retry_base + retry_delay(state.attempts));
             }
         }
         true
@@ -294,6 +323,7 @@ fn connect_once(
     options: EndpointConnectOptions,
     endpoint_id: ClientEndpointId,
     generation: u64,
+    deadline: Instant,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
     match target {
         ConnectTarget::Local(path) => {
@@ -308,15 +338,16 @@ fn connect_once(
                     error
                 }
             })?;
-            establish(stream, None, options, endpoint_id, generation)
+            establish(stream, None, options, endpoint_id, generation, deadline)
         }
-        ConnectTarget::Ssh(connector) => connector.connect(|connected| {
+        ConnectTarget::Ssh(connector) => connector.connect(deadline, |connected| {
             establish(
                 connected.stream,
                 Some(connected.bridge),
                 options,
                 endpoint_id.clone(),
                 generation,
+                deadline,
             )
         }),
     }
@@ -329,6 +360,7 @@ fn establish(
     options: EndpointConnectOptions,
     endpoint_id: ClientEndpointId,
     generation: u64,
+    deadline: Instant,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
     super::super::do_handshake(
         &mut stream,
@@ -341,6 +373,7 @@ fn establish(
         options.endpoint_keybindings,
         options.mouse_capture,
         false,
+        Some(deadline),
     )
     .map_err(|error| {
         let error = handshake_error(error);
@@ -516,6 +549,48 @@ mod tests {
                     .next_attempt
                     .is_some_and(|next| next <= now + Duration::from_secs(30))
             );
+        }
+    }
+
+    #[test]
+    fn a_slow_failed_attempt_still_retries_within_thirty_seconds_of_any_moment() {
+        // An attempt that hangs until its budget runs out, at the longest backoff, and the
+        // user runs `shepr machine reconnect` just after it started.
+        assert!(ATTEMPT_BUDGET < MAX_RETRY_DELAY);
+        for status in [
+            ClientEndpointStatus::Reconnecting,
+            ClientEndpointStatus::Attention,
+        ] {
+            let started = Instant::now();
+            let profile = profile();
+            let id = ClientEndpointId::Ssh(profile.id.clone());
+            let mut supervisors = supervisors_for(&[profile], started);
+            {
+                // What `spawn_due` does when it launches an attempt.
+                let state = supervisors
+                    .endpoints
+                    .get_mut(&id)
+                    .expect("test precondition");
+                state.attempts = 30;
+                state.in_flight = true;
+                state.attempt_started = Some(started);
+                state.next_attempt = None;
+                state.generation = Some(7);
+            }
+            let promised_at = started + Duration::from_millis(10);
+            let gave_up = started + ATTEMPT_BUDGET;
+            assert!(supervisors.record_status(&id, 7, status, gave_up));
+            let next = supervisors.endpoints[&id]
+                .next_attempt
+                .expect("a failed attempt is retried");
+            assert!(
+                next <= promised_at + MAX_RETRY_DELAY,
+                "{status:?}: retry {:?} after the promise",
+                next.saturating_duration_since(promised_at)
+            );
+            // The retry delay counts from the attempt's start, not from when it gave up.
+            assert!(next < gave_up + MAX_RETRY_DELAY);
+            assert!(supervisors.endpoints[&id].attempt_started.is_none());
         }
     }
 

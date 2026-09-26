@@ -22,10 +22,6 @@ Surfaced in two scopes: pane/terminal state, client UI.
   - **API:** API-024.
   - **Mouse copy:** once rows are absolute, `content_revision: None` is safe because evicted rows are refused.
 
-## TERM-035 - A poisoned core is only noticed on the pane's next output
+## TERM-042 - No release events for text keys under kitty report-all-keys
 
-- A core poisoned off the reader thread now ends the reader loop and reports `PaneDied` on the next PTY read. An idle pane isn't noticed until it produces output, and render, detection text and API reads on a poisoned core still quietly return empty or default values.
-
-## TERM-041 - Kitty report-all-keys sends text keys as raw text
-
-- Under REPORT_ALL_KEYS (kitty flag 8), a key the client committed as text is still sent as raw text rather than CSI u. The removed Windows path was the only code that re-encoded it; pre-existing. A comment in `encode_terminal_key` (`src/input/encode.rs`) marks it open.
+- Text keys are now reported as CSI u under kitty flag 8, but the client never asks the host terminal for flag 8 (`ime_compatible_keyboard_enhancement_flags`, `src/input/model.rs`), so the host sends no release events for them; a child that sets flags 8|2 gets press and repeat but never release for letters. The lease code (`src/input/lease.rs`) also assumes committed text gets no release. Fixing it needs a decision on the host keyboard flags the client requests.

@@ -111,8 +111,29 @@ impl TerminalState {
         self.agent_metadata.len() < MAX_METADATA_SOURCES
     }
 
+    /// Whether a metadata report is not older than the source's last accepted
+    /// one. Ordered by the same rule as hook reports, re-anchoring included:
+    /// the seqs come from the reporter's wall clock, and without it a clock
+    /// stepping backwards would drop every metadata report until it caught
+    /// up again.
     pub(crate) fn metadata_report_sequence_is_fresh(&self, source: &str, seq: Option<u64>) -> bool {
-        crate::metadata_tokens::sequence_is_fresh(&self.metadata_report_sequences, source, seq)
+        self.metadata_report_sequence_is_fresh_at(source, seq, Instant::now())
+    }
+
+    fn metadata_report_sequence_is_fresh_at(
+        &self,
+        source: &str,
+        seq: Option<u64>,
+        now: Instant,
+    ) -> bool {
+        let Some(seq) = seq else {
+            return true;
+        };
+        self.metadata_report_sequences
+            .get(source)
+            .is_none_or(|last| {
+                !super::report_seq_superseded(last.seq, Some(last.accepted_at), seq, now)
+            })
     }
 
     pub(crate) fn metadata_report_agent(
@@ -157,10 +178,21 @@ impl TerminalState {
         includes_tokens: bool,
         agent: Option<crate::detect::Agent>,
     ) -> Result<bool, ()> {
+        self.accept_metadata_report_at(source, seq, includes_tokens, agent, Instant::now())
+    }
+
+    fn accept_metadata_report_at(
+        &mut self,
+        source: &str,
+        seq: Option<u64>,
+        includes_tokens: bool,
+        agent: Option<crate::detect::Agent>,
+        now: Instant,
+    ) -> Result<bool, ()> {
         let Some(seq) = seq else {
             return Ok(true);
         };
-        if !self.metadata_report_sequence_is_fresh(source, Some(seq)) {
+        if !self.metadata_report_sequence_is_fresh_at(source, Some(seq), now) {
             return Ok(false);
         }
         if includes_tokens
@@ -173,8 +205,13 @@ impl TerminalState {
         if !self.metadata_report_sequence_has_room(source) {
             return Err(());
         }
-        self.metadata_report_sequences
-            .insert(source.to_string(), seq);
+        self.metadata_report_sequences.insert(
+            source.to_string(),
+            super::MetadataReportSeq {
+                seq,
+                accepted_at: now,
+            },
+        );
         if let Some(agent) = agent {
             self.metadata_report_agents
                 .insert(source.to_string(), agent);
@@ -674,6 +711,46 @@ mod tests {
             );
             assert!(terminal.metadata_report_sequences.len() <= MAX_METADATA_SOURCES);
         }
+    }
+
+    #[test]
+    fn metadata_seq_reanchors_after_a_backwards_clock_step() {
+        let mut terminal = test_terminal();
+        let start = Instant::now();
+        assert_eq!(
+            terminal.accept_metadata_report_at("user:status", Some(1_000), false, None, start),
+            Ok(true)
+        );
+        // A racing straggler moments later is still dropped.
+        let soon = start + Duration::from_millis(50);
+        assert!(!terminal.metadata_report_sequence_is_fresh_at("user:status", Some(900), soon));
+        assert_eq!(
+            terminal.accept_metadata_report_at("user:status", Some(900), false, None, soon),
+            Ok(false)
+        );
+        // Long after the last acceptance, a lower seq means the reporter's
+        // clock stepped back: it is accepted and becomes the new baseline.
+        let later = start + super::super::HOOK_SEQUENCE_REANCHOR_AFTER;
+        assert!(terminal.metadata_report_sequence_is_fresh_at("user:status", Some(10), later));
+        assert_eq!(
+            terminal.accept_metadata_report_at("user:status", Some(10), false, None, later),
+            Ok(true)
+        );
+        assert_eq!(
+            terminal.accept_metadata_report_at(
+                "user:status",
+                Some(11),
+                false,
+                None,
+                later + Duration::from_millis(1)
+            ),
+            Ok(true)
+        );
+        assert!(!terminal.metadata_report_sequence_is_fresh_at(
+            "user:status",
+            Some(10),
+            later + Duration::from_millis(2)
+        ));
     }
 
     #[test]

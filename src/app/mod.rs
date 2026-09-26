@@ -176,6 +176,10 @@ impl App {
         let mut restored_terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         let mut pane_history_carry = crate::persist::HistoryCarry::default();
         let snapshot = policy.restore_session.then(crate::persist::load).flatten();
+        let restored_host_theme = snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.host_theme.to_theme())
+            .unwrap_or_default();
         let session_writer = Arc::new(std::sync::Mutex::new(crate::persist::SessionWriter::new(
             policy.restore_session && snapshot.is_none(),
         )));
@@ -187,10 +191,8 @@ impl App {
                 .flatten();
             // No view exists yet, so restored panes start at the headless size
             // (what the server lays out against until a client attaches); the
-            // first view computation resizes each to its split. Their theme is
-            // the default because no host has reported one yet: `AppState`
-            // holds the same default here, and a later report is applied to
-            // every runtime, restored or not.
+            // first view computation resizes each to its split. The saved
+            // host theme supplies colours until a live client reports its own.
             let (headless_cols, headless_rows) = config.headless_size();
             let (restore_rows, restore_cols) = crate::workspace::PaneGeometry {
                 area: Rect::new(0, 0, headless_cols, headless_rows),
@@ -284,7 +286,7 @@ impl App {
             host_terminal_appearance: None,
             host_terminal_appearance_explicit: false,
             agent_manifest_summaries,
-            host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
+            host_terminal_theme: restored_host_theme,
             host_cell_size: crate::terminal_cell_size::HostCellSize::default(),
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),

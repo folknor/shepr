@@ -300,6 +300,7 @@ mod tests {
     fn empty_snapshot() -> SessionSnapshot {
         SessionSnapshot {
             version: SNAPSHOT_VERSION,
+            host_theme: Default::default(),
             workspaces: vec![],
             active: None,
             selected: 0,

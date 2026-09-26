@@ -78,6 +78,13 @@ const idleDebounceMs = parseDurationEnv("SHEPR_OMP_IDLE_DEBOUNCE_MS", 250);
 const retryGraceMs = parseDurationEnv("SHEPR_OMP_RETRY_GRACE_MS", 2500);
 const retryableErrorPattern =
   /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
+// Seqs are microseconds since the epoch plus one per report, while the shell
+// and Python hooks send nanoseconds. The units never meet: shepr orders seqs
+// per source string, and nothing else reports under this source. Nanoseconds
+// are not an option here: they exceed 2^53, where a JS number stops being
+// exact, so `+= 1` would round away. The wall-clock seed puts a restarted
+// process above its predecessor's last seq; after a backwards clock step,
+// shepr accepts any seq from a source that has been silent for a few seconds.
 let reportSeq = Date.now() * 1000;
 let currentAgentSessionId: string | undefined;
 let currentAgentSessionPath: string | undefined;

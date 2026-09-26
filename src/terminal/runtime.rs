@@ -350,7 +350,7 @@ impl TerminalRuntime {
         text: Bytes,
         enter: Bytes,
         delay: std::time::Duration,
-    ) -> std::io::Result<std::sync::mpsc::Receiver<std::io::Result<()>>> {
+    ) -> std::io::Result<crate::pty::actor::QueuedSubmission> {
         self.0.queue_user_input_submission(text, enter, delay)
     }
 
