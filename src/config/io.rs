@@ -31,9 +31,9 @@ pub fn app_dir_name() -> &'static str {
     }
 }
 
-/// Paths resolved once at the process boundary and passed to consumers.
-/// Production code can only obtain one from `resolve()`: empty paths would
-/// put every file relative to the working directory.
+/// Paths and the local target resolved once at the process boundary and
+/// passed to consumers. Production constructors reject unresolved path inputs
+/// that would put files relative to the working directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(Default))]
 pub struct AppPaths {
@@ -42,6 +42,8 @@ pub struct AppPaths {
     config_file: PathBuf,
     home_dir: Option<PathBuf>,
     current_dir: Option<PathBuf>,
+    session_id: crate::session::SessionId,
+    server_address: crate::server::socket_paths::ServerAddress,
 }
 
 impl AppPaths {
@@ -65,9 +67,33 @@ impl AppPaths {
         self.current_dir.as_deref()
     }
 
-    /// Resolve the application's XDG directories and config file once.
+    pub fn session_id(&self) -> &crate::session::SessionId {
+        &self.session_id
+    }
+
+    pub fn server_address(&self) -> &crate::server::socket_paths::ServerAddress {
+        &self.server_address
+    }
+
+    /// Resolve XDG directories, session identity and socket target once from
+    /// the inherited process environment.
     pub fn resolve() -> Result<Self, Vec<String>> {
-        resolve_paths_from_env()
+        resolve_paths_from_env(None)
+    }
+
+    /// Resolve paths and the local session/socket target from one environment
+    /// snapshot. `Some(Default)` represents an explicit request for the
+    /// default session and therefore takes precedence over socket overrides.
+    pub fn resolve_with_session(
+        requested_session: Option<crate::session::SessionId>,
+    ) -> Result<Self, Vec<String>> {
+        resolve_paths_from_env(requested_session)
+    }
+
+    /// Resolve only the machine catalog's local paths, without allowing local
+    /// session or socket environment values to affect a remote command.
+    pub(crate) fn resolve_for_machine() -> Result<Self, Vec<String>> {
+        resolve_paths_from_env(Some(crate::session::SessionId::Default))
     }
 
     #[cfg(test)]
@@ -87,6 +113,14 @@ impl AppPaths {
             config_file: root.join("config/config.toml"),
             home_dir: home_dir.map(Path::to_path_buf),
             current_dir: current_dir.map(Path::to_path_buf),
+            session_id: crate::session::SessionId::Default,
+            server_address: crate::server::socket_paths::ServerAddress::resolve(
+                &root.join("config"),
+                &crate::session::SessionId::Default,
+                false,
+                None,
+                None,
+            ),
         }
     }
 }
@@ -112,7 +146,20 @@ fn platform_xdg_dir(
     Ok(home_dir.join(home_suffix).join(app_dir_name()))
 }
 
-fn resolve_paths_from_env() -> Result<AppPaths, Vec<String>> {
+fn resolve_paths_from_env(
+    requested_session: Option<crate::session::SessionId>,
+) -> Result<AppPaths, Vec<String>> {
+    let api_socket_override = std::env::var(crate::api::SOCKET_PATH_ENV_VAR).ok();
+    let client_socket_override =
+        std::env::var(crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR).ok();
+    let inherited_session = std::env::var(crate::session::SESSION_ENV_VAR).ok();
+    let (session_id, session_was_requested) = crate::session::SessionId::resolve(
+        requested_session,
+        inherited_session.as_deref(),
+        api_socket_override.is_some(),
+    )
+    .map_err(|error| vec![format!("session selection error: {error}")])?;
+
     let home_dir = crate::pathutil::home_dir().ok();
     let current_dir = std::env::current_dir().ok();
     let config_dir = platform_xdg_dir("XDG_CONFIG_HOME", ".config", home_dir.as_deref());
@@ -168,12 +215,21 @@ fn resolve_paths_from_env() -> Result<AppPaths, Vec<String>> {
 
     match (config_dir, state_dir, config_file) {
         (Some(config_dir), Some(state_dir), Some(config_file)) if diagnostics.is_empty() => {
+            let server_address = crate::server::socket_paths::ServerAddress::resolve(
+                &config_dir,
+                &session_id,
+                session_was_requested,
+                api_socket_override.as_deref(),
+                client_socket_override.as_deref(),
+            );
             Ok(AppPaths {
                 config_dir,
                 state_dir,
                 config_file,
                 home_dir,
                 current_dir,
+                session_id,
+                server_address,
             })
         }
         _ if diagnostics.is_empty() => {

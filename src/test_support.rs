@@ -136,8 +136,7 @@ impl Drop for ScratchDir {
 /// Holding it serializes the test against every other test that holds one,
 /// crate-wide. On creation it snapshots the environment, sets `HOME` to a
 /// fresh scratch directory, removes the XDG base directory variables and every
-/// `SHEPR_*` variable, and clears the explicit-session flag. On drop it puts
-/// the snapshot back exactly and clears the flag again.
+/// `SHEPR_*` variable. On drop it puts the snapshot back exactly.
 ///
 /// Change variables through [`IsolatedEnv::set`] and [`IsolatedEnv::remove`]:
 /// borrowing the guard is what proves the lock is held.
@@ -177,7 +176,6 @@ impl IsolatedEnv {
         for key in inherited_shepr {
             env.remove(key);
         }
-        crate::session::clear_explicit_session_for_test();
         env
     }
 
@@ -218,7 +216,6 @@ impl Drop for IsolatedEnv {
                 self.set(key, value);
             }
         }
-        crate::session::clear_explicit_session_for_test();
     }
 }
 

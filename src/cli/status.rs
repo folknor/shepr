@@ -15,7 +15,7 @@ pub(super) fn run_status_command(
         None => print_full_status(paths, json(matches)),
         Some(("server", scope)) => print_server_status(paths, json(scope)),
         Some(("client", scope)) => {
-            print_client_status(json(scope))?;
+            print_client_status(json(scope), paths)?;
             Ok(0)
         }
         Some(_) => Ok(super::missing_subcommand()),
@@ -37,7 +37,7 @@ fn print_full_status(paths: &crate::config::AppPaths, json: bool) -> std::io::Re
 
     if json {
         print_json(&FullStatusJson {
-            client: client_status_json(),
+            client: client_status_json(paths),
             server: server_status_json(paths, &server),
             update: update_status_json(&server),
         })?;
@@ -71,9 +71,9 @@ fn print_server_status(paths: &crate::config::AppPaths, json: bool) -> std::io::
     Ok(0)
 }
 
-fn print_client_status(json: bool) -> std::io::Result<()> {
+fn print_client_status(json: bool, paths: &crate::config::AppPaths) -> std::io::Result<()> {
     if json {
-        print_json(&client_status_json())?;
+        print_json(&client_status_json(paths))?;
         return Ok(());
     }
 
@@ -204,12 +204,12 @@ struct UpdateStatusJson {
     server_binary_stale: Option<bool>,
 }
 
-fn client_status_json() -> ClientStatusJson {
+fn client_status_json(paths: &crate::config::AppPaths) -> ClientStatusJson {
     ClientStatusJson {
         version: crate::build_info::version(),
         protocol: crate::protocol::PROTOCOL_VERSION,
         binary: current_exe_label(),
-        session: crate::session::active_name(),
+        session: paths.session_id().name().map(str::to_owned),
     }
 }
 
@@ -237,7 +237,7 @@ fn server_status_json(
                 }),
             compatible: protocol.map(|value| value == crate::protocol::PROTOCOL_VERSION),
             socket: api::socket_path(paths).display().to_string(),
-            session: crate::session::active_name(),
+            session: paths.session_id().name().map(str::to_owned),
             restart_needed: restart_needed_bool(server),
             server_binary_stale: server_binary_stale_bool(server),
         },
@@ -249,7 +249,7 @@ fn server_status_json(
             capabilities: None,
             compatible: None,
             socket: api::socket_path(paths).display().to_string(),
-            session: crate::session::active_name(),
+            session: paths.session_id().name().map(str::to_owned),
             restart_needed: Some(false),
             server_binary_stale: Some(false),
         },

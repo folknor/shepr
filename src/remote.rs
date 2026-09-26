@@ -11,6 +11,205 @@ pub(crate) use attach::*;
 pub(crate) use host::run_remote_client_bridge;
 pub(crate) use saved::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SshFailure {
+    Authentication,
+    HostKey,
+    Link,
+    StaleMetadata,
+    Compatibility,
+    Other,
+}
+
+/// A connection failure with its diagnostic class kept alongside its text.
+/// Remote command output, IO errors and endpoint events all use this classifier.
+#[derive(Clone, Debug)]
+pub(crate) struct SshFailureDiagnostic {
+    failure: SshFailure,
+    origin: SshFailureOrigin,
+    message: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SshFailureOrigin {
+    Io(std::io::ErrorKind),
+    SshOutput(Option<i32>),
+    Message,
+}
+
+impl SshFailure {
+    pub(crate) fn requires_authentication(self) -> bool {
+        self == Self::Authentication
+    }
+
+    pub(crate) fn needs_attention(self) -> bool {
+        matches!(
+            self,
+            Self::Authentication | Self::HostKey | Self::Compatibility
+        )
+    }
+}
+
+impl SshFailureDiagnostic {
+    pub(crate) fn from_error(error: &std::io::Error) -> Self {
+        if let Some(failure) = error
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<Self>())
+        {
+            return failure.clone();
+        }
+        let message = error.to_string();
+        let mut failure = classify_ssh_diagnostic(&message);
+        if failure == SshFailure::Other {
+            failure = if is_ssh_link_error_kind(error.kind()) {
+                SshFailure::Link
+            } else if is_attention_error_kind(error.kind()) {
+                SshFailure::Compatibility
+            } else {
+                SshFailure::Other
+            };
+        }
+        Self {
+            failure,
+            origin: SshFailureOrigin::Io(error.kind()),
+            message,
+        }
+    }
+
+    pub(crate) fn from_message(message: impl Into<String>) -> Self {
+        let message = message.into();
+        let failure = classify_ssh_diagnostic(&message);
+        Self {
+            failure,
+            origin: SshFailureOrigin::Message,
+            message,
+        }
+    }
+
+    pub(crate) fn from_ssh_output(exit_code: Option<i32>, message: String) -> Self {
+        let mut failure = classify_ssh_diagnostic(&message);
+        if failure == SshFailure::Other && exit_code == Some(attach::SSH_OWN_FAILURE_EXIT_CODE) {
+            failure = SshFailure::Link;
+        }
+        Self {
+            failure,
+            origin: SshFailureOrigin::SshOutput(exit_code),
+            message,
+        }
+    }
+
+    pub(crate) fn requires_authentication(&self) -> bool {
+        self.failure.requires_authentication()
+    }
+
+    pub(crate) fn is_host_key(&self) -> bool {
+        self.failure == SshFailure::HostKey
+    }
+
+    pub(crate) fn is_stale_metadata(&self) -> bool {
+        self.failure == SshFailure::StaleMetadata
+    }
+
+    pub(crate) fn is_link_failure(&self) -> bool {
+        if self.failure == SshFailure::Link {
+            return true;
+        }
+        match self.origin {
+            SshFailureOrigin::Io(kind) => is_ssh_link_error_kind(kind),
+            SshFailureOrigin::SshOutput(exit_code) => {
+                exit_code == Some(attach::SSH_OWN_FAILURE_EXIT_CODE)
+            }
+            SshFailureOrigin::Message => false,
+        }
+    }
+
+    pub(crate) fn needs_attention(&self) -> bool {
+        self.failure.needs_attention()
+    }
+
+    fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl std::fmt::Display for SshFailureDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message())
+    }
+}
+
+impl std::error::Error for SshFailureDiagnostic {}
+
+impl std::ops::Deref for SshFailureDiagnostic {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.message()
+    }
+}
+
+fn classify_ssh_diagnostic(message: &str) -> SshFailure {
+    let message = message.to_ascii_lowercase();
+    if message.contains("host key verification failed")
+        || message.contains("remote host identification has changed")
+        || message.contains("no matching host key")
+    {
+        return SshFailure::HostKey;
+    }
+    if (message.contains("permission denied")
+        && ["(publickey", "(keyboard-interactive", "(password"]
+            .iter()
+            .any(|method| message.contains(method)))
+        || (message.contains("signing failed")
+            && (message.contains("sign_and_send_pubkey") || message.contains("agent")))
+    {
+        return SshFailure::Authentication;
+    }
+    if message.contains(attach::STALE_API_METADATA) {
+        return SshFailure::StaleMetadata;
+    }
+    if [
+        "permission denied",
+        "unsupported remote platform",
+        "not ready",
+        "install or update",
+        "remote shepr server speaks a different protocol",
+        "predates shepr's stable endpoint protocol",
+        // A generic handshake can end during a transient restart; only a rejection needs attention.
+        "handshake rejected",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+    {
+        return SshFailure::Compatibility;
+    }
+    SshFailure::Other
+}
+
+fn is_ssh_link_error_kind(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::AddrInUse
+            | std::io::ErrorKind::HostUnreachable
+            | std::io::ErrorKind::NetworkUnreachable
+            | std::io::ErrorKind::NetworkDown
+    )
+}
+
+fn is_attention_error_kind(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::InvalidInput
+            | std::io::ErrorKind::InvalidData
+            | std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::PermissionDenied
+            | std::io::ErrorKind::Unsupported
+    )
+}
+
 pub(crate) fn run_remote_api_bridge(
     args: &[String],
     paths: &crate::config::AppPaths,
@@ -63,13 +262,15 @@ pub(crate) fn print_remote_error_hint(err: &std::io::Error, target: &str) {
 }
 
 fn is_remote_host_key_error(err: &std::io::Error) -> bool {
-    let message = err.to_string().to_ascii_lowercase();
-    message.contains("host key verification failed")
-        || message.contains("remote host identification has changed")
+    SshFailureDiagnostic::from_error(err).is_host_key()
 }
 
 fn is_remote_auth_error(err: &std::io::Error) -> bool {
-    ssh_error_requires_authentication(&err.to_string())
+    SshFailureDiagnostic::from_error(err).requires_authentication()
+}
+
+pub(crate) fn ssh_error_requires_authentication(message: &str) -> bool {
+    SshFailureDiagnostic::from_message(message).requires_authentication()
 }
 
 fn ssh_check_command(target: &str) -> String {

@@ -90,7 +90,7 @@ pub(super) fn api_client(paths: &crate::config::AppPaths) -> io::Result<ApiClien
             target.bridge = Some(
                 crate::remote::SavedSshApiBridge::start(
                     paths,
-                    target.profile.id.as_str(),
+                    &target.profile.id,
                     &target.profile.target,
                     &target.profile.session,
                     true,
@@ -151,7 +151,7 @@ pub(super) fn server_status(
         target.bridge.take();
         target.bridge = Some(crate::remote::SavedSshApiBridge::start(
             paths,
-            target.profile.id.as_str(),
+            &target.profile.id,
             &target.profile.target,
             &target.profile.session,
             false,
@@ -183,10 +183,10 @@ pub(super) fn remote_error(error: io::Error) -> io::Error {
     })
 }
 
-pub(super) fn restart_guidance() -> String {
+pub(super) fn restart_guidance(paths: &crate::config::AppPaths) -> String {
     TARGET.with(|target| match target.borrow().as_ref() {
         Some(target) => format!("Update Shepr and restart the server on machine '{}' (session {}). Stopping the server exits its pane processes.", target.profile.label, target.profile.session),
-        None => crate::session::active_restart_after_update_guidance(),
+        None => crate::session::restart_after_update_guidance_for(paths),
     })
 }
 

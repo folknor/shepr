@@ -19,6 +19,30 @@ pub enum ClientError {
     Protocol(protocol::FramingError),
 }
 
+impl ClientError {
+    pub(crate) fn display_with_target(
+        &self,
+        session: &crate::session::SessionId,
+        address: &crate::server::socket_paths::ServerAddress,
+    ) -> String {
+        let message = self.to_string();
+        if matches!(
+            self,
+            Self::ServerShutdown {
+                reason: Some(reason)
+            } if reason == "detached"
+        ) && std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR).is_err()
+        {
+            format!(
+                "{message}\nRun `{}` to reattach",
+                address.attach_command(session)
+            )
+        } else {
+            message
+        }
+    }
+}
+
 impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -43,11 +67,6 @@ impl std::fmt::Display for ClientError {
                             write!(f, "\nRun `{reattach_command}` to reattach")?;
                         } else {
                             write!(f, "detached from server")?;
-                            write!(
-                                f,
-                                "\nRun `{}` to reattach",
-                                crate::session::local_attach_command()
-                            )?;
                         }
                     }
                     _ => {

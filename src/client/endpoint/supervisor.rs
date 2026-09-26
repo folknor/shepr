@@ -67,7 +67,7 @@ pub(crate) enum EndpointSupervisorEvent {
         endpoint_id: ClientEndpointId,
         generation: u64,
         status: ClientEndpointStatus,
-        message: String,
+        message: crate::remote::SshFailureDiagnostic,
     },
     Connected {
         endpoint_id: ClientEndpointId,
@@ -155,7 +155,7 @@ impl EndpointSupervisors {
         self.retire(&endpoint_id);
         let connector = crate::remote::SavedSshConnector::new(
             &self.paths,
-            profile.id.as_str(),
+            &profile.id,
             &profile.target,
             &profile.session,
             self.ssh_settings,
@@ -225,21 +225,26 @@ impl EndpointSupervisors {
                 .await;
                 let event = match result {
                     Ok(Ok(event)) => event,
-                    Ok(Err(error)) => EndpointSupervisorEvent::Status {
-                        endpoint_id: task_endpoint_id,
-                        generation,
-                        status: if failure_needs_attention(&error) {
-                            ClientEndpointStatus::Attention
-                        } else {
-                            ClientEndpointStatus::Reconnecting
-                        },
-                        message: error.to_string(),
-                    },
+                    Ok(Err(error)) => {
+                        let failure = crate::remote::SshFailureDiagnostic::from_error(&error);
+                        EndpointSupervisorEvent::Status {
+                            endpoint_id: task_endpoint_id,
+                            generation,
+                            status: if failure.needs_attention() {
+                                ClientEndpointStatus::Attention
+                            } else {
+                                ClientEndpointStatus::Reconnecting
+                            },
+                            message: failure,
+                        }
+                    }
                     Err(error) => EndpointSupervisorEvent::Status {
                         endpoint_id: task_endpoint_id,
                         generation,
                         status: ClientEndpointStatus::Reconnecting,
-                        message: format!("endpoint connection task stopped unexpectedly: {error}"),
+                        message: crate::remote::SshFailureDiagnostic::from_message(format!(
+                            "endpoint connection task stopped unexpectedly: {error}"
+                        )),
                     },
                 };
                 if !shutdown.load(Ordering::Acquire) {
@@ -424,14 +429,10 @@ fn establish(
     })
 }
 
-fn failure_needs_attention(error: &std::io::Error) -> bool {
-    crate::remote::saved_ssh_failure_needs_attention(error)
-}
-
 fn handshake_error(error: crate::client::ClientError) -> std::io::Error {
     use crate::client::ClientError;
     use crate::protocol::FramingError;
-    match error {
+    let error = match error {
         ClientError::ConnectionFailed(error) | ClientError::ConnectionLost(error) => error,
         ClientError::HostTerminal(error) => error,
         ClientError::HandshakeRejected { error, .. } => {
@@ -452,7 +453,12 @@ fn handshake_error(error: crate::client::ClientError) -> std::io::Error {
             std::io::ErrorKind::ConnectionAborted,
             reason.unwrap_or_else(|| "server shut down while connecting".into()),
         ),
-    }
+    };
+    let kind = error.kind();
+    std::io::Error::new(
+        kind,
+        crate::remote::SshFailureDiagnostic::from_error(&error),
+    )
 }
 
 fn retry_delay(attempt: u32) -> Duration {
@@ -474,7 +480,7 @@ mod tests {
         super::super::SavedSshEndpoint {
             id: ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
             label: "Build".into(),
-            target: "build".into(),
+            target: crate::remote::SshTarget::parse("build").expect("test precondition"),
             session: "agents".into(),
         }
     }
@@ -693,13 +699,13 @@ mod tests {
         let timeout = handshake_error(crate::client::ClientError::ConnectionLost(
             std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out"),
         ));
-        assert!(!failure_needs_attention(&timeout));
+        assert!(!crate::remote::SshFailureDiagnostic::from_error(&timeout).needs_attention());
         let rejected = handshake_error(crate::client::ClientError::HandshakeRejected {
             version: crate::protocol::PROTOCOL_VERSION,
             error: "surface capability missing".into(),
         });
         assert_eq!(rejected.kind(), std::io::ErrorKind::Unsupported);
-        assert!(failure_needs_attention(&rejected));
+        assert!(crate::remote::SshFailureDiagnostic::from_error(&rejected).needs_attention());
     }
 
     #[test]
@@ -708,13 +714,13 @@ mod tests {
             crate::protocol::FramingError::UnexpectedEof,
         ));
         assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof);
-        assert!(!failure_needs_attention(&eof));
+        assert!(!crate::remote::SshFailureDiagnostic::from_error(&eof).needs_attention());
         let shutdown = handshake_error(crate::client::ClientError::ServerShutdown { reason: None });
-        assert!(!failure_needs_attention(&shutdown));
+        assert!(!crate::remote::SshFailureDiagnostic::from_error(&shutdown).needs_attention());
         let malformed = handshake_error(crate::client::ClientError::Protocol(
             crate::protocol::FramingError::Oversized { claimed: 2, max: 1 },
         ));
-        assert!(failure_needs_attention(&malformed));
+        assert!(crate::remote::SshFailureDiagnostic::from_error(&malformed).needs_attention());
     }
 
     #[test]

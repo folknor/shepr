@@ -40,8 +40,7 @@ pub(crate) fn run_remote(
     settings: super::SavedSshSettings,
     paths: &crate::config::AppPaths,
 ) -> io::Result<()> {
-    let session_name = crate::session::active_name()
-        .unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_string());
+    let session_name = paths.session_id().display_name().to_owned();
     let local_socket = local_forward_socket_path(&remote.target, &session_name);
     let program = std::env::args()
         .next()
@@ -78,16 +77,14 @@ pub(crate) fn run_remote(
 
 pub(crate) fn check_saved_ssh(
     paths: &crate::config::AppPaths,
-    target: &str,
+    target: &SshTarget,
     session: &str,
     settings: super::SavedSshSettings,
 ) -> io::Result<()> {
-    super::validate_remote_target(target)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     crate::session::validate_name(session)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let mut ssh =
-        RemoteSsh::new_noninteractive_with(target.to_owned(), settings.manage_ssh_config, paths);
+        RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths);
     ssh.session_name = session.to_owned();
     let remote = find_installed_remote_shepr(&ssh)?;
     match remote_server_status(&ssh, &remote, false)? {
@@ -110,23 +107,21 @@ pub(crate) fn check_saved_ssh(
         }
         _ => Err(io::Error::other(format!(
             "remote Shepr server is stopped or incompatible; run `{}`",
-            super::saved_ssh_bootstrap_command(target, session),
+            super::saved_ssh_bootstrap_command(target.as_str(), session),
         ))),
     }
 }
 
 pub(crate) fn prepare_saved_ssh(
     paths: &crate::config::AppPaths,
-    target: &str,
+    target: &SshTarget,
     session_name: &str,
     settings: super::SavedSshSettings,
 ) -> io::Result<Option<crate::client::endpoint::SshMachineMetadata>> {
-    super::validate_remote_target(target)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     crate::session::validate_name(session_name)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let ssh = RemoteSsh::new(
-        target.to_owned(),
+        target.clone(),
         settings.manage_ssh_config,
         session_name.to_owned(),
         paths,
@@ -417,23 +412,6 @@ pub(crate) fn release_ssh_resources_before_exit(grace: Duration) {
     SSH_TEARDOWN.release_all(grace);
 }
 
-/// Classify only SSH authentication diagnostics, not transport failures or
-/// unknown/changed host keys. This does not imply permission to prompt.
-pub(crate) fn ssh_error_requires_authentication(message: &str) -> bool {
-    let message = message.to_ascii_lowercase();
-    if message.contains("host key verification failed")
-        || message.contains("remote host identification has changed")
-    {
-        return false;
-    }
-    (message.contains("permission denied")
-        && ["(publickey", "(keyboard-interactive", "(password"]
-            .iter()
-            .any(|method| message.contains(method)))
-        || (message.contains("signing failed")
-            && (message.contains("sign_and_send_pubkey") || message.contains("agent")))
-}
-
 /// Keep this owner alive until the child has exited: OpenSSH reads its temporary
 /// config after spawn. Dropping it never stops the shared authenticated master.
 pub(crate) struct SshAuthenticationCommand {
@@ -443,27 +421,21 @@ pub(crate) struct SshAuthenticationCommand {
 
 pub(crate) fn ssh_authentication_command(
     paths: &crate::config::AppPaths,
-    target: &str,
+    target: &SshTarget,
     settings: super::SavedSshSettings,
 ) -> io::Result<SshAuthenticationCommand> {
-    if target.is_empty() || target.starts_with('-') || target.chars().any(char::is_control) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid SSH target",
-        ));
-    }
     if !settings.manage_ssh_config {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "interactive SSH recovery requires remote.manage_ssh_config=true",
         ));
     }
-    let config = write_managed_ssh_config(target, paths)?;
+    let config = write_managed_ssh_config(target.as_str(), paths)?;
     Ok(authentication_command_with_config(target, config))
 }
 
 fn authentication_command_with_config(
-    target: &str,
+    target: &SshTarget,
     config: ManagedSshConfig,
 ) -> SshAuthenticationCommand {
     let mut command = Command::new("ssh");
@@ -478,7 +450,7 @@ fn authentication_command_with_config(
         .arg("-o")
         .arg("NumberOfPasswordPrompts=3")
         .arg("-T")
-        .arg(target)
+        .arg(target.as_str())
         .arg("exit");
     SshAuthenticationCommand {
         command,
@@ -487,7 +459,7 @@ fn authentication_command_with_config(
 }
 
 pub(super) struct RemoteSsh {
-    target: String,
+    target: SshTarget,
     session_name: String,
     managed_config: Option<ManagedSshConfig>,
     noninteractive: bool,
@@ -499,13 +471,13 @@ pub(super) struct RemoteSsh {
 
 impl RemoteSsh {
     fn new(
-        target: String,
+        target: SshTarget,
         manage_ssh_config: bool,
         session_name: String,
         paths: &crate::config::AppPaths,
     ) -> Self {
         let managed_config = if manage_ssh_config {
-            write_managed_ssh_config(&target, paths)
+            write_managed_ssh_config(target.as_str(), paths)
                 .inspect_err(|err| {
                     tracing::debug!(%err, "could not write managed ssh config; using plain ssh");
                 })
@@ -525,7 +497,7 @@ impl RemoteSsh {
 
     /// For long-lived callers that already hold the launch-time config.
     pub(super) fn new_noninteractive_with(
-        target: String,
+        target: SshTarget,
         manage_ssh_config: bool,
         paths: &crate::config::AppPaths,
     ) -> Self {
@@ -562,7 +534,7 @@ impl RemoteSsh {
     }
 
     fn target(&self) -> &str {
-        &self.target
+        self.target.as_str()
     }
 
     fn destination(&self) -> String {
@@ -578,7 +550,7 @@ impl RemoteSsh {
         if self.noninteractive {
             apply_noninteractive_ssh_options(&mut command);
         }
-        command.arg("-T").arg(&self.target);
+        command.arg("-T").arg(self.target.as_str());
         command
     }
 
@@ -794,13 +766,14 @@ impl DiscoverySteps for SshDiscovery<'_> {
 }
 
 /// Reads a `command -v shepr` result. A failed lookup means no `shepr` on that PATH,
-/// except when ssh itself failed (exit 255): then nothing was learned about the remote,
-/// and recording "not found" would be wrong, so it is the link failure it is.
+/// except when the typed failure says ssh itself exited 255: then nothing was learned
+/// about the remote, and recording "not found" would be wrong.
 fn path_lookup_result(output: &Output) -> io::Result<Option<RemoteShepr>> {
-    if output.status.code() == Some(SSH_OWN_FAILURE_EXIT_CODE) {
-        return Err(command_failed("remote SSH connection failed", output));
-    }
     if !output.status.success() {
+        let error = command_failed("remote SSH connection failed", output);
+        if super::SshFailureDiagnostic::from_error(&error).is_link_failure() {
+            return Err(error);
+        }
         return Ok(None);
     }
     Ok(remote_shepr_from_path_discovery(&String::from_utf8_lossy(
@@ -997,8 +970,9 @@ fn remote_client_status(
 ) -> io::Result<Option<RemoteClientStatusJson>> {
     let output = ssh.sh_output(&remote_shepr.status_client_command())?;
     if !output.status.success() {
-        if output.status.code() == Some(SSH_OWN_FAILURE_EXIT_CODE) {
-            return Err(command_failed("remote SSH connection failed", &output));
+        let error = command_failed("remote SSH connection failed", &output);
+        if super::SshFailureDiagnostic::from_error(&error).is_link_failure() {
+            return Err(error);
         }
         return Ok(None);
     }
@@ -1345,9 +1319,7 @@ fn reattach_command(
     command
 }
 
-/// An `Other` error for a remote command that exited unsuccessfully. It carries the exit
-/// code (an `SshBridgeExit` inside, same message), so `is_ssh_link_failure` can tell ssh's
-/// own failure (exit 255) from the remote command's.
+/// Preserve the SSH process exit code and its classified diagnostic in the error source.
 fn command_failed(context: &str, output: &Output) -> io::Error {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stderr = stderr.trim();
@@ -1356,10 +1328,10 @@ fn command_failed(context: &str, output: &Output) -> io::Error {
     } else {
         format!("{context}: {stderr}")
     };
-    io::Error::other(SshBridgeExit {
-        code: output.status.code(),
+    io::Error::other(super::SshFailureDiagnostic::from_ssh_output(
+        output.status.code(),
         message,
-    })
+    ))
 }
 
 pub(super) struct SshStdioBridge {
@@ -1374,7 +1346,7 @@ pub(super) struct SshStdioBridge {
 
 impl SshStdioBridge {
     pub(super) fn start(
-        target: String,
+        target: SshTarget,
         remote_shepr: &RemoteShepr,
         local_socket: PathBuf,
         session_name: &str,
@@ -1391,7 +1363,7 @@ impl SshStdioBridge {
     }
 
     pub(super) fn start_command(
-        target: String,
+        target: SshTarget,
         remote_command: String,
         local_socket: PathBuf,
         ssh_options: Option<&ManagedSshOptions>,
@@ -1461,7 +1433,7 @@ impl SshStdioBridge {
                             } else {
                                 eprintln!("shepr: remote bridge failed: {err}");
                             }
-                            // The original error, so an `SshBridgeExit` payload survives.
+                            // The original error, so its typed SSH failure survives.
                             let _ = failure_tx.try_send(err);
                         }
                     }
@@ -1635,7 +1607,7 @@ pub(crate) fn bridge_upload_cancellation_for_test(
 
 fn bridge_connection(
     mut stream: crate::ipc::LocalStream,
-    target: &str,
+    target: &SshTarget,
     remote_command: &str,
     ssh_options: Option<&ManagedSshOptions>,
     noninteractive: bool,
@@ -1649,7 +1621,7 @@ fn bridge_connection(
     }
     command
         .arg("-T")
-        .arg(target)
+        .arg(target.as_str())
         .arg(remote_command)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1831,29 +1803,9 @@ fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io:
     };
     io::Error::new(
         io::ErrorKind::ConnectionAborted,
-        SshBridgeExit {
-            code: status.code(),
-            message,
-        },
+        super::SshFailureDiagnostic::from_ssh_output(status.code(), message),
     )
 }
-
-/// An ssh process (a bridge or a one-shot remote command) that exited unsuccessfully,
-/// keeping its exit code so callers can tell ssh's own failures from the remote
-/// command's.
-#[derive(Debug)]
-struct SshBridgeExit {
-    code: Option<i32>,
-    message: String,
-}
-
-impl std::fmt::Display for SshBridgeExit {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for SshBridgeExit {}
 
 /// A connection attempt that ran out of its time budget. `TimedOut`, so it counts as a link
 /// failure (no rediscovery) and a transient one (a retry, not attention).
@@ -1866,27 +1818,12 @@ pub(super) fn attempt_deadline_passed() -> io::Error {
 
 /// OpenSSH exits with 255 when ssh itself fails (resolve, connect, host key,
 /// authentication, a dropped link); any other code came from the remote command.
-const SSH_OWN_FAILURE_EXIT_CODE: i32 = 255;
+pub(super) const SSH_OWN_FAILURE_EXIT_CODE: i32 = 255;
 
 /// Whether `error` says the SSH link, not the remote side, failed: the remote end
 /// was never reached or was lost, so nothing is known about the remote install.
 pub(super) fn is_ssh_link_failure(error: &io::Error) -> bool {
-    if let Some(exit) = error
-        .get_ref()
-        .and_then(|inner| inner.downcast_ref::<SshBridgeExit>())
-    {
-        return exit.code == Some(SSH_OWN_FAILURE_EXIT_CODE);
-    }
-    matches!(
-        error.kind(),
-        io::ErrorKind::TimedOut
-            | io::ErrorKind::ConnectionRefused
-            | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::AddrInUse
-            | io::ErrorKind::HostUnreachable
-            | io::ErrorKind::NetworkUnreachable
-            | io::ErrorKind::NetworkDown
-    )
+    super::SshFailureDiagnostic::from_error(error).is_link_failure()
 }
 
 fn discard_remote_output_preamble(reader: &mut impl io::BufRead) -> io::Result<()> {
@@ -2250,7 +2187,7 @@ mod tests {
         let socket = scratch.join("bridge.sock");
         let remote_shepr = RemoteShepr::new("/usr/bin/shepr");
         let bridge = SshStdioBridge::start(
-            "example".to_string(),
+            SshTarget::parse("example").expect("test precondition"),
             &remote_shepr,
             socket.clone(),
             "default",
@@ -2312,7 +2249,7 @@ mod tests {
         assert!(socket.starts_with(env.path()), "{}", socket.display());
         let remote_shepr = RemoteShepr::new("/usr/bin/shepr");
         let bridge = SshStdioBridge::start(
-            "example".to_string(),
+            SshTarget::parse("example").expect("test precondition"),
             &remote_shepr,
             socket.clone(),
             "default",
@@ -2428,7 +2365,10 @@ mod tests {
             "Permission denied (password).",
             "sign_and_send_pubkey: signing failed for ED25519 from agent: agent refused operation",
         ] {
-            assert!(ssh_error_requires_authentication(message), "{message}");
+            assert!(
+                crate::remote::ssh_error_requires_authentication(message),
+                "{message}"
+            );
         }
         for message in [
             "Host key verification failed.",
@@ -2438,7 +2378,10 @@ mod tests {
             "agent disconnected",
             "Permission denied (publickey). Host key verification failed.",
         ] {
-            assert!(!ssh_error_requires_authentication(message), "{message}");
+            assert!(
+                !crate::remote::ssh_error_requires_authentication(message),
+                "{message}"
+            );
         }
     }
 
@@ -2458,12 +2401,20 @@ mod tests {
     fn authentication_command_uses_shared_transport_without_askpass_or_host_key_relaxation() {
         let paths = test_app_paths();
         let config = write_managed_ssh_config("example", &paths).expect("test precondition");
-        let setup = RemoteSsh::new("example".into(), true, "other-session".into(), &paths);
+        let setup = RemoteSsh::new(
+            super::super::SshTarget::parse("example").expect("test precondition"),
+            true,
+            "other-session".into(),
+            &paths,
+        );
         assert_eq!(
             config.options.control_path,
             setup.options().expect("test precondition").control_path
         );
-        let authentication = authentication_command_with_config("example", config);
+        let authentication = authentication_command_with_config(
+            &SshTarget::parse("example").expect("test precondition"),
+            config,
+        );
         let command = &authentication.command;
         assert_eq!(command.get_program(), "ssh");
         let args = command
@@ -2491,26 +2442,14 @@ mod tests {
     }
 
     #[test]
-    fn authentication_command_rejects_option_injection() {
-        assert_eq!(
-            ssh_authentication_command(
-                &crate::config::AppPaths::default(),
-                "-oProxyCommand=bad",
-                crate::remote::SavedSshSettings {
-                    manage_ssh_config: true,
-                },
-            )
-            .err()
-            .expect("test precondition")
-            .kind(),
-            io::ErrorKind::InvalidInput
-        );
-    }
-
-    #[test]
     fn unmanaged_ssh_setup_preserves_plain_transport() {
         let paths = test_app_paths();
-        let ssh = RemoteSsh::new("example".into(), false, "main".into(), &paths);
+        let ssh = RemoteSsh::new(
+            super::super::SshTarget::parse("example").expect("test precondition"),
+            false,
+            "main".into(),
+            &paths,
+        );
         assert!(ssh.options().is_none());
         assert!(!ssh.command().get_args().any(|arg| arg == "-F"));
     }
@@ -2535,7 +2474,7 @@ mod tests {
             .clone()
             .expect("test precondition");
         let ssh = RemoteSsh {
-            target: "example".to_string(),
+            target: SshTarget::parse("example").expect("test precondition"),
             session_name: crate::session::DEFAULT_SESSION_NAME.into(),
             managed_config: Some(managed_config),
             noninteractive: false,
@@ -2661,7 +2600,11 @@ mod tests {
     #[test]
     fn noninteractive_ssh_command_cannot_prompt_or_accept_unknown_hosts() {
         let paths = test_app_paths();
-        let ssh = RemoteSsh::new_noninteractive_with("example".into(), false, &paths);
+        let ssh = RemoteSsh::new_noninteractive_with(
+            super::super::SshTarget::parse("example").expect("test precondition"),
+            false,
+            &paths,
+        );
         let args = ssh
             .command()
             .get_args()
@@ -2743,7 +2686,7 @@ mod tests {
     #[test]
     fn remote_ssh_commands_compress_without_managed_config() {
         let ssh = RemoteSsh {
-            target: "example".to_string(),
+            target: SshTarget::parse("example").expect("test precondition"),
             session_name: crate::session::DEFAULT_SESSION_NAME.into(),
             managed_config: None,
             noninteractive: false,
@@ -2762,7 +2705,7 @@ mod tests {
     #[test]
     fn an_attempt_deadline_shortens_and_then_refuses_noninteractive_commands() {
         let mut ssh = RemoteSsh {
-            target: "example".to_string(),
+            target: SshTarget::parse("example").expect("test precondition"),
             session_name: crate::session::DEFAULT_SESSION_NAME.into(),
             managed_config: None,
             noninteractive: true,
@@ -2784,7 +2727,7 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         // Treated as a dropped link: no rediscovery, and a retry rather than attention.
         assert!(is_ssh_link_failure(&error));
-        assert!(!crate::remote::saved_ssh_failure_needs_attention(&error));
+        assert!(!crate::remote::SshFailureDiagnostic::from_error(&error).needs_attention());
         // The refusal happens before ssh is spawned.
         let error = ssh.sh_output("true\n").expect_err("refused");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);

@@ -7,13 +7,13 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use super::ProfileId;
+use crate::remote::{IntoSshTarget, SshTarget};
 
 const CATALOG_VERSION: u32 = 1;
 const SELECTION_VERSION: u32 = 1;
 const MAX_CATALOG_BYTES: u64 = 64 * 1024;
 const MAX_PROFILES: usize = 64;
 const MAX_LABEL_BYTES: usize = 128;
-const MAX_TARGET_BYTES: usize = 1024;
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,20 +21,20 @@ static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
 pub(crate) struct SavedSshEndpoint {
     pub(crate) id: ProfileId,
     pub(crate) label: String,
-    pub(crate) target: String,
+    pub(crate) target: SshTarget,
     pub(crate) session: String,
 }
 
 impl SavedSshEndpoint {
     pub(crate) fn new(
         label: impl Into<String>,
-        target: impl Into<String>,
+        target: impl IntoSshTarget,
         session: impl Into<String>,
     ) -> Result<Self, String> {
         let profile = Self {
             id: ProfileId::generate(),
             label: label.into(),
-            target: target.into(),
+            target: target.into_ssh_target()?,
             session: session.into(),
         };
         profile.validate()?;
@@ -42,7 +42,6 @@ impl SavedSshEndpoint {
     }
 
     fn validate(&self) -> Result<(), String> {
-        ProfileId::parse(self.id.to_string())?;
         let label = self.label.trim();
         if label.is_empty() {
             return Err("SSH endpoint label cannot be empty".into());
@@ -51,19 +50,6 @@ impl SavedSshEndpoint {
             return Err(format!(
                 "SSH endpoint label must be at most {MAX_LABEL_BYTES} bytes and contain no control characters"
             ));
-        }
-        if self.target.len() > MAX_TARGET_BYTES || self.target.chars().any(char::is_control) {
-            return Err(format!(
-                "SSH target must be at most {MAX_TARGET_BYTES} bytes and contain no control characters"
-            ));
-        }
-        crate::remote::validate_remote_target(&self.target).map(|_| ())?;
-        let authority = self.target.strip_prefix("ssh://").unwrap_or(&self.target);
-        if authority
-            .rsplit_once('@')
-            .is_some_and(|(userinfo, _)| userinfo.contains(':'))
-        {
-            return Err("SSH target must not contain a password".into());
         }
         crate::session::validate_name(&self.session)?;
         Ok(())
@@ -171,7 +157,7 @@ impl EndpointCatalog {
     pub(crate) fn add_ssh(
         &mut self,
         label: impl Into<String>,
-        target: impl Into<String>,
+        target: impl IntoSshTarget,
         session: impl Into<String>,
     ) -> Result<ProfileId, String> {
         if self.ssh.len() >= MAX_PROFILES {
@@ -236,7 +222,7 @@ impl EndpointCatalog {
     pub(crate) fn contains_target_session(&self, target: &str, session: &str) -> bool {
         self.ssh
             .iter()
-            .any(|profile| profile.target == target && profile.session == session)
+            .any(|profile| profile.target.as_str() == target && profile.session == session)
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -766,7 +752,7 @@ mod tests {
         SavedSshEndpoint {
             id: ProfileId::parse(id).expect("test precondition"),
             label: "Build".into(),
-            target: target.into(),
+            target: SshTarget::parse(target).expect("test precondition"),
             session: "agents".into(),
         }
     }

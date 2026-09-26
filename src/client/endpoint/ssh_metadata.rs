@@ -43,20 +43,18 @@ pub(crate) struct SshMetadataCache {
 impl SshMetadataCache {
     pub(crate) fn new(
         paths: &crate::config::AppPaths,
-        profile_id: &str,
+        profile_id: &ProfileId,
         target: &str,
         session: &str,
-    ) -> io::Result<Self> {
-        let id = ProfileId::parse(profile_id)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             path: paths
                 .state_dir()
                 .join("client/ssh-metadata")
-                .join(format!("{id}.json")),
+                .join(format!("{profile_id}.json")),
             target: target.to_owned(),
             session: session.to_owned(),
-        })
+        }
     }
 
     pub(crate) fn load(&self) -> Option<SshMachineMetadata> {

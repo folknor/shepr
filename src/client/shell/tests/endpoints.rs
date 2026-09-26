@@ -11,7 +11,7 @@ fn remote_profile() -> SavedSshEndpoint {
     SavedSshEndpoint {
         id: ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
         label: "Build".into(),
-        target: "dev@build.example".into(),
+        target: crate::remote::SshTarget::parse("dev@build.example").expect("test precondition"),
         session: "agents".into(),
     }
 }

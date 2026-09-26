@@ -299,22 +299,6 @@ same shape.
 
 Reported by: ui, protocol.
 
-## STR-022 - Session identity and server address are ambient
-
-Session identity is `Option<&str>`/`Option<String>` with `None` = default,
-through `data_dir_for`, `api_socket_path_for`, `client_socket_path_for`,
-`stop_session`, `session_info`, `SessionInfo.name`; `session::configure` mutates
-process env (`SHEPR_SESSION`) plus a global `AtomicBool`
-(`EXPLICIT_SESSION_REQUESTED`), and `active_name()` re-reads and re-validates
-env on every call. Socket choice is decided from an explicit flag,
-`SHEPR_SOCKET_PATH`, `SHEPR_CLIENT_SOCKET_PATH` and the session. Proposed:
-`SessionId { Default, Named(SessionName) }` and `ServerAddress { Session(SessionId),
-Override { api, client } }` with `api_socket()`, `client_socket()`,
-`data_dir()`, `stop_command()`, `attach_command()`, resolved once in `main`;
-`SHEPR_SESSION` written only into child env. See CON-042, CON-047, STR-037.
-
-Reported by: config-cli.
-
 ## STR-023 - Remote machine metadata
 
 `SshMachineMetadata.os: String`, where only `"linux"` is valid, is an upstream
@@ -372,15 +356,6 @@ Clipboard delivery (OSC 52, WSL detection reading `/proc` and env,
 upward on `pane::ScrollMetrics` and `ratatui::Rect`. Proposed: WSL/SSH env
 sniffing to `platform/`, OSC 52 encoding to host-term, selection `AbsRow`-only
 (removes the `ScrollMetrics` dependency).
-
-Reported by: terminal-core.
-
-## STR-028 - PTY actor: submission logic as its own module
-
-The ~400 lines of submission logic in `pty/actor.rs` could be a `submission.rs`
-state machine separate from the fd IO loop (CON-013); three `PtyIoActorRunner`
-literal constructions in tests want a builder. The hunter judges the PTY
-boundary itself fine.
 
 Reported by: terminal-core.
 
@@ -742,3 +717,20 @@ at lines 56-63, 91-95, 108-112 - O(n) with an allocation per comparison, per
 candidate. Keeping `TerminalId` allows `terminals.get(&id)` (STR-001).
 
 Reported by: app-state.
+
+## STR-059 - Replace the three-valued shell_mode with a login bool
+
+`terminal.shell_mode` (`ShellModeConfig { Auto, Login, NonLogin }` in
+`config/model.rs`) has three values but two behaviours: `pane.rs` only tests
+`mode == Login`, so `Auto` (the default) is an alias for `NonLogin`. A pane shell
+is always interactive; the only real axis is whether it is also a login shell
+(argv0 prefixed with `-`, reading `/etc/profile` and `~/.profile` /
+`~/.zprofile`).
+
+Decision (owner): replace it with `terminal.login_shell: bool`, default `false`
+(today's `Auto` behaviour). Delete `ShellModeConfig` and its tests, update the
+pane launch path, the default config text and the config docs. shepr has never
+been run, so no migration; the old `shell_mode` key becomes an unknown key and
+fails the launch like any other.
+
+Reported by: orchestrator, from the wave A review.

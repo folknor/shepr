@@ -119,8 +119,20 @@ pub(crate) fn message(
         return Ok(None);
     };
     let expected_cells = usize::from(surface.frame.width) * usize::from(surface.frame.height);
-    if last.boot_id != surface.boot_id
-        || last.frame.width != surface.frame.width
+    let baseline = super::surface_reuse::Baseline::new(
+        &last.boot_id,
+        last.projection_revision,
+        last.surface_revision,
+    );
+    if !baseline.accepts(
+        &surface.boot_id,
+        last.surface_revision,
+        surface.surface_revision,
+        &super::surface_reuse::ProjectionUpdate::Delta {
+            base: last.projection_revision,
+            next: surface.projection_revision,
+        },
+    ) || last.frame.width != surface.frame.width
         || last.frame.height != surface.frame.height
         || last.frame.cells.len() != expected_cells
         || !decode::metadata_fits(surface)
@@ -371,10 +383,10 @@ mod tests {
                 },
             ))
             .expect("test precondition");
-        let base_revision = next.surface_revision;
+        let last = next.clone();
         next.surface_revision += 1;
         next.projection_revision += 1;
-        let reused = crate::protocol::surface_reuse::message(base_revision, &mut next)
+        let reused = crate::protocol::surface_reuse::message(&last, &mut next)
             .expect("test precondition")
             .expect("test precondition");
         decoder.decode(reused).expect("test precondition");

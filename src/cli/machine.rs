@@ -50,7 +50,7 @@ fn list(paths: &crate::config::AppPaths, json: bool) -> std::io::Result<i32> {
         .map(|profile| MachineListRow {
             id: profile.id.as_str(),
             label: &profile.label,
-            target: &profile.target,
+            target: profile.target.as_str(),
             session: &profile.session,
             selected: catalog.selected_profile.as_ref() == Some(&profile.id),
         })
@@ -204,11 +204,18 @@ fn add(
         label,
         session,
     } = args;
+    let target = match crate::remote::SshTarget::parse(target) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return Ok(2);
+        }
+    };
     let mut catalog = load_catalog(paths)?;
     // This preflight validates fields and capacity before remote setup can wait. Its ID is
     // intentionally discarded; IDs identify saved rows. Duplicate labels are permitted,
     // and selectors report ambiguity so callers can use the profile ID.
-    match catalog.add_ssh(label.clone(), &target, session.clone()) {
+    match catalog.add_ssh(label.clone(), target.clone(), session.clone()) {
         Ok(_) => {}
         Err(error) => {
             eprintln!("error: {error}");
@@ -229,7 +236,7 @@ fn add(
             "remote prepared, but machine was not saved: {error}"
         ))
     })?;
-    let id = match catalog.add_ssh(label, &target, &session) {
+    let id = match catalog.add_ssh(label, target.clone(), &session) {
         Ok(id) => id,
         Err(error) => {
             eprintln!("error: {error}");
@@ -242,7 +249,7 @@ fn add(
         ))
     })?;
     if let Some(metadata) = metadata {
-        crate::client::endpoint::SshMetadataCache::new(paths, id.as_str(), &target, &session)?
+        crate::client::endpoint::SshMetadataCache::new(paths, &id, &target, &session)
             .store(&metadata);
     }
     println!("Saved SSH machine {id}. Remote server is ready.");
@@ -297,12 +304,11 @@ fn remove(paths: &crate::config::AppPaths, raw_id: &str) -> std::io::Result<i32>
         .map(|profile| {
             crate::client::endpoint::SshMetadataCache::new(
                 paths,
-                id.as_str(),
+                &id,
                 &profile.target,
                 &profile.session,
             )
-        })
-        .transpose()?;
+        });
     if !catalog.remove_ssh(&id) {
         eprintln!("machine profile {id} was not found");
         return Ok(1);

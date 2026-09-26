@@ -269,12 +269,11 @@ mod tests {
     fn local_session_target_resolves_named_session_socket() {
         let env = crate::test_support::IsolatedEnv::new();
         env.set(crate::session::SESSION_ENV_VAR, "work");
-        let scratch = crate::test_support::ScratchDir::new("local-session-target");
-        let paths = crate::config::AppPaths::test_at(scratch.path());
+        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
         let client = ApiClient::local(&paths);
         let socket = client.socket_path();
         assert!(socket.ends_with("sessions/work/shepr.sock"), "{socket:?}");
-        assert!(socket.starts_with(scratch.path()), "{socket:?}");
+        assert!(socket.starts_with(paths.config_dir()), "{socket:?}");
     }
 
     #[test]

@@ -1,6 +1,4 @@
 use std::cell::Cell;
-use std::io;
-use std::path::Path;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -1144,26 +1142,6 @@ fn terminate_pane_session(
     );
 }
 
-fn pane_shell(configured_shell: &str) -> String {
-    pane_shell_from(configured_shell, std::env::var("SHELL").ok())
-}
-
-fn pane_shell_from(configured_shell: &str, env_shell: Option<String>) -> String {
-    let configured_shell = configured_shell.trim();
-    if !configured_shell.is_empty() {
-        return configured_shell.to_string();
-    }
-
-    env_shell
-        .map(|shell| shell.trim().to_string())
-        .filter(|shell| !shell.is_empty())
-        .unwrap_or_else(default_pane_shell)
-}
-
-fn default_pane_shell() -> String {
-    "/bin/sh".into()
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct PaneShellConfig<'a> {
     pub(crate) default_shell: &'a str,
@@ -1179,73 +1157,13 @@ impl<'a> PaneShellConfig<'a> {
     }
 }
 
-fn is_executable_file(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    path.metadata()
-        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-}
-
-/// Resolve the configured shell to the executable path the pane will run: a
-/// path is checked as given, a bare name is looked up on `PATH`. Used for
-/// every shell mode, to fill in the pane's `SHELL`.
-fn resolve_shell_executable(shell: &str) -> io::Result<String> {
-    resolve_shell_executable_on(shell, std::env::var_os("PATH"))
-}
-
-/// `resolve_shell_executable` against an explicit `PATH` value, so tests need
-/// not change the process-wide one (which every concurrently running test
-/// that spawns a program by bare name would see).
-fn resolve_shell_executable_on(
-    shell: &str,
-    search_path: Option<std::ffi::OsString>,
-) -> io::Result<String> {
-    if shell.contains(std::path::MAIN_SEPARATOR) {
-        let path = Path::new(shell);
-        return is_executable_file(path)
-            .then(|| shell.to_string())
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("shell {shell:?} is not executable"),
-                )
-            });
-    }
-
-    search_path
-        .and_then(|path| {
-            std::env::split_paths(&path)
-                .map(|dir| dir.join(shell))
-                .find(|candidate| is_executable_file(candidate))
-        })
-        .and_then(|path| path.into_os_string().into_string().ok())
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("shell {shell:?} was not found on PATH"),
-            )
-        })
-}
-
-/// Login shells use `PtyCommand::login_shell` so they receive the login argv0
-/// convention (`-zsh`). `Auto` means non-login.
-///
-/// In every mode the pane's `SHELL` names the shell the pane actually runs, so
-/// anything inside it that spawns `$SHELL` (agents' shell tools included) gets
-/// the same shell rather than the one the server inherited.
-fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> io::Result<PtyCommand> {
-    let shell = pane_shell(shell_config.default_shell);
-    if shell_config.mode == crate::config::ShellModeConfig::Login {
-        let mut cmd = PtyCommand::login_shell();
-        cmd.env("SHELL", resolve_shell_executable(&shell)?);
-        return Ok(cmd);
-    }
-    let mut cmd = PtyCommand::new(&shell);
-    // A shell that does not resolve here is left to `PtyCommand` to reject at
-    // spawn with its own PATH search error; the inherited `SHELL` stays.
-    if let Ok(resolved) = resolve_shell_executable(&shell) {
-        cmd.env("SHELL", resolved);
-    }
-    Ok(cmd)
+/// `PtyCommand` selects and resolves the shell at spawn, and uses that resolved
+/// path for both exec and the child-visible `SHELL`.
+fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> PtyCommand {
+    PtyCommand::interactive_shell(
+        shell_config.default_shell,
+        shell_config.mode == crate::config::ShellModeConfig::Login,
+    )
 }
 
 fn usable_reported_cwd(cwd: std::path::PathBuf) -> Option<std::path::PathBuf> {
@@ -1367,7 +1285,7 @@ impl PaneRuntime {
         render_notify: &Arc<Notify>,
         render_dirty: &Arc<RenderSignal>,
     ) -> std::io::Result<Self> {
-        let mut cmd = pane_shell_command_builder(shell_config)?;
+        let mut cmd = pane_shell_command_builder(shell_config);
         cmd.cwd(cwd);
         apply_pane_terminal_env(&mut cmd);
         apply_pane_launch_env(&mut cmd, launch_env);
@@ -3191,67 +3109,48 @@ mod tests {
     }
 
     #[test]
-    fn pane_shell_prefers_configured_shell() {
-        assert_eq!(
-            pane_shell_from("/usr/bin/nu", Some("/bin/bash".to_string())),
-            "/usr/bin/nu"
-        );
-    }
-
-    #[test]
-    fn pane_shell_falls_back_to_shell_env() {
-        assert_eq!(
-            pane_shell_from("", Some("/bin/bash".to_string())),
-            "/bin/bash"
-        );
-    }
-
-    #[test]
-    fn pane_shell_ignores_empty_values() {
-        assert_eq!(
-            pane_shell_from("   ", Some("  ".to_string())),
-            default_pane_shell()
-        );
-        assert_eq!(pane_shell_from("", None), default_pane_shell());
-    }
-
-    #[test]
-    fn login_shell_builder_uses_login_shell_with_resolved_shell_env() {
+    fn login_shell_builder_uses_one_resolved_path_for_exec_and_shell_env() {
         let cmd = pane_shell_command_builder(PaneShellConfig::new(
             "/bin/sh",
             crate::config::ShellModeConfig::Login,
-        ))
-        .expect("test precondition");
+        ));
         assert!(cmd.is_login_shell());
+        let std_cmd = cmd.to_std_command().expect("test precondition");
+        assert_eq!(std_cmd.get_program(), std::ffi::OsStr::new("/bin/sh"));
+        assert_eq!(std_cmd.get_args().count(), 0);
         assert_eq!(
-            cmd.get_env("SHELL").and_then(std::ffi::OsStr::to_str),
-            Some("/bin/sh")
+            std_cmd
+                .get_envs()
+                .find(|(key, _)| *key == std::ffi::OsStr::new("SHELL"))
+                .and_then(|(_, value)| value),
+            Some(std::ffi::OsStr::new("/bin/sh"))
         );
     }
 
     #[test]
-    fn auto_shell_builder_keeps_direct_shell() {
+    fn auto_shell_builder_execs_configured_shell_without_login_argv0() {
         let cmd = pane_shell_command_builder(PaneShellConfig::new(
             "/bin/sh",
             crate::config::ShellModeConfig::Auto,
-        ))
-        .expect("test precondition");
+        ));
         assert!(!cmd.is_login_shell());
-        assert_eq!(cmd.argv(), &[std::ffi::OsString::from("/bin/sh")]);
+        let std_cmd = cmd.to_std_command().expect("test precondition");
+        assert_eq!(std_cmd.get_program(), std::ffi::OsStr::new("/bin/sh"));
+        assert_eq!(std_cmd.get_args().count(), 0);
     }
 
     #[test]
-    fn login_shell_builder_rejects_missing_shell_instead_of_falling_back() {
-        let err = pane_shell_command_builder(PaneShellConfig::new(
+    fn pane_shell_spawn_rejects_a_missing_configured_shell() {
+        let cmd = pane_shell_command_builder(PaneShellConfig::new(
             "/__shepr_missing_shell__",
             crate::config::ShellModeConfig::Login,
-        ))
-        .expect_err("test precondition");
-        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        ));
+        let err = cmd.to_std_command().expect_err("test precondition");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]
-    fn shell_resolution_finds_bare_shell_names_on_path() {
+    fn pane_shell_spawn_resolves_a_bare_name_on_the_child_path() {
         let bin = crate::test_support::ScratchDir::new("bin");
         let shell = bin.join("fake-shell");
         std::fs::write(&shell, "#!/bin/sh\nexit 0\n").expect("test precondition");
@@ -3261,66 +3160,20 @@ mod tests {
                 .expect("test precondition");
         }
 
-        let resolved =
-            resolve_shell_executable_on("fake-shell", Some(bin.as_os_str().to_os_string()))
-                .expect("test precondition");
-
-        assert_eq!(Some(resolved.as_str()), shell.to_str());
-        assert_eq!(
-            resolve_shell_executable_on("missing-shell", Some(bin.as_os_str().to_os_string()))
-                .expect_err("test precondition")
-                .kind(),
-            io::ErrorKind::NotFound
-        );
-    }
-
-    #[test]
-    fn login_shell_builder_sets_shell_to_the_resolved_executable() {
-        let cmd = pane_shell_command_builder(PaneShellConfig::new(
-            "/bin/sh",
-            crate::config::ShellModeConfig::Login,
-        ))
-        .expect("test precondition");
-
-        assert!(cmd.is_login_shell());
-        assert_eq!(
-            cmd.get_env("SHELL").and_then(std::ffi::OsStr::to_str),
-            Some("/bin/sh")
-        );
-    }
-
-    #[test]
-    fn shell_resolution_preserves_shell_paths() {
-        assert_eq!(
-            resolve_shell_executable("/bin/sh").expect("test precondition"),
-            "/bin/sh"
-        );
-    }
-
-    #[test]
-    fn non_login_shell_builder_execs_resolved_shell_directly() {
-        let cmd = pane_shell_command_builder(PaneShellConfig::new(
-            "/bin/sh",
+        let mut cmd = pane_shell_command_builder(PaneShellConfig::new(
+            "fake-shell",
             crate::config::ShellModeConfig::NonLogin,
-        ))
-        .expect("test precondition");
-        assert!(!cmd.is_login_shell());
-        assert_eq!(cmd.argv(), &[std::ffi::OsString::from("/bin/sh")]);
-    }
-
-    #[test]
-    fn non_login_shell_builder_exports_the_configured_shell() {
-        for mode in [
-            crate::config::ShellModeConfig::Auto,
-            crate::config::ShellModeConfig::NonLogin,
-        ] {
-            let cmd = pane_shell_command_builder(PaneShellConfig::new("/bin/sh", mode))
-                .expect("test precondition");
-            assert_eq!(
-                cmd.get_env("SHELL").and_then(std::ffi::OsStr::to_str),
-                Some("/bin/sh")
-            );
-        }
+        ));
+        cmd.env("PATH", bin.as_os_str());
+        let std_cmd = cmd.to_std_command().expect("test precondition");
+        assert_eq!(std_cmd.get_program(), shell.as_os_str());
+        assert_eq!(
+            std_cmd
+                .get_envs()
+                .find(|(key, _)| *key == std::ffi::OsStr::new("SHELL"))
+                .and_then(|(_, value)| value),
+            Some(shell.as_os_str())
+        );
     }
 
     #[test]

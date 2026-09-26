@@ -531,7 +531,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let profile = SavedSshEndpoint {
         id: ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
         label: "Remote".into(),
-        target: "dev@example.com".into(),
+        target: crate::remote::SshTarget::parse("dev@example.com").expect("test precondition"),
         session: "main".into(),
     };
     let target_id = ClientEndpointId::Ssh(profile.id.clone());

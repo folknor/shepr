@@ -1,6 +1,6 @@
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
 
 mod activation;
@@ -24,7 +24,7 @@ pub(crate) use writer::NativeEndpointTransport;
 
 const PROFILE_ID_BYTES: usize = 16;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub(crate) struct ProfileId(String);
 
@@ -62,6 +62,16 @@ impl ProfileId {
 
     pub(crate) fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for ProfileId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -112,6 +122,11 @@ mod tests {
             first
         );
         assert_eq!(first.as_str().len(), 32);
+    }
+
+    #[test]
+    fn profile_id_deserialization_preserves_the_type_invariant() {
+        assert!(serde_json::from_str::<ProfileId>("\"not-a-profile-id\"").is_err());
     }
 
     #[test]

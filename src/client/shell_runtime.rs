@@ -1134,7 +1134,8 @@ mod tests {
             .expect("test precondition");
         let docs_id = endpoint::ClientEndpointId::Ssh(docs);
         let mut profiles = catalog.ssh.clone();
-        profiles[0].target = "build-moved".into();
+        profiles[0].target =
+            crate::remote::SshTarget::parse("build-moved").expect("test precondition");
         profiles.extend(added.ssh);
 
         assert!(

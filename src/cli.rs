@@ -185,14 +185,17 @@ pub(crate) fn run_on_machine(
     invocation: &Invocation,
     selector: &str,
 ) -> std::io::Result<CommandOutcome> {
-    let paths = resolve_app_paths()?;
+    let paths = resolve_machine_app_paths()?;
     target::run_on_machine(selector, invocation.matches.subcommand(), &paths)
 }
 
 /// Runs the invocation's subcommand. `NotCli` means the invocation launches
 /// something instead: the TUI (no subcommand, or `session attach`), the
 /// headless server (bare `server`), or one of the hidden client/bridge modes.
-pub(crate) fn run(invocation: &Invocation) -> std::io::Result<CommandOutcome> {
+pub(crate) fn run(
+    invocation: &Invocation,
+    requested_session: Option<crate::session::SessionId>,
+) -> std::io::Result<CommandOutcome> {
     match invocation.matches.subcommand() {
         Some(("server", matches)) if matches.subcommand().is_none() => Ok(CommandOutcome::NotCli),
         Some(("session", matches))
@@ -216,7 +219,7 @@ pub(crate) fn run(invocation: &Invocation) -> std::io::Result<CommandOutcome> {
             dispatch_config_check(name, matches)
         }
         Some((name, matches)) => {
-            let paths = resolve_app_paths()?;
+            let paths = resolve_app_paths(requested_session)?;
             dispatch(name, matches, &paths)
         }
         None => Ok(CommandOutcome::NotCli),
@@ -274,8 +277,19 @@ fn dispatch_config_check(name: &str, matches: &ArgMatches) -> std::io::Result<Co
     Ok(CommandOutcome::Handled(exit_code))
 }
 
-fn resolve_app_paths() -> std::io::Result<crate::config::AppPaths> {
-    crate::config::AppPaths::resolve().map_err(|diagnostics| {
+fn resolve_app_paths(
+    requested_session: Option<crate::session::SessionId>,
+) -> std::io::Result<crate::config::AppPaths> {
+    crate::config::AppPaths::resolve_with_session(requested_session).map_err(|diagnostics| {
+        std::io::Error::other(format!(
+            "application paths could not be resolved:\n  {}",
+            diagnostics.join("\n  ")
+        ))
+    })
+}
+
+fn resolve_machine_app_paths() -> std::io::Result<crate::config::AppPaths> {
+    crate::config::AppPaths::resolve_for_machine().map_err(|diagnostics| {
         std::io::Error::other(format!(
             "application paths could not be resolved:\n  {}",
             diagnostics.join("\n  ")
@@ -422,7 +436,7 @@ fn session_stop(name: &str, json: bool, paths: &crate::config::AppPaths) -> i32 
             return 1;
         }
     };
-    match crate::session::stop_session(paths, target.as_deref()) {
+    match crate::session::stop_session(paths, &target) {
         Ok(session) => {
             if json {
                 print_json(&serde_json::json!({
@@ -442,7 +456,14 @@ fn session_stop(name: &str, json: bool, paths: &crate::config::AppPaths) -> i32 
 }
 
 fn session_delete(name: &str, json: bool, paths: &crate::config::AppPaths) -> i32 {
-    match crate::session::delete_session(paths, name) {
+    let target = match crate::session::parse_target_name(name) {
+        Ok(target) => target,
+        Err(message) => {
+            print_session_error("invalid_session_name", &message);
+            return 1;
+        }
+    };
+    match crate::session::delete_session(paths, &target) {
         Ok(session) => {
             if json {
                 print_json(&serde_json::json!({
@@ -536,9 +557,11 @@ fn ensure_server_protocol_compatible(
     let server_protocol = status
         .protocol
         .ok_or_else(|| std::io::Error::other("server ping did not include a protocol version"))?;
-    let Some(response) =
-        protocol_guard::mismatch_response(request_id, server_protocol, &target::restart_guidance())
-    else {
+    let Some(response) = protocol_guard::mismatch_response(
+        request_id,
+        server_protocol,
+        &target::restart_guidance(paths),
+    ) else {
         target::mark_protocol_checked();
         return Ok(());
     };
@@ -736,7 +759,7 @@ mod tests {
             Some("work".to_string())
         );
         assert!(matches!(
-            super::run(&invocation).expect("test precondition"),
+            super::run(&invocation, None).expect("test precondition"),
             CommandOutcome::NotCli
         ));
 
@@ -762,7 +785,7 @@ mod tests {
             &["terminal", "attach", "terminal-1"][..],
             &["agent", "attach", "agent-1"],
         ] {
-            let error = match super::run(&parse(args)) {
+            let error = match super::run(&parse(args), None) {
                 Err(error) => error,
                 Ok(CommandOutcome::Handled(code)) => {
                     panic!("{args:?} unexpectedly returned exit code {code}")

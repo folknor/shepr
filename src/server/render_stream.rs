@@ -148,9 +148,9 @@ impl ClientRenderState {
                 .is_none()
                 .then_some(last_surface.as_deref())
                 .flatten()
-                .filter(|last| last.boot_id == surface.boot_id && last.frame == surface.frame)
+                .filter(|last| last.frame == surface.frame)
                 .and_then(|last| {
-                    crate::protocol::surface_reuse::message(last.surface_revision, surface)
+                    crate::protocol::surface_reuse::message(last, surface)
                         .map_err(|error| tracing::warn!(%error, "failed to encode surface reuse"))
                         .ok()
                         .flatten()
@@ -180,13 +180,22 @@ impl ClientRenderState {
             return None;
         }
         let last = last_surface.as_deref()?;
-        if last.boot_id != patch.boot_id
-            || last.projection_revision != patch.projection_revision
-            || last.surface_revision != patch.base_surface_revision
-        {
+        let next_revision = surface_revision.checked_add(1)?;
+        let baseline = crate::protocol::surface_reuse::Baseline::new(
+            &last.boot_id,
+            last.projection_revision,
+            last.surface_revision,
+        );
+        if !baseline.accepts(
+            &patch.boot_id,
+            patch.base_surface_revision,
+            next_revision,
+            &crate::protocol::surface_reuse::ProjectionUpdate::Patch {
+                revision: patch.projection_revision,
+            },
+        ) {
             return None;
         }
-        let next_revision = surface_revision.saturating_add(1);
         patch.surface_revision = next_revision;
         Some(PreparedRender::SemanticPatch {
             message: ServerMessage::PaneSurfacePatch(patch),
@@ -261,10 +270,19 @@ pub(super) fn apply_pane_surface_patch(
     surface: &mut PaneSurfaceFrame,
     patch: &PaneSurfacePatch,
 ) -> Result<(), &'static str> {
-    if surface.boot_id != patch.boot_id
-        || surface.projection_revision != patch.projection_revision
-        || surface.surface_revision != patch.base_surface_revision
-    {
+    let baseline = crate::protocol::surface_reuse::Baseline::new(
+        &surface.boot_id,
+        surface.projection_revision,
+        surface.surface_revision,
+    );
+    if !baseline.accepts(
+        &patch.boot_id,
+        patch.base_surface_revision,
+        patch.surface_revision,
+        &crate::protocol::surface_reuse::ProjectionUpdate::Patch {
+            revision: patch.projection_revision,
+        },
+    ) {
         return Err("patch revision does not match the surface baseline");
     }
     let width = usize::from(surface.frame.width);

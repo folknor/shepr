@@ -129,8 +129,19 @@ fn modes_and_kitty_flags_follow_terminal_state() {
     let mut terminal = Terminal::new(80, 24, 0).expect("test precondition");
     terminal.mode_set(1, true).expect("test precondition");
     terminal.write(b"\x1b[>1u\x1b[?1000h\x1b[?1006h");
+    terminal.write(b"\x1b[?12h\x1b[?1042h");
 
     assert!(terminal.mode_get(1).expect("test precondition"));
+    assert!(
+        terminal
+            .mode_get(MODE_CURSOR_BLINK)
+            .expect("test precondition")
+    );
+    assert!(
+        terminal
+            .mode_get(MODE_URGENCY_HINTS)
+            .expect("test precondition")
+    );
     assert_eq!(
         terminal.kitty_keyboard_flags().expect("test precondition"),
         1
@@ -157,6 +168,17 @@ fn modes_and_kitty_flags_follow_terminal_state() {
     assert!(terminal.mode_get(1003).expect("test precondition"));
 
     terminal.write(b"\x1b[<u");
+    terminal.write(b"\x1b[?12l\x1b[?1042l");
+    assert!(
+        !terminal
+            .mode_get(MODE_CURSOR_BLINK)
+            .expect("test precondition")
+    );
+    assert!(
+        !terminal
+            .mode_get(MODE_URGENCY_HINTS)
+            .expect("test precondition")
+    );
     assert_eq!(
         terminal.kitty_keyboard_flags().expect("test precondition"),
         0

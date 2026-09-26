@@ -111,9 +111,12 @@ fn decode_surface(decoder: &mut Decoder<'_>) -> Result<PaneSurfaceFrame, CodecEr
 }
 
 fn decode_frame(decoder: &mut Decoder<'_>) -> Result<FrameData, CodecError> {
-    // Delta metadata is encoded after the sender has taken both full cell
-    // grids. Reading only the count prevents a forged Vec prefix from causing
-    // any cell allocation.
+    // Delta metadata requires an empty cell list, while full surfaces need a
+    // bounded cell list. A normal serde decode of FrameData cannot apply
+    // those different limits at this field occurrence, and would allocate the
+    // announced cells before rejecting them. Removing this context-specific
+    // read needs either a separate delta-metadata frame type or a codec seed
+    // that carries per-field limits into serde.
     require_empty_sequence(decoder, "surface metadata contains main cells")?;
     let width = decoder.decode::<u16>()?;
     let height = decoder.decode::<u16>()?;

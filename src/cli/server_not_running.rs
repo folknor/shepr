@@ -44,14 +44,9 @@ pub(super) fn response(
 }
 
 fn startup_command(socket_path: &Path, paths: &crate::config::AppPaths) -> String {
-    let session_socket =
-        crate::session::api_socket_path_for(paths, crate::session::active_name().as_deref());
-    if socket_path == session_socket {
-        crate::session::local_attach_command()
+    if socket_path == paths.server_address().api_socket() {
+        paths.server_address().attach_command(paths.session_id())
     } else {
-        // A socket override wins over an inherited SHEPR_SESSION. Keep the
-        // command in the current environment so it starts the overridden
-        // target instead of directing the user to an unrelated session.
         "shepr".to_string()
     }
 }

@@ -334,7 +334,8 @@ fn client_error_display_detached_default_session_reattach_hint() {
     let err = ClientError::ServerShutdown {
         reason: Some("detached".into()),
     };
-    let msg = err.to_string();
+    let paths = crate::config::AppPaths::default();
+    let msg = err.display_with_target(paths.session_id(), paths.server_address());
     assert!(
         msg.contains("Run `shepr` to reattach"),
         "should suggest default reattach command: {msg}"
@@ -345,11 +346,12 @@ fn client_error_display_detached_default_session_reattach_hint() {
 fn client_error_display_detached_named_session_reattach_hint() {
     let env = IsolatedEnv::new();
     env.remove(crate::remote::REATTACH_COMMAND_ENV_VAR);
-    env.set(crate::session::SESSION_ENV_VAR, "work");
     let err = ClientError::ServerShutdown {
         reason: Some("detached".into()),
     };
-    let msg = err.to_string();
+    let session = crate::session::SessionId::parse("work").expect("test precondition");
+    let paths = crate::config::AppPaths::default();
+    let msg = err.display_with_target(&session, paths.server_address());
     assert!(
         msg.contains("Run `shepr session attach work` to reattach"),
         "should suggest named session reattach command: {msg}"

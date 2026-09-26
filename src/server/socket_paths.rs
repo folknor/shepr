@@ -1,5 +1,6 @@
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Legacy environment variable for overriding the client socket path.
 ///
@@ -8,45 +9,162 @@ use std::path::{Path, PathBuf};
 /// client-only override when `SHEPR_SOCKET_PATH` is not set.
 pub const CLIENT_SOCKET_PATH_ENV_VAR: &str = "SHEPR_CLIENT_SOCKET_PATH";
 
-/// Returns the path for the client protocol socket.
-///
-/// Contract-aligned override behavior:
-/// 1. If CLI `--session <name>` is active, use that session's client socket.
-/// 2. If `SHEPR_SOCKET_PATH` is set, derive the client socket path from it by
-///    inserting `-client` before `.sock` (e.g. `shepr.sock` -> `shepr-client.sock`).
-///    This keeps JSON API and client socket overrides consistent.
-/// 3. Otherwise, honor `SHEPR_CLIENT_SOCKET_PATH` (legacy/testing fallback).
-/// 4. Otherwise, use the active session data directory.
-pub fn client_socket_path(paths: &crate::config::AppPaths) -> PathBuf {
-    if crate::session::explicit_session_requested() {
-        return crate::session::client_socket_path_for(
-            paths,
-            crate::session::active_name().as_deref(),
-        );
-    }
-    client_socket_path_from_overrides(
-        paths,
-        std::env::var(crate::api::SOCKET_PATH_ENV_VAR)
-            .ok()
-            .as_deref(),
-        std::env::var(CLIENT_SOCKET_PATH_ENV_VAR).ok().as_deref(),
-    )
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerAddress {
+    api_socket: PathBuf,
+    client_socket: PathBuf,
+    source: AddressSource,
 }
 
-pub(crate) fn client_socket_path_from_overrides(
-    paths: &crate::config::AppPaths,
-    api_socket_override: Option<&str>,
-    client_socket_override: Option<&str>,
-) -> PathBuf {
-    if let Some(api_socket_override) = api_socket_override {
-        return derive_client_socket_from_api_socket(Path::new(api_socket_override));
+// Only for `AppPaths::default()` in tests; production addresses come from
+// `resolve`, never from relative placeholder paths.
+#[cfg(test)]
+impl Default for ServerAddress {
+    fn default() -> Self {
+        Self {
+            api_socket: PathBuf::from("shepr.sock"),
+            client_socket: PathBuf::from("shepr-client.sock"),
+            source: AddressSource::Session,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AddressSource {
+    Session,
+    ApiOverride,
+    ClientOverride,
+}
+
+impl ServerAddress {
+    pub(crate) fn resolve(
+        config_dir: &Path,
+        session: &crate::session::SessionId,
+        session_was_requested: bool,
+        api_socket_override: Option<&str>,
+        client_socket_override: Option<&str>,
+    ) -> Self {
+        let session_api = session.api_socket_path_under(config_dir);
+        if session_was_requested {
+            return Self::for_session(session_api);
+        }
+        if let Some(api_socket) = api_socket_override {
+            let api_socket = PathBuf::from(api_socket);
+            return Self {
+                client_socket: derive_client_socket_from_api_socket(&api_socket),
+                api_socket,
+                source: AddressSource::ApiOverride,
+            };
+        }
+        if let Some(client_socket) = client_socket_override {
+            return Self {
+                api_socket: session_api,
+                client_socket: PathBuf::from(client_socket),
+                source: AddressSource::ClientOverride,
+            };
+        }
+        Self::for_session(session_api)
     }
 
-    if let Some(client_socket_override) = client_socket_override {
-        return PathBuf::from(client_socket_override);
+    fn for_session(api_socket: PathBuf) -> Self {
+        let client_socket = derive_client_socket_from_api_socket(&api_socket);
+        Self {
+            api_socket,
+            client_socket,
+            source: AddressSource::Session,
+        }
     }
 
-    crate::session::client_socket_path_for(paths, crate::session::active_name().as_deref())
+    pub fn api_socket(&self) -> &Path {
+        &self.api_socket
+    }
+
+    pub fn client_socket(&self) -> &Path {
+        &self.client_socket
+    }
+
+    pub fn attach_command(&self, session: &crate::session::SessionId) -> String {
+        match self.source {
+            AddressSource::Session => session.attach_command(),
+            AddressSource::ApiOverride => {
+                self.command_with_api_override(session, &self.api_socket, "shepr")
+            }
+            AddressSource::ClientOverride => {
+                self.command_with_client_override(session, &self.client_socket, "shepr")
+            }
+        }
+    }
+
+    pub fn stop_command(&self, session: &crate::session::SessionId) -> String {
+        match self.source {
+            AddressSource::Session => session.stop_command(),
+            AddressSource::ApiOverride => {
+                self.command_with_api_override(session, &self.api_socket, "shepr server stop")
+            }
+            AddressSource::ClientOverride => {
+                self.command_with_client_override(session, &self.client_socket, "shepr server stop")
+            }
+        }
+    }
+
+    fn command_with_api_override(
+        &self,
+        session: &crate::session::SessionId,
+        api_socket: &Path,
+        command: &str,
+    ) -> String {
+        format!(
+            "{}={} {}={} {command}",
+            crate::session::SESSION_ENV_VAR,
+            shell_quote(session.display_name()),
+            crate::api::SOCKET_PATH_ENV_VAR,
+            shell_quote(&api_socket.to_string_lossy())
+        )
+    }
+
+    fn command_with_client_override(
+        &self,
+        session: &crate::session::SessionId,
+        client_socket: &Path,
+        command: &str,
+    ) -> String {
+        format!(
+            "{}={} {}={} {command}",
+            crate::session::SESSION_ENV_VAR,
+            shell_quote(session.display_name()),
+            CLIENT_SOCKET_PATH_ENV_VAR,
+            shell_quote(&client_socket.to_string_lossy())
+        )
+    }
+
+    pub(crate) fn apply_to_child_command(&self, command: &mut Command) {
+        match self.source {
+            AddressSource::Session => {
+                command
+                    .env_remove(crate::api::SOCKET_PATH_ENV_VAR)
+                    .env_remove(CLIENT_SOCKET_PATH_ENV_VAR);
+            }
+            AddressSource::ApiOverride => {
+                command
+                    .env(crate::api::SOCKET_PATH_ENV_VAR, &self.api_socket)
+                    .env_remove(CLIENT_SOCKET_PATH_ENV_VAR);
+            }
+            AddressSource::ClientOverride => {
+                command
+                    .env_remove(crate::api::SOCKET_PATH_ENV_VAR)
+                    .env(CLIENT_SOCKET_PATH_ENV_VAR, &self.client_socket);
+            }
+        }
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Returns the resolved client protocol socket for this process.
+pub fn client_socket_path(paths: &crate::config::AppPaths) -> PathBuf {
+    paths.server_address().client_socket().to_path_buf()
 }
 
 pub(crate) fn derive_client_socket_from_api_socket(api_socket_path: &Path) -> PathBuf {
@@ -84,36 +202,101 @@ mod tests {
 
     #[test]
     fn client_socket_path_derived_from_api_socket_override() {
-        let paths = crate::config::AppPaths::default();
-        let path = client_socket_path_from_overrides(&paths, Some("/tmp/test-shepr.sock"), None);
-        assert_eq!(path, PathBuf::from("/tmp/test-shepr-client.sock"));
+        let address = ServerAddress::resolve(
+            Path::new("/tmp"),
+            &crate::session::SessionId::Default,
+            false,
+            Some("/tmp/test-shepr.sock"),
+            None,
+        );
+        assert_eq!(
+            address.client_socket(),
+            Path::new("/tmp/test-shepr-client.sock")
+        );
     }
 
     #[test]
     fn client_socket_path_api_override_takes_precedence_over_legacy_client_override() {
-        let paths = crate::config::AppPaths::default();
-        let path = client_socket_path_from_overrides(
-            &paths,
+        let address = ServerAddress::resolve(
+            Path::new("/tmp"),
+            &crate::session::SessionId::Default,
+            false,
             Some("/tmp/test-shepr.sock"),
             Some("/tmp/legacy-client.sock"),
         );
-        assert_eq!(path, PathBuf::from("/tmp/test-shepr-client.sock"));
+        assert_eq!(
+            address.client_socket(),
+            Path::new("/tmp/test-shepr-client.sock")
+        );
+    }
+
+    #[test]
+    fn explicit_session_address_ignores_both_socket_overrides() {
+        let session = crate::session::SessionId::parse("work").expect("test precondition");
+        let address = ServerAddress::resolve(
+            Path::new("/tmp/config"),
+            &session,
+            true,
+            Some("/tmp/other-api.sock"),
+            Some("/tmp/other-client.sock"),
+        );
+
+        assert_eq!(
+            address.api_socket(),
+            Path::new("/tmp/config/sessions/work/shepr.sock")
+        );
+        assert_eq!(
+            address.client_socket(),
+            Path::new("/tmp/config/sessions/work/shepr-client.sock")
+        );
+        assert_eq!(
+            address.attach_command(&session),
+            "shepr session attach work"
+        );
     }
 
     #[test]
     fn client_socket_path_respects_legacy_client_override_without_api_override() {
-        let paths = crate::config::AppPaths::default();
-        let path =
-            client_socket_path_from_overrides(&paths, None, Some("/tmp/test-shepr-client.sock"));
-        assert_eq!(path, PathBuf::from("/tmp/test-shepr-client.sock"));
+        let address = ServerAddress::resolve(
+            Path::new("/tmp"),
+            &crate::session::SessionId::Named(
+                crate::session::SessionName::parse("work").expect("test precondition"),
+            ),
+            false,
+            None,
+            Some("/tmp/test-shepr-client.sock"),
+        );
+        assert_eq!(
+            address.client_socket(),
+            Path::new("/tmp/test-shepr-client.sock")
+        );
+        assert_eq!(
+            address.api_socket(),
+            Path::new("/tmp/sessions/work/shepr.sock")
+        );
     }
 
     #[test]
     fn client_socket_path_defaults_to_config_dir() {
-        let scratch = crate::test_support::ScratchDir::new("socket-path");
-        let paths = crate::config::AppPaths::test_at(scratch.path());
-        let path = client_socket_path_from_overrides(&paths, None, None);
-        assert_eq!(path, paths.config_dir().join("shepr-client.sock"));
+        let session = crate::session::SessionId::Default;
+        let address = ServerAddress::resolve(Path::new("/tmp/config"), &session, false, None, None);
+        assert_eq!(
+            address.client_socket(),
+            Path::new("/tmp/config/shepr-client.sock")
+        );
+    }
+
+    #[test]
+    fn named_session_client_socket_matches_derived_api_socket_name() {
+        let session = crate::session::SessionId::parse("work").expect("test precondition");
+        let api = session.api_socket_path_under(Path::new("/tmp/config"));
+        let client = session.client_socket_path_under(Path::new("/tmp/config"));
+        let derived = derive_client_socket_from_api_socket(&api);
+        assert_eq!(client, derived);
+        assert_eq!(
+            client,
+            Path::new("/tmp/config/sessions/work/shepr-client.sock")
+        );
     }
 
     #[test]

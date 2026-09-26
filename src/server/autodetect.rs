@@ -87,7 +87,7 @@ fn validate_running_server_compatibility(paths: &crate::config::AppPaths) -> io:
     let Some(status) = read_server_status(paths)? else {
         return Err(io::Error::other(format!(
             "a shepr server is listening, but its status API is unavailable.\n\n{}\nIf that fails, stop the old server process manually.",
-            crate::session::active_restart_after_update_guidance()
+            crate::session::restart_after_update_guidance_for(paths)
         )));
     };
 
@@ -104,7 +104,7 @@ fn validate_running_server_compatibility(paths: &crate::config::AppPaths) -> io:
             .unwrap_or_else(|| "unavailable".to_string()),
         crate::build_info::version(),
         crate::protocol::PROTOCOL_VERSION,
-        crate::session::active_restart_after_update_guidance()
+        crate::session::restart_after_update_guidance_for(paths)
     )))
 }
 
@@ -117,9 +117,9 @@ fn validate_running_server_compatibility(paths: &crate::config::AppPaths) -> io:
 /// The server process is fully detached:
 /// - Runs in its own session (setsid) so it survives the client exiting
 /// - Stdin/stdout/stderr are redirected to /dev/null
-/// - Inherits relevant environment variables (`XDG_CONFIG_HOME`, `SHEPR_SESSION`,
-///   socket overrides, etc.), except inherited socket overrides are cleared when
-///   this CLI invocation explicitly selected a session.
+/// - Inherits the surrounding environment and gets the already-resolved
+///   session and socket target on its child command, including removals for
+///   inherited overrides that were superseded by an explicit session.
 ///
 /// Returns the PID of the spawned server process.
 pub fn spawn_server_daemon(paths: &crate::config::AppPaths) -> io::Result<u32> {
@@ -134,7 +134,7 @@ pub fn spawn_server_daemon(paths: &crate::config::AppPaths) -> io::Result<u32> {
 
     info!(exe = %exe.display(), "spawning server daemon");
 
-    let mut command = build_server_daemon_command(&exe, paths.current_dir());
+    let mut command = build_server_daemon_command(&exe, paths.current_dir(), paths);
 
     let pid = command.spawn().map(|child| child.id()).map_err(|err| {
         io::Error::new(err.kind(), format!("failed to spawn shepr server: {err}"))
@@ -144,7 +144,11 @@ pub fn spawn_server_daemon(paths: &crate::config::AppPaths) -> io::Result<u32> {
     Ok(pid)
 }
 
-fn build_server_daemon_command(exe: &Path, startup_cwd: Option<&Path>) -> Command {
+fn build_server_daemon_command(
+    exe: &Path,
+    startup_cwd: Option<&Path>,
+    paths: &crate::config::AppPaths,
+) -> Command {
     let mut command = Command::new(exe);
     command
         .arg("server")
@@ -160,11 +164,8 @@ fn build_server_daemon_command(exe: &Path, startup_cwd: Option<&Path>) -> Comman
         command.env_remove(STARTUP_CWD_ENV_VAR);
     }
 
-    if crate::session::explicit_session_requested() {
-        command
-            .env_remove(crate::api::SOCKET_PATH_ENV_VAR)
-            .env_remove("SHEPR_CLIENT_SOCKET_PATH");
-    }
+    paths.session_id().apply_to_child_command(&mut command);
+    paths.server_address().apply_to_child_command(&mut command);
 
     command
 }
@@ -284,11 +285,14 @@ mod tests {
         let env = IsolatedEnv::new();
         env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
         env.set("SHEPR_CLIENT_SOCKET_PATH", "/tmp/inherited-client.sock");
-        crate::session::configure(Some("work")).expect("test precondition");
+        let session = crate::session::SessionId::parse("work").expect("test precondition");
+        let paths = crate::config::AppPaths::resolve_with_session(Some(session))
+            .expect("isolated paths resolve");
 
         let command = build_server_daemon_command(
             &PathBuf::from("/tmp/shepr-test"),
             Some(Path::new("/home/test")),
+            &paths,
         );
         let envs: Vec<_> = command.get_envs().collect();
 
@@ -298,13 +302,18 @@ mod tests {
         assert!(envs.iter().any(|(key, value)| {
             *key == OsStr::new("SHEPR_CLIENT_SOCKET_PATH") && value.is_none()
         }));
+        assert!(envs.iter().any(|(key, value)| {
+            *key == OsStr::new(crate::session::SESSION_ENV_VAR)
+                && value == &Some(OsStr::new("work"))
+        }));
     }
 
     #[test]
     fn server_daemon_command_passes_current_dir_as_startup_cwd() {
         let expected = Path::new("/home/test");
+        let paths = crate::config::AppPaths::default();
         let command =
-            build_server_daemon_command(&PathBuf::from("/tmp/shepr-test"), Some(expected));
+            build_server_daemon_command(&PathBuf::from("/tmp/shepr-test"), Some(expected), &paths);
         let envs: Vec<_> = command.get_envs().collect();
 
         assert!(envs.iter().any(|(key, value)| {
@@ -453,9 +462,9 @@ test "$sid" = "$$"
     #[test]
     fn validate_running_server_compatibility_fails_when_status_api_missing() {
         let env = IsolatedEnv::new();
-        let paths = crate::config::AppPaths::test_at(env.path());
         let path = env.path().join("api.sock");
         env.set(crate::api::SOCKET_PATH_ENV_VAR, &path);
+        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
 
         let err = validate_running_server_compatibility(&paths).expect_err("test precondition");
 
@@ -468,9 +477,9 @@ test "$sid" = "$$"
     #[test]
     fn validate_running_server_compatibility_names_session_commands_for_protocol_mismatch() {
         let env = IsolatedEnv::new();
-        let paths = crate::config::AppPaths::test_at(env.path());
         env.set(crate::session::SESSION_ENV_VAR, "work");
-        let path = crate::session::api_socket_path_for(&paths, Some("work"));
+        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
+        let path = crate::session::api_socket_path_for(&paths, paths.session_id());
         std::fs::create_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
         let listener = UnixListener::bind(&path).expect("test precondition");

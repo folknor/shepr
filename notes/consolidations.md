@@ -111,67 +111,6 @@ Proposed owner: the vt module owns one set of types; protocol conversions are
 
 Reported by: terminal-core, server.
 
-## CON-010 - Row wrap flags
-
-Sites: `visit_screen_row_text` and `screen_text_rows_range` each compute
-`soft_wrapped` and `wrap_continuation`; `ScreenTextRow` re-declares the fields
-instead of embedding `RowWrap`.
-
-Reported by: terminal-core.
-
-## CON-011 - DEC private mode numbers and rules
-
-Sites: `mode_get` (numbers → `TermMode` bits); `handler::private_mode` (numbers →
-vte names; disagrees with `mode_get` on 3, 12 and 1042); `CoreHandler::adapter_private_mode`
-plus the set/unset arms; `terminal_modes::DISABLE_HOST_MOUSE_REPORTING_SEQUENCE`
-(includes 1015, which the core does not model); `PrivateMode::Unknown(9 | 1016 |
-2031 | 2048)` literals matched in several places. The X10 mouse exclusivity rule
-is written twice, in the `set_private_mode` and `unset_private_mode` arms.
-
-Proposed owner: one mode table (number, name, getter, setter) over a mode enum.
-
-Reported by: terminal-core.
-
-## CON-012 - How a batch against the term is opened and closed
-
-Sites: the nine-field `CoreHandler` construction wrapped in
-`rows.begin`/`rows.finish` plus `drain_events`, repeated in `advance`,
-`flush_expired_synchronized_output` and `mode_set`. A new entry point could skip
-the row accounting.
-
-Proposed owner: one `with_handler(|h| ...)` method.
-
-Reported by: terminal-core.
-
-## CON-013 - PTY submission lifecycle state
-
-Sites: `SubmissionStage` (shared), `SubmissionPhase` (runner-local) and
-`PendingWrite.boundary` in `pty/actor.rs`, held together only by `debug_assert!`.
-
-Proposed owner: one state machine owned by the actor, with the canceller seeing a
-projection; possibly its own `submission.rs`.
-
-Reported by: terminal-core.
-
-## CON-014 - SHELL fallback and shell resolution
-
-Sites: `base_env` fills `SHELL` from passwd; `PtyCommand::shell()` re-validates
-and falls back again; `to_std_command` re-inserts it. `pane.rs` has its own shell
-resolution (`resolve_shell_executable_on`, `pane_shell_from`).
-
-Proposed owner: resolve once at spawn.
-
-Reported by: terminal-core, pane-detection.
-
-## CON-015 - Is this PATH candidate executable?
-
-Sites: `search_path` duplicates the executable / directory / missing checks
-between its cwd-relative and absolute branches.
-
-Proposed owner: one `classify_candidate`.
-
-Reported by: terminal-core.
-
 ## CON-016 - Is the pane's child gone?
 
 Sites: `child_wait_completed: AtomicBool`, `session_leader.has_exited()` /
@@ -365,19 +304,6 @@ choice becomes a function of `(diagnostics, KeybindingSource)`.
 
 Reported by: config-cli, server.
 
-## CON-032 - Does this surface update continue the baseline?
-
-Sites (`protocol/surface_reuse.rs`): reuse check (l.82-88) ignores
-projection_revision; patch check (l.122-125) requires `projection_revision ==
-base`; delta check (l.157-162) requires `base_projection_revision == base` and
-`projection_revision >= base`. A patch with no baseline passes silently
-(BUG-012); reuse and delta error. Sender side: `surface_delta::message` checks
-boot, width, height and cell count against `last`.
-
-Proposed owner: one `Baseline::accepts(kind, base_rev, next_rev, proj, boot)`.
-
-Reported by: protocol.
-
 ## CON-034 - Surface size and frame size limits
 
 Sites: `wire.rs` `MAX_SURFACE_DIMENSION = 4096`, `MAX_SURFACE_CELLS =
@@ -400,6 +326,15 @@ Sites: `PaneSurfaceFrame`, `FrameData`, `PaneSurfaceSplit` layout restated in
 
 Proposed owner: bounded collection decoding in the codec (e.g. `BoundedVec<T,
 const MAX>`), deleting the hand decoder.
+
+Obstacle (wave A fixer): delta metadata reuses the frame type with an empty cell
+list while full frames need a bounded one, so one field occurrence needs two
+limits; noted at `decode_frame` in `surface_delta/decode.rs`.
+
+Decision (owner): do it properly, not as a delta-only patch. The codec itself
+enforces logical item limits on every wire collection, for all messages, and
+the wire types are shaped so each field has one rule; then the hand decoder
+goes. A single-agent wave of its own.
 
 Reported by: protocol.
 
@@ -476,22 +411,6 @@ Proposed owner: a `PresentationGate` returning Apply/Drop/Buffer per message.
 
 Reported by: client.
 
-## CON-042 - Which socket does this process target?
-
-Sites: `session::active_api_socket_path` (explicit session, else
-`SHEPR_SOCKET_PATH`, else session); `server::socket_paths::client_socket_path`
-(same order plus `SHEPR_CLIENT_SOCKET_PATH`);
-`session::active_restart_after_update_guidance` (third time);
-`session::stop_active_server` combines one path from each; `api::socket_path()`
-possibly a fourth (unverified); `api::SOCKET_PATH_ENV_VAR` lives in `api`.
-Client-socket naming disagrees on edge cases: `client_socket_path_for`
-hard-codes `shepr-client.sock`, `derive_client_socket_from_api_socket` produces
-`{stem}-client.sock`.
-
-Proposed owner: a `ServerAddress` value resolved once in `main` (STR-022, STR-037).
-
-Reported by: config-cli, server.
-
 ## CON-043 - Is a server alive?
 
 Sites: `session::is_running_at` (`path.exists() && connect().is_ok()`);
@@ -548,20 +467,6 @@ get a writable session path.
 
 Reported by: config-cli.
 
-## CON-047 - Is this a valid session name?
-
-Sites: `session.rs` `validate_name` / `normalize_name` / `parse_target_name`,
-re-applied in `active_name()` (reads env every call) and `list_sessions`;
-`exact_session_dir_for_delete` does its own scan; `delete_session(&str)`
-re-validates. In `remote/`: `SavedSshEndpoint::validate`,
-`SavedSshConnector::connect`, `validated_saved_ssh`, `check_saved_ssh`,
-`prepare_saved_ssh`. `delete_session` and `list_sessions` also repeat
-`config_dir().join("sessions")` instead of `data_dir_for`.
-
-Proposed owner: `enum SessionId { Default, Named(SessionName) }` minted once.
-
-Reported by: config-cli, remote.
-
 ## CON-048 - Where is home?
 
 Sites: `pathutil::home_dir()` (rejects empty `HOME`); `config/io.rs`
@@ -569,26 +474,6 @@ Sites: `pathutil::home_dir()` (rejects empty `HOME`); `config/io.rs`
 `platform::remote_ssh_config_paths()` reads `HOME` directly. See BUG-030.
 
 Reported by: config-cli.
-
-## CON-049 - What kind of SSH failure is this?
-
-Sites: `saved::saved_ssh_failure_needs_attention` (ErrorKind plus substrings);
-`attach::is_ssh_link_failure` (downcast to `SshBridgeExit` code 255, else
-kinds); `attach::ssh_error_requires_authentication` (lowercase, includes
-`"signing failed"`); `remote.rs::is_remote_auth_error` (case-sensitive
-`"Permission denied"`, no `"signing failed"` - already disagrees);
-`remote.rs::is_remote_host_key_error`; `SavedSshApiBridge::stale_metadata_failure`
-(marker `STALE_API_METADATA` through remote stderr); `handshake_error` in
-`supervisor.rs` picks an `ErrorKind` to steer the substring classifier;
-`attach.rs:999` hard-codes `255` instead of `SSH_OWN_FAILURE_EXIT_CODE`;
-`EndpointSupervisorEvent::Status { message: String }` loses the class before the
-UI.
-
-Proposed owner: one `SshFailure` enum built where ssh output is interpreted
-(`command_failed`, `ssh_bridge_exit_error`, `path_lookup_result`,
-`remote_client_status`, `handshake_error`), carried typed.
-
-Reported by: remote.
 
 ## CON-050 - Which remote executable is right, and is it valid?
 
@@ -601,27 +486,6 @@ the discovery script. They disagree (BUG-036, BUG-037).
 
 Proposed owner: one discovery with one definition of "match", one
 `RemoteExecutable` parse, one cache.
-
-Reported by: remote.
-
-## CON-051 - Is this SSH target valid?
-
-Sites: `validate_remote_target` (empty, leading `-`);
-`SavedSshEndpoint::validate` (adds length, control characters, no password);
-`ssh_authentication_command` (`attach.rs:439`, inline empty / `-` / control
-characters). Already disagree (BUG-035).
-
-Proposed owner: one `SshTarget` type.
-
-Reported by: remote.
-
-## CON-052 - Is this profile id valid?
-
-Sites: `ProfileId::parse`; `saved.rs` `validate_profile_path_id` (hand-copied
-32-hex check); `SshMetadataCache::new` parses again; `&profile_id[..16]` slices in
-`saved_bridge_path` and `SavedSshApiBridge::start` rely on the earlier check.
-
-Proposed owner: take `&ProfileId` everywhere.
 
 Reported by: remote.
 

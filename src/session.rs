@@ -1,6 +1,5 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::Stream as _;
@@ -20,7 +19,134 @@ const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 const STOP_WAIT_POLL: Duration = Duration::from_millis(25);
 const MIN_SOCKET_TIMEOUT: Duration = Duration::from_millis(1);
 
-static EXPLICIT_SESSION_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// A validated non-default session name.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SessionName(String);
+
+impl SessionName {
+    pub fn parse(name: &str) -> Result<Self, String> {
+        if name == DEFAULT_SESSION_NAME {
+            return Err("default is reserved for the default session".to_string());
+        }
+        validate_name(name)?;
+        Ok(Self(name.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The session identity selected for this process. The default session has no
+/// directory component; named sessions live below `sessions/<name>`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub enum SessionId {
+    #[default]
+    Default,
+    Named(SessionName),
+}
+
+impl SessionId {
+    /// Parse a session name supplied by the user. `default` is the spelling
+    /// for the default session and is not a valid `SessionName`.
+    pub fn parse(name: &str) -> Result<Self, String> {
+        if name == DEFAULT_SESSION_NAME {
+            Ok(Self::Default)
+        } else {
+            SessionName::parse(name).map(Self::Named)
+        }
+    }
+
+    /// Resolve the command-line selection or inherited session value. An API
+    /// socket override makes an inherited session irrelevant to socket
+    /// routing, matching the legacy behavior for malformed inherited values.
+    pub(crate) fn resolve(
+        requested: Option<Self>,
+        inherited: Option<&str>,
+        api_socket_override_present: bool,
+    ) -> Result<(Self, bool), String> {
+        if let Some(requested) = requested {
+            return Ok((requested, true));
+        }
+        let Some(inherited) = inherited else {
+            return Ok((Self::Default, false));
+        };
+        match Self::parse(inherited) {
+            Ok(session) => Ok((session, false)),
+            Err(_) if api_socket_override_present => Ok((Self::Default, false)),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Self::Default => None,
+            Self::Named(name) => Some(name.as_str()),
+        }
+    }
+
+    pub fn display_name(&self) -> &str {
+        self.name().unwrap_or(DEFAULT_SESSION_NAME)
+    }
+
+    pub fn is_default(&self) -> bool {
+        matches!(self, Self::Default)
+    }
+
+    pub fn data_dir(&self, paths: &crate::config::AppPaths) -> PathBuf {
+        self.data_dir_under(paths.config_dir())
+    }
+
+    pub(crate) fn data_dir_under(&self, config_dir: &Path) -> PathBuf {
+        match self {
+            Self::Default => config_dir.to_path_buf(),
+            Self::Named(name) => sessions_dir_under(config_dir).join(name.as_str()),
+        }
+    }
+
+    pub fn api_socket_path(&self, paths: &crate::config::AppPaths) -> PathBuf {
+        self.api_socket_path_under(paths.config_dir())
+    }
+
+    pub(crate) fn api_socket_path_under(&self, config_dir: &Path) -> PathBuf {
+        self.data_dir_under(config_dir).join("shepr.sock")
+    }
+
+    pub fn client_socket_path(&self, paths: &crate::config::AppPaths) -> PathBuf {
+        self.client_socket_path_under(paths.config_dir())
+    }
+
+    pub(crate) fn client_socket_path_under(&self, config_dir: &Path) -> PathBuf {
+        crate::server::socket_paths::derive_client_socket_from_api_socket(
+            &self.api_socket_path_under(config_dir),
+        )
+    }
+
+    pub fn attach_command(&self) -> String {
+        match self {
+            Self::Default => "shepr".to_string(),
+            Self::Named(name) => format!("shepr session attach {}", name.as_str()),
+        }
+    }
+
+    pub fn stop_command(&self) -> String {
+        match self {
+            Self::Default => "shepr server stop".to_string(),
+            Self::Named(name) => format!("shepr session stop {}", name.as_str()),
+        }
+    }
+
+    pub(crate) fn apply_to_child_command(&self, command: &mut std::process::Command) {
+        match self {
+            Self::Default => {
+                command.env_remove(SESSION_ENV_VAR);
+            }
+            Self::Named(name) => {
+                command.env(SESSION_ENV_VAR, name.as_str());
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SessionInfo {
@@ -29,55 +155,6 @@ pub struct SessionInfo {
     pub running: bool,
     pub socket_path: String,
     pub session_dir: String,
-}
-
-/// Selects the session for this process. `requested` is the session named on
-/// the command line (`--session NAME` before the subcommand, or
-/// `session attach NAME`); without one, an inherited socket override or
-/// `SHEPR_SESSION` decides, and neither counts as an explicit request.
-pub fn configure(requested: Option<&str>) -> Result<(), String> {
-    if let Some(session) = requested {
-        apply_explicit_name(session)?;
-    } else if std::env::var_os(crate::api::SOCKET_PATH_ENV_VAR).is_some() {
-        EXPLICIT_SESSION_REQUESTED.store(false, Ordering::Relaxed);
-    } else if let Ok(session) = std::env::var(SESSION_ENV_VAR) {
-        if normalize_name(&session)?.is_none() {
-            // SAFETY: `main` calls `configure` before it starts any thread,
-            // so nothing reads the environment concurrently; tests call it
-            // while holding the crate-wide environment lock.
-            unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        }
-        EXPLICIT_SESSION_REQUESTED.store(false, Ordering::Relaxed);
-    } else {
-        EXPLICIT_SESSION_REQUESTED.store(false, Ordering::Relaxed);
-    }
-
-    Ok(())
-}
-
-pub fn active_name() -> Option<String> {
-    std::env::var(SESSION_ENV_VAR)
-        .ok()
-        .filter(|name| name != DEFAULT_SESSION_NAME)
-        .filter(|name| validate_name(name).is_ok())
-}
-
-pub fn local_attach_command() -> String {
-    match active_name() {
-        Some(name) => format!("shepr session attach {name}"),
-        None => "shepr".to_string(),
-    }
-}
-
-pub fn local_stop_command() -> String {
-    stop_command_for(active_name().as_deref())
-}
-
-pub fn stop_command_for(name: Option<&str>) -> String {
-    match name {
-        Some(name) => format!("shepr session stop {name}"),
-        None => "shepr server stop".to_string(),
-    }
 }
 
 pub fn restart_after_update_guidance(stop_command: &str, attach_command: Option<&str>) -> String {
@@ -90,64 +167,45 @@ pub fn restart_after_update_guidance(stop_command: &str, attach_command: Option<
     )
 }
 
-pub fn active_restart_after_update_guidance() -> String {
-    if !explicit_session_requested()
-        && let Ok(socket_path) = std::env::var(crate::api::SOCKET_PATH_ENV_VAR)
-    {
-        return restart_after_update_guidance(
-            &format!(
-                "{}={} shepr server stop",
-                crate::api::SOCKET_PATH_ENV_VAR,
-                socket_path
-            ),
-            None,
-        );
-    }
-
-    restart_after_update_guidance(&local_stop_command(), Some(&local_attach_command()))
-}
-
-pub fn explicit_session_requested() -> bool {
-    EXPLICIT_SESSION_REQUESTED.load(Ordering::Relaxed)
-}
-
-#[cfg(test)]
-pub(crate) fn clear_explicit_session_for_test() {
-    EXPLICIT_SESSION_REQUESTED.store(false, Ordering::Relaxed);
+pub fn restart_after_update_guidance_for(paths: &crate::config::AppPaths) -> String {
+    let address = paths.server_address();
+    let session = paths.session_id();
+    let stop_command = address.stop_command(session);
+    let attach_command = address.attach_command(session);
+    restart_after_update_guidance(&stop_command, Some(&attach_command))
 }
 
 pub fn data_dir(paths: &crate::config::AppPaths) -> PathBuf {
-    data_dir_for(paths, active_name().as_deref())
+    paths.session_id().data_dir(paths)
 }
 
-pub fn data_dir_for(paths: &crate::config::AppPaths, name: Option<&str>) -> PathBuf {
-    match name {
-        Some(name) => paths.config_dir().join("sessions").join(name),
-        None => paths.config_dir().to_path_buf(),
-    }
+pub fn data_dir_for(paths: &crate::config::AppPaths, session: &SessionId) -> PathBuf {
+    session.data_dir(paths)
 }
 
-pub fn api_socket_path_for(paths: &crate::config::AppPaths, name: Option<&str>) -> PathBuf {
-    data_dir_for(paths, name).join("shepr.sock")
+pub fn sessions_dir(paths: &crate::config::AppPaths) -> PathBuf {
+    sessions_dir_under(paths.config_dir())
+}
+
+fn sessions_dir_under(config_dir: &Path) -> PathBuf {
+    config_dir.join("sessions")
+}
+
+pub fn api_socket_path_for(paths: &crate::config::AppPaths, session: &SessionId) -> PathBuf {
+    session.api_socket_path(paths)
 }
 
 pub fn active_api_socket_path(paths: &crate::config::AppPaths) -> PathBuf {
-    if explicit_session_requested() {
-        return api_socket_path_for(paths, active_name().as_deref());
-    }
-    if let Ok(path) = std::env::var(crate::api::SOCKET_PATH_ENV_VAR) {
-        return PathBuf::from(path);
-    }
-    api_socket_path_for(paths, active_name().as_deref())
+    paths.server_address().api_socket().to_path_buf()
 }
 
-pub fn client_socket_path_for(paths: &crate::config::AppPaths, name: Option<&str>) -> PathBuf {
-    data_dir_for(paths, name).join("shepr-client.sock")
+pub fn client_socket_path_for(paths: &crate::config::AppPaths, session: &SessionId) -> PathBuf {
+    session.client_socket_path(paths)
 }
 
 pub fn list_sessions(paths: &crate::config::AppPaths) -> std::io::Result<Vec<SessionInfo>> {
-    let mut sessions = vec![session_info(paths, None)?];
-    let sessions_dir = paths.config_dir().join("sessions");
+    let mut sessions = vec![session_info(paths, &SessionId::Default)?];
+    let sessions_dir = sessions_dir(paths);
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(sessions),
@@ -163,25 +221,27 @@ pub fn list_sessions(paths: &crate::config::AppPaths) -> std::io::Result<Vec<Ses
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if name != DEFAULT_SESSION_NAME && validate_name(&name).is_ok() {
+        if name != DEFAULT_SESSION_NAME
+            && let Ok(name) = SessionName::parse(&name)
+        {
             names.push(name);
         }
     }
     names.sort();
     for name in &names {
-        sessions.push(session_info(paths, Some(name))?);
+        sessions.push(session_info(paths, &SessionId::Named(name.clone()))?);
     }
     Ok(sessions)
 }
 
 pub fn session_info(
     paths: &crate::config::AppPaths,
-    name: Option<&str>,
+    session: &SessionId,
 ) -> std::io::Result<SessionInfo> {
-    let default = name.is_none();
-    let display_name = name.unwrap_or(DEFAULT_SESSION_NAME).to_string();
-    let socket_path = api_socket_path_for(paths, name);
-    let session_dir = data_dir_for(paths, name);
+    let default = session.is_default();
+    let display_name = session.display_name().to_string();
+    let socket_path = api_socket_path_for(paths, session);
+    let session_dir = data_dir_for(paths, session);
     Ok(SessionInfo {
         name: display_name,
         default,
@@ -191,20 +251,21 @@ pub fn session_info(
     })
 }
 
-pub fn parse_target_name(name: &str) -> Result<Option<String>, String> {
-    normalize_name(name)
+pub fn parse_target_name(name: &str) -> Result<SessionId, String> {
+    SessionId::parse(name)
 }
 
 pub fn stop_session(
     paths: &crate::config::AppPaths,
-    name: Option<&str>,
+    session: &SessionId,
 ) -> Result<SessionInfo, String> {
-    stop_session_with_timeout(paths, name, STOP_WAIT_TIMEOUT)
+    stop_session_with_timeout(paths, session, STOP_WAIT_TIMEOUT)
 }
 
 pub(crate) fn stop_active_server(paths: &crate::config::AppPaths) -> Result<(), String> {
-    let socket_path = active_api_socket_path(paths);
-    let client_socket_path = crate::server::socket_paths::client_socket_path(paths);
+    let address = paths.server_address();
+    let socket_path = address.api_socket().to_path_buf();
+    let client_socket_path = address.client_socket().to_path_buf();
     stop_socket_with_timeout(
         &socket_path,
         &[socket_path.clone(), client_socket_path],
@@ -215,19 +276,19 @@ pub(crate) fn stop_active_server(paths: &crate::config::AppPaths) -> Result<(), 
 
 fn stop_session_with_timeout(
     paths: &crate::config::AppPaths,
-    name: Option<&str>,
+    session: &SessionId,
     timeout: Duration,
 ) -> Result<SessionInfo, String> {
-    let socket_path = api_socket_path_for(paths, name);
-    let client_socket_path = client_socket_path_for(paths, name);
-    let label = format!("session {}", name.unwrap_or(DEFAULT_SESSION_NAME));
+    let socket_path = api_socket_path_for(paths, session);
+    let client_socket_path = client_socket_path_for(paths, session);
+    let label = format!("session {}", session.display_name());
     stop_socket_with_timeout(
         &socket_path,
         &[socket_path.clone(), client_socket_path],
         timeout,
         &label,
     )?;
-    session_info(paths, name).map_err(|err| err.to_string())
+    session_info(paths, session).map_err(|err| err.to_string())
 }
 
 fn stop_socket_with_timeout(
@@ -274,15 +335,18 @@ fn stop_socket_with_timeout(
     Ok(())
 }
 
-pub fn delete_session(paths: &crate::config::AppPaths, name: &str) -> Result<SessionInfo, String> {
-    if name == DEFAULT_SESSION_NAME {
+pub fn delete_session(
+    paths: &crate::config::AppPaths,
+    session: &SessionId,
+) -> Result<SessionInfo, String> {
+    let SessionId::Named(name) = session else {
         return Err("deleting the default session is not supported".to_string());
-    }
-    validate_name(name)?;
-    let Some(dir) = exact_session_dir_for_delete(paths, name)? else {
-        return session_info(paths, Some(name)).map_err(|err| err.to_string());
     };
-    let socket_path = dir.join("shepr.sock");
+    let name = name.as_str();
+    let Some(dir) = exact_session_dir_for_delete(paths, name)? else {
+        return session_info(paths, session).map_err(|err| err.to_string());
+    };
+    let socket_path = api_socket_path_for(paths, session);
     if is_running_at(&socket_path).map_err(|err| {
         format!(
             "failed to inspect session {name} socket {}: {err}",
@@ -293,7 +357,7 @@ pub fn delete_session(paths: &crate::config::AppPaths, name: &str) -> Result<Ses
             "session {name} is running; stop it before deleting"
         ));
     }
-    let info = session_info(paths, Some(name)).map_err(|err| {
+    let info = session_info(paths, session).map_err(|err| {
         format!(
             "failed to inspect session {name} socket {}: {err}",
             socket_path.display()
@@ -310,7 +374,7 @@ fn exact_session_dir_for_delete(
     paths: &crate::config::AppPaths,
     name: &str,
 ) -> Result<Option<PathBuf>, String> {
-    let sessions_dir = paths.config_dir().join("sessions");
+    let sessions_dir = sessions_dir(paths);
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -488,34 +552,12 @@ pub fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn apply_explicit_name(name: &str) -> Result<(), String> {
-    let session = normalize_name(name)?;
-    if let Some(session) = session {
-        // SAFETY: only `configure` calls this, and `main` calls `configure`
-        // before it starts any thread; tests call it while holding the
-        // crate-wide environment lock.
-        unsafe { std::env::set_var(SESSION_ENV_VAR, session) };
-    } else {
-        // SAFETY: as above.
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-    }
-    EXPLICIT_SESSION_REQUESTED.store(true, Ordering::Relaxed);
-    Ok(())
-}
-
-fn normalize_name(name: &str) -> Result<Option<String>, String> {
-    if name == DEFAULT_SESSION_NAME {
-        return Ok(None);
-    }
-    validate_name(name)?;
-    Ok(Some(name.to_string()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::{IsolatedEnv, ScratchDir};
     use interprocess::local_socket::traits::Listener as _;
+    use std::sync::atomic::Ordering;
 
     /// A connected socket pair; the socket file lives in the returned scratch
     /// directory.
@@ -528,11 +570,11 @@ mod tests {
         (client, server, scratch)
     }
 
-    /// An isolated environment whose config directory is `config` inside the
-    /// test's scratch directory.
+    /// An isolated environment with config and state directories under its
+    /// scratch HOME.
     fn isolated_config_env() -> (IsolatedEnv, crate::config::AppPaths) {
         let env = IsolatedEnv::new();
-        let paths = crate::config::AppPaths::test_at(env.path());
+        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
         (env, paths)
     }
 
@@ -609,9 +651,12 @@ mod tests {
 
     #[test]
     fn stop_session_times_out_when_socket_stays_open_without_response() {
-        let (_env, paths) = isolated_config_env();
+        let (_env, _) = isolated_config_env();
         let session_name = "silent";
-        let socket_path = api_socket_path_for(&paths, Some(session_name));
+        let session = SessionId::parse(session_name).expect("test precondition");
+        let paths = crate::config::AppPaths::resolve_with_session(Some(session.clone()))
+            .expect("isolated paths resolve");
+        let socket_path = api_socket_path_for(&paths, &session);
         std::fs::create_dir_all(socket_path.parent().expect("test precondition"))
             .expect("test precondition");
         let _ = std::fs::remove_file(&socket_path);
@@ -645,7 +690,7 @@ mod tests {
             }
         });
 
-        let err = stop_session_with_timeout(&paths, Some(session_name), Duration::from_millis(75))
+        let err = stop_session_with_timeout(&paths, &session, Duration::from_millis(75))
             .expect_err("silent session should fail after timeout");
 
         assert!(err.contains("did not stop"), "{err}");
@@ -654,112 +699,97 @@ mod tests {
     }
 
     // Which argv words name the session is the parser's job (tests in
-    // `cli.rs`); these cover what a requested session does to the process.
+    // `cli.rs`); here the parsed identity and address are resolved once.
 
     #[test]
-    fn configure_applies_requested_session() {
-        let _env = IsolatedEnv::new();
-
-        configure(Some("work")).expect("test precondition");
-
-        assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("work"));
-        assert!(explicit_session_requested());
-    }
-
-    #[test]
-    fn configure_rejects_invalid_requested_session() {
-        let _env = IsolatedEnv::new();
-
-        assert!(configure(Some("../prod")).is_err());
-        assert!(configure(Some("")).is_err());
-        assert!(std::env::var(SESSION_ENV_VAR).is_err());
-        assert!(!explicit_session_requested());
-    }
-
-    #[test]
-    fn configure_requested_session_overrides_inherited_env_and_socket() {
+    fn requested_session_does_not_mutate_the_parent_environment() {
         let env = IsolatedEnv::new();
-        env.set(SESSION_ENV_VAR, "bad/name");
+        env.set(SESSION_ENV_VAR, "inherited");
         env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
+        let requested = SessionId::parse("work").expect("test precondition");
 
-        configure(Some("work")).expect("test precondition");
+        let (resolved, explicit) =
+            SessionId::resolve(Some(requested.clone()), Some("bad/name"), true)
+                .expect("explicit selection wins");
 
-        assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("work"));
-        assert!(explicit_session_requested());
-    }
-
-    #[test]
-    fn configure_maps_default_session_name_to_default_path() {
-        let (env, paths) = isolated_config_env();
-        env.set(SESSION_ENV_VAR, "work");
-        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
-
-        configure(Some(DEFAULT_SESSION_NAME)).expect("test precondition");
-
-        assert!(std::env::var(SESSION_ENV_VAR).is_err());
-        assert!(explicit_session_requested());
+        assert_eq!(resolved, requested);
+        assert!(explicit);
+        assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("inherited"));
         assert_eq!(
-            active_api_socket_path(&paths),
-            paths.config_dir().join("shepr.sock")
+            std::env::var(crate::api::SOCKET_PATH_ENV_VAR).as_deref(),
+            Ok("/tmp/inherited.sock")
         );
     }
 
     #[test]
-    fn env_session_does_not_mark_session_explicit() {
+    fn invalid_requested_session_is_rejected() {
+        assert!(SessionId::parse("../prod").is_err());
+        assert!(SessionId::parse("").is_err());
+    }
+
+    #[test]
+    fn requested_default_session_ignores_inherited_session_and_socket() {
+        let env = IsolatedEnv::new();
+        env.set(SESSION_ENV_VAR, "work");
+        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
+        let paths = crate::config::AppPaths::resolve_with_session(Some(SessionId::Default))
+            .expect("isolated paths resolve");
+
+        assert_eq!(paths.session_id(), &SessionId::Default);
+        assert_eq!(
+            active_api_socket_path(&paths),
+            paths.config_dir().join("shepr.sock")
+        );
+        assert_eq!(
+            std::env::var(SESSION_ENV_VAR).as_deref(),
+            Ok("work"),
+            "resolving a target must leave the parent environment unchanged"
+        );
+    }
+
+    #[test]
+    fn inherited_session_is_resolved_into_paths_once() {
         let env = IsolatedEnv::new();
         env.set(SESSION_ENV_VAR, "env-session");
-        EXPLICIT_SESSION_REQUESTED.store(true, Ordering::Relaxed);
+        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
 
-        configure(None).expect("test precondition");
-
-        assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("env-session"));
-        assert!(!explicit_session_requested());
-    }
-
-    #[test]
-    fn env_default_session_name_uses_default_path() {
-        let (env, paths) = isolated_config_env();
-        env.set(SESSION_ENV_VAR, DEFAULT_SESSION_NAME);
-        EXPLICIT_SESSION_REQUESTED.store(true, Ordering::Relaxed);
-
-        configure(None).expect("test precondition");
-
-        assert!(std::env::var(SESSION_ENV_VAR).is_err());
-        assert!(!explicit_session_requested());
+        assert_eq!(paths.session_id().name(), Some("env-session"));
         assert_eq!(
             active_api_socket_path(&paths),
-            paths.config_dir().join("shepr.sock")
+            paths
+                .config_dir()
+                .join("sessions")
+                .join("env-session")
+                .join("shepr.sock")
         );
     }
 
     #[test]
-    fn local_attach_command_uses_default_launch_for_default_session() {
-        let _env = IsolatedEnv::new();
-
-        assert_eq!(local_attach_command(), "shepr");
-    }
-
-    #[test]
-    fn local_attach_command_uses_session_attach_for_named_session() {
+    fn inherited_default_session_name_resolves_to_default_identity() {
         let env = IsolatedEnv::new();
-        env.set(SESSION_ENV_VAR, "work");
+        env.set(SESSION_ENV_VAR, DEFAULT_SESSION_NAME);
+        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
 
-        assert_eq!(local_attach_command(), "shepr session attach work");
+        assert_eq!(paths.session_id(), &SessionId::Default);
+        assert_eq!(
+            active_api_socket_path(&paths),
+            paths.config_dir().join("shepr.sock")
+        );
+        assert_eq!(
+            std::env::var(SESSION_ENV_VAR).as_deref(),
+            Ok(DEFAULT_SESSION_NAME)
+        );
     }
 
     #[test]
-    fn local_stop_command_uses_server_stop_for_default_session() {
-        let _env = IsolatedEnv::new();
+    fn session_commands_use_typed_identity() {
+        let default = SessionId::Default;
+        let named = SessionId::parse("work").expect("test precondition");
 
-        assert_eq!(local_stop_command(), "shepr server stop");
-    }
-
-    #[test]
-    fn local_stop_command_uses_session_stop_for_named_session() {
-        let env = IsolatedEnv::new();
-        env.set(SESSION_ENV_VAR, "work");
-
-        assert_eq!(local_stop_command(), "shepr session stop work");
+        assert_eq!(default.attach_command(), "shepr");
+        assert_eq!(default.stop_command(), "shepr server stop");
+        assert_eq!(named.attach_command(), "shepr session attach work");
+        assert_eq!(named.stop_command(), "shepr session stop work");
     }
 
     #[test]
@@ -774,23 +804,42 @@ mod tests {
     }
 
     #[test]
-    fn active_restart_after_update_guidance_respects_socket_override() {
+    fn restart_after_update_guidance_respects_socket_override() {
         let env = IsolatedEnv::new();
         env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/custom-shepr.sock");
+        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
 
         assert_eq!(
-            active_restart_after_update_guidance(),
-            "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr server stop`, then restart Shepr with the same socket override."
+            restart_after_update_guidance_for(&paths),
+            "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `SHEPR_SESSION='default' SHEPR_SOCKET_PATH='/tmp/custom-shepr.sock' shepr server stop`, then run `SHEPR_SESSION='default' SHEPR_SOCKET_PATH='/tmp/custom-shepr.sock' shepr` again."
+        );
+    }
+
+    #[test]
+    fn restart_after_update_guidance_preserves_client_socket_override() {
+        let env = IsolatedEnv::new();
+        env.set(SESSION_ENV_VAR, "work");
+        env.set(
+            crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR,
+            "/tmp/work-client.sock",
+        );
+        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
+
+        assert_eq!(
+            restart_after_update_guidance_for(&paths),
+            "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `SHEPR_SESSION='work' SHEPR_CLIENT_SOCKET_PATH='/tmp/work-client.sock' shepr server stop`, then run `SHEPR_SESSION='work' SHEPR_CLIENT_SOCKET_PATH='/tmp/work-client.sock' shepr` again."
         );
     }
 
     #[test]
     fn explicit_session_socket_ignores_inherited_socket_override() {
-        let (env, paths) = isolated_config_env();
+        let env = IsolatedEnv::new();
         env.set(SESSION_ENV_VAR, "work");
-        EXPLICIT_SESSION_REQUESTED.store(true, Ordering::Relaxed);
         env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
-
+        let paths = crate::config::AppPaths::resolve_with_session(Some(
+            SessionId::parse("work").expect("test precondition"),
+        ))
+        .expect("isolated paths resolve");
         let path = active_api_socket_path(&paths);
 
         assert_eq!(
@@ -806,9 +855,9 @@ mod tests {
     #[test]
     fn env_socket_override_wins_without_explicit_session() {
         let env = IsolatedEnv::new();
-        let paths = crate::config::AppPaths::test_at(env.path());
         env.set(SESSION_ENV_VAR, "work");
         env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/explicit.sock");
+        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
 
         assert_eq!(
             active_api_socket_path(&paths),
@@ -819,13 +868,10 @@ mod tests {
     #[test]
     fn env_socket_override_skips_invalid_env_session_validation_without_explicit_session() {
         let env = IsolatedEnv::new();
-        let paths = crate::config::AppPaths::test_at(env.path());
         env.set(SESSION_ENV_VAR, "bad/name");
         env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/shepr.sock");
-
-        configure(None).expect("test precondition");
-
-        assert!(!explicit_session_requested());
+        let paths =
+            crate::config::AppPaths::resolve().expect("socket override skips session validation");
         assert_eq!(
             active_api_socket_path(&paths),
             PathBuf::from("/tmp/shepr.sock")
@@ -834,10 +880,24 @@ mod tests {
     }
 
     #[test]
+    fn invalid_inherited_session_without_api_override_is_rejected() {
+        let env = IsolatedEnv::new();
+        env.set(SESSION_ENV_VAR, "bad/name");
+
+        let error = crate::config::AppPaths::resolve().expect_err("invalid session name");
+
+        assert!(error.join(" ").contains("session name may only contain"));
+        assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("bad/name"));
+    }
+
+    #[test]
     fn stop_session_fails_when_socket_remains_reachable_after_timeout() {
-        let (_env, paths) = isolated_config_env();
+        let (_env, _) = isolated_config_env();
         let session_name = "slow";
-        let socket_path = api_socket_path_for(&paths, Some(session_name));
+        let session = SessionId::parse(session_name).expect("test precondition");
+        let paths = crate::config::AppPaths::resolve_with_session(Some(session.clone()))
+            .expect("isolated paths resolve");
+        let socket_path = api_socket_path_for(&paths, &session);
         std::fs::create_dir_all(socket_path.parent().expect("test precondition"))
             .expect("test precondition");
         let _ = std::fs::remove_file(&socket_path);
@@ -870,7 +930,7 @@ mod tests {
             }
         });
 
-        let err = stop_session_with_timeout(&paths, Some(session_name), Duration::from_millis(75))
+        let err = stop_session_with_timeout(&paths, &session, Duration::from_millis(75))
             .expect_err("still-running session should fail");
 
         assert!(err.contains("did not stop"), "{err}");
@@ -912,11 +972,11 @@ mod tests {
     fn parse_default_target_name_maps_to_default_session() {
         assert_eq!(
             parse_target_name(DEFAULT_SESSION_NAME).expect("test precondition"),
-            None
+            SessionId::Default
         );
         assert_eq!(
             parse_target_name("work").expect("test precondition"),
-            Some("work".to_string())
+            SessionId::parse("work").expect("test precondition")
         );
     }
 
@@ -924,7 +984,7 @@ mod tests {
     fn delete_default_session_is_rejected() {
         let scratch = ScratchDir::new("delete-default-session");
         let paths = crate::config::AppPaths::test_at(scratch.path());
-        assert!(delete_session(&paths, DEFAULT_SESSION_NAME).is_err());
+        assert!(delete_session(&paths, &SessionId::Default).is_err());
     }
 
     #[test]

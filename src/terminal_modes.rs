@@ -3,6 +3,8 @@ use std::io::{self, Write};
 const DISABLE_HOST_MOUSE_REPORTING_SEQUENCE: &[u8] =
     b"\x1b[?1006l\x1b[?1016l\x1b[?1015l\x1b[?1005l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?9l";
 
+// 1015 remains in host cleanup for legacy urxvt terminals; the core does not
+// model that host-side mouse encoding.
 pub(crate) fn clear_host_mouse_reporting<W: Write>(writer: &mut W) -> io::Result<()> {
     writer.write_all(DISABLE_HOST_MOUSE_REPORTING_SEQUENCE)?;
     writer.flush()

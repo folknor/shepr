@@ -68,31 +68,17 @@ use alacritty_terminal::vte::ansi::{
 };
 
 use super::ExtraModes;
+use super::modes::{self, ExtraMode};
 use super::rows::RowOrigin;
 
-/// vte's private-mode numbering (`PrivateMode::new` is private to vte).
+/// The vte private mode a write of `mode` goes through, from the mode table
+/// (`PrivateMode::new` is private to vte). Adapter-stored and unlisted modes
+/// stay `Unknown`, exactly as vte's parser would deliver them.
 pub(super) fn private_mode(mode: u16) -> PrivateMode {
-    let named = match mode {
-        1 => NamedPrivateMode::CursorKeys,
-        3 => NamedPrivateMode::ColumnMode,
-        6 => NamedPrivateMode::Origin,
-        7 => NamedPrivateMode::LineWrap,
-        12 => NamedPrivateMode::BlinkingCursor,
-        25 => NamedPrivateMode::ShowCursor,
-        1000 => NamedPrivateMode::ReportMouseClicks,
-        1002 => NamedPrivateMode::ReportCellMouseMotion,
-        1003 => NamedPrivateMode::ReportAllMouseMotion,
-        1004 => NamedPrivateMode::ReportFocusInOut,
-        1005 => NamedPrivateMode::Utf8Mouse,
-        1006 => NamedPrivateMode::SgrMouse,
-        1007 => NamedPrivateMode::AlternateScroll,
-        1042 => NamedPrivateMode::UrgencyHints,
-        1049 => NamedPrivateMode::SwapScreenAndSetRestoreCursor,
-        2004 => NamedPrivateMode::BracketedPaste,
-        2026 => NamedPrivateMode::SyncUpdate,
-        _ => return PrivateMode::Unknown(mode),
-    };
-    PrivateMode::Named(named)
+    match modes::lookup(mode).map(|spec| spec.set) {
+        Some(modes::Setter::Vte(named)) => PrivateMode::Named(named),
+        _ => PrivateMode::Unknown(mode),
+    }
 }
 
 /// The in-band resize report (`CSI 48 ; rows ; cols ; height ; width t`),
@@ -210,10 +196,9 @@ impl<T: EventListener> CoreHandler<'_, T> {
     /// or misreports (2026), `None` for every other mode.
     fn adapter_private_mode(&self, mode: PrivateMode) -> Option<bool> {
         match mode {
-            PrivateMode::Unknown(9) => Some(self.modes.x10_mouse),
-            PrivateMode::Unknown(1016) => Some(self.modes.sgr_pixels_mouse),
-            PrivateMode::Unknown(2031) => Some(self.modes.color_scheme_report),
-            PrivateMode::Unknown(2048) => Some(self.modes.in_band_resize),
+            PrivateMode::Unknown(number) => {
+                modes::extra_mode(number).map(|extra| extra.get(self.modes))
+            }
             PrivateMode::Named(NamedPrivateMode::SyncUpdate) => {
                 Some(self.modes.synchronized_update)
             }
@@ -467,39 +452,36 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
     }
 
     fn set_private_mode(&mut self, mode: PrivateMode) {
+        if let PrivateMode::Unknown(number) = mode
+            && let Some(extra) = modes::extra_mode(number)
+        {
+            extra.set(self.modes, true);
+            match extra {
+                ExtraMode::X10Mouse => {
+                    // X10 mouse replaces the other tracking modes, as in xterm.
+                    for other in [
+                        NamedPrivateMode::ReportMouseClicks,
+                        NamedPrivateMode::ReportCellMouseMotion,
+                        NamedPrivateMode::ReportAllMouseMotion,
+                    ] {
+                        Handler::unset_private_mode(self.term, other.into());
+                    }
+                }
+                ExtraMode::InBandResize => {
+                    if let Some(report) = in_band_size_report(
+                        self.term.screen_lines(),
+                        self.term.columns(),
+                        self.cell_width_px,
+                        self.cell_height_px,
+                    ) {
+                        self.reply(report);
+                    }
+                }
+                ExtraMode::SgrPixelsMouse | ExtraMode::ColorSchemeReport => {}
+            }
+            return;
+        }
         match mode {
-            PrivateMode::Unknown(9) => {
-                // X10 mouse replaces the other tracking modes, as in xterm.
-                self.modes.x10_mouse = true;
-                for other in [
-                    NamedPrivateMode::ReportMouseClicks,
-                    NamedPrivateMode::ReportCellMouseMotion,
-                    NamedPrivateMode::ReportAllMouseMotion,
-                ] {
-                    Handler::unset_private_mode(self.term, other.into());
-                }
-                return;
-            }
-            PrivateMode::Unknown(1016) => {
-                self.modes.sgr_pixels_mouse = true;
-                return;
-            }
-            PrivateMode::Unknown(2031) => {
-                self.modes.color_scheme_report = true;
-                return;
-            }
-            PrivateMode::Unknown(2048) => {
-                self.modes.in_band_resize = true;
-                if let Some(report) = in_band_size_report(
-                    self.term.screen_lines(),
-                    self.term.columns(),
-                    self.cell_width_px,
-                    self.cell_height_px,
-                ) {
-                    self.reply(report);
-                }
-                return;
-            }
             PrivateMode::Named(
                 NamedPrivateMode::ReportMouseClicks
                 | NamedPrivateMode::ReportCellMouseMotion
@@ -525,34 +507,32 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
     }
 
     fn unset_private_mode(&mut self, mode: PrivateMode) {
-        match mode {
-            PrivateMode::Unknown(9) => self.modes.x10_mouse = false,
-            PrivateMode::Unknown(1016) => self.modes.sgr_pixels_mouse = false,
-            PrivateMode::Unknown(2031) => self.modes.color_scheme_report = false,
-            PrivateMode::Unknown(2048) => self.modes.in_band_resize = false,
-            _ => {
-                match mode {
-                    // xterm keeps one variable for 9/1000/1002/1003, so
-                    // resetting any of them turns X10 reporting off too.
-                    PrivateMode::Named(
-                        NamedPrivateMode::ReportMouseClicks
-                        | NamedPrivateMode::ReportCellMouseMotion
-                        | NamedPrivateMode::ReportAllMouseMotion,
-                    ) => self.modes.x10_mouse = false,
-                    PrivateMode::Named(NamedPrivateMode::SyncUpdate) => {
-                        self.modes.synchronized_update = false;
-                    }
-                    PrivateMode::Named(NamedPrivateMode::SwapScreenAndSetRestoreCursor) => {
-                        self.settle_rows();
-                        Handler::unset_private_mode(self.term, mode);
-                        self.resume_rows();
-                        return;
-                    }
-                    _ => {}
-                }
-                Handler::unset_private_mode(self.term, mode);
-            }
+        if let PrivateMode::Unknown(number) = mode
+            && let Some(extra) = modes::extra_mode(number)
+        {
+            extra.set(self.modes, false);
+            return;
         }
+        match mode {
+            // xterm keeps one variable for 9/1000/1002/1003, so
+            // resetting any of them turns X10 reporting off too.
+            PrivateMode::Named(
+                NamedPrivateMode::ReportMouseClicks
+                | NamedPrivateMode::ReportCellMouseMotion
+                | NamedPrivateMode::ReportAllMouseMotion,
+            ) => self.modes.x10_mouse = false,
+            PrivateMode::Named(NamedPrivateMode::SyncUpdate) => {
+                self.modes.synchronized_update = false;
+            }
+            PrivateMode::Named(NamedPrivateMode::SwapScreenAndSetRestoreCursor) => {
+                self.settle_rows();
+                Handler::unset_private_mode(self.term, mode);
+                self.resume_rows();
+                return;
+            }
+            _ => {}
+        }
+        Handler::unset_private_mode(self.term, mode);
     }
 
     /// alacritty answers "not recognised" for the adapter-modelled modes and

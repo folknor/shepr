@@ -428,9 +428,14 @@ fn main() -> io::Result<()> {
         Ok(session) => session,
         Err(err) => usage_exit(&err),
     };
-    if let Err(err) = session::configure(requested_session.as_deref()) {
-        usage_exit(&err);
-    }
+    let requested_session = match requested_session
+        .as_deref()
+        .map(session::SessionId::parse)
+        .transpose()
+    {
+        Ok(session) => session,
+        Err(err) => usage_exit(&err),
+    };
     let remote_launch = match remote::remote_launch(
         invocation.remote().as_deref(),
         invocation.remote_keybindings().as_deref(),
@@ -451,7 +456,7 @@ fn main() -> io::Result<()> {
     // Root-level `--help`, `--version` and `--default-config` win over any
     // subcommand given with them.
     if invocation.help_requested() {
-        print_help();
+        print_help(requested_session.clone());
         return Ok(());
     }
 
@@ -467,33 +472,37 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
-    finish_cli(cli::run(&invocation))?;
+    finish_cli(cli::run(&invocation, requested_session.clone()))?;
 
     // Whatever `cli::run` did not handle launches something: a hidden mode,
     // the headless server, or (below) the TUI.
     match invocation.command_name() {
         Some("remote-api-bridge") => {
-            let paths = config::AppPaths::resolve().map_err(|errors| {
-                io::Error::other(format!(
-                    "application paths could not be resolved: {}",
-                    errors.join("; ")
-                ))
-            })?;
+            let paths = config::AppPaths::resolve_with_session(requested_session.clone()).map_err(
+                |errors| {
+                    io::Error::other(format!(
+                        "application paths could not be resolved: {}",
+                        errors.join("; ")
+                    ))
+                },
+            )?;
             return remote::run_remote_api_bridge(&invocation.bridge_args(), &paths);
         }
         Some("remote-client-bridge") => {
-            let paths = config::AppPaths::resolve().map_err(|errors| {
-                io::Error::other(format!(
-                    "application paths could not be resolved: {}",
-                    errors.join("; ")
-                ))
-            })?;
+            let paths = config::AppPaths::resolve_with_session(requested_session.clone()).map_err(
+                |errors| {
+                    io::Error::other(format!(
+                        "application paths could not be resolved: {}",
+                        errors.join("; ")
+                    ))
+                },
+            )?;
             return remote::run_remote_client_bridge(&invocation.bridge_args(), &paths);
         }
         _ => {}
     }
 
-    let (loaded_config, paths) = load_validated_config_or_exit();
+    let (loaded_config, paths) = load_validated_config_or_exit(requested_session);
 
     // `server` with a subcommand was handled by `cli::run`.
     if invocation.command_name() == Some("server") {
@@ -532,8 +541,10 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn load_validated_config_or_exit() -> (config::Config, config::AppPaths) {
-    let paths = match config::AppPaths::resolve() {
+fn load_validated_config_or_exit(
+    requested_session: Option<session::SessionId>,
+) -> (config::Config, config::AppPaths) {
+    let paths = match config::AppPaths::resolve_with_session(requested_session) {
         Ok(paths) => paths,
         Err(diagnostics) => {
             eprintln!("shepr: configuration error:");
@@ -596,7 +607,7 @@ const COMMON_COMMANDS: &[(&str, &str)] = &[
     ),
 ];
 
-fn print_help() {
+fn print_help(requested_session: Option<session::SessionId>) {
     platform::begin_cli_output();
     println!("shepr \u{2014} terminal workspace manager for AI coding agents");
     println!();
@@ -633,7 +644,7 @@ fn print_help() {
     println!("  --version, -V       Print version and exit");
     println!("  --help, -h          Show this help");
     println!();
-    match config::AppPaths::resolve() {
+    match config::AppPaths::resolve_with_session(requested_session) {
         Ok(paths) => {
             println!("Config: {}", paths.config_file().display());
             println!("Logs:   {}", logging::help_log_paths_summary(&paths));

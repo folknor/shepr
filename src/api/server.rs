@@ -1209,17 +1209,17 @@ mod tests {
     #[test]
     fn socket_path_prefers_explicit_env_override() {
         let env = IsolatedEnv::new();
-        let paths = crate::config::AppPaths::test_at(env.path());
         let unique = env.path().join("override.sock");
         env.set(crate::api::SOCKET_PATH_ENV_VAR, &unique);
+        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
         assert_eq!(socket_path(&paths), unique);
     }
 
     #[test]
     fn socket_path_defaults_to_config_dir_even_when_xdg_runtime_dir_is_set() {
         let env = IsolatedEnv::new();
-        let paths = crate::config::AppPaths::test_at(env.path());
         env.set("XDG_RUNTIME_DIR", env.path().join("runtime"));
+        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
 
         assert_eq!(socket_path(&paths), paths.config_dir().join("shepr.sock"));
     }
@@ -1227,8 +1227,8 @@ mod tests {
     #[test]
     fn socket_path_uses_named_session_dir() {
         let env = IsolatedEnv::new();
-        let paths = crate::config::AppPaths::test_at(env.path());
         env.set(crate::session::SESSION_ENV_VAR, "work");
+        let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
 
         let expected = paths
             .config_dir()

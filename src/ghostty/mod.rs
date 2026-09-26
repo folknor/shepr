@@ -39,6 +39,7 @@
 
 mod format;
 mod handler;
+mod modes;
 mod rows;
 mod scan;
 
@@ -115,11 +116,13 @@ impl ColorScheme {
 }
 
 pub const MODE_APPLICATION_CURSOR_KEYS: u16 = 1;
+pub const MODE_CURSOR_BLINK: u16 = 12;
 pub const MODE_FOCUS_EVENT: u16 = 1004;
 pub const MODE_MOUSE_UTF8: u16 = 1005;
 pub const MODE_MOUSE_SGR: u16 = 1006;
 pub const MODE_MOUSE_ALTERNATE_SCROLL: u16 = 1007;
 pub const MODE_MOUSE_SGR_PIXELS: u16 = 1016;
+pub const MODE_URGENCY_HINTS: u16 = 1042;
 pub const MODE_BRACKETED_PASTE: u16 = 2004;
 pub const MODE_SYNCHRONIZED_OUTPUT: u16 = 2026;
 pub const MODE_COLOR_SCHEME_REPORT: u16 = 2031;
@@ -337,6 +340,8 @@ pub(crate) struct RowWrap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScreenTextRow {
     pub cells: Vec<ScreenTextCell>,
+    // Kept flat for current snapshot constructors and readers; RowWrap owns
+    // the shared calculation used to populate these two values.
     pub soft_wrapped: bool,
     pub wrap_continuation: bool,
 }
@@ -692,21 +697,48 @@ impl Terminal {
     }
 
     fn advance(&mut self, bytes: &[u8]) {
-        self.rows.begin(&self.term);
-        let mut handler = CoreHandler {
-            term: &mut self.term,
-            keyboard_depth: &mut self.keyboard_depth,
-            modes: &mut self.modes,
-            cell_width_px: self.cell_width_px,
-            cell_height_px: self.cell_height_px,
-            events: &self.events,
-            default_color_set: &mut self.default_color_set,
-            rows: &mut self.rows,
-            history_limit: self.history_lines,
+        self.with_handler(|handler, parser| parser.advance(handler, bytes));
+    }
+
+    /// Runs an operation with the parser and its handler inside one row batch.
+    /// Every parser-driven terminal mutation must use this entry point so the
+    /// row tracker and queued events are settled together.
+    fn with_handler<R>(
+        &mut self,
+        operation: impl FnOnce(&mut CoreHandler<'_, Listener>, &mut Processor) -> R,
+    ) -> R {
+        let Self {
+            term,
+            parser,
+            keyboard_depth,
+            modes,
+            cell_width_px,
+            cell_height_px,
+            events,
+            default_color_set,
+            rows,
+            history_lines,
+            ..
+        } = self;
+
+        rows.begin(term);
+        let result = {
+            let mut handler = CoreHandler {
+                term,
+                keyboard_depth,
+                modes,
+                cell_width_px: *cell_width_px,
+                cell_height_px: *cell_height_px,
+                events,
+                default_color_set,
+                rows,
+                history_limit: *history_lines,
+            };
+            operation(&mut handler, parser)
         };
-        self.parser.advance(&mut handler, bytes);
-        self.rows.finish(&self.term, self.history_lines);
+        rows.finish(term, *history_lines);
         self.drain_events();
+        result
     }
 
     /// The xterm modifyOtherKeys level the child selected (0, 1 or 2).
@@ -727,21 +759,7 @@ impl Terminal {
             .sync_timeout()
             .is_some_and(|deadline| Instant::now() >= deadline);
         if expired {
-            self.rows.begin(&self.term);
-            let mut handler = CoreHandler {
-                term: &mut self.term,
-                keyboard_depth: &mut self.keyboard_depth,
-                modes: &mut self.modes,
-                cell_width_px: self.cell_width_px,
-                cell_height_px: self.cell_height_px,
-                events: &self.events,
-                default_color_set: &mut self.default_color_set,
-                rows: &mut self.rows,
-                history_limit: self.history_lines,
-            };
-            self.parser.stop_sync(&mut handler);
-            self.rows.finish(&self.term, self.history_lines);
-            self.drain_events();
+            self.with_handler(|handler, parser| parser.stop_sync(handler));
             self.collect_damage();
         }
         expired
@@ -1134,28 +1152,18 @@ impl Terminal {
         mem::take(&mut self.clipboard_writes)
     }
 
+    /// The live value of a DEC private mode; `false` for modes the table in
+    /// `modes.rs` does not list or reports as unsupported.
     pub fn mode_get(&self, mode: u16) -> Result<bool, Error> {
-        let term_mode = *self.term.mode();
-        Ok(match mode {
-            1 => term_mode.contains(TermMode::APP_CURSOR),
-            6 => term_mode.contains(TermMode::ORIGIN),
-            7 => term_mode.contains(TermMode::LINE_WRAP),
-            9 => self.modes.x10_mouse,
-            25 => term_mode.contains(TermMode::SHOW_CURSOR),
-            47 | 1047 | 1049 => term_mode.contains(TermMode::ALT_SCREEN),
-            1000 => term_mode.contains(TermMode::MOUSE_REPORT_CLICK),
-            1002 => term_mode.contains(TermMode::MOUSE_DRAG),
-            1003 => term_mode.contains(TermMode::MOUSE_MOTION),
-            1004 => term_mode.contains(TermMode::FOCUS_IN_OUT),
-            1005 => term_mode.contains(TermMode::UTF8_MOUSE),
-            1006 => term_mode.contains(TermMode::SGR_MOUSE),
-            1007 => term_mode.contains(TermMode::ALTERNATE_SCROLL),
-            1016 => self.modes.sgr_pixels_mouse,
-            2004 => term_mode.contains(TermMode::BRACKETED_PASTE),
-            2026 => self.synchronized_output_deadline().is_some(),
-            2031 => self.modes.color_scheme_report,
-            2048 => self.modes.in_band_resize,
-            _ => false,
+        let Some(spec) = modes::lookup(mode) else {
+            return Ok(false);
+        };
+        Ok(match spec.get {
+            modes::Getter::Term(flag) => self.term.mode().contains(flag),
+            modes::Getter::CursorBlink => self.term.cursor_style().blinking,
+            modes::Getter::Extra(extra) => extra.get(&self.modes),
+            modes::Getter::SynchronizedOutput => self.synchronized_output_deadline().is_some(),
+            modes::Getter::Unsupported => false,
         })
     }
 
@@ -1169,25 +1177,13 @@ impl Terminal {
             return Err(Error("synchronized output is driven by the parser"));
         }
         let private_mode = handler::private_mode(mode);
-        self.rows.begin(&self.term);
-        let mut handler = CoreHandler {
-            term: &mut self.term,
-            keyboard_depth: &mut self.keyboard_depth,
-            modes: &mut self.modes,
-            cell_width_px: self.cell_width_px,
-            cell_height_px: self.cell_height_px,
-            events: &self.events,
-            default_color_set: &mut self.default_color_set,
-            rows: &mut self.rows,
-            history_limit: self.history_lines,
-        };
-        if value {
-            Handler::set_private_mode(&mut handler, private_mode);
-        } else {
-            Handler::unset_private_mode(&mut handler, private_mode);
-        }
-        self.rows.finish(&self.term, self.history_lines);
-        self.drain_events();
+        self.with_handler(|handler, _parser| {
+            if value {
+                Handler::set_private_mode(handler, private_mode);
+            } else {
+                Handler::unset_private_mode(handler, private_mode);
+            }
+        });
         self.collect_damage();
         Ok(())
     }
@@ -1290,7 +1286,6 @@ impl Terminal {
         let line = self.screen_line(u64::try_from(y).ok()?)?;
         let grid = self.term.grid();
         let columns = grid.columns();
-        let last_column = Column(columns - 1);
         let row = &grid[line];
         for (x, cell) in row[..].iter().take(columns).enumerate() {
             let Ok(x) = u16::try_from(x) else {
@@ -1299,13 +1294,20 @@ impl Terminal {
             cell_text_into(cell, scratch);
             visit(x, cell_wide(cell), scratch.as_str());
         }
-        Some(RowWrap {
-            soft_wrapped: row[last_column].flags.contains(Flags::WRAPLINE),
+        Some(self.row_wrap(line))
+    }
+
+    /// The single rule for the two wrap flags exposed by row readers.
+    fn row_wrap(&self, line: Line) -> RowWrap {
+        let grid = self.term.grid();
+        let last_column = Column(grid.columns() - 1);
+        RowWrap {
+            soft_wrapped: grid[line][last_column].flags.contains(Flags::WRAPLINE),
             wrap_continuation: line > grid.topmost_line()
                 && grid[Line(line.0 - 1)][last_column]
                     .flags
                     .contains(Flags::WRAPLINE),
-        })
+        }
     }
 
     /// Converts a screen row (0 = oldest retained line) to an alacritty line.
@@ -1353,7 +1355,6 @@ impl Terminal {
         let end_row_exclusive = end_row_exclusive.min(total_rows).max(start_row);
         let grid = self.term.grid();
         let columns = grid.columns();
-        let last_column = Column(columns - 1);
         let mut rows = Vec::with_capacity(end_row_exclusive - start_row);
         for y in start_row..end_row_exclusive {
             let Some(line) = self.screen_line(y as u64) else {
@@ -1369,15 +1370,11 @@ impl Terminal {
                     }
                 })
                 .collect();
-            let soft_wrapped = row[last_column].flags.contains(Flags::WRAPLINE);
-            let wrap_continuation = line > grid.topmost_line()
-                && grid[Line(line.0 - 1)][last_column]
-                    .flags
-                    .contains(Flags::WRAPLINE);
+            let wrap = self.row_wrap(line);
             rows.push(ScreenTextRow {
                 cells,
-                soft_wrapped,
-                wrap_continuation,
+                soft_wrapped: wrap.soft_wrapped,
+                wrap_continuation: wrap.wrap_continuation,
             });
         }
         Ok(rows)

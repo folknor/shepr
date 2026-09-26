@@ -1,6 +1,8 @@
 use std::io;
 use std::path::PathBuf;
 
+use crate::client::endpoint::ProfileId;
+
 use super::attach::{
     DiscoveryProgress, RemoteShepr, RemoteSsh, SshStdioBridge,
     resume_installed_remote_shepr_discovery,
@@ -55,8 +57,8 @@ pub(crate) struct SavedSshSettings {
 /// finishes.
 pub(crate) struct SavedSshConnector {
     paths: crate::config::AppPaths,
-    profile_id: String,
-    target: String,
+    profile_id: ProfileId,
+    target: super::SshTarget,
     session: String,
     settings: SavedSshSettings,
     state: std::sync::Mutex<ConnectorState>,
@@ -75,15 +77,15 @@ struct ConnectorState {
 impl SavedSshConnector {
     pub(crate) fn new(
         paths: &crate::config::AppPaths,
-        profile_id: &str,
-        target: &str,
+        profile_id: &ProfileId,
+        target: &super::SshTarget,
         session: &str,
         settings: SavedSshSettings,
     ) -> Self {
         Self {
             paths: paths.clone(),
-            profile_id: profile_id.to_owned(),
-            target: target.to_owned(),
+            profile_id: profile_id.clone(),
+            target: target.clone(),
             session: session.to_owned(),
             settings,
             state: std::sync::Mutex::new(ConnectorState::default()),
@@ -103,15 +105,15 @@ impl SavedSshConnector {
         deadline: std::time::Instant,
         mut establish: impl FnMut(SavedSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
-        validate_profile_path_id(&self.profile_id)?;
         crate::session::validate_name(&self.session)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let target = &self.target;
         let metadata_cache = crate::client::endpoint::SshMetadataCache::new(
             &self.paths,
             &self.profile_id,
-            &self.target,
+            target.as_str(),
             &self.session,
-        )?;
+        );
         // Attempts for one endpoint never overlap (the supervisor keeps one in flight, and
         // a replacement connector for the same profile waits for a retired one's attempt),
         // so holding the lock for the whole attempt contends with nothing.
@@ -132,7 +134,7 @@ impl SavedSshConnector {
             .is_none_or(|ssh| ssh.missing_managed_config(self.settings.manage_ssh_config))
         {
             state.ssh = Some(RemoteSsh::new_noninteractive_with(
-                self.target.clone(),
+                target.clone(),
                 self.settings.manage_ssh_config,
                 &self.paths,
             ));
@@ -150,7 +152,7 @@ impl SavedSshConnector {
         let ssh = &*ssh;
 
         if let Some(known) = remote_shepr.clone() {
-            match self.attempt(ssh, &known, deadline, &mut establish) {
+            match self.attempt(ssh, target, &known, deadline, &mut establish) {
                 Ok(connected) => return Ok(connected),
                 Err(error) if super::attach::is_ssh_link_failure(&error) => return Err(error),
                 Err(error) => {
@@ -178,7 +180,7 @@ impl SavedSshConnector {
         // discovering again. Any other failure forgets it, so the next attempt discovers
         // from scratch.
         *remote_shepr = Some(discovered.clone());
-        match self.attempt(ssh, &discovered, deadline, &mut establish) {
+        match self.attempt(ssh, target, &discovered, deadline, &mut establish) {
             Ok(connected) => {
                 if let Some(metadata) = discovered.machine_metadata() {
                     metadata_cache.store(&metadata);
@@ -197,6 +199,7 @@ impl SavedSshConnector {
     fn attempt<T>(
         &self,
         ssh: &RemoteSsh,
+        target: &super::SshTarget,
         remote_shepr: &RemoteShepr,
         deadline: std::time::Instant,
         establish: &mut impl FnMut(SavedSshStream) -> io::Result<T>,
@@ -206,7 +209,7 @@ impl SavedSshConnector {
         }
         let path = saved_bridge_path(&self.profile_id);
         let bridge = SshStdioBridge::start(
-            self.target.clone(),
+            target.clone(),
             remote_shepr,
             path.clone(),
             &self.session,
@@ -231,15 +234,19 @@ pub(crate) struct SavedSshApiBridge {
 impl SavedSshApiBridge {
     pub(crate) fn start(
         paths: &crate::config::AppPaths,
-        profile_id: &str,
-        target: &str,
+        profile_id: &ProfileId,
+        target: &super::SshTarget,
         session: &str,
         use_cached_metadata: bool,
         settings: SavedSshSettings,
     ) -> io::Result<Self> {
-        let ssh = validated_saved_ssh(paths, profile_id, target, session, settings)?;
-        let metadata_cache =
-            crate::client::endpoint::SshMetadataCache::new(paths, profile_id, target, session)?;
+        let ssh = validated_saved_ssh(paths, target, session, settings)?;
+        let metadata_cache = crate::client::endpoint::SshMetadataCache::new(
+            paths,
+            profile_id,
+            target.as_str(),
+            session,
+        );
         let cached = use_cached_metadata.then(|| metadata_cache.load()).flatten();
         let used_cached_metadata = cached.is_some();
         let metadata = match cached {
@@ -256,11 +263,11 @@ impl SavedSshApiBridge {
             &format!(
                 "shepr-api-{}-{}.sock",
                 std::process::id(),
-                &profile_id[..16]
+                &profile_id.as_str()[..16]
             ),
         );
         let bridge = SshStdioBridge::start_command(
-            target.to_owned(),
+            target.clone(),
             command,
             path.clone(),
             ssh.options(),
@@ -287,9 +294,7 @@ impl SavedSshApiBridge {
     }
 
     pub(crate) fn stale_metadata_failure(error: &io::Error) -> bool {
-        error
-            .to_string()
-            .contains(super::attach::STALE_API_METADATA)
+        super::SshFailureDiagnostic::from_error(error).is_stale_metadata()
     }
 }
 
@@ -301,73 +306,26 @@ pub(crate) fn saved_ssh_bootstrap_command(target: &str, session: &str) -> String
     )
 }
 
-pub(crate) fn saved_ssh_failure_needs_attention(error: &io::Error) -> bool {
-    if matches!(
-        error.kind(),
-        io::ErrorKind::InvalidInput
-            | io::ErrorKind::InvalidData
-            | io::ErrorKind::NotFound
-            | io::ErrorKind::PermissionDenied
-            | io::ErrorKind::Unsupported
-    ) {
-        return true;
-    }
-    let message = error.to_string().to_ascii_lowercase();
-    [
-        "permission denied",
-        "host key verification failed",
-        "remote host identification has changed",
-        "no matching host key",
-        "unsupported remote platform",
-        "not ready",
-        "install or update",
-        "remote shepr server speaks a different protocol",
-        "predates shepr's stable endpoint protocol",
-        // Only a rejection is a compatibility problem; a bare "handshake" also matched
-        // transient shutdowns that happened to occur mid-handshake.
-        "handshake rejected",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
-}
-
-fn saved_bridge_path(profile_id: &str) -> PathBuf {
+fn saved_bridge_path(profile_id: &ProfileId) -> PathBuf {
     let pid = std::process::id();
     let readable = format!("shepr-ssh-{pid}-{profile_id}.sock");
-    let short = format!("shepr-s-{pid}-{}.sock", &profile_id[..16]);
+    let short = format!("shepr-s-{pid}-{}.sock", &profile_id.as_str()[..16]);
     crate::platform::remote_bridge_endpoint_path(&readable, &short)
 }
 
 fn validated_saved_ssh(
     paths: &crate::config::AppPaths,
-    profile_id: &str,
-    target: &str,
+    target: &super::SshTarget,
     session: &str,
     settings: SavedSshSettings,
 ) -> io::Result<RemoteSsh> {
-    validate_profile_path_id(profile_id)?;
     crate::session::validate_name(session)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     Ok(RemoteSsh::new_noninteractive_with(
-        target.to_owned(),
+        target.clone(),
         settings.manage_ssh_config,
         paths,
     ))
-}
-
-fn validate_profile_path_id(profile_id: &str) -> io::Result<()> {
-    if profile_id.len() == 32
-        && profile_id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "invalid SSH endpoint profile id",
-        ))
-    }
 }
 
 #[cfg(test)]
@@ -376,37 +334,36 @@ mod tests {
 
     #[test]
     fn bridge_paths_use_profile_identity_not_target_or_session() {
-        let first = saved_bridge_path("0123456789abcdef0123456789abcdef");
-        let second = saved_bridge_path("fedcba9876543210fedcba9876543210");
+        let first = saved_bridge_path(
+            &ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
+        );
+        let second = saved_bridge_path(
+            &ProfileId::parse("fedcba9876543210fedcba9876543210").expect("test precondition"),
+        );
         assert_ne!(first, second);
         assert!(!first.to_string_lossy().contains("example.com"));
         assert!(!first.to_string_lossy().contains("default"));
     }
 
     #[test]
-    fn connector_rejects_invalid_profiles_before_touching_ssh() {
+    fn connector_rejects_invalid_session_before_touching_ssh() {
         let settings = SavedSshSettings {
             manage_ssh_config: false,
         };
-        for (profile_id, session) in [
-            ("not-a-profile-id", "agents"),
-            ("0123456789abcdef0123456789abcdef", "bad session/name"),
-        ] {
-            let connector = SavedSshConnector::new(
-                &crate::config::AppPaths::default(),
-                profile_id,
-                "build",
-                session,
-                settings,
-            );
-            let error = connector
-                .connect(
-                    std::time::Instant::now() + std::time::Duration::from_secs(30),
-                    |_| -> io::Result<()> { panic!("no attempt may start") },
-                )
-                .expect_err("test precondition");
-            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        }
+        let connector = SavedSshConnector::new(
+            &crate::config::AppPaths::default(),
+            &ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
+            &super::super::SshTarget::parse("build").expect("test precondition"),
+            "bad session/name",
+            settings,
+        );
+        let error = connector
+            .connect(
+                std::time::Instant::now() + std::time::Duration::from_secs(30),
+                |_| -> io::Result<()> { panic!("no attempt may start") },
+            )
+            .expect_err("test precondition");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
@@ -427,26 +384,36 @@ mod tests {
             "the remote server predates Shepr's stable endpoint protocol",
             "handshake rejected",
         ] {
-            assert!(saved_ssh_failure_needs_attention(&io::Error::other(
-                message
-            )));
+            assert!(
+                super::super::SshFailureDiagnostic::from_error(&io::Error::other(message))
+                    .needs_attention()
+            );
         }
-        assert!(!saved_ssh_failure_needs_attention(&io::Error::new(
-            io::ErrorKind::TimedOut,
-            "network timed out"
-        )));
-        assert!(!saved_ssh_failure_needs_attention(&io::Error::new(
-            io::ErrorKind::ConnectionAborted,
-            "server shut down during handshake"
-        )));
+        assert!(
+            !super::super::SshFailureDiagnostic::from_error(&io::Error::new(
+                io::ErrorKind::TimedOut,
+                "network timed out"
+            ))
+            .needs_attention()
+        );
+        assert!(
+            !super::super::SshFailureDiagnostic::from_error(&io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "server shut down during handshake"
+            ))
+            .needs_attention()
+        );
         for message in [
             "Protocol mismatch in unrelated SSH stderr",
             "remote command mentioned protocol in its output",
         ] {
-            assert!(!saved_ssh_failure_needs_attention(&io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                message,
-            )));
+            assert!(
+                !super::super::SshFailureDiagnostic::from_error(&io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    message,
+                ))
+                .needs_attention()
+            );
         }
     }
 }

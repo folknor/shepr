@@ -10,7 +10,11 @@ use bytes::Bytes;
 use tokio::sync::mpsc::{self, error::TryRecvError as DataTryRecvError};
 use tracing::{debug, error, warn};
 
-use crate::pty::fd;
+pub use crate::pty::submission::{QueuedSubmission, SubmissionCancel, SubmissionCancelOutcome};
+use crate::pty::{
+    fd,
+    submission::{EnterStart, SharedSubmissionState, SubmissionPart, SubmissionState, lock_state},
+};
 
 // Actor handle methods must call wake_actor() after queuing work. The idle
 // timeout is only a fallback for missed wakes; PTY and wake readiness drive
@@ -98,136 +102,8 @@ enum PtyIoDataCommand {
         enter: Bytes,
         delay: Duration,
         reply: std_mpsc::Sender<std::io::Result<()>>,
-        progress: Arc<Mutex<SubmissionProgress>>,
+        state: SharedSubmissionState,
     },
-}
-
-/// A submission handed to the actor: its completion and a way to withdraw it.
-pub struct QueuedSubmission {
-    pub completion: std_mpsc::Receiver<std::io::Result<()>>,
-    pub cancel: SubmissionCancel,
-}
-
-/// Withdraws a queued submission whose caller stopped waiting for it (an
-/// `agent.prompt --wait --timeout` that reached its deadline). Without this
-/// the actor would still type the prompt, and press Enter, whenever the pane
-/// next reads input, long after the caller was told it timed out.
-///
-/// Cancellation never cuts a write in half: a bracketed paste or an escape
-/// sequence truncated mid-way would leave the agent's input parser in a state
-/// that swallows whatever the user types next. So text already being written
-/// is finished, and only what has not started is dropped - in particular the
-/// Enter, which is never sent once the submission is cancelled.
-#[derive(Clone)]
-pub struct SubmissionCancel {
-    progress: Arc<Mutex<SubmissionProgress>>,
-    wake: Option<fd::WakeWriter>,
-}
-
-/// How far a submission had got when it was cancelled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SubmissionCancelOutcome {
-    /// Nothing was written; the submission is dropped.
-    Withdrawn,
-    /// Some or all of the text reached the pane, but Enter will not be sent:
-    /// the text may sit unsubmitted in the agent's input.
-    TextUnsubmitted,
-    /// Enter was already being written; the prompt will be submitted.
-    AlreadySubmitting,
-    /// The actor already finished it; its result is on the completion channel.
-    Finished,
-}
-
-impl SubmissionCancel {
-    /// A cancel handle for a submission nothing else tracks: cancelling it
-    /// always answers `Finished`, sending the caller to the completion.
-    #[cfg(test)]
-    pub(crate) fn untracked() -> Self {
-        Self {
-            progress: Arc::new(Mutex::new(SubmissionProgress {
-                stage: SubmissionStage::Finished,
-                cancelled: false,
-            })),
-            wake: None,
-        }
-    }
-
-    /// A cancel handle for a submission no actor ever picks up: cancelling
-    /// it answers `Withdrawn`.
-    #[cfg(test)]
-    pub(crate) fn never_started() -> Self {
-        Self {
-            progress: Arc::new(Mutex::new(SubmissionProgress {
-                stage: SubmissionStage::Queued,
-                cancelled: false,
-            })),
-            wake: None,
-        }
-    }
-
-    pub fn cancel(&self) -> SubmissionCancelOutcome {
-        let outcome = {
-            let mut progress = lock_progress(&self.progress);
-            match progress.stage {
-                SubmissionStage::Queued => {
-                    progress.cancelled = true;
-                    SubmissionCancelOutcome::Withdrawn
-                }
-                SubmissionStage::Typing => {
-                    progress.cancelled = true;
-                    SubmissionCancelOutcome::TextUnsubmitted
-                }
-                SubmissionStage::Submitting => SubmissionCancelOutcome::AlreadySubmitting,
-                SubmissionStage::Finished => SubmissionCancelOutcome::Finished,
-            }
-        };
-        // The actor may be parked on the submission's delay or on a PTY that
-        // is not writable; wake it so it drops the submission now and moves
-        // on to the input queued behind it.
-        if matches!(
-            outcome,
-            SubmissionCancelOutcome::Withdrawn | SubmissionCancelOutcome::TextUnsubmitted
-        ) && let Some(wake) = &self.wake
-            && let Err(err) = wake.wake()
-        {
-            debug!(err = %err, "failed to wake PTY actor for a cancelled submission");
-        }
-        outcome
-    }
-}
-
-/// Progress of one submission, shared between the actor and its canceller.
-/// The actor writes the first byte of each part while holding this lock, so
-/// a cancel either lands before that part starts (and the part is dropped)
-/// or sees the stage it reached.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SubmissionProgress {
-    stage: SubmissionStage,
-    cancelled: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SubmissionStage {
-    /// No byte written yet.
-    Queued,
-    /// Text bytes written; Enter not started.
-    Typing,
-    /// Enter bytes written; cannot be withdrawn.
-    Submitting,
-    /// The reply has been, or is being, sent.
-    Finished,
-}
-
-fn lock_progress(
-    progress: &Mutex<SubmissionProgress>,
-) -> std::sync::MutexGuard<'_, SubmissionProgress> {
-    progress
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn mark_submission_finished(progress: &Mutex<SubmissionProgress>) {
-    lock_progress(progress).stage = SubmissionStage::Finished;
 }
 
 fn submission_withdrawn_error() -> std::io::Error {
@@ -314,17 +190,14 @@ impl PtyIoActorHandle {
             ));
         }
         let (reply_tx, reply_rx) = std_mpsc::channel();
-        let progress = Arc::new(Mutex::new(SubmissionProgress {
-            stage: SubmissionStage::Queued,
-            cancelled: false,
-        }));
+        let state = SubmissionState::shared();
         self.data_tx
             .try_send(PtyIoDataCommand::SubmitUserInput {
                 text,
                 enter,
                 delay,
                 reply: reply_tx,
-                progress: Arc::clone(&progress),
+                state: Arc::clone(&state),
             })
             .map_err(|err| match err {
                 mpsc::error::TrySendError::Full(_) => {
@@ -338,7 +211,7 @@ impl PtyIoActorHandle {
         Ok(QueuedSubmission {
             completion: reply_rx,
             cancel: SubmissionCancel {
-                progress,
+                state,
                 wake: Some(self.wake.clone()),
             },
         })
@@ -491,22 +364,14 @@ struct PtyIoActorRunner {
 
 struct ActiveSubmission {
     enter: Bytes,
-    delay: Duration,
-    phase: SubmissionPhase,
     reply: std_mpsc::Sender<std::io::Result<()>>,
-    progress: Arc<Mutex<SubmissionProgress>>,
+    state: SharedSubmissionState,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct PendingWrite {
-    bytes: Bytes,
-    boundary: Option<SubmissionBoundary>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SubmissionBoundary {
-    Text,
-    Enter,
+enum PendingWrite {
+    User(Bytes),
+    Submission { bytes: Bytes, part: SubmissionPart },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -518,28 +383,17 @@ enum ReadOutcome {
     Closed,
 }
 
-enum SubmissionPhase {
-    WritingText,
-    WaitingUntil(Instant),
-    WritingEnter,
-}
-
 impl PtyIoActorRunner {
     fn enqueue_write(&mut self, bytes: Bytes) {
         if !bytes.is_empty() {
-            self.pending_writes.push_back(PendingWrite {
-                bytes,
-                boundary: None,
-            });
+            self.pending_writes.push_back(PendingWrite::User(bytes));
         }
     }
 
-    fn enqueue_submission_write(&mut self, bytes: Bytes, boundary: SubmissionBoundary) {
+    fn enqueue_submission_write(&mut self, bytes: Bytes, part: SubmissionPart) {
         if !bytes.is_empty() {
-            self.pending_writes.push_back(PendingWrite {
-                bytes,
-                boundary: Some(boundary),
-            });
+            self.pending_writes
+                .push_back(PendingWrite::Submission { bytes, part });
         }
     }
 
@@ -564,7 +418,7 @@ impl PtyIoActorRunner {
 
             if !self.pending_writes.is_empty() {
                 match self.flush_pending_writes_once() {
-                    Ok(Some(boundary)) => self.complete_submission_boundary(boundary),
+                    Ok(Some(part)) => self.complete_submission_part(part),
                     Ok(None) => {}
                     Err(err) => {
                         self.handle_write_failure(err);
@@ -597,7 +451,7 @@ impl PtyIoActorRunner {
                     }
                     if readiness.pty_write_ready && !self.pending_writes.is_empty() {
                         match self.flush_pending_writes_once() {
-                            Ok(Some(boundary)) => self.complete_submission_boundary(boundary),
+                            Ok(Some(part)) => self.complete_submission_part(part),
                             Ok(None) => {}
                             Err(err) => {
                                 self.handle_write_failure(err);
@@ -682,30 +536,21 @@ impl PtyIoActorRunner {
                 enter,
                 delay,
                 reply,
-                progress,
+                state,
             } => {
-                {
-                    let mut shared = lock_progress(&progress);
-                    if shared.cancelled {
-                        // Withdrawn while it waited in the queue.
-                        shared.stage = SubmissionStage::Finished;
-                        drop(shared);
-                        let _ = reply.send(Err(submission_withdrawn_error()));
-                        return;
-                    }
+                let started = lock_state(&state).start(text.is_empty(), delay);
+                if !started {
+                    lock_state(&state).finish();
+                    let _ = reply.send(Err(submission_withdrawn_error()));
+                    return;
                 }
-                let phase = if text.is_empty() {
-                    SubmissionPhase::WaitingUntil(Instant::now() + delay)
-                } else {
-                    self.enqueue_submission_write(text, SubmissionBoundary::Text);
-                    SubmissionPhase::WritingText
-                };
+                if !text.is_empty() {
+                    self.enqueue_submission_write(text, SubmissionPart::Text);
+                }
                 self.active_submission = Some(ActiveSubmission {
                     enter,
-                    delay,
-                    phase,
                     reply,
-                    progress,
+                    state,
                 });
             }
         }
@@ -828,25 +673,35 @@ impl PtyIoActorRunner {
 
     /// Called when a submission part finished writing, or was skipped because
     /// the submission was cancelled before it started.
-    fn complete_submission_boundary(&mut self, boundary: SubmissionBoundary) {
-        if self.active_submission_cancelled() {
-            self.finish_active_submission(Err(submission_withdrawn_error()));
-            return;
-        }
-        match boundary {
-            SubmissionBoundary::Text => {
-                let Some(submission) = self.active_submission.as_mut() else {
+    fn complete_submission_part(&mut self, part: SubmissionPart) {
+        match part {
+            SubmissionPart::Text => {
+                let Some(submission) = self.active_submission.as_ref() else {
                     return;
                 };
-                debug_assert!(matches!(submission.phase, SubmissionPhase::WritingText));
-                submission.phase = SubmissionPhase::WaitingUntil(Instant::now() + submission.delay);
+                let completed = lock_state(&submission.state).text_finished(Instant::now());
+                if !completed {
+                    self.finish_active_submission(Err(std::io::Error::other(
+                        "PTY actor completed text outside the submission state machine",
+                    )));
+                } else if self.active_submission_cancelled() {
+                    self.finish_active_submission(Err(submission_withdrawn_error()));
+                }
             }
-            SubmissionBoundary::Enter => {
-                debug_assert!(matches!(
-                    self.active_submission.as_ref().map(|s| &s.phase),
-                    Some(SubmissionPhase::WritingEnter)
-                ));
-                self.finish_active_submission(Ok(()));
+            SubmissionPart::Enter => {
+                let Some(submission) = self.active_submission.as_ref() else {
+                    return;
+                };
+                let finished = lock_state(&submission.state).enter_finished();
+                if finished {
+                    self.finish_active_submission(Ok(()));
+                } else if self.active_submission_cancelled() {
+                    self.finish_active_submission(Err(submission_withdrawn_error()));
+                } else {
+                    self.finish_active_submission(Err(std::io::Error::other(
+                        "PTY actor completed Enter outside the submission state machine",
+                    )));
+                }
             }
         }
     }
@@ -854,12 +709,12 @@ impl PtyIoActorRunner {
     fn active_submission_cancelled(&self) -> bool {
         self.active_submission
             .as_ref()
-            .is_some_and(|submission| lock_progress(&submission.progress).cancelled)
+            .is_some_and(|submission| lock_state(&submission.state).cancelled())
     }
 
     fn finish_active_submission(&mut self, result: std::io::Result<()>) {
         if let Some(submission) = self.active_submission.take() {
-            mark_submission_finished(&submission.progress);
+            lock_state(&submission.state).finish();
             let _ = submission.reply.send(result);
         }
     }
@@ -873,53 +728,39 @@ impl PtyIoActorRunner {
         let Some(submission) = self.active_submission.as_ref() else {
             return;
         };
-        let stage = {
-            let progress = lock_progress(&submission.progress);
-            if !progress.cancelled {
-                return;
-            }
-            progress.stage
-        };
-        if matches!(submission.phase, SubmissionPhase::WritingText)
-            && stage != SubmissionStage::Queued
-        {
+        let should_withdraw = lock_state(&submission.state).should_withdraw();
+        if !should_withdraw {
             return;
         }
-        // Only the active submission has boundary writes queued, and none of
-        // them has started: a started text part is excluded above, and an
-        // Enter part never starts once the submission is cancelled.
-        self.pending_writes.retain(|write| write.boundary.is_none());
+        self.pending_writes
+            .retain(|write| matches!(write, PendingWrite::User(_)));
         self.finish_active_submission(Err(submission_withdrawn_error()));
     }
 
     fn schedule_submission_enter(&mut self) {
-        let Some(ActiveSubmission {
-            enter,
-            phase: SubmissionPhase::WaitingUntil(deadline),
-            ..
-        }) = self.active_submission.as_ref()
-        else {
+        let Some(submission) = self.active_submission.as_ref() else {
             return;
         };
-        if Instant::now() >= *deadline {
-            let enter = enter.clone();
-            if self.active_submission_cancelled() {
+        let enter = submission.enter.clone();
+        let state = Arc::clone(&submission.state);
+        let start = lock_state(&state).start_enter(Instant::now(), enter.is_empty());
+        match start {
+            EnterStart::Cancelled => {
                 self.finish_active_submission(Err(submission_withdrawn_error()));
-            } else if enter.is_empty() {
-                self.finish_active_submission(Ok(()));
-            } else if let Some(submission) = self.active_submission.as_mut() {
-                submission.phase = SubmissionPhase::WritingEnter;
-                self.enqueue_submission_write(enter, SubmissionBoundary::Enter);
             }
+            EnterStart::Empty => {
+                self.finish_active_submission(Ok(()));
+            }
+            EnterStart::Started => self.enqueue_submission_write(enter, SubmissionPart::Enter),
+            EnterStart::NotReady => {}
         }
     }
 
     fn poll_timeout_ms(&self) -> i32 {
-        let Some(ActiveSubmission {
-            phase: SubmissionPhase::WaitingUntil(deadline),
-            ..
-        }) = self.active_submission.as_ref()
-        else {
+        let Some(submission) = self.active_submission.as_ref() else {
+            return ACTOR_IDLE_POLL_MS;
+        };
+        let Some(deadline) = lock_state(&submission.state).deadline() else {
             return ACTOR_IDLE_POLL_MS;
         };
         i32::try_from(
@@ -940,37 +781,44 @@ impl PtyIoActorRunner {
         self.data_rx.close();
         self.fail_active_submission(input_submission_closed_error());
         while let Some(command) = self.data_rx.blocking_recv() {
-            if let PtyIoDataCommand::SubmitUserInput {
-                reply, progress, ..
-            } = command
-            {
-                mark_submission_finished(&progress);
+            if let PtyIoDataCommand::SubmitUserInput { reply, state, .. } = command {
+                lock_state(&state).finish();
                 let _ = reply.send(Err(input_submission_closed_error()));
             }
         }
     }
 
-    fn flush_pending_writes_once(&mut self) -> std::io::Result<Option<SubmissionBoundary>> {
+    fn flush_pending_writes_once(&mut self) -> std::io::Result<Option<SubmissionPart>> {
         while let Some(write) = self.pending_writes.front() {
-            let boundary = write.boundary;
-            // The first byte of a submission part is written under the
-            // submission's progress lock, so a concurrent cancel either
-            // lands first (and the part is skipped whole) or sees the part
-            // started. Later chunks of a started part need no lock.
-            let progress = match boundary {
-                Some(_) if self.current_write_offset == 0 => self
+            let (bytes, part) = match write {
+                PendingWrite::User(bytes) => (bytes, None),
+                PendingWrite::Submission { bytes, part } => (bytes, Some(*part)),
+            };
+            // The first byte of a submission part is written under the state
+            // lock, so cancellation either skips the whole part or observes
+            // that writing has started. Later text chunks can finish without
+            // the lock because cancellation never truncates an in-flight part.
+            let state = match (part, self.current_write_offset) {
+                (Some(_), 0) => self
                     .active_submission
                     .as_ref()
-                    .map(|submission| Arc::clone(&submission.progress)),
+                    .map(|submission| Arc::clone(&submission.state)),
                 _ => None,
             };
-            let mut progress_guard = progress.as_deref().map(lock_progress);
-            if progress_guard.as_ref().is_some_and(|guard| guard.cancelled) {
-                drop(progress_guard);
+            if part.is_some() && self.current_write_offset == 0 && state.is_none() {
                 self.pending_writes.pop_front();
-                return Ok(boundary);
+                return Ok(part);
             }
-            let chunk = &write.bytes[self.current_write_offset..];
+            let mut state_guard = state.as_deref().map(lock_state);
+            if state_guard
+                .as_ref()
+                .is_some_and(|guard| part.is_some_and(|part| !guard.can_write_first_byte(part)))
+            {
+                drop(state_guard);
+                self.pending_writes.pop_front();
+                return Ok(part);
+            }
+            let chunk = &bytes[self.current_write_offset..];
             match self.file.write(chunk) {
                 Ok(0) => {
                     return Err(std::io::Error::new(
@@ -979,22 +827,19 @@ impl PtyIoActorRunner {
                     ));
                 }
                 Ok(written) => {
-                    if let Some(guard) = progress_guard.as_mut() {
-                        guard.stage = match boundary {
-                            Some(SubmissionBoundary::Enter) => SubmissionStage::Submitting,
-                            _ => SubmissionStage::Typing,
-                        };
+                    if let (Some(guard), Some(part)) = (state_guard.as_mut(), part) {
+                        guard.first_byte_written(part);
                     }
-                    drop(progress_guard);
+                    drop(state_guard);
                     self.current_write_offset += written;
-                    if self.current_write_offset >= write.bytes.len() {
+                    if self.current_write_offset >= bytes.len() {
                         let Some(completed) = self.pending_writes.pop_front() else {
                             return Ok(None);
                         };
                         self.current_write_offset = 0;
-                        if let Some(boundary) = completed.boundary {
+                        if let PendingWrite::Submission { part, .. } = completed {
                             self.file.flush()?;
-                            return Ok(Some(boundary));
+                            return Ok(Some(part));
                         }
                     }
                 }
@@ -1208,20 +1053,28 @@ mod tests {
     }
 
     #[test]
-    fn submission_boundary_does_not_wait_for_following_protocol_write() {
+    fn submission_part_does_not_wait_for_following_protocol_write() {
         let (mut runner, _peer) = actor_runner_for_unit_test();
-        runner.enqueue_submission_write(Bytes::from_static(b"prompt"), SubmissionBoundary::Text);
+        let state = SubmissionState::shared();
+        assert!(lock_state(&state).start(false, Duration::ZERO));
+        let (reply, _completion) = std_mpsc::channel();
+        runner.active_submission = Some(ActiveSubmission {
+            enter: Bytes::new(),
+            reply,
+            state,
+        });
+        runner.enqueue_submission_write(Bytes::from_static(b"prompt"), SubmissionPart::Text);
         runner.enqueue_write(Bytes::from_static(b"response"));
 
         assert_eq!(
             runner
                 .flush_pending_writes_once()
                 .expect("test precondition"),
-            Some(SubmissionBoundary::Text)
+            Some(SubmissionPart::Text)
         );
         assert_eq!(
-            runner.pending_writes[0].bytes,
-            Bytes::from_static(b"response")
+            runner.pending_writes[0],
+            PendingWrite::User(Bytes::from_static(b"response"))
         );
     }
 
@@ -1918,14 +1771,8 @@ mod tests {
         assert_eq!(
             runner.pending_writes,
             VecDeque::from([
-                PendingWrite {
-                    bytes: Bytes::from_static(b"live-light"),
-                    boundary: None,
-                },
-                PendingWrite {
-                    bytes: Bytes::from_static(b"query-light"),
-                    boundary: None,
-                },
+                PendingWrite::User(Bytes::from_static(b"live-light")),
+                PendingWrite::User(Bytes::from_static(b"query-light")),
             ])
         );
     }

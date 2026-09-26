@@ -14,11 +14,17 @@ use std::path::{Component, Path};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Program {
-    /// The user's shell run as a login shell: argv0 is `-<basename>`, and the
-    /// shell path is taken from the command's `SHELL` at spawn time.
-    LoginShell,
+    /// An interactive pane shell. The configured name, environment fallback,
+    /// executable and child `SHELL` are resolved together at spawn time.
+    Shell { login: bool },
     /// Explicit argv; `argv[0]` is resolved against the command's `PATH`.
     Argv(Vec<OsString>),
+}
+
+#[derive(Clone, Copy)]
+enum ShellResolutionPolicy {
+    PaneProgram,
+    ChildEnvironment,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,9 +40,13 @@ impl PtyCommand {
         Self::with_program(Program::Argv(vec![program.as_ref().to_owned()]))
     }
 
-    /// Run the shell named by `SHELL` as a login shell (`-zsh` convention).
-    pub(crate) fn login_shell() -> Self {
-        Self::with_program(Program::LoginShell)
+    /// Run the configured shell, or the environment/default shell, in pane mode.
+    pub(crate) fn interactive_shell(default_shell: &str, login: bool) -> Self {
+        let mut command = Self::with_program(Program::Shell { login });
+        if !default_shell.trim().is_empty() {
+            command.env("SHELL", default_shell.trim());
+        }
+        command
     }
 
     fn with_program(program: Program) -> Self {
@@ -49,23 +59,14 @@ impl PtyCommand {
 
     #[cfg(test)]
     pub(crate) fn is_login_shell(&self) -> bool {
-        matches!(self.program, Program::LoginShell)
+        matches!(self.program, Program::Shell { login: true, .. })
     }
 
-    /// Explicit argv; empty for a login shell, whose argv is decided at spawn.
-    #[cfg(test)]
-    pub(crate) fn argv(&self) -> &[OsString] {
-        match &self.program {
-            Program::LoginShell => &[],
-            Program::Argv(argv) => argv,
-        }
-    }
-
-    /// Append an argument. A login shell takes no arguments; they are ignored.
+    /// Append an argument. An interactive shell takes no arguments; they are ignored.
     pub(crate) fn arg<S: AsRef<OsStr>>(&mut self, arg: S) {
         match &mut self.program {
-            Program::LoginShell => {
-                tracing::warn!("ignoring argument for login shell pty command");
+            Program::Shell { .. } => {
+                tracing::warn!("ignoring argument for interactive shell pty command");
             }
             Program::Argv(argv) => argv.push(arg.as_ref().to_owned()),
         }
@@ -115,16 +116,20 @@ impl PtyCommand {
             .filter(|dir| Path::new(dir).is_dir())
             .cloned()
             .unwrap_or(home);
-        let shell = self.shell();
-
-        let mut cmd = match &self.program {
-            Program::LoginShell => {
+        let (mut cmd, shell) = match &self.program {
+            Program::Shell { login } => {
+                let shell = self.resolve_shell(&dir, ShellResolutionPolicy::PaneProgram)?;
                 let mut cmd = std::process::Command::new(&shell);
-                let basename = shell.rsplit('/').next().unwrap_or(&shell);
-                cmd.arg0(format!("-{basename}"));
-                cmd
+                if *login {
+                    let basename = Path::new(&shell).file_name().unwrap_or(shell.as_os_str());
+                    let mut argv0 = OsString::from("-");
+                    argv0.push(basename);
+                    cmd.arg0(argv0);
+                }
+                (cmd, shell)
             }
             Program::Argv(argv) => {
+                let shell = self.resolve_shell(&dir, ShellResolutionPolicy::ChildEnvironment)?;
                 let Some((program, args)) = argv.split_first() else {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
@@ -135,31 +140,49 @@ impl PtyCommand {
                 let mut cmd = std::process::Command::new(resolved);
                 cmd.arg0(program);
                 cmd.args(args);
-                cmd
+                (cmd, shell)
             }
         };
-
         cmd.current_dir(dir);
         cmd.env_clear();
         cmd.envs(&self.envs);
-        // After `envs`, so the resolved shell (with its passwd / `/bin/sh`
-        // fallback for a non-executable `SHELL`) is what the child sees.
+        // The child sees the same resolved SHELL that was selected above.
         cmd.env("SHELL", shell);
         Ok(cmd)
     }
 
-    /// `SHELL` when it names an executable, else the passwd shell, else `/bin/sh`.
-    fn shell(&self) -> String {
-        if let Some(shell) = self.get_env("SHELL").and_then(OsStr::to_str) {
-            if access_ok(Path::new(shell), libc::X_OK) {
-                return shell.to_owned();
+    /// Resolve `$SHELL` once for this launch. Pane shells use `/bin/sh` when
+    /// the environment value is empty and reject an invalid selected shell;
+    /// other child commands fall back to passwd, then `/bin/sh`.
+    fn resolve_shell(&self, cwd: &OsStr, policy: ShellResolutionPolicy) -> io::Result<OsString> {
+        let inherited = self
+            .get_env("SHELL")
+            .and_then(OsStr::to_str)
+            .map(str::trim)
+            .filter(|shell| !shell.is_empty())
+            .map(OsString::from);
+        let candidate = inherited.clone().unwrap_or_else(|| match policy {
+            ShellResolutionPolicy::PaneProgram => OsString::from("/bin/sh"),
+            ShellResolutionPolicy::ChildEnvironment => OsString::from(passwd_shell()),
+        });
+        match self.search_path(&candidate, cwd) {
+            Ok(resolved) => Ok(resolved),
+            Err(err) if matches!(policy, ShellResolutionPolicy::PaneProgram) => Err(err),
+            Err(_) if inherited.is_none() => Ok(OsString::from("/bin/sh")),
+            Err(err) => {
+                if let Some(shell) = inherited {
+                    tracing::warn!(
+                        shell = %shell.to_string_lossy(),
+                        err = %err,
+                        "SHELL is not executable; falling back to passwd shell"
+                    );
+                }
+                let fallback = OsString::from(passwd_shell());
+                Ok(self
+                    .search_path(&fallback, cwd)
+                    .unwrap_or_else(|_| OsString::from("/bin/sh")))
             }
-            tracing::warn!(
-                shell = %shell,
-                "$SHELL is not executable, falling back to password db lookup"
-            );
         }
-        passwd_shell()
     }
 
     fn home_dir(&self) -> OsString {
@@ -179,40 +202,23 @@ impl PtyCommand {
             // An executable explicitly relative to cwd is only looked up there.
             if is_cwd_relative_path(exe_path) {
                 let abs_path = cwd.join(exe_path);
-                if abs_path.is_dir() {
-                    return Err(spawn_error(
-                        io::ErrorKind::InvalidInput,
-                        format!("{} is a directory", abs_path.display()),
-                    ));
+                match classify_candidate(&abs_path) {
+                    CandidateStatus::Executable => return Ok(abs_path.into_os_string()),
+                    status => return Err(candidate_error(&abs_path, status)),
                 }
-                if access_ok(&abs_path, libc::X_OK) {
-                    return Ok(abs_path.into_os_string());
-                }
-                if access_ok(&abs_path, libc::F_OK) {
-                    return Err(spawn_error(
-                        io::ErrorKind::PermissionDenied,
-                        format!("{} is not executable", abs_path.display()),
-                    ));
-                }
-                return Err(spawn_error(
-                    io::ErrorKind::NotFound,
-                    format!("{} does not exist", abs_path.display()),
-                ));
             }
 
             let mut errors = Vec::new();
             if let Some(path) = self.get_env("PATH") {
                 for dir in std::env::split_paths(path) {
                     let candidate = cwd.join(dir).join(exe_path);
-                    if candidate.is_dir() {
-                        errors.push(format!("{} exists but is a directory", candidate.display()));
-                    } else if access_ok(&candidate, libc::X_OK) {
-                        return Ok(candidate.into_os_string());
-                    } else if access_ok(&candidate, libc::F_OK) {
-                        errors.push(format!(
-                            "{} exists but is not executable",
-                            candidate.display()
-                        ));
+                    let status = classify_candidate(&candidate);
+                    match status {
+                        CandidateStatus::Executable => return Ok(candidate.into_os_string()),
+                        CandidateStatus::Directory | CandidateStatus::NotExecutable => {
+                            errors.push(candidate_problem(&candidate, status));
+                        }
+                        CandidateStatus::Missing => {}
                     }
                 }
                 errors.push(format!("no viable candidates found in PATH {path:?}"));
@@ -225,26 +231,63 @@ impl PtyCommand {
             ));
         }
 
-        if exe_path.is_dir() {
-            return Err(spawn_error(
-                io::ErrorKind::InvalidInput,
-                format!("{} is a directory", exe_path.display()),
-            ));
+        match classify_candidate(exe_path) {
+            CandidateStatus::Executable => Ok(exe.to_owned()),
+            status => Err(candidate_error(exe_path, status)),
         }
-        if !access_ok(exe_path, libc::X_OK) {
-            if access_ok(exe_path, libc::F_OK) {
-                return Err(spawn_error(
-                    io::ErrorKind::PermissionDenied,
-                    format!("{} is not executable", exe_path.display()),
-                ));
-            }
-            return Err(spawn_error(
-                io::ErrorKind::NotFound,
-                format!("{} does not exist", exe_path.display()),
-            ));
-        }
-        Ok(exe.to_owned())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateStatus {
+    Executable,
+    Directory,
+    NotExecutable,
+    Missing,
+}
+
+fn classify_candidate(path: &Path) -> CandidateStatus {
+    if path.is_dir() {
+        CandidateStatus::Directory
+    } else if access_ok(path, libc::X_OK) {
+        CandidateStatus::Executable
+    } else if access_ok(path, libc::F_OK) {
+        CandidateStatus::NotExecutable
+    } else {
+        CandidateStatus::Missing
+    }
+}
+
+fn candidate_problem(path: &Path, status: CandidateStatus) -> String {
+    match status {
+        CandidateStatus::Directory => format!("{} exists but is a directory", path.display()),
+        CandidateStatus::NotExecutable => {
+            format!("{} exists but is not executable", path.display())
+        }
+        CandidateStatus::Executable | CandidateStatus::Missing => String::new(),
+    }
+}
+
+fn candidate_error(path: &Path, status: CandidateStatus) -> io::Error {
+    let (kind, detail) = match status {
+        CandidateStatus::Directory => (
+            io::ErrorKind::InvalidInput,
+            format!("{} is a directory", path.display()),
+        ),
+        CandidateStatus::NotExecutable => (
+            io::ErrorKind::PermissionDenied,
+            format!("{} is not executable", path.display()),
+        ),
+        CandidateStatus::Missing => (
+            io::ErrorKind::NotFound,
+            format!("{} does not exist", path.display()),
+        ),
+        CandidateStatus::Executable => (
+            io::ErrorKind::InvalidInput,
+            format!("{} unexpectedly classified as executable", path.display()),
+        ),
+    };
+    spawn_error(kind, detail)
 }
 
 fn spawn_error(kind: io::ErrorKind, mut detail: String) -> io::Error {
@@ -252,12 +295,10 @@ fn spawn_error(kind: io::ErrorKind, mut detail: String) -> io::Error {
     io::Error::new(kind, detail)
 }
 
-/// The server's environment, with `SHELL` filled from passwd when unset.
+/// The server's environment. Shell selection and validation happen at spawn,
+/// after pane policy and launch environment have been applied.
 fn base_env() -> BTreeMap<OsString, OsString> {
-    let mut env: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
-    env.entry(OsString::from("SHELL"))
-        .or_insert_with(|| OsString::from(passwd_shell()));
-    env
+    std::env::vars_os().collect()
 }
 
 fn passwd_shell() -> String {
@@ -337,13 +378,43 @@ mod tests {
     }
 
     #[test]
+    fn path_candidate_classification_distinguishes_all_filesystem_cases() {
+        let scratch = crate::test_support::ScratchDir::new("pty-candidates");
+        let directory = scratch.join("directory");
+        std::fs::create_dir(&directory).expect("test precondition");
+        let executable = scratch.join("executable");
+        std::fs::write(&executable, "#!/bin/sh\nexit 0\n").expect("test precondition");
+        let not_executable = scratch.join("not-executable");
+        std::fs::write(&not_executable, "content").expect("test precondition");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
+                .expect("test precondition");
+            std::fs::set_permissions(&not_executable, std::fs::Permissions::from_mode(0o644))
+                .expect("test precondition");
+        }
+
+        assert_eq!(classify_candidate(&directory), CandidateStatus::Directory);
+        assert_eq!(classify_candidate(&executable), CandidateStatus::Executable);
+        assert_eq!(
+            classify_candidate(&not_executable),
+            CandidateStatus::NotExecutable
+        );
+        assert_eq!(
+            classify_candidate(&scratch.join("missing")),
+            CandidateStatus::Missing
+        );
+    }
+
+    #[test]
     fn env_edits_are_visible_before_spawn() {
         let mut cmd = PtyCommand::new("/bin/sh");
-        assert!(cmd.get_env("SHELL").is_some(), "SHELL is always seeded");
         cmd.env("SHEPR_PTY_TEST_KEY", "value");
         assert_eq!(cmd.get_env("SHEPR_PTY_TEST_KEY"), Some(OsStr::new("value")));
         cmd.env_remove("SHEPR_PTY_TEST_KEY");
         assert!(cmd.get_env("SHEPR_PTY_TEST_KEY").is_none());
+        cmd.env_remove("SHELL");
+        assert!(cmd.get_env("SHELL").is_none());
     }
 
     #[test]
@@ -366,8 +437,7 @@ mod tests {
 
     #[test]
     fn login_shell_execs_shell_env_without_arguments() {
-        let mut cmd = PtyCommand::login_shell();
-        cmd.env("SHELL", "/bin/sh");
+        let cmd = PtyCommand::interactive_shell("/bin/sh", true);
         let std_cmd = cmd.to_std_command().expect("build std command");
         assert_eq!(std_cmd.get_program(), OsStr::new("/bin/sh"));
         assert_eq!(std_cmd.get_args().count(), 0);
@@ -382,7 +452,13 @@ mod tests {
             .get_envs()
             .find(|(key, _)| *key == OsStr::new("SHELL"))
             .and_then(|(_, value)| value.map(OsStr::to_owned));
-        assert_eq!(shell, Some(OsString::from(cmd.shell())));
+        assert_eq!(
+            shell,
+            Some(
+                cmd.resolve_shell(&cmd.home_dir(), ShellResolutionPolicy::ChildEnvironment)
+                    .expect("test precondition")
+            )
+        );
         assert_ne!(shell, Some(OsString::from("/__shepr_missing_shell__")));
     }
 

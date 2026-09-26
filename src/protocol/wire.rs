@@ -571,6 +571,12 @@ pub enum AttachScrollSource {
 
 /// A single cell in a rendered frame, serialized independently from ratatui's
 /// `Cell` type to keep the wire protocol stable.
+// Keep the scalar fields in step with the terminal adapter: `src/pane/terminal.rs`
+// constructs `CellData` directly and supplies these values through the packed
+// conversion helpers below. Moving the color and underline layout into typed
+// wire fields requires migrating that adapter in the same change. The terminal
+// core also still exposes underline as a `u8` in `ghostty::CellStyle`, so the
+// adapter and core style need to move with the wire fields.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CellData {
     /// Grapheme cluster displayed in this cell (usually 1-2 chars).

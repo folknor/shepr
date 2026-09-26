@@ -12,12 +12,27 @@ struct SurfaceReuse<S> {
 }
 
 pub(crate) fn message(
-    base_surface_revision: u64,
+    last: &PaneSurfaceFrame,
     surface: &mut PaneSurfaceFrame,
 ) -> serde_json::Result<Option<ServerMessage>> {
+    if !Baseline::new(
+        &last.boot_id,
+        last.projection_revision,
+        last.surface_revision,
+    )
+    .accepts(
+        &surface.boot_id,
+        last.surface_revision,
+        surface.surface_revision,
+        &ProjectionUpdate::Reuse {
+            next: surface.projection_revision,
+        },
+    ) {
+        return Ok(None);
+    }
     let cells = std::mem::take(&mut surface.frame.cells);
     let data = serde_json::to_string(&SurfaceReuse {
-        base_surface_revision,
+        base_surface_revision: last.surface_revision,
         surface: &*surface,
     });
     surface.frame.cells = cells;
@@ -44,6 +59,60 @@ struct CellBaseline {
     width: u16,
     height: u16,
     cells: Vec<CellData>,
+}
+
+pub(crate) enum ProjectionUpdate {
+    Reuse { next: u64 },
+    Patch { revision: u64 },
+    Delta { base: u64, next: u64 },
+}
+
+pub(crate) struct Baseline<'a> {
+    boot_id: &'a str,
+    projection_revision: u64,
+    surface_revision: u64,
+}
+
+impl<'a> Baseline<'a> {
+    pub(crate) fn new(boot_id: &'a str, projection_revision: u64, surface_revision: u64) -> Self {
+        Self {
+            boot_id,
+            projection_revision,
+            surface_revision,
+        }
+    }
+
+    pub(crate) fn accepts(
+        &self,
+        boot_id: &str,
+        base_surface_revision: u64,
+        surface_revision: u64,
+        projection: &ProjectionUpdate,
+    ) -> bool {
+        if self.boot_id != boot_id
+            || base_surface_revision != self.surface_revision
+            || self.surface_revision.checked_add(1) != Some(surface_revision)
+        {
+            return false;
+        }
+        match *projection {
+            ProjectionUpdate::Reuse { next } => next >= self.projection_revision,
+            ProjectionUpdate::Patch { revision } => revision == self.projection_revision,
+            ProjectionUpdate::Delta { base, next } => {
+                base == self.projection_revision && next >= self.projection_revision
+            }
+        }
+    }
+}
+
+impl CellBaseline {
+    fn revisions(&self) -> Baseline<'_> {
+        Baseline::new(
+            &self.boot_id,
+            self.projection_revision,
+            self.surface_revision,
+        )
+    }
 }
 
 /// Connection-local decoding happens before activation and presentation filtering, so
@@ -79,10 +148,14 @@ impl Decoder {
                     return Err("surface reuse without a baseline".into());
                 };
                 let mut surface = reuse.surface;
-                if base.boot_id != surface.boot_id
-                    || base.surface_revision != reuse.base_surface_revision
-                    || surface.surface_revision != base.surface_revision.saturating_add(1)
-                    || base.width != surface.frame.width
+                if !base.revisions().accepts(
+                    &surface.boot_id,
+                    reuse.base_surface_revision,
+                    surface.surface_revision,
+                    &ProjectionUpdate::Reuse {
+                        next: surface.projection_revision,
+                    },
+                ) || base.width != surface.frame.width
                     || base.height != surface.frame.height
                     || !surface.frame.cells.is_empty()
                 {
@@ -121,11 +194,14 @@ impl Decoder {
                 let Some(base) = &mut self.baseline else {
                     return Err("surface patch without a baseline".into());
                 };
-                if patch.boot_id != base.boot_id
-                    || patch.projection_revision != base.projection_revision
-                    || patch.base_surface_revision != base.surface_revision
-                    || patch.surface_revision != base.surface_revision.saturating_add(1)
-                {
+                if !base.revisions().accepts(
+                    &patch.boot_id,
+                    patch.base_surface_revision,
+                    patch.surface_revision,
+                    &ProjectionUpdate::Patch {
+                        revision: patch.projection_revision,
+                    },
+                ) {
                     return Err("surface patch does not match its baseline".into());
                 }
                 // `apply_rows` checks every span before touching the grid, so a
@@ -153,12 +229,15 @@ impl Decoder {
         };
         let delta = surface_delta::decode_for(data, (base.width, base.height))?;
         let mut surface = delta.surface;
-        if surface.boot_id != base.boot_id
-            || delta.base_projection_revision != base.projection_revision
-            || delta.base_surface_revision != base.surface_revision
-            || surface.surface_revision != base.surface_revision.saturating_add(1)
-            || surface.projection_revision < base.projection_revision
-            || base.cells.len() != usize::from(base.width) * usize::from(base.height)
+        if !base.revisions().accepts(
+            &surface.boot_id,
+            delta.base_surface_revision,
+            surface.surface_revision,
+            &ProjectionUpdate::Delta {
+                base: delta.base_projection_revision,
+                next: surface.projection_revision,
+            },
+        ) || base.cells.len() != usize::from(base.width) * usize::from(base.height)
         {
             return Err("surface delta does not match its baseline".into());
         }
@@ -239,15 +318,53 @@ mod tests {
     }
 
     fn reuse_after(decoder: &mut Decoder, base_revision: u64) -> Result<PaneSurfaceFrame, String> {
+        let mut last = surface(2, 2);
+        last.surface_revision = base_revision;
         let mut next = surface(2, 2);
         next.surface_revision = base_revision + 1;
-        let message = message(base_revision, &mut next)
+        let message = message(&last, &mut next)
             .map_err(|error| error.to_string())?
             .ok_or("reuse fits in a frame")?;
         match decoder.decode(message)? {
             ServerMessage::PaneSurface(surface) => Ok(surface),
             other => Err(format!("expected a pane surface, got {other:?}")),
         }
+    }
+
+    #[test]
+    fn baseline_accepts_each_update_projection_rule_in_one_place() {
+        let baseline = Baseline::new("boot", 4, 9);
+
+        let accepts = |base_surface_revision, surface_revision, projection: ProjectionUpdate| {
+            baseline.accepts("boot", base_surface_revision, surface_revision, &projection)
+        };
+        assert!(accepts(9, 10, ProjectionUpdate::Reuse { next: 4 }));
+        assert!(accepts(9, 10, ProjectionUpdate::Reuse { next: 5 }));
+        assert!(!accepts(9, 10, ProjectionUpdate::Reuse { next: 3 }));
+        assert!(accepts(9, 10, ProjectionUpdate::Patch { revision: 4 }));
+        assert!(!accepts(9, 10, ProjectionUpdate::Patch { revision: 5 }));
+        assert!(accepts(9, 10, ProjectionUpdate::Delta { base: 4, next: 5 }));
+        assert!(!accepts(
+            9,
+            10,
+            ProjectionUpdate::Delta { base: 3, next: 5 }
+        ));
+        assert!(!accepts(
+            9,
+            10,
+            ProjectionUpdate::Delta { base: 4, next: 3 }
+        ));
+        assert!(!baseline.accepts("another-boot", 9, 10, &ProjectionUpdate::Reuse { next: 4 },));
+        assert!(!accepts(8, 10, ProjectionUpdate::Reuse { next: 4 }));
+        assert!(!accepts(9, 9, ProjectionUpdate::Reuse { next: 4 }));
+
+        let exhausted = Baseline::new("boot", 4, u64::MAX);
+        assert!(!exhausted.accepts(
+            "boot",
+            u64::MAX,
+            u64::MAX,
+            &ProjectionUpdate::Reuse { next: 4 },
+        ));
     }
 
     #[test]
@@ -331,5 +448,42 @@ mod tests {
             .expect("matching patch");
         let reused = reuse_after(&mut decoder, 2).expect("reuse after patch");
         assert_eq!(reused.frame.cells[3], cell("z"));
+    }
+
+    #[test]
+    fn reuse_cannot_move_the_projection_revision_backwards() {
+        let mut decoder = Decoder::new(false);
+        decoder
+            .decode(ServerMessage::PaneSurface(surface(2, 2)))
+            .expect("test precondition");
+
+        let last = surface(2, 2);
+        let mut regressed = last.clone();
+        regressed.projection_revision = 0;
+        regressed.surface_revision = 2;
+        assert!(
+            message(&last, &mut regressed)
+                .expect("test precondition")
+                .is_none()
+        );
+
+        let mut mismatched_projection = last.clone();
+        mismatched_projection.projection_revision = 0;
+        mismatched_projection.surface_revision = 2;
+        let reuse = ServerMessage::EndpointControl {
+            kind: MESSAGE_KIND.into(),
+            data: serde_json::to_string(&SurfaceReuse {
+                base_surface_revision: 1,
+                surface: &mismatched_projection,
+            })
+            .expect("test precondition"),
+        };
+        let error = decoder
+            .decode(reuse)
+            .expect_err("reuse cannot regress the projection revision");
+        assert!(error.contains("does not match its baseline"), "{error}");
+
+        let reused = reuse_after(&mut decoder, 1).expect("failed update left baseline intact");
+        assert_eq!(reused.projection_revision, 1);
     }
 }

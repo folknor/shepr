@@ -282,17 +282,18 @@ fn run_client_with_mode(
     }
 
     if let Err(err) = result {
-        let _ = writeln!(io::stderr(), "shepr: {err}");
-        rt.shutdown_timeout(Duration::from_millis(100));
-        crate::remote::release_ssh_resources_before_exit(Duration::from_secs(1));
-        crate::logging::shutdown("client");
-
         let detached = matches!(
             &err,
             ClientError::ServerShutdown {
                 reason: Some(reason)
             } if reason == "detached"
         );
+        let error_message = err.display_with_target(paths.session_id(), paths.server_address());
+        let _ = writeln!(io::stderr(), "shepr: {error_message}");
+        rt.shutdown_timeout(Duration::from_millis(100));
+        crate::remote::release_ssh_resources_before_exit(Duration::from_secs(1));
+        crate::logging::shutdown("client");
+
         let connection_lost_during_terminal_hangup =
             terminal_restore_failed && matches!(&err, ClientError::ConnectionLost(_));
         if detached || connection_lost_during_terminal_hangup {

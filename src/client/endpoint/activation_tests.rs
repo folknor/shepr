@@ -73,7 +73,7 @@ fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> Test
         id: super::super::ProfileId::parse("0123456789abcdef0123456789abcdef")
             .expect("test precondition"),
         label: "Remote".into(),
-        target: "dev@example.com".into(),
+        target: crate::remote::SshTarget::parse("dev@example.com").expect("test precondition"),
         session: "main".into(),
     };
     let target = ClientEndpointId::Ssh(profile.id.clone());
