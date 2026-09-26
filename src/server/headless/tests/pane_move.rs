@@ -62,6 +62,7 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
         .expect("test precondition");
     let destination_id = server.app.public_workspace_id(1);
     let (control_rx, render_rx) = connect_test_shell(&mut server, 9, 80, 23);
+    let mut render_rx = PaneSurfaceReceiver::new(render_rx);
     let initial = client_shell_snapshot(&control_rx);
 
     let moved = public_move(
@@ -105,7 +106,7 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
         snapshot.focused_pane_id.as_deref(),
         Some(moved.pane.pane_id.as_str())
     );
-    let surface = recv_pane_surface(&render_rx, "moved pane surface");
+    let surface = recv_pane_surface(&mut render_rx, "moved pane surface");
     assert_eq!(surface.projection_revision, snapshot.revision);
 
     server.handle_server_event(ServerEvent::ClientShellPaneInput {

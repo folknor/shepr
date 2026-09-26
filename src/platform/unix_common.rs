@@ -381,10 +381,15 @@ pub(crate) fn configure_status_command(process: &mut std::process::Command) {
 
 pub(crate) struct StatusCommandGuard {
     process_group_id: Option<i32>,
+    /// A pidfd on the group leader, opened while the child was certainly
+    /// unreaped. `None` only on kernels without pidfds.
+    leader: Option<super::ProcessHandle>,
 }
 
 impl StatusCommandGuard {
     pub(crate) fn new(child: &tokio::process::Child) -> std::io::Result<Self> {
+        // `id()` is `None` once tokio has reaped the child, and reaping needs
+        // `&mut Child`, so the pid cannot be reused before the pidfd is open.
         let process_id = child
             .id()
             .ok_or_else(|| std::io::Error::other("status command has no process id"))?;
@@ -392,18 +397,48 @@ impl StatusCommandGuard {
             .map_err(|_| std::io::Error::other("status command process id exceeds i32"))?;
         Ok(Self {
             process_group_id: Some(process_group_id),
+            leader: super::ProcessHandle::open(process_id),
         })
     }
 }
 
+/// Whether process group `process_group_id` can still only be the one the
+/// status command led. The kernel reuses a number only once nothing holds it
+/// as a pid, process-group id or session id. An unreaped leader holds it.
+/// After the leader is reaped, any task that holds that pid again is proof
+/// the number was reused, and the original group had no members left when
+/// that happened. Without a leader handle (no pidfd support) the second test
+/// is all there is.
+fn status_group_is_ours(
+    leader_unreaped: Option<bool>,
+    pid_held_by_a_task: impl FnOnce() -> bool,
+) -> bool {
+    leader_unreaped == Some(true) || !pid_held_by_a_task()
+}
+
 impl StatusCommandGuard {
     pub(crate) fn terminate(&mut self) {
-        if let Some(process_group_id) = self.process_group_id.take() {
-            // The command was spawned as this process group's leader. Killing the
-            // group also cleans up background descendants on completion/cancellation.
-            unsafe {
-                libc::kill(-process_group_id, libc::SIGKILL);
-            }
+        let Some(process_group_id) = self.process_group_id.take() else {
+            return;
+        };
+        let leader = self.leader.take();
+        // The command was spawned as this process group's leader. Killing the
+        // group also cleans up background descendants on completion or
+        // cancellation, but only while the id still names that group: tokio
+        // may have reaped the leader already, and a reused number would send
+        // SIGKILL to an unrelated group. The remaining gap (the number is
+        // reused, the new owner leads a group and exits, all between the reap
+        // and this call) needs a full pid wraparound in that window.
+        let ours = status_group_is_ours(
+            leader.as_ref().map(super::ProcessHandle::is_unreaped),
+            || Path::new(&format!("/proc/{process_group_id}")).exists(),
+        );
+        if !ours {
+            return;
+        }
+        // SAFETY: kill(2) touches no memory of this process.
+        unsafe {
+            libc::kill(-process_group_id, libc::SIGKILL);
         }
     }
 }
@@ -434,6 +469,36 @@ fn datetime_from_tm(value: &libc::tm) -> Option<time::PrimitiveDateTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_group_is_signalled_only_while_its_id_cannot_have_been_reused() {
+        // Unreaped leader: the id is still held, whatever /proc shows.
+        assert!(status_group_is_ours(Some(true), || true));
+        // Reaped leader, pid free: survivors may still hold the group id.
+        assert!(status_group_is_ours(Some(false), || false));
+        assert!(status_group_is_ours(None, || false));
+        // Reaped leader, pid held by a task again: the number was reused.
+        assert!(!status_group_is_ours(Some(false), || true));
+        assert!(!status_group_is_ours(None, || true));
+    }
+
+    #[tokio::test]
+    async fn status_guard_kills_the_group_while_the_leader_is_unreaped() {
+        let mut command = std::process::Command::new("/bin/sh");
+        command.args(["-c", "sleep 30 & exec sleep 30"]);
+        configure_status_command(&mut command);
+        let mut child = tokio::process::Command::from(command)
+            .spawn()
+            .expect("spawn status command");
+        let mut guard = StatusCommandGuard::new(&child).expect("guard");
+        guard.terminate();
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+            .await
+            .expect("leader dies after the group kill")
+            .expect("wait");
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+    }
 
     #[test]
     fn remote_ssh_config_dir_rejects_overlong_control_socket_name() {

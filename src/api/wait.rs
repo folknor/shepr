@@ -10,7 +10,7 @@ use crate::api::schema::{
 };
 use crate::api::server::{
     APP_RESPONSE_TIMEOUT, CONNECTION_POLL_INTERVAL, dispatch_to_app_with_caller_timeout,
-    dispatch_to_app_with_timeout, should_stop_connection,
+    dispatch_to_app_with_timeout, error_response_json, should_stop_connection,
 };
 use crate::api::subscriptions::ActiveSubscription;
 use crate::api::subscriptions::{
@@ -809,25 +809,19 @@ fn event_match_subscription(match_event: EventMatch) -> Subscription {
 
 fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
     let Ok(event) = serde_json::from_value::<SubscriptionEventEnvelope>(event) else {
-        return serde_json::to_string(&ErrorResponse {
-            id: request_id.into(),
-            error: ErrorBody {
-                code: "internal_error".into(),
-                message: "failed to decode matched event".into(),
-            },
-        })
-        .expect("ErrorResponse serializes to JSON");
+        return error_response_json(
+            request_id.into(),
+            "internal_error",
+            "failed to decode matched event".into(),
+        );
     };
 
     let SubscriptionEventData::PaneAgentStatusChanged(data) = event.data else {
-        return serde_json::to_string(&ErrorResponse {
-            id: request_id.into(),
-            error: ErrorBody {
-                code: "unsupported_event_wait_match".into(),
-                message: "events.wait currently supports pane agent status matches".into(),
-            },
-        })
-        .expect("ErrorResponse serializes to JSON");
+        return error_response_json(
+            request_id.into(),
+            "unsupported_event_wait_match",
+            "events.wait currently supports pane agent status matches".into(),
+        );
     };
 
     serde_json::to_string(&SuccessResponse {
@@ -847,7 +841,13 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
             },
         },
     })
-    .expect("SuccessResponse serializes to JSON")
+    .unwrap_or_else(|err| {
+        error_response_json(
+            request_id.into(),
+            "internal_error",
+            format!("failed to encode matched event: {err}"),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -881,5 +881,53 @@ mod tests {
             serde_json::from_str(&unavailable).expect("test precondition");
         assert_eq!(unavailable.id, "wait");
         assert_eq!(unavailable.error.code, "server_unavailable");
+    }
+
+    #[test]
+    fn wait_matched_response_reports_undecodable_and_unsupported_events() {
+        let garbage = wait_matched_response("wait", serde_json::json!({"nope": true}));
+        let garbage: ErrorResponse = serde_json::from_str(&garbage).expect("test precondition");
+        assert_eq!(garbage.id, "wait");
+        assert_eq!(garbage.error.code, "internal_error");
+
+        let scroll = serde_json::to_value(SubscriptionEventEnvelope {
+            event: crate::api::schema::SubscriptionEventKind::ScrollChanged,
+            data: SubscriptionEventData::ScrollChanged(
+                crate::api::schema::PaneScrollChangedEvent {
+                    pane_id: "pane_1".into(),
+                    workspace_id: "workspace_1".into(),
+                    scroll: crate::api::schema::PaneScrollInfo {
+                        offset_from_bottom: 1,
+                        max_offset_from_bottom: 2,
+                        viewport_rows: 3,
+                    },
+                },
+            ),
+        })
+        .expect("test precondition");
+        let unsupported = wait_matched_response("wait", scroll);
+        let unsupported: ErrorResponse =
+            serde_json::from_str(&unsupported).expect("test precondition");
+        assert_eq!(unsupported.error.code, "unsupported_event_wait_match");
+
+        let status = serde_json::to_value(SubscriptionEventEnvelope {
+            event: crate::api::schema::SubscriptionEventKind::PaneAgentStatusChanged,
+            data: SubscriptionEventData::PaneAgentStatusChanged(
+                crate::api::schema::PaneAgentStatusChangedEvent {
+                    pane_id: "pane_1".into(),
+                    workspace_id: "workspace_1".into(),
+                    agent_status: crate::api::schema::AgentStatus::Idle,
+                    agent: None,
+                    title: None,
+                    display_agent: None,
+                    state_labels: Default::default(),
+                },
+            ),
+        })
+        .expect("test precondition");
+        let matched: serde_json::Value =
+            serde_json::from_str(&wait_matched_response("wait", status))
+                .expect("test precondition");
+        assert_eq!(matched["result"]["type"], "wait_matched");
     }
 }

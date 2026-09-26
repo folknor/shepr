@@ -663,6 +663,14 @@ impl ClientShellState {
             outcome.repaint = true;
             return;
         }
+        if self.visible_config_diagnostic().is_some()
+            && mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && super::contains(self.hits.config_diagnostic, point)
+        {
+            self.dismiss_config_diagnostic();
+            outcome.repaint = true;
+            return;
+        }
         if mouse.kind == MouseEventKind::Drag(MouseButton::Left) {
             match self.chrome_drag.as_ref() {
                 Some(ClientChromeDrag::SidebarWidth) => {

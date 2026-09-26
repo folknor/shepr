@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io;
 use std::time::Instant;
 
@@ -20,50 +20,10 @@ pub(crate) trait EndpointTransport: Send {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct EndpointNegotiation {
-    methods: HashSet<String>,
-    capabilities: HashSet<String>,
-}
-
-impl EndpointNegotiation {
-    pub(crate) fn new(methods: Vec<String>, capabilities: Vec<String>) -> Self {
-        Self {
-            methods: methods.into_iter().collect(),
-            capabilities: capabilities.into_iter().collect(),
-        }
-    }
-
-    pub(crate) fn methods(&self) -> Vec<String> {
-        self.methods.iter().cloned().collect()
-    }
-
-    pub(crate) fn supports_method(&self, method: &str) -> bool {
-        self.methods.contains(method)
-    }
-
-    pub(crate) fn supports_capability(&self, capability: &str) -> bool {
-        self.capabilities.contains(capability)
-    }
-
-    pub(crate) fn supports_surface_interest(&self) -> bool {
-        self.supports_capability(crate::protocol::endpoint::SURFACE_INTEREST_CAPABILITY)
-            && self.supports_capability(
-                crate::protocol::endpoint::PRESENTATION_EFFECTS_FENCE_CAPABILITY,
-            )
-            && self.supports_method("client_shell.surface.set")
-    }
-
-    pub(crate) fn supports_health_check(&self) -> bool {
-        self.supports_capability(crate::protocol::endpoint::HEALTH_CHECK_CAPABILITY)
-    }
-}
-
 pub(crate) struct EndpointConnection {
     transport: Box<dyn EndpointTransport>,
     pub(crate) generation: u64,
     pub(crate) surface_active: bool,
-    pub(crate) negotiation: EndpointNegotiation,
     health: Option<EndpointHealth>,
 }
 
@@ -98,20 +58,10 @@ impl EndpointRegistry {
         }
     }
 
-    pub(crate) fn new(
-        local: impl EndpointTransport + 'static,
-        generation: u64,
-        negotiation: EndpointNegotiation,
-    ) -> Self {
+    pub(crate) fn new(local: impl EndpointTransport + 'static, generation: u64) -> Self {
         let mut registry = Self::empty();
         registry.input_enabled = true;
-        registry.insert(
-            ClientEndpointId::Local,
-            local,
-            generation,
-            negotiation,
-            true,
-        );
+        registry.insert(ClientEndpointId::Local, local, generation, true);
         registry
     }
 
@@ -144,18 +94,15 @@ impl EndpointRegistry {
         endpoint_id: ClientEndpointId,
         transport: impl EndpointTransport + 'static,
         generation: u64,
-        negotiation: EndpointNegotiation,
         surface_active: bool,
     ) {
-        let health = (!endpoint_id.is_local() && negotiation.supports_health_check())
-            .then(|| EndpointHealth::new(Instant::now()));
+        let health = (!endpoint_id.is_local()).then(|| EndpointHealth::new(Instant::now()));
         if let Some(mut previous) = self.connections.insert(
             endpoint_id,
             EndpointConnection {
                 transport: Box::new(transport),
                 generation,
                 surface_active,
-                negotiation,
                 health,
             },
         ) {
@@ -393,17 +340,6 @@ mod tests {
         }
     }
 
-    fn negotiation() -> EndpointNegotiation {
-        EndpointNegotiation::new(
-            vec!["client_shell.surface.set".into()],
-            vec![
-                crate::protocol::endpoint::SURFACE_INTEREST_CAPABILITY.into(),
-                crate::protocol::endpoint::PRESENTATION_EFFECTS_FENCE_CAPABILITY.into(),
-                crate::protocol::endpoint::HEALTH_CHECK_CAPABILITY.into(),
-            ],
-        )
-    }
-
     fn profile() -> crate::client::endpoint::ProfileId {
         crate::client::endpoint::ProfileId::parse("0123456789abcdef0123456789abcdef")
             .expect("test precondition")
@@ -418,7 +354,6 @@ mod tests {
                 error: None,
             },
             1,
-            negotiation(),
         );
         let ssh_id = ClientEndpointId::Ssh(profile());
         registry.insert(
@@ -428,7 +363,6 @@ mod tests {
                 error: Some(io::ErrorKind::BrokenPipe),
             },
             2,
-            negotiation(),
             true,
         );
         assert!(registry.set_active(&ssh_id));
@@ -457,7 +391,6 @@ mod tests {
                 error: None,
             },
             1,
-            negotiation(),
         );
         let ssh_id = ClientEndpointId::Ssh(profile());
         registry.insert(
@@ -467,7 +400,6 @@ mod tests {
                 error: None,
             },
             2,
-            negotiation(),
             true,
         );
         assert!(registry.set_active(&ssh_id));
@@ -480,7 +412,6 @@ mod tests {
                 error: None,
             },
             3,
-            negotiation(),
             false,
         );
         assert!(!registry.active_surface_available());
@@ -497,7 +428,6 @@ mod tests {
                 error: None,
             },
             2,
-            negotiation(),
             false,
         );
         registry.tick_health(Instant::now() + std::time::Duration::from_secs(300));
@@ -514,7 +444,6 @@ mod tests {
                 error: None,
             },
             1,
-            negotiation(),
         );
         let ssh_id = ClientEndpointId::Ssh(profile());
         let sent = Arc::new(Mutex::new(Vec::new()));
@@ -525,7 +454,6 @@ mod tests {
                 error: None,
             },
             2,
-            negotiation(),
             false,
         );
         let now = Instant::now();
@@ -552,7 +480,6 @@ mod tests {
                 error: None,
             },
             1,
-            negotiation(),
         );
         let ssh_id = ClientEndpointId::Ssh(profile());
         registry.insert(
@@ -562,7 +489,6 @@ mod tests {
                 error: None,
             },
             2,
-            negotiation(),
             false,
         );
         let now = Instant::now();
@@ -570,30 +496,6 @@ mod tests {
         registry.received(&ssh_id, 2, now + super::super::health::HEARTBEAT_INTERVAL);
         registry.tick_health(now + super::super::health::HEARTBEAT_TIMEOUT);
         assert!(registry.connection(&ssh_id).is_some());
-    }
-
-    #[test]
-    fn negotiated_surface_interest_requires_capability_and_method() {
-        assert!(negotiation().supports_surface_interest());
-        assert!(negotiation().supports_health_check());
-        assert!(
-            !EndpointNegotiation::new(vec!["client_shell.surface.set".into()], Vec::new())
-                .supports_surface_interest()
-        );
-        assert!(
-            !EndpointNegotiation::new(
-                Vec::new(),
-                vec![crate::protocol::endpoint::SURFACE_INTEREST_CAPABILITY.into()]
-            )
-            .supports_surface_interest()
-        );
-        assert!(
-            !EndpointNegotiation::new(
-                vec!["client_shell.surface.set".into()],
-                vec![crate::protocol::endpoint::SURFACE_INTEREST_CAPABILITY.into()]
-            )
-            .supports_surface_interest()
-        );
     }
 
     #[test]
@@ -606,7 +508,6 @@ mod tests {
                 error: None,
             },
             1,
-            negotiation(),
         );
         registry.insert(
             ClientEndpointId::Ssh(profile()),
@@ -615,7 +516,6 @@ mod tests {
                 error: None,
             },
             2,
-            negotiation(),
             false,
         );
 
@@ -639,7 +539,6 @@ mod tests {
                 error: None,
             },
             7,
-            negotiation(),
         );
         assert!(registry.accepts(&ClientEndpointId::Local, 7));
         assert!(!registry.accepts(&ClientEndpointId::Local, 6));

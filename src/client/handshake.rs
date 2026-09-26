@@ -8,9 +8,7 @@ use crate::ipc::LocalStream;
 use crate::protocol::endpoint::{
     ENDPOINT_HELLO_KIND, ENDPOINT_WELCOME_KIND, EndpointClientHello, EndpointServerWelcome,
 };
-use crate::protocol::{
-    self, ClientMessage, MAX_FRAME_SIZE, PROTOCOL_VERSION, RenderEncoding, ServerMessage,
-};
+use crate::protocol::{self, ClientMessage, MAX_FRAME_SIZE, PROTOCOL_VERSION, ServerMessage};
 
 use super::{ClientError, shell};
 
@@ -57,17 +55,39 @@ fn set_handshake_recv_timeout(
         .map_err(ClientError::ConnectionFailed)
 }
 
+/// Outcome of a successful handshake.
+///
 #[derive(Debug)]
-pub(super) struct HandshakeResult {
-    pub(super) encoding: RenderEncoding,
-    pub(super) endpoint_methods: Option<Vec<String>>,
-    pub(super) endpoint_capabilities: Option<Vec<String>>,
+pub(super) struct HandshakeResult;
+
+/// Maps a failed preamble exchange onto the client's error kinds: an early
+/// close or read failure stays a transient connection problem, while a peer
+/// that is not this build is a rejection the user has to act on.
+fn preamble_error(error: protocol::preamble::PreambleError) -> ClientError {
+    use protocol::preamble::PreambleError;
+    match error {
+        PreambleError::UnexpectedEof => ClientError::from(protocol::FramingError::UnexpectedEof),
+        PreambleError::Io(error) => ClientError::from(protocol::FramingError::Io(error)),
+        error @ PreambleError::NotShepr => ClientError::Protocol(protocol::FramingError::Io(
+            io::Error::new(io::ErrorKind::InvalidData, error.to_string()),
+        )),
+        PreambleError::DifferentBuild(peer) => {
+            let version = peer.protocol_version;
+            ClientError::HandshakeRejected {
+                version,
+                error: PreambleError::DifferentBuild(peer).to_string(),
+            }
+        }
+    }
 }
 
 /// Performs the client→server handshake.
 ///
-/// Direct terminal clients send `TerminalHello`; client-owned shells send a JSON
-/// endpoint hello. Both carry `PROTOCOL_VERSION` and are rejected on mismatch.
+/// The connection opens with the raw build-identity preamble in both
+/// directions (`protocol::preamble`), so a server of any other build is
+/// reported as a mismatch before either side decodes a codec frame. Direct
+/// terminal clients then send `TerminalHello`; client-owned shells send a JSON
+/// endpoint hello. Both still carry `PROTOCOL_VERSION`.
 pub(super) fn do_handshake(
     stream: &mut LocalStream,
     cols: u16,
@@ -80,6 +100,11 @@ pub(super) fn do_handshake(
     mouse_capture: bool,
     surface_active: bool,
 ) -> Result<HandshakeResult, ClientError> {
+    let exact_cell_size = exact_cell_size
+        && cell_width_px <= protocol::MAX_CELL_SIZE_PX
+        && cell_height_px <= protocol::MAX_CELL_SIZE_PX;
+    let cell_width_px = cell_width_px.min(protocol::MAX_CELL_SIZE_PX);
+    let cell_height_px = cell_height_px.min(protocol::MAX_CELL_SIZE_PX);
     stream
         .set_nonblocking(false)
         .map_err(ClientError::ConnectionFailed)?;
@@ -95,8 +120,6 @@ pub(super) fn do_handshake(
             endpoint_keybindings,
             mouse_capture,
             surface_active,
-            surface_reuse: true,
-            surface_delta: true,
         };
         ClientMessage::EndpointControl {
             kind: ENDPOINT_HELLO_KIND.into(),
@@ -114,18 +137,30 @@ pub(super) fn do_handshake(
             pixel_mouse: exact_cell_size,
         }
     };
-    protocol::write_message(stream, &hello).map_err(hello_write_error)?;
+    // Preamble and hello go out together; the server's preamble is read back
+    // before its welcome, so a different build is named even if its welcome
+    // would not decode.
+    let mut opening = protocol::preamble::local_preamble().to_vec();
+    opening.extend_from_slice(&protocol::encode_frame(&hello).map_err(hello_write_error)?);
+    {
+        use std::io::Write as _;
+        stream
+            .write_all(&opening)
+            .and_then(|()| stream.flush())
+            .map_err(|error| hello_write_error(protocol::FramingError::Io(error)))?;
+    }
 
     let read_timeout = if endpoint_shell && !surface_active {
         REMOTE_HANDSHAKE_READ_TIMEOUT
     } else {
         handshake_read_timeout()
     };
-    // One deadline for the whole Welcome frame, not a per-read idle timeout.
-    let welcome = protocol::read_message::<_, ServerMessage>(
-        &mut crate::ipc::DeadlineReader::new(stream, std::time::Instant::now() + read_timeout),
-        MAX_FRAME_SIZE,
-    )?;
+    // One deadline for the preamble and the whole Welcome frame together, not a
+    // per-read idle timeout.
+    let mut reader =
+        crate::ipc::DeadlineReader::new(stream, std::time::Instant::now() + read_timeout);
+    protocol::preamble::read_preamble(&mut reader).map_err(preamble_error)?;
+    let welcome = protocol::read_message::<_, ServerMessage>(&mut reader, MAX_FRAME_SIZE)?;
     set_handshake_recv_timeout(
         stream,
         None,
@@ -171,11 +206,7 @@ pub(super) fn do_handshake(
             });
         }
         info!(version = welcome.version, "endpoint handshake succeeded");
-        return Ok(HandshakeResult {
-            encoding: RenderEncoding::SemanticFrame,
-            endpoint_methods: Some(welcome.methods),
-            endpoint_capabilities: Some(welcome.capabilities),
-        });
+        return Ok(HandshakeResult);
     }
 
     match welcome {
@@ -188,11 +219,7 @@ pub(super) fn do_handshake(
                 return Err(ClientError::HandshakeRejected { version, error });
             }
             info!(version, ?encoding, "handshake succeeded");
-            Ok(HandshakeResult {
-                encoding,
-                endpoint_methods: None,
-                endpoint_capabilities: None,
-            })
+            Ok(HandshakeResult)
         }
         _ => Err(ClientError::Protocol(protocol::FramingError::Io(
             io::Error::new(io::ErrorKind::InvalidData, "expected Welcome message"),
@@ -235,6 +262,8 @@ mod tests {
             "shutdown-terminal"
         });
         let peer = std::thread::spawn(move || {
+            protocol::preamble::write_preamble(&mut server).expect("test precondition");
+            protocol::preamble::read_preamble(&mut server).expect("client preamble");
             let _hello: ClientMessage =
                 protocol::read_message(&mut server, MAX_FRAME_SIZE).expect("test precondition");
             protocol::write_message(
@@ -274,6 +303,80 @@ mod tests {
                 }
                 other => panic!("endpoint_shell={endpoint_shell}: {other}"),
             }
+        }
+    }
+
+    /// Runs a handshake against a peer that answers with `server_opening` raw
+    /// bytes and then hangs up.
+    fn handshake_against_opening(name: &str, server_opening: Vec<u8>) -> ClientError {
+        use std::io::Write as _;
+        let (mut client, mut server, path) = socket_pair(name);
+        let peer = std::thread::spawn(move || {
+            let _ = server.write_all(&server_opening);
+            // Hold the connection until the client has read the opening.
+            let mut client_preamble = [0u8; protocol::preamble::PREAMBLE_LEN];
+            let _ = std::io::Read::read_exact(&mut server, &mut client_preamble);
+            std::thread::sleep(Duration::from_millis(50));
+        });
+        let error = do_handshake(
+            &mut client,
+            80,
+            24,
+            8,
+            16,
+            false,
+            Some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
+            false,
+            false,
+            true,
+        )
+        .expect_err("the opening is not this build");
+        peer.join().expect("test precondition");
+        let _ = std::fs::remove_file(path);
+        error
+    }
+
+    #[test]
+    fn different_build_is_reported_from_the_preamble() {
+        // A server of another build: its preamble names it, and nothing after
+        // it (here: garbage) needs to decode for the mismatch to be reported.
+        let mut opening = protocol::preamble::local_preamble().to_vec();
+        let version_start = protocol::preamble::PREAMBLE_MAGIC.len();
+        opening[version_start..version_start + 4]
+            .copy_from_slice(&(PROTOCOL_VERSION + 1).to_le_bytes());
+        let id_start = version_start + 4;
+        let other_id = if opening[id_start] == b'0' {
+            b'1'
+        } else {
+            b'0'
+        };
+        opening[id_start] = other_id;
+        opening.extend_from_slice(&[0xff; 16]);
+        match handshake_against_opening("preamble-other-build", opening) {
+            ClientError::HandshakeRejected { version, error } => {
+                assert_eq!(version, PROTOCOL_VERSION + 1);
+                assert!(error.contains("different shepr build"), "{error}");
+            }
+            other => panic!("expected a build mismatch, got {other}"),
+        }
+    }
+
+    #[test]
+    fn peer_without_a_preamble_is_not_mistaken_for_a_closed_connection() {
+        // A peer that answers straight with a codec frame.
+        let mut opening = protocol::encode_frame(&ServerMessage::Welcome {
+            version: PROTOCOL_VERSION,
+            encoding: crate::protocol::RenderEncoding::SemanticFrame,
+            error: None,
+        })
+        .expect("test precondition");
+        opening.resize(opening.len().max(protocol::preamble::PREAMBLE_LEN), 0);
+        match handshake_against_opening("preamble-missing", opening) {
+            ClientError::Protocol(protocol::FramingError::Io(error)) => {
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                assert!(error.to_string().contains("preamble"), "{error}");
+            }
+            other => panic!("expected a missing-preamble error, got {other}"),
         }
     }
 

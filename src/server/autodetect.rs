@@ -94,7 +94,7 @@ fn validate_running_server_compatibility() -> io::Result<()> {
     }
 
     Err(io::Error::other(format!(
-        "the running shepr server speaks a different protocol; restart it before attaching.\n\nserver: v{} protocol {}\nclient: v{} protocol {}\n\n{}",
+        "the running shepr server is a different build; restart it before attaching.\n\nserver: v{} protocol {}\nclient: v{} protocol {}\n\n{}",
         status.version.as_deref().unwrap_or("unknown"),
         status
             .protocol
@@ -227,13 +227,13 @@ pub fn auto_detect_launch(saved_federation: bool) -> io::Result<()> {
     let socket_path = client_socket_path();
     info!(path = %socket_path.display(), "auto-detect launch starting");
 
+    // The running server is checked whether or not saved machines are
+    // enabled. With saved machines a mismatch only downgrades to a warning
+    // below, so they stay reachable; the Local endpoint's own handshake then
+    // rejects the different build with the build-identity preamble error.
     let startup = if is_server_listening_at(&socket_path) {
         info!("server already running, attaching as client");
-        if saved_federation {
-            Ok(())
-        } else {
-            validate_running_server_compatibility()
-        }
+        validate_running_server_compatibility()
     } else {
         info!("no server running, spawning server daemon");
         spawn_server_daemon()

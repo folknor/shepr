@@ -42,10 +42,6 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "workspace.rename",
 ];
 
-pub(crate) fn supported_client_shell_method_names() -> &'static [&'static str] {
-    CLIENT_SHELL_METHODS
-}
-
 pub(crate) fn supports_client_shell_method_name(method: &str) -> bool {
     CLIENT_SHELL_METHODS.contains(&method)
 }

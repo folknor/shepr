@@ -54,6 +54,71 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
 }
 
 #[test]
+fn copy_cursor_is_never_left_under_the_mode_bar() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let area = state.layout(106, 20).pane_surface;
+    let mut pane_surface = surface();
+    let lines = (0..area.height)
+        .map(|row| format!("{row:<width$}", width = usize::from(area.width)))
+        .collect::<Vec<_>>();
+    pane_surface.frame =
+        FrameData::from_ratatui_buffer_with_hyperlinks(&Buffer::with_lines(lines), None, &[]);
+    let rect = SurfaceRect {
+        x: 0,
+        y: 0,
+        width: area.width,
+        height: area.height,
+    };
+    pane_surface.panes[0].rect = rect;
+    pane_surface.panes[0].inner_rect = rect;
+    pane_surface.panes[0].scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 50,
+        viewport_rows: u64::from(area.height),
+    });
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("terminal frame");
+    let mut outcome = ClientShellInput::default();
+    assert!(state.enter_copy_mode(&mut outcome));
+
+    // The cursor starts on the last line of history, which no scroll can lift above the
+    // bar's usual row: the bar moves to the top row instead.
+    let accent = crate::protocol::color_to_u32(state.config.palette.accent);
+    let bottom = area.bottom() - 1;
+    let frame = state.compose(106, 20).expect("copy frame");
+    let rows = frame_rows(&frame);
+    assert!(rows[usize::from(area.y)].contains("COPY"));
+    assert!(!rows[usize::from(bottom)].contains("COPY"));
+    assert_eq!(
+        frame.cells[usize::from(bottom) * 106 + usize::from(area.x)].bg,
+        accent
+    );
+
+    // One row up the bar is back at the bottom, clear of the cursor.
+    state.handle_input_bytes(b"k");
+    let frame = state.compose(106, 20).expect("copy frame");
+    let rows = frame_rows(&frame);
+    assert!(rows[usize::from(bottom)].contains("COPY"));
+    assert_eq!(
+        frame.cells[usize::from(bottom - 1) * 106 + usize::from(area.x)].bg,
+        accent
+    );
+
+    // Scrolled back, a motion onto the covered row scrolls one line instead of hiding the
+    // cursor under the bar.
+    let height = u32::from(area.height);
+    if let Some(copy_mode) = state.copy_mode.as_mut() {
+        copy_mode.offset_from_bottom = 10;
+        copy_mode.cursor.row = 40 + height - 2;
+    }
+    state.handle_input_bytes(b"j");
+    let copy_mode = state.copy_mode.as_ref().expect("still in copy mode");
+    assert_eq!(copy_mode.cursor.row, 40 + height - 1);
+    assert_eq!(copy_mode.offset_from_bottom, 9);
+}
+
+#[test]
 fn client_selection_uses_host_background_and_repaints_when_it_changes() {
     use crate::terminal_theme::{DefaultColorKind, HostAppearance, RgbColor};
     use ratatui::style::Color;
@@ -2314,7 +2379,9 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
         let mut next = snapshot();
         next.revision += 1;
         state.set_snapshot(Box::new(next));
-        assert!(state.hits.panes.is_empty());
+        // The last composed frame is still on screen, so its hit map stays valid until
+        // the matching surface is composed.
+        assert!(!state.hits.panes.is_empty());
         assert_eq!(state.mode, ClientShellMode::Copy);
         if selection_before_gap == Some(false) {
             state.handle_input_bytes(b"V");

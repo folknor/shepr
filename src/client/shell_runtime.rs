@@ -62,10 +62,12 @@ pub(super) fn client_shell_resize_message(
     pixel_mouse: bool,
 ) -> ClientMessage {
     ClientMessage::ClientShellResize {
-        cell_width_px,
-        cell_height_px,
+        cell_width_px: cell_width_px.min(crate::protocol::MAX_CELL_SIZE_PX),
+        cell_height_px: cell_height_px.min(crate::protocol::MAX_CELL_SIZE_PX),
         surface_size: shell.surface_size(cols, rows),
-        pixel_mouse,
+        pixel_mouse: pixel_mouse
+            && cell_width_px <= crate::protocol::MAX_CELL_SIZE_PX
+            && cell_height_px <= crate::protocol::MAX_CELL_SIZE_PX,
     }
 }
 

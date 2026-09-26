@@ -752,6 +752,59 @@ fn clamp_pane_size(rows: u16, cols: u16) -> (u16, u16) {
     (rows.max(MIN_PANE_ROWS), cols.max(MIN_PANE_COLS))
 }
 
+/// The render a pane needs once a synchronized update (mode 2026) that never
+/// ended is force-flushed by its timeout. Every PTY read inside the update
+/// asks for it; one sleeping task per pane serves all of those requests
+/// instead of one task per read.
+#[derive(Debug, Default)]
+struct SyncTimeoutRender {
+    /// The latest wake-up asked for, while a task is armed; `None` when no
+    /// task is sleeping.
+    latest: Mutex<Option<std::time::Instant>>,
+}
+
+impl SyncTimeoutRender {
+    /// Ask for a render at `at`. Returns the instant a new task must first
+    /// wake at, or `None` when the armed task will cover it.
+    fn arm(&self, at: std::time::Instant) -> Option<std::time::Instant> {
+        let mut latest = self
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match *latest {
+            Some(armed) => {
+                if at > armed {
+                    *latest = Some(at);
+                }
+                None
+            }
+            None => {
+                *latest = Some(at);
+                Some(at)
+            }
+        }
+    }
+
+    /// Called by the armed task after waking for `woke_for`. Returns a later
+    /// instant to sleep until when a later update asked for one meanwhile;
+    /// otherwise disarms and returns `None`, and the task renders. Skipping
+    /// the earlier wake is safe: a newer update only begins after the earlier
+    /// one ended, and ending an update requests its own render.
+    fn next_wake(&self, woke_for: std::time::Instant) -> Option<std::time::Instant> {
+        let mut latest = self
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match *latest {
+            Some(later) if later > woke_for => Some(later),
+            _ => {
+                *latest = None;
+                None
+            }
+        }
+    }
+}
+
 /// PTY runtime for a pane. Owns the terminal, I/O channels, and background tasks.
 /// Dropping this aborts async tasks and closes the PTY.
 pub struct PaneRuntime {
@@ -763,6 +816,10 @@ pub struct PaneRuntime {
     reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
     persistence_cwd: Mutex<Option<std::path::PathBuf>>,
     child_wait_completed: Arc<AtomicBool>,
+    /// A pidfd on the child, the leader of the pane's session, opened before
+    /// anything could reap it. Teardown signals through it so a reused pid is
+    /// never hit. `None` in test runtimes and on kernels without pidfds.
+    session_leader: Option<crate::platform::ProcessHandle>,
     content_seq: Arc<AtomicU64>,
     content_write_lock: Arc<Mutex<()>>,
     detection_content_seq: Arc<AtomicU64>,
@@ -892,92 +949,184 @@ impl Drop for PaneRuntime {
             shutdown_pane_processes(
                 self.pane_id,
                 self.child_pid.load(Ordering::Acquire),
-                &self.child_wait_completed,
+                self.session_leader.take(),
+                Arc::clone(&self.child_wait_completed),
             );
         }
     }
 }
 
-fn process_alive_for_shutdown(
-    pid: u32,
-    child_pid: u32,
-    child_wait_completed: bool,
-    process_exists: impl FnOnce(u32) -> bool,
-) -> bool {
-    if pid == child_pid && child_wait_completed {
-        return false;
-    }
-    process_exists(pid)
-}
+/// Pane session teardowns still running on their background threads, so a
+/// process that is about to exit can let them finish first.
+static PANE_TEARDOWNS_IN_FLIGHT: Mutex<usize> = Mutex::new(0);
+static PANE_TEARDOWNS_DONE: std::sync::Condvar = std::sync::Condvar::new();
 
-fn wait_for_processes_to_exit(
-    pids: &[u32],
-    child_pid: u32,
-    child_wait_completed: &AtomicBool,
-    timeout: std::time::Duration,
-) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        let child_wait_completed = child_wait_completed.load(Ordering::Acquire);
-        if pids.iter().all(|pid| {
-            !process_alive_for_shutdown(
-                *pid,
-                child_pid,
-                child_wait_completed,
-                crate::platform::process_exists,
-            )
-        }) {
-            return true;
-        }
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+/// Block until every pane session teardown started so far has finished, or
+/// `timeout` passes. Returns whether they all finished. For exit paths only:
+/// teardown runs off the caller's thread, and a process that exits right
+/// after dropping its panes would otherwise cut the SIGTERM/SIGKILL
+/// escalation short.
+pub(crate) fn wait_for_pane_session_teardowns(timeout: std::time::Duration) -> bool {
+    let guard = PANE_TEARDOWNS_IN_FLIGHT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match PANE_TEARDOWNS_DONE.wait_timeout_while(guard, timeout, |in_flight| *in_flight > 0) {
+        Ok((guard, _)) => *guard == 0,
+        Err(poisoned) => *poisoned.into_inner().0 == 0,
     }
 }
 
-fn shutdown_pane_processes(pane_id: PaneId, child_pid: u32, child_wait_completed: &AtomicBool) {
-    if child_pid == 0 {
+struct PaneTeardownInFlight;
+
+impl PaneTeardownInFlight {
+    fn start() -> Self {
+        *PANE_TEARDOWNS_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
+        Self
+    }
+}
+
+impl Drop for PaneTeardownInFlight {
+    fn drop(&mut self) {
+        let mut in_flight = PANE_TEARDOWNS_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *in_flight = in_flight.saturating_sub(1);
+        if *in_flight == 0 {
+            PANE_TEARDOWNS_DONE.notify_all();
+        }
+    }
+}
+
+/// Tear down the pane's session: its leader (the shell or command the pane
+/// started, spawned with `setsid`, so the session id is its pid) and every
+/// process still in that session, such as background jobs and servers an
+/// agent started. Those usually outlive the leader: by the time a pane is
+/// closed because its child exited, the leader is long reaped.
+///
+/// Returns at once. The leader, if still running, is sent SIGHUP here through
+/// its pidfd; finding the other members (a `/proc` scan) and the
+/// SIGHUP/SIGTERM/SIGKILL escalation with its grace periods run on a
+/// background thread, so closing a workspace never stalls the caller for
+/// them. Every signal goes through a pidfd, so a pid the kernel has handed to
+/// an unrelated process is never signalled.
+fn shutdown_pane_processes(
+    pane_id: PaneId,
+    session_id: u32,
+    leader: Option<crate::platform::ProcessHandle>,
+    child_wait_completed: Arc<AtomicBool>,
+) {
+    if session_id == 0 {
         return;
     }
-
-    let mut pids = crate::platform::session_processes(child_pid);
-    if pids.is_empty() {
-        pids.push(child_pid);
+    if let Some(leader) = &leader
+        && !leader.has_exited()
+    {
+        leader.signal(crate::platform::Signal::Hangup);
     }
-    pids.sort_unstable();
-    pids.dedup();
+    // `thread::Builder::spawn` drops its closure on failure, so the work is
+    // parked in a shared slot that the inline fallback can still take back.
+    let work = Arc::new(Mutex::new(Some((
+        PaneTeardownInFlight::start(),
+        leader,
+        child_wait_completed,
+    ))));
+    let thread_work = Arc::clone(&work);
+    let spawned = std::thread::Builder::new()
+        .name(format!("shepr-pane-{}-teardown", pane_id.raw()))
+        .spawn(move || run_pane_teardown(pane_id, session_id, &thread_work));
+    if let Err(err) = spawned {
+        warn!(
+            pane = pane_id.raw(),
+            %err,
+            "could not start pane teardown thread; tearing down inline"
+        );
+        run_pane_teardown(pane_id, session_id, &work);
+    }
+}
 
-    for (signal, grace) in [
-        (
-            crate::platform::Signal::Hangup,
-            std::time::Duration::from_millis(250),
-        ),
-        (
-            crate::platform::Signal::Terminate,
-            std::time::Duration::from_millis(250),
-        ),
-        (
-            crate::platform::Signal::Kill,
-            std::time::Duration::from_millis(250),
-        ),
-    ] {
-        crate::platform::signal_processes(&pids, signal);
-        if wait_for_processes_to_exit(&pids, child_pid, child_wait_completed, grace) {
-            info!(
-                pane = pane_id.raw(),
-                pid = child_pid,
-                ?signal,
-                "pane session terminated"
-            );
-            return;
+type PaneTeardownWork = Mutex<
+    Option<(
+        PaneTeardownInFlight,
+        Option<crate::platform::ProcessHandle>,
+        Arc<AtomicBool>,
+    )>,
+>;
+
+fn run_pane_teardown(pane_id: PaneId, session_id: u32, work: &PaneTeardownWork) {
+    let taken = work
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some((_in_flight, leader, child_wait_completed)) = taken {
+        terminate_pane_session(pane_id, session_id, leader.as_ref(), &child_wait_completed);
+    }
+}
+
+const PANE_TEARDOWN_STEPS: [(crate::platform::Signal, std::time::Duration); 3] = [
+    (
+        crate::platform::Signal::Hangup,
+        std::time::Duration::from_millis(250),
+    ),
+    (
+        crate::platform::Signal::Terminate,
+        std::time::Duration::from_millis(250),
+    ),
+    (
+        crate::platform::Signal::Kill,
+        std::time::Duration::from_millis(250),
+    ),
+];
+
+fn terminate_pane_session(
+    pane_id: PaneId,
+    session_id: u32,
+    leader: Option<&crate::platform::ProcessHandle>,
+    child_wait_completed: &AtomicBool,
+) {
+    let leader_reaped = || match leader {
+        Some(leader) => !leader.is_unreaped(),
+        None => child_wait_completed.load(Ordering::Acquire),
+    };
+    let mut members = Vec::new();
+    for (signal, grace) in PANE_TEARDOWN_STEPS {
+        // Rescan every round: a process that forked while being hung up is
+        // still in the session and must not escape the next signal.
+        members = crate::platform::session_member_handles(session_id, leader_reaped);
+        let handles: Vec<&crate::platform::ProcessHandle> =
+            leader.into_iter().chain(members.iter()).collect();
+        for handle in &handles {
+            if !handle.has_exited() {
+                handle.signal(signal);
+            }
+        }
+        if crate::platform::wait_for_process_exits(&handles, grace) {
+            // A signalled member can fork before it exits. The newly forked
+            // process was absent from `handles`, so confirm the whole session
+            // is empty before ending the escalation.
+            if crate::platform::session_member_handles(session_id, leader_reaped).is_empty() {
+                info!(
+                    pane = pane_id.raw(),
+                    session = session_id,
+                    ?signal,
+                    "pane session terminated"
+                );
+                return;
+            }
         }
     }
 
+    let survivors: Vec<u32> = leader
+        .into_iter()
+        .chain(members.iter())
+        .filter(|handle| !handle.has_exited())
+        .map(crate::platform::ProcessHandle::pid)
+        .collect();
     warn!(
         pane = pane_id.raw(),
-        pid = child_pid,
-        pids = ?pids,
+        session = session_id,
+        ?survivors,
         "pane session still alive after forced shutdown"
     );
 }
@@ -1023,7 +1172,10 @@ fn is_executable_file(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
-fn resolve_shell_for_login_mode(shell: &str) -> io::Result<String> {
+/// Resolve the configured shell to the executable path the pane will run: a
+/// path is checked as given, a bare name is looked up on `PATH`. Used for
+/// every shell mode, to fill in the pane's `SHELL`.
+fn resolve_shell_executable(shell: &str) -> io::Result<String> {
     if shell.contains(std::path::MAIN_SEPARATOR) {
         let path = Path::new(shell);
         return is_executable_file(path)
@@ -1031,7 +1183,7 @@ fn resolve_shell_for_login_mode(shell: &str) -> io::Result<String> {
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("login shell {shell:?} is not executable"),
+                    format!("shell {shell:?} is not executable"),
                 )
             });
     }
@@ -1046,7 +1198,7 @@ fn resolve_shell_for_login_mode(shell: &str) -> io::Result<String> {
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("login shell {shell:?} was not found on PATH"),
+                format!("shell {shell:?} was not found on PATH"),
             )
         })
 }
@@ -1061,13 +1213,13 @@ fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> io::Result<P
     let shell = pane_shell(shell_config.default_shell);
     if shell_config.mode == crate::config::ShellModeConfig::Login {
         let mut cmd = PtyCommand::login_shell();
-        cmd.env("SHELL", resolve_shell_for_login_mode(&shell)?);
+        cmd.env("SHELL", resolve_shell_executable(&shell)?);
         return Ok(cmd);
     }
     let mut cmd = PtyCommand::new(&shell);
     // A shell that does not resolve here is left to `PtyCommand` to reject at
     // spawn with its own PATH search error; the inherited `SHELL` stays.
-    if let Ok(resolved) = resolve_shell_for_login_mode(&shell) {
+    if let Ok(resolved) = resolve_shell_executable(&shell) {
         cmd.env("SHELL", resolved);
     }
     Ok(cmd)
@@ -1124,7 +1276,8 @@ impl PaneRuntime {
         shutdown_pane_processes(
             self.pane_id,
             self.child_pid.load(Ordering::Acquire),
-            &self.child_wait_completed,
+            self.session_leader.take(),
+            Arc::clone(&self.child_wait_completed),
         );
         self.preserve_processes_on_drop = true;
     }
@@ -1294,6 +1447,15 @@ impl PaneRuntime {
         let content_seq = Arc::new(AtomicU64::new(0));
         let detection_content_seq = Arc::new(AtomicU64::new(0));
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
+        // Opened before the watcher below exists, so nothing can have reaped
+        // the child yet and the pid is certainly still this child's.
+        let session_leader = crate::platform::ProcessHandle::open(spawned.child.id());
+        if session_leader.is_none() {
+            warn!(
+                pane = pane_id.raw(),
+                "no pidfd for the pane's child; closing the pane cannot signal it directly"
+            );
+        }
         {
             let child_pid = Arc::clone(&child_pid);
             let child_wait_completed = Arc::clone(&child_wait_completed);
@@ -1330,6 +1492,7 @@ impl PaneRuntime {
         }
 
         let io = {
+            let timer_writer = Arc::new(std::sync::OnceLock::<PtyIoActorHandle>::new());
             let terminal = Arc::clone(&terminal);
             let render_notify = Arc::clone(render_notify);
             let render_dirty = Arc::clone(render_dirty);
@@ -1341,6 +1504,8 @@ impl PaneRuntime {
             let reader_exit_events = events.clone();
             let reported_cwd = Arc::clone(&reported_cwd);
             let rt = tokio::runtime::Handle::current();
+            let sync_timeout_render = Arc::new(SyncTimeoutRender::default());
+            let timer_writer_for_read = Arc::clone(&timer_writer);
             let on_read = Box::new(move |bytes: &[u8]| {
                 let _content_write_guard = match content_write_lock.lock() {
                     Ok(guard) => guard,
@@ -1358,14 +1523,69 @@ impl PaneRuntime {
                 if title_requested || render_requested {
                     render_notify.notify_one();
                 }
-                if let Some(delay) = result.render_delay {
+                if let Some(delay) = result.render_delay
+                    && let Some(first_wake) =
+                        sync_timeout_render.arm(std::time::Instant::now() + delay)
+                {
+                    let sync_timeout_render = Arc::clone(&sync_timeout_render);
                     let render_notify = Arc::clone(&render_notify);
                     let render_dirty = Arc::clone(&render_dirty);
+                    let terminal = Arc::clone(&terminal);
+                    let content_write_lock = Arc::clone(&content_write_lock);
+                    let content_seq = Arc::clone(&content_seq);
+                    let detection_content_seq = Arc::clone(&detection_content_seq);
+                    let child_pid = Arc::clone(&child_pid);
+                    let reported_cwd = Arc::clone(&reported_cwd);
+                    let events = events.clone();
+                    let timer_writer = Arc::clone(&timer_writer_for_read);
                     rt.spawn(async move {
-                        tokio::time::sleep(delay).await;
-                        if render_dirty.request_pty(pane_id) {
-                            render_notify.notify_one();
+                        let mut wake_at = first_wake;
+                        loop {
+                            tokio::time::sleep_until(tokio::time::Instant::from_std(wake_at))
+                                .await;
+                            match sync_timeout_render.next_wake(wake_at) {
+                                Some(later) => wake_at = later,
+                                None => break,
+                            }
                         }
+                        // The terminal and content locks are synchronous. Keep
+                        // their wait off a Tokio worker when a timer fires.
+                        tokio::task::spawn_blocking(move || {
+                            let _content_write_guard = match content_write_lock.lock() {
+                                Ok(guard) => guard,
+                                Err(poisoned) => poisoned.into_inner(),
+                            };
+                            content_seq.fetch_add(1, Ordering::AcqRel);
+                            let result = terminal.flush_expired_synchronized_output(
+                                pane_id,
+                                child_pid.load(Ordering::Acquire),
+                            );
+                            content_seq.fetch_add(1, Ordering::Release);
+                            drop(_content_write_guard);
+                            if result.request_render {
+                                detection_content_seq.fetch_add(1, Ordering::AcqRel);
+                            }
+                            let title_requested = result.terminal_title_changed
+                                && render_dirty.request_terminal_title(pane_id);
+                            let render_requested = result.request_render
+                                && render_dirty.request_pty(pane_id);
+                            if title_requested || render_requested {
+                                render_notify.notify_one();
+                            }
+                            if let Some(cwd) = result.reported_cwd {
+                                publish_reported_cwd(pane_id, cwd, &reported_cwd, &events);
+                            }
+                            for content in result.clipboard_writes {
+                                if let Err(err) = events.try_send(AppEvent::ClipboardWrite { content }) {
+                                    warn!(pane = pane_id.raw(), err = %err, "failed to send OSC 52 clipboard write");
+                                }
+                            }
+                            if let Some(writer) = timer_writer.get() {
+                                for response in result.terminal_responses {
+                                    writer.write_terminal_response(|| Some(response));
+                                }
+                            }
+                        });
                     });
                 }
                 if let Some(cwd) = result.reported_cwd.clone() {
@@ -1411,12 +1631,14 @@ impl PaneRuntime {
                     }
                 })
             };
-            PaneRuntimeIo::Actor(PtyIoActor::spawn(PtyIoActorConfig {
+            let actor = PtyIoActor::spawn(PtyIoActorConfig {
                 pane_id: pane_id.raw(),
                 master_fd: spawned.master_fd,
                 on_read,
                 on_reader_exit: Some(on_reader_exit),
-            })?)
+            })?;
+            let _ = timer_writer.set(actor.clone());
+            PaneRuntimeIo::Actor(actor)
         };
 
         // --- Detection task ---
@@ -1723,11 +1945,8 @@ impl PaneRuntime {
                         }
                     }
 
-                    let current_detection_content_seq = if agent.is_some() {
-                        Some(detection_content_seq.load(Ordering::Relaxed))
-                    } else {
-                        None
-                    };
+                    let current_detection_content_seq =
+                        Some(detection_content_seq.load(Ordering::Relaxed));
                     match decide_detection_screen_read(DetectionScreenReadInput {
                         state,
                         agent,
@@ -1741,12 +1960,29 @@ impl PaneRuntime {
                         DetectionScreenReadDecision::Skip => continue,
                     }
 
-                    let content = terminal.detection_text();
+                    // Without an identified agent, detection reports `Unknown`
+                    // whatever the screen shows, and the screen would only feed
+                    // the content-change signal for process acquisition. The PTY
+                    // read counter gives that signal without copying the screen
+                    // out of the terminal core, which plain shell panes would
+                    // otherwise do on every tick.
+                    let (content, content_changed, osc_title, osc_progress) = if agent.is_some() {
+                        let content = terminal.detection_text();
+                        let content_changed = content != last_detection_text;
+                        last_detection_text.clone_from(&content);
+                        (
+                            content,
+                            content_changed,
+                            terminal.agent_osc_title(),
+                            terminal.agent_osc_progress(),
+                        )
+                    } else {
+                        let content_changed =
+                            last_screen_scan_detection_content_seq != current_detection_content_seq;
+                        last_detection_text.clear();
+                        (String::new(), content_changed, String::new(), String::new())
+                    };
                     last_screen_scan_detection_content_seq = current_detection_content_seq;
-                    let content_changed = content != last_detection_text;
-                    last_detection_text.clone_from(&content);
-                    let osc_title = terminal.agent_osc_title();
-                    let osc_progress = terminal.agent_osc_progress();
                     let screen_detection = detection_update_for_publish_with_osc(
                         agent,
                         &content,
@@ -1839,6 +2075,7 @@ impl PaneRuntime {
             reported_cwd,
             persistence_cwd: Mutex::new(None),
             child_wait_completed,
+            session_leader,
             content_seq,
             content_write_lock,
             detection_content_seq,
@@ -2446,6 +2683,7 @@ impl PaneRuntime {
                 reported_cwd: Arc::new(Mutex::new(None)),
                 persistence_cwd: Mutex::new(None),
                 child_wait_completed: Arc::new(AtomicBool::new(false)),
+                session_leader: None,
                 content_seq: Arc::new(AtomicU64::new(0)),
                 content_write_lock: Arc::new(Mutex::new(())),
                 detection_content_seq: Arc::new(AtomicU64::new(0)),
@@ -2792,23 +3030,73 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_liveness_treats_reaped_direct_child_as_gone() {
-        assert!(!process_alive_for_shutdown(42, 42, true, |_| true));
+    fn pane_teardown_reaches_background_jobs_after_the_leader_is_reaped() {
+        // The common close path: the pane's child has exited and been reaped,
+        // but it left a job behind in its session that ignores SIGHUP and
+        // SIGTERM, as a daemonised dev server might.
+        let mut cmd = PtyCommand::new("/bin/sh");
+        cmd.args(["-c", "trap '' HUP TERM; sleep 30 & exit 0"]);
+        let mut spawned = crate::pty::backend::spawn_pty(24, 80, &cmd).expect("spawn session");
+        let leader_pid = spawned.child.id();
+        let leader = crate::platform::ProcessHandle::open(leader_pid).expect("leader pidfd");
+        spawned.child.wait().expect("reap the leader");
+        let child_wait_completed = Arc::new(AtomicBool::new(true));
+
+        let members = crate::platform::session_member_handles(leader_pid, || true);
+        assert_eq!(members.len(), 1, "the background job survives its leader");
+
+        let started = std::time::Instant::now();
+        shutdown_pane_processes(
+            PaneId::from_raw(0),
+            leader_pid,
+            Some(leader),
+            child_wait_completed,
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(200),
+            "teardown must not block its caller through the grace periods"
+        );
+
+        assert!(wait_for_pane_session_teardowns(
+            std::time::Duration::from_secs(10)
+        ));
+        let handles: Vec<&crate::platform::ProcessHandle> = members.iter().collect();
+        assert!(
+            crate::platform::wait_for_process_exits(&handles, std::time::Duration::from_secs(1)),
+            "the background job is killed once SIGHUP and SIGTERM are ignored"
+        );
     }
 
     #[test]
-    fn shutdown_liveness_keeps_unreaped_direct_child_alive() {
-        assert!(process_alive_for_shutdown(42, 42, false, |_| true));
+    fn sync_timeout_render_arms_one_task_for_many_reads() {
+        let timer = SyncTimeoutRender::default();
+        let start = std::time::Instant::now();
+        let deadline = start + std::time::Duration::from_millis(150);
+
+        assert_eq!(
+            timer.arm(deadline),
+            Some(deadline),
+            "first read arms a task"
+        );
+        for _ in 0..100 {
+            assert_eq!(timer.arm(deadline), None, "later reads reuse the task");
+        }
+        // A later update's deadline extends the armed task instead.
+        let later = deadline + std::time::Duration::from_millis(150);
+        assert_eq!(timer.arm(later), None);
+        assert_eq!(timer.next_wake(deadline), Some(later));
+        assert_eq!(timer.next_wake(later), None, "the task disarms and renders");
+        assert_eq!(timer.arm(later), Some(later), "a disarmed timer re-arms");
     }
 
     #[test]
-    fn shutdown_liveness_keeps_other_session_processes_alive() {
-        assert!(process_alive_for_shutdown(43, 42, true, |_| true));
-    }
-
-    #[test]
-    fn shutdown_liveness_treats_missing_process_as_gone() {
-        assert!(!process_alive_for_shutdown(43, 42, false, |_| false));
+    fn pane_teardown_without_a_session_does_nothing() {
+        shutdown_pane_processes(
+            PaneId::from_raw(0),
+            0,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
     }
 
     fn capture_shell_output(command: &str, extra_env: &[(&str, &str)]) -> String {
@@ -2942,9 +3230,9 @@ mod tests {
     }
 
     #[test]
-    fn login_shell_resolution_preserves_shell_paths() {
+    fn shell_resolution_preserves_shell_paths() {
         assert_eq!(
-            resolve_shell_for_login_mode("/bin/sh").expect("test precondition"),
+            resolve_shell_executable("/bin/sh").expect("test precondition"),
             "/bin/sh"
         );
     }
@@ -3059,6 +3347,7 @@ mod tests {
             child_pid: Arc::new(AtomicU32::new(0)),
             reported_cwd: Arc::new(Mutex::new(None)),
             child_wait_completed: Arc::new(AtomicBool::new(false)),
+            session_leader: None,
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),
             detection_content_seq: Arc::new(AtomicU64::new(0)),
@@ -3097,6 +3386,7 @@ mod tests {
             child_pid: Arc::new(AtomicU32::new(0)),
             reported_cwd: Arc::new(Mutex::new(None)),
             child_wait_completed: Arc::new(AtomicBool::new(false)),
+            session_leader: None,
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),
             detection_content_seq: Arc::new(AtomicU64::new(0)),

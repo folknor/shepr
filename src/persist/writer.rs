@@ -5,18 +5,90 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{SessionHistorySnapshot, SessionSnapshot};
 
+/// Whether this writer may touch its data directory's session files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ownership {
+    /// No write attempted yet, or the last claim failed for a reason other
+    /// than another owner (the lock file was unusable); claim on next write.
+    Unclaimed,
+    /// This process holds the data directory's lock.
+    Owned,
+    /// Another server held the lock when this one first tried to write. The
+    /// session files are that server's, and this one never loaded them, so it
+    /// stays out for its whole life rather than overwrite them later.
+    Refused,
+    /// The final shutdown save is done and the lock is released.
+    Retired,
+}
+
 /// Shared by autosave, pane-exit checkpoints, and shutdown.
 pub(crate) struct SessionWriter {
     path: PathBuf,
     protect_unloaded: bool,
+    ownership: Ownership,
+    /// Digest of the history JSON this writer last put on disk. History is
+    /// the bulk of a save (full scrollback per pane) and is rewritten and
+    /// fsynced on every save otherwise, even when no pane printed anything.
+    written_history: Option<Vec<u8>>,
 }
 
 impl SessionWriter {
     pub(crate) fn new(protect_unloaded: bool) -> Self {
+        Self::at(super::io::session_path(), protect_unloaded)
+    }
+
+    fn at(path: PathBuf, protect_unloaded: bool) -> Self {
         Self {
-            path: super::io::session_path(),
+            path,
             protect_unloaded,
+            ownership: Ownership::Unclaimed,
+            written_history: None,
         }
+    }
+
+    fn directory(&self) -> &Path {
+        super::io::containing_directory(&self.path)
+    }
+
+    /// Claims the data directory before the first write; see `lock.rs`.
+    fn may_write(&mut self) -> bool {
+        match self.ownership {
+            Ownership::Owned => true,
+            Ownership::Refused | Ownership::Retired => false,
+            Ownership::Unclaimed => match super::lock::claim(self.directory()) {
+                Ok(()) => {
+                    self.ownership = Ownership::Owned;
+                    true
+                }
+                Err(err) if super::lock::is_owned_elsewhere(&err) => {
+                    tracing::error!(
+                        event = "persist.lock", subsystem = "persist", outcome = "owned_elsewhere",
+                        path = %self.path.display(), err = %err,
+                        "another server owns this session's files; this server will not save them"
+                    );
+                    self.ownership = Ownership::Refused;
+                    false
+                }
+                Err(err) => {
+                    tracing::error!(
+                        event = "persist.lock", subsystem = "persist", outcome = "error",
+                        path = %self.path.display(), err = %err,
+                        "could not lock the session directory; session files were not written"
+                    );
+                    false
+                }
+            },
+        }
+    }
+
+    /// Ends this writer's ownership after the final shutdown save, releasing
+    /// the data directory for the next server before this process finishes
+    /// tearing down. Later saves and clears are ignored.
+    pub(crate) fn retire(&mut self) {
+        // Also drops a claim `load` took for restore; a no-op when this
+        // process never held one.
+        super::lock::release(self.directory());
+        self.ownership = Ownership::Retired;
     }
 
     fn preserve_unloaded(&mut self) -> io::Result<()> {
@@ -40,6 +112,9 @@ impl SessionWriter {
         snapshot: &SessionSnapshot,
         history: Option<&SessionHistorySnapshot>,
     ) {
+        if !self.may_write() {
+            return;
+        }
         let result = self.preserve_unloaded().and_then(|()| {
             self.preserve_snapshot_history();
             super::io::save_to_path(&self.path, snapshot)
@@ -75,13 +150,42 @@ impl SessionWriter {
         self.protect_unloaded = false;
         self.preserve_snapshot_history();
         let history_path = self.path.with_file_name("session-history.json");
-        if let Err(err) = super::io::save_history_to_path(&history_path, history) {
+        if let Err(err) = self.save_history(&history_path, history) {
+            self.written_history = None;
             crate::logging::session_save_failed(&history_path, &err.to_string());
         }
         crate::logging::session_saved(&self.path, snapshot.workspaces.len());
     }
 
+    /// Writes the history unless the file already holds exactly these bytes
+    /// from this writer's previous save. The history names the layout it
+    /// pairs with, so a changed layout always changes the bytes.
+    fn save_history(
+        &mut self,
+        history_path: &Path,
+        history: Option<&SessionHistorySnapshot>,
+    ) -> io::Result<()> {
+        use sha2::{Digest, Sha256};
+        let Some(history) = history else {
+            self.written_history = None;
+            return super::io::save_history_to_path(history_path, None);
+        };
+        let json = super::io::serialize_history(history)?;
+        let digest = Sha256::digest(json.as_bytes()).to_vec();
+        if self.written_history.as_ref() == Some(&digest) {
+            return Ok(());
+        }
+        self.written_history = None;
+        super::io::save_history_json_to_path(history_path, &json)?;
+        self.written_history = Some(digest);
+        Ok(())
+    }
+
     pub(crate) fn clear(&mut self) {
+        if !self.may_write() {
+            return;
+        }
+        self.written_history = None;
         let result = self.preserve_unloaded().and_then(|()| {
             self.preserve_snapshot_history();
             super::io::clear_path(&self.path)
@@ -292,10 +396,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&directory).expect("test precondition");
-        SessionWriter {
-            path: directory.join("session.json"),
-            protect_unloaded,
-        }
+        SessionWriter::at(directory.join("session.json"), protect_unloaded)
     }
 
     fn snapshot() -> SessionSnapshot {
@@ -353,10 +454,7 @@ mod tests {
             let mut shrinking = snapshot();
             shrinking.workspaces[0].custom_name = Some(format!("remaining pane {i}"));
             writer.save(&shrinking, None);
-            writer = SessionWriter {
-                path: writer.path.clone(),
-                protect_unloaded: false,
-            };
+            writer = SessionWriter::at(writer.path.clone(), false);
         }
         writer.clear();
         assert!(
@@ -444,10 +542,7 @@ mod tests {
         changed.workspaces[0].custom_name = Some("after clock rollback".into());
         writer.save(&changed, None);
         assert_eq!(snapshots(&writer).len(), 2);
-        writer = SessionWriter {
-            path: writer.path.clone(),
-            protect_unloaded: false,
-        };
+        writer = SessionWriter::at(writer.path.clone(), false);
         changed.workspaces[0].custom_name = Some("after restart".into());
         writer.save(&changed, None);
         assert_eq!(
@@ -590,10 +685,7 @@ mod tests {
         assert!(history_path.exists(), "history pairs with the new layout");
 
         // A save that never reached the target changes nothing else.
-        let mut failed = SessionWriter {
-            path: writer.path.clone(),
-            protect_unloaded: true,
-        };
+        let mut failed = SessionWriter::at(writer.path.clone(), true);
         std::fs::remove_file(&history_path).expect("test precondition");
         failed.finish_save(
             Err(io::Error::other("write failed")),
@@ -602,6 +694,121 @@ mod tests {
         );
         assert!(failed.protect_unloaded);
         assert!(!history_path.exists());
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
+    }
+
+    /// Holds `writer`'s data directory the way another server process would:
+    /// through its own open file description.
+    fn foreign_lock(writer: &SessionWriter) -> File {
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(
+                writer
+                    .path
+                    .with_file_name(super::super::lock::LOCK_FILE_NAME),
+            )
+            .expect("test precondition");
+        file.try_lock().expect("test precondition");
+        file
+    }
+
+    #[test]
+    fn a_directory_owned_by_another_server_is_never_written() {
+        let mut writer = writer(true);
+        std::fs::write(&writer.path, b"other server's layout").expect("test precondition");
+        let other = foreign_lock(&writer);
+
+        writer.save(&snapshot(), None);
+        writer.clear();
+        assert_eq!(writer.ownership, Ownership::Refused);
+        assert_eq!(
+            std::fs::read(&writer.path).expect("test precondition"),
+            b"other server's layout"
+        );
+
+        // The other server going away does not hand its files to this one,
+        // which never loaded them.
+        drop(other);
+        writer.save(&snapshot(), None);
+        assert_eq!(
+            std::fs::read(&writer.path).expect("test precondition"),
+            b"other server's layout"
+        );
+        assert!(backups(&writer).is_empty());
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
+    }
+
+    #[test]
+    fn retiring_releases_the_directory_and_ignores_later_saves() {
+        let mut writer = writer(false);
+        writer.save(&snapshot(), None);
+        assert_eq!(writer.ownership, Ownership::Owned);
+        let lock = File::open(
+            writer
+                .path
+                .with_file_name(super::super::lock::LOCK_FILE_NAME),
+        )
+        .expect("test precondition");
+        assert!(matches!(
+            lock.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+
+        writer.retire();
+        lock.try_lock().expect("the next server can take over");
+        let saved = std::fs::read(&writer.path).expect("test precondition");
+        let mut changed = snapshot();
+        changed.workspaces[0].custom_name = Some("after shutdown".into());
+        writer.save(&changed, None);
+        writer.clear();
+        assert_eq!(
+            std::fs::read(&writer.path).expect("test precondition"),
+            saved
+        );
+        drop(lock);
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
+    }
+
+    #[test]
+    fn unchanged_history_is_not_rewritten() {
+        let history = |fingerprint: &str| SessionHistorySnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            layout_fingerprint: Some(fingerprint.into()),
+            workspaces: Vec::new(),
+        };
+        let mut writer = writer(false);
+        let history_path = writer.path.with_file_name("session-history.json");
+        writer.save(&snapshot(), Some(&history("one")));
+        let written = std::fs::read(&history_path).expect("test precondition");
+
+        // A marker only survives if the identical history is skipped.
+        std::fs::write(&history_path, b"untouched").expect("test precondition");
+        writer.save(&snapshot(), Some(&history("one")));
+        assert_eq!(
+            std::fs::read(&history_path).expect("test precondition"),
+            b"untouched"
+        );
+
+        writer.save(&snapshot(), Some(&history("two")));
+        let changed = std::fs::read(&history_path).expect("test precondition");
+        assert_ne!(changed, written);
+        assert!(String::from_utf8_lossy(&changed).contains("two"));
+
+        // A clear forgets what was written, so the same history is written
+        // again afterwards.
+        writer.clear();
+        assert!(!history_path.exists());
+        writer.save(&snapshot(), Some(&history("two")));
+        assert_eq!(
+            std::fs::read(&history_path).expect("test precondition"),
+            changed
+        );
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
     }

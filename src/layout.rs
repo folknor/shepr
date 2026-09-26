@@ -337,7 +337,6 @@ impl TileLayout {
     }
 
     /// Reconstruct a layout from a saved tree.
-    /// Reconstruct a layout from a saved tree.
     pub fn from_saved(root: Node, focus: PaneId) -> Self {
         Self {
             root,

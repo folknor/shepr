@@ -1,5 +1,22 @@
 use super::*;
 
+/// The session snapshot a shell projection is built from. The projection never
+/// reads the pane layout trees, so they are dropped before the snapshot is
+/// copied for each shell client.
+fn shell_session_snapshot(app: &app::App) -> crate::api::schema::SessionSnapshot {
+    let mut snapshot = app.session_snapshot();
+    snapshot.layouts = Vec::new();
+    snapshot
+}
+
+/// Error shown to a shell client whose screen cannot be sent in one frame.
+pub(super) fn oversized_frame_notice(claimed: usize, max: usize) -> String {
+    format!(
+        "The screen is too large to send ({claimed} bytes; the limit is {max}). \
+         Make the window smaller; the display resumes once a frame fits."
+    )
+}
+
 impl HeadlessServer {
     fn shell_focused_runtime(
         &self,
@@ -432,7 +449,22 @@ impl HeadlessServer {
         }
 
         let mut broken_clients: Vec<u64> = Vec::new();
+        // The session snapshot every shell projection is diffed against is
+        // built at most once per render and shared: copies for all but the
+        // last shell client, the original for the last one.
+        let mut shell_clients_left = render_targets
+            .iter()
+            .filter(|(_, _, _, _, mode)| matches!(mode, ClientConnectionMode::ClientShell))
+            .count();
+        let mut shared_session_snapshot: Option<crate::api::schema::SessionSnapshot> = None;
+        let mut oversized_notices: Vec<(u64, usize, usize)> = Vec::new();
         for (client_id, (cols, rows), cell_size, _is_foreground, mode) in render_targets {
+            let last_shell_client = if matches!(mode, ClientConnectionMode::ClientShell) {
+                shell_clients_left = shell_clients_left.saturating_sub(1);
+                shell_clients_left == 0
+            } else {
+                false
+            };
             let area = Rect::new(0, 0, cols, rows);
             let shell_target = self.shell_target_for_client(client_id);
             let shell_render = if matches!(mode, ClientConnectionMode::ClientShell)
@@ -473,26 +505,32 @@ impl HeadlessServer {
             };
             let mut shell_projection_revision = 0;
             if matches!(mode, ClientConnectionMode::ClientShell) {
-                let location = self
-                    .clients
-                    .get(&client_id)
-                    .and_then(|client| client.shell_location.clone());
+                let session = if last_shell_client {
+                    shared_session_snapshot
+                        .take()
+                        .unwrap_or_else(|| shell_session_snapshot(&self.app))
+                } else {
+                    shared_session_snapshot
+                        .get_or_insert_with(|| shell_session_snapshot(&self.app))
+                        .clone()
+                };
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     continue;
                 };
-                let (mut candidate, mut completions) = client_shell_snapshot(
-                    &self.app,
-                    &self.client_shell_boot_id,
-                    client.shell_projection_revision,
-                    None,
-                    location.as_ref(),
-                );
-                candidate.config_diagnostic = if client.shell_uses_endpoint_keybindings {
-                    self.server_config_diagnostic.clone()
+                let config_diagnostic = if client.shell_uses_endpoint_keybindings {
+                    self.server_config_diagnostic.as_deref()
                 } else {
-                    self.server_config_diagnostic_without_keybindings.clone()
+                    self.server_config_diagnostic_without_keybindings.as_deref()
                 };
-                candidate.revision = client.shell_projection_revision;
+                let (mut candidate, mut completions) =
+                    crate::server::client_shell::snapshot_from_session(
+                        &self.app,
+                        session,
+                        &self.client_shell_boot_id,
+                        client.shell_projection_revision,
+                        config_diagnostic,
+                        client.shell_location.as_ref(),
+                    );
                 if client.shell_snapshot.as_ref() != Some(&candidate)
                     || client.shell_agent_completions.as_ref() != Some(&completions)
                 {
@@ -632,10 +670,31 @@ impl HeadlessServer {
             let serialized = match Self::frame_server_message(prepared.message()) {
                 Ok(frame) => frame,
                 Err(protocol::FramingError::Oversized { claimed, max }) => {
-                    warn!(
-                        client_id,
-                        claimed, max, "skipping oversized frame for client"
-                    );
+                    // Nothing is committed, so the next render that has work
+                    // for this client tries a full frame again: the frame fits
+                    // again once the window shrinks or the content gets
+                    // cheaper (fewer hyperlinks or long graphemes). Renders
+                    // only run on real damage, so this does not spin. What
+                    // must not happen is a client that stays blank with
+                    // nobody told why, or a warning per render.
+                    if client.oversized_frame_reported {
+                        debug!(
+                            client_id,
+                            claimed, max, "skipping oversized frame for client"
+                        );
+                    } else {
+                        warn!(
+                            client_id,
+                            claimed, max, "skipping oversized frame for client"
+                        );
+                        client.oversized_frame_reported = true;
+                        // A shell client can show an error. A direct terminal
+                        // attach is a raw byte stream into the host terminal
+                        // with no message for this, so it only gets the log.
+                        if client.is_shell_client() {
+                            oversized_notices.push((client_id, claimed, max));
+                        }
+                    }
                     continue;
                 }
                 Err(err) => {
@@ -649,6 +708,7 @@ impl HeadlessServer {
                 Ok(()) => {
                     client.render_state.commit_sent_frame(prepared);
                     client.clear_deferred_render();
+                    client.oversized_frame_reported = false;
                 }
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
                     client.defer_full_render();
@@ -657,6 +717,18 @@ impl HeadlessServer {
                     broken_clients.push(client_id);
                 }
             }
+        }
+
+        for (client_id, claimed, max) in oversized_notices {
+            if broken_clients.contains(&client_id) {
+                continue;
+            }
+            self.send_to_client(
+                client_id,
+                &ServerMessage::ClientShellError {
+                    message: oversized_frame_notice(claimed, max),
+                },
+            );
         }
 
         if !broken_clients.is_empty() {

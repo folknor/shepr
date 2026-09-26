@@ -266,9 +266,7 @@ pub(super) fn render_shell(
                 layout.sidebar,
                 snapshot,
                 config,
-                state
-                    .selected_workspace_id
-                    .map(|target| target.workspace_id.as_str()),
+                &mut state,
                 &mut hits,
             );
         } else {

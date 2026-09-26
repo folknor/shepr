@@ -173,6 +173,10 @@ pub(crate) fn keybind_help_groups(
                     binding_label(&keybinds.focus_pane_right),
                     "focus pane right",
                 ),
+                entry(binding_label(&keybinds.swap_pane_left), "swap pane left"),
+                entry(binding_label(&keybinds.swap_pane_down), "swap pane down"),
+                entry(binding_label(&keybinds.swap_pane_up), "swap pane up"),
+                entry(binding_label(&keybinds.swap_pane_right), "swap pane right"),
                 entry(binding_label(&keybinds.cycle_pane_next), "cycle pane next"),
                 entry(
                     binding_label(&keybinds.cycle_pane_previous),
@@ -235,5 +239,26 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].1[0].1, "close pane");
         assert!(filter_keybind_help_groups(groups(), "panes").is_empty());
+    }
+
+    #[test]
+    fn help_lists_every_default_pane_binding() {
+        let config = crate::config::Config::default();
+        let groups = keybind_help_groups(&config.keybinds(), config.prefix_key());
+        let entries: Vec<_> = groups.iter().flat_map(|(_, entries)| entries).collect();
+        for (key, label) in [
+            ("prefix+[", "copy mode"),
+            ("prefix+shift+h", "swap pane left"),
+            ("prefix+shift+j", "swap pane down"),
+            ("prefix+shift+k", "swap pane up"),
+            ("prefix+shift+l", "swap pane right"),
+        ] {
+            assert!(
+                entries
+                    .iter()
+                    .any(|(entry_key, entry_label)| entry_key == key && entry_label == label),
+                "{label} ({key}) missing from the help screen"
+            );
+        }
     }
 }

@@ -1,7 +1,7 @@
 #!/bin/sh
 # managed by shepr; reinstalling the integration replaces this file.
 # SHEPR_INTEGRATION_ID=kimi
-# SHEPR_INTEGRATION_VERSION=2
+# SHEPR_INTEGRATION_VERSION=3
 
 # Stamp the report the moment the hook starts. Every event runs this script in
 # a fresh process, and shepr drops a report whose seq is older than the last
@@ -32,6 +32,10 @@ action = sys.argv[1]
 try:
     payload = json.load(sys.stdin)
 except Exception:
+    payload = {}
+# A valid JSON body that is not an object (a list, a string, null) carries no
+# fields we can read; treat it as empty so state reports still go through.
+if not isinstance(payload, dict):
     payload = {}
 
 session_id = payload.get("session_id")

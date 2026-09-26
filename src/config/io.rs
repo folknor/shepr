@@ -135,6 +135,12 @@ impl Config {
                         .collect(),
                 ));
                 diagnostics.extend(config.collect_diagnostics());
+                // The one place config diagnostics are logged: the validators
+                // behind `collect_diagnostics` are pure and are re-run by
+                // accessors such as `keybinds()`.
+                for diagnostic in &diagnostics {
+                    warn!(message = %diagnostic, "config diagnostic");
+                }
                 LoadedConfig {
                     config,
                     diagnostics,

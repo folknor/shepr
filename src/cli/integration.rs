@@ -1,39 +1,28 @@
+use clap::ArgMatches;
+
 use crate::api::schema::IntegrationTarget;
 
-pub(super) fn run_integration_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(String::as_str) else {
-        print_integration_help();
-        return Ok(2);
-    };
+use super::matches;
 
-    match subcommand {
-        "install" => integration_install(&args[1..]),
-        "uninstall" => integration_uninstall(&args[1..]),
-        "status" => integration_status(&args[1..]),
-        "help" | "--help" | "-h" => {
-            print_integration_help();
-            Ok(0)
+/// `shepr integration <install|uninstall|status>`. The clap spec
+/// (`integration_command` in `spec.rs`) has already required a subcommand and
+/// restricted `TARGET` to the known labels, so usage errors and help never
+/// reach this function.
+pub(super) fn run_integration_command(matches: &ArgMatches) -> std::io::Result<i32> {
+    match matches.subcommand() {
+        Some(("install", matches)) => Ok(integration_install(matches)),
+        Some(("uninstall", matches)) => Ok(integration_uninstall(matches)),
+        Some(("status", matches)) => {
+            Ok(integration_status(matches::flag(matches, "outdated-only")))
         }
-        _ => {
-            print_integration_help();
-            Ok(2)
-        }
+        _ => Ok(super::missing_subcommand()),
     }
 }
 
-fn integration_status(args: &[String]) -> std::io::Result<i32> {
-    let outdated_only = match args {
-        [] => false,
-        [flag] if flag == "--outdated-only" => true,
-        _ => {
-            eprintln!("usage: shepr integration status [--outdated-only]");
-            return Ok(2);
-        }
-    };
-
+fn integration_status(outdated_only: bool) -> i32 {
     if outdated_only {
         crate::integration::print_outdated_update_notice();
-        return Ok(0);
+        return 0;
     }
 
     for status in crate::integration::installed_integration_statuses() {
@@ -59,7 +48,7 @@ fn integration_status(args: &[String]) -> std::io::Result<i32> {
         );
     }
 
-    Ok(0)
+    0
 }
 
 fn describe_integration_state(
@@ -85,52 +74,52 @@ fn describe_integration_state(
     }
 }
 
-fn integration_install(args: &[String]) -> std::io::Result<i32> {
-    let Some(target) = parse_integration_target(args, "install")? else {
-        return Ok(2);
+fn integration_install(matches: &ArgMatches) -> i32 {
+    let Some(target) = command_target(matches) else {
+        return unknown_target(matches);
     };
 
     let installed = match target {
         IntegrationCommandTarget::Builtin(target) => crate::integration::install_target(target),
         IntegrationCommandTarget::Letta => crate::integration::install_experimental_letta(),
     };
-    match installed {
-        Ok(messages) => {
-            print_integration_messages(messages);
-            Ok(0)
-        }
-        Err(err) => {
-            eprintln!("{err}");
-            Ok(1)
-        }
-    }
+    report_outcome(installed)
 }
 
-fn integration_uninstall(args: &[String]) -> std::io::Result<i32> {
-    let Some(target) = parse_integration_target(args, "uninstall")? else {
-        return Ok(2);
+fn integration_uninstall(matches: &ArgMatches) -> i32 {
+    let Some(target) = command_target(matches) else {
+        return unknown_target(matches);
     };
 
     let removed = match target {
         IntegrationCommandTarget::Builtin(target) => crate::integration::uninstall_target(target),
         IntegrationCommandTarget::Letta => crate::integration::uninstall_experimental_letta(),
     };
-    match removed {
+    report_outcome(removed)
+}
+
+fn report_outcome(outcome: std::io::Result<Vec<String>>) -> i32 {
+    match outcome {
         Ok(messages) => {
-            print_integration_messages(messages);
-            Ok(0)
+            for message in messages {
+                println!("{message}");
+            }
+            0
         }
         Err(err) => {
             eprintln!("{err}");
-            Ok(1)
+            1
         }
     }
 }
 
-fn print_integration_messages(messages: Vec<String>) {
-    for message in messages {
-        println!("{message}");
-    }
+/// Only reachable if the spec's possible values and [`target_from_label`]
+/// disagree; the test below keeps them in step.
+fn unknown_target(matches: &ArgMatches) -> i32 {
+    super::usage_error(&format!(
+        "unknown integration target: {}",
+        matches::required(matches, "target")
+    ))
 }
 
 /// Integration target accepted by the CLI. Letta is not an `IntegrationTarget`
@@ -146,122 +135,78 @@ enum IntegrationCommandTarget {
     Letta,
 }
 
-/// Every target label the CLI accepts, in the order usage and help list them.
-/// Usage, the unknown-target hint and the help text all come from this list,
-/// so a new target cannot be added to one and forgotten in another.
-const INTEGRATION_TARGET_LABELS: &[&str] = &[
-    "pi",
-    "omp",
-    "claude",
-    "codex",
-    "copilot",
-    "devin",
-    "droid",
-    "kimi",
-    "opencode",
-    "kilo",
-    "hermes",
-    "qodercli",
-    "qwen",
-    "letta",
-    "cursor",
-    "mastracode",
-    "antigravity-cli",
-    "grok",
-];
-
-fn parse_integration_target(
-    args: &[String],
-    action: &str,
-) -> std::io::Result<Option<IntegrationCommandTarget>> {
-    let [target] = args else {
-        eprintln!(
-            "usage: shepr integration {action} <{}>",
-            INTEGRATION_TARGET_LABELS.join("|")
-        );
-        return Ok(None);
-    };
-    let target = target.as_str();
-
-    let parsed = match target {
-        "pi" => IntegrationCommandTarget::Builtin(IntegrationTarget::Pi),
-        "omp" => IntegrationCommandTarget::Builtin(IntegrationTarget::Omp),
-        "claude" => IntegrationCommandTarget::Builtin(IntegrationTarget::Claude),
-        "codex" => IntegrationCommandTarget::Builtin(IntegrationTarget::Codex),
-        "copilot" => IntegrationCommandTarget::Builtin(IntegrationTarget::Copilot),
-        "devin" => IntegrationCommandTarget::Builtin(IntegrationTarget::Devin),
-        "droid" => IntegrationCommandTarget::Builtin(IntegrationTarget::Droid),
-        "kimi" => IntegrationCommandTarget::Builtin(IntegrationTarget::Kimi),
-        "opencode" => IntegrationCommandTarget::Builtin(IntegrationTarget::Opencode),
-        "kilo" => IntegrationCommandTarget::Builtin(IntegrationTarget::Kilo),
-        "hermes" => IntegrationCommandTarget::Builtin(IntegrationTarget::Hermes),
-        "qodercli" => IntegrationCommandTarget::Builtin(IntegrationTarget::Qodercli),
-        "qwen" => IntegrationCommandTarget::Builtin(IntegrationTarget::Qwen),
-        "letta" => IntegrationCommandTarget::Letta,
-        "cursor" => IntegrationCommandTarget::Builtin(IntegrationTarget::Cursor),
-        "mastracode" => IntegrationCommandTarget::Builtin(IntegrationTarget::Mastracode),
-        "antigravity-cli" | "antigravity_cli" => {
-            IntegrationCommandTarget::Builtin(IntegrationTarget::AntigravityCli)
-        }
-        "grok" => IntegrationCommandTarget::Builtin(IntegrationTarget::Grok),
-        _ => {
-            eprintln!("unknown integration target: {target}");
-            eprintln!(
-                "currently supported: {}",
-                INTEGRATION_TARGET_LABELS.join(", ")
-            );
-            return Ok(None);
-        }
-    };
-
-    Ok(Some(parsed))
+fn command_target(matches: &ArgMatches) -> Option<IntegrationCommandTarget> {
+    target_from_label(&matches::required(matches, "target"))
 }
 
-fn print_integration_help() {
-    eprintln!("shepr integration commands:");
-    for action in ["install", "uninstall"] {
-        for target in INTEGRATION_TARGET_LABELS {
-            eprintln!("  shepr integration {action} {target}");
-        }
+/// Maps a `TARGET` value back to its target. The labels are the ones the spec
+/// offers as possible values (`integration_target_label` over
+/// `IntegrationTarget::ALL`, plus the experimental labels), so there is no
+/// second list of names to keep in step.
+fn target_from_label(label: &str) -> Option<IntegrationCommandTarget> {
+    if label == "letta" {
+        return Some(IntegrationCommandTarget::Letta);
     }
-    eprintln!("  shepr integration status [--outdated-only]");
+    IntegrationTarget::ALL
+        .into_iter()
+        .find(|target| crate::integration::integration_target_label(*target) == label)
+        .map(IntegrationCommandTarget::Builtin)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn spec_labels() -> Vec<&'static str> {
+        let mut labels: Vec<&'static str> = IntegrationTarget::ALL
+            .into_iter()
+            .map(crate::integration::integration_target_label)
+            .collect();
+        labels.extend_from_slice(crate::integration::EXPERIMENTAL_INTEGRATION_TARGET_LABELS);
+        labels
+    }
+
     #[test]
-    fn every_listed_label_parses_and_every_target_is_listed() {
-        for label in INTEGRATION_TARGET_LABELS {
-            let parsed = parse_integration_target(&[label.to_string()], "install")
-                .expect("test precondition");
-            assert!(parsed.is_some(), "listed label {label} does not parse");
+    fn every_target_the_spec_accepts_resolves_to_a_target() {
+        for action in ["install", "uninstall"] {
+            for label in spec_labels() {
+                let matches = crate::cli::tests::command_matches(&["integration", action, label]);
+                let target = command_target(&matches)
+                    .unwrap_or_else(|| panic!("{action} {label} does not resolve"));
+                match target {
+                    IntegrationCommandTarget::Builtin(target) => {
+                        assert_eq!(crate::integration::integration_target_label(target), label);
+                    }
+                    IntegrationCommandTarget::Letta => assert_eq!(label, "letta"),
+                }
+            }
         }
-        for target in [
-            IntegrationTarget::Pi,
-            IntegrationTarget::Omp,
-            IntegrationTarget::Claude,
-            IntegrationTarget::Codex,
-            IntegrationTarget::Copilot,
-            IntegrationTarget::Devin,
-            IntegrationTarget::Droid,
-            IntegrationTarget::Kimi,
-            IntegrationTarget::Opencode,
-            IntegrationTarget::Kilo,
-            IntegrationTarget::Hermes,
-            IntegrationTarget::Qodercli,
-            IntegrationTarget::Qwen,
-            IntegrationTarget::Cursor,
-            IntegrationTarget::Mastracode,
-            IntegrationTarget::AntigravityCli,
-            IntegrationTarget::Grok,
-        ] {
-            let label = crate::integration::integration_target_label(target);
+    }
+
+    #[test]
+    fn every_experimental_label_has_a_handler() {
+        for label in crate::integration::EXPERIMENTAL_INTEGRATION_TARGET_LABELS {
             assert!(
-                INTEGRATION_TARGET_LABELS.contains(&label),
-                "{label} missing from the CLI target list"
+                target_from_label(label).is_some(),
+                "experimental label {label} has no handler"
             );
         }
+    }
+
+    #[test]
+    fn unknown_labels_do_not_resolve() {
+        assert!(target_from_label("nope").is_none());
+        assert!(target_from_label("").is_none());
+        // Only the hyphenated label is a target name.
+        assert!(target_from_label("antigravity_cli").is_none());
+    }
+
+    #[test]
+    fn status_reads_the_outdated_only_flag() {
+        let status = crate::cli::tests::command_matches(&["integration", "status"]);
+        assert!(!matches::flag(&status, "outdated-only"));
+        let status =
+            crate::cli::tests::command_matches(&["integration", "status", "--outdated-only"]);
+        assert!(matches::flag(&status, "outdated-only"));
     }
 }

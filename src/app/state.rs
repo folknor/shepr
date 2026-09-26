@@ -615,14 +615,18 @@ pub(crate) struct PaneFocusTarget {
     pub pane_id: PaneId,
 }
 
-/// All application state - pure data, no channels or async runtime.
-/// Testable without PTYs or a tokio runtime.
+/// One right-hand tab bar segment as last rendered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TabBarStatusSegment {
     Zoom,
     Text(Option<String>),
 }
 
+/// All application state - pure data, no channels or async runtime.
+/// Testable without PTYs or a tokio runtime. Live pane runtimes and the
+/// channels they report through belong to `App` (`terminal_runtimes`,
+/// `pane_spawn_handles`); state reaches a runtime only through the registry
+/// it is handed, keyed by terminal id.
 pub struct AppState {
     pub terminals:
         std::collections::HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
@@ -693,14 +697,6 @@ impl AppState {
         self.session_dirty = true;
     }
 
-    pub(crate) fn pane_exposes_host_cursor(
-        &self,
-        _ws_idx: usize,
-        _pane_id: crate::layout::PaneId,
-    ) -> bool {
-        true
-    }
-
     pub(crate) fn refresh_agent_manifest_summaries(&mut self) {
         self.agent_manifest_summaries = crate::detect::manifest::manifest_summaries();
     }
@@ -723,28 +719,16 @@ impl AppState {
         }
     }
 
-    /// Returns true when the given (workspace, tab, pane) refers to the
-    /// currently focused pane in the active workspace's active tab.
+    /// The live runtime of `pane_id` in workspace `ws_idx`: the pane's
+    /// terminal id looked up in `terminal_runtimes`. `None` when the pane is
+    /// not in that workspace or its terminal has no runtime (a restored pane
+    /// whose shell failed to start, or one still waiting on agent resume).
     pub(crate) fn runtime_for_pane_in_workspace<'a>(
         &'a self,
         terminal_runtimes: &'a crate::terminal::TerminalRuntimeRegistry,
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
     ) -> Option<&'a crate::terminal::TerminalRuntime> {
-        #[cfg(test)]
-        if let Some(runtime) = self.workspaces.get(ws_idx)?.test_runtimes.get(&pane_id) {
-            return Some(runtime);
-        }
-        #[cfg(test)]
-        if let Some(runtime) = self
-            .workspaces
-            .get(ws_idx)?
-            .tabs
-            .iter()
-            .find_map(|tab| tab.runtimes.get(&pane_id))
-        {
-            return Some(runtime);
-        }
         let terminal_id = self.workspaces.get(ws_idx)?.terminal_id(pane_id)?;
         terminal_runtimes.get(terminal_id)
     }
@@ -942,20 +926,6 @@ impl AppState {
             assert_workspace_pane(&focus.workspace_id, focus.pane_id, "previous pane focus");
         }
     }
-
-    pub fn insert_test_runtime(
-        &mut self,
-        pane_id: crate::layout::PaneId,
-        runtime: crate::terminal::TerminalRuntime,
-    ) {
-        if let Some(ws) = self
-            .workspaces
-            .iter_mut()
-            .find(|ws| ws.terminal_id(pane_id).is_some())
-        {
-            ws.insert_test_runtime(pane_id, runtime);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -992,26 +962,38 @@ mod tests {
         assert_eq!(geometry.pane_size(&layout, new_pane), Some((38, 87)));
     }
 
-    #[test]
-    fn agent_terminal_keeps_final_child_cursor_exposed() {
+    #[tokio::test]
+    async fn runtime_lookup_goes_through_the_registry_by_terminal_id() {
         let mut state = AppState::test_new();
         let ws = crate::workspace::Workspace::test_new("test");
         let pane_id = ws.tabs[0].root_pane;
-        state.terminals.insert(
-            ws.tabs[0].panes[&pane_id].attached_terminal_id.clone(),
-            crate::terminal::TerminalState::new(
-                ws.tabs[0].panes[&pane_id].attached_terminal_id.clone(),
-                std::path::PathBuf::from("/tmp"),
-            ),
-        );
-        state
-            .terminals
-            .get_mut(&ws.tabs[0].panes[&pane_id].attached_terminal_id)
-            .expect("terminal state")
-            .launch_argv = Some(vec!["codex".to_string()]);
+        let terminal_id = ws.tabs[0].panes[&pane_id].attached_terminal_id.clone();
         state.workspaces = vec![ws];
+        let mut registry = crate::terminal::TerminalRuntimeRegistry::new();
 
-        assert!(state.pane_exposes_host_cursor(0, pane_id));
+        assert!(
+            state
+                .runtime_for_pane_in_workspace(&registry, 0, pane_id)
+                .is_none()
+        );
+
+        registry.insert(
+            terminal_id,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 5, b""),
+        );
+        assert!(
+            state
+                .runtime_for_pane_in_workspace(&registry, 0, pane_id)
+                .is_some()
+        );
+        assert!(
+            state
+                .runtime_for_pane_in_workspace(&registry, 1, pane_id)
+                .is_none()
+        );
+        for (_, runtime) in registry.drain() {
+            runtime.shutdown();
+        }
     }
 
     #[test]

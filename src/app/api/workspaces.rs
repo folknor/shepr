@@ -74,11 +74,14 @@ impl App {
                     crate::logging::workspace_renamed(&workspace.id);
                 }
                 self.emit_workspace_open_events(index);
-                encode_success(
-                    id,
-                    self.workspace_created_result(index)
-                        .expect("new workspace should produce a complete create response"),
-                )
+                match self.workspace_created_result(index) {
+                    Some(result) => encode_success(id, result),
+                    None => encode_error(
+                        id,
+                        "workspace_create_failed",
+                        "new workspace is unavailable",
+                    ),
+                }
             }
             Err(err) => encode_error(id, "workspace_create_failed", err.to_string()),
         }

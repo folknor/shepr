@@ -10,5 +10,6 @@ pub(super) struct ClientLoopConfig {
     pub(super) host_escape_disambiguation_active: bool,
     pub(super) initial_host_input: Vec<u8>,
     pub(super) endpoint_keybindings: bool,
+    pub(super) manage_ssh_config: bool,
     pub(super) shell_config: Option<shell::ClientShellConfig>,
 }

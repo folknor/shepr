@@ -66,6 +66,7 @@ mod retained_surface;
 mod surface_interest;
 
 pub use bootstrap::run_server;
+use lifecycle::HostShutdownFreeze;
 
 #[cfg(test)]
 use crate::protocol::MAX_FRAME_SIZE;
@@ -169,6 +170,23 @@ pub struct HeadlessServer {
     deferred_alt_screen_reads: Vec<api::ApiRequestMessage>,
     /// Monotonic activity counter used to pick the most recently active client.
     next_activity_stamp: u64,
+    /// Whether the set of panes whose PTY output should wake the loop at once
+    /// (`sync_immediate_pty_sources`) may be stale. That set depends only on
+    /// the clients and on workspace/tab/pane topology, which change only while
+    /// handling an internal event, an API request, a server event or a client
+    /// removal; a PTY render wake changes neither. Recomputing it on every loop
+    /// wake walked every pane per PTY notify. A missed mark would only delay a
+    /// visible pane's repaint to the normal render cadence, never drop it:
+    /// visibility at render time is computed fresh.
+    immediate_pty_sources_dirty: bool,
+    /// Whether the host mouse-capture and keyboard modes pushed to clients
+    /// (`stream_host_mouse_capture_mode`, `stream_direct_terminal_keyboard_mode`)
+    /// may be stale. They follow the focused pane's terminal modes, which only
+    /// PTY output changes, plus the same client/topology changes as above. Set
+    /// whenever a render request carrying PTY sources is taken; every render
+    /// is followed by another loop iteration, which pushes the modes before
+    /// the loop sleeps again.
+    host_input_modes_dirty: bool,
     /// Configured virtual terminal size used when no clients are connected.
     headless_size: (u16, u16),
     /// Shared pane runtime size derived from the foreground client, or the
@@ -178,7 +196,17 @@ pub struct HeadlessServer {
     shutting_down: bool,
     /// Flag set by Ctrl+C or `server stop` signal.
     should_quit: Arc<AtomicBool>,
+    /// Set by the host shutdown monitor on logind's `PrepareForShutdown(true)`.
+    /// See `sync_host_shutdown_freeze` for what the server does with it and
+    /// what the monitor is expected to do in return.
     host_shutdown_requested: Arc<AtomicBool>,
+    /// Present from the host shutdown warning until the shutdown completes
+    /// (the process exits) or is found to be cancelled.
+    host_shutdown_freeze: Option<HostShutdownFreeze>,
+    /// Watches logind for shutdown warnings; `None` before `run` and while the
+    /// server has dropped it to release its delay lock (see
+    /// `freeze_for_host_shutdown`).
+    host_shutdown_monitor: Option<crate::platform::HostShutdownMonitor>,
     /// Set by the SIGINT/SIGTERM/SIGHUP handler before it sets `should_quit`.
     /// A signal usually arrives as part of an external teardown (logout,
     /// `kill` of the session) that signals the panes at the same time, so pane
@@ -208,8 +236,7 @@ impl HeadlessServer {
         let client_path = client_socket_path();
         prepare_socket_path(&client_path)?;
 
-        let listener = bind_local_listener(&client_path)?;
-        restrict_socket_permissions(&client_path)?;
+        let listener = bind_owner_only_listener(&client_path)?;
         let client_socket_identity = socket_file_identity(&client_path)?;
         info!(path = %client_path.display(), "client protocol socket listening");
 
@@ -248,10 +275,14 @@ impl HeadlessServer {
             pending_alt_screen_reads: Vec::new(),
             deferred_alt_screen_reads: Vec::new(),
             next_activity_stamp: 1,
+            immediate_pty_sources_dirty: true,
+            host_input_modes_dirty: true,
             headless_size,
             effective_size: headless_size,
             shutting_down: false,
             host_shutdown_requested: Arc::new(AtomicBool::new(false)),
+            host_shutdown_freeze: None,
+            host_shutdown_monitor: None,
             signal_quit_requested: Arc::new(AtomicBool::new(false)),
             should_quit,
             server_event_rx,
@@ -276,30 +307,24 @@ impl HeadlessServer {
         let signal_quit = Arc::clone(&self.signal_quit_requested);
         let quit_notify = self.server_event_tx.clone();
         ctrlc_handler(should_quit, signal_quit, quit_notify);
-        let quit_notify = self.server_event_tx.clone();
-        let _host_shutdown = crate::platform::HostShutdownMonitor::start(
-            Arc::clone(&self.host_shutdown_requested),
-            move || {
-                let _ = quit_notify.try_send(ServerEvent::QuitSignal);
-            },
-        );
+        self.start_host_shutdown_monitor();
 
         let mut needs_render = true;
         let mut needs_full_render = true;
+        let mut run_error = None;
 
         loop {
             // If shutdown has been initiated, complete it and exit.
             if self.shutting_down {
-                self.complete_shutdown().await?;
+                if let Err(err) = self.complete_shutdown().await {
+                    run_error.get_or_insert(err);
+                }
                 break;
             }
 
-            // A host shutdown warning precedes process termination. Do not drain pane
-            // deaths here: logind's delay lock stays held until the final session save.
-            if self.host_shutdown_requested.load(Ordering::Acquire) {
-                self.initiate_shutdown();
-                continue;
-            }
+            // A host shutdown warning checkpoints the session and freezes
+            // saving; it does not stop the server (see `sync_host_shutdown_freeze`).
+            self.sync_host_shutdown_freeze(Instant::now());
 
             // Check if we should start shutting down. The drain applies queued
             // state and agent-session reports so the final save carries them;
@@ -344,7 +369,11 @@ impl HeadlessServer {
             self.app.sync_session_save_schedule();
 
             // 4. Accept new client connections.
-            self.accept_client_connections()?;
+            if let Err(err) = self.accept_client_connections() {
+                run_error = Some(err);
+                self.initiate_shutdown();
+                continue;
+            }
 
             // 5. Drain server events from client threads.
             if self.drain_server_events() {
@@ -369,13 +398,21 @@ impl HeadlessServer {
             }
 
             if latest_shell_client(&self.clients).is_some() && self.app.ensure_default_workspace() {
+                self.immediate_pty_sources_dirty = true;
                 needs_render = true;
                 needs_full_render = true;
             }
 
-            self.sync_immediate_pty_sources();
-            self.stream_host_mouse_capture_mode();
-            self.stream_direct_terminal_keyboard_mode();
+            if std::mem::take(&mut self.immediate_pty_sources_dirty) {
+                self.sync_immediate_pty_sources();
+                self.host_input_modes_dirty = true;
+            }
+            // PTY output reaches this through the render request: the mode push
+            // runs on the iteration right after the render that took it.
+            if std::mem::take(&mut self.host_input_modes_dirty) {
+                self.stream_host_mouse_capture_mode();
+                self.stream_direct_terminal_keyboard_mode();
+            }
 
             // 7. Render virtually and stream frames. Hidden-only PTY work keeps a
             // bounded classification cadence without delaying presentation work
@@ -388,6 +425,9 @@ impl HeadlessServer {
             {
                 let render_request = self.app.render_dirty.take();
                 let pty_dirty = !render_request.pty_sources.is_empty();
+                if pty_dirty {
+                    self.host_input_modes_dirty = true;
+                }
                 if render_request.generic {
                     needs_full_render = true;
                 }
@@ -462,9 +502,7 @@ impl HeadlessServer {
                 }
             };
 
-            if self.should_quit.load(Ordering::Acquire)
-                || self.host_shutdown_requested.load(Ordering::Acquire)
-            {
+            if self.should_quit.load(Ordering::Acquire) {
                 match event {
                     LoopEvent::Internal(ev) => {
                         self.handle_internal_event_with_forwarding(ev);
@@ -517,14 +555,26 @@ impl HeadlessServer {
             }
         }
 
-        // Save session on exit.
-        if self.app.policy.persist_session {
-            self.app.save_session_on_shutdown();
+        // Save session on exit. During a host shutdown saving is frozen
+        // (`policy.persist_session` is off), so this writes nothing and the
+        // checkpoint taken on the warning stands; the writer is still retired.
+        if self.app.policy.persist_session
+            || self
+                .host_shutdown_freeze
+                .as_ref()
+                .is_some_and(|freeze| freeze.persist_session)
+        {
+            self.app.save_session_before_teardown();
         }
+        self.app.terminal_runtimes.clear();
+        if !crate::pane::wait_for_pane_session_teardowns(Duration::from_secs(3)) {
+            warn!("pane session teardown did not finish before server exit");
+        }
+        self.app.retire_session_writer();
         self.release_sockets_after_save()?;
 
         info!("headless server exiting");
-        Ok(())
+        run_error.map_or(Ok(()), Err)
     }
 
     fn allocate_activity_stamp(&mut self) -> u64 {
@@ -583,20 +633,69 @@ impl HeadlessServer {
         let host_terminal_theme = client.host_terminal_theme;
         let host_terminal_appearance = client.host_terminal_appearance;
         let host_terminal_appearance_explicit = client.host_terminal_appearance_explicit;
-        let outer_terminal_focus = client.outer_terminal_focus;
 
         self.effective_size = terminal_size;
         self.sync_runtime_view_geometry();
-        self.app.state.outer_terminal_focus = outer_terminal_focus;
         self.app.state.host_cell_size = host_cell_size;
-        if outer_terminal_focus == Some(true) {
-            self.app.state.mark_active_tab_seen();
-        }
+        self.sync_foreground_focus_state();
         self.app.set_host_terminal_appearance_state(
             host_terminal_appearance,
             host_terminal_appearance_explicit,
         );
         self.app.set_host_terminal_theme(host_terminal_theme);
+    }
+
+    /// Mirrors the foreground client's outer-terminal focus into `AppState`
+    /// and, while that terminal is focused, marks the tab the client is
+    /// looking at as seen.
+    ///
+    /// The tab is the foreground client's own `shell_location` tab, not the
+    /// global `app.state.active` one. With several clients, endpoint requests
+    /// from one client move `app.state.active` (see
+    /// `set_default_shell_target_from_client`) while another is the focused
+    /// foreground; marking the global active tab let the focused client clear
+    /// "done" markers on a tab only the other client had open.
+    ///
+    /// This is all agent state and hook reports need before they are applied:
+    /// they change neither client geometry nor layout, so they do not rerun
+    /// `compute_view_without_resizing_panes` through the full
+    /// `sync_foreground_client_state`.
+    fn sync_foreground_focus_state(&mut self) {
+        let foreground = self
+            .foreground_client_id
+            .and_then(|client_id| Some((client_id, self.clients.get(&client_id)?)));
+        let Some((client_id, client)) = foreground else {
+            self.app.state.outer_terminal_focus = None;
+            return;
+        };
+        let outer_terminal_focus = client.outer_terminal_focus;
+        self.app.state.outer_terminal_focus = outer_terminal_focus;
+        if outer_terminal_focus == Some(true) {
+            self.mark_client_shell_tab_seen(client_id);
+        }
+    }
+
+    fn mark_client_shell_tab_seen(&mut self, client_id: u64) -> bool {
+        let Some(target) = self.shell_target_for_client(client_id) else {
+            return false;
+        };
+        let Some(tab) = self
+            .app
+            .state
+            .workspaces
+            .get_mut(target.workspace_index)
+            .and_then(|workspace| workspace.tabs.get_mut(target.tab_index))
+        else {
+            return false;
+        };
+        let mut changed = false;
+        for pane in tab.panes.values_mut() {
+            if !pane.seen {
+                pane.seen = true;
+                changed = true;
+            }
+        }
+        changed
     }
 
     fn promote_client_to_foreground(&mut self, client_id: u64) -> bool {
@@ -637,6 +736,7 @@ impl HeadlessServer {
     }
 
     fn remove_client(&mut self, client_id: u64) -> bool {
+        self.immediate_pty_sources_dirty = true;
         let disconnected_focus = self
             .clients
             .get(&client_id)
@@ -662,7 +762,7 @@ impl HeadlessServer {
             self.release_client_shell_inputs(client_id, held_inputs);
             if let ClientConnectionMode::TerminalAttach { terminal_id } = removed.mode {
                 self.terminal_attach_owners.remove(&terminal_id);
-                if let Some(terminal_id) = self.terminal_id_by_string(&terminal_id) {
+                if let Some(terminal_id) = self.terminal_id_by_string(&terminal_id).cloned() {
                     self.app
                         .state
                         .direct_attach_resize_locks
@@ -782,13 +882,20 @@ impl HeadlessServer {
         }
     }
 
-    fn terminal_id_by_string(&self, terminal_id: &str) -> Option<crate::terminal::TerminalId> {
+    /// Resolves a direct-attach terminal id string to the live `TerminalId`.
+    ///
+    /// Still a scan over the session's terminals (tens, not thousands): the
+    /// terminal map is keyed by `TerminalId`, which has no `Borrow<str>` and no
+    /// public constructor from a string, so a hashed lookup by `&str` is not
+    /// available from here. The scan compares borrowed strings; it used to
+    /// allocate a `to_string()` per terminal on every attach keystroke, mouse
+    /// event and render.
+    fn terminal_id_by_string(&self, terminal_id: &str) -> Option<&crate::terminal::TerminalId> {
         self.app
             .state
             .terminals
             .keys()
-            .find(|id| id.to_string() == terminal_id)
-            .cloned()
+            .find(|id| id.as_str() == terminal_id)
     }
 
     fn runtime_for_terminal_id_string(
@@ -796,7 +903,7 @@ impl HeadlessServer {
         terminal_id: &str,
     ) -> Option<&crate::terminal::TerminalRuntime> {
         let terminal_id = self.terminal_id_by_string(terminal_id)?;
-        self.app.terminal_runtimes.get(&terminal_id)
+        self.app.terminal_runtimes.get(terminal_id)
     }
 
     fn handle_terminal_attach_scroll(
@@ -1013,9 +1120,7 @@ impl HeadlessServer {
     /// `protocol::write_message` refuses it before writing anything, since
     /// every reader would drop the connection on such a frame.
     fn frame_server_message(msg: &ServerMessage) -> Result<Vec<u8>, protocol::FramingError> {
-        let mut framed = Vec::new();
-        protocol::write_message(&mut framed, msg)?;
-        Ok(framed)
+        protocol::encode_frame(msg)
     }
 
     /// Sends a message to all connected clients.
@@ -1131,7 +1236,7 @@ impl HeadlessServer {
             return false;
         }
 
-        let Some(real_terminal_id) = self.terminal_id_by_string(terminal_id) else {
+        let Some(real_terminal_id) = self.terminal_id_by_string(terminal_id).cloned() else {
             self.send_to_client(
                 client_id,
                 &ServerMessage::ServerShutdown {
@@ -1224,6 +1329,7 @@ impl HeadlessServer {
 
     /// Handles a server event. Returns true if the event requires a re-render.
     fn handle_server_event(&mut self, ev: ServerEvent) -> bool {
+        self.immediate_pty_sources_dirty = true;
         match ev {
             ServerEvent::ClientConnected {
                 client_id,
@@ -1266,8 +1372,6 @@ impl HeadlessServer {
                 endpoint_keybindings,
                 mouse_capture,
                 surface_active,
-                surface_reuse,
-                surface_delta,
                 writer,
             } => {
                 info!(
@@ -1299,8 +1403,6 @@ impl HeadlessServer {
                 connection.shell_uses_endpoint_keybindings = endpoint_keybindings;
                 connection.shell_mouse_capture = mouse_capture;
                 connection.shell_surface_active = surface_active;
-                connection.render_state.enable_surface_reuse(surface_reuse);
-                connection.render_state.enable_surface_delta(surface_delta);
                 connection.shell_projection_revision = 1;
                 let config_diagnostic = if endpoint_keybindings {
                     self.server_config_diagnostic.as_deref()
@@ -2001,6 +2103,7 @@ impl HeadlessServer {
             Self::reject_api_request_for_shutdown(msg);
             return false;
         }
+        self.immediate_pty_sources_dirty = true;
 
         let frozen_alt_screen_read = match self.alt_screen_read_conflict(&msg.request) {
             AltScreenReadConflict::None => None,
@@ -2031,10 +2134,12 @@ impl HeadlessServer {
         }
 
         let mut changed = metadata_expired | api::request_changes_ui(&msg.request);
-        let skip_default_workspace =
-            matches!(&msg.request.method, api::schema::Method::ServerStop(_));
         changed |= self.drain_all_internal_events_with_forwarding();
 
+        // The full sync (including the view recompute) stays on this path:
+        // API handlers read `app.state.view` for directional focus, splits and
+        // resume geometry, and an earlier request may have changed the layout
+        // without anything cheaper recording that it did.
         self.sync_foreground_client_state();
         if let Some(error) = self.agent_read_not_idle_error(&msg.request) {
             let response = serde_json::to_string(&api::schema::ErrorResponse {
@@ -2094,7 +2199,7 @@ impl HeadlessServer {
         }
         let _ = msg.respond_to.send(response);
 
-        if !skip_default_workspace && latest_shell_client(&self.clients).is_some() {
+        if latest_shell_client(&self.clients).is_some() {
             changed |= self.app.ensure_default_workspace();
         }
 
@@ -2201,6 +2306,74 @@ async fn sleep_until_or_pending(deadline: Option<Instant>) {
         Some(deadline) => tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await,
         None => std::future::pending().await,
     }
+}
+
+/// Binds the client socket at `path` so it is never reachable with anything
+/// looser than owner-only permissions.
+///
+/// Binding at `path` and then chmodding leaves the socket connectable with
+/// umask-derived permissions in between. Instead the socket is bound inside a
+/// fresh 0700 staging directory next to `path`, restricted to 0600 there, and
+/// then hard-linked into place. `link` fails if `path` already exists, so a
+/// server that raced us to the path is never replaced (a `bind` at the path
+/// would have failed the same way). The listener is bound to the inode, so
+/// connections through the new name reach it, and the socket identity the
+/// server records for cleanup is the same inode.
+///
+/// If staging cannot be used (a staged path over the socket path length limit,
+/// or a filesystem without hard links), this falls back to bind-then-chmod at
+/// `path`, which still ends owner-only. File mode stays the only access
+/// control: no peer credential check is made on accept.
+fn bind_owner_only_listener(path: &Path) -> io::Result<LocalListener> {
+    match bind_via_private_staging(path) {
+        Ok(listener) => Ok(listener),
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Err(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            format!(
+                "shepr server is already running (socket busy at {})",
+                path.display()
+            ),
+        )),
+        Err(err) => {
+            warn!(
+                path = %path.display(),
+                err = %err,
+                "private socket staging failed; binding in place"
+            );
+            let listener = bind_local_listener(path)?;
+            restrict_socket_permissions(path)?;
+            Ok(listener)
+        }
+    }
+}
+
+fn bind_via_private_staging(path: &Path) -> io::Result<LocalListener> {
+    use std::os::unix::fs::DirBuilderExt as _;
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let staging_dir = parent.join(format!(".shepr-bind-{}-{nanos:x}", std::process::id()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&staging_dir)?;
+    let staged = staging_dir.join("s.sock");
+    let result = bind_staged_and_link(&staged, path);
+    let _ = std::fs::remove_file(&staged);
+    let _ = std::fs::remove_dir(&staging_dir);
+    result
+}
+
+fn bind_staged_and_link(staged: &Path, path: &Path) -> io::Result<LocalListener> {
+    let listener = bind_local_listener(staged)?;
+    restrict_socket_permissions(staged)?;
+    std::fs::hard_link(staged, path)?;
+    Ok(listener)
 }
 
 fn server_config_diagnostic_summaries(diagnostics: &[String]) -> (Option<String>, Option<String>) {

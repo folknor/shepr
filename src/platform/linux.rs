@@ -705,51 +705,194 @@ pub fn process_agent_hint(pid: u32) -> Option<crate::detect::Agent> {
     super::parse_agent_env_hint(&environ)
 }
 
-pub fn session_processes(child_pid: u32) -> Vec<u32> {
-    let Some(session_id) = process_session_id(child_pid) else {
-        return Vec::new();
-    };
-
-    let mut pids = Vec::new();
-    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
-        let file_name = entry.file_name();
-        let Some(pid_str) = file_name.to_str() else {
-            continue;
-        };
-        if !pid_str.bytes().all(|b| b.is_ascii_digit()) {
-            continue;
-        }
-
-        let Ok(pid) = pid_str.parse::<u32>() else {
-            continue;
-        };
-        if process_session_id(pid) == Some(session_id) {
-            pids.push(pid);
-        }
-    }
-    pids
-}
-
-pub fn signal_processes(pids: &[u32], signal: Signal) {
-    let sig = match signal {
+fn signal_number(signal: Signal) -> libc::c_int {
+    match signal {
         Signal::Hangup => libc::SIGHUP,
         Signal::Terminate => libc::SIGTERM,
         Signal::Kill => libc::SIGKILL,
-    };
+    }
+}
 
-    for &pid in pids {
-        if pid == 0 {
-            continue;
+/// A pidfd: a handle on one specific process. A signal sent through it
+/// reaches that process or nobody; it can never land on an unrelated process
+/// the kernel later gave the same pid, which a plain `kill(pid)` can.
+#[derive(Debug)]
+pub(crate) struct ProcessHandle {
+    pid: u32,
+    fd: std::os::fd::OwnedFd,
+}
+
+impl ProcessHandle {
+    /// Open a handle on the process that holds `pid` right now. `None` when
+    /// no such process exists, or the kernel predates pidfds (Linux 5.3).
+    pub(crate) fn open(pid: u32) -> Option<Self> {
+        use std::os::fd::FromRawFd;
+
+        let raw_pid = libc::pid_t::try_from(pid).ok().filter(|pid| *pid > 0)?;
+        // SAFETY: pidfd_open(2) takes a pid and a flags word and returns a new
+        // close-on-exec fd or -1; it reads and writes no memory of ours.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, raw_pid, 0_u32) };
+        if fd < 0 {
+            return None;
         }
-        let Ok(pid) = i32::try_from(pid) else {
-            continue;
+        let fd = RawFd::try_from(fd).ok()?;
+        // SAFETY: `fd` was just returned by pidfd_open and nothing else owns it.
+        let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+        Some(Self { pid, fd })
+    }
+
+    pub(crate) fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    fn send(&self, signal: libc::c_int) -> bool {
+        use std::os::fd::AsRawFd;
+        // SAFETY: pidfd_send_signal(2) with a null siginfo and no flags only
+        // reads the fd, which `self` keeps open for the duration of the call.
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                self.fd.as_raw_fd(),
+                signal,
+                std::ptr::null::<libc::siginfo_t>(),
+                0_u32,
+            )
         };
-        unsafe {
-            libc::kill(pid, sig);
+        result == 0
+    }
+
+    /// Send `signal` to this process. False once it has been reaped.
+    pub(crate) fn signal(&self, signal: Signal) -> bool {
+        self.send(signal_number(signal))
+    }
+
+    /// Whether the process still holds its pid: running, or a zombie nobody
+    /// has reaped yet. While this is true the pid cannot be reused, and
+    /// neither can a process-group or session id equal to it.
+    pub(crate) fn is_unreaped(&self) -> bool {
+        self.send(0)
+    }
+
+    /// Whether the process has exited. A zombie counts as exited.
+    pub(crate) fn has_exited(&self) -> bool {
+        use std::os::fd::AsRawFd;
+        let mut descriptor = libc::pollfd {
+            fd: self.fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one pollfd that lives on this stack frame; zero timeout.
+        let ready = unsafe { libc::poll(&mut descriptor, 1, 0) };
+        ready > 0 && descriptor.revents & (libc::POLLIN | libc::POLLHUP) != 0
+    }
+}
+
+/// Wait until every handle's process has exited, or `timeout` passes.
+/// Returns whether they all exited.
+pub(crate) fn wait_for_process_exits(
+    handles: &[&ProcessHandle],
+    timeout: std::time::Duration,
+) -> bool {
+    use std::os::fd::AsRawFd;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let mut descriptors: Vec<libc::pollfd> = handles
+            .iter()
+            .filter(|handle| !handle.has_exited())
+            .map(|handle| libc::pollfd {
+                fd: handle.fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            })
+            .collect();
+        if descriptors.is_empty() {
+            return true;
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return false;
+        }
+        let wait_ms = i32::try_from(remaining.as_millis().max(1)).unwrap_or(i32::MAX);
+        let count = libc::nfds_t::try_from(descriptors.len()).unwrap_or(libc::nfds_t::MAX);
+        // SAFETY: `descriptors` holds `count` initialised pollfds and outlives
+        // the call; the fds are kept open by `handles`.
+        let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), count, wait_ms) };
+        if ready < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            // A failing poll must not turn this into a busy loop.
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 }
 
+/// Every live process of session `session_id` other than its leader, each
+/// held through a pidfd so later signals cannot reach a reused pid.
+///
+/// Membership is read straight from `/proc/<pid>/stat` for every process;
+/// the leader's own stat is never consulted, so this works after the leader
+/// has exited and been reaped. A candidate's stat is re-read after its pidfd
+/// is open: if the handle is still unreaped afterwards, the pid was not
+/// handed to anyone else in between and the stat described that process.
+///
+/// A session id is the leader's pid, and the kernel only reuses a number
+/// nobody holds as a pid, process-group id or session id. So while the
+/// leader is unreaped (`leader_reaped()` false) every process with this
+/// session id is ours. Once it is reaped, a task that now holds pid
+/// `session_id` proves the number was reused, which also proves the session
+/// had no members left when that happened; nothing is returned then.
+/// Remaining gap: the number is reused, the new owner starts its own session
+/// and then exits and is reaped while its session lives on, all before this
+/// runs. That needs a full pid wraparound between the pane's leader dying
+/// and its teardown.
+pub(crate) fn session_member_handles(
+    session_id: u32,
+    leader_reaped: impl Fn() -> bool,
+) -> Vec<ProcessHandle> {
+    let Ok(wanted) = i32::try_from(session_id) else {
+        return Vec::new();
+    };
+    if wanted <= 0 {
+        return Vec::new();
+    }
+    let mut handles = Vec::new();
+    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Some(pid) = numeric_file_name(&entry) else {
+            continue;
+        };
+        if pid == session_id || process_session_id(pid) != Some(wanted) {
+            continue;
+        }
+        let Some(handle) = ProcessHandle::open(pid) else {
+            continue;
+        };
+        if process_session_id(pid) == Some(wanted) && handle.is_unreaped() {
+            handles.push(handle);
+        }
+    }
+    if leader_reaped() && std::path::Path::new(&format!("/proc/{session_id}")).exists() {
+        return Vec::new();
+    }
+    handles
+}
+
+/// Signal processes by bare pid. Test-only: production code signals through
+/// `ProcessHandle`, which cannot hit a reused pid.
+#[cfg(test)]
+pub fn signal_processes(pids: &[u32], signal: Signal) {
+    for &pid in pids {
+        let Ok(pid) = i32::try_from(pid) else {
+            continue;
+        };
+        if pid <= 0 {
+            continue;
+        }
+        // SAFETY: kill(2) touches no memory of this process.
+        unsafe {
+            libc::kill(pid, signal_number(signal));
+        }
+    }
+}
+
+#[cfg(test)]
 pub fn process_exists(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -757,6 +900,7 @@ pub fn process_exists(pid: u32) -> bool {
     let Ok(pid) = i32::try_from(pid) else {
         return false;
     };
+    // SAFETY: kill(2) with signal 0 only probes for the pid.
     let result = unsafe { libc::kill(pid, 0) };
     if result == 0 {
         true
@@ -872,14 +1016,12 @@ fn read_clipboard_text_with_command(command: &ClipboardCommand) -> Option<String
         .ok()?;
 
     let stdout = child.stdout.take()?;
-    let read = match read_limited_reader(stdout, MAX_CLIPBOARD_TEXT_BYTES) {
-        Ok(LimitedRead::Oversized) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        Ok(read) => read,
-        Err(_) => {
+    let bytes = match read_limited_reader(stdout, MAX_CLIPBOARD_TEXT_BYTES) {
+        Ok(LimitedRead::Complete(bytes)) => Some(bytes),
+        Ok(LimitedRead::Empty) => None,
+        // Too large, or unreadable: stop the helper rather than wait for it
+        // to finish writing into a pipe nobody reads.
+        Ok(LimitedRead::Oversized) | Err(_) => {
             let _ = child.kill();
             let _ = child.wait();
             return None;
@@ -890,12 +1032,7 @@ fn read_clipboard_text_with_command(command: &ClipboardCommand) -> Option<String
     if !status.success() {
         return None;
     }
-
-    match read {
-        LimitedRead::Complete(bytes) => String::from_utf8(bytes).ok(),
-        LimitedRead::Empty => None,
-        LimitedRead::Oversized => unreachable!("oversized clipboard text is handled before wait"),
-    }
+    String::from_utf8(bytes?).ok()
 }
 
 fn run_clipboard_command(command: &ClipboardCommand, bytes: &[u8]) -> bool {
@@ -1524,6 +1661,100 @@ mod tests {
         }
         for state in ['R', 'S', 'I', 'T', 't'] {
             assert!(process_state_allows_remote_memory_read(state));
+        }
+    }
+
+    #[test]
+    fn process_handle_follows_one_process_through_exit_and_reap() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let handle = ProcessHandle::open(child.id()).expect("pidfd_open on a live child");
+        assert_eq!(handle.pid(), child.id());
+        assert!(handle.is_unreaped());
+        assert!(!handle.has_exited());
+
+        assert!(handle.signal(Signal::Kill));
+        assert!(wait_for_process_exits(
+            &[&handle],
+            std::time::Duration::from_secs(5)
+        ));
+        // A zombie has exited but still holds its pid.
+        assert!(handle.has_exited());
+        assert!(handle.is_unreaped());
+
+        child.wait().expect("reap sleep");
+        assert!(!handle.is_unreaped());
+        assert!(
+            !handle.signal(Signal::Kill),
+            "a reaped process's handle must not signal anything"
+        );
+    }
+
+    #[test]
+    fn wait_for_process_exits_times_out_on_a_live_process() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let handle = ProcessHandle::open(child.id()).expect("pidfd_open on a live child");
+        assert!(!wait_for_process_exits(
+            &[&handle],
+            std::time::Duration::from_millis(30)
+        ));
+        handle.signal(Signal::Kill);
+        let _ = child.wait();
+    }
+
+    fn spawn_session_with_background_job() -> crate::pty::backend::SpawnedPty {
+        let mut cmd = crate::pty::PtyCommand::new("/bin/sh");
+        cmd.args(["-c", "sleep 30 & exec sleep 30"]);
+        crate::pty::backend::spawn_pty(24, 80, &cmd).expect("spawn session in a pty")
+    }
+
+    #[test]
+    fn session_members_are_found_without_the_leader_and_signalled_by_handle() {
+        let mut spawned = spawn_session_with_background_job();
+        let leader = spawned.child.id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let members = loop {
+            let members = session_member_handles(leader, || false);
+            if !members.is_empty() || std::time::Instant::now() >= deadline {
+                break members;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+
+        assert!(
+            members.iter().all(|member| member.pid() != leader),
+            "the leader is not a member handle"
+        );
+        assert_eq!(members.len(), 1, "the background sleep is the only member");
+        for member in &members {
+            member.signal(Signal::Kill);
+        }
+        let _ = spawned.child.kill();
+        let _ = spawned.child.wait();
+        let handles: Vec<&ProcessHandle> = members.iter().collect();
+        assert!(wait_for_process_exits(
+            &handles,
+            std::time::Duration::from_secs(5)
+        ));
+    }
+
+    #[test]
+    fn session_members_are_withheld_when_a_reaped_leaders_pid_is_held_again() {
+        let mut spawned = spawn_session_with_background_job();
+        let leader = spawned.child.id();
+        // The leader is alive, so from the point of view of a caller that has
+        // already reaped its own leader, pid `leader` belongs to someone else.
+        assert!(session_member_handles(leader, || true).is_empty());
+        let _ = spawned.child.kill();
+        let _ = spawned.child.wait();
+        // Clean up the background sleep, which outlives the leader.
+        for member in session_member_handles(leader, || false) {
+            member.signal(Signal::Kill);
         }
     }
 

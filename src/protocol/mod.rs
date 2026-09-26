@@ -2,6 +2,7 @@
 
 pub mod codec;
 pub mod endpoint;
+pub mod preamble;
 pub(crate) mod render_ansi;
 pub(crate) mod surface_delta;
 pub(crate) mod surface_reuse;

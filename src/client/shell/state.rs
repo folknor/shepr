@@ -4,6 +4,13 @@ pub(super) const MIN_TAB_WIDTH: u16 = 8;
 pub(super) const NEW_TAB_WIDTH: u16 = 3;
 pub(super) const WORKSPACE_HEADER_ROWS: u16 = 2;
 const ENDPOINT_ERROR_TIMEOUT_SECS: u64 = 5;
+/// How long a config diagnostic banner stays up before it hides itself. A click on the banner
+/// hides it sooner. Without a lifetime it would sit over the panes for the whole session, and
+/// while any banner is up every pane update takes the full-compose path.
+const CONFIG_DIAGNOSTIC_TIMEOUT_SECS: u64 = 20;
+/// How long an endpoint notice card stays up before it hides itself. A click on the card hides
+/// it sooner; the timeout is what dismisses it when `ui.mouse_capture` is off.
+const ENDPOINT_NOTICE_TIMEOUT_SECS: u64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientShellKeybindingSource {
@@ -75,6 +82,7 @@ pub(super) struct ShellHitMap {
     pub(super) tab_scroll_right: Rect,
     pub(super) global_launcher: Rect,
     pub(super) notification_toast: Rect,
+    pub(super) config_diagnostic: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
     pub(super) overlay_primary: Rect,
@@ -460,7 +468,6 @@ pub(super) struct PendingEndpointRequest {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum ClientEndpointNoticeKind {
-    Unsupported,
     Rejected,
     Timeout,
     Unavailable,
@@ -660,10 +667,21 @@ pub(crate) struct ClientShellState {
     pub(super) pending_requests: HashMap<String, PendingEndpointRequest>,
     pub(super) endpoint_notice_seen: HashSet<ClientEndpointNoticeKey>,
     pub(super) visible_endpoint_notice: Option<ClientVisibleEndpointNotice>,
+    /// Expiry of the notice currently shown, with the key and body it was started for, so a
+    /// replacement notice gets its own full lifetime. See `tick_transient_banners`.
+    pub(super) endpoint_notice_deadline:
+        Option<(ClientEndpointNoticeKey, String, std::time::Instant)>,
     pub(super) outer_focused: Option<bool>,
     pub(super) host_background: Option<crate::terminal_theme::RgbColor>,
     pub(super) local_config_diagnostic: Option<String>,
+    /// The merged client + endpoint config diagnostic. It stays set while the configs are
+    /// broken; whether its banner is drawn is `visible_config_diagnostic`.
     pub(super) config_diagnostic: Option<String>,
+    /// A diagnostic text the user dismissed or that timed out. The banner comes back only
+    /// when the diagnostic text changes.
+    pub(super) config_diagnostic_hidden: Option<String>,
+    /// Expiry of the banner currently shown, with the text it was started for.
+    pub(super) config_diagnostic_deadline: Option<(String, std::time::Instant)>,
     pub(super) endpoint_error: Option<String>,
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
 }
@@ -764,9 +782,12 @@ impl ClientShellState {
             pending_requests: HashMap::new(),
             endpoint_notice_seen: HashSet::new(),
             visible_endpoint_notice: None,
+            endpoint_notice_deadline: None,
             outer_focused: None,
             host_background: None,
             config_diagnostic: local_config_diagnostic.clone(),
+            config_diagnostic_hidden: None,
+            config_diagnostic_deadline: None,
             local_config_diagnostic,
             endpoint_error: None,
             endpoint_error_deadline: None,
@@ -815,6 +836,7 @@ impl ClientShellState {
             cols: surface.width.max(1),
             rows: surface.height.max(1),
         }
+        .clamped()
     }
 
     pub(super) fn reset_endpoint_projection(&mut self) {
@@ -912,14 +934,12 @@ impl ClientShellState {
                 .snapshot
                 .as_ref()
                 .is_some_and(|current| current.boot_id != snapshot.boot_id);
-        if boot_changed
-            || self
-                .pane_surface
-                .as_ref()
-                .is_none_or(|surface| surface.projection_revision != snapshot.revision)
-        {
-            self.hits = ShellHitMap::default();
-        }
+        // The hit map describes the last composed frame, which stays on screen until the
+        // snapshot's matching surface is composed. Clicks are aimed at that frame, so its hits
+        // stay live through the gap: emptying them dropped clicks, made copy-mode entry fail
+        // silently, and let a click inside Help or the navigator close it. Targets the new
+        // snapshot removed are rejected by the endpoint like any other stale ID. A reboot is
+        // different (IDs can be reused), and `reset_endpoint_projection` clears the hits.
         if boot_changed {
             // A reboot must not turn Enter on a stale preview into focus on a reused ID.
             let preview = (self.mode == ClientShellMode::Navigate)
@@ -1124,8 +1144,8 @@ impl ClientShellState {
         if surface.projection_revision == snapshot.revision.saturating_add(1) {
             // The next expected surface waits separately for its exact snapshot. Keeping the
             // current pair avoids treating this speculative successor as presentation evidence.
+            // The visible pair and its hit map are untouched, so the hits stay live.
             self.pending_pane_surface = Some(surface);
-            self.hits = ShellHitMap::default();
             return;
         }
         // A surface that skips one or more revisions supersedes any retained pair, but is still
@@ -1151,10 +1171,13 @@ impl ClientShellState {
         {
             return;
         }
-        // A retained future surface is not presentable yet. Clear hit targets immediately; the
-        // exact-pair compose guard prevents it from replacing the visible frame.
+        // A retained future surface is not presentable yet; the exact-pair compose guard keeps
+        // it from replacing the visible frame. Its pane geometry no longer matches the pane
+        // hits on screen, so those go (pane input and copy mode read `pane_surface` alongside
+        // them). Chrome hits still match the visible frame and stay.
         if surface.projection_revision != snapshot.revision {
-            self.hits = ShellHitMap::default();
+            self.hits.panes.clear();
+            self.hits.pane_splits.clear();
         }
         self.acknowledge_active_surface_agents(&surface);
         let selection_pane = match &self.word_selection_gesture {
@@ -1286,6 +1309,88 @@ impl ClientShellState {
             return true;
         }
         false
+    }
+
+    /// The config diagnostic banner text, unless the user dismissed it or it timed out.
+    pub(super) fn visible_config_diagnostic(&self) -> Option<&str> {
+        self.config_diagnostic
+            .as_deref()
+            .filter(|text| self.config_diagnostic_hidden.as_deref() != Some(*text))
+    }
+
+    /// Hides the config diagnostic banner until its text changes.
+    pub(super) fn dismiss_config_diagnostic(&mut self) {
+        self.config_diagnostic_hidden = self.config_diagnostic.clone();
+        self.config_diagnostic_deadline = None;
+    }
+
+    /// Starts the lifetime of the config diagnostic banner, once per distinct text, when
+    /// `compose` first draws it. A banner never drawn (no presentable frame yet) cannot expire.
+    pub(super) fn config_diagnostic_drawn(&mut self, now: std::time::Instant) {
+        let Some(text) = self.visible_config_diagnostic() else {
+            return;
+        };
+        if self
+            .config_diagnostic_deadline
+            .as_ref()
+            .is_some_and(|(shown, _)| shown == text)
+        {
+            return;
+        }
+        let text = text.to_owned();
+        let deadline = now + std::time::Duration::from_secs(CONFIG_DIAGNOSTIC_TIMEOUT_SECS);
+        self.config_diagnostic_deadline = Some((text, deadline));
+    }
+
+    /// Starts the lifetime of the endpoint notice card, once per distinct notice, when a
+    /// compose first draws it.
+    pub(super) fn endpoint_notice_drawn(&mut self, now: std::time::Instant) {
+        let Some(notice) = self.visible_endpoint_notice.as_ref() else {
+            return;
+        };
+        if self
+            .endpoint_notice_deadline
+            .as_ref()
+            .is_some_and(|(key, body, _)| *key == notice.key && *body == notice.body)
+        {
+            return;
+        }
+        let started = (notice.key.clone(), notice.body.clone());
+        let deadline = now + std::time::Duration::from_secs(ENDPOINT_NOTICE_TIMEOUT_SECS);
+        self.endpoint_notice_deadline = Some((started.0, started.1, deadline));
+    }
+
+    /// Hides the config diagnostic banner and the endpoint notice card once their lifetimes
+    /// (started when first drawn) run out. A replacement banner or notice carries its own
+    /// lifetime, so it is not cut short by its predecessor's. Returns whether anything was
+    /// hidden.
+    pub(crate) fn tick_transient_banners(&mut self, now: std::time::Instant) -> bool {
+        let mut repaint = false;
+
+        let diagnostic_expired = self.visible_config_diagnostic().is_some_and(|text| {
+            self.config_diagnostic_deadline
+                .as_ref()
+                .is_some_and(|(shown, deadline)| shown == text && now >= *deadline)
+        });
+        if diagnostic_expired {
+            self.dismiss_config_diagnostic();
+            repaint = true;
+        }
+
+        let notice_expired = self.visible_endpoint_notice.as_ref().is_some_and(|notice| {
+            self.endpoint_notice_deadline
+                .as_ref()
+                .is_some_and(|(key, body, deadline)| {
+                    *key == notice.key && *body == notice.body && now >= *deadline
+                })
+        });
+        if notice_expired {
+            self.visible_endpoint_notice = None;
+            self.endpoint_notice_deadline = None;
+            repaint = true;
+        }
+
+        repaint
     }
 
     pub(crate) fn timer_delay(&self, now: std::time::Instant) -> std::time::Duration {

@@ -70,6 +70,7 @@ impl App {
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
         let host_terminal_appearance = self.state.host_terminal_appearance;
+        let spawn = self.pane_spawn_handles();
         let extra_env = match super::env::normalize_launch_env(env) {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
@@ -89,6 +90,7 @@ impl App {
                     host_terminal_appearance,
                     crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
                     extra_env,
+                    &spawn,
                 )
             });
         match result {
@@ -130,9 +132,9 @@ impl App {
             return tab_not_found(id, &target.tab_id);
         };
         self.state.switch_workspace_tab(ws_idx, tab_idx);
-        let tab = self
-            .tab_info(ws_idx, tab_idx)
-            .expect("tab info exists for tab just focused");
+        let Some(tab) = self.tab_info(ws_idx, tab_idx) else {
+            return tab_not_found(id, &target.tab_id);
+        };
 
         encode_success(id, ResponseResult::TabInfo { tab })
     }
@@ -141,7 +143,9 @@ impl App {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
             return tab_not_found(id, &params.tab_id);
         };
-        let workspace_id = self.state.workspaces[ws_idx].id.clone();
+        let Some(workspace_id) = self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone()) else {
+            return tab_not_found(id, &params.tab_id);
+        };
         let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
             crate::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
         });
@@ -164,9 +168,9 @@ impl App {
                 label: params.label,
             },
         });
-        let tab = self
-            .tab_info(ws_idx, tab_idx)
-            .expect("tab info exists for tab just renamed");
+        let Some(tab) = self.tab_info(ws_idx, tab_idx) else {
+            return tab_not_found(id, &params.tab_id);
+        };
 
         encode_success(id, ResponseResult::TabInfo { tab })
     }

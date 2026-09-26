@@ -7,14 +7,13 @@ mod status;
 pub(super) mod test_support;
 
 pub(crate) use self::discovery::automatic_workspace_label;
+#[cfg(test)]
+pub(crate) use self::{discovery::git_space_metadata, status::git_status_snapshot_for_cwd};
 
 pub use self::{
-    discovery::{
-        GitSpaceMetadata, derive_label_from_cwd, fallback_label_from_cwd, git_branch,
-        git_space_metadata,
-    },
+    discovery::{GitSpaceMetadata, derive_label_from_cwd, fallback_label_from_cwd},
     status::{
         GitStatusCacheEntry, GitStatusRefreshDemand, git_status_cache_key,
-        git_status_cache_key_for_space, git_status_snapshot_for_cwd_with_demand,
+        git_status_snapshot_for_cwd_with_demand,
     },
 };

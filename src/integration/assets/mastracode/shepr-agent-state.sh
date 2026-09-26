@@ -3,7 +3,7 @@
 # managed by shepr; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # SHEPR_INTEGRATION_ID=mastracode
-# SHEPR_INTEGRATION_VERSION=2
+# SHEPR_INTEGRATION_VERSION=3
 
 set -eu
 
@@ -54,6 +54,10 @@ if hook_input_file:
             hook_input = json.loads(content)
     except Exception:
         hook_input = {}
+# A valid JSON body that is not an object (a list, a string, null) carries no
+# fields we can read; treat it as empty so state reports still go through.
+if not isinstance(hook_input, dict):
+    hook_input = {}
 
 request_id = f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}"
 raw_seq = os.environ.get("SHEPR_HOOK_SEQ", "")

@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::workspace::{GitSpaceMetadata, WorkspaceGitStatusSnapshot};
+#[cfg(test)]
+use crate::workspace::GitSpaceMetadata;
+use crate::workspace::WorkspaceGitStatusSnapshot;
 
 use super::{
     config::{ConfigCtx, FileDep, deps_current, read_config, stamp, upstream_full_ref},
@@ -85,7 +87,8 @@ pub fn git_status_cache_key(cwd: &Path) -> Option<PathBuf> {
     git_worktree_info(cwd).map(|info| canonicalize_best_effort_path(&info.repo_root))
 }
 
-pub fn git_status_cache_key_for_space(space: &GitSpaceMetadata) -> PathBuf {
+#[cfg(test)]
+pub(crate) fn git_status_cache_key_for_space(space: &GitSpaceMetadata) -> PathBuf {
     canonicalize_best_effort_path(&space.repo_root)
 }
 

@@ -17,12 +17,10 @@ use crate::protocol::CellData;
 #[cfg(test)]
 mod migration_tests;
 
-use super::cursor::DecscusrTracker;
+use super::cursor::decscusr_cursor_shape;
 use super::osc::{
-    AgentOscStateTracker, DefaultColorEvent, DefaultColorEventTracker, DefaultColorOscTracker,
-    DefaultColorQuery, DefaultColorTrackedEvent, OscDebugTracker,
-    current_transient_default_color_owner, parse_reported_cwd,
-    restore_host_terminal_theme_if_needed, write_host_terminal_theme_selective,
+    AgentOscStateTracker, OscDebugTracker, current_transient_default_color_owner,
+    parse_reported_cwd, restore_host_terminal_theme_if_needed,
 };
 
 const DEFAULT_DETECTION_ROWS: usize = 24;
@@ -102,19 +100,6 @@ pub(crate) enum TerminalDirtyPatchOutcome {
     Fallback,
 }
 
-fn decscusr_cursor_shape(style: crate::ghostty::CursorVisualStyle, blinking: bool) -> u8 {
-    match (style, blinking) {
-        (crate::ghostty::CursorVisualStyle::Block, true)
-        | (crate::ghostty::CursorVisualStyle::BlockHollow, true) => 1,
-        (crate::ghostty::CursorVisualStyle::Block, false)
-        | (crate::ghostty::CursorVisualStyle::BlockHollow, false) => 2,
-        (crate::ghostty::CursorVisualStyle::Underline, true) => 3,
-        (crate::ghostty::CursorVisualStyle::Underline, false) => 4,
-        (crate::ghostty::CursorVisualStyle::Bar, true) => 5,
-        (crate::ghostty::CursorVisualStyle::Bar, false) => 6,
-    }
-}
-
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputState {
@@ -175,14 +160,12 @@ pub(crate) struct GhosttyPaneCore {
     pub initial_default_foreground: Option<crate::ghostty::RgbColor>,
     pub initial_default_background: Option<crate::ghostty::RgbColor>,
     pub host_terminal_theme: crate::terminal_theme::TerminalTheme,
+    /// Process group of the foreground program that last overrode a default
+    /// colour (OSC 10/11); its overrides are dropped once the shell is back
+    /// in the foreground. `None` while no override is in effect.
     pub transient_default_color_owner_pgid: Option<u32>,
-    pub default_color_tracker: DefaultColorOscTracker,
-    pub default_color_event_tracker: DefaultColorEventTracker,
-    pub child_default_foreground_changed: bool,
-    pub child_default_background_changed: bool,
     pub osc_debug_tracker: OscDebugTracker,
     pub agent_osc_state: AgentOscStateTracker,
-    decscusr_tracker: DecscusrTracker,
 }
 
 pub(crate) struct PaneTerminal {
@@ -201,6 +184,18 @@ impl PaneTerminal {
         bytes: &[u8],
     ) -> ProcessBytesResult {
         self.ghostty.process_pty_bytes(pane_id, shell_pid, bytes)
+    }
+
+    /// See [`GhosttyPaneTerminal::flush_expired_synchronized_output`]. The
+    /// reader's `render_delay` timer should call this and deliver the result
+    /// like a PTY read's (replies to the child, clipboard writes, cwd, title).
+    pub(crate) fn flush_expired_synchronized_output(
+        &self,
+        pane_id: PaneId,
+        shell_pid: u32,
+    ) -> ProcessBytesResult {
+        self.ghostty
+            .flush_expired_synchronized_output(pane_id, shell_pid)
     }
 
     pub fn resize(
@@ -1086,23 +1081,19 @@ impl GhosttyPaneTerminal {
                 initial_default_background,
                 host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
                 transient_default_color_owner_pgid: None,
-                default_color_tracker: DefaultColorOscTracker::default(),
-                default_color_event_tracker: DefaultColorEventTracker::default(),
-                child_default_foreground_changed: false,
-                child_default_background_changed: false,
                 osc_debug_tracker: OscDebugTracker::default(),
                 agent_osc_state: AgentOscStateTracker::default(),
-                decscusr_tracker: DecscusrTracker::default(),
             }),
         })
     }
 
+    /// Installs the host theme as the pane's default palette and default
+    /// colours. They sit under whatever the child set itself (OSC 4/10/11),
+    /// which stays in effect; nothing is written into the child's stream.
     pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
         if let Ok(mut core) = self.core.lock() {
-            let foreground_unowned = !core.child_default_foreground_changed;
-            let background_unowned = !core.child_default_background_changed;
             core.host_terminal_theme = theme;
-            if foreground_unowned && background_unowned {
+            if !has_default_color_override(&core.terminal) {
                 core.transient_default_color_owner_pgid = None;
             }
 
@@ -1119,12 +1110,9 @@ impl GhosttyPaneTerminal {
             if let Err(err) = core.terminal.set_default_palette(&palette) {
                 debug!(err = %err, "failed to apply host terminal palette");
             }
-
-            write_host_terminal_theme_selective(
-                &mut core.terminal,
-                theme,
-                foreground_unowned,
-                background_unowned,
+            core.terminal.set_default_colors(
+                theme.foreground.map(host_theme_color_to_ghostty),
+                theme.background.map(host_theme_color_to_ghostty),
             );
         }
     }
@@ -1242,25 +1230,6 @@ impl GhosttyPaneTerminal {
             };
         };
 
-        let _ = core.terminal.take_pwd_changes();
-        // Restored history may have exercised terminal callbacks before this live PTY write.
-        // Those effects must not be delivered as live pane output. Bells are
-        // not surfaced anywhere; draining them here keeps the core's counter
-        // from sitting at a stale value.
-        let _ = core.terminal.take_bell_count();
-        let _ = core.terminal.take_clipboard_writes();
-        let default_color_observation = core.default_color_tracker.observe(bytes);
-        if shell_pid > 0
-            && default_color_observation
-            && let Some(owner_pgid) = current_transient_default_color_owner(shell_pid)
-        {
-            core.transient_default_color_owner_pgid = Some(owner_pgid);
-            debug!(
-                pane = pane_id.raw(),
-                owner_pgid, "tracked transient default color override"
-            );
-        }
-
         core.osc_debug_tracker.observe(bytes);
         for event in core.osc_debug_tracker.drain_pending() {
             debug!(
@@ -1270,29 +1239,16 @@ impl GhosttyPaneTerminal {
                 "agent OSC evidence observed"
             );
         }
-        let terminal_title_changed = core.agent_osc_state.observe(bytes);
 
-        let mut terminal_responses = Vec::new();
-        core.default_color_event_tracker.observe(bytes);
-        core.decscusr_tracker.observe(bytes);
-        let default_color_events = core.default_color_event_tracker.drain_pending();
         let synchronized_output_before = core
             .terminal
             .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT)
             .unwrap_or(false);
-        write_pty_bytes_with_ordered_responses(
-            &mut core,
-            bytes,
-            default_color_events,
-            &mut terminal_responses,
-        );
-        let clipboard_writes = core.terminal.take_clipboard_writes();
-        let reported_cwd = core
-            .terminal
-            .take_pwd_changes()
-            .into_iter()
-            .filter_map(|value| parse_reported_cwd(&value))
-            .next_back();
+        core.terminal.write(bytes);
+        // Everything the core queued is collected here, including the effects
+        // of a timed-out synchronized update that a render flushed since the
+        // last read: those are late, but dropping them would be worse.
+        let effects = collect_core_effects(&mut core, pane_id, shell_pid);
 
         let synchronized_output = core
             .terminal
@@ -1318,10 +1274,47 @@ impl GhosttyPaneTerminal {
         ProcessBytesResult {
             request_render,
             render_delay,
-            terminal_title_changed,
-            clipboard_writes,
-            reported_cwd,
-            terminal_responses,
+            terminal_title_changed: effects.terminal_title_changed,
+            clipboard_writes: effects.clipboard_writes,
+            reported_cwd: effects.reported_cwd,
+            terminal_responses: effects.terminal_responses,
+        }
+    }
+
+    /// Force-ends a synchronized update whose timeout has passed and returns
+    /// everything the core has queued for delivery: replies for the child,
+    /// OSC 52 writes, a working-directory report, a title change. Meant for
+    /// the timer the reader arms from [`ProcessBytesResult::render_delay`]:
+    /// a child that sent a query inside a frame it never ended waits for the
+    /// reply, and nothing else would deliver it before its next output.
+    /// `request_render` is set when a frame was flushed.
+    pub(crate) fn flush_expired_synchronized_output(
+        &self,
+        pane_id: PaneId,
+        shell_pid: u32,
+    ) -> ProcessBytesResult {
+        let Ok(mut core) = self.core.lock() else {
+            return ProcessBytesResult {
+                request_render: false,
+                render_delay: None,
+                terminal_title_changed: false,
+                clipboard_writes: Vec::new(),
+                reported_cwd: None,
+                terminal_responses: Vec::new(),
+            };
+        };
+        let flushed = core.terminal.flush_expired_synchronized_output();
+        if flushed {
+            core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
+        }
+        let effects = collect_core_effects(&mut core, pane_id, shell_pid);
+        ProcessBytesResult {
+            request_render: flushed,
+            render_delay: None,
+            terminal_title_changed: effects.terminal_title_changed,
+            clipboard_writes: effects.clipboard_writes,
+            reported_cwd: effects.reported_cwd,
+            terminal_responses: effects.terminal_responses,
         }
     }
 
@@ -1339,8 +1332,10 @@ impl GhosttyPaneTerminal {
         if !ansi.ends_with('\n') {
             core.terminal.write(b"\r\n");
         }
-        // Restored history must never answer the live child.
-        let _ = core.terminal.take_pty_responses();
+        // Restored history must never answer the live child, nor surface as
+        // live clipboard writes, directory reports or title and colour
+        // changes.
+        discard_core_effects(&mut core.terminal);
     }
 
     pub fn resize(
@@ -1365,23 +1360,21 @@ impl GhosttyPaneTerminal {
                         .saturating_sub(scrollbar.offset + scrollbar.len)
                 })
                 .unwrap_or(0);
-            let bottom_before_resize = ghostty_bottom_rows_text(&mut core)
-                .map(|text| !text.trim().is_empty())
-                .unwrap_or(false);
             let resize_recovery_probe_lines = usize::from(rows)
                 .saturating_mul(8)
                 .max(DEFAULT_DETECTION_ROWS);
-            let replay_ansi = if core.terminal.active_screen().ok()
-                == Some(crate::ghostty::ActiveScreen::Primary)
-                && bottom_before_resize
-            {
-                ghostty_recent_ansi(&mut core, resize_recovery_probe_lines, true)
-                    .ok()
-                    .filter(|ansi| !ansi.trim().is_empty())
-            } else {
-                None
-            };
 
+            // Replies already queued (a render may have flushed a timed-out
+            // synchronized update) stay queued for the next read: the
+            // resize's own replies go to a slot the next resize overwrites.
+            let pending_responses = core.terminal.take_pty_responses();
+            // No history is replayed into the core after the resize. That was
+            // a workaround for the libghostty core losing rows on resize;
+            // alacritty reflows bottom-anchored and keeps the rows above the
+            // cursor (a shrink drops only rows below it, as Terminal.app and
+            // iTerm do), and a replay fed bytes through the child's parser,
+            // cutting into any sequence it had half-written and moving its
+            // cursor behind its back.
             let _ = core
                 .terminal
                 .resize(cols, rows, cell_width_px, cell_height_px);
@@ -1393,16 +1386,8 @@ impl GhosttyPaneTerminal {
                 core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
             }
             let terminal_responses = drain_terminal_responses(&mut core);
+            core.terminal.restore_pty_responses(pending_responses);
 
-            let bottom_is_blank = ghostty_bottom_rows_text(&mut core)
-                .map(|text| text.trim().is_empty())
-                .unwrap_or(false);
-            if bottom_is_blank && let Some(ansi) = replay_ansi.as_deref() {
-                core.terminal.scroll_viewport_bottom();
-                core.terminal.write(ansi.as_bytes());
-                // Replayed history must never answer the live child.
-                let _ = core.terminal.take_pty_responses();
-            }
             ghostty_set_scroll_offset_from_bottom(&mut core.terminal, offset_from_bottom);
             if offset_from_bottom > 0 {
                 let mut remaining = offset_from_bottom.min(resize_recovery_probe_lines);
@@ -1939,12 +1924,12 @@ impl GhosttyPaneTerminal {
         let GhosttyPaneCore {
             terminal,
             render_state,
-            decscusr_tracker,
             ..
         } = &mut *core;
         if render_state.update(terminal).is_err() {
             return;
         }
+        let cursor_shape_overridden = terminal.cursor_shape_overridden();
         let colors = render_state.colors().ok();
         let default_bg = colors
             .and_then(|c| ghostty_default_bg(c.background, host_theme, initial_default_background));
@@ -2033,8 +2018,9 @@ impl GhosttyPaneTerminal {
         ghostty_clear_render_dirty(render_state, area.height);
 
         if show_cursor
-            && let Some(cursor) = cursor_state_from_render_state(render_state, decscusr_tracker)
-                .filter(|cursor| cursor.visible)
+            && let Some(cursor) =
+                cursor_state_from_render_state(render_state, cursor_shape_overridden)
+                    .filter(|cursor| cursor.visible)
             && cursor.x < area.width
             && cursor.y < area.height
         {
@@ -2069,43 +2055,76 @@ impl GhosttyPaneTerminal {
     }
 }
 
-/// Writes child output into the core, splitting at OSC 10/11/12/4 set and
-/// reset boundaries so the host-theme bookkeeping (and any host colour it
-/// re-applies) lands between the same bytes as in the stream. Replies are
-/// collected in byte order.
-fn write_pty_bytes_with_ordered_responses(
+/// What the core queued for the pane to deliver.
+struct CoreEffects {
+    terminal_title_changed: bool,
+    clipboard_writes: Vec<Vec<u8>>,
+    reported_cwd: Option<std::path::PathBuf>,
+    terminal_responses: Vec<Bytes>,
+}
+
+/// Collects every effect the core has queued, whichever write or flush
+/// produced it, and keeps the default-colour owner bookkeeping in step.
+fn collect_core_effects(
     core: &mut GhosttyPaneCore,
-    bytes: &[u8],
-    default_color_events: Vec<DefaultColorTrackedEvent>,
-    terminal_responses: &mut Vec<Bytes>,
-) {
-    let mut written = 0;
-    for event in default_color_events {
-        let end_offset = event.end_offset.min(bytes.len());
-        if end_offset > written {
-            core.terminal.write(&bytes[written..end_offset]);
-            terminal_responses.extend(drain_terminal_responses(core));
-            written = end_offset;
-        }
-        match event.event {
-            DefaultColorEvent::Set(query) => mark_child_default_color_changed(core, query, true),
-            DefaultColorEvent::Reset(query) => {
-                mark_child_default_color_changed(core, query, false);
-                apply_cached_host_default_color(core, query);
-                // Re-applying host colours never produces replies of its own.
-                let _ = core.terminal.take_pty_responses();
-            }
-            // Queries are answered from the core's structured colour requests.
-            DefaultColorEvent::Query(_) | DefaultColorEvent::PaletteQuery(_) => {}
-        }
+    pane_id: PaneId,
+    shell_pid: u32,
+) -> CoreEffects {
+    let terminal_responses = drain_terminal_responses(core);
+    let terminal_title_changed = core
+        .agent_osc_state
+        .apply_terminal_updates(&mut core.terminal);
+    let clipboard_writes = core.terminal.take_clipboard_writes();
+    let reported_cwd = core
+        .terminal
+        .take_pwd_changes()
+        .into_iter()
+        .filter_map(|value| parse_reported_cwd(&value))
+        .next_back();
+    track_default_color_owner(core, pane_id, shell_pid);
+    CoreEffects {
+        terminal_title_changed,
+        clipboard_writes,
+        reported_cwd,
+        terminal_responses,
     }
+}
 
-    if written < bytes.len() {
-        core.terminal.write(&bytes[written..]);
-        terminal_responses.extend(drain_terminal_responses(core));
+/// Drops queued effects that must never reach the live child or the app
+/// (restored history).
+fn discard_core_effects(terminal: &mut crate::ghostty::Terminal) {
+    let _ = terminal.take_pty_responses();
+    let _ = terminal.take_clipboard_writes();
+    let _ = terminal.take_pwd_changes();
+    let _ = terminal.take_title_update();
+    let _ = terminal.take_progress_update();
+    let _ = terminal.take_default_color_set();
+}
+
+fn has_default_color_override(terminal: &crate::ghostty::Terminal) -> bool {
+    terminal
+        .default_color_override(crate::ghostty::DefaultColor::Foreground)
+        .is_some()
+        || terminal
+            .default_color_override(crate::ghostty::DefaultColor::Background)
+            .is_some()
+}
+
+/// Remembers which foreground program overrode a default colour, so the
+/// detection tick can drop the override once that program is gone; forgets
+/// it once no override is left (the child reset it with OSC 110/111).
+fn track_default_color_owner(core: &mut GhosttyPaneCore, pane_id: PaneId, shell_pid: u32) {
+    if core.terminal.take_default_color_set()
+        && shell_pid > 0
+        && let Some(owner_pgid) = current_transient_default_color_owner(shell_pid)
+    {
+        core.transient_default_color_owner_pgid = Some(owner_pgid);
+        debug!(
+            pane = pane_id.raw(),
+            owner_pgid, "tracked transient default color override"
+        );
     }
-
-    if !core.child_default_foreground_changed && !core.child_default_background_changed {
+    if !has_default_color_override(&core.terminal) {
         core.transient_default_color_owner_pgid = None;
     }
 }
@@ -2119,40 +2138,30 @@ fn drain_terminal_responses(core: &mut GhosttyPaneCore) -> Vec<Bytes> {
         match response {
             crate::ghostty::PtyResponse::Bytes(bytes) => replies.push(Bytes::from(bytes)),
             crate::ghostty::PtyResponse::ColorQuery(query) => {
-                replies.extend(color_query_response(core, &query));
+                replies.extend(color_query_response(&query));
             }
         }
     }
     replies
 }
 
-/// Host theme first while the child has not taken over that default colour;
-/// otherwise whatever the core reports (the child's own value), in the form
-/// the child asked for.
-fn color_query_response(
-    core: &mut GhosttyPaneCore,
-    query: &crate::ghostty::ColorQuery,
-) -> Option<Bytes> {
-    let core_reply = |color: crate::ghostty::RgbColor| Bytes::from(query.encode(color));
-    match query.target() {
-        crate::ghostty::ColorQueryTarget::Foreground => match core.host_terminal_theme.foreground {
-            Some(color) if !core.child_default_foreground_changed => {
-                Some(osc_rgb_response("10", color.r, color.g, color.b))
-            }
-            _ => query.core_color().map(core_reply),
-        },
-        crate::ghostty::ColorQueryTarget::Background => match core.host_terminal_theme.background {
-            Some(color) if !core.child_default_background_changed => {
-                Some(osc_rgb_response("11", color.r, color.g, color.b))
-            }
-            _ => query.core_color().map(core_reply),
-        },
-        crate::ghostty::ColorQueryTarget::Cursor => cursor_color_query_color(core)
-            .map(|color| osc_rgb_response("12", color.r, color.g, color.b)),
-        crate::ghostty::ColorQueryTarget::Palette(index) => query
-            .core_color()
-            .map(|color| osc_rgb_response(&format!("4;{index}"), color.r, color.g, color.b)),
+/// The core resolves every colour (child override, then host default, then
+/// built-in); this only picks the reply form. A default colour the child set
+/// itself is echoed in the form it asked for; everything else is reported
+/// the way shepr reports host colours, ST-terminated. No reply for a
+/// default colour nobody has set.
+fn color_query_response(query: &crate::ghostty::ColorQuery) -> Option<Bytes> {
+    let color = query.core_color()?;
+    if query.child_override() {
+        return Some(Bytes::from(query.encode(color)));
     }
+    let command = match query.target() {
+        crate::ghostty::ColorQueryTarget::Foreground => "10".to_owned(),
+        crate::ghostty::ColorQueryTarget::Background => "11".to_owned(),
+        crate::ghostty::ColorQueryTarget::Cursor => "12".to_owned(),
+        crate::ghostty::ColorQueryTarget::Palette(index) => format!("4;{index}"),
+    };
+    Some(osc_rgb_response(&command, color.r, color.g, color.b))
 }
 
 fn flush_expired_synchronized_output(core: &mut GhosttyPaneCore) {
@@ -2165,20 +2174,19 @@ fn current_cursor_state(core: &mut GhosttyPaneCore) -> Option<TerminalCursorStat
     let GhosttyPaneCore {
         terminal,
         render_state,
-        decscusr_tracker,
         ..
     } = core;
     render_state.update(terminal).ok()?;
-    cursor_state_from_render_state(render_state, decscusr_tracker)
+    cursor_state_from_render_state(render_state, terminal.cursor_shape_overridden())
 }
 
 fn cursor_state_from_render_state(
     render_state: &mut crate::ghostty::RenderState,
-    decscusr_tracker: &DecscusrTracker,
+    cursor_shape_overridden: bool,
 ) -> Option<TerminalCursorState> {
     let cursor = render_state.cursor().ok()?;
     let viewport = cursor.viewport?;
-    let shape = if decscusr_tracker.cursor_shape_overridden() {
+    let shape = if cursor_shape_overridden {
         decscusr_cursor_shape(cursor.visual_style, cursor.blinking)
     } else {
         0
@@ -2434,27 +2442,6 @@ fn ghostty_detection_text(core: &mut GhosttyPaneCore) -> Result<String, crate::g
     ghostty_text_rows(terminal, start.max(screen_start), end, screen_rows)
 }
 
-/// A screen's worth of rows ending at the last content (or cursor) row, which
-/// may reach into history when the content sits high on the screen. Resize
-/// recovery uses this to tell whether a resize blanked the pane's bottom; it is
-/// not the detector's snapshot (see `ghostty_detection_text`).
-fn ghostty_bottom_rows_text(core: &mut GhosttyPaneCore) -> Result<String, crate::ghostty::Error> {
-    let lines = core
-        .terminal
-        .rows()
-        .ok()
-        .map(|rows| usize::from(rows).max(1))
-        .unwrap_or(DEFAULT_DETECTION_ROWS);
-    ghostty_recent_text(core, lines)
-}
-
-fn ghostty_recent_text(
-    core: &mut GhosttyPaneCore,
-    lines: usize,
-) -> Result<String, crate::ghostty::Error> {
-    ghostty_recent_text_snapshot(core, lines).map(|snapshot| snapshot.text)
-}
-
 fn ghostty_recent_text_snapshot(
     core: &mut GhosttyPaneCore,
     lines: usize,
@@ -2484,14 +2471,6 @@ fn ghostty_recent_text_unwrapped_snapshot(
         false,
     )?;
     Ok(finish_recent_snapshot(text, start))
-}
-
-fn ghostty_recent_ansi(
-    core: &mut GhosttyPaneCore,
-    lines: usize,
-    unwrap: bool,
-) -> Result<String, crate::ghostty::Error> {
-    ghostty_recent_ansi_snapshot(core, lines, unwrap).map(|snapshot| snapshot.text)
 }
 
 fn ghostty_recent_ansi_snapshot(
@@ -2878,24 +2857,6 @@ fn ghostty_cell_style(
     style.add_modifier(modifiers)
 }
 
-fn cursor_color_query_color(core: &mut GhosttyPaneCore) -> Option<crate::ghostty::RgbColor> {
-    let host_foreground = core.host_terminal_theme.foreground;
-    let child_foreground_changed = core.child_default_foreground_changed;
-    core.terminal
-        .effective_cursor_color()
-        .ok()
-        .flatten()
-        .or_else(|| {
-            if child_foreground_changed {
-                core.terminal.effective_foreground_color().ok().flatten()
-            } else {
-                host_foreground
-                    .map(host_theme_color_to_ghostty)
-                    .or_else(|| core.terminal.effective_foreground_color().ok().flatten())
-            }
-        })
-}
-
 fn osc_rgb_response(command: &str, r: u8, g: u8, b: u8) -> Bytes {
     let r = u16::from(r) * 257;
     let g = u16::from(g) * 257;
@@ -2908,27 +2869,6 @@ fn host_theme_color_to_ghostty(color: crate::terminal_theme::RgbColor) -> crate:
         r: color.r,
         g: color.g,
         b: color.b,
-    }
-}
-
-fn apply_cached_host_default_color(core: &mut GhosttyPaneCore, query: DefaultColorQuery) {
-    write_host_terminal_theme_selective(
-        &mut core.terminal,
-        core.host_terminal_theme,
-        matches!(query, DefaultColorQuery::Foreground),
-        matches!(query, DefaultColorQuery::Background),
-    );
-}
-
-fn mark_child_default_color_changed(
-    core: &mut GhosttyPaneCore,
-    query: DefaultColorQuery,
-    changed: bool,
-) {
-    match query {
-        DefaultColorQuery::Foreground => core.child_default_foreground_changed = changed,
-        DefaultColorQuery::Background => core.child_default_background_changed = changed,
-        DefaultColorQuery::Cursor => {}
     }
 }
 
@@ -3731,6 +3671,125 @@ mod tests {
                 .map(|cursor| (cursor.x, cursor.y, cursor.visible)),
             Some((20, 5, true))
         );
+    }
+
+    #[test]
+    fn cursor_state_returns_terminal_default_after_ris() {
+        let terminal = crate::ghostty::Terminal::new(80, 24, 0).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
+        let pane_id = PaneId::from_raw(1);
+
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[4 q");
+        assert_eq!(pane.cursor_state().expect("test precondition").shape, 4);
+        pane.process_pty_bytes(pane_id, 0, b"\x1bc");
+
+        assert_eq!(pane.cursor_state().expect("test precondition").shape, 0);
+    }
+
+    /// The host theme is applied to the core directly, never written through
+    /// the child's parser: a CSI the child is halfway through must survive.
+    #[test]
+    fn host_theme_change_does_not_split_a_partial_child_sequence() {
+        let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
+        let pane_id = PaneId::from_raw(1);
+
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[3");
+        pane.apply_host_terminal_theme(crate::terminal_theme::TerminalTheme {
+            foreground: Some(crate::terminal_theme::RgbColor {
+                r: 0xaa,
+                g: 0xbb,
+                b: 0xcc,
+            }),
+            background: None,
+            ..Default::default()
+        });
+        pane.process_pty_bytes(pane_id, 0, b"1mred");
+
+        assert_eq!(pane.visible_text(), "red\n");
+    }
+
+    /// A render that force-ends a timed-out synchronized update must not
+    /// lose the frame's effects: the flush entry point hands them over, and
+    /// a clipboard write is no longer thrown away by the next read.
+    #[test]
+    fn timed_out_synchronized_update_effects_survive_a_render_flush() {
+        let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
+        let pane_id = PaneId::from_raw(1);
+
+        let begin = pane.process_pty_bytes(
+            pane_id,
+            0,
+            b"\x1b[?2026h\x1b]52;c;aGk=\x07\x1b]2;framed\x07\x1b[6n",
+        );
+        assert!(begin.terminal_responses.is_empty());
+        assert!(begin.clipboard_writes.is_empty());
+        let deadline = pane
+            .core
+            .lock()
+            .expect("test precondition")
+            .terminal
+            .synchronized_output_deadline()
+            .expect("test precondition");
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // A render flushes the frame; nothing reads its effects yet.
+        assert!(matches!(
+            pane.collect_dirty_patch(20, 5),
+            TerminalDirtyPatchOutcome::Patch(_) | TerminalDirtyPatchOutcome::Clean
+        ));
+        // A resize in between must not take the queued reply with it.
+        assert!(pane.resize(5, 20, 0, 0).is_empty());
+
+        let flushed = pane.flush_expired_synchronized_output(pane_id, 0);
+        assert!(!flushed.request_render, "the render already flushed it");
+        assert_eq!(
+            flushed.terminal_responses,
+            vec![Bytes::from_static(b"\x1b[1;1R")]
+        );
+        assert_eq!(flushed.clipboard_writes, vec![b"hi".to_vec()]);
+        assert!(flushed.terminal_title_changed);
+        assert_eq!(pane.terminal_title().as_deref(), Some("framed"));
+
+        let next = pane.process_pty_bytes(pane_id, 0, b"x");
+        assert!(next.terminal_responses.is_empty());
+        assert!(next.clipboard_writes.is_empty());
+    }
+
+    #[test]
+    fn flush_entry_point_ends_an_expired_update_itself() {
+        let terminal = crate::ghostty::Terminal::new(20, 5, 0).expect("test precondition");
+        let pane = GhosttyPaneTerminal::new(terminal).expect("test precondition");
+        let pane_id = PaneId::from_raw(1);
+
+        let begin = pane.process_pty_bytes(pane_id, 0, b"\x1b[?2026h\x1b[5n");
+        assert!(begin.render_delay.is_some());
+        assert!(
+            !pane
+                .flush_expired_synchronized_output(pane_id, 0)
+                .request_render
+        );
+        let deadline = pane
+            .core
+            .lock()
+            .expect("test precondition")
+            .terminal
+            .synchronized_output_deadline()
+            .expect("test precondition");
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let flushed = pane.flush_expired_synchronized_output(pane_id, 0);
+        assert!(flushed.request_render);
+        assert_eq!(
+            flushed.terminal_responses,
+            vec![Bytes::from_static(b"\x1b[0n")]
+        );
+        assert!(!pane.synchronized_output_state().0);
     }
 
     #[test]
@@ -5905,8 +5964,7 @@ mod tests {
             3
         );
         let core = pane.core.lock().expect("test precondition");
-        assert!(!core.child_default_foreground_changed);
-        assert!(!core.child_default_background_changed);
+        assert!(!has_default_color_override(&core.terminal));
         drop(core);
     }
 
@@ -5946,8 +6004,16 @@ mod tests {
         pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?;rgb:44/55/66\x1b\\");
 
         let core = pane.core.lock().expect("test precondition");
-        assert!(!core.child_default_foreground_changed);
-        assert!(core.child_default_background_changed);
+        assert_eq!(
+            core.terminal
+                .default_color_override(crate::ghostty::DefaultColor::Foreground),
+            None
+        );
+        assert_eq!(
+            core.terminal
+                .default_color_override(crate::ghostty::DefaultColor::Background),
+            Some(rgb(0x44, 0x55, 0x66))
+        );
     }
 
     #[test]

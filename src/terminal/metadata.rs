@@ -53,7 +53,64 @@ impl EffectivePresentation {
     }
 }
 
+/// Distinct metadata sources one terminal keeps, both for live presentation
+/// metadata and for the per-source report sequences. Any process in the pane
+/// can report metadata under a source name of its choosing, so without a cap
+/// a script that invents a new name per report grows these maps forever.
+pub(crate) const MAX_METADATA_SOURCES: usize = 64;
+
+/// State labels one source can accumulate through partial updates.
+pub(crate) const MAX_STATE_LABELS_PER_SOURCE: usize = 16;
+
 impl TerminalState {
+    /// Make room for `source` in the report-sequence maps. Sequences of
+    /// sources that hold no live metadata and no metadata tokens guard
+    /// nothing anyone can see any more; they are dropped first. Returns
+    /// whether `source` fits.
+    fn metadata_report_sequence_has_room(&mut self, source: &str) -> bool {
+        if self.metadata_report_sequences.contains_key(source)
+            || self.metadata_report_sequences.len() < MAX_METADATA_SOURCES
+        {
+            return true;
+        }
+        let agent_metadata = &self.agent_metadata;
+        let token_sources = &self.metadata_token_sequence_sources;
+        let in_use =
+            |source: &String| agent_metadata.contains_key(source) || token_sources.contains(source);
+        self.metadata_report_sequences
+            .retain(|source, _| in_use(source));
+        self.metadata_report_agents
+            .retain(|source, _| in_use(source));
+        self.metadata_report_sequences.len() < MAX_METADATA_SOURCES
+    }
+
+    /// Make room for `source` in the live metadata map, dropping expired
+    /// entries and entries a clear left with nothing to show. An expired
+    /// entry still owed an expiry event stays until that event is sent.
+    /// Returns whether `source` fits.
+    fn agent_metadata_has_room(&mut self, source: &str, now: Instant) -> bool {
+        if self.agent_metadata.contains_key(source)
+            || self.agent_metadata.len() < MAX_METADATA_SOURCES
+        {
+            return true;
+        }
+        let dead: Vec<String> = self
+            .agent_metadata
+            .iter()
+            .filter(|(_, metadata)| {
+                (self.agent_metadata_is_expired(metadata, now) && !metadata.expiry_event_pending)
+                    || (metadata.title.is_none()
+                        && metadata.display_agent.is_none()
+                        && metadata.state_labels.is_empty())
+            })
+            .map(|(source, _)| source.clone())
+            .collect();
+        for source in dead {
+            self.agent_metadata.remove(&source);
+        }
+        self.agent_metadata.len() < MAX_METADATA_SOURCES
+    }
+
     pub(crate) fn metadata_report_sequence_is_fresh(&self, source: &str, seq: Option<u64>) -> bool {
         crate::metadata_tokens::sequence_is_fresh(&self.metadata_report_sequences, source, seq)
     }
@@ -113,6 +170,9 @@ impl TerminalState {
         {
             return Err(());
         }
+        if !self.metadata_report_sequence_has_room(source) {
+            return Err(());
+        }
         self.metadata_report_sequences
             .insert(source.to_string(), seq);
         if let Some(agent) = agent {
@@ -157,6 +217,15 @@ impl TerminalState {
             report.agent_label.as_deref(),
             report.applies_to_source.as_deref(),
         );
+        let now = Instant::now();
+        if !self.agent_metadata_has_room(&report.source, now) {
+            tracing::debug!(
+                source = %report.source,
+                limit = MAX_METADATA_SOURCES,
+                "ignoring agent metadata from a new source: too many sources"
+            );
+            return None;
+        }
         if !matches!(
             self.accept_metadata_report(&report.source, report.seq, false, report_agent),
             Ok(true)
@@ -164,7 +233,6 @@ impl TerminalState {
             return None;
         }
 
-        let now = Instant::now();
         if self
             .agent_metadata
             .get(&report.source)
@@ -228,6 +296,13 @@ impl TerminalState {
                 metadata.display_agent_reported_at = Some(now);
             }
             for (state, label) in report.state_labels {
+                // Partial updates merge, so a source could otherwise grow
+                // this map one new key per report.
+                if !metadata.state_labels.contains_key(&state)
+                    && metadata.state_labels.len() >= MAX_STATE_LABELS_PER_SOURCE
+                {
+                    continue;
+                }
                 metadata.state_labels.insert(state.clone(), label);
                 metadata.state_label_reported_at.insert(state, now);
             }
@@ -528,8 +603,97 @@ mod tests {
         TerminalState::new(TerminalId::alloc(), "/tmp".into())
     }
 
+    fn presentation_report(source: String, seq: Option<u64>) -> AgentMetadataReport {
+        AgentMetadataReport {
+            source,
+            agent_label: None,
+            applies_to_source: None,
+            title: Some("title".into()),
+            display_agent: None,
+            state_labels: HashMap::new(),
+            clear_title: false,
+            clear_display_agent: false,
+            clear_state_labels: false,
+            ttl: None,
+            seq,
+        }
+    }
+
     #[test]
-    fn presentation_sequences_remain_unbounded_while_token_sequences_are_bounded() {
+    fn live_metadata_sources_are_capped() {
+        let mut terminal = test_terminal();
+        for index in 0..MAX_METADATA_SOURCES {
+            assert!(
+                terminal
+                    .set_agent_metadata(presentation_report(format!("source-{index}"), Some(1)))
+                    .is_some()
+            );
+        }
+        assert!(
+            terminal
+                .set_agent_metadata(presentation_report("one-too-many".into(), Some(1)))
+                .is_none(),
+            "a new source past the cap is ignored"
+        );
+        assert_eq!(terminal.agent_metadata.len(), MAX_METADATA_SOURCES);
+        assert!(terminal.metadata_report_sequences.len() <= MAX_METADATA_SOURCES);
+        assert!(
+            terminal
+                .set_agent_metadata(presentation_report("source-0".into(), Some(2)))
+                .is_some(),
+            "known sources keep updating"
+        );
+    }
+
+    #[test]
+    fn expired_metadata_makes_room_for_new_sources() {
+        let mut terminal = test_terminal();
+        for index in 0..MAX_METADATA_SOURCES {
+            let mut report = presentation_report(format!("source-{index}"), None);
+            report.title = None;
+            report.clear_title = true;
+            terminal.set_agent_metadata(report);
+        }
+        assert_eq!(terminal.agent_metadata.len(), MAX_METADATA_SOURCES);
+        assert!(
+            terminal
+                .set_agent_metadata(presentation_report("fresh".into(), None))
+                .is_some(),
+            "entries with nothing to show are dropped to make room"
+        );
+        assert!(terminal.agent_metadata.contains_key("fresh"));
+    }
+
+    #[test]
+    fn idle_report_sequences_are_pruned_instead_of_growing() {
+        let mut terminal = test_terminal();
+        for index in 0..MAX_METADATA_SOURCES * 4 {
+            assert_eq!(
+                terminal.accept_metadata_report(&format!("source-{index}"), Some(1), false, None),
+                Ok(true)
+            );
+            assert!(terminal.metadata_report_sequences.len() <= MAX_METADATA_SOURCES);
+        }
+    }
+
+    #[test]
+    fn partial_updates_cap_accumulated_state_labels() {
+        let mut terminal = test_terminal();
+        for index in 0..MAX_STATE_LABELS_PER_SOURCE * 2 {
+            let mut report = presentation_report("labels".into(), None);
+            report.title = None;
+            report.clear_title = true;
+            report.state_labels = HashMap::from([(format!("state-{index}"), "label".into())]);
+            terminal.set_agent_metadata(report);
+        }
+        assert_eq!(
+            terminal.agent_metadata["labels"].state_labels.len(),
+            MAX_STATE_LABELS_PER_SOURCE
+        );
+    }
+
+    #[test]
+    fn token_sequences_are_bounded() {
         let mut terminal = test_terminal();
         for index in 0..=crate::metadata_tokens::MAX_SEQUENCE_SOURCES {
             assert_eq!(

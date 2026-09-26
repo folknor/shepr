@@ -716,20 +716,8 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
 }
 
 #[test]
-fn navigation_highlight_requires_enqueued_focus_and_yields_to_new_intent() {
+fn navigation_highlight_yields_to_new_intent() {
     let mut state = local_navigation_state(false);
-    state.set_endpoint_methods(Some(Vec::new()));
-    enter_navigation(&mut state);
-    preview_key(&mut state, b"\x1b[B");
-    let refused = state.handle_input_bytes(b"\r");
-    assert!(refused.actions.is_empty());
-    assert_eq!(state.mode, ClientShellMode::Terminal);
-    assert!(state.pending_workspace_highlight.is_none());
-    // The unsupported-action notice spans the sidebar on this narrow frame.
-    assert!(state.visible_endpoint_notice.take().is_some());
-    assert_local_highlight(&mut state, "ws_1");
-
-    state.set_endpoint_methods(None);
     request_local_navigation(&mut state, 2);
     enter_navigation(&mut state);
     preview_key(&mut state, b"\x1b");

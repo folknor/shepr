@@ -44,7 +44,7 @@ const CODEX_HOOK_ASSET: &str = include_str!("assets/codex/shepr-agent-state.sh")
 const CODEX_INTEGRATION_VERSION: u32 = 1;
 const KIMI_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const KIMI_HOOK_ASSET: &str = include_str!("assets/kimi/shepr-agent-state.sh");
-const KIMI_INTEGRATION_VERSION: u32 = 2;
+const KIMI_INTEGRATION_VERSION: u32 = 3;
 const KIMI_CONFIG_BLOCK_BEGIN: &str = "# >>> shepr kimi integration";
 const KIMI_CONFIG_BLOCK_END: &str = "# <<< shepr kimi integration";
 const KIMI_MIN_VERSION: &str = "0.14.0";
@@ -149,7 +149,7 @@ const ANTIGRAVITY_CLI_HOOK_EVENTS: [(&str, &str); 1] = [("PreInvocation", "sessi
 const INTEGRATION_VERSION_MARKER: &str = "SHEPR_INTEGRATION_VERSION=";
 const MASTRACODE_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const MASTRACODE_HOOK_ASSET: &str = include_str!("assets/mastracode/shepr-agent-state.sh");
-const MASTRACODE_INTEGRATION_VERSION: u32 = 2;
+const MASTRACODE_INTEGRATION_VERSION: u32 = 3;
 const MASTRACODE_HOOK_TIMEOUT_MS: u64 = 10_000;
 const MASTRACODE_HOOK_EVENTS: [(&str, &str); 11] = [
     ("SessionStart", "session"),

@@ -14,7 +14,23 @@
 //! * Private modes 9 (X10 mouse), 1016 (SGR-pixel mouse), 2031 (colour-scheme
 //!   reports) and 2048 (in-band resize), which alacritty ignores: set, reset
 //!   and DECRQM-reported here, plus the mouse modes that cancel 9 and 1016.
-//! * `reset_state` (RIS) also resets those adapter modes and modifyOtherKeys.
+//!   Setting or resetting any of 1000/1002/1003 ends X10 mode: xterm keeps
+//!   one mouse-mode variable for all four.
+//! * DECRQM for mode 2026, which alacritty always reports as reset. vte hands
+//!   the handler BSU/ESU as `set/unset_private_mode(SyncUpdate)` and replays
+//!   a buffered frame in byte order, so a query inside a frame learns that
+//!   the update is still active.
+//! * `reset_state` (RIS) also resets those adapter modes and modifyOtherKeys,
+//!   the DECSCUSR override flag, and reports the title reset alacritty makes
+//!   without an event.
+//! * `set_title`/`push_title`/`pop_title` reach `Term`, whose `Title` and
+//!   `ResetTitle` events are the adapter's only title source; the pane never
+//!   parses OSC 0/2 itself.
+//! * `set_color` for the default foreground/background notes that the child
+//!   took over a default colour (the pane tracks who owns the override).
+//! * `set_cursor_style`/`set_cursor_shape` note whether the child chose a
+//!   cursor shape (DECSCUSR 1-6 or OSC 50) or asked for the default
+//!   (DECSCUSR 0, RIS).
 //! * modifyOtherKeys (`CSI > 4 ; Pv m`, `CSI ? 4 m`), which alacritty does not
 //!   model.
 //! * `input` of U+FF9E/U+FF9F, printed in a cell of their own (see
@@ -43,11 +59,36 @@ use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::cursor_icon::CursorIcon;
 use alacritty_terminal::vte::ansi::{
     Attr, CharsetIndex, ClearMode, CursorShape, CursorStyle, Handler, Hyperlink, KeyboardModes,
-    KeyboardModesApplyBehavior, LineClearMode, Mode, ModifyOtherKeys, NamedPrivateMode,
+    KeyboardModesApplyBehavior, LineClearMode, Mode, ModifyOtherKeys, NamedColor, NamedPrivateMode,
     PrivateMode, Rgb, ScpCharPath, ScpUpdateMode, StandardCharset, TabulationClearMode,
 };
 
 use super::ExtraModes;
+
+/// vte's private-mode numbering (`PrivateMode::new` is private to vte).
+pub(super) fn private_mode(mode: u16) -> PrivateMode {
+    let named = match mode {
+        1 => NamedPrivateMode::CursorKeys,
+        3 => NamedPrivateMode::ColumnMode,
+        6 => NamedPrivateMode::Origin,
+        7 => NamedPrivateMode::LineWrap,
+        12 => NamedPrivateMode::BlinkingCursor,
+        25 => NamedPrivateMode::ShowCursor,
+        1000 => NamedPrivateMode::ReportMouseClicks,
+        1002 => NamedPrivateMode::ReportCellMouseMotion,
+        1003 => NamedPrivateMode::ReportAllMouseMotion,
+        1004 => NamedPrivateMode::ReportFocusInOut,
+        1005 => NamedPrivateMode::Utf8Mouse,
+        1006 => NamedPrivateMode::SgrMouse,
+        1007 => NamedPrivateMode::AlternateScroll,
+        1042 => NamedPrivateMode::UrgencyHints,
+        1049 => NamedPrivateMode::SwapScreenAndSetRestoreCursor,
+        2004 => NamedPrivateMode::BracketedPaste,
+        2026 => NamedPrivateMode::SyncUpdate,
+        _ => return PrivateMode::Unknown(mode),
+    };
+    PrivateMode::Named(named)
+}
 
 /// The in-band resize report (`CSI 48 ; rows ; cols ; height ; width t`),
 /// `None` while no pixel geometry is known.
@@ -120,6 +161,10 @@ pub(super) struct CoreHandler<'a, T: EventListener> {
     /// The queue alacritty's listener fills; adapter replies go in as
     /// `PtyWrite`s so they keep byte order with alacritty's.
     pub(super) events: &'a Mutex<Vec<Event>>,
+    /// Set when the child sets the default foreground or background (OSC
+    /// 10/11); the terminal hands it to the pane with
+    /// `take_default_color_set`.
+    pub(super) default_color_set: &'a mut bool,
 }
 
 impl<T: EventListener> CoreHandler<'_, T> {
@@ -135,14 +180,17 @@ impl<T: EventListener> CoreHandler<'_, T> {
             .push(Event::PtyWrite(text));
     }
 
-    /// The adapter-modelled state of a private mode alacritty does not know,
-    /// `None` for every other mode.
+    /// The adapter-modelled state of a private mode alacritty does not know
+    /// or misreports (2026), `None` for every other mode.
     fn adapter_private_mode(&self, mode: PrivateMode) -> Option<bool> {
         match mode {
             PrivateMode::Unknown(9) => Some(self.modes.x10_mouse),
             PrivateMode::Unknown(1016) => Some(self.modes.sgr_pixels_mouse),
             PrivateMode::Unknown(2031) => Some(self.modes.color_scheme_report),
             PrivateMode::Unknown(2048) => Some(self.modes.in_band_resize),
+            PrivateMode::Named(NamedPrivateMode::SyncUpdate) => {
+                Some(self.modes.synchronized_update)
+            }
             _ => None,
         }
     }
@@ -172,11 +220,15 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
         Handler::set_title(self.term, title);
     }
 
+    /// `None` is DECSCUSR 0: back to the terminal's default cursor.
     fn set_cursor_style(&mut self, style: Option<CursorStyle>) {
+        self.modes.cursor_shape_set = style.is_some();
         Handler::set_cursor_style(self.term, style);
     }
 
+    /// OSC 50 `CursorShape=`: an explicit shape, like DECSCUSR 1-6.
     fn set_cursor_shape(&mut self, shape: CursorShape) {
+        self.modes.cursor_shape_set = true;
         Handler::set_cursor_shape(self.term, shape);
     }
 
@@ -328,7 +380,18 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
         Handler::reset_state(self.term);
         // alacritty's RIS empties both keyboard-mode stacks.
         *self.keyboard_depth = KeyboardStackDepth::default();
-        *self.modes = ExtraModes::default();
+        // A synchronized update belongs to vte's parser, which RIS does not
+        // end, so the DECRQM ?2026 state survives it.
+        *self.modes = ExtraModes {
+            synchronized_update: self.modes.synchronized_update,
+            ..ExtraModes::default()
+        };
+        // alacritty clears its title (and title stack) here without sending
+        // an event; report the reset so the pane's title follows.
+        self.events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Event::ResetTitle);
     }
 
     fn reverse_index(&mut self) {
@@ -393,6 +456,9 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
             // Re-asserting 1006 deliberately does not cancel 1016: apps resend
             // it after 1016 and still expect pixel coordinates.
             PrivateMode::Named(NamedPrivateMode::Utf8Mouse) => self.modes.sgr_pixels_mouse = false,
+            PrivateMode::Named(NamedPrivateMode::SyncUpdate) => {
+                self.modes.synchronized_update = true;
+            }
             _ => {}
         }
         Handler::set_private_mode(self.term, mode);
@@ -404,11 +470,27 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
             PrivateMode::Unknown(1016) => self.modes.sgr_pixels_mouse = false,
             PrivateMode::Unknown(2031) => self.modes.color_scheme_report = false,
             PrivateMode::Unknown(2048) => self.modes.in_band_resize = false,
-            _ => Handler::unset_private_mode(self.term, mode),
+            _ => {
+                match mode {
+                    // xterm keeps one variable for 9/1000/1002/1003, so
+                    // resetting any of them turns X10 reporting off too.
+                    PrivateMode::Named(
+                        NamedPrivateMode::ReportMouseClicks
+                        | NamedPrivateMode::ReportCellMouseMotion
+                        | NamedPrivateMode::ReportAllMouseMotion,
+                    ) => self.modes.x10_mouse = false,
+                    PrivateMode::Named(NamedPrivateMode::SyncUpdate) => {
+                        self.modes.synchronized_update = false;
+                    }
+                    _ => {}
+                }
+                Handler::unset_private_mode(self.term, mode);
+            }
         }
     }
 
-    /// alacritty answers "not recognised" for the adapter-modelled modes.
+    /// alacritty answers "not recognised" for the adapter-modelled modes and
+    /// "reset" for 2026 even inside a synchronized update.
     fn report_private_mode(&mut self, mode: PrivateMode) {
         match self.adapter_private_mode(mode) {
             Some(enabled) => {
@@ -440,6 +522,9 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
     }
 
     fn set_color(&mut self, index: usize, color: Rgb) {
+        if index == NamedColor::Foreground as usize || index == NamedColor::Background as usize {
+            *self.default_color_set = true;
+        }
         Handler::set_color(self.term, index, color);
     }
 

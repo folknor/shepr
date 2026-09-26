@@ -113,24 +113,6 @@ pub fn parse_palette_color_response(sequence: &str) -> Option<(u8, RgbColor)> {
     Some((index.parse().ok()?, parse_rgb_color(value)?))
 }
 
-pub fn osc_set_default_color_sequence(kind: DefaultColorKind, color: RgbColor) -> String {
-    let command = match kind {
-        DefaultColorKind::Foreground => 10,
-        DefaultColorKind::Background => 11,
-    };
-    format!(
-        "\x1b]{command};rgb:{:02x}/{:02x}/{:02x}\x1b\\",
-        color.r, color.g, color.b
-    )
-}
-
-pub fn osc_reset_default_color_sequence(kind: DefaultColorKind) -> &'static str {
-    match kind {
-        DefaultColorKind::Foreground => "\x1b]110\x1b\\",
-        DefaultColorKind::Background => "\x1b]111\x1b\\",
-    }
-}
-
 fn parse_rgb_color(value: &str) -> Option<RgbColor> {
     if let Some(rgb) = value.strip_prefix("rgb:") {
         let mut parts = rgb.split('/');
@@ -233,18 +215,6 @@ mod tests {
         assert_eq!(
             host_terminal_theme_query_sequence(false),
             HOST_COLOR_QUERY_SEQUENCE
-        );
-    }
-
-    #[test]
-    fn default_color_reset_sequences_use_xterm_osc_numbers() {
-        assert_eq!(
-            osc_reset_default_color_sequence(DefaultColorKind::Foreground),
-            "\x1b]110\x1b\\"
-        );
-        assert_eq!(
-            osc_reset_default_color_sequence(DefaultColorKind::Background),
-            "\x1b]111\x1b\\"
         );
     }
 

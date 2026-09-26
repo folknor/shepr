@@ -85,9 +85,7 @@ impl App {
                 WindowTitlePart::Token(WindowTitleToken::Hostname) => title.push_str(hostname),
                 WindowTitlePart::Token(WindowTitleToken::Workspace) => {
                     if let Some(workspace) = workspace {
-                        title.push_str(
-                            &workspace.display_name_from_terminals(&self.state.terminals),
-                        );
+                        title.push_str(&workspace.display_name());
                     }
                 }
                 WindowTitlePart::Token(WindowTitleToken::Tab) => {

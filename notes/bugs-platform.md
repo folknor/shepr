@@ -50,10 +50,10 @@ Surfaced in five scopes: platform, wire protocol, CLI/config, headless server, d
 - `fits_unix_socket_path` uses 103 bytes, which is macOS's limit (Linux allows 107), so it rejects SSH control paths that would work (`unix_common.rs`, duplicated in `remote/attach.rs`).
 - **Recommendation:** collapse everything into one flat `platform` module with no re-export layering.
 
-## PLAT-010 - A cancelled host shutdown still stops the server
+## PLAT-010 - The host-shutdown monitor can't report a cancellation
 
-- The monitor ignores a later `PrepareForShutdown(false)`, but watching for it alone would not help: `server/headless.rs` calls `initiate_shutdown()` as soon as the flag is set, so the server has saved and exited before a cancellation can arrive.
-- The fix is server-side: on the warning, save a checkpoint and freeze further session saves (so panes killed by the real shutdown aren't saved as closed); exit only on SIGTERM; unfreeze on cancellation. Only then should the monitor keep looping after `true`, clear the flag on `false`, and keep the inhibitor. A comment in `src/platform/linux/shutdown.rs` records this.
+- The server side is done: the shutdown warning writes a checkpoint and freezes saves (`sync_host_shutdown_freeze`), exits only on SIGTERM / `server stop`, and thaws when the flag clears. Until the monitor can report a cancellation, the server drops the monitor right after the checkpoint (releasing the delay lock) and thaws itself after `HOST_SHUTDOWN_CANCEL_GRACE` (60 s).
+- The monitor (`src/platform/linux/shutdown.rs`) needs to: on `true`, set the flag and wake the loop; release the delay inhibitor once the server has checkpointed (needs a server→monitor channel; `HostShutdownMonitor::start` doesn't take one); keep watching instead of parking on `pending()`; on `false`, clear the flag, wake the loop and take a fresh inhibitor. Then remove the monitor drop in `freeze_for_host_shutdown` and the grace timeout. The comment at the `pending()` park describes the old server behaviour and is stale.
 
 ## PLAT-011 - Release-profile tests may touch the real config directory
 
@@ -67,10 +67,14 @@ Surfaced in five scopes: platform, wire protocol, CLI/config, headless server, d
 
 - Tests that change `PATH`, `HOME` or `XDG_*` each take their own module's lock (`server/autodetect.rs`, `api/server.rs`, `session.rs`, `client/tests/mod.rs`, `app/mod.rs`, `integration/env.rs`, `integration/mod.rs`, `remote/attach.rs`, `config.rs`). The locks don't exclude each other, so those tests can race. Needs one crate-wide lock, or no environment mutation in tests.
 
-## PLAT-014 - `unreachable!` in production platform code
-
-- `platform/linux.rs`: the PTY helper and `read_clipboard_text_with_command`'s `Oversized` arm call `unreachable!`, a panic path in production.
-
 ## PLAT-015 - Keystroke logging outside `raw_input.rs` is unchecked
 
 - `raw_input.rs` now logs input lengths and content-free event kinds at debug level. Client and server input handling were not checked for debug lines that record typed text or paste contents.
+
+## PLAT-016 - Clipboard helpers have no timeout
+
+- The client now waits at most 500 ms for a clipboard read on its own thread and skips later pastes while an abandoned read is still running. But `read_clipboard_text_with_command` (`src/platform/linux.rs`) still waits on the helper with no deadline, so an abandoned `xclip`/`wl-paste` lives until it exits, possibly never. Kill the child after a deadline. Check `run_clipboard_command` (writes) for the same blocking wait.
+
+## PLAT-017 - Unsafe blocks in `pty/backend.rs` lack SAFETY comments
+
+- `open_pty`, `enable_utf8_input`, `prepare_pty_child` and `mark_inherited_fds_cloexec` in `src/pty/backend.rs`, and the raw `kill(-pgid)` in the `detect/mod.rs` test `foreground_job_detects_agent_behind_shell_wrapper`.

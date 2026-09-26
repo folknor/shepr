@@ -44,7 +44,7 @@ use crate::events::AppEvent;
 
 pub use state::{AppState, Mode, ViewState};
 
-/// Full application: AppState + runtime concerns (event channels, async I/O).
+/// Whether the app restores a saved session at startup and persists it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AppPolicy {
     pub(crate) restore_session: bool,
@@ -64,6 +64,9 @@ impl AppPolicy {
     };
 }
 
+/// Full application: the pure `AppState` plus the runtime concerns it must
+/// not hold - live pane runtimes, the event channels and render signals they
+/// report through, and async I/O.
 pub struct App {
     pub state: AppState,
     pub(crate) pixel_mouse_available: bool,
@@ -273,13 +276,11 @@ impl App {
         };
 
         state.terminals = restored_terminals;
-
-        for ws_idx in 0..state.workspaces.len() {
-            let cwd = state.workspaces[ws_idx]
-                .resolved_identity_cwd_from(&state.terminals, &restored_terminal_runtimes);
-            state.workspaces[ws_idx].cached_git_branch =
-                cwd.as_deref().and_then(crate::workspace::git_branch);
-        }
+        // Restored workspaces get their Git identity (label, branch, space)
+        // from the first background Git refresh, not from a synchronous walk
+        // here: the refresh is due immediately (see
+        // `last_git_remote_status_refresh` below) and discovers every
+        // workspace whose resolved cwd differs from its cached identity.
 
         let last_focus = state.active.and_then(|idx| {
             state
@@ -330,6 +331,51 @@ impl App {
         app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
         app.configure_window_title(&config.ui.window_title);
         app
+    }
+
+    /// The channels a newly spawned pane runtime reports through. Every call
+    /// that spawns a pane (workspace, tab or split creation) takes these;
+    /// the workspace tree does not keep them.
+    pub(crate) fn pane_spawn_handles(&self) -> crate::workspace::PaneSpawnHandles {
+        crate::workspace::PaneSpawnHandles {
+            events: self.event_tx.clone(),
+            render_notify: Arc::clone(&self.render_notify),
+            render_dirty: Arc::clone(&self.render_dirty),
+        }
+    }
+
+    /// Installs `runtime` as the live runtime of `pane_id` in the same
+    /// registry production uses, keyed by the pane's terminal id. Panics when
+    /// the pane is not in any workspace, so a test cannot silently install a
+    /// runtime nothing will ever look up.
+    #[cfg(test)]
+    pub(crate) fn insert_test_runtime(
+        &mut self,
+        pane_id: crate::layout::PaneId,
+        runtime: crate::terminal::TerminalRuntime,
+    ) {
+        let terminal_id = self
+            .state
+            .workspaces
+            .iter()
+            .find_map(|ws| ws.terminal_id(pane_id))
+            .cloned()
+            .expect("test runtime pane must be in a workspace");
+        self.terminal_runtimes.insert(terminal_id, runtime);
+    }
+
+    /// The live runtime of `pane_id`, looked up the way production does.
+    #[cfg(test)]
+    pub(crate) fn test_runtime(
+        &self,
+        pane_id: crate::layout::PaneId,
+    ) -> &crate::terminal::TerminalRuntime {
+        self.state
+            .workspaces
+            .iter()
+            .find_map(|ws| ws.terminal_id(pane_id))
+            .and_then(|terminal_id| self.terminal_runtimes.get(terminal_id))
+            .expect("pane must have a live runtime")
     }
 
     /// Returns the client shell keybindings profile serialized as TOML, if
@@ -529,15 +575,15 @@ mod tests {
         }
 
         let response = app.handle_api_request(crate::api::schema::Request {
-            id: "req_server_stop_after_events".into(),
-            method: crate::api::schema::Method::ServerStop(
+            id: "req_workspace_list_after_events".into(),
+            method: crate::api::schema::Method::WorkspaceList(
                 crate::api::schema::EmptyParams::default(),
             ),
         });
         let response: serde_json::Value =
             serde_json::from_str(&response).expect("test precondition");
 
-        assert_eq!(response["result"]["type"], "ok");
+        assert_eq!(response["result"]["type"], "workspace_list");
         assert!(app.event_rx.try_recv().is_err());
     }
 
@@ -769,20 +815,20 @@ mod tests {
     }
 
     #[test]
-    fn server_stop_request_sets_should_quit_flag() {
+    fn workspace_list_request_keeps_server_running() {
         let mut app = test_app();
 
         let response = app.handle_api_request(crate::api::schema::Request {
-            id: "req_server_stop".into(),
-            method: crate::api::schema::Method::ServerStop(
+            id: "req_workspace_list".into(),
+            method: crate::api::schema::Method::WorkspaceList(
                 crate::api::schema::EmptyParams::default(),
             ),
         });
         let response: serde_json::Value =
             serde_json::from_str(&response).expect("test precondition");
 
-        assert_eq!(response["result"]["type"], "ok");
-        assert!(app.state.should_quit);
+        assert_eq!(response["result"]["type"], "workspace_list");
+        assert!(!app.state.should_quit);
     }
 
     #[test]
@@ -1536,7 +1582,8 @@ mod tests {
         assert!(app.state.workspaces.is_empty());
         assert!(app.ensure_default_workspace());
 
-        app.save_session_on_shutdown();
+        app.save_session_before_teardown();
+        app.retire_session_writer();
 
         let snapshot = crate::persist::load().expect("checkpointed session should survive");
         assert_eq!(snapshot.workspaces.len(), 1);
@@ -1573,7 +1620,8 @@ mod tests {
         if let Some(thread) = app.session_save_thread.take() {
             thread.join().expect("test precondition");
         }
-        app.save_session_on_shutdown();
+        app.save_session_before_teardown();
+        app.retire_session_writer();
 
         assert!(crate::persist::load().is_none());
 
@@ -1613,7 +1661,8 @@ mod tests {
                     exit_reason: crate::platform::ChildExitReason::Interrupted,
                 });
             }
-            app.save_session_on_shutdown();
+            app.save_session_before_teardown();
+            app.retire_session_writer();
 
             let snapshot = crate::persist::load().expect("newer session should be saved");
             assert_eq!(snapshot.workspaces.len(), 1);

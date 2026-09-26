@@ -60,6 +60,11 @@ pub(crate) fn derive_client_socket_from_api_socket(api_socket_path: &Path) -> Pa
 /// Prepares a socket path for binding: creates parent directories,
 /// removes stale socket files where no server is listening, and rejects live
 /// sockets that are already in use.
+///
+/// This only keeps two servers off one socket. Session files follow the
+/// session name, not the socket, so a server on an overridden socket can share
+/// another server's data directory; the persistence layer guards that with a
+/// lock of its own (`persist/lock.rs`).
 pub(crate) fn prepare_socket_path(path: &Path) -> io::Result<()> {
     crate::ipc::prepare_socket_path(path, |path| {
         format!(

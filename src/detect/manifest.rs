@@ -106,6 +106,7 @@ use serde::Deserialize;
 use super::{Agent, AgentDetection, AgentState, agent_label, parse_agent_label};
 
 pub const DEFAULT_KNOWN_AGENT_IDLE_FALLBACK: &str = "default_known_agent_idle_fallback";
+pub const NO_SCREEN_MANIFEST_FALLBACK: &str = "no_screen_manifest";
 
 /// Input to the detection engine, carrying the screen snapshot plus any
 /// OSC-derived strings captured from the terminal title / progress sequences.
@@ -584,7 +585,7 @@ fn detect_with_manifest(
     loaded: Option<&LoadedManifest>,
 ) -> AgentDetection {
     let Some(loaded) = loaded else {
-        return fallback_detection(agent);
+        return fallback_detection(agent, false);
     };
     let mut texts = RegionTexts::new(input, loaded.regions.len());
     for &index in &loaded.priority_order {
@@ -598,7 +599,14 @@ fn detect_with_manifest(
             return rule_detection(rule);
         }
     }
-    fallback_detection(agent)
+    fallback_detection(agent, true)
+}
+
+/// Whether screen detection has a manifest for `agent`. Agents without one
+/// (Omp, Mastracode) are only ever reported `Unknown` by the screen, so
+/// consumers that wait for a screen-derived `Idle` must not wait on them.
+pub fn has_screen_manifest(agent: Agent) -> bool {
+    registry().get(agent).is_some()
 }
 
 pub fn explain(agent: Agent, screen_content: &str) -> DetectionExplain {
@@ -667,27 +675,28 @@ fn rule_detection(rule: &ManifestRule) -> AgentDetection {
 
 /// State reported when no rule matched, or the agent has no manifest at all.
 ///
-/// Every known agent except Codex falls back to `Idle`, including the agents
-/// with no screen manifest (Omp, Mastracode). `Unknown` would be the more
-/// literal value for those, but `Idle` is load-bearing downstream: managed
-/// agent launches only become ready once the pane reports `Idle`
-/// (`TerminalState::reconcile_managed_agent_at`, which special-cases only
-/// Codex), and the idle screen-scan skip in `pane/agent_detection.rs` treats
-/// only `Idle` (or Codex `Unknown`) as stable. Reporting `Unknown` here alone
-/// would time out every managed Omp/Mastracode launch without their hook and
-/// re-read the screen on every tick. Those agents are full-lifecycle hook
-/// authorities; with the hook installed the hook state overrides this value.
-fn fallback_state(agent: Agent) -> AgentState {
-    if agent == Agent::Codex {
+/// With a manifest, no match means the agent's live chrome shows none of the
+/// working/blocked evidence the manifest encodes, which for every agent but
+/// Codex is its idle prompt; Codex's no-match screen is ambiguous.
+///
+/// Without a manifest (Omp, Mastracode) the screen says nothing about the
+/// agent's state, so the honest value is `Unknown`; those agents rely on
+/// their full-lifecycle hook for state. Two consumers treat that `Unknown` as
+/// settled rather than pending: `TerminalState::reconcile_managed_agent_at`
+/// lets a managed launch of such an agent become ready on `Unknown` (there
+/// is no screen `Idle` to wait for), and `should_skip_idle_screen_scan` in
+/// `pane/agent_detection.rs` skips re-reading an unchanged screen for it.
+fn fallback_state(agent: Agent, has_manifest: bool) -> AgentState {
+    if !has_manifest || agent == Agent::Codex {
         AgentState::Unknown
     } else {
         AgentState::Idle
     }
 }
 
-fn fallback_detection(agent: Agent) -> AgentDetection {
+fn fallback_detection(agent: Agent, has_manifest: bool) -> AgentDetection {
     AgentDetection {
-        state: fallback_state(agent),
+        state: fallback_state(agent, has_manifest),
         skip_state_update: false,
         visible_idle: false,
         visible_blocker: false,
@@ -766,6 +775,7 @@ fn fallback_explain(
     agent: Option<Agent>,
     context: Option<(&LoadedManifest, Vec<EvaluatedRule>)>,
 ) -> DetectionExplain {
+    let has_manifest = context.is_some();
     let (source, evaluated_rules, warning) = context
         .map(|(loaded, evaluated)| {
             (
@@ -778,7 +788,9 @@ fn fallback_explain(
 
     DetectionExplain {
         agent: agent.map(|agent| agent_label(agent).to_string()),
-        state: agent.map_or(AgentState::Unknown, fallback_state),
+        state: agent.map_or(AgentState::Unknown, |agent| {
+            fallback_state(agent, has_manifest)
+        }),
         source,
         matched_rule: None,
         screen_detection_skipped: false,
@@ -788,6 +800,7 @@ fn fallback_explain(
         skip_state_update: false,
         skipped_update_reason: None,
         fallback_reason: match agent {
+            Some(_) if !has_manifest => Some(NO_SCREEN_MANIFEST_FALLBACK.to_string()),
             Some(Agent::Codex) => Some("codex_state_ambiguous".to_string()),
             Some(_) => Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK.to_string()),
             None => None,

@@ -13,7 +13,34 @@ pub(super) fn snapshot_with_completions(
     protocol::ClientShellSnapshot,
     protocol::endpoint::EndpointAgentCompletions,
 ) {
-    let snapshot = app.session_snapshot();
+    snapshot_from_session(
+        app,
+        app.session_snapshot(),
+        boot_id,
+        revision,
+        config_diagnostic,
+        location,
+    )
+}
+
+/// Projects an already built `app.session_snapshot()` for one shell client.
+///
+/// A full render diffs every shell client's projection against what it was
+/// last sent. The session snapshot underneath is the same for all of them
+/// (only `location` and `config_diagnostic` are per client), so the render
+/// builds it once and hands each client its own copy instead of rebuilding
+/// the whole session per client.
+pub(super) fn snapshot_from_session(
+    app: &app::App,
+    snapshot: crate::api::schema::SessionSnapshot,
+    boot_id: &str,
+    revision: u64,
+    config_diagnostic: Option<&str>,
+    location: Option<&crate::server::clients::ClientShellLocation>,
+) -> (
+    protocol::ClientShellSnapshot,
+    protocol::endpoint::EndpointAgentCompletions,
+) {
     let completions = protocol::endpoint::EndpointAgentCompletions {
         boot_id: boot_id.to_owned(),
         revision,

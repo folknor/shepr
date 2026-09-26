@@ -92,10 +92,14 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         pending_alt_screen_reads: Vec::new(),
         deferred_alt_screen_reads: Vec::new(),
         next_activity_stamp: 1,
+        immediate_pty_sources_dirty: true,
+        host_input_modes_dirty: true,
         headless_size,
         effective_size: headless_size,
         shutting_down: false,
         host_shutdown_requested: Arc::new(AtomicBool::new(false)),
+        host_shutdown_freeze: None,
+        host_shutdown_monitor: None,
         signal_quit_requested: Arc::new(AtomicBool::new(false)),
         should_quit,
         server_event_rx,
@@ -339,8 +343,8 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
     // not asserted; this test only covers draining past the per-batch limit.
     server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
         request: api::schema::Request {
-            id: "headless_stop_after_events".into(),
-            method: api::schema::Method::ServerStop(api::schema::EmptyParams::default()),
+            id: "headless_list_after_events".into(),
+            method: api::schema::Method::WorkspaceList(api::schema::EmptyParams::default()),
         },
         respond_to,
     });
@@ -349,7 +353,7 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
         .expect("test precondition");
     let response: serde_json::Value = serde_json::from_str(&response).expect("test precondition");
 
-    assert_eq!(response["result"]["type"], "ok");
+    assert_eq!(response["result"]["type"], "workspace_list");
     assert!(server.app.event_rx.try_recv().is_err());
 }
 
@@ -755,8 +759,6 @@ async fn client_shell_attach_seeds_workspace() {
 
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
-            surface_reuse: false,
-            surface_delta: false,
             client_id: 6,
             surface_cols: 80,
             surface_rows: 23,
@@ -795,8 +797,6 @@ async fn completion_guard_endpoint_pairs_runtime_completions_with_snapshots() {
         endpoint_keybindings: false,
         mouse_capture: false,
         surface_active: false,
-        surface_reuse: false,
-        surface_delta: false,
         writer,
     });
     let (_, initial) = client_shell_projection(&control_rx);
@@ -843,8 +843,6 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     let client_id = 41;
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
-            surface_reuse: false,
-            surface_delta: false,
             client_id,
             surface_cols: 80,
             surface_rows: 23,
@@ -962,9 +960,11 @@ fn terminal_client_endpoint_request_error_removes_client() {
 #[tokio::test]
 async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("shell-only-label");
+    let workspace = crate::workspace::Workspace::test_new("shell-only-label");
     let pane_id = workspace.focused_pane_id().expect("focused pane");
-    workspace.insert_test_runtime(
+
+    server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(
         pane_id,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(
             80,
@@ -972,7 +972,6 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
             b"\x1b[?1003h\x1b[?1006h\x1b[?1016hCLIENT_SHELL_LIVE",
         ),
     );
-    server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
@@ -981,8 +980,6 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     let (writer, control_rx, render_rx) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
-            surface_reuse: false,
-            surface_delta: false,
             client_id: 7,
             surface_cols: 80,
             surface_rows: 23,
@@ -1136,13 +1133,14 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
 }
 
 fn install_shared_view_test_runtime(server: &mut HeadlessServer) -> crate::layout::PaneId {
-    let mut workspace = crate::workspace::Workspace::test_new("shared-view");
+    let workspace = crate::workspace::Workspace::test_new("shared-view");
     let pane_id = workspace.focused_pane_id().expect("focused pane");
-    workspace.insert_test_runtime(
+
+    server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(
         pane_id,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"BASE"),
     );
-    server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
@@ -1161,8 +1159,6 @@ fn connect_test_shell(
     let (writer, control, render) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
-            surface_reuse: false,
-            surface_delta: false,
             client_id,
             surface_cols,
             surface_rows,
@@ -1201,29 +1197,52 @@ fn write_shared_test_pane(
         .test_process_pty_bytes(bytes);
 }
 
+/// Pairs a render receiver with the decoder that unwraps its surface reuse
+/// and delta messages: the server encodes those against the last full
+/// surface it sent on that connection, so decoding them here needs the same
+/// running baseline a real endpoint client would keep.
+struct PaneSurfaceReceiver {
+    receiver: std::sync::mpsc::Receiver<Vec<u8>>,
+    decoder: crate::protocol::surface_reuse::Decoder,
+}
+
+impl PaneSurfaceReceiver {
+    fn new(receiver: std::sync::mpsc::Receiver<Vec<u8>>) -> Self {
+        Self {
+            receiver,
+            decoder: crate::protocol::surface_reuse::Decoder::new(true),
+        }
+    }
+
+    fn try_recv(&self) -> Result<Vec<u8>, std::sync::mpsc::TryRecvError> {
+        self.receiver.try_recv()
+    }
+
+    fn recv(&mut self, context: &str) -> ServerMessage {
+        let message = read_server_message(
+            self.receiver
+                .recv()
+                .unwrap_or_else(|error| panic!("{context}: {error}")),
+        );
+        self.decoder.decode(message.clone()).unwrap_or(message)
+    }
+}
+
 fn recv_pane_surface(
-    receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
+    receiver: &mut PaneSurfaceReceiver,
     context: &str,
 ) -> crate::protocol::PaneSurfaceFrame {
-    match read_server_message(
-        receiver
-            .recv()
-            .unwrap_or_else(|error| panic!("{context}: {error}")),
-    ) {
+    match receiver.recv(context) {
         ServerMessage::PaneSurface(surface) => surface,
         other => panic!("{context}: expected pane surface, got {other:?}"),
     }
 }
 
 fn recv_pane_surface_patch(
-    receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
+    receiver: &mut PaneSurfaceReceiver,
     context: &str,
 ) -> crate::protocol::PaneSurfacePatch {
-    match read_server_message(
-        receiver
-            .recv()
-            .unwrap_or_else(|error| panic!("{context}: {error}")),
-    ) {
+    match receiver.recv(context) {
         ServerMessage::PaneSurfacePatch(patch) => patch,
         other => panic!("{context}: expected pane surface patch, got {other:?}"),
     }
@@ -1234,8 +1253,9 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
     let mut server = test_headless_server();
     let pane_id = install_shared_view_test_runtime(&mut server);
     let (_control, render) = connect_matching_test_shell(&mut server, 7);
+    let mut render = PaneSurfaceReceiver::new(render);
     server.render_and_stream();
-    let before = recv_pane_surface(&render, "baseline");
+    let before = recv_pane_surface(&mut render, "baseline");
     assert!(frame_text(&before.frame).contains("BASE"));
     let projection_before = server.clients[&7].shell_projection_revision;
 
@@ -1260,7 +1280,7 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
     write_shared_test_pane(&mut server, pane_id, b"\rCOMPLETE\x1b[?2026l");
     assert!(!server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
     server.render_and_stream();
-    let after = recv_pane_surface(&render, "completed frame");
+    let after = recv_pane_surface(&mut render, "completed frame");
     assert!(frame_text(&after.frame).contains("COMPLETE"));
     assert!(after.projection_revision > projection_before);
     shutdown_test_runtimes(&mut server);
@@ -1272,21 +1292,23 @@ async fn sibling_retained_output_waits_for_synchronized_pane_to_finish() {
     let mut workspace = crate::workspace::Workspace::test_new("synchronized-split");
     let first = workspace.tabs[0].root_pane;
     let second = workspace.test_split(ratatui::layout::Direction::Vertical);
-    workspace.insert_test_runtime(
+
+    server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(
         first,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
     );
-    workspace.insert_test_runtime(
+    server.app.insert_test_runtime(
         second,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
     );
-    server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
     let (_control, render) = connect_matching_test_shell(&mut server, 7);
+    let mut render = PaneSurfaceReceiver::new(render);
     server.render_and_stream();
-    let _ = recv_pane_surface(&render, "split baseline");
+    let _ = recv_pane_surface(&mut render, "split baseline");
 
     write_shared_test_pane(&mut server, first, b"\x1b[?2026h\rPARTIAL");
     write_shared_test_pane(&mut server, second, b"\rUPDATED");
@@ -1300,7 +1322,7 @@ async fn sibling_retained_output_waits_for_synchronized_pane_to_finish() {
     write_shared_test_pane(&mut server, first, b"\rCOMPLETE\x1b[?2026l");
     assert!(!server.render_retained_pane_surface_and_stream(&HashSet::from([first])));
     server.render_and_stream();
-    let after = recv_pane_surface(&render, "completed split");
+    let after = recv_pane_surface(&mut render, "completed split");
     let text = frame_text(&after.frame);
     assert!(
         text.contains("COMPLETE") && text.contains("UPDATED"),
@@ -1317,22 +1339,24 @@ async fn zoom_hidden_synchronized_pane_does_not_block_surface() {
     let hidden = workspace.tabs[0].root_pane;
     let visible = workspace.test_split(ratatui::layout::Direction::Vertical);
     workspace.tabs[0].zoomed = true;
-    workspace.insert_test_runtime(
+
+    server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(
         hidden,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"HIDDEN"),
     );
-    workspace.insert_test_runtime(
+    server.app.insert_test_runtime(
         visible,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"VISIBLE"),
     );
-    server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
     let (_control, render) = connect_matching_test_shell(&mut server, 7);
+    let mut render = PaneSurfaceReceiver::new(render);
     write_shared_test_pane(&mut server, hidden, b"\x1b[?2026h\rPARTIAL");
     server.render_and_stream();
-    let surface = recv_pane_surface(&render, "zoomed visible pane");
+    let surface = recv_pane_surface(&mut render, "zoomed visible pane");
     assert!(frame_text(&surface.frame).contains("VISIBLE"));
     assert!(!frame_text(&surface.frame).contains("PARTIAL"));
     shutdown_test_runtimes(&mut server);
@@ -1343,9 +1367,10 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
     let mut server = test_headless_server();
     let pane_id = install_shared_view_test_runtime(&mut server);
     let (control, render) = connect_matching_test_shell(&mut server, 7);
+    let mut render = PaneSurfaceReceiver::new(render);
     let _ = control.recv().expect("snapshot");
     server.render_and_stream();
-    let _ = recv_pane_surface(&render, "initial surface");
+    let _ = recv_pane_surface(&mut render, "initial surface");
 
     let (release, writer, revision) = {
         let runtime = server
@@ -1371,7 +1396,7 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
         !announced,
         "writer must wait before announcing a new revision"
     );
-    let patch = recv_pane_surface_patch(&render, "snapshot before waiting write");
+    let patch = recv_pane_surface_patch(&mut render, "snapshot before waiting write");
     assert_eq!(patch.panes[0].content_revision, revision);
     assert!(revision.is_multiple_of(2));
     assert!(patch.panes[0].mouse_reporting);
@@ -1383,7 +1408,7 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
     assert!(!frame_text(&surface.frame).contains("BBBB"));
 
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
-    let next = recv_pane_surface_patch(&render, "waiting write remains dirty");
+    let next = recv_pane_surface_patch(&mut render, "waiting write remains dirty");
     assert_eq!(next.panes[0].content_revision, revision + 2);
     assert!(!next.panes[0].mouse_reporting);
     let surface = server.clients[&7]
@@ -1399,15 +1424,16 @@ async fn first_shell_surface_resizes_a_pane_that_entered_alternate_screen() {
     let mut server = test_headless_server();
     let pane_id = install_shared_view_test_runtime(&mut server);
     let (_control, render) = connect_test_shell(&mut server, 7, 80, 23);
-    let initial_size = server.app.state.workspaces[0].test_runtimes[&pane_id].current_size();
+    let mut render = PaneSurfaceReceiver::new(render);
+    let initial_size = server.app.test_runtime(pane_id).current_size();
 
     write_shared_test_pane(&mut server, pane_id, b"\x1b[?1049hALT");
     server.render_and_stream();
 
-    let surface = recv_pane_surface(&render, "first alternate-screen surface");
+    let surface = recv_pane_surface(&mut render, "first alternate-screen surface");
     assert!(surface.panes[0].alternate_screen_active);
     assert_eq!(
-        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
+        server.app.test_runtime(pane_id).current_size(),
         (initial_size.0, initial_size.1 + 1)
     );
     shutdown_test_runtimes(&mut server);
@@ -1418,13 +1444,15 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     let mut server = test_headless_server();
     let pane_id = install_shared_view_test_runtime(&mut server);
     let (large_control, large_render) = connect_test_shell(&mut server, 7, 80, 23);
+    let mut large_render = PaneSurfaceReceiver::new(large_render);
     let (small_control, small_render) = connect_test_shell(&mut server, 8, 68, 17);
+    let mut small_render = PaneSurfaceReceiver::new(small_render);
     let _ = large_control.recv().expect("large snapshot");
     let _ = small_control.recv().expect("small snapshot");
     server.render_and_stream();
-    let large_initial = recv_pane_surface(&large_render, "large initial surface");
-    let small_initial = recv_pane_surface(&small_render, "small initial surface");
-    let initial_size = server.app.state.workspaces[0].test_runtimes[&pane_id].current_size();
+    let large_initial = recv_pane_surface(&mut large_render, "large initial surface");
+    let small_initial = recv_pane_surface(&mut small_render, "small initial surface");
+    let initial_size = server.app.test_runtime(pane_id).current_size();
     assert_eq!(
         (large_initial.frame.width, large_initial.frame.height),
         (80, 23)
@@ -1441,8 +1469,8 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     write_shared_test_pane(&mut server, pane_id, b"\rMIXED");
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
 
-    let large_patch = recv_pane_surface_patch(&large_render, "large retained patch");
-    let small_patch = recv_pane_surface_patch(&small_render, "small retained patch");
+    let large_patch = recv_pane_surface_patch(&mut large_render, "large retained patch");
+    let small_patch = recv_pane_surface_patch(&mut small_render, "small retained patch");
     assert_eq!(
         large_patch.base_surface_revision,
         large_initial.surface_revision
@@ -1492,12 +1520,12 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     write_shared_test_pane(&mut server, pane_id, b"\x1b[?1049hALT");
     assert!(!server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
     server.render_and_stream();
-    let large_alt = recv_pane_surface(&large_render, "large alternate-screen surface");
-    let small_alt = recv_pane_surface(&small_render, "small alternate-screen surface");
+    let large_alt = recv_pane_surface(&mut large_render, "large alternate-screen surface");
+    let small_alt = recv_pane_surface(&mut small_render, "small alternate-screen surface");
     assert!(large_alt.panes[0].alternate_screen_active);
     assert!(small_alt.panes[0].alternate_screen_active);
     assert_eq!(
-        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
+        server.app.test_runtime(pane_id).current_size(),
         (initial_size.0, initial_size.1 + 1)
     );
     assert_eq!(
@@ -1512,12 +1540,12 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     write_shared_test_pane(&mut server, pane_id, b"\x1b[?1049l");
     assert!(!server.render_retained_pane_surface_and_stream(&HashSet::from([pane_id])));
     server.render_and_stream();
-    let large_main = recv_pane_surface(&large_render, "large restored main-screen surface");
-    let small_main = recv_pane_surface(&small_render, "small restored main-screen surface");
+    let large_main = recv_pane_surface(&mut large_render, "large restored main-screen surface");
+    let small_main = recv_pane_surface(&mut small_render, "small restored main-screen surface");
     assert!(!large_main.panes[0].alternate_screen_active);
     assert!(!small_main.panes[0].alternate_screen_active);
     assert_eq!(
-        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
+        server.app.test_runtime(pane_id).current_size(),
         initial_size
     );
     assert_eq!(
@@ -1539,15 +1567,16 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_tab() {
     let first_pane = workspace.tabs[0].root_pane;
     let second_tab = workspace.test_add_tab(Some("second"));
     let second_pane = workspace.tabs[second_tab].root_pane;
-    workspace.insert_test_runtime(
+
+    server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(
         first_pane,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
     );
-    workspace.insert_test_runtime(
+    server.app.insert_test_runtime(
         second_pane,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
     );
-    server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
@@ -1557,7 +1586,9 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_tab() {
         .expect("test precondition");
 
     let (first_control, first_render) = connect_matching_test_shell(&mut server, 7);
+    let mut first_render = PaneSurfaceReceiver::new(first_render);
     let (second_control, second_render) = connect_matching_test_shell(&mut server, 8);
+    let mut second_render = PaneSurfaceReceiver::new(second_render);
     let _ = first_control.recv().expect("first snapshot");
     let _ = second_control.recv().expect("second snapshot");
     assert!(server.focus_shell_client_on_tab(8, &second_tab_id));
@@ -1566,20 +1597,24 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_tab() {
         server.pty_sources_visible_to_any_render_target(&HashSet::from([first_pane, second_pane,]))
     );
     server.render_and_stream();
-    let _ = recv_pane_surface(&first_render, "first baseline");
-    let _ = recv_pane_surface(&second_render, "second baseline");
+    let _ = recv_pane_surface(&mut first_render, "first baseline");
+    let _ = recv_pane_surface(&mut second_render, "second baseline");
 
-    server.app.state.workspaces[0].test_runtimes[&first_pane]
+    server
+        .app
+        .test_runtime(first_pane)
         .test_process_pty_bytes(b"\rFIRST_PATCH");
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([first_pane])));
-    let first_patch = recv_pane_surface_patch(&first_render, "first patch");
+    let first_patch = recv_pane_surface_patch(&mut first_render, "first patch");
     assert_eq!(first_patch.panes.len(), 1);
     assert!(second_render.try_recv().is_err());
 
-    server.app.state.workspaces[0].test_runtimes[&second_pane]
+    server
+        .app
+        .test_runtime(second_pane)
         .test_process_pty_bytes(b"\rSECOND_PATCH");
     assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([second_pane])));
-    let second_patch = recv_pane_surface_patch(&second_render, "second patch");
+    let second_patch = recv_pane_surface_patch(&mut second_render, "second patch");
     assert_eq!(second_patch.panes.len(), 1);
     assert!(first_render.try_recv().is_err());
 
@@ -1591,10 +1626,12 @@ async fn late_retained_fallback_leaves_all_client_baselines_unchanged() {
     let mut server = test_headless_server();
     let pane_id = install_shared_view_test_runtime(&mut server);
     let (_first_control, first_render) = connect_matching_test_shell(&mut server, 7);
+    let mut first_render = PaneSurfaceReceiver::new(first_render);
     let (_second_control, second_render) = connect_matching_test_shell(&mut server, 8);
+    let mut second_render = PaneSurfaceReceiver::new(second_render);
     server.render_and_stream();
-    let _ = recv_pane_surface(&first_render, "first baseline");
-    let _ = recv_pane_surface(&second_render, "second baseline");
+    let _ = recv_pane_surface(&mut first_render, "first baseline");
+    let _ = recv_pane_surface(&mut second_render, "second baseline");
 
     // Foreground renders last. Its old hyperlink forces a fallback after the first plan.
     server.foreground_client_id = Some(8);
@@ -1637,13 +1674,14 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
     let pane_id = install_shared_view_test_runtime(&mut server);
     let (responsive_control, responsive_render) = connect_matching_test_shell(&mut server, 7);
     let (slow_control, slow_render) = connect_matching_test_shell(&mut server, 8);
+    let mut slow_render = PaneSurfaceReceiver::new(slow_render);
     let _ = responsive_control.recv().expect("responsive snapshot");
     let _ = slow_control.recv().expect("slow snapshot");
     server.render_and_stream();
     let _ = responsive_render
         .recv()
         .expect("responsive initial surface");
-    let _ = slow_render.recv().expect("slow initial surface");
+    let _ = slow_render.recv("slow initial surface");
 
     let sources = HashSet::from([pane_id]);
     write_shared_test_pane(&mut server, pane_id, b"\rONE");
@@ -1679,13 +1717,13 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
     ));
 
     assert!(matches!(
-        read_server_message(slow_render.recv().expect("slow queued first patch")),
+        slow_render.recv("slow queued first patch"),
         ServerMessage::PaneSurfacePatch(_)
     ));
     assert!(server.handle_server_event(ServerEvent::ClientWriterDrained { client_id: 8 }));
     server.render_and_stream();
     assert!(matches!(
-        read_server_message(slow_render.recv().expect("slow full recovery surface")),
+        slow_render.recv("slow full recovery surface"),
         ServerMessage::PaneSurface(_)
     ));
 
@@ -1751,8 +1789,6 @@ async fn client_shell_config_diagnostics_follow_keybinding_ownership() {
     let (local_writer, local_control, _local_render) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
-            surface_reuse: false,
-            surface_delta: false,
             client_id: 13,
             surface_cols: 80,
             surface_rows: 23,
@@ -1774,8 +1810,6 @@ async fn client_shell_config_diagnostics_follow_keybinding_ownership() {
     let (endpoint_writer, endpoint_control, _endpoint_render) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
-            surface_reuse: false,
-            surface_delta: false,
             client_id: 14,
             surface_cols: 80,
             surface_rows: 23,
@@ -1887,9 +1921,10 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
             b"\x1b[?1004h",
             4,
         );
-    workspace.insert_test_runtime(first_pane, first_runtime);
-    workspace.insert_test_runtime(second_pane, second_runtime);
+
     server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(first_pane, first_runtime);
+    server.app.insert_test_runtime(second_pane, second_runtime);
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
@@ -2076,9 +2111,10 @@ async fn public_focus_moves_shell_focus_between_tabs() {
             b"\x1b[?1004h",
             4,
         );
-    workspace.insert_test_runtime(first_pane, first_runtime);
-    workspace.insert_test_runtime(second_pane, second_runtime);
+
     server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(first_pane, first_runtime);
+    server.app.insert_test_runtime(second_pane, second_runtime);
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
@@ -2127,15 +2163,16 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
     let mut workspace = crate::workspace::Workspace::test_new("layout-geometry");
     let first_pane = workspace.tabs[0].root_pane;
     let second_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
-    workspace.insert_test_runtime(
+
+    server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(
         first_pane,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
     );
-    workspace.insert_test_runtime(
+    server.app.insert_test_runtime(
         second_pane,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
     );
-    server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
@@ -2143,7 +2180,7 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
 
     let (control, _) = connect_test_shell(&mut server, 65, 100, 30);
     let _ = control.recv().expect("snapshot");
-    let before = server.app.state.workspaces[0].test_runtimes[&first_pane].current_size();
+    let before = server.app.test_runtime(first_pane).current_size();
     let (respond_to, _response_rx) = std::sync::mpsc::channel();
 
     assert!(server.handle_client_shell_api_request(
@@ -2164,7 +2201,7 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
         },
     ));
 
-    let after = server.app.state.workspaces[0].test_runtimes[&first_pane].current_size();
+    let after = server.app.test_runtime(first_pane).current_size();
     assert_ne!(after, before);
     shutdown_test_runtimes(&mut server);
 }
@@ -2175,15 +2212,16 @@ async fn public_close_reapplies_controller_geometry() {
     let mut workspace = crate::workspace::Workspace::test_new("public-close-geometry");
     let first_pane = workspace.tabs[0].root_pane;
     let second_pane = workspace.test_split(ratatui::layout::Direction::Vertical);
-    workspace.insert_test_runtime(
+
+    server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(
         first_pane,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
     );
-    workspace.insert_test_runtime(
+    server.app.insert_test_runtime(
         second_pane,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
     );
-    server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
@@ -2194,7 +2232,7 @@ async fn public_close_reapplies_controller_geometry() {
 
     let (control, _) = connect_test_shell(&mut server, 66, 100, 30);
     let _ = control.recv().expect("snapshot");
-    let shrunk = server.app.state.workspaces[0].test_runtimes[&first_pane].current_size();
+    let shrunk = server.app.test_runtime(first_pane).current_size();
     assert!(shrunk.0 < 30);
 
     let (respond_to, _response_rx) = std::sync::mpsc::channel();
@@ -2210,7 +2248,7 @@ async fn public_close_reapplies_controller_geometry() {
         })
     );
 
-    let runtime = &server.app.state.workspaces[0].test_runtimes[&first_pane];
+    let runtime = &server.app.test_runtime(first_pane);
     let grown = runtime.current_size();
     assert!(grown.0 > shrunk.0);
     assert_eq!(runtime.terminal_dimensions(), Some((grown.1, grown.0)));
@@ -2233,13 +2271,13 @@ async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
     let second_pane = workspace.tabs[second_tab].root_pane;
     let third_tab = workspace.test_add_tab(Some("third"));
     let third_pane = workspace.tabs[third_tab].root_pane;
+    server.app.state.workspaces = vec![workspace];
     for pane_id in [first_pane, second_pane, third_pane] {
-        workspace.insert_test_runtime(
+        server.app.insert_test_runtime(
             pane_id,
             crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
         );
     }
-    server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
@@ -2266,7 +2304,7 @@ async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
         server.tab_geometry_controllers.get(&second_tab_id),
         Some(&67)
     );
-    let stale_size = server.app.state.workspaces[0].test_runtimes[&second_pane].current_size();
+    let stale_size = server.app.test_runtime(second_pane).current_size();
 
     assert!(server.reapply_controlled_shell_tab_geometry(false));
 
@@ -2275,7 +2313,7 @@ async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
         Some(&68)
     );
     assert_ne!(
-        server.app.state.workspaces[0].test_runtimes[&second_pane].current_size(),
+        server.app.test_runtime(second_pane).current_size(),
         stale_size
     );
     shutdown_test_runtimes(&mut server);
@@ -2288,10 +2326,7 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
     let first_pane = workspace.tabs[0].root_pane;
     let second_tab = workspace.test_add_tab(Some("second"));
     let second_pane = workspace.tabs[second_tab].root_pane;
-    workspace.insert_test_runtime(
-        first_pane,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"FIRST_TAB"),
-    );
+
     let (second_runtime, mut second_input) =
         crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
             80,
@@ -2300,8 +2335,13 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
             b"SECOND_TAB",
             4,
         );
-    workspace.insert_test_runtime(second_pane, second_runtime);
+
     server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(
+        first_pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"FIRST_TAB"),
+    );
+    server.app.insert_test_runtime(second_pane, second_runtime);
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
@@ -2313,14 +2353,12 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
         .app
         .public_pane_id(0, second_pane)
         .expect("test precondition");
-    let initial_second_size =
-        server.app.state.workspaces[0].test_runtimes[&second_pane].current_size();
+    let initial_second_size = server.app.test_runtime(second_pane).current_size();
 
     let (first_control, first_render) = connect_test_shell(&mut server, 21, 100, 30);
     let _ = first_control.recv().expect("first snapshot");
-    let first_size = server.app.state.workspaces[0].test_runtimes[&first_pane].current_size();
-    let singleton_second_size =
-        server.app.state.workspaces[0].test_runtimes[&second_pane].current_size();
+    let first_size = server.app.test_runtime(first_pane).current_size();
+    let singleton_second_size = server.app.test_runtime(second_pane).current_size();
     assert_ne!(singleton_second_size, initial_second_size);
     assert_eq!(singleton_second_size, first_size);
 
@@ -2329,10 +2367,10 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
 
     assert!(server.focus_shell_client_on_tab(22, &second_tab_id));
     assert!(server.claim_shell_tab_geometry(22, false));
-    let second_size = server.app.state.workspaces[0].test_runtimes[&second_pane].current_size();
+    let second_size = server.app.test_runtime(second_pane).current_size();
     assert_ne!(first_size, second_size);
     assert_eq!(
-        server.app.state.workspaces[0].test_runtimes[&first_pane].current_size(),
+        server.app.test_runtime(first_pane).current_size(),
         first_size
     );
 
@@ -2368,24 +2406,23 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
         cell_height_px: 0,
         pixel_mouse: false,
     }));
-    let resized_second = server.app.state.workspaces[0].test_runtimes[&second_pane].current_size();
+    let resized_second = server.app.test_runtime(second_pane).current_size();
     assert_ne!(resized_second, second_size);
     assert_eq!(
-        server.app.state.workspaces[0].test_runtimes[&first_pane].current_size(),
+        server.app.test_runtime(first_pane).current_size(),
         first_size
     );
 
     assert!(server.focus_shell_client_on_tab(21, &second_tab_id));
     assert!(server.claim_shell_tab_geometry(21, false));
     assert_ne!(
-        server.app.state.workspaces[0].test_runtimes[&second_pane].current_size(),
+        server.app.test_runtime(second_pane).current_size(),
         resized_second
     );
 
     server.remove_client_and_resize_if_needed(21);
-    let singleton_first = server.app.state.workspaces[0].test_runtimes[&first_pane].current_size();
-    let singleton_second =
-        server.app.state.workspaces[0].test_runtimes[&second_pane].current_size();
+    let singleton_first = server.app.test_runtime(first_pane).current_size();
+    let singleton_second = server.app.test_runtime(second_pane).current_size();
     assert_ne!(singleton_first, first_size);
     assert_eq!(singleton_first, singleton_second);
     shutdown_test_runtimes(&mut server);
@@ -2508,19 +2545,21 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
 #[tokio::test]
 async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
     let mut server = test_headless_server();
-    let mut first = crate::workspace::Workspace::test_new("first");
+    let first = crate::workspace::Workspace::test_new("first");
     let first_pane = first.tabs[0].root_pane;
-    first.insert_test_runtime(
+
+    let second = crate::workspace::Workspace::test_new("second");
+    let second_pane = second.tabs[0].root_pane;
+
+    server.app.state.workspaces = vec![first, second];
+    server.app.insert_test_runtime(
         first_pane,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"FIRST_AGENT"),
     );
-    let mut second = crate::workspace::Workspace::test_new("second");
-    let second_pane = second.tabs[0].root_pane;
-    second.insert_test_runtime(
+    server.app.insert_test_runtime(
         second_pane,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"SECOND_WORKSPACE"),
     );
-    server.app.state.workspaces = vec![first, second];
     server.app.state.ensure_test_terminals();
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
@@ -2534,6 +2573,7 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
     let second_tab_id = server.app.public_tab_id(1, 0).expect("test precondition");
 
     let (control_rx, render_rx) = connect_test_shell(&mut server, 9, 80, 23);
+    let mut render_rx = PaneSurfaceReceiver::new(render_rx);
     let _ = client_shell_snapshot(&control_rx);
     assert!(server.focus_shell_client_on_tab(9, &second_tab_id));
     assert!(server.claim_shell_tab_geometry(9, false));
@@ -2543,7 +2583,7 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
         diverged.focused_workspace_id.as_deref(),
         Some(server.app.public_workspace_id(1).as_str())
     );
-    let diverged_surface = recv_pane_surface(&render_rx, "diverged surface");
+    let diverged_surface = recv_pane_surface(&mut render_rx, "diverged surface");
     assert!(frame_text(&diverged_surface.frame).contains("SECOND_WORKSPACE"));
 
     server
@@ -2590,7 +2630,7 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
         replacement.focused_workspace_id.as_deref(),
         Some(first_workspace_id.as_str())
     );
-    let replacement_surface = recv_pane_surface(&render_rx, "agent focus replacement surface");
+    let replacement_surface = recv_pane_surface(&mut render_rx, "agent focus replacement surface");
     assert!(frame_text(&replacement_surface.frame).contains("FIRST_AGENT"));
     assert!(!frame_text(&replacement_surface.frame).contains("SECOND_WORKSPACE"));
     shutdown_test_runtimes(&mut server);
@@ -2613,8 +2653,6 @@ async fn public_api_focus_replaces_every_client_shell_projection() {
     let (writer, control_rx, render_rx) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
-            surface_reuse: false,
-            surface_delta: false,
             client_id: 9,
             surface_cols: 80,
             surface_rows: 23,
@@ -2781,8 +2819,9 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
             b"\x1b[>3u",
             4,
         );
-    workspace.insert_test_runtime(hidden_pane, runtime);
+
     server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(hidden_pane, runtime);
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     let pane_id = server
@@ -2834,7 +2873,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
 #[tokio::test]
 async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("scrolled-input");
+    let workspace = crate::workspace::Workspace::test_new("scrolled-input");
     let pane_id = workspace.tabs[0].root_pane;
     let (runtime, mut input_rx) =
         crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
@@ -2850,8 +2889,9 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
             .scroll_metrics()
             .is_some_and(|metrics| metrics.offset_from_bottom > 0)
     );
-    workspace.insert_test_runtime(pane_id, runtime);
+
     server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(pane_id, runtime);
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     let public_pane_id = server
@@ -3055,7 +3095,7 @@ fn install_focused_test_runtime(
     server: &mut HeadlessServer,
     terminal_bytes: &[u8],
 ) -> tokio::sync::mpsc::Receiver<Bytes> {
-    let mut workspace = crate::workspace::Workspace::test_new("focus-reporting");
+    let workspace = crate::workspace::Workspace::test_new("focus-reporting");
     let pane_id = workspace.tabs[0].root_pane;
     let (runtime, input_rx) =
         crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
@@ -3065,8 +3105,9 @@ fn install_focused_test_runtime(
             terminal_bytes,
             4,
         );
-    workspace.insert_test_runtime(pane_id, runtime);
+
     server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(pane_id, runtime);
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
@@ -3082,13 +3123,14 @@ fn retained_test_server_with_control(
     crate::layout::PaneId,
 ) {
     let mut server = test_headless_server();
-    let mut workspace = crate::workspace::Workspace::test_new("test");
+    let workspace = crate::workspace::Workspace::test_new("test");
     let pane_id = workspace.focused_pane_id().expect("focused pane");
-    workspace.insert_test_runtime(
+
+    server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(
         pane_id,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, initial_screen),
     );
-    server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
@@ -3701,38 +3743,229 @@ fn changed_git_refresh_requests_headless_render() {
 }
 
 #[tokio::test]
-async fn host_shutdown_preserves_panes_from_queued_and_selected_death_events() {
+async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on_cancel() {
     let mut server = test_headless_server();
     let workspace = crate::workspace::Workspace::test_new("host-shutdown");
     let pane_id = workspace.tabs[0].root_pane;
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
     server.app.state.active = Some(0);
-    let event = || AppEvent::PaneDied {
-        pane_id,
-        exit_reason: crate::platform::ChildExitReason::Exited,
-    };
-    server
-        .app
-        .event_tx
-        .try_send(event())
-        .expect("test precondition");
     server
         .host_shutdown_requested
         .store(true, Ordering::Release);
-    assert_eq!(
-        server.drain_internal_events_with_forwarding_up_to(16),
-        (false, false)
+    // The test policy never saves, so the checkpoint writes nothing and the
+    // real session file is untouched.
+    server.sync_host_shutdown_freeze(Instant::now());
+    let freeze = server
+        .host_shutdown_freeze
+        .as_mut()
+        .expect("warning freezes saving");
+    assert!(!freeze.persist_session);
+    // Pretend saving was on before the warning, so the thaw has to restore it.
+    freeze.persist_session = true;
+    assert!(!server.app.policy.persist_session);
+    assert!(server.app.session_save_deadline.is_none());
+
+    // The server keeps running and applies pane deaths; only the disk is frozen.
+    assert!(
+        server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
+            pane_id,
+            exit_reason: crate::platform::ChildExitReason::Exited,
+        })
     );
-    assert!(!server.handle_internal_event_with_forwarding(event()));
-    assert!(server.app.find_pane(pane_id).is_some());
-    assert!(server.app.event_rx.try_recv().is_ok());
+    assert!(server.app.find_pane(pane_id).is_none());
+    assert!(!server.app.policy.persist_session);
+
+    // Cancellation reported through the flag thaws and re-saves current state.
+    server.app.state.session_dirty = false;
     server
         .host_shutdown_requested
         .store(false, Ordering::Release);
-    assert!(server.handle_internal_event_with_forwarding(event()));
-    assert!(server.app.find_pane(pane_id).is_none());
+    server.sync_host_shutdown_freeze(Instant::now());
+    assert!(server.host_shutdown_freeze.is_none());
+    assert!(server.app.policy.persist_session);
+    assert!(server.app.state.session_dirty);
+    // Not stopping: the warning alone never ends the server.
+    assert!(!server.shutting_down);
+    assert!(!server.should_quit.load(Ordering::Acquire));
+    server.app.policy.persist_session = false;
     shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn focused_foreground_marks_its_own_tab_seen_not_the_global_active_tab() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("seen");
+    let first_pane = workspace.tabs[0].root_pane;
+    let second_tab = workspace.test_add_tab(Some("second"));
+    let second_pane = workspace.tabs[second_tab].root_pane;
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let first_tab_id = server.app.public_tab_id(0, 0).expect("first tab id");
+
+    let (control, _) = connect_test_shell(&mut server, 81, 100, 30);
+    let _ = control.recv().expect("snapshot");
+    assert!(server.focus_shell_client_on_tab(81, &first_tab_id));
+    // Another client's endpoint request would leave the global active tab
+    // on the second tab while client 81 keeps looking at the first.
+    assert!(server.app.state.switch_workspace_tab(0, second_tab));
+    for tab in &mut server.app.state.workspaces[0].tabs {
+        for pane in tab.panes.values_mut() {
+            pane.seen = false;
+        }
+    }
+    server.foreground_client_id = Some(81);
+    server
+        .clients
+        .get_mut(&81)
+        .expect("test precondition")
+        .outer_terminal_focus = Some(true);
+
+    server.sync_foreground_client_state();
+
+    let tabs = &server.app.state.workspaces[0].tabs;
+    assert!(tabs[0].panes[&first_pane].seen, "the viewed tab is seen");
+    assert!(
+        !tabs[second_tab].panes[&second_pane].seen,
+        "a tab nobody focused keeps its done marker"
+    );
+
+    // An unfocused foreground terminal marks nothing.
+    for pane in server.app.state.workspaces[0].tabs[0].panes.values_mut() {
+        pane.seen = false;
+    }
+    server
+        .clients
+        .get_mut(&81)
+        .expect("test precondition")
+        .outer_terminal_focus = Some(false);
+    server.sync_foreground_client_state();
+    assert!(!server.app.state.workspaces[0].tabs[0].panes[&first_pane].seen);
+    assert_eq!(server.app.state.outer_terminal_focus, Some(false));
+}
+
+#[tokio::test]
+async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("oversized")];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    // Even blank cells cost several bytes each on the wire, so 600k of them
+    // cannot fit in one frame.
+    let (control, render_rx) = connect_test_shell(&mut server, 91, 2000, 300);
+    // The test writer forwards queued control messages from a background
+    // thread (see `ClientWriter::test_channel`), so a message queued by this
+    // render is not necessarily visible to a bare `try_recv` yet. Wait a
+    // short beat for the drain thread instead of racing it.
+    let drain_notices = || {
+        std::iter::from_fn(|| {
+            control
+                .recv_timeout(std::time::Duration::from_millis(500))
+                .ok()
+        })
+        .map(read_server_message)
+        .filter(|message| matches!(message, ServerMessage::ClientShellError { .. }))
+        .count()
+    };
+    let reported = |server: &HeadlessServer| {
+        server
+            .clients
+            .get(&91)
+            .expect("client stays connected")
+            .oversized_frame_reported
+    };
+
+    server.render_and_stream();
+    assert!(reported(&server));
+    assert_eq!(drain_notices(), 1, "the first oversized frame is reported");
+    assert!(
+        render_rx.try_recv().is_err(),
+        "nothing oversized was queued"
+    );
+
+    server.render_and_stream();
+    assert!(reported(&server));
+    assert_eq!(drain_notices(), 0, "the report is not repeated per render");
+
+    assert!(server.handle_server_event(ServerEvent::ClientShellResize {
+        client_id: 91,
+        surface_cols: 80,
+        surface_rows: 24,
+        cell_width_px: 0,
+        cell_height_px: 0,
+        pixel_mouse: false,
+    }));
+    server.render_and_stream();
+    assert!(!reported(&server), "a frame that fits clears the report");
+    assert!(render_rx.try_recv().is_ok(), "the smaller frame was sent");
+    assert!(render::oversized_frame_notice(3_000_000, MAX_FRAME_SIZE).contains("too large"));
+    shutdown_test_runtimes(&mut server);
+}
+
+#[test]
+fn client_socket_is_owner_only_from_the_moment_it_is_reachable() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = std::env::temp_dir().join(format!(
+        "hb-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    fs::create_dir_all(&dir).expect("test precondition");
+    let path = dir.join("client.sock");
+
+    let listener = bind_owner_only_listener(&path).expect("bind");
+    let mode = fs::metadata(&path)
+        .expect("socket exists")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+    // The staging directory is gone; only the socket is left.
+    let entries = fs::read_dir(&dir)
+        .expect("test precondition")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(entries, vec![std::ffi::OsString::from("client.sock")]);
+    // The linked name reaches the listener.
+    assert!(crate::ipc::connect_local_stream(&path).is_ok());
+    assert!(listener.accept().is_ok());
+    // A second server never replaces a socket that is already there.
+    let err = bind_owner_only_listener(&path).expect_err("path is taken");
+    assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
+
+    drop(listener);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn host_shutdown_freeze_thaws_after_grace_without_a_monitor() {
+    let mut server = test_headless_server();
+    server
+        .host_shutdown_requested
+        .store(true, Ordering::Release);
+    let warned_at = Instant::now();
+    server.sync_host_shutdown_freeze(warned_at);
+    assert!(server.host_shutdown_freeze.is_some());
+
+    server.sync_host_shutdown_freeze(warned_at + lifecycle::HOST_SHUTDOWN_CANCEL_GRACE / 2);
+    assert!(server.host_shutdown_freeze.is_some());
+    assert!(server.host_shutdown_requested.load(Ordering::Acquire));
+
+    server.sync_host_shutdown_freeze(warned_at + lifecycle::HOST_SHUTDOWN_CANCEL_GRACE);
+    assert!(server.host_shutdown_freeze.is_none());
+    assert!(!server.host_shutdown_requested.load(Ordering::Acquire));
+    // No monitor ran before the warning, so none is started by the thaw.
+    assert!(server.host_shutdown_monitor.is_none());
 }
 
 #[tokio::test]
@@ -3779,8 +4012,9 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
             b"\x1b[?1004h",
             4,
         );
-    workspace.insert_test_runtime(second_pane, second_runtime);
+
     server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(second_pane, second_runtime);
     server.app.state.ensure_test_terminals();
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
@@ -3835,7 +4069,7 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
         server.tab_geometry_controllers.get(&second_tab_id),
         Some(&71)
     );
-    let before_resize = server.app.state.workspaces[0].test_runtimes[&second_pane].current_size();
+    let before_resize = server.app.test_runtime(second_pane).current_size();
     assert!(server.handle_server_event(ServerEvent::ClientShellResize {
         client_id: 71,
         surface_cols: 90,
@@ -3845,7 +4079,7 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
         pixel_mouse: false,
     }));
     assert_ne!(
-        server.app.state.workspaces[0].test_runtimes[&second_pane].current_size(),
+        server.app.test_runtime(second_pane).current_size(),
         before_resize
     );
     shutdown_test_runtimes(&mut server);
@@ -3857,22 +4091,23 @@ async fn pane_death_reapplies_controller_geometry() {
     let mut workspace = crate::workspace::Workspace::test_new("pane-death-geometry");
     let first_pane = workspace.tabs[0].root_pane;
     let dead_pane = workspace.test_split(ratatui::layout::Direction::Vertical);
-    workspace.insert_test_runtime(
+
+    server.app.state.workspaces = vec![workspace];
+    server.app.insert_test_runtime(
         first_pane,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
     );
-    workspace.insert_test_runtime(
+    server.app.insert_test_runtime(
         dead_pane,
         crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
     );
-    server.app.state.workspaces = vec![workspace];
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
 
     let (control, _) = connect_test_shell(&mut server, 73, 185, 46);
     let _ = control.recv().expect("snapshot");
-    let shrunk = server.app.state.workspaces[0].test_runtimes[&first_pane].current_size();
+    let shrunk = server.app.test_runtime(first_pane).current_size();
     assert!(shrunk.0 < 46);
 
     assert!(
@@ -3882,7 +4117,7 @@ async fn pane_death_reapplies_controller_geometry() {
         })
     );
 
-    let runtime = &server.app.state.workspaces[0].test_runtimes[&first_pane];
+    let runtime = &server.app.test_runtime(first_pane);
     let grown = runtime.current_size();
     assert!(grown.0 > shrunk.0);
     assert_eq!(runtime.terminal_dimensions(), Some((grown.1, grown.0)));

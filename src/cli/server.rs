@@ -15,6 +15,9 @@ pub(super) fn run_server_command(matches: &ArgMatches) -> std::io::Result<Option
     }
 }
 
+/// The local path skips the protocol check on purpose, like `session stop`:
+/// the protocol-mismatch error tells the user to run this command, so it must
+/// be able to stop a server from another build.
 fn server_stop() -> std::io::Result<i32> {
     if super::target::is_remote() {
         return super::send_ok_request(Method::ServerStop(EmptyParams::default()));

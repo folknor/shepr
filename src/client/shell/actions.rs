@@ -248,17 +248,6 @@ impl ClientShellState {
             return false;
         }
         let method_name = crate::api::api_method_name(&method).to_owned();
-        if !self.supports_endpoint_method(&method) {
-            outcome.repaint |= self.push_endpoint_notice(
-                ClientEndpointNoticeKind::Unsupported,
-                method_name.clone(),
-                "Action unavailable",
-                format!(
-                    "This server does not support {method_name} yet. Update and restart it to enable this action."
-                ),
-            );
-            return false;
-        }
         let Some(snapshot) = self.snapshot.as_deref() else {
             return false;
         };

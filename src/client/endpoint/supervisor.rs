@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use super::{ClientEndpointId, ClientEndpointStatus, EndpointNegotiation, NativeEndpointTransport};
-use crate::protocol::{ClientSurfaceSize, RenderEncoding};
+use super::{ClientEndpointId, ClientEndpointStatus, NativeEndpointTransport};
+use crate::protocol::ClientSurfaceSize;
 use interprocess::TryClone as _;
 
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
@@ -38,7 +38,6 @@ pub(crate) enum EndpointSupervisorEvent {
         generation: u64,
         reader: crate::ipc::LocalStream,
         writer: NativeEndpointTransport,
-        negotiation: EndpointNegotiation,
     },
 }
 
@@ -80,13 +79,6 @@ pub(crate) struct EndpointSupervisors {
 }
 
 impl EndpointSupervisors {
-    /// Reads the ssh settings from the config file once, here, and keeps them for
-    /// every reconnect. A caller that already holds its launch-time config should
-    /// use [`Self::with_ssh_settings`] instead, which reads nothing.
-    pub(crate) fn new(profiles: &[super::SavedSshEndpoint], now: Instant) -> Self {
-        Self::with_ssh_settings(profiles, crate::remote::SavedSshSettings::load(), now)
-    }
-
     pub(crate) fn with_ssh_settings(
         profiles: &[super::SavedSshEndpoint],
         settings: crate::remote::SavedSshSettings,
@@ -295,7 +287,7 @@ fn establish(
     endpoint_id: ClientEndpointId,
     generation: u64,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
-    let handshake = super::super::do_handshake(
+    super::super::do_handshake(
         &mut stream,
         options.cols,
         options.rows,
@@ -326,24 +318,9 @@ fn establish(
         Some(bridge) => Box::new(bridge),
         None => Box::new(()),
     };
-    if handshake.encoding != RenderEncoding::SemanticFrame {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "endpoint did not negotiate the semantic client shell",
-        ));
-    }
-    let negotiation = EndpointNegotiation::new(
-        handshake.endpoint_methods.unwrap_or_default(),
-        handshake.endpoint_capabilities.unwrap_or_default(),
-    );
-    if !negotiation.supports_surface_interest()
-        || (!endpoint_id.is_local() && !negotiation.supports_health_check())
-    {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "this machine needs a server update before it can participate in multi-machine viewing",
-        ));
-    }
+    // No encoding or capability checks: the handshake's build-identity
+    // preamble already proved the endpoint is this same build, so it speaks
+    // the semantic client shell and has every capability this build has.
     let reader = stream.try_clone()?;
     let writer = NativeEndpointTransport::with_lifetime(stream, lifetime)?;
     Ok(EndpointSupervisorEvent::Connected {
@@ -351,7 +328,6 @@ fn establish(
         generation,
         reader,
         writer,
-        negotiation,
     })
 }
 

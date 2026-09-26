@@ -298,26 +298,82 @@ pub(super) fn carry_history(terminal: &TerminalId, history: Option<&PaneHistoryS
     }
 }
 
-/// Capture pane screen history separately from the structural session snapshot.
+/// Produces one live pane's saved-screen history. Runs on the session save
+/// thread, not on the event loop.
+type PaneHistoryRead = Box<dyn FnOnce() -> Option<String> + Send>;
+
+enum PendingPaneHistory {
+    /// Saved history carried for a pane without a runtime.
+    Carried(String),
+    Live(PaneHistoryRead),
+}
+
+/// Pane history captured on the event loop in the cheapest form available,
+/// to be turned into a `SessionHistorySnapshot` off it (`resolve`). The shape
+/// mirrors the workspaces and tabs it was captured from.
+pub(crate) struct PendingHistory {
+    workspaces: Vec<Vec<Vec<(u32, PendingPaneHistory)>>>,
+}
+
+impl PendingHistory {
+    /// Formats every live pane's history and pairs the result with the layout
+    /// it was captured alongside. Meant for the save thread: it can take as
+    /// long as formatting every pane's scrollback does.
+    pub(crate) fn resolve(self, snapshot: &SessionSnapshot) -> SessionHistorySnapshot {
+        SessionHistorySnapshot {
+            version: SNAPSHOT_VERSION,
+            layout_fingerprint: layout_fingerprint(snapshot),
+            workspaces: self
+                .workspaces
+                .into_iter()
+                .map(|tabs| WorkspaceHistorySnapshot {
+                    tabs: tabs
+                        .into_iter()
+                        .map(|panes| TabHistorySnapshot {
+                            panes: panes
+                                .into_iter()
+                                .filter_map(|(id, pending)| {
+                                    let ansi = match pending {
+                                        PendingPaneHistory::Carried(ansi) => Some(ansi),
+                                        PendingPaneHistory::Live(read) => read(),
+                                    }?;
+                                    Some((id, PaneHistorySnapshot { ansi }))
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// Both halves of a history capture in one call. Saves split them across the
+/// event loop and the save thread instead.
+#[cfg(test)]
 pub fn capture_history(
     snapshot: &SessionSnapshot,
     workspaces: &[Workspace],
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> SessionHistorySnapshot {
+    capture_pending_history(workspaces, terminal_runtimes).resolve(snapshot)
+}
+
+/// The event-loop half of a history capture; see `PendingHistory`.
+pub(crate) fn capture_pending_history(
+    workspaces: &[Workspace],
+    terminal_runtimes: &TerminalRuntimeRegistry,
+) -> PendingHistory {
     let mut carried = carried_history();
-    SessionHistorySnapshot {
-        version: SNAPSHOT_VERSION,
-        layout_fingerprint: layout_fingerprint(snapshot),
+    PendingHistory {
         workspaces: workspaces
             .iter()
-            .map(|workspace| WorkspaceHistorySnapshot {
-                tabs: workspace
+            .map(|workspace| {
+                workspace
                     .tabs
                     .iter()
-                    .map(|tab| TabHistorySnapshot {
-                        panes: capture_tab_history(tab, terminal_runtimes, &mut carried),
-                    })
-                    .collect(),
+                    .map(|tab| capture_tab_history(tab, terminal_runtimes, &mut carried))
+                    .collect()
             })
             .collect(),
     }
@@ -327,29 +383,42 @@ fn capture_tab_history(
     tab: &crate::workspace::Tab,
     terminal_runtimes: &TerminalRuntimeRegistry,
     carried: &mut CarriedHistory,
-) -> HashMap<u32, PaneHistorySnapshot> {
-    let mut panes = HashMap::new();
-    for (id, pane) in &tab.panes {
-        if let Some(history) = capture_pane_history(pane, terminal_runtimes, carried) {
-            panes.insert(id.raw(), history);
-        }
-    }
-    panes
+) -> Vec<(u32, PendingPaneHistory)> {
+    tab.panes
+        .iter()
+        .filter_map(|(id, pane)| {
+            capture_pane_history(pane, terminal_runtimes, carried)
+                .map(|history| (id.raw(), history))
+        })
+        .collect()
 }
 
 fn capture_pane_history(
     pane: &crate::pane::PaneState,
     terminal_runtimes: &TerminalRuntimeRegistry,
     carried: &mut CarriedHistory,
-) -> Option<PaneHistorySnapshot> {
+) -> Option<PendingPaneHistory> {
     let terminal = &pane.attached_terminal_id;
     let Some(runtime) = terminal_runtimes.get(terminal) else {
-        let ansi = carried.get(terminal)?.clone();
-        return Some(PaneHistorySnapshot { ansi });
+        return carried
+            .get(terminal)
+            .cloned()
+            .map(PendingPaneHistory::Carried);
     };
     carried.remove(terminal);
-    let ansi = runtime.snapshot_history()?;
-    Some(PaneHistorySnapshot { ansi })
+    Some(PendingPaneHistory::Live(live_history_read(runtime)))
+}
+
+/// How a live pane's history gets read. The save path is built to run this
+/// read on the save thread, but a `TerminalRuntime` cannot leave the event
+/// loop and the pane layer offers no `Send` handle to its terminal core yet,
+/// so for now the whole scrollback is still formatted here, on the loop,
+/// under one hold of the pane's terminal lock. Once the pane layer exposes
+/// such a handle (ideally one that formats in bounded chunks under short lock
+/// holds), returning a closure over it is the only change needed here.
+fn live_history_read(runtime: &crate::terminal::TerminalRuntime) -> PaneHistoryRead {
+    let ansi = runtime.snapshot_history();
+    Box::new(move || ansi)
 }
 
 pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {

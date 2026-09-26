@@ -48,9 +48,14 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
 /// allocate a full `MAX_FRAME_SIZE` buffer.
 const MAX_HANDSHAKE_FRAME: usize = 64 * 1024;
 
-const MAX_CLIENT_SHELL_DIMENSION: u16 = 4096;
-const MAX_CLIENT_SHELL_CELLS: u32 = 1_000_000;
-const MAX_CLIENT_CELL_SIZE_PX: u32 = 4096;
+// Geometry limits for every client size the server accepts: the shell hello
+// and `ClientShellResize`, and the direct-attach `TerminalHello` and `Resize`.
+// The cell limit is what one frame can carry (see `MAX_SURFACE_CELLS`), not
+// an arbitrary safety number: a grid past it renders frames that can never
+// be sent.
+const MAX_CLIENT_SHELL_DIMENSION: u16 = protocol::MAX_SURFACE_DIMENSION;
+const MAX_CLIENT_SHELL_CELLS: usize = protocol::MAX_SURFACE_CELLS;
+const MAX_CLIENT_CELL_SIZE_PX: u32 = protocol::MAX_CELL_SIZE_PX;
 
 fn client_shell_geometry_error(
     surface_size: crate::protocol::ClientSurfaceSize,
@@ -62,14 +67,55 @@ fn client_shell_geometry_error(
     }
     if surface_size.cols > MAX_CLIENT_SHELL_DIMENSION
         || surface_size.rows > MAX_CLIENT_SHELL_DIMENSION
-        || u32::from(surface_size.cols) * u32::from(surface_size.rows) > MAX_CLIENT_SHELL_CELLS
+        || usize::from(surface_size.cols) * usize::from(surface_size.rows) > MAX_CLIENT_SHELL_CELLS
     {
-        return Some("client shell pane surface exceeds the safe geometry limit");
+        return Some("client shell pane surface is larger than one frame can carry");
     }
     if cell_width_px > MAX_CLIENT_CELL_SIZE_PX || cell_height_px > MAX_CLIENT_CELL_SIZE_PX {
         return Some("client shell cell pixel size exceeds the safe geometry limit");
     }
     None
+}
+
+/// Direct-attach geometry as the server will use it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TerminalGeometry {
+    cols: u16,
+    rows: u16,
+    cell_width_px: u32,
+    cell_height_px: u32,
+    pixel_mouse: bool,
+}
+
+/// Bounds a direct-attach client's reported geometry.
+///
+/// The terminal is the client's real window, so an oversized one is clamped
+/// rather than refused: the attach renders into the largest grid one frame
+/// can carry (rows are cut first, keeping full-width lines) and the rest of
+/// the window stays blank. A cell pixel size past the limit is treated as
+/// unknown, which also turns off pixel mouse reporting.
+fn bound_terminal_geometry(
+    cols: u16,
+    rows: u16,
+    cell_width_px: u32,
+    cell_height_px: u32,
+    pixel_mouse: bool,
+) -> TerminalGeometry {
+    let (cols, rows) = clamp_terminal_size(cols, rows);
+    let pixels_valid =
+        cell_width_px <= MAX_CLIENT_CELL_SIZE_PX && cell_height_px <= MAX_CLIENT_CELL_SIZE_PX;
+    let (cell_width_px, cell_height_px) = if pixels_valid {
+        (cell_width_px, cell_height_px)
+    } else {
+        (0, 0)
+    };
+    TerminalGeometry {
+        cols,
+        rows,
+        cell_width_px,
+        cell_height_px,
+        pixel_mouse: pixel_mouse && pixels_valid,
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -367,8 +413,6 @@ pub(crate) enum ServerEvent {
         endpoint_keybindings: bool,
         mouse_capture: bool,
         surface_active: bool,
-        surface_reuse: bool,
-        surface_delta: bool,
         writer: ClientWriter,
     },
     /// A client sent an input message.
@@ -469,11 +513,15 @@ pub(crate) enum ServerEvent {
     QuitSignal,
 }
 
-/// Clamp client-reported terminal dimensions to a minimum viable size.
+/// Clamp client-reported terminal dimensions into the accepted range: at
+/// least the minimum viable size, at most `MAX_CLIENT_SHELL_DIMENSION` per
+/// side and `MAX_CLIENT_SHELL_CELLS` in total (rows give way first).
 pub(crate) fn clamp_terminal_size(cols: u16, rows: u16) -> (u16, u16) {
-    let clamped_cols = cols.max(MIN_CLIENT_COLS);
-    let clamped_rows = rows.max(MIN_CLIENT_ROWS);
-    (clamped_cols, clamped_rows)
+    let cols = cols.clamp(MIN_CLIENT_COLS, MAX_CLIENT_SHELL_DIMENSION);
+    let rows = rows.clamp(MIN_CLIENT_ROWS, MAX_CLIENT_SHELL_DIMENSION);
+    let max_rows = MAX_CLIENT_SHELL_CELLS / usize::from(cols);
+    let rows = u16::try_from(max_rows).map_or(rows, |max_rows| rows.min(max_rows.max(1)));
+    (cols, rows)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -563,14 +611,36 @@ pub(crate) fn handle_client_handshake(
     // the handshake thread needs blocking I/O for read_message/write_message.
     stream.set_nonblocking(false)?;
 
-    // Read the handshake message against one overall deadline.
-    let hello = protocol::read_message::<_, ClientMessage>(
-        &mut crate::ipc::DeadlineReader::new(
-            &mut stream,
-            std::time::Instant::now() + HANDSHAKE_TIMEOUT,
-        ),
-        MAX_HANDSHAKE_FRAME,
-    );
+    // The build-identity preamble goes out first, before anything is read, so
+    // a client of any other build learns which build it reached even though
+    // this side hangs up on it below. Probes that connect and close at once
+    // (socket liveness checks) make this write fail; that is not an error.
+    if let Err(error) = protocol::preamble::write_preamble(&mut stream) {
+        debug!(client_id, %error, "client left before the build-identity preamble");
+        return Ok(());
+    }
+
+    // The client's preamble and hello are read against one overall deadline.
+    let mut reader =
+        crate::ipc::DeadlineReader::new(&mut stream, std::time::Instant::now() + HANDSHAKE_TIMEOUT);
+    match protocol::preamble::read_preamble(&mut reader) {
+        Ok(()) => {}
+        Err(protocol::preamble::PreambleError::UnexpectedEof) => {
+            debug!(client_id, "client disconnected before handshake");
+            return Ok(());
+        }
+        Err(protocol::preamble::PreambleError::Io(error)) => {
+            debug!(client_id, %error, "failed to read client preamble");
+            return Ok(());
+        }
+        Err(error) => {
+            // The client reports the mismatch from this server's preamble;
+            // nothing it sends after a foreign preamble can be decoded.
+            warn!(client_id, %error, "rejecting client connection");
+            return Ok(());
+        }
+    }
+    let hello = protocol::read_message::<_, ClientMessage>(&mut reader, MAX_HANDSHAKE_FRAME);
     let hello: ClientMessage = match hello {
         Ok(msg) => msg,
         Err(protocol::FramingError::UnexpectedEof) => {
@@ -612,8 +682,16 @@ pub(crate) fn handle_client_handshake(
                 let _ = protocol::write_message(&mut stream, &welcome);
                 return Ok(());
             }
-            let (cols, rows) = clamp_terminal_size(cols, rows);
-            (cols, rows, cell_width_px, cell_height_px, pixel_mouse, None)
+            let geometry =
+                bound_terminal_geometry(cols, rows, cell_width_px, cell_height_px, pixel_mouse);
+            (
+                geometry.cols,
+                geometry.rows,
+                geometry.cell_width_px,
+                geometry.cell_height_px,
+                geometry.pixel_mouse,
+                None,
+            )
         }
         ClientMessage::EndpointControl { kind, data } if kind == ENDPOINT_HELLO_KIND => {
             let hello: EndpointClientHello = match serde_json::from_str(&data) {
@@ -653,8 +731,6 @@ pub(crate) fn handle_client_handshake(
                     hello.endpoint_keybindings,
                     hello.mouse_capture,
                     hello.surface_active,
-                    hello.surface_reuse,
-                    hello.surface_delta,
                 )),
             )
         }
@@ -680,12 +756,7 @@ pub(crate) fn handle_client_handshake(
         RenderEncoding::TerminalAnsi
     };
     let welcome = if shell_options.is_some() {
-        let welcome = EndpointServerWelcome::compatible(
-            crate::server::client_commands::supported_client_shell_method_names()
-                .iter()
-                .map(|method| (*method).to_owned())
-                .collect(),
-        );
+        let welcome = EndpointServerWelcome::compatible();
         ServerMessage::EndpointControl {
             kind: ENDPOINT_WELCOME_KIND.into(),
             data: serde_json::to_string(&welcome).map_err(io::Error::other)?,
@@ -727,40 +798,34 @@ pub(crate) fn handle_client_handshake(
 
     // Notify the main loop about the new client.
     let endpoint_control_writer = shell_options.as_ref().map(|_| writer.control.clone());
-    let connected = if let Some((
-        pixel_mouse,
-        endpoint_keybindings,
-        mouse_capture,
-        surface_active,
-        surface_reuse,
-        surface_delta,
-    )) = shell_options
-    {
-        ServerEvent::ClientShellConnected {
-            client_id,
-            surface_cols: client_cols,
-            surface_rows: client_rows,
-            cell_width_px,
-            cell_height_px,
-            pixel_mouse,
-            endpoint_keybindings,
-            mouse_capture,
-            surface_active,
-            surface_reuse,
-            surface_delta,
-            writer,
-        }
-    } else {
-        ServerEvent::ClientConnected {
-            client_id,
-            cols: client_cols,
-            rows: client_rows,
-            cell_width_px,
-            cell_height_px,
-            pixel_mouse: terminal_pixel_mouse,
-            writer,
-        }
-    };
+    let connected =
+        if let Some((pixel_mouse, endpoint_keybindings, mouse_capture, surface_active)) =
+            shell_options
+        {
+            // The build-identity preamble guarantees both surface encodings.
+            ServerEvent::ClientShellConnected {
+                client_id,
+                surface_cols: client_cols,
+                surface_rows: client_rows,
+                cell_width_px,
+                cell_height_px,
+                pixel_mouse,
+                endpoint_keybindings,
+                mouse_capture,
+                surface_active,
+                writer,
+            }
+        } else {
+            ServerEvent::ClientConnected {
+                client_id,
+                cols: client_cols,
+                rows: client_rows,
+                cell_width_px,
+                cell_height_px,
+                pixel_mouse: terminal_pixel_mouse,
+                writer,
+            }
+        };
     if let Err(err) = server_event_tx.blocking_send(connected) {
         match err.0 {
             ServerEvent::ClientConnected { writer, .. }
@@ -782,15 +847,9 @@ pub(crate) fn handle_client_handshake(
 }
 
 fn send_shutdown_to_unregistered_client(writer: &ClientWriter) {
-    let mut framed = Vec::new();
-    if protocol::write_message(
-        &mut framed,
-        &ServerMessage::ServerShutdown {
-            reason: Some("server is shutting down".to_owned()),
-        },
-    )
-    .is_ok()
-    {
+    if let Ok(framed) = protocol::encode_frame(&ServerMessage::ServerShutdown {
+        reason: Some("server is shutting down".to_owned()),
+    }) {
         let _ = writer.control.send(framed);
     }
 }
@@ -918,14 +977,15 @@ fn client_read_loop_with_endpoint_controls(
                 cell_height_px,
                 pixel_mouse,
             } => {
-                let (clamped_cols, clamped_rows) = clamp_terminal_size(cols, rows);
+                let geometry =
+                    bound_terminal_geometry(cols, rows, cell_width_px, cell_height_px, pixel_mouse);
                 ServerEvent::ClientResize {
                     client_id,
-                    cols: clamped_cols,
-                    rows: clamped_rows,
-                    cell_width_px,
-                    cell_height_px,
-                    pixel_mouse,
+                    cols: geometry.cols,
+                    rows: geometry.rows,
+                    cell_width_px: geometry.cell_width_px,
+                    cell_height_px: geometry.cell_height_px,
+                    pixel_mouse: geometry.pixel_mouse,
                 }
             }
             ClientMessage::ClientShellResize {
@@ -1085,10 +1145,10 @@ fn client_read_loop_with_endpoint_controls(
                 let Some(writer) = endpoint_control_writer else {
                     continue;
                 };
-                let mut framed = Vec::new();
-                if protocol::write_message(&mut framed, &response).is_err()
-                    || writer.send(framed).is_err()
-                {
+                let Ok(framed) = protocol::encode_frame(&response) else {
+                    break;
+                };
+                if writer.send(framed).is_err() {
                     break;
                 }
                 continue;
@@ -1196,13 +1256,19 @@ mod tests {
             endpoint_keybindings: true,
             mouse_capture: true,
             surface_active: true,
-            surface_reuse: false,
-            surface_delta: false,
         };
         ClientMessage::EndpointControl {
             kind: ENDPOINT_HELLO_KIND.into(),
             data: serde_json::to_string(&hello).expect("test precondition"),
         }
+    }
+
+    /// Plays the client side of the opening: sends this build's preamble and
+    /// `hello`, then consumes the server's preamble.
+    fn open_as_client(client_stream: &mut LocalStream, hello: &ClientMessage) {
+        protocol::preamble::write_preamble(client_stream).expect("write client preamble");
+        protocol::write_message(client_stream, hello).expect("write hello");
+        protocol::preamble::read_preamble(client_stream).expect("server preamble");
     }
 
     fn endpoint_welcome(message: ServerMessage) -> EndpointServerWelcome {
@@ -1248,9 +1314,7 @@ mod tests {
     }
 
     fn frame_server_message(message: &ServerMessage) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        protocol::write_message(&mut bytes, message).expect("frame server message");
-        bytes
+        protocol::encode_frame(message).expect("frame server message")
     }
 
     #[test]
@@ -1455,6 +1519,178 @@ mod tests {
     }
 
     #[test]
+    fn clamp_terminal_size_bounds_the_grid_to_one_frame() {
+        assert_eq!(
+            clamp_terminal_size(u16::MAX, u16::MAX),
+            (
+                MAX_CLIENT_SHELL_DIMENSION,
+                u16::try_from(MAX_CLIENT_SHELL_CELLS / usize::from(MAX_CLIENT_SHELL_DIMENSION))
+                    .expect("test precondition"),
+            )
+        );
+        for (cols, rows) in [(u16::MAX, 1), (1, u16::MAX), (1000, 1000), (512, 256)] {
+            let (cols, rows) = clamp_terminal_size(cols, rows);
+            assert!(cols >= MIN_CLIENT_COLS && rows >= MIN_CLIENT_ROWS);
+            assert!(cols <= MAX_CLIENT_SHELL_DIMENSION && rows <= MAX_CLIENT_SHELL_DIMENSION);
+            assert!(usize::from(cols) * usize::from(rows) <= MAX_CLIENT_SHELL_CELLS);
+        }
+        // Full width is kept; rows give way.
+        assert_eq!(clamp_terminal_size(1000, 1000).0, 1000);
+    }
+
+    #[test]
+    fn terminal_geometry_drops_implausible_pixel_sizes() {
+        let geometry = bound_terminal_geometry(80, 24, 8, 16, true);
+        assert_eq!(
+            geometry,
+            TerminalGeometry {
+                cols: 80,
+                rows: 24,
+                cell_width_px: 8,
+                cell_height_px: 16,
+                pixel_mouse: true,
+            }
+        );
+        let geometry = bound_terminal_geometry(80, 24, u32::MAX, 16, true);
+        assert_eq!((geometry.cell_width_px, geometry.cell_height_px), (0, 0));
+        assert!(!geometry.pixel_mouse);
+    }
+
+    #[test]
+    fn oversized_terminal_hello_is_clamped_to_one_frame() {
+        let (mut client_stream, server_stream, _path) =
+            local_stream_pair("client-handshake-oversized-terminal");
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+        let should_quit = Arc::new(AtomicBool::new(false));
+        let handshake_quit = Arc::clone(&should_quit);
+        let handle = std::thread::spawn(move || {
+            handle_client_handshake(server_stream, 44, &server_event_tx, &handshake_quit)
+        });
+
+        open_as_client(
+            &mut client_stream,
+            &ClientMessage::TerminalHello {
+                version: PROTOCOL_VERSION,
+                cols: u16::MAX,
+                rows: u16::MAX,
+                cell_width_px: u32::MAX,
+                cell_height_px: u32::MAX,
+                pixel_mouse: true,
+            },
+        );
+        let _welcome: ServerMessage =
+            protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
+        match recv_server_event(&mut server_event_rx, "oversized terminal connect") {
+            ServerEvent::ClientConnected {
+                cols,
+                rows,
+                cell_width_px,
+                pixel_mouse,
+                writer,
+                ..
+            } => {
+                assert!(usize::from(cols) * usize::from(rows) <= MAX_CLIENT_SHELL_CELLS);
+                assert!(cols <= MAX_CLIENT_SHELL_DIMENSION);
+                assert_eq!(cell_width_px, 0);
+                assert!(!pixel_mouse);
+                drop(writer);
+            }
+            other => panic!("expected ClientConnected, got {other:?}"),
+        }
+
+        drop(client_stream);
+        should_quit.store(true, Ordering::Release);
+        handle
+            .join()
+            .expect("handshake thread join")
+            .expect("handshake thread result");
+    }
+
+    #[test]
+    fn oversized_terminal_resize_is_clamped_to_one_frame() {
+        let (mut client_stream, server_stream, _path) =
+            local_stream_pair("client-read-oversized-resize");
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+        let should_quit = Arc::new(AtomicBool::new(false));
+        let read_quit = Arc::clone(&should_quit);
+        let handle = std::thread::spawn(move || {
+            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+        });
+
+        protocol::write_message(
+            &mut client_stream,
+            &ClientMessage::Resize {
+                cols: u16::MAX,
+                rows: u16::MAX,
+                cell_width_px: 8,
+                cell_height_px: 16,
+                pixel_mouse: true,
+            },
+        )
+        .expect("test precondition");
+        match recv_server_event(&mut server_event_rx, "oversized resize") {
+            ServerEvent::ClientResize {
+                cols,
+                rows,
+                pixel_mouse,
+                ..
+            } => {
+                assert!(usize::from(cols) * usize::from(rows) <= MAX_CLIENT_SHELL_CELLS);
+                assert!(pixel_mouse);
+            }
+            other => panic!("expected ClientResize, got {other:?}"),
+        }
+
+        protocol::write_message(&mut client_stream, &ClientMessage::Detach).expect("write detach");
+        assert!(matches!(
+            recv_server_event(&mut server_event_rx, "detach event"),
+            ServerEvent::ClientDetach { client_id: 7 }
+        ));
+        handle
+            .join()
+            .expect("read thread join")
+            .expect("read thread result");
+    }
+
+    #[test]
+    fn foreign_build_preamble_gets_the_server_identity_and_no_session() {
+        use std::io::Read as _;
+
+        let (mut client_stream, server_stream, _path) =
+            local_stream_pair("client-handshake-foreign-build");
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+        let should_quit = Arc::new(AtomicBool::new(false));
+        let handshake_quit = Arc::clone(&should_quit);
+        let handle = std::thread::spawn(move || {
+            handle_client_handshake(server_stream, 45, &server_event_tx, &handshake_quit)
+        });
+
+        // A client of another build: right magic, different identity.
+        let mut preamble = protocol::preamble::local_preamble();
+        let last = preamble.len() - 1;
+        preamble[last] = if preamble[last] == b'0' { b'1' } else { b'0' };
+        client_stream
+            .write_all(&preamble)
+            .expect("test precondition");
+        protocol::write_message(&mut client_stream, &endpoint_hello(80, 24))
+            .expect("test precondition");
+
+        // The server still announced itself, then hung up without a welcome.
+        protocol::preamble::read_preamble(&mut client_stream).expect("server preamble");
+        let mut rest = Vec::new();
+        client_stream
+            .set_recv_timeout(Some(Duration::from_secs(2)))
+            .expect("test precondition");
+        let _ = client_stream.read_to_end(&mut rest);
+        assert!(rest.is_empty(), "no welcome after a foreign preamble");
+        handle
+            .join()
+            .expect("handshake thread join")
+            .expect("handshake thread result");
+        assert!(server_event_rx.try_recv().is_err());
+    }
+
+    #[test]
     fn client_shell_geometry_rejects_unsafe_dimensions_and_cell_sizes() {
         assert!(
             client_shell_geometry_error(
@@ -1526,7 +1762,7 @@ mod tests {
             handle_client_handshake(server_stream, 42, &server_event_tx, &handshake_quit)
         });
 
-        protocol::write_message(
+        open_as_client(
             &mut client_stream,
             &ClientMessage::TerminalHello {
                 version: PROTOCOL_VERSION,
@@ -1536,8 +1772,7 @@ mod tests {
                 cell_height_px: 16,
                 pixel_mouse: true,
             },
-        )
-        .expect("write hello");
+        );
 
         let welcome: ServerMessage =
             protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
@@ -1594,8 +1829,7 @@ mod tests {
             handle_client_handshake(server_stream, 43, &server_event_tx, &handshake_quit)
         });
 
-        protocol::write_message(&mut client_stream, &endpoint_hello(80, 29))
-            .expect("write shell hello");
+        open_as_client(&mut client_stream, &endpoint_hello(80, 29));
 
         let welcome: ServerMessage =
             protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
@@ -1616,12 +1850,8 @@ mod tests {
                 endpoint_keybindings,
                 mouse_capture,
                 surface_active,
-                surface_reuse,
-                surface_delta,
                 writer,
             } => {
-                assert!(!surface_reuse);
-                assert!(!surface_delta);
                 assert_eq!(client_id, 43);
                 assert_eq!((surface_cols, surface_rows), (80, 29));
                 assert_eq!((cell_width_px, cell_height_px), (8, 16));
@@ -1653,8 +1883,7 @@ mod tests {
             handle_client_handshake(server_stream, 43, &server_event_tx, &handshake_quit)
         });
 
-        protocol::write_message(&mut client_stream, &endpoint_hello(0, 29))
-            .expect("write empty shell hello");
+        open_as_client(&mut client_stream, &endpoint_hello(0, 29));
 
         let welcome: ServerMessage =
             protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");

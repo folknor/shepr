@@ -44,28 +44,83 @@ pub(in crate::client::shell) fn collapsed_sidebar_sections(
     )
 }
 
+/// First workspace row shown by the collapsed sidebar: the current scroll, clamped to the
+/// list, and moved just enough to bring `reveal` into view when there is one.
+pub(in crate::client::shell) fn collapsed_workspace_scroll(
+    scroll: usize,
+    count: usize,
+    height: usize,
+    reveal: Option<usize>,
+) -> usize {
+    if height == 0 {
+        return 0;
+    }
+    let max_scroll = count.saturating_sub(height);
+    let scroll = scroll.min(max_scroll);
+    match reveal {
+        Some(target) if target < scroll => target,
+        Some(target) if target >= scroll + height => (target + 1 - height).min(max_scroll),
+        _ => scroll,
+    }
+}
+
 pub(crate) fn render_collapsed_sidebar(
     buffer: &mut Buffer,
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
-    selected_workspace_id: Option<&str>,
+    state: &mut ShellRenderState<'_>,
     hits: &mut ShellHitMap,
 ) {
+    let selected_workspace_id = state
+        .selected_workspace_id
+        .map(|target| target.workspace_id.as_str());
     let palette = &config.palette;
     let selection_background = workspace_selection_background(palette);
     let active_background = workspace_active_background(palette, selected_workspace_id.is_some());
     render_sidebar_background(buffer, area, palette);
     let (workspace_area, divider_y, detail_area) = collapsed_sidebar_sections(area);
+    // One row per workspace. A list taller than the section scrolls (wheel over the rows, or
+    // following the Navigate selection and focus changes) so every workspace Navigate mode can
+    // select is also on screen and clickable.
+    let height = usize::from(workspace_area.height);
+    let focus_changed = std::mem::take(state.reveal_focused_workspace);
+    let reveal = selected_workspace_id
+        .and_then(|id| {
+            snapshot
+                .workspaces
+                .iter()
+                .position(|workspace| workspace.workspace_id == id)
+        })
+        .or_else(|| {
+            focus_changed
+                .then(|| {
+                    snapshot
+                        .workspaces
+                        .iter()
+                        .position(|workspace| workspace.focused)
+                })
+                .flatten()
+        });
+    let scroll = collapsed_workspace_scroll(
+        *state.workspace_scroll,
+        snapshot.workspaces.len(),
+        height,
+        reveal,
+    );
+    *state.workspace_scroll = scroll;
+    hits.workspace_body = workspace_area;
+    hits.workspace_max_scroll = snapshot.workspaces.len().saturating_sub(height);
     for (index, workspace) in snapshot
         .workspaces
         .iter()
-        .take(workspace_area.height as usize)
         .enumerate()
+        .skip(scroll)
+        .take(height)
     {
         let rect = Rect::new(
             workspace_area.x,
-            workspace_area.y + u16::try_from(index).unwrap_or(u16::MAX),
+            workspace_area.y + u16::try_from(index - scroll).unwrap_or(u16::MAX),
             workspace_area.width,
             1,
         );
@@ -558,5 +613,25 @@ pub(in crate::client::shell) fn render_workspace_rows(
                 buffer[(x, y)].set_bg(background);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collapsed_workspace_scroll;
+
+    #[test]
+    fn collapsed_workspace_scroll_reveals_rows_past_the_section() {
+        // Everything fits: never scrolls.
+        assert_eq!(collapsed_workspace_scroll(3, 4, 10, Some(3)), 0);
+        // A target below the window scrolls just far enough to show it on the last row.
+        assert_eq!(collapsed_workspace_scroll(0, 20, 5, Some(7)), 3);
+        // A target above the window becomes its first row.
+        assert_eq!(collapsed_workspace_scroll(10, 20, 5, Some(4)), 4);
+        // A visible target leaves a wheel-chosen scroll alone.
+        assert_eq!(collapsed_workspace_scroll(6, 20, 5, Some(8)), 6);
+        // A stale scroll is clamped to the list.
+        assert_eq!(collapsed_workspace_scroll(50, 20, 5, None), 15);
+        assert_eq!(collapsed_workspace_scroll(3, 20, 0, Some(9)), 0);
     }
 }

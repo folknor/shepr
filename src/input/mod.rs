@@ -7,11 +7,7 @@ pub(crate) mod mouse;
 mod parse;
 
 pub(crate) use encode::encode_mouse_event;
-#[allow(unused_imports)]
-pub use encode::{
-    KeyEncodeModes, encode_cursor_key, encode_key, encode_mouse_button, encode_mouse_scroll,
-    encode_terminal_key, encode_terminal_key_with_modes,
-};
+pub use encode::{KeyEncodeModes, encode_terminal_key, encode_terminal_key_with_modes};
 pub(crate) use keybind_help::{
     filter_keybind_help_groups, keybind_help_groups, keybind_help_text_char,
 };

@@ -11,16 +11,6 @@
 4. Once all findings are resolved, the file gets deleted.
 ```
 
-The OSC tracker divergence from vte, raised in this scope, is filed as TERM-020.
-
-## DET-002 - Agents without a manifest are reported as idle
-
-- Omp and Mastracode have no screen manifest, so `fallback_state` in `src/detect/manifest.rs` gives them `AgentState::Idle`. Without the hook installed, the sidebar shows them idle whatever they are doing; `Unknown` is the honest value.
-- Changing detection alone breaks two consumers, so the fix must change all three together:
-  - `TerminalState::reconcile_managed_agent_at` (`src/terminal/state.rs`) only marks a managed launch ready on `Idle` (Codex excepted), so managed Omp/Mastracode launches would time out and lose their name.
-  - `should_skip_idle_screen_scan` (`src/pane/agent_detection.rs`) treats only `Idle`, or Codex `Unknown`, as stable, so `Unknown` would force a screen read every tick.
-- A comment at `fallback_state` records this.
-
 ## DET-003 - `stabilize_agent_detection` is an identity function, and the detector's visible-state signals are carried but ignored
 
 Surfaced in three scopes: detection, app core, pane/terminal state.
@@ -36,7 +26,7 @@ Surfaced in three scopes: detection, app core, pane/terminal state.
 
 ## DET-012 - Hook report ordering is decided by wall-clock seqs from separate processes
 
-- Kimi and Mastracode now take their seq first thing in the shell (`date +%s%N`), which shrinks but doesn't close the window: separate hook processes still race, and a wall clock stepping backwards still drops reports until it catches up.
+- Kimi and Mastracode take their seq first thing in the shell (`date +%s%N`), which shrinks but doesn't close the window: separate hook processes still race, and a wall clock stepping backwards still drops reports until it catches up.
 - The real fix is server-side, in how `HookStateReported` / `AgentSessionReported` accept seqs (reached from `src/app/api/panes.rs`): tolerate small inversions or use a monotonic per-source clock.
 - Seq units differ by integration: Kilo, opencode, pi and omp seed from `Date.now()*1000` (microseconds); the shell/python hooks use nanoseconds. Harmless only while seqs are compared per source.
 - Kilo still sends `session_start_source: "startup"` always; its events carry no start source (commented in the asset).
@@ -45,10 +35,10 @@ Surfaced in three scopes: detection, app core, pane/terminal state.
 
 - The `permission_required` rules in the opencode and Kilo manifests also require one of "allow once", "allow always", "reject" or "enter confirm". Those labels were written from memory of opencode's TUI. Confirm them against a live dialog with `shepr agent read <pane> --source detection --format text`.
 
-## DET-017 - `expand_tilde_path` mis-expands `~user`
+## DET-019 - Session-only python hooks crash on a non-object payload
 
-- `expand_tilde_path` in `src/integration/env.rs` turns `~bob/x` into `$HOME/bob/x`. It should only expand a bare `~` or `~/`.
+- The Claude and Grok hooks (and probably Codex, Copilot, Devin, Droid, Qoder, Qwen, Cursor and Antigravity, which share the pattern) do `json.loads` then `hook_input.get` under `set -eu`, with python's stderr not redirected. A non-object JSON payload makes the hook exit 1 and print a traceback, which the agent may show. No report is lost (they only send session reports). Fixing each needs an integration version bump; Kimi and Mastracode already treat non-dicts as `{}`.
 
-## DET-018 - The Kimi hook assumes a JSON object payload
+## DET-020 - Two `expand_tilde_path` implementations
 
-- The Kimi hook script calls `payload.get` without checking the payload is a dict, so a non-object JSON body raises (and the report is silently lost).
+- `src/integration/env.rs::expand_tilde_path` duplicates `crate::pathutil::expand_tilde_path`. They differ when `HOME` is unset (env.rs errors, pathutil falls back to the literal path). Merging them needs a decision on which behaviour to keep.

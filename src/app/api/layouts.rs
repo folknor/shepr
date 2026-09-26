@@ -104,6 +104,7 @@ impl App {
         };
 
         let created = {
+            let spawn = self.pane_spawn_handles();
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return encode_error(id, "workspace_not_found", "workspace not found");
             };
@@ -117,6 +118,7 @@ impl App {
                     scrollback_limit_bytes,
                     host_terminal_theme,
                     host_terminal_appearance,
+                    &spawn,
                 )
             } else {
                 ws.create_tab(
@@ -128,6 +130,7 @@ impl App {
                     host_terminal_appearance,
                     crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
                     extra_env,
+                    &spawn,
                 )
             }
         };
@@ -400,6 +403,7 @@ impl App {
             SplitDirection::Down => Direction::Vertical,
         };
         let command = layout_command(pane)?;
+        let spawn = self.pane_spawn_handles();
         let result = {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return Err("workspace not found".into());
@@ -417,6 +421,7 @@ impl App {
                     host_terminal_theme,
                     host_terminal_appearance,
                     false,
+                    &spawn,
                 )
             } else {
                 ws.split_pane_with_ratio(
@@ -431,6 +436,7 @@ impl App {
                     crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
                     extra_env,
                     false,
+                    &spawn,
                 )
             }
         };

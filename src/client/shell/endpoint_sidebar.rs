@@ -439,6 +439,9 @@ pub(super) fn render_expanded(
                 let selected = state.selected_workspace_id.is_some_and(|target| {
                     target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
                 });
+                // Drag-reordering moves workspaces of the active machine only.
+                let dragged = endpoint_active
+                    && state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
                 super::sidebar::render_workspace_rows(
                     buffer,
                     nested,
@@ -449,7 +452,7 @@ pub(super) fn render_expanded(
                     endpoint_active && workspace.focused,
                     selected,
                     state.selected_workspace_id.is_some(),
-                    false,
+                    dragged,
                     palette,
                 );
                 if endpoint.status != ClientEndpointStatus::Online {
@@ -476,6 +479,21 @@ pub(super) fn render_expanded(
         let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
         hits.workspace_scrollbar = track;
         super::scroll::render_list_scrollbar(buffer, track, metrics, palette);
+    }
+
+    // Same drop marker as the single-machine sidebar draws while a workspace is dragged.
+    if let Some(row) = state.workspace_drop_indicator_row.filter(|row| {
+        *row >= workspace_area.y.saturating_add(1)
+            && *row < workspace_area.bottom().saturating_sub(1)
+    }) {
+        put_text(
+            buffer,
+            body.x,
+            row,
+            body.width,
+            &"─".repeat(body.width as usize),
+            Style::default().fg(palette.accent),
+        );
     }
 
     let footer_y = workspace_area.bottom().saturating_sub(1);

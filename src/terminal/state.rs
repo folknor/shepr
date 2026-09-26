@@ -2016,10 +2016,12 @@ impl TerminalState {
         }
         if managed.phase == ManagedAgentPhase::Blocked {
             if known_agent == Some(managed.kind)
-                && (self.state == AgentState::Idle
-                    || managed.kind == Agent::Codex
-                        && self.state == AgentState::Unknown
-                        && self.codex_prompt_ready)
+                && managed_agent_state_is_ready(
+                    managed.kind,
+                    self.state,
+                    self.codex_prompt_ready,
+                    crate::detect::manifest::has_screen_manifest,
+                )
             {
                 self.managed_agent = Some(ManagedAgent {
                     kind: managed.kind,
@@ -2049,10 +2051,12 @@ impl TerminalState {
             }
             if ready_after.is_none_or(|ready_after| now >= ready_after) {
                 if known_agent == Some(managed.kind)
-                    && (self.state == AgentState::Idle
-                        || managed.kind == Agent::Codex
-                            && self.state == AgentState::Unknown
-                            && self.codex_prompt_ready)
+                    && managed_agent_state_is_ready(
+                        managed.kind,
+                        self.state,
+                        self.codex_prompt_ready,
+                        crate::detect::manifest::has_screen_manifest,
+                    )
                 {
                     self.managed_agent = Some(ManagedAgent {
                         kind: managed.kind,
@@ -2218,6 +2222,28 @@ pub(crate) fn stabilize_agent_detection(detection: crate::detect::AgentDetection
     detection.state
 }
 
+/// Whether a managed agent launch in `state` counts as ready for input.
+///
+/// `Idle` is ready. Codex's idle screen is ambiguous and reports `Unknown`,
+/// so it additionally needs its prompt observed. An agent with no screen
+/// manifest (Omp, Mastracode) is never anything but `Unknown` on screen, so
+/// without its hook that `Unknown` is as settled as it gets and counts as
+/// ready once the launch's settle delay has passed; with the hook, the hook
+/// state replaces it and `Idle` applies as usual.
+fn managed_agent_state_is_ready(
+    kind: Agent,
+    state: AgentState,
+    codex_prompt_ready: bool,
+    has_screen_manifest: impl FnOnce(Agent) -> bool,
+) -> bool {
+    match state {
+        AgentState::Idle => true,
+        AgentState::Unknown if kind == Agent::Codex => codex_prompt_ready,
+        AgentState::Unknown => !has_screen_manifest(kind),
+        AgentState::Working | AgentState::Blocked => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2291,6 +2317,69 @@ mod tests {
         assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
         assert!(terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), true));
         assert_eq!(terminal.agent_name, None);
+    }
+
+    #[test]
+    fn managed_readiness_accepts_unknown_only_for_agents_without_a_screen_manifest() {
+        let no_manifest = |_: Agent| false;
+        let manifest = |_: Agent| true;
+        assert!(managed_agent_state_is_ready(
+            Agent::Omp,
+            AgentState::Unknown,
+            false,
+            no_manifest
+        ));
+        assert!(!managed_agent_state_is_ready(
+            Agent::Pi,
+            AgentState::Unknown,
+            false,
+            manifest
+        ));
+        assert!(managed_agent_state_is_ready(
+            Agent::Pi,
+            AgentState::Idle,
+            false,
+            manifest
+        ));
+        assert!(!managed_agent_state_is_ready(
+            Agent::Codex,
+            AgentState::Unknown,
+            false,
+            no_manifest
+        ));
+        assert!(managed_agent_state_is_ready(
+            Agent::Codex,
+            AgentState::Unknown,
+            true,
+            manifest
+        ));
+        for state in [AgentState::Working, AgentState::Blocked] {
+            assert!(!managed_agent_state_is_ready(
+                Agent::Omp,
+                state,
+                true,
+                no_manifest
+            ));
+        }
+    }
+
+    #[test]
+    fn managed_launch_of_an_agent_without_a_screen_manifest_becomes_ready_on_unknown() {
+        for kind in [Agent::Omp, Agent::Mastracode] {
+            let mut terminal = test_terminal();
+            let now = Instant::now();
+            terminal.begin_managed_agent(
+                "helper".into(),
+                kind,
+                now,
+                Duration::from_millis(100),
+                Duration::from_secs(1),
+            );
+            terminal.set_detected_state(Some(kind), AgentState::Unknown);
+            assert!(terminal.reconcile_managed_agent_at(now + Duration::from_millis(100), false));
+            assert!(terminal.managed_agent_interactive_ready());
+            assert_eq!(terminal.agent_name.as_deref(), Some("helper"));
+        }
     }
 
     #[test]

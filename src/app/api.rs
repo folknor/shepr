@@ -300,6 +300,16 @@ impl App {
     /// `agent.prompt --wait` end on their pane's `pane.closed`, and subscribers
     /// rebuild the model from these events. Public ids stop resolving once
     /// the tab is gone, so build these before removing it and emit them after.
+    ///
+    /// Every production close reaches one of the emitting paths: keybinding,
+    /// context-menu and confirm-dialog closes in the client shell are sent as
+    /// `tab.close` / `pane.close` / `workspace.close` over the client-shell
+    /// endpoint lane and land in the same API handlers as socket requests,
+    /// and a pane whose process exits is covered by
+    /// `pane_exit_container_events`. `AppState::close_tab` and
+    /// `AppState::close_pane` are test-only; a new direct caller of
+    /// `AppState::close_workspace_at` or `Workspace::close_tab` must emit
+    /// these events itself.
     pub(super) fn tab_close_events(
         &self,
         ws_idx: usize,
@@ -502,19 +512,33 @@ impl App {
         self.sync_pending_terminal_titles();
         use crate::api::schema::{Method, ResponseResult, SuccessResponse};
 
+        let method_name = crate::api::api_method_name(&request.method);
         let response = match request.method {
-            Method::ServerStop(_) => {
-                self.state.should_quit = true;
-                SuccessResponse {
-                    id: request.id,
-                    result: ResponseResult::Ok {},
-                }
-            }
-            Method::ServerSshAgentRegister(_) => {
+            // Every one of these is answered before a request reaches the app:
+            // the API server handles ping, SSH agent leases, subscriptions and
+            // waits (including `agent.wait`) on the connection thread and
+            // rejects `client_shell.surface.set`; the headless server
+            // intercepts window titles and `agent.prompt` before calling this
+            // function. Reaching here is a routing bug, reported as such.
+            Method::Ping(_)
+            | Method::ServerStop(_)
+            | Method::ServerSshAgentRegister(_)
+            | Method::ClientWindowTitleSet(_)
+            | Method::ClientWindowTitleClear(_)
+            | Method::ClientShellSurfaceSet(_)
+            | Method::AgentPrompt(_)
+            | Method::AgentWait(_)
+            | Method::EventsSubscribe(_)
+            | Method::EventsWait(_)
+            | Method::PaneWaitForOutput(_) => {
+                tracing::warn!(
+                    method = method_name,
+                    "api request routed to the app by mistake"
+                );
                 return responses::encode_error(
                     request.id,
-                    "connection_local_only",
-                    "SSH agent registration requires a persistent local JSON API connection",
+                    "internal_error",
+                    format!("{method_name} is not handled by the app"),
                 );
             }
             Method::ServerAgentManifests(_) => {
@@ -542,15 +566,6 @@ impl App {
                         manifests: summaries.into_iter().map(agent_manifest_info).collect(),
                     },
                 }
-            }
-            Method::ClientWindowTitleSet(_) | Method::ClientWindowTitleClear(_) => {
-                return responses::encode_success(
-                    request.id,
-                    ResponseResult::ClientWindowTitle {
-                        changed: false,
-                        reason: crate::api::schema::ClientWindowTitleReason::NoForegroundClient,
-                    },
-                );
             }
             Method::SessionSnapshot(_) => return self.handle_session_snapshot(request.id),
             Method::WorkspaceList(_) => return self.handle_workspace_list(request.id),
@@ -588,20 +603,6 @@ impl App {
             Method::AgentFocus(target) => return self.handle_agent_focus(request.id, &target),
             Method::AgentRename(params) => return self.handle_agent_rename(request.id, params),
             Method::AgentStart(params) => return self.handle_agent_start(request.id, params),
-            Method::AgentPrompt(_) => {
-                return responses::encode_error(
-                    request.id,
-                    "invalid_request",
-                    "agent.prompt is handled asynchronously by the app runtime",
-                );
-            }
-            Method::AgentWait(_) => {
-                return responses::encode_error(
-                    request.id,
-                    "invalid_request",
-                    "agent.wait is handled by the api server",
-                );
-            }
             Method::AgentRead(params) => return self.handle_agent_read(request.id, &params),
             Method::AgentExplain(target) => return self.handle_agent_explain(request.id, &target),
             Method::AgentSendKeys(params) => {
@@ -667,16 +668,9 @@ impl App {
             }
             Method::PaneClose(target) => return self.handle_pane_close(request.id, &target),
             Method::PaneSendKeys(params) => return self.handle_pane_send_keys(request.id, &params),
-            _ => {
-                return responses::encode_error(
-                    request.id,
-                    "not_implemented",
-                    "method not implemented yet",
-                );
-            }
         };
 
-        serde_json::to_string(&response).expect("response serializes to JSON")
+        responses::encode_success(response.id, response.result)
     }
 }
 
@@ -920,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn client_window_title_api_reports_no_foreground_client_in_app_mode() {
+    fn methods_answered_before_the_app_are_reported_as_misrouted() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &crate::config::Config::default(),
@@ -929,28 +923,28 @@ mod tests {
             crate::api::EventHub::default(),
         );
 
-        let set = app.handle_api_request(crate::api::schema::Request {
-            id: "title_set".into(),
-            method: crate::api::schema::Method::ClientWindowTitleSet(
-                crate::api::schema::ClientWindowTitleSetParams {
-                    title: "plugin review".into(),
-                },
-            ),
-        });
-        let set: serde_json::Value = serde_json::from_str(&set).expect("test precondition");
-        assert_eq!(set["result"]["type"], "client_window_title");
-        assert_eq!(set["result"]["changed"], false);
-        assert_eq!(set["result"]["reason"], "no_foreground_client");
-
-        let clear = app.handle_api_request(crate::api::schema::Request {
-            id: "title_clear".into(),
-            method: crate::api::schema::Method::ClientWindowTitleClear(
+        for method in [
+            crate::api::schema::Method::ClientWindowTitleClear(
                 crate::api::schema::EmptyParams::default(),
             ),
-        });
-        let clear: serde_json::Value = serde_json::from_str(&clear).expect("test precondition");
-        assert_eq!(clear["result"]["type"], "client_window_title");
-        assert_eq!(clear["result"]["reason"], "no_foreground_client");
+            crate::api::schema::Method::AgentWait(crate::api::schema::AgentWaitParams {
+                target: "reviewer".into(),
+                until: Vec::new(),
+                timeout_ms: None,
+            }),
+            crate::api::schema::Method::Ping(crate::api::schema::PingParams::default()),
+        ] {
+            let name = crate::api::api_method_name(&method);
+            let response = app.handle_api_request(crate::api::schema::Request {
+                id: "misrouted".into(),
+                method,
+            });
+            let response: serde_json::Value =
+                serde_json::from_str(&response).expect("test precondition");
+            assert_eq!(response["id"], "misrouted", "{name}");
+            assert_eq!(response["error"]["code"], "internal_error", "{name}");
+        }
+        assert!(!app.state.should_quit);
     }
 
     #[test]

@@ -2953,6 +2953,100 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     let _ = fs::remove_dir_all(base);
 }
 
+/// Runs the bundled Kimi hook with `payload` on stdin and returns the request
+/// line it sent to a stand-in server socket, or `None` when it sent nothing.
+/// The hook needs python3; callers skip when [`python3_available`] is false.
+#[cfg(unix)]
+// The `expect` calls below are test preconditions (fixture setup), not the
+// `None` path this function's return type communicates to callers.
+#[allow(clippy::unwrap_in_result)]
+fn run_kimi_hook(base: &Path, action: &str, payload: &[u8]) -> Option<String> {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
+    use std::process::{Command, Stdio};
+
+    fs::create_dir_all(base).expect("test precondition");
+    let hook = base.join(KIMI_HOOK_INSTALL_NAME);
+    fs::write(&hook, KIMI_HOOK_ASSET).expect("test precondition");
+    let socket_path = base.join("s.sock");
+    let listener = UnixListener::bind(&socket_path).expect("test precondition");
+    listener.set_nonblocking(true).expect("test precondition");
+
+    let mut child = Command::new("sh")
+        .arg(&hook)
+        .arg(action)
+        .env("SHEPR_ENV", "1")
+        .env("SHEPR_PANE_ID", "w1:p2")
+        .env("SHEPR_SOCKET_PATH", &socket_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("test precondition");
+    child
+        .stdin
+        .take()
+        .expect("test precondition")
+        .write_all(payload)
+        .expect("test precondition");
+    let status = child.wait().expect("test precondition");
+    assert!(status.success(), "the hook must never fail its caller");
+
+    // The hook has exited; a connection it made is still queued on the
+    // listener with its request buffered.
+    let (mut stream, _) = listener.accept().ok()?;
+    stream.set_nonblocking(false).expect("test precondition");
+    let mut request = String::new();
+    stream
+        .read_to_string(&mut request)
+        .expect("test precondition");
+    Some(request)
+}
+
+#[cfg(unix)]
+fn python3_available() -> bool {
+    std::process::Command::new("python3")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(unix)]
+#[test]
+fn kimi_hook_reports_state_when_the_payload_is_not_a_json_object() {
+    let _lock = integration_env_lock();
+    if !python3_available() {
+        eprintln!("skipping: python3 is not installed");
+        return;
+    }
+    let base = unique_base();
+
+    let payloads: [&[u8]; 5] = [
+        b"[1, 2]",
+        b"\"text\"",
+        b"null",
+        b"not json",
+        br#"{"session_id":"abc"}"#,
+    ];
+    for (index, payload) in payloads.into_iter().enumerate() {
+        let request = run_kimi_hook(&base.join(index.to_string()), "working", payload)
+            .unwrap_or_else(|| {
+                panic!(
+                    "payload {:?} sent no report",
+                    String::from_utf8_lossy(payload)
+                )
+            });
+        let request: Value = serde_json::from_str(request.trim()).expect("test precondition");
+        assert_eq!(request["method"], "pane.report_agent");
+        assert_eq!(request["params"]["state"], "working");
+        assert_eq!(request["params"]["pane_id"], "w1:p2");
+    }
+
+    let _ = fs::remove_dir_all(base);
+}
+
 #[test]
 fn install_letta_errors_when_config_dir_missing() {
     let _lock = integration_env_lock();

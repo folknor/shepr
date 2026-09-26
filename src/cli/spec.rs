@@ -250,7 +250,7 @@ fn agent_command() -> Command {
                 .about("Send key presses to an agent")
                 .arg(required("target", "TARGET"))
                 .arg(text_words("key", "KEY"))
-                .after_help("Use esc as the canonical Escape key name; escape is also accepted."),
+                .after_help(SEND_KEYS_HELP),
         )
         .subcommand(
             Command::new("prompt")
@@ -382,6 +382,10 @@ pub(super) fn agent_kind_values() -> Vec<&'static str> {
         .map(crate::detect::agent_label)
         .collect()
 }
+
+/// Key syntax for `pane send-keys` and `agent send-keys`; the server parses
+/// each key with the keybinding parser (`config::parse_key_combo`).
+const SEND_KEYS_HELP: &str = "Each KEY is a key combo in keybinding syntax: ctrl/alt/shift/super modifiers joined with + (meta is an alias for alt), then a character or a key name: enter, tab, esc, backspace, space, up, down, left, right, home, end, pageup, pagedown, delete, insert, f1..f12. Use esc as the canonical Escape key name; escape is also accepted.";
 
 fn pane_command() -> Command {
     group("pane")
@@ -555,7 +559,7 @@ fn pane_command() -> Command {
                 .about("Send key presses to a pane")
                 .arg(required("pane_id", "PANE_ID"))
                 .arg(text_words("key", "KEY"))
-                .after_help("Use esc as the canonical Escape key name; escape is also accepted."),
+                .after_help(SEND_KEYS_HELP),
         )
         .subcommand(
             Command::new("wait-output")

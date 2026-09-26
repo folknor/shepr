@@ -1,6 +1,7 @@
 //! Byte-level scanner for the few control sequences vte never hands to a
 //! `Handler`, but shepr must answer or track: OSC 7 / OSC 9;9 / OSC 1337
-//! CurrentDir working-directory reports, CSI ? 996 n, CSI 16 t, XTGETTCAP
+//! CurrentDir working-directory reports, OSC 9;4 progress (agent detection
+//! evidence), CSI ? 996 n, CSI 16 t, XTGETTCAP
 //! (`ESC P + q`), `CSI ? 3 J`, and the modifyOtherKeys spellings vte drops
 //! (`CSI > m`, `CSI > 4 n`, `CSI > 4 ; Pv m` with Pv above 2).
 //!
@@ -36,6 +37,8 @@ pub(super) enum ScanEvent {
     Xtgettcap(Vec<Vec<u8>>),
     /// Working-directory report payload (URI or path, exactly as sent).
     WorkingDirectory(Vec<u8>),
+    /// ConEmu progress report: the OSC 9 payload after `9;`, starting `4`.
+    Progress(Vec<u8>),
     /// CSI ? 3 J: the DECSED spelling of ED3 (erase scrollback). vte only
     /// dispatches `CSI 3 J`, but programs (Droid among them) emit this form.
     EraseScrollback,
@@ -269,6 +272,19 @@ impl Scanner {
             events.push(ScannedEvent {
                 end: index + 1,
                 event: ScanEvent::WorkingDirectory(payload.to_vec()),
+            });
+            return;
+        }
+        // ConEmu progress is `OSC 9 ; 4 ; state ; percent`. Every other OSC 9
+        // is an iTerm2-style notification (or ConEmu's other subcommands),
+        // which must not overwrite progress evidence.
+        if let Some(payload) = body
+            .strip_prefix(b"9;")
+            .filter(|payload| *payload == b"4" || payload.starts_with(b"4;"))
+        {
+            events.push(ScannedEvent {
+                end: index + 1,
+                event: ScanEvent::Progress(payload.to_vec()),
             });
         }
     }
@@ -511,6 +527,21 @@ mod tests {
                 b"file:///tmp/a".to_vec(),
                 b"/tmp/b".to_vec(),
                 b"/tmp/c".to_vec()
+            ]
+        );
+        assert_chunk_equivalence(bytes);
+    }
+
+    #[test]
+    fn only_conemu_progress_counts_as_progress() {
+        let bytes: &[u8] =
+            b"\x1b]9;4;3;50\x07\x1b]9;build finished\x1b\\\x1b]9;4\x07\x1b]9;42\x07\x1b]9;9;/tmp\x07";
+        assert_eq!(
+            scanned_events(bytes),
+            vec![
+                ScanEvent::Progress(b"4;3;50".to_vec()),
+                ScanEvent::Progress(b"4".to_vec()),
+                ScanEvent::WorkingDirectory(b"/tmp".to_vec()),
             ]
         );
         assert_chunk_equivalence(bytes);

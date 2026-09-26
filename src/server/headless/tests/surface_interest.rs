@@ -3,8 +3,8 @@ use super::*;
 use std::sync::{Arc, Mutex};
 
 use crate::client::endpoint::{
-    ClientEndpointId, ClientEndpointStatus, EndpointNegotiation, EndpointRegistry,
-    EndpointTransport, ProfileId, SavedSshEndpoint,
+    ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointTransport, ProfileId,
+    SavedSshEndpoint,
 };
 
 #[derive(Clone)]
@@ -19,16 +19,6 @@ impl EndpointTransport for CapturingEndpointTransport {
         sent.push(message.clone());
         Ok(())
     }
-}
-
-fn lifecycle_negotiation() -> EndpointNegotiation {
-    EndpointNegotiation::new(
-        vec!["client_shell.surface.set".into()],
-        vec![
-            crate::protocol::endpoint::SURFACE_INTEREST_CAPABILITY.into(),
-            crate::protocol::endpoint::PRESENTATION_EFFECTS_FENCE_CAPABILITY.into(),
-        ],
-    )
 }
 
 fn lifecycle_resize() -> crate::protocol::ClientMessage {
@@ -76,8 +66,6 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
 
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
-            surface_reuse: false,
-            surface_delta: false,
             client_id,
             surface_cols: 101,
             surface_rows: 37,
@@ -278,7 +266,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         client_id: 7,
         focused: true,
     }));
-    let focused_size = server.app.state.workspaces[0].test_runtimes[&pane_id].current_size();
+    let focused_size = server.app.test_runtime(pane_id).current_size();
     assert_eq!(focused_size, (17, 67));
     let shared_tab_id = server.shell_tab_id_for_client(7).expect("focused tab");
     assert_eq!(
@@ -289,8 +277,6 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
     let (writer, background_control, _) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
-            surface_reuse: false,
-            surface_delta: false,
             client_id: 8,
             surface_cols: 100,
             surface_rows: 35,
@@ -318,7 +304,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
     assert_eq!(server.clients[&7].outer_terminal_focus, Some(true));
     assert_eq!(server.clients[&8].outer_terminal_focus, None);
     assert_eq!(
-        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
+        server.app.test_runtime(pane_id).current_size(),
         focused_size,
         "surface activation must not transiently resize a focused viewer's tab"
     );
@@ -334,7 +320,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
     assert_eq!(server.clients[&7].outer_terminal_focus, Some(true));
     assert_eq!(server.clients[&8].outer_terminal_focus, Some(false));
     assert_eq!(
-        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
+        server.app.test_runtime(pane_id).current_size(),
         focused_size
     );
     assert_eq!(
@@ -347,7 +333,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         .recv()
         .expect("background presentation synchronization response");
     assert_eq!(
-        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
+        server.app.test_runtime(pane_id).current_size(),
         focused_size
     );
     assert_eq!(
@@ -372,10 +358,7 @@ async fn focused_surface_reassertion_reclaims_tab_geometry() {
     let (other_control, _) = connect_test_shell(&mut server, 7, 68, 17);
     let _ = other_control.recv().expect("other client snapshot");
     assert!(server.claim_shell_tab_geometry(7, false));
-    assert_eq!(
-        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
-        (17, 67)
-    );
+    assert_eq!(server.app.test_runtime(pane_id).current_size(), (17, 67));
 
     request_active_surface(&mut server, 8, "reassert-focused-surface");
     let _ = focused_control
@@ -383,10 +366,7 @@ async fn focused_surface_reassertion_reclaims_tab_geometry() {
         .expect("focused surface reassertion response");
 
     assert_eq!(server.clients[&8].outer_terminal_focus, Some(true));
-    assert_eq!(
-        server.app.state.workspaces[0].test_runtimes[&pane_id].current_size(),
-        (35, 99)
-    );
+    assert_eq!(server.app.test_runtime(pane_id).current_size(), (35, 99));
     assert_eq!(
         server.tab_geometry_controllers.get(&shared_tab_id),
         Some(&8)
@@ -401,8 +381,6 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
     let client_id = 63;
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
-            surface_reuse: false,
-            surface_delta: false,
             client_id,
             surface_cols: 80,
             surface_rows: 24,
@@ -521,8 +499,6 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let source_client_id = 78;
     assert!(
         source_server.handle_server_event(ServerEvent::ClientShellConnected {
-            surface_reuse: false,
-            surface_delta: false,
             client_id: source_client_id,
             surface_cols: 80,
             surface_rows: 24,
@@ -543,8 +519,6 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let target_client_id = 79;
     assert!(
         target_server.handle_server_event(ServerEvent::ClientShellConnected {
-            surface_reuse: false,
-            surface_delta: false,
             client_id: target_client_id,
             surface_cols: 80,
             surface_rows: 24,
@@ -577,16 +551,12 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
 
     let source_sent = Arc::new(Mutex::new(Vec::new()));
     let target_sent = Arc::new(Mutex::new(Vec::new()));
-    let mut endpoints = EndpointRegistry::new(
-        CapturingEndpointTransport(Arc::clone(&source_sent)),
-        1,
-        lifecycle_negotiation(),
-    );
+    let mut endpoints =
+        EndpointRegistry::new(CapturingEndpointTransport(Arc::clone(&source_sent)), 1);
     endpoints.insert(
         target_id.clone(),
         CapturingEndpointTransport(Arc::clone(&target_sent)),
         7,
-        lifecycle_negotiation(),
         false,
     );
     let mut activation = crate::client::endpoint::PendingEndpointActivation::begin(

@@ -19,7 +19,7 @@
   - Added machines never connect, and removed or disabled ones keep reconnecting.
   - `federated` is also fixed at launch, so a Local-only client stays fatal on Local loss after a machine is added.
   - The `reconnect` message is only true for an endpoint already in `Attention`.
-- A `SavedSshConnector` is now built per enabled profile at startup; a live-catalog fix should create and drop connectors per profile.
+- A `SavedSshConnector` is built per enabled profile at startup; a live-catalog fix should create and drop connectors per profile.
 
 ## EP-006 - The activation's surface geometry is computed from the source's layout
 
@@ -31,7 +31,7 @@
 
 ## EP-011 - Bridge sockets use predictable paths in `$TMPDIR`
 
-- Names are pid-derived (`unix_common.rs`), and the socket is bound before its mode is set to 0600 (`bind_private_local_listener`, called from `attach.rs`), so there is a small window.
+- Names are pid-derived (`unix_common.rs`), and the socket is bound before its mode is set to 0600 (`bind_private_local_listener`), so there is a small window. The headless server's socket now avoids this with `bind_owner_only_listener` (staging directory + hard link); that helper could move into `ipc.rs` and serve here too.
 - A socket another user leaves at that path can block a connect attempt.
 
 ## EP-015 - Presentation freeze handling looks inverted relative to its comments
@@ -39,14 +39,9 @@
 Raised by the client UI hunter for this scope.
 
 - `install_client_shell_snapshot` calls `present_frame` (which respects the freeze) when `projection_pending`, and otherwise `present_frozen_chrome` (which bypasses it) (`shell_runtime.rs`).
-- `finish_client_shell_input` bypasses the freeze whenever no activation is pending, including after `present_handoff_unavailable` froze presentation with `pending = None`. That lets full frames with the stale pane surface through. Endpoint-result input now also goes through `finish_client_shell_input`.
+- `finish_client_shell_input` bypasses the freeze whenever no activation is pending, including after `present_handoff_unavailable` froze presentation with `pending = None`. That lets full frames with the stale pane surface through. Endpoint-result input also goes through `finish_client_shell_input`.
 
 ## EP-017 - Production `expect()` in the client endpoint code
 
 - **Claim:** no `unwrap` in production code.
 - `activation.rs`: `geometry()`, `send_latest_focus`. `shell_runtime.rs`: `handle_endpoint_attention`, `complete_endpoint_activation`. `client/mod.rs`: "checked shell mode", "checked pending activation".
-
-## EP-018 - Discovery and the API bridge may not survive a non-POSIX login shell (unverified)
-
-- The client bridge command is now `/bin/sh -c '<one plain line>'`. `posix_remote_api_discovery_command` and `cached_remote_api_command` (`src/remote/attach.rs`) still pass multi-line scripts with embedded `'\''` quoting inside `/bin/sh -c '…'`. Whether xonsh or nushell parse a multi-line single-quoted argument is unverified, so the claim that discovery and the API bridge work for non-POSIX shells is unproven.
-- The loadable config is still read once at client start by `EndpointSupervisors::new`; carrying `remote.manage_ssh_config` from the launch-time config into `EndpointSupervisors::with_ssh_settings` in `src/client/mod.rs` would remove even that read.

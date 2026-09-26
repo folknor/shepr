@@ -58,7 +58,8 @@ pub fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
     })
 }
 
-pub fn git_space_metadata(cwd: &Path) -> Option<GitSpaceMetadata> {
+#[cfg(test)]
+pub(crate) fn git_space_metadata(cwd: &Path) -> Option<GitSpaceMetadata> {
     let info = git_worktree_info(cwd)?;
     Some(git_space_metadata_from_info(&info))
 }
@@ -183,7 +184,8 @@ pub(super) fn read_git_ref_file(path: &Path) -> Option<String> {
     }
 }
 
-pub fn git_branch(cwd: &Path) -> Option<String> {
+#[cfg(test)]
+pub(crate) fn git_branch(cwd: &Path) -> Option<String> {
     let repo_root = git_repo_root(cwd)?;
     let git_dir = git_dir_for_repo_root(&repo_root)?;
     let git_common_dir = git_common_dir_for_git_dir(&git_dir);
@@ -227,6 +229,7 @@ pub(super) fn git_symbolic_head_full(repo_root: &Path) -> Option<String> {
     git_trimmed_stdout(repo_root, &["symbolic-ref", "--quiet", "HEAD"])
 }
 
+#[cfg(test)]
 fn git_symbolic_head_short(repo_root: &Path) -> Option<String> {
     git_trimmed_stdout(repo_root, &["symbolic-ref", "--quiet", "--short", "HEAD"])
 }
@@ -245,6 +248,7 @@ fn git_dir_is_bare(git_dir: &Path) -> bool {
         .is_some_and(|value| value.eq_ignore_ascii_case("true"))
 }
 
+#[cfg(test)]
 fn parse_git_head_branch(head: &str) -> Option<String> {
     let branch = head.trim().strip_prefix("ref: refs/heads/")?;
     (!branch.is_empty()).then(|| branch.to_string())

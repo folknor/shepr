@@ -106,14 +106,7 @@ pub(crate) fn resize_tab_surface(
     else {
         return;
     };
-    resize_tab_panes(
-        app,
-        terminal_runtimes,
-        workspace_index,
-        tab,
-        area,
-        cell_size,
-    );
+    resize_tab_panes(app, terminal_runtimes, tab, area, cell_size);
 }
 
 pub(crate) fn render_tab_surface(
@@ -161,9 +154,6 @@ pub(crate) fn tab_surface_cursor(
 ) -> Option<CursorState> {
     let ws_idx = surface.target?.workspace_index;
     let info = surface.pane_infos.iter().find(|info| info.is_focused)?;
-    if !app.pane_exposes_host_cursor(ws_idx, info.id) {
-        return None;
-    }
     let runtime = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)?;
     if runtime.synchronized_output_active() {
         return None;
@@ -222,16 +212,22 @@ mod tests {
         let mut workspace = Workspace::test_new("shell-workspace");
         let left = workspace.tabs[0].root_pane;
         let right = workspace.test_split(Direction::Horizontal);
-        workspace.insert_test_runtime(
-            left,
+        let mut runtimes = TerminalRuntimeRegistry::new();
+        let left_terminal = workspace.terminal_id(left).cloned().expect("left terminal");
+        let right_terminal = workspace
+            .terminal_id(right)
+            .cloned()
+            .expect("right terminal");
+        runtimes.insert(
+            left_terminal,
             crate::terminal::TerminalRuntime::test_with_screen_bytes(
                 20,
                 8,
                 format!("\x1b]8;;{uri}\x1b\\LEFT\x1b]8;;\x1b\\").as_bytes(),
             ),
         );
-        workspace.insert_test_runtime(
-            right,
+        runtimes.insert(
+            right_terminal,
             crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 8, b"RIGHT"),
         );
 
@@ -244,7 +240,7 @@ mod tests {
         let area = full_area;
         let surface = compute_tab_surface(
             &app,
-            &TerminalRuntimeRegistry::new(),
+            &runtimes,
             area,
             false,
             crate::terminal_cell_size::HostCellSize::default(),
@@ -264,7 +260,7 @@ mod tests {
             .expect("test precondition");
         terminal
             .draw(|frame| {
-                render_tab_surface(&app, &TerminalRuntimeRegistry::new(), surface_view, frame);
+                render_tab_surface(&app, &runtimes, surface_view, frame);
             })
             .expect("test precondition");
 
@@ -279,12 +275,12 @@ mod tests {
         assert!(rendered.contains("RIGHT"), "surface: {rendered:?}");
         assert!(!rendered.contains("shell-workspace"));
 
-        let links = tab_surface_hyperlinks(&app, &TerminalRuntimeRegistry::new(), surface_view);
+        let links = tab_surface_hyperlinks(&app, &runtimes, surface_view);
         assert!(
             links
                 .iter()
                 .any(|(_, symbol, link)| { symbol == "L" && link == uri })
         );
-        assert!(tab_surface_cursor(&app, &TerminalRuntimeRegistry::new(), surface_view,).is_some());
+        assert!(tab_surface_cursor(&app, &runtimes, surface_view,).is_some());
     }
 }

@@ -23,15 +23,14 @@ pub(super) fn mismatch_response(
         return None;
     }
 
-    let message = if client_protocol > server_protocol {
-        format!(
-            "client protocol {client_protocol} is newer than server protocol {server_protocol}; restart the Shepr server before using this command. {restart_guidance}"
-        )
-    } else {
-        format!(
-            "client protocol {client_protocol} is older than server protocol {server_protocol}; upgrade the Shepr client before using this command"
-        )
-    };
+    // Protocol versions are folded from a source fingerprint (see `build.rs`),
+    // so comparing them says nothing about which build is newer. Report a
+    // different build and give the same restart guidance either way: the
+    // server that is running is the one that has to go.
+    let message = format!(
+        "this shepr client (protocol {client_protocol}, {}) is a different build from the running server (protocol {server_protocol}); restart the Shepr server with this build before using this command. {restart_guidance}",
+        crate::build_info::version()
+    );
 
     Some(ErrorResponse {
         id: request_id.to_string(),
@@ -62,7 +61,7 @@ mod tests {
     }
 
     #[test]
-    fn older_server_error_preserves_request_id_and_guidance() {
+    fn mismatch_error_preserves_request_id_and_guidance() {
         let response = mismatch_response(
             "cli:agent:wait",
             crate::protocol::PROTOCOL_VERSION - 1,
@@ -72,34 +71,42 @@ mod tests {
 
         assert_eq!(response.id, "cli:agent:wait");
         assert_eq!(response.error.code, "protocol_mismatch");
-        assert!(response.error.message.contains(&format!(
-            "client protocol {}",
-            crate::protocol::PROTOCOL_VERSION
-        )));
-        assert!(response.error.message.contains(&format!(
-            "server protocol {}",
-            crate::protocol::PROTOCOL_VERSION - 1
-        )));
-        assert!(response.error.message.contains("restart"));
-    }
-
-    #[test]
-    fn newer_server_error_tells_user_to_upgrade_client() {
-        let response = mismatch_response(
-            "cli:pane:list",
-            crate::protocol::PROTOCOL_VERSION + 1,
-            "unused restart guidance",
-        )
-        .expect("test precondition");
-
         assert!(
             response
                 .error
                 .message
-                .contains("older than server protocol")
+                .contains(&format!("protocol {}", crate::protocol::PROTOCOL_VERSION))
         );
-        assert!(response.error.message.contains("upgrade the Shepr client"));
-        assert!(!response.error.message.contains("unused restart guidance"));
+        assert!(response.error.message.contains(&format!(
+            "protocol {}",
+            crate::protocol::PROTOCOL_VERSION - 1
+        )));
+        assert!(
+            response
+                .error
+                .message
+                .contains("Run the session stop command, then restart.")
+        );
+    }
+
+    #[test]
+    fn mismatch_wording_does_not_depend_on_which_number_is_larger() {
+        // Fingerprint-derived versions have no order, so a higher and a lower
+        // server version must produce the same "different build" report with
+        // the restart guidance.
+        for server_protocol in [
+            crate::protocol::PROTOCOL_VERSION - 1,
+            crate::protocol::PROTOCOL_VERSION + 1,
+        ] {
+            let message = mismatch_response("req", server_protocol, "restart guidance")
+                .expect("test precondition")
+                .error
+                .message;
+            assert!(message.contains("different build"), "{message}");
+            assert!(message.contains("restart guidance"), "{message}");
+            assert!(!message.contains("newer"), "{message}");
+            assert!(!message.contains("older"), "{message}");
+        }
     }
 
     #[test]

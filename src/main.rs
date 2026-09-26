@@ -89,7 +89,8 @@ const DEFAULT_CONFIG: &str = r##"# shepr configuration
 # Examples: "ctrl+b", "f12", "esc", "-"
 # Action bindings use explicit syntax: "prefix+n" requires the prefix;
 # "ctrl+alt+n" is a direct terminal-mode shortcut.
-# Accepted key syntax: plain keys, ctrl/shift/alt/cmd/super modifiers, and special keys like enter/tab/esc/left/right/up/down.
+# Accepted key syntax: plain keys, ctrl/shift/alt/cmd/super modifiers ("meta" is an alias for alt),
+# and special keys like enter/tab/esc/left/right/up/down/home/end/pageup/pagedown/delete/insert/f1.
 # Named punctuation such as minus, comma, ampersand, plus, and backtick is also accepted.
 # Most reliable direct bindings are ctrl+letter, function keys, and explicit modified chords.
 # alt+..., cmd/super, and punctuation-with-modifiers may depend on your terminal/tmux setup.
@@ -119,10 +120,15 @@ const DEFAULT_CONFIG: &str = r##"# shepr configuration
 # close_tab = "prefix+shift+x"
 # rename_pane = "prefix+shift+p"
 # clear_pane = ""                  # unbound; e.g. "prefix+ctrl+k"
+# copy_mode = "prefix+["
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"
 # focus_pane_right = "prefix+l"
+# swap_pane_left = "prefix+shift+h"
+# swap_pane_down = "prefix+shift+j"
+# swap_pane_up = "prefix+shift+k"
+# swap_pane_right = "prefix+shift+l"
 # cycle_pane_next = "prefix+tab"
 # cycle_pane_previous = "prefix+shift+tab"
 # last_pane = ""          # optional, unset by default; bind e.g. "prefix+tab" for global back-and-forth
@@ -185,6 +191,8 @@ const DEFAULT_CONFIG: &str = r##"# shepr configuration
 
 # Optional modifier that forwards right-click hold/drag gestures to pane apps instead of opening Shepr's pane menu.
 # Empty/off disables this. Shift is intentionally unsupported because terminals commonly reserve Shift+mouse.
+# Terminal mouse reports only carry ctrl and alt ("option" and "meta" are aliases for alt),
+# so use "ctrl", "alt" or "ctrl+alt".
 # right_click_passthrough_modifier = ""
 
 # Force a full redraw when the outer terminal regains focus.
@@ -595,6 +603,30 @@ mod tests {
             .expect("test precondition");
 
         assert!(accent < sidebar);
+    }
+
+    #[test]
+    fn default_config_documents_every_keybinding_with_its_default() {
+        let keys =
+            toml::Value::try_from(config::Config::default().keys).expect("test precondition");
+        let keys = keys.as_table().expect("test precondition");
+        assert!(!keys.is_empty());
+        for (field, value) in keys {
+            let Some(default) = value.as_str() else {
+                continue;
+            };
+            let marker = format!("# {field} = ");
+            let quoted = format!("{default:?}");
+            let documented = DEFAULT_CONFIG.lines().any(|line| {
+                line.strip_prefix(marker.as_str())
+                    .and_then(|rest| rest.split_whitespace().next())
+                    == Some(quoted.as_str())
+            });
+            assert!(
+                documented,
+                "keys.{field} = {default:?} missing from DEFAULT_CONFIG"
+            );
+        }
     }
 
     #[test]

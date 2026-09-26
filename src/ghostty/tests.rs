@@ -1191,3 +1191,170 @@ fn plain_reads_trim_trailing_blank_lines_and_spaces() {
         ""
     );
 }
+
+#[test]
+fn titles_follow_the_parser_title_stack_and_ris() {
+    let mut terminal = Terminal::new(20, 3, 100).expect("test precondition");
+    assert_eq!(terminal.take_title_update(), None);
+
+    // An OSC ends at any ESC, exactly as the parser sees it: the CSI after it
+    // is not part of the title and the later OSC is a title of its own.
+    terminal.write(b"\x1b]0;foo\x1b[m text \x1b]2;bar\x07");
+    assert_eq!(terminal.take_title_update(), Some(Some("bar".to_owned())));
+
+    terminal.write(b"\x1b[22t\x1b]2;vim\x07");
+    assert_eq!(terminal.take_title_update(), Some(Some("vim".to_owned())));
+    terminal.write(b"\x1b[23t");
+    assert_eq!(terminal.take_title_update(), Some(Some("bar".to_owned())));
+
+    // Resizing re-announces the title inside alacritty; that is no change.
+    terminal.resize(30, 5, 0, 0).expect("test precondition");
+    terminal.resize(10, 2, 0, 0).expect("test precondition");
+    assert_eq!(terminal.take_title_update(), None);
+
+    terminal.write(b"\x1bc");
+    assert_eq!(terminal.take_title_update(), Some(None));
+}
+
+#[test]
+fn only_conemu_progress_is_reported_as_progress() {
+    let mut terminal = Terminal::new(20, 3, 0).expect("test precondition");
+    terminal.write(b"\x1b]9;4;3;\x07");
+    assert_eq!(terminal.take_progress_update(), Some(b"4;3;".to_vec()));
+    terminal.write(b"\x1b]9;build finished\x07");
+    assert_eq!(terminal.take_progress_update(), None);
+}
+
+/// Inside a frame vte replays DECRQM after BSU and before ESU, so it must see
+/// the update as active; outside one it is reset.
+#[test]
+fn decrqm_2026_reports_an_active_synchronized_update() {
+    let mut terminal = Terminal::new(20, 3, 0).expect("test precondition");
+    terminal.write(b"\x1b[?2026$p");
+    terminal.write(b"\x1b[?2026h\x1b[?2026$p\x1bc\x1b[?2026$p\x1b[?2026l\x1b[?2026$p");
+    assert_eq!(
+        core_replies(&mut terminal),
+        vec![
+            b"\x1b[?2026;2$y".to_vec(),
+            b"\x1b[?2026;1$y".to_vec(),
+            b"\x1b[?2026;1$y".to_vec(),
+            b"\x1b[?2026;2$y".to_vec(),
+        ]
+    );
+    assert_eq!(
+        terminal.mode_get(MODE_SYNCHRONIZED_OUTPUT),
+        Ok(false),
+        "the parser agrees the update ended"
+    );
+}
+
+#[test]
+fn resetting_any_tracking_mode_ends_x10_mouse() {
+    for mode in [1000u16, 1002, 1003] {
+        let mut terminal = Terminal::new(20, 3, 0).expect("test precondition");
+        terminal.write(b"\x1b[?9h");
+        assert_eq!(terminal.mode_get(9), Ok(true));
+        terminal.write(format!("\x1b[?{mode}l").as_bytes());
+        assert_eq!(terminal.mode_get(9), Ok(false), "mode {mode}");
+        assert_eq!(terminal.mouse_tracking_enabled(), Ok(false), "mode {mode}");
+    }
+}
+
+#[test]
+fn host_default_colors_sit_under_child_overrides() {
+    let host_fg = RgbColor {
+        r: 0xaa,
+        g: 0xbb,
+        b: 0xcc,
+    };
+    let host_bg = RgbColor {
+        r: 0x11,
+        g: 0x22,
+        b: 0x33,
+    };
+    let child_bg = RgbColor {
+        r: 0x44,
+        g: 0x55,
+        b: 0x66,
+    };
+    let mut terminal = Terminal::new(20, 3, 0).expect("test precondition");
+    terminal.set_default_colors(Some(host_fg), Some(host_bg));
+    let mut render_state = RenderState::new().expect("test precondition");
+    render_state.update(&terminal).expect("test precondition");
+    let colors = render_state.colors().expect("test precondition");
+    assert_eq!((colors.foreground, colors.background), (host_fg, host_bg));
+    assert_eq!(
+        terminal.default_color_override(DefaultColor::Background),
+        None
+    );
+
+    terminal.write(b"\x1b]11;rgb:44/55/66\x07\x1b]11;?\x07");
+    assert!(terminal.take_default_color_set());
+    assert_eq!(
+        terminal.default_color_override(DefaultColor::Background),
+        Some(child_bg)
+    );
+    // A host theme change leaves the child's override alone.
+    terminal.set_default_colors(Some(host_fg), Some(RgbColor::default()));
+    terminal.write(b"\x1b]111\x07\x1b]11;?\x07");
+    assert!(!terminal.take_default_color_set());
+    let queries: Vec<_> = terminal
+        .take_pty_responses()
+        .into_iter()
+        .map(|response| match response {
+            PtyResponse::ColorQuery(query) => (query.core_color(), query.child_override()),
+            other => panic!("expected colour query, got {other:?}"),
+        })
+        .collect();
+    // OSC 111 falls back to the host default, not to the built-in one.
+    assert_eq!(
+        queries,
+        vec![(Some(child_bg), true), (Some(RgbColor::default()), false)]
+    );
+
+    terminal.write(b"\x1b]10;rgb:01/02/03\x07");
+    terminal.reset_default_color_overrides();
+    assert_eq!(
+        terminal.default_color_override(DefaultColor::Foreground),
+        None
+    );
+    render_state.update(&terminal).expect("test precondition");
+    assert_eq!(
+        render_state.colors().expect("test precondition").foreground,
+        host_fg
+    );
+}
+
+#[test]
+fn cursor_shape_override_follows_decscusr_osc50_and_ris() {
+    let mut terminal = Terminal::new(20, 3, 0).expect("test precondition");
+    assert!(!terminal.cursor_shape_overridden());
+    terminal.write(b"\x1b[5 q");
+    assert!(terminal.cursor_shape_overridden());
+    terminal.write(b"\x1b[0 q");
+    assert!(!terminal.cursor_shape_overridden());
+    terminal.write(b"\x1b]50;CursorShape=1\x07");
+    assert!(terminal.cursor_shape_overridden());
+    terminal.write(b"\x1bc");
+    assert!(!terminal.cursor_shape_overridden());
+}
+
+/// Host-side mode changes must not be fed through the parser: a sequence the
+/// child has half-written would be cut short.
+#[test]
+fn mode_set_does_not_disturb_a_partial_child_sequence() {
+    let mut terminal = Terminal::new(20, 3, 0).expect("test precondition");
+    terminal.write(b"\x1b[3");
+    terminal
+        .mode_set(MODE_BRACKETED_PASTE, true)
+        .expect("test precondition");
+    terminal.write(b"1mred");
+    assert_eq!(terminal.mode_get(MODE_BRACKETED_PASTE), Ok(true));
+    assert_eq!(
+        terminal
+            .read_text_viewport((0, 0), (19, 0), false)
+            .expect("test precondition"),
+        "red"
+    );
+    assert!(terminal.mode_set(MODE_SYNCHRONIZED_OUTPUT, true).is_err());
+}

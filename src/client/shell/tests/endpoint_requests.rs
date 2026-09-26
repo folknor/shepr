@@ -39,15 +39,9 @@ impl crate::client::endpoint::EndpointTransport for TestTransport {
 #[test]
 fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
     use crate::client::{
-        ClientLoopEvent,
-        endpoint::{EndpointNegotiation, EndpointRegistry},
-        endpoint_commands::EndpointCommands,
+        ClientLoopEvent, endpoint::EndpointRegistry, endpoint_commands::EndpointCommands,
     };
-    let mut endpoints = EndpointRegistry::new(
-        TestTransport { fail: false },
-        1,
-        EndpointNegotiation::default(),
-    );
+    let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 1);
     let mut commands = EndpointCommands::default();
     let (tx, mut rx) = tokio::sync::mpsc::channel(1);
     tx.try_send(ClientLoopEvent::Timer)
@@ -73,16 +67,12 @@ fn local_selection_is_scheduled_ahead_of_a_full_event_queue() {
 
 #[test]
 fn dispatcher_cancels_pending_requests_on_frozen_surface_or_failed_send() {
-    use crate::client::endpoint::{EndpointNegotiation, EndpointRegistry};
+    use crate::client::endpoint::EndpointRegistry;
     use crate::client::endpoint_commands::EndpointCommands;
 
     for fail_send in [false, true] {
         let (mut state, actions) = pending_request();
-        let mut endpoints = EndpointRegistry::new(
-            TestTransport { fail: fail_send },
-            1,
-            EndpointNegotiation::default(),
-        );
+        let mut endpoints = EndpointRegistry::new(TestTransport { fail: fail_send }, 1);
         endpoints.set_surface_active(&ClientEndpointId::Local, fail_send);
         let mut commands = EndpointCommands::default();
         let mut scheduled = None;
@@ -107,7 +97,7 @@ fn dispatcher_cancels_pending_requests_on_frozen_surface_or_failed_send() {
 
 #[test]
 fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
-    use crate::client::endpoint::{EndpointNegotiation, EndpointRegistry};
+    use crate::client::endpoint::EndpointRegistry;
     use crate::client::endpoint_commands::EndpointCommands;
 
     let (mut state, actions) = pending_request();
@@ -128,11 +118,7 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
             commands.enqueue(endpoint_id, generation, boot_id, request);
         }
     }
-    let mut endpoints = EndpointRegistry::new(
-        TestTransport { fail: false },
-        2,
-        EndpointNegotiation::default(),
-    );
+    let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 2);
     let cancelled = commands.send_next(&ClientEndpointId::Local, &mut endpoints);
     assert_eq!(cancelled, vec![stale_id.clone()]);
     state.cancel_endpoint_request(&stale_id);

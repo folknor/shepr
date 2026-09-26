@@ -84,6 +84,18 @@ enum PtyIoDataCommand {
     },
 }
 
+impl PtyIoDataCommand {
+    /// The bytes a rejected send carried back. A failed `try_send` returns the
+    /// very command that was offered, so for a write this is its payload; a
+    /// submission hands back its text so no arm needs a panic.
+    fn into_input_bytes(self) -> Bytes {
+        match self {
+            Self::WriteUserInput(bytes) => bytes,
+            Self::SubmitUserInput { text, .. } => text,
+        }
+    }
+}
+
 enum PtyIoControlCommand {
     ForegroundProcessGroup(std_mpsc::Sender<Option<u32>>),
     Shutdown,
@@ -125,17 +137,11 @@ impl PtyIoActorHandle {
                 Ok(())
             }
             Err(mpsc::error::TrySendError::Full(command)) => {
-                let PtyIoDataCommand::WriteUserInput(bytes) = command else {
-                    unreachable!("queued write returned another command")
-                };
-                Err(mpsc::error::TrySendError::Full(bytes))
+                Err(mpsc::error::TrySendError::Full(command.into_input_bytes()))
             }
-            Err(mpsc::error::TrySendError::Closed(command)) => {
-                let PtyIoDataCommand::WriteUserInput(bytes) = command else {
-                    unreachable!("queued write returned another command")
-                };
-                Err(mpsc::error::TrySendError::Closed(bytes))
-            }
+            Err(mpsc::error::TrySendError::Closed(command)) => Err(
+                mpsc::error::TrySendError::Closed(command.into_input_bytes()),
+            ),
         }
     }
 
@@ -904,6 +910,33 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("buffered output is read after the write fails");
         assert_eq!(read, Bytes::from_static(b"last-output"));
+    }
+
+    #[test]
+    fn rejected_user_input_hands_its_bytes_back() {
+        let (data_tx, data_rx) = mpsc::channel(1);
+        let (control_tx, _control_rx) = std_mpsc::channel();
+        let (wake, _wake_read_fd) = test_wake_pair();
+        let handle = PtyIoActorHandle {
+            data_tx,
+            control_tx,
+            wake,
+            user_writes: Arc::new(Mutex::new(UserWriteGate { accepting: true })),
+            controls: Arc::new(Mutex::new(SharedPtyControls::default())),
+            response_order: Arc::new(Mutex::new(())),
+        };
+        handle
+            .try_write_user_input(Bytes::from_static(b"fill"))
+            .expect("first write fits the queue");
+        match handle.try_write_user_input(Bytes::from_static(b"full")) {
+            Err(mpsc::error::TrySendError::Full(bytes)) => assert_eq!(bytes, "full"),
+            other => panic!("expected a full queue, got {other:?}"),
+        }
+        drop(data_rx);
+        match handle.try_write_user_input(Bytes::from_static(b"closed")) {
+            Err(mpsc::error::TrySendError::Closed(bytes)) => assert_eq!(bytes, "closed"),
+            other => panic!("expected a closed queue, got {other:?}"),
+        }
     }
 
     #[test]

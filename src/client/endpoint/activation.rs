@@ -64,19 +64,6 @@ impl PendingEndpointActivation {
         };
         let target_lease =
             endpoint_lease(shell, endpoints, target).map_err(ActivationBeginError::Preflight)?;
-        let source_compatible = !source_available
-            || endpoints
-                .connection(&source_id)
-                .is_some_and(|connection| connection.negotiation.supports_surface_interest());
-        let target_compatible = endpoints
-            .connection(target)
-            .is_some_and(|connection| connection.negotiation.supports_surface_interest());
-        if !source_compatible || !target_compatible {
-            return Err(ActivationBeginError::Preflight(
-                "endpoint must be updated before it can join the selected surface".into(),
-            ));
-        }
-
         let source_is_target = source.endpoint_id == target_lease.endpoint_id;
         // Validate every typed lifecycle and optional focus envelope before the first transport
         // write. Any error above this line is guaranteed not to have changed either endpoint.

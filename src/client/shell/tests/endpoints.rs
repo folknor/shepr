@@ -56,6 +56,31 @@ fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
 }
 
 #[test]
+fn multi_machine_sidebar_draws_the_workspace_drop_marker() {
+    let (mut state, _) = state_with_remote();
+    state.compose(120, 40).expect("test precondition");
+    let local = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.endpoint_id == ClientEndpointId::Local)
+        .expect("local workspace row")
+        .rect;
+    let row = local.bottom();
+    state.chrome_drag = Some(ClientChromeDrag::Workspace {
+        source_workspace_id: "ws_1".into(),
+        target: Some((None, row)),
+    });
+    let frame = state.compose(120, 40).expect("dragging frame");
+    let cell = &frame.cells[usize::from(row) * 120 + usize::from(local.x)];
+    assert_eq!(cell.symbol, "─");
+    assert_eq!(
+        cell.fg,
+        crate::protocol::color_to_u32(state.config.palette.accent)
+    );
+}
+
+#[test]
 fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
     let (mut state, id) = state_with_remote();
     state.set_endpoint_status(&id, ClientEndpointStatus::Attention);

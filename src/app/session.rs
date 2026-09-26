@@ -6,7 +6,7 @@ enum SessionSaveJob {
     Clear,
     Save {
         snapshot: crate::persist::SessionSnapshot,
-        history: Option<crate::persist::SessionHistorySnapshot>,
+        history: Option<crate::persist::PendingHistory>,
     },
 }
 
@@ -36,6 +36,9 @@ impl App {
         }
     }
 
+    /// Runs on the event loop, so it takes only what must be read here: the
+    /// structural snapshot and each pane's history source. Turning history
+    /// into its saved form is left to `run_session_save_job`.
     fn capture_session_save_job(&self) -> SessionSaveJob {
         if self.state.workspaces.is_empty() {
             SessionSaveJob::Clear
@@ -48,8 +51,7 @@ impl App {
                 self.state.selected,
             );
             let history = self.persist_pane_history.then(|| {
-                crate::persist::capture_history(
-                    &snapshot,
+                crate::persist::capture_pending_history(
                     &self.state.workspaces,
                     &self.terminal_runtimes,
                 )
@@ -74,14 +76,27 @@ impl App {
         self.pane_exit_checkpoint_pending = false;
         self.session_save_deadline = None;
         let writer = std::sync::Arc::clone(&self.session_writer);
+        // The job goes to the thread over a channel rather than inside the
+        // closure, so a failed spawn hands it back to be saved inline instead
+        // of capturing everything a second time.
+        let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<SessionSaveJob>(1);
         match std::thread::Builder::new()
             .name("shepr-session-save".into())
-            .spawn(move || run_session_save_job(job, &writer))
-        {
-            Ok(thread) => self.session_save_thread = Some(thread),
+            .spawn(move || {
+                if let Ok(job) = job_rx.recv() {
+                    run_session_save_job(job, &writer);
+                }
+            }) {
+            Ok(thread) => {
+                if let Err(std::sync::mpsc::SendError(job)) = job_tx.send(job) {
+                    // Only possible if the thread is already gone.
+                    run_session_save_job(job, &self.session_writer);
+                }
+                self.session_save_thread = Some(thread);
+            }
             Err(err) => {
                 tracing::warn!(err = %err, "failed to spawn session save thread; saving inline");
-                run_session_save_job(self.capture_session_save_job(), &self.session_writer);
+                run_session_save_job(job, &self.session_writer);
             }
         }
     }
@@ -119,12 +134,27 @@ impl App {
         }
     }
 
-    pub(crate) fn save_session_on_shutdown(&mut self) {
+    /// Save the live pane histories while runtimes still exist, keeping the
+    /// directory claim until their processes have finished tearing down.
+    pub(crate) fn save_session_before_teardown(&mut self) {
         if self.pane_exit_checkpoint_pending && !self.state.session_dirty {
             self.session_save_deadline = None;
-            return;
+        } else {
+            self.save_session_now();
         }
-        self.save_session_now();
+    }
+
+    pub(crate) fn retire_session_writer(&mut self) {
+        if let Some(thread) = self.session_save_thread.take() {
+            let _ = thread.join();
+        }
+        self.session_save_deadline = None;
+        // Retiring only drops the lock and marks the writer done; a panic in
+        // an earlier save cannot leave anything here half-updated.
+        self.session_writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retire();
     }
 }
 
@@ -132,6 +162,15 @@ fn run_session_save_job(
     job: SessionSaveJob,
     writer: &std::sync::Mutex<crate::persist::SessionWriter>,
 ) {
+    // Formatting pane history is the expensive part of a save; it happens
+    // here, before the writer is locked.
+    let job = match job {
+        SessionSaveJob::Clear => None,
+        SessionSaveJob::Save { snapshot, history } => {
+            let history = history.map(|history| history.resolve(&snapshot));
+            Some((snapshot, history))
+        }
+    };
     let mut writer = match writer.lock() {
         Ok(writer) => writer,
         Err(err) => {
@@ -140,7 +179,7 @@ fn run_session_save_job(
         }
     };
     match job {
-        SessionSaveJob::Clear => writer.clear(),
-        SessionSaveJob::Save { snapshot, history } => writer.save(&snapshot, history.as_ref()),
+        None => writer.clear(),
+        Some((snapshot, history)) => writer.save(&snapshot, history.as_ref()),
     }
 }

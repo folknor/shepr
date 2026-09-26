@@ -214,7 +214,7 @@ fn dispatch(name: &str, matches: &ArgMatches) -> std::io::Result<CommandOutcome>
         "agent" => agent::run_agent_command(matches)?,
         "terminal" => run_terminal_command(matches)?,
         "pane" => pane::run_pane_command(matches)?,
-        "integration" => run_integration_command(matches)?,
+        "integration" => integration::run_integration_command(matches)?,
         "session" => {
             let Some(exit_code) = run_session_command(matches)? else {
                 return Ok(CommandOutcome::NotCli);
@@ -260,25 +260,6 @@ fn config_check() -> i32 {
     }
 
     i32::from(!diagnostics.is_empty())
-}
-
-fn run_integration_command(matches: &ArgMatches) -> std::io::Result<i32> {
-    // The integration handlers take argv-shaped arguments; hand them the
-    // values clap has already validated, in that shape.
-    let args: Vec<String> = match matches.subcommand() {
-        Some((action @ ("install" | "uninstall"), matches)) => {
-            vec![action.to_string(), matches::required(matches, "target")]
-        }
-        Some(("status", matches)) => {
-            let mut args = vec!["status".to_string()];
-            if matches::flag(matches, "outdated-only") {
-                args.push("--outdated-only".to_string());
-            }
-            args
-        }
-        _ => return Ok(missing_subcommand()),
-    };
-    integration::run_integration_command(&args)
 }
 
 fn run_terminal_command(matches: &ArgMatches) -> std::io::Result<i32> {
@@ -336,6 +317,10 @@ fn session_list(json: bool) -> std::io::Result<i32> {
     Ok(0)
 }
 
+/// Deliberately skips the protocol check that `send_request` does: the
+/// protocol-mismatch error tells the user to run `session stop` / `server
+/// stop`, so stopping must keep working against a server from another build.
+/// `crate::session` sends a bare `server.stop` JSON line for that reason.
 fn session_stop(name: &str, json: bool) -> i32 {
     let target = match crate::session::parse_target_name(name) {
         Ok(target) => target,
@@ -432,6 +417,11 @@ pub(super) fn send_request_unchecked(request: &Request) -> std::io::Result<serde
 }
 
 fn ensure_server_protocol_compatible(client: &ApiClient, request_id: &str) -> std::io::Result<()> {
+    // Checked once per target: a polling command must not pay a status round
+    // trip (up to 15 s under `--machine`) before every request.
+    if target::protocol_checked() {
+        return Ok(());
+    }
     let status = target::server_status(client)
         .map_err(|err| map_server_not_running_or_io(err, request_id, client))?;
     let server_protocol = status
@@ -440,6 +430,7 @@ fn ensure_server_protocol_compatible(client: &ApiClient, request_id: &str) -> st
     let Some(response) =
         protocol_guard::mismatch_response(request_id, server_protocol, &target::restart_guidance())
     else {
+        target::mark_protocol_checked();
         return Ok(());
     };
 

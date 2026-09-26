@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use bytes::Bytes;
 
 use crate::api::schema::{
@@ -65,6 +63,7 @@ impl App {
         let host_terminal_theme = self.state.host_terminal_theme;
         let host_terminal_appearance = self.state.host_terminal_appearance;
         let previous_focus = self.state.current_pane_focus_target();
+        let spawn = self.pane_spawn_handles();
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
@@ -86,6 +85,7 @@ impl App {
                 shell_config,
                 extra_env,
                 params.focus,
+                &spawn,
             ),
             None => ws.split_pane(
                 target_pane_id,
@@ -98,6 +98,7 @@ impl App {
                 shell_config,
                 extra_env,
                 params.focus,
+                &spawn,
             ),
         };
         let (target_tab_idx, new_pane) = match split_result {
@@ -301,14 +302,10 @@ impl App {
                         "terminal row is unavailable",
                     );
                 };
-                let col = match params.motion {
-                    PaneCopyMotion::LineEnd => {
-                        crate::copy_mode::last_character_col(&text).unwrap_or(0)
-                    }
-                    PaneCopyMotion::FirstNonBlank => {
-                        crate::copy_mode::first_non_blank_col(&text).unwrap_or(0)
-                    }
-                    _ => unreachable!(),
+                let col = if params.motion == PaneCopyMotion::LineEnd {
+                    crate::copy_mode::last_character_col(&text).unwrap_or(0)
+                } else {
+                    crate::copy_mode::first_non_blank_col(&text).unwrap_or(0)
                 };
                 crate::pane::TerminalTextPoint {
                     row: params.cursor.row,
@@ -321,20 +318,12 @@ impl App {
             | PaneCopyMotion::NextBigWordStart
             | PaneCopyMotion::PreviousBigWordStart
             | PaneCopyMotion::NextBigWordEnd => {
-                let motion = match params.motion {
-                    PaneCopyMotion::NextWordStart => crate::pane::TerminalWordMotion::NextStart,
-                    PaneCopyMotion::PreviousWordStart => {
-                        crate::pane::TerminalWordMotion::PreviousStart
-                    }
-                    PaneCopyMotion::NextWordEnd => crate::pane::TerminalWordMotion::NextEnd,
-                    PaneCopyMotion::NextBigWordStart => {
-                        crate::pane::TerminalWordMotion::NextBigStart
-                    }
-                    PaneCopyMotion::PreviousBigWordStart => {
-                        crate::pane::TerminalWordMotion::PreviousBigStart
-                    }
-                    PaneCopyMotion::NextBigWordEnd => crate::pane::TerminalWordMotion::NextBigEnd,
-                    _ => unreachable!(),
+                let Some(motion) = terminal_word_motion(params.motion) else {
+                    return encode_error(
+                        id,
+                        "copy_motion_unavailable",
+                        "copy motion is not a word motion",
+                    );
                 };
                 runtime
                     .word_motion_target(params.cursor.row, params.cursor.col, motion)
@@ -1205,13 +1194,7 @@ impl App {
                 };
                 let moved_pane_id = moved.pane_id;
                 let target_tab_idx = self.state.workspaces[target_ws_idx]
-                    .create_tab_from_existing_pane(
-                        moved,
-                        label,
-                        self.event_tx.clone(),
-                        Arc::clone(&self.render_notify),
-                        Arc::clone(&self.render_dirty),
-                    );
+                    .create_tab_from_existing_pane(moved, label);
                 created_tab = true;
                 (target_ws_idx, target_tab_idx, moved_pane_id)
             }
@@ -1228,9 +1211,6 @@ impl App {
                     tab_label,
                     &identity_cwd,
                     moved,
-                    self.event_tx.clone(),
-                    Arc::clone(&self.render_notify),
-                    Arc::clone(&self.render_dirty),
                 );
                 self.state.workspaces.push(workspace);
                 let target_ws_idx = self.state.workspaces.len() - 1;
@@ -1343,22 +1323,14 @@ impl App {
         moved: crate::workspace::MovedPane,
     ) {
         if let Some(ws_idx) = self.parse_workspace_id(&context.previous_workspace_id) {
-            self.state.workspaces[ws_idx].create_tab_from_existing_pane(
-                moved,
-                context.previous_tab_label,
-                self.event_tx.clone(),
-                Arc::clone(&self.render_notify),
-                Arc::clone(&self.render_dirty),
-            );
+            self.state.workspaces[ws_idx]
+                .create_tab_from_existing_pane(moved, context.previous_tab_label);
         } else {
             let mut workspace = crate::workspace::Workspace::from_existing_pane(
                 context.previous_workspace_label,
                 context.previous_tab_label,
                 &context.identity_cwd,
                 moved,
-                self.event_tx.clone(),
-                Arc::clone(&self.render_notify),
-                Arc::clone(&self.render_dirty),
             );
             workspace.id = context.previous_workspace_id;
             let insert_idx = context.source_ws_idx.min(self.state.workspaces.len());
@@ -1974,6 +1946,22 @@ fn normalize_state_labels(
         .collect()
 }
 
+fn terminal_word_motion(motion: PaneCopyMotion) -> Option<crate::pane::TerminalWordMotion> {
+    use crate::pane::TerminalWordMotion;
+    match motion {
+        PaneCopyMotion::NextWordStart => Some(TerminalWordMotion::NextStart),
+        PaneCopyMotion::PreviousWordStart => Some(TerminalWordMotion::PreviousStart),
+        PaneCopyMotion::NextWordEnd => Some(TerminalWordMotion::NextEnd),
+        PaneCopyMotion::NextBigWordStart => Some(TerminalWordMotion::NextBigStart),
+        PaneCopyMotion::PreviousBigWordStart => Some(TerminalWordMotion::PreviousBigStart),
+        PaneCopyMotion::NextBigWordEnd => Some(TerminalWordMotion::NextBigEnd),
+        PaneCopyMotion::LineEnd
+        | PaneCopyMotion::FirstNonBlank
+        | PaneCopyMotion::PreviousParagraph
+        | PaneCopyMotion::NextParagraph => None,
+    }
+}
+
 fn pane_not_found(id: String, pane_id: &str) -> String {
     encode_error(id, "pane_not_found", format!("pane {pane_id} not found"))
 }
@@ -2265,7 +2253,7 @@ mod tests {
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let (runtime, rx) =
             crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, capacity);
-        app.state.insert_test_runtime(pane_id, runtime);
+        app.insert_test_runtime(pane_id, runtime);
         (app, public_pane_id, rx)
     }
 
@@ -2281,7 +2269,7 @@ mod tests {
             1000,
             lines.as_bytes(),
         );
-        app.state.insert_test_runtime(pane_id, runtime);
+        app.insert_test_runtime(pane_id, runtime);
         (app, public_pane_id, pane_id)
     }
 
@@ -2465,7 +2453,7 @@ mod tests {
     async fn api_pane_selection_read_uses_endpoint_terminal_text() {
         let (mut app, public_pane_id) = app_with_test_workspace();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        app.state.insert_test_runtime(
+        app.insert_test_runtime(
             pane_id,
             crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
                 20,
@@ -2511,7 +2499,7 @@ mod tests {
     async fn api_copy_motion_uses_endpoint_terminal_word_semantics() {
         let (mut app, public_pane_id) = app_with_test_workspace();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        app.state.insert_test_runtime(
+        app.insert_test_runtime(
             pane_id,
             crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
                 20,
@@ -2546,7 +2534,7 @@ mod tests {
     async fn api_paragraph_motion_preserves_the_copy_cursor_column() {
         let (mut app, public_pane_id) = app_with_test_workspace();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        app.state.insert_test_runtime(
+        app.insert_test_runtime(
             pane_id,
             crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
                 20,
@@ -2579,7 +2567,7 @@ mod tests {
     async fn api_copy_search_uses_endpoint_terminal_matches_and_wraps() {
         let (mut app, public_pane_id) = app_with_test_workspace();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        app.state.insert_test_runtime(
+        app.insert_test_runtime(
             pane_id,
             crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
                 20,
@@ -2632,7 +2620,7 @@ mod tests {
         let (mut app, public_pane_id) = app_with_test_workspace();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let text = "a ".repeat(1500);
-        app.state.insert_test_runtime(
+        app.insert_test_runtime(
             pane_id,
             crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
                 200,
@@ -2670,7 +2658,7 @@ mod tests {
     async fn api_copy_search_rejects_stale_content_revision() {
         let (mut app, public_pane_id) = app_with_test_workspace();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        app.state.insert_test_runtime(
+        app.insert_test_runtime(
             pane_id,
             crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
                 20,
@@ -2873,7 +2861,7 @@ mod tests {
                 b"\x1b[>7u",
                 1,
             );
-        app.state.insert_test_runtime(internal_pane_id, runtime);
+        app.insert_test_runtime(internal_pane_id, runtime);
 
         let response = app.handle_api_request(crate::api::schema::Request {
             id: "req".into(),
@@ -3570,11 +3558,16 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn api_pane_move_only_pane_to_new_tab_uses_app_render_handles() {
+    #[tokio::test]
+    async fn api_pane_move_only_pane_to_new_tab_preserves_runtime_registry() {
         let mut app = app_with_workspace();
         let source = app.state.workspaces[0].tabs[0].root_pane;
         seed_terminal_states(&mut app);
+        app.insert_test_runtime(
+            source,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 5, b"moved"),
+        );
+        let runtime = app.test_runtime(source) as *const crate::terminal::TerminalRuntime;
         let source_public = app.public_pane_id(0, source).expect("test precondition");
 
         let response = app.handle_pane_move(
@@ -3594,14 +3587,7 @@ mod tests {
             panic!("expected pane move response");
         };
         assert!(move_result.changed);
-        assert!(std::sync::Arc::ptr_eq(
-            &app.state.workspaces[0].tabs[0].render_notify,
-            &app.render_notify
-        ));
-        assert!(std::sync::Arc::ptr_eq(
-            &app.state.workspaces[0].tabs[0].render_dirty,
-            &app.render_dirty
-        ));
+        assert_eq!(app.test_runtime(source) as *const _, runtime);
     }
 
     #[test]
@@ -3663,14 +3649,6 @@ mod tests {
             app.state.workspaces[0].tabs[0].terminal_id(source),
             Some(&source_terminal)
         );
-        assert!(std::sync::Arc::ptr_eq(
-            &app.state.workspaces[0].tabs[0].render_notify,
-            &app.render_notify
-        ));
-        assert!(std::sync::Arc::ptr_eq(
-            &app.state.workspaces[0].tabs[0].render_dirty,
-            &app.render_dirty
-        ));
         let envelopes = app.event_hub.events_after(0);
         let events: Vec<_> = envelopes
             .iter()

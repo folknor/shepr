@@ -88,9 +88,16 @@ pub(super) struct IdleScreenScanSkipInput {
     pub(super) last_screen_scan_detection_content_seq: Option<u64>,
 }
 
+/// Whether an unchanged screen may be left unread this tick. Only states the
+/// screen can hold indefinitely qualify: `Idle`; Codex's ambiguous `Unknown`;
+/// and `Unknown` for an agent with no screen manifest, which the screen can
+/// never move off `Unknown` (its state comes from its hook).
 pub(super) fn should_skip_idle_screen_scan(input: IdleScreenScanSkipInput) -> bool {
     let stable_state = input.state == AgentState::Idle
-        || (input.state == AgentState::Unknown && input.agent == Some(Agent::Codex));
+        || (input.state == AgentState::Unknown
+            && input.agent.is_some_and(|agent| {
+                agent == Agent::Codex || !Agent::SCREEN_MANIFEST_AGENTS.contains(&agent)
+            }));
     if !stable_state
         || input.agent.is_none()
         || input.pending_idle_active
@@ -424,6 +431,30 @@ mod tests {
         );
         input.agent_changed = false;
         input.agent = Some(Agent::Pi);
+        assert_eq!(
+            decide_detection_screen_read(input),
+            DetectionScreenReadDecision::Read
+        );
+    }
+
+    #[test]
+    fn screen_read_skips_unchanged_unknown_for_agents_without_a_screen_manifest() {
+        for agent in [Agent::Omp, Agent::Mastracode] {
+            let mut input = screen_read_input(AgentState::Unknown, 10);
+            input.agent = Some(agent);
+            assert_eq!(
+                decide_detection_screen_read(input),
+                DetectionScreenReadDecision::Skip
+            );
+            input.current_detection_content_seq = Some(11);
+            assert_eq!(
+                decide_detection_screen_read(input),
+                DetectionScreenReadDecision::Read
+            );
+        }
+        // A manifest agent's Unknown is transient: keep reading.
+        let mut input = screen_read_input(AgentState::Unknown, 10);
+        input.agent = Some(Agent::Claude);
         assert_eq!(
             decide_detection_screen_read(input),
             DetectionScreenReadDecision::Read

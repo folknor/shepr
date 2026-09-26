@@ -353,11 +353,8 @@ mod tests {
         }
 
         let sent = Arc::new(Mutex::new(Sent::default()));
-        let mut registry = super::super::endpoint::EndpointRegistry::new(
-            Capture(Arc::clone(&sent)),
-            1,
-            super::super::endpoint::EndpointNegotiation::default(),
-        );
+        let mut registry =
+            super::super::endpoint::EndpointRegistry::new(Capture(Arc::clone(&sent)), 1);
         forward_input(
             &mut registry,
             &vec![b'x'; crate::protocol::MAX_FRAME_SIZE + 17],

@@ -490,6 +490,141 @@ fn help_overlay_uses_live_keymap_and_owns_filter_state() {
 }
 
 #[test]
+fn overlay_that_does_not_fit_still_presents_the_frame() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let mut open = ClientShellInput::default();
+    state.record_binding(
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::Help),
+        &mut open,
+    );
+    // Help needs at least 10 rows; this terminal has 8.
+    let frame = state
+        .compose(106, 8)
+        .expect("a frame is presented even though help does not fit");
+    let text = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("window too small"));
+    assert!(state.hits.help_popup.is_empty());
+    assert!(matches!(state.overlay, Some(ClientShellOverlay::Help(_))));
+
+    // Once the terminal is large enough the overlay is drawn again.
+    let frame = state.compose(106, 30).expect("help overlay");
+    assert!(!state.hits.help_popup.is_empty());
+    assert_eq!(frame.height, 30);
+}
+
+#[test]
+fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
+    let mut many = snapshot();
+    let template = many.workspaces[0].clone();
+    many.workspaces = (1..=30)
+        .map(|number| ClientShellWorkspace {
+            workspace_id: format!("ws_{number}"),
+            number,
+            focused: number == 30,
+            ..template.clone()
+        })
+        .collect();
+    many.focused_workspace_id = Some("ws_30".into());
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
+    state.sidebar_collapsed = true;
+    state.set_snapshot(Box::new(many));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("collapsed frame");
+    // The focused workspace is revealed, so it is on screen and clickable.
+    assert!(
+        state
+            .hits
+            .workspaces
+            .iter()
+            .any(|hit| hit.workspace_id == "ws_30")
+    );
+    assert!(
+        !state
+            .hits
+            .workspaces
+            .iter()
+            .any(|hit| hit.workspace_id == "ws_1")
+    );
+
+    // The wheel scrolls the list back up.
+    let body = state.hits.workspace_body;
+    for _ in 0..30 {
+        state.handle_mouse(
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: body.x,
+                row: body.y,
+                modifiers: KeyModifiers::NONE,
+            },
+            &mut ClientShellInput::default(),
+        );
+    }
+    state.compose(106, 20).expect("scrolled frame");
+    assert!(
+        state
+            .hits
+            .workspaces
+            .iter()
+            .any(|hit| hit.workspace_id == "ws_1")
+    );
+}
+
+#[test]
+fn hit_maps_stay_live_until_the_matching_surface_is_composed() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let mut open = ClientShellInput::default();
+    state.record_binding(
+        &crate::input::KeybindMatch::Action(crate::input::KeybindAction::Help),
+        &mut open,
+    );
+    state.compose(106, 30).expect("help overlay");
+    let popup = state.hits.help_popup;
+    assert!(!popup.is_empty());
+
+    // A newer snapshot arrives; its surface has not. The old frame is still on screen.
+    let mut next = snapshot();
+    next.revision += 1;
+    state.set_snapshot(Box::new(next));
+    assert!(!state.hits.panes.is_empty());
+    assert_eq!(state.hits.help_popup, popup);
+
+    // A click inside the visible popup must not close it.
+    let mut outcome = ClientShellInput::default();
+    state.handle_mouse(
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: popup.x + popup.width / 2,
+            row: popup.y + popup.height / 2,
+            modifiers: KeyModifiers::NONE,
+        },
+        &mut outcome,
+    );
+    assert!(matches!(state.overlay, Some(ClientShellOverlay::Help(_))));
+
+    // Parking the next revision's surface leaves the visible pair, and its hits, alone.
+    let mut parked = surface();
+    parked.projection_revision = 3;
+    state.set_pane_surface(parked);
+    assert!(state.pending_pane_surface.is_some());
+    assert!(!state.hits.panes.is_empty());
+    assert_eq!(state.hits.help_popup, popup);
+}
+
+#[test]
 fn rename_pane_empty_value_is_preserved_as_a_clear_request() {
     let mut snapshot = snapshot();
     snapshot.panes[0].label = Some("build".into());

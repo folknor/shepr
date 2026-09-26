@@ -13,7 +13,7 @@ use std::fs;
 use crate::api::schema::{
     ErrorBody, ErrorResponse, Method, Request, ResponseResult, ServerCapabilities, SuccessResponse,
 };
-use crate::api::subscriptions::ActiveSubscription;
+use crate::api::subscriptions::{ActiveSubscription, SubscriptionStream};
 use crate::api::wait::{prompt_agent, wait_for_agent, wait_for_event, wait_for_output};
 use crate::api::{ApiRequestMessage, ApiRequestSender, EventHub, request_changes_ui, socket_path};
 use crate::ipc::{
@@ -770,36 +770,34 @@ fn stream_subscriptions(
         return Err(err);
     }
 
+    // Polled as one stream so events go out in the hub's global order.
+    let mut subscriptions = SubscriptionStream::new(subscriptions, event_start_sequence);
     loop {
         if should_stop_connection(&mut stream, running)? {
             return Ok(());
         }
 
-        for subscription in &mut subscriptions {
-            let events = match subscription.poll_batch(api_tx, event_hub) {
-                Ok(events) => events,
-                Err(error) => {
-                    write_json_line_allow_disconnect(
-                        &mut stream,
-                        &ErrorResponse {
-                            id: request_id,
-                            error,
-                        },
-                    )?;
-                    return Ok(());
-                }
-            };
-            for event in events {
-                if should_stop_connection(&mut stream, running)? {
-                    return Ok(());
-                }
-                if let Err(err) = write_json_line(&mut stream, &event) {
-                    if is_connection_closed_error(&err) {
-                        return Ok(());
-                    }
-                    return Err(err);
-                }
+        let batch = subscriptions.poll(api_tx, event_hub);
+        for event in batch.events {
+            if should_stop_connection(&mut stream, running)? {
+                return Ok(());
             }
+            if let Err(err) = write_json_line(&mut stream, &event) {
+                if is_connection_closed_error(&err) {
+                    return Ok(());
+                }
+                return Err(err);
+            }
+        }
+        if let Some(error) = batch.error {
+            write_json_line_allow_disconnect(
+                &mut stream,
+                &ErrorResponse {
+                    id: request_id,
+                    error,
+                },
+            )?;
+            return Ok(());
         }
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
     }
@@ -943,7 +941,7 @@ fn caller_timeout_dispatch_uses_timeout_error() {
     assert_eq!(error.error.code, "timeout");
 }
 
-fn error_response_json(id: String, code: &str, message: String) -> String {
+pub(super) fn error_response_json(id: String, code: &str, message: String) -> String {
     serde_json::to_string(&ErrorResponse {
         id,
         error: ErrorBody {

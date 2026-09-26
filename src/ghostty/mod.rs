@@ -15,12 +15,19 @@
 //!   and gives the halfwidth voiced marks U+FF9E/U+FF9F (zero-width to
 //!   unicode-width, and so to alacritty) a column of their own;
 //! * a byte scanner for sequences vte never hands to a `Handler` at all
-//!   (OSC 7 / 9;9 / 1337 CurrentDir, CSI ? 996 n, CSI 16 t, XTGETTCAP,
-//!   CSI ? 3 J, and the modifyOtherKeys spellings vte drops; `scan.rs`);
+//!   (OSC 7 / 9;9 / 1337 CurrentDir, OSC 9;4 progress, CSI ? 996 n, CSI 16 t,
+//!   XTGETTCAP, CSI ? 3 J, and the modifyOtherKeys spellings vte drops;
+//!   `scan.rs`);
 //! * query replies in byte order, with OSC colour queries surfaced as
-//!   structured [`ColorQuery`] values so the pane can answer from the host
-//!   theme. Replies from the scanner are the exception inside a synchronized
+//!   structured [`ColorQuery`] values so the pane can pick the reply form.
+//!   Replies from the scanner are the exception inside a synchronized
 //!   update: see [`Terminal::write`];
+//! * host default colours ([`Terminal::set_default_colors`]) layered under
+//!   the child's OSC 10/11 overrides. Host state is never written into the
+//!   child's byte stream: that would share the parser, the scanner and
+//!   vte's sync buffer with the child and could split its sequences;
+//! * the window title, taken from alacritty's own `Title`/`ResetTitle`
+//!   events (so OSC 0/2, the CSI 22/23 t title stack and RIS all count);
 //! * byte-denominated scrollback limits converted to line counts;
 //! * synchronized-output (mode 2026) timeout flushing.
 
@@ -44,7 +51,7 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, TermMode};
-use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb};
+use alacritty_terminal::vte::ansi::{Color, CursorShape, Handler, NamedColor, Processor, Rgb};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -334,12 +341,31 @@ impl ColorQueryTarget {
     }
 }
 
-/// An OSC colour query the child sent. The pane decides which colour answers
-/// it; `core_color` is what the terminal itself would report (child overrides
-/// first, then defaults; `None` for an unset foreground/background).
+/// The default colours a child can override with OSC 10/11.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultColor {
+    Foreground,
+    Background,
+}
+
+impl DefaultColor {
+    fn named(self) -> NamedColor {
+        match self {
+            Self::Foreground => NamedColor::Foreground,
+            Self::Background => NamedColor::Background,
+        }
+    }
+}
+
+/// An OSC colour query the child sent. The pane decides how to answer it;
+/// `core_color` is what the terminal itself would report (child override,
+/// then host default, then built-in palette; `None` for a foreground or
+/// background nobody has set), captured at the query's position in the
+/// stream.
 pub struct ColorQuery {
     target: ColorQueryTarget,
     core_color: Option<RgbColor>,
+    child_override: bool,
     format: Arc<dyn Fn(Rgb) -> String + Sync + Send + 'static>,
 }
 
@@ -350,6 +376,13 @@ impl ColorQuery {
 
     pub fn core_color(&self) -> Option<RgbColor> {
         self.core_color
+    }
+
+    /// Whether a default-colour query was answered from the child's own OSC
+    /// 10/11 override at the moment it was asked (always false for palette
+    /// and cursor queries).
+    pub fn child_override(&self) -> bool {
+        self.child_override
     }
 
     /// Encode a reply in the form the query asked for (same OSC number and
@@ -364,6 +397,7 @@ impl fmt::Debug for ColorQuery {
         f.debug_struct("ColorQuery")
             .field("target", &self.target)
             .field("core_color", &self.core_color)
+            .field("child_override", &self.child_override)
             .finish_non_exhaustive()
     }
 }
@@ -457,6 +491,7 @@ impl Dimensions for TermSize {
 }
 
 /// Collects the alacritty events the adapter acts on, in emission order.
+/// Bells are not among them: nothing in shepr surfaces a bell.
 #[derive(Clone)]
 struct Listener(Arc<Mutex<Vec<Event>>>);
 
@@ -464,7 +499,11 @@ impl EventListener for Listener {
     fn send_event(&self, event: Event) {
         let relevant = matches!(
             event,
-            Event::PtyWrite(_) | Event::ColorRequest(..) | Event::Bell | Event::ClipboardStore(..)
+            Event::PtyWrite(_)
+                | Event::ColorRequest(..)
+                | Event::ClipboardStore(..)
+                | Event::Title(_)
+                | Event::ResetTitle
         );
         if relevant {
             self.0
@@ -483,6 +522,13 @@ struct ExtraModes {
     in_band_resize: bool,
     /// xterm modifyOtherKeys level (0, 1 or 2).
     modify_other_keys: u8,
+    /// The child chose a cursor shape (DECSCUSR 1-6 or OSC 50) and has not
+    /// asked for the default back (DECSCUSR 0, RIS).
+    cursor_shape_set: bool,
+    /// Between vte's BSU and ESU (or timeout) as the handler sees them, which
+    /// inside a buffered frame is replay order. Only DECRQM ?2026 reads it;
+    /// [`Terminal::mode_get`] asks the parser.
+    synchronized_update: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -506,10 +552,21 @@ pub struct Terminal {
     cell_height_px: u32,
     modes: ExtraModes,
     color_scheme: Option<ColorScheme>,
+    /// The host's default foreground/background. They sit under the child's
+    /// OSC 10/11 overrides (alacritty's `colors` slots) and over the built-in
+    /// defaults, so host theme changes never go through the child's parser.
+    host_foreground: Option<RgbColor>,
+    host_background: Option<RgbColor>,
     responses: Vec<PtyResponse>,
-    bell_count: u16,
     pwd_changes: Vec<Vec<u8>>,
     clipboard_writes: Vec<Vec<u8>>,
+    /// The latest title change not yet collected: `Some(None)` is a reset.
+    title_update: Option<Option<String>>,
+    /// The latest OSC 9;4 progress payload (after `9;`) not yet collected.
+    progress_update: Option<Vec<u8>>,
+    /// The child set the default foreground or background since the last
+    /// [`Terminal::take_default_color_set`].
+    default_color_set: bool,
     /// Monotonic damage counter; [`RenderState`] remembers the last value it saw.
     damage_generation: u64,
     /// Generation of the most recent whole-viewport damage.
@@ -548,10 +605,14 @@ impl Terminal {
             cell_height_px: 0,
             modes: ExtraModes::default(),
             color_scheme: None,
+            host_foreground: None,
+            host_background: None,
             responses: Vec::new(),
-            bell_count: 0,
             pwd_changes: Vec::new(),
             clipboard_writes: Vec::new(),
+            title_update: None,
+            progress_update: None,
+            default_color_set: false,
             damage_generation: 1,
             full_damage_generation: 1,
             row_damage_generations: vec![0; screen_lines],
@@ -603,6 +664,7 @@ impl Terminal {
             cell_width_px: self.cell_width_px,
             cell_height_px: self.cell_height_px,
             events: &self.events,
+            default_color_set: &mut self.default_color_set,
         };
         self.parser.advance(&mut handler, bytes);
         self.drain_events();
@@ -615,6 +677,10 @@ impl Terminal {
 
     /// Ends a synchronized update (mode 2026) whose timeout has passed so its
     /// buffered output becomes visible. Returns whether anything was flushed.
+    ///
+    /// The frame's effects (replies, clipboard writes, title and colour
+    /// changes) stay queued like any other write's, for whoever collects
+    /// them next; nothing here discards them.
     pub fn flush_expired_synchronized_output(&mut self) -> bool {
         let expired = self
             .parser
@@ -629,6 +695,7 @@ impl Terminal {
                 cell_width_px: self.cell_width_px,
                 cell_height_px: self.cell_height_px,
                 events: &self.events,
+                default_color_set: &mut self.default_color_set,
             };
             self.parser.stop_sync(&mut handler);
             self.drain_events();
@@ -644,6 +711,17 @@ impl Terminal {
 
     pub fn take_pty_responses(&mut self) -> Vec<PtyResponse> {
         mem::take(&mut self.responses)
+    }
+
+    /// Puts replies taken with [`Terminal::take_pty_responses`] back at the
+    /// front of the queue, ahead of anything queued since, for a caller that
+    /// only wanted the replies of one operation.
+    pub fn restore_pty_responses(&mut self, mut responses: Vec<PtyResponse>) {
+        if responses.is_empty() {
+            return;
+        }
+        responses.append(&mut self.responses);
+        self.responses = responses;
     }
 
     fn push_bytes(&mut self, bytes: Vec<u8>) {
@@ -673,6 +751,7 @@ impl Terminal {
                 }
             }
             ScanEvent::WorkingDirectory(payload) => self.pwd_changes.push(payload),
+            ScanEvent::Progress(payload) => self.progress_update = Some(payload),
             // The parser has just consumed (and ignored) `CSI ? 3 J`; feed the
             // ED3 spelling it does dispatch. Going through the parser keeps
             // the erase in byte order even inside a synchronized update.
@@ -703,33 +782,52 @@ impl Terminal {
                 Event::ColorRequest(index, format) => {
                     if let Some(target) = ColorQueryTarget::from_index(index) {
                         let core_color = self.core_query_color(target);
+                        let child_override = match target {
+                            ColorQueryTarget::Foreground => self
+                                .default_color_override(DefaultColor::Foreground)
+                                .is_some(),
+                            ColorQueryTarget::Background => self
+                                .default_color_override(DefaultColor::Background)
+                                .is_some(),
+                            ColorQueryTarget::Palette(_) | ColorQueryTarget::Cursor => false,
+                        };
                         self.responses.push(PtyResponse::ColorQuery(ColorQuery {
                             target,
                             core_color,
+                            child_override,
                             format,
                         }));
                     }
                 }
-                Event::Bell => self.bell_count = self.bell_count.saturating_add(1),
                 Event::ClipboardStore(ClipboardType::Clipboard, text)
                     if !text.is_empty() && text.len() <= MAX_CLIPBOARD_BYTES =>
                 {
                     self.clipboard_writes.push(text.into_bytes());
                 }
+                Event::Title(title) => self.title_update = Some(Some(title)),
+                Event::ResetTitle => self.title_update = Some(None),
                 _ => {}
             }
         }
     }
 
+    /// What the terminal reports for a colour query: the child's override
+    /// first, then the host default, then (for the palette) the built-in
+    /// table. `None` for a default colour nobody has set.
     fn core_query_color(&self, target: ColorQueryTarget) -> Option<RgbColor> {
         let colors = self.term.colors();
         match target {
             ColorQueryTarget::Palette(index) => Some(self.effective_palette_color(index)),
-            ColorQueryTarget::Foreground => colors[NamedColor::Foreground].map(RgbColor::from),
-            ColorQueryTarget::Background => colors[NamedColor::Background].map(RgbColor::from),
+            ColorQueryTarget::Foreground => colors[NamedColor::Foreground]
+                .map(RgbColor::from)
+                .or(self.host_foreground),
+            ColorQueryTarget::Background => colors[NamedColor::Background]
+                .map(RgbColor::from)
+                .or(self.host_background),
             ColorQueryTarget::Cursor => colors[NamedColor::Cursor]
                 .or(colors[NamedColor::Foreground])
-                .map(RgbColor::from),
+                .map(RgbColor::from)
+                .or(self.host_foreground),
         }
     }
 
@@ -751,9 +849,11 @@ impl Terminal {
         RenderColors {
             background: colors[NamedColor::Background]
                 .map(RgbColor::from)
+                .or(self.host_background)
                 .unwrap_or(DEFAULT_BACKGROUND),
             foreground: colors[NamedColor::Foreground]
                 .map(RgbColor::from)
+                .or(self.host_foreground)
                 .unwrap_or(DEFAULT_FOREGROUND),
             palette,
         }
@@ -835,6 +935,67 @@ impl Terminal {
         Ok(self.default_palette)
     }
 
+    /// Sets the host's default foreground/background (`None`: the built-in
+    /// default). The child's own OSC 10/11 overrides stay on top of them, and
+    /// OSC 110/111 fall back to them.
+    pub fn set_default_colors(
+        &mut self,
+        foreground: Option<RgbColor>,
+        background: Option<RgbColor>,
+    ) {
+        if (self.host_foreground, self.host_background) != (foreground, background) {
+            self.host_foreground = foreground;
+            self.host_background = background;
+            self.bump_full_damage();
+        }
+    }
+
+    /// The default colour the child set with OSC 10/11, if it has one.
+    pub fn default_color_override(&self, color: DefaultColor) -> Option<RgbColor> {
+        self.term.colors()[color.named()].map(RgbColor::from)
+    }
+
+    /// Drops the child's OSC 10/11 overrides, as OSC 110/111 would, so the
+    /// host defaults show again. Goes through `Term`'s handler directly,
+    /// never through the child's parser.
+    pub fn reset_default_color_overrides(&mut self) {
+        let mut changed = false;
+        for color in [DefaultColor::Foreground, DefaultColor::Background] {
+            if self.default_color_override(color).is_some() {
+                Handler::reset_color(&mut self.term, color.named() as usize);
+                changed = true;
+            }
+        }
+        if changed {
+            self.bump_full_damage();
+        }
+    }
+
+    /// Whether the child set a default foreground or background since the
+    /// last call.
+    pub fn take_default_color_set(&mut self) -> bool {
+        mem::take(&mut self.default_color_set)
+    }
+
+    /// The latest window-title change (OSC 0/2, CSI 23 t, RIS) since the last
+    /// call: `Some(None)` is a reset, `None` means no change. The title is
+    /// exactly what vte parsed (trimmed, not otherwise sanitised).
+    pub fn take_title_update(&mut self) -> Option<Option<String>> {
+        self.title_update.take()
+    }
+
+    /// The latest OSC 9;4 progress payload (the text after `9;`) since the
+    /// last call.
+    pub fn take_progress_update(&mut self) -> Option<Vec<u8>> {
+        self.progress_update.take()
+    }
+
+    /// Whether the child chose a cursor shape (DECSCUSR 1-6 or OSC 50) that
+    /// is still in effect.
+    pub fn cursor_shape_overridden(&self) -> bool {
+        self.modes.cursor_shape_set
+    }
+
     pub fn resize(
         &mut self,
         cols: u16,
@@ -880,15 +1041,22 @@ impl Terminal {
 
     fn set_history_lines(&mut self, history_lines: usize) {
         self.history_lines = history_lines;
+        let queued = self
+            .events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len();
         self.term.set_options(term_config(history_lines));
+        // `set_options` re-announces the current title; that is not a change
+        // the child made, so drop it.
+        self.events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .truncate(queued);
     }
 
     pub fn set_color_scheme(&mut self, color_scheme: Option<ColorScheme>) -> Option<ColorScheme> {
         mem::replace(&mut self.color_scheme, color_scheme)
-    }
-
-    pub fn take_bell_count(&mut self) -> u16 {
-        mem::take(&mut self.bell_count)
     }
 
     pub fn take_pwd_changes(&mut self) -> Vec<Vec<u8>> {
@@ -924,10 +1092,32 @@ impl Terminal {
         })
     }
 
-    /// Sets a DEC private mode as if the child had sent `CSI ? mode h/l`.
+    /// Sets a DEC private mode with the same effect as the child's
+    /// `CSI ? mode h/l`, but through the handler directly: nothing is fed to
+    /// the parser, so a sequence the child has half-written is not disturbed
+    /// and a synchronized update does not defer it. Mode 2026 is refused: it
+    /// is parser state, not terminal state.
     pub fn mode_set(&mut self, mode: u16, value: bool) -> Result<(), Error> {
-        let sequence = format!("\x1b[?{mode}{}", if value { 'h' } else { 'l' });
-        self.write(sequence.as_bytes());
+        if mode == MODE_SYNCHRONIZED_OUTPUT {
+            return Err(Error("synchronized output is driven by the parser"));
+        }
+        let private_mode = handler::private_mode(mode);
+        let mut handler = CoreHandler {
+            term: &mut self.term,
+            keyboard_depth: &mut self.keyboard_depth,
+            modes: &mut self.modes,
+            cell_width_px: self.cell_width_px,
+            cell_height_px: self.cell_height_px,
+            events: &self.events,
+            default_color_set: &mut self.default_color_set,
+        };
+        if value {
+            Handler::set_private_mode(&mut handler, private_mode);
+        } else {
+            Handler::unset_private_mode(&mut handler, private_mode);
+        }
+        self.drain_events();
+        self.collect_damage();
         Ok(())
     }
 
@@ -1266,9 +1456,12 @@ impl Terminal {
         Ok(u16::try_from(line).unwrap_or(u16::MAX))
     }
 
-    /// The foreground colour set with OSC 10 (by the child or the host theme).
+    /// The foreground in effect: the child's OSC 10 override, else the host
+    /// default; `None` while neither is set.
     pub fn effective_foreground_color(&self) -> Result<Option<RgbColor>, Error> {
-        Ok(self.term.colors()[NamedColor::Foreground].map(RgbColor::from))
+        Ok(self
+            .default_color_override(DefaultColor::Foreground)
+            .or(self.host_foreground))
     }
 
     /// The cursor colour set with OSC 12, if any.

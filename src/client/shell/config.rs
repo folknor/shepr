@@ -198,6 +198,7 @@ impl ClientShellConfig {
             cols: surface.width.max(1),
             rows: surface.height.max(1),
         }
+        .clamped()
     }
 }
 

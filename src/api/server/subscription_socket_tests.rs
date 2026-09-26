@@ -272,6 +272,34 @@ fn subscriptions_drain_retained_bursts_without_per_event_poll_delay() {
 }
 
 #[test]
+fn events_for_different_subscriptions_arrive_in_hub_order_with_their_sequence() {
+    let mut test = SocketTest::new();
+    let mut client = test.connect();
+    // Listed in the reverse of the order the events happen in.
+    client.subscribe(
+        "order",
+        &json!([{"type": "workspace.renamed"}, {"type": "workspace.focused"}]),
+    );
+    client.assert_started("order");
+    let start = test.hub.current_sequence();
+    test.hub.push(EventEnvelope {
+        event: EventKind::WorkspaceFocused,
+        data: EventData::WorkspaceFocused {
+            workspace_id: "workspace_1".into(),
+        },
+    });
+    test.hub.push(renamed_event(0));
+
+    let deadline = Instant::now() + RESPONSE_TIMEOUT;
+    let first = client.next_line(deadline).expect("focus before EOF");
+    let second = client.next_line(deadline).expect("rename before EOF");
+    assert_eq!(first["event"], "workspace_focused");
+    assert_eq!(first["seq"], start + 1);
+    assert_eq!(second["event"], "workspace_renamed");
+    assert_eq!(second["seq"], start + 2);
+}
+
+#[test]
 fn subscriptions_report_history_loss_before_sending_a_partial_stream() {
     assert_subscription_history_loss(false);
 }

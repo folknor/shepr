@@ -112,9 +112,7 @@ pub(super) fn render_notice(
         &notice.body,
         top_offset,
         match notice.key.kind {
-            ClientEndpointNoticeKind::Unsupported | ClientEndpointNoticeKind::Rejected => {
-                palette.red
-            }
+            ClientEndpointNoticeKind::Rejected => palette.red,
             ClientEndpointNoticeKind::Timeout | ClientEndpointNoticeKind::Unavailable => {
                 palette.yellow
             }

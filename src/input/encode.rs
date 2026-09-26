@@ -1,6 +1,8 @@
 use std::fmt::Write as _;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
+#[cfg(test)]
+use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
 use super::model::KITTY_FLAG_REPORT_ALL_KEYS;
 use super::{KeyboardProtocol, MouseProtocolEncoding, MouseProtocolMode, TerminalKey};
@@ -10,8 +12,9 @@ const KITTY_FLAG_REPORT_ALTERNATE_KEYS: u16 = 0b0000_0100;
 const KITTY_FLAG_REPORT_ASSOCIATED_TEXT: u16 = 0b0001_0000;
 
 /// Encode a key event for a PTY child using the pane's negotiated keyboard protocol.
-#[allow(dead_code)] // Only unit tests call this; production keys go through `encode_terminal_key_with_modes`.
-pub fn encode_key(key: KeyEvent, protocol: KeyboardProtocol) -> Vec<u8> {
+/// Test-only: production keys go through `encode_terminal_key_with_modes`.
+#[cfg(test)]
+fn encode_key(key: KeyEvent, protocol: KeyboardProtocol) -> Vec<u8> {
     encode_terminal_key(key.into(), protocol)
 }
 
@@ -79,8 +82,9 @@ pub fn encode_terminal_key(key: TerminalKey, protocol: KeyboardProtocol) -> Vec<
     encode_legacy(key)
 }
 
-#[allow(dead_code)] // Only unit tests call this; production applies DECCKM in `encode_terminal_key_with_modes`.
-pub fn encode_cursor_key(code: KeyCode, application_cursor: bool) -> Vec<u8> {
+/// Test-only: production applies DECCKM in `encode_terminal_key_with_modes`.
+#[cfg(test)]
+fn encode_cursor_key(code: KeyCode, application_cursor: bool) -> Vec<u8> {
     match (code, application_cursor) {
         (KeyCode::Up, true) => b"\x1bOA".to_vec(),
         (KeyCode::Down, true) => b"\x1bOB".to_vec(),
@@ -94,8 +98,9 @@ pub fn encode_cursor_key(code: KeyCode, application_cursor: bool) -> Vec<u8> {
     }
 }
 
-#[allow(dead_code)] // Only unit tests call this; production mouse reports go through `encode_mouse_event`.
-pub fn encode_mouse_scroll(
+/// Test-only: production mouse reports go through `encode_mouse_event`.
+#[cfg(test)]
+fn encode_mouse_scroll(
     kind: MouseEventKind,
     column: u16,
     row: u16,
@@ -119,8 +124,9 @@ pub fn encode_mouse_scroll(
     )
 }
 
-#[allow(dead_code)] // Only unit tests call this; production mouse reports go through `encode_mouse_event`.
-pub fn encode_mouse_button(
+/// Test-only: production mouse reports go through `encode_mouse_event`.
+#[cfg(test)]
+fn encode_mouse_button(
     kind: MouseEventKind,
     column: u16,
     row: u16,

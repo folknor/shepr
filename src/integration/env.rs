@@ -98,6 +98,9 @@ pub(crate) fn config_dir_from_env_or_home(
     Ok(path)
 }
 
+/// Expands a leading bare `~` or `~/` to `$HOME`. The `~user` form is left
+/// untouched: resolving another user's home needs a passwd lookup, and
+/// silently turning `~bob/x` into `$HOME/bob/x` would point at the wrong place.
 pub(crate) fn expand_tilde_path(path: PathBuf) -> io::Result<PathBuf> {
     let Some(raw) = path.to_str() else {
         return Ok(path);
@@ -107,7 +110,7 @@ pub(crate) fn expand_tilde_path(path: PathBuf) -> io::Result<PathBuf> {
         return home_dir();
     }
 
-    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix('~')) {
+    if let Some(rest) = raw.strip_prefix("~/") {
         return Ok(home_dir()?.join(rest));
     }
 
@@ -211,6 +214,28 @@ pub(crate) fn integration_env_lock() -> IntegrationEnvLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expand_tilde_path_expands_only_bare_tilde_and_tilde_slash() {
+        let _lock = integration_env_lock();
+        let home = home_dir().expect("test precondition");
+        assert_eq!(
+            expand_tilde_path(PathBuf::from("~")).expect("test precondition"),
+            home
+        );
+        assert_eq!(
+            expand_tilde_path(PathBuf::from("~/x/y")).expect("test precondition"),
+            home.join("x/y")
+        );
+        assert_eq!(
+            expand_tilde_path(PathBuf::from("~bob/x")).expect("test precondition"),
+            PathBuf::from("~bob/x")
+        );
+        assert_eq!(
+            expand_tilde_path(PathBuf::from("/abs/~/x")).expect("test precondition"),
+            PathBuf::from("/abs/~/x")
+        );
+    }
 
     #[test]
     fn opencode_state_dir_defaults_to_local_state() {

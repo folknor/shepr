@@ -10,7 +10,6 @@ pub(crate) struct ClientShellEndpoint {
     pub(crate) snapshot_generation: Option<u64>,
     pub(crate) agent_recency: HashMap<String, u64>,
     pub(super) agent_presentation: super::endpoint_agent_state::EndpointAgentPresentation,
-    pub(crate) methods: Option<HashSet<String>>,
 }
 
 pub(super) struct MachineHit {
@@ -64,7 +63,6 @@ impl ClientShellState {
                 agent_presentation: previous
                     .map(|endpoint| endpoint.agent_presentation.clone())
                     .unwrap_or_default(),
-                methods: previous.and_then(|endpoint| endpoint.methods.clone()),
             });
         }
 
@@ -121,21 +119,6 @@ impl ClientShellState {
             }
             self.pane_scroll_in_flight.clear();
             self.pane_scroll_queued.clear();
-        }
-    }
-
-    pub(crate) fn set_endpoint_methods_for(
-        &mut self,
-        endpoint_id: &ClientEndpointId,
-        methods: Option<Vec<String>>,
-    ) {
-        let methods = methods.map(|methods| methods.into_iter().collect::<HashSet<_>>());
-        if let Some(endpoint) = self
-            .endpoints
-            .iter_mut()
-            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-        {
-            endpoint.methods = methods;
         }
     }
 
@@ -302,20 +285,6 @@ impl ClientShellState {
     pub(crate) fn set_snapshot(&mut self, snapshot: Box<ClientShellSnapshot>) {
         let endpoint_id = self.active_endpoint_id.clone();
         self.set_endpoint_snapshot(&endpoint_id, snapshot);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_endpoint_methods(&mut self, methods: Option<Vec<String>>) {
-        let endpoint_id = self.active_endpoint_id.clone();
-        self.set_endpoint_methods_for(&endpoint_id, methods);
-    }
-
-    pub(super) fn supports_endpoint_method(&self, method: &crate::api::schema::Method) -> bool {
-        self.endpoints
-            .iter()
-            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
-            .and_then(|endpoint| endpoint.methods.as_ref())
-            .is_none_or(|methods| methods.contains(crate::api::api_method_name(method)))
     }
 
     pub(super) fn focused_tab_count(&self) -> usize {
@@ -519,6 +488,5 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         snapshot_generation: None,
         agent_recency: HashMap::new(),
         agent_presentation: Default::default(),
-        methods: None,
     }
 }

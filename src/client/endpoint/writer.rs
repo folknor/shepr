@@ -320,11 +320,7 @@ mod tests {
             })();
             done.send(result).expect("test precondition");
         });
-        let mut registry = super::super::EndpointRegistry::new(
-            transport,
-            1,
-            super::super::EndpointNegotiation::default(),
-        );
+        let mut registry = super::super::EndpointRegistry::new(transport, 1);
         let input = ClientMessage::Input {
             data: b"queued input".to_vec(),
         };

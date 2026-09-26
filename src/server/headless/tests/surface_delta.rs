@@ -18,20 +18,10 @@ fn decode_surface_message(
     }
 }
 
-fn enable_delta(server: &mut HeadlessServer, client_id: u64) {
-    server
-        .clients
-        .get_mut(&client_id)
-        .expect("delta client")
-        .render_state
-        .enable_surface_delta(true);
-}
-
 #[tokio::test]
 async fn surface_delta_reconstructs_metadata_text_and_hyperlinks() {
     let (mut server, _control_rx, render_rx, pane_id) =
         retained_test_server_with_control(b"initial text");
-    enable_delta(&mut server, 1);
     server.render_and_stream();
     let (initial_bytes, initial_message) = receive_message(&render_rx);
     let mut decoder = protocol::surface_reuse::Decoder::new(true);

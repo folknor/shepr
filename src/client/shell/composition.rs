@@ -140,6 +140,7 @@ impl ClientShellState {
                 1,
                 &self.config.palette,
             );
+            self.endpoint_notice_drawn(std::time::Instant::now());
         }
         FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
     }
@@ -311,7 +312,28 @@ impl ClientShellState {
         {
             layout.tab_bar
         } else {
-            layout.pane_surface
+            // The bar normally covers the pane area's bottom row. When the copy cursor sits on
+            // that row (the last line of history, which scrolling cannot lift, or a pane too
+            // short to reserve it) the bar moves to the top row so the cursor stays visible.
+            let bottom_row = layout.pane_surface.bottom().saturating_sub(1);
+            let copy_cursor_row = (self.mode == ClientShellMode::Copy)
+                .then(|| {
+                    self.copy_mode
+                        .as_ref()
+                        .and_then(|copy_mode| client_copy_cursor_cell(copy_mode, &self.hits.panes))
+                })
+                .flatten()
+                .map(|(_, y)| y);
+            if layout.pane_surface.height > 1 && copy_cursor_row == Some(bottom_row) {
+                Rect::new(
+                    layout.pane_surface.x,
+                    layout.pane_surface.y,
+                    layout.pane_surface.width,
+                    1,
+                )
+            } else {
+                layout.pane_surface
+            }
         };
         let mode_bar = if self.overlay.is_some() {
             None
@@ -398,50 +420,32 @@ impl ClientShellState {
         }
         if self.mode == ClientShellMode::Copy {
             frame.cursor = None;
-            if let Some(copy_mode) = self.copy_mode.as_ref()
-                && let Some(hit) = self.hits.panes.iter().find(|hit| {
-                    hit.pane_id == copy_mode.pane_id
-                        && client_copy_surface_coherent(Some(copy_mode), hit)
-                })
+            if let Some((x, y)) = self
+                .copy_mode
+                .as_ref()
+                .and_then(|copy_mode| client_copy_cursor_cell(copy_mode, &self.hits.panes))
+                && x < frame.width
+                && y < frame.height
             {
-                let viewport_top = u32::try_from(
-                    copy_mode
-                        .max_offset_from_bottom
-                        .saturating_sub(copy_mode.offset_from_bottom),
-                )
-                .unwrap_or(u32::MAX);
-                let viewport_row = copy_mode.cursor.row.saturating_sub(viewport_top);
-                let x = hit.inner_rect.x.saturating_add(copy_mode.cursor.col);
-                let y = hit
-                    .inner_rect
-                    .y
-                    .saturating_add(u16::try_from(viewport_row).unwrap_or(u16::MAX));
-                if viewport_row < u32::from(hit.inner_rect.height)
-                    && copy_mode.cursor.col < hit.inner_rect.width
-                    && x < frame.width
-                    && y < frame.height
-                {
-                    let mut composed = frame.to_ratatui_buffer()?;
-                    if let Some(cell) = composed.cell_mut((x, y)) {
-                        cell.set_style(
-                            Style::default()
-                                .fg(match self.config.palette.panel_bg {
-                                    ratatui::style::Color::Reset => self.config.palette.surface_dim,
-                                    color => color,
-                                })
-                                .bg(self.config.palette.accent)
-                                .add_modifier(Modifier::BOLD),
-                        );
-                    }
-                    frame.replace_from_ratatui_buffer_preserving_effects(&composed, None);
-                } else {
-                    frame.cursor = None;
+                let mut composed = frame.to_ratatui_buffer()?;
+                if let Some(cell) = composed.cell_mut((x, y)) {
+                    cell.set_style(
+                        Style::default()
+                            .fg(match self.config.palette.panel_bg {
+                                ratatui::style::Color::Reset => self.config.palette.surface_dim,
+                                color => color,
+                            })
+                            .bg(self.config.palette.accent)
+                            .add_modifier(Modifier::BOLD),
+                    );
                 }
+                frame.replace_from_ratatui_buffer_preserving_effects(&composed, None);
             }
         }
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         self.hits.notification_toast = Rect::default();
-        let has_config_diagnostic = self.config_diagnostic.is_some();
+        self.hits.config_diagnostic = Rect::default();
+        let has_config_diagnostic = self.visible_config_diagnostic().is_some();
         let active_lifecycle = self
             .endpoints
             .iter()
@@ -454,22 +458,24 @@ impl ClientShellState {
         {
             let cursor = frame.cursor.clone();
             let mut composed = frame.to_ratatui_buffer()?;
-            if let Some(diagnostic) = self.config_diagnostic.as_deref() {
+            if let Some(diagnostic) = self.visible_config_diagnostic() {
                 let diagnostic_area = Rect::new(0, 0, cols, rows);
-                crate::ui::render_config_diagnostic_buffer(
+                self.hits.config_diagnostic = crate::ui::render_config_diagnostic_buffer(
                     &mut composed,
                     diagnostic_area,
                     diagnostic,
                     &self.config.palette,
                 );
             }
+            // A merged client + endpoint diagnostic spans two rows; stack below all of them.
+            let diagnostic_rows = self.hits.config_diagnostic.height;
             let lifecycle_offset = active_lifecycle.as_ref().map_or(0, |(label, status)| {
                 endpoint_notices::render_lifecycle_banner(
                     &mut composed,
                     Rect::new(0, 0, cols, rows),
                     label,
                     *status,
-                    u16::from(has_config_diagnostic),
+                    diagnostic_rows,
                     &self.config.palette,
                 );
                 1
@@ -479,7 +485,7 @@ impl ClientShellState {
                     &mut composed,
                     Rect::new(0, 0, cols, rows),
                     notice,
-                    u16::from(has_config_diagnostic) + lifecycle_offset,
+                    diagnostic_rows.saturating_add(lifecycle_offset),
                     &self.config.palette,
                 );
             }
@@ -488,23 +494,18 @@ impl ClientShellState {
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         if let Some(overlay) = self.overlay.as_ref() {
             let mut composed = frame.to_ratatui_buffer()?;
-            let cursor = if let ClientShellOverlay::ContextMenu(menu) = overlay {
-                let rendered =
-                    render::render_context_menu(&mut composed, menu, &self.config.palette)?;
-                self.hits.context_menu_rows = rendered.menu_rows;
-                None
-            } else if let ClientShellOverlay::GlobalMenu(menu) = overlay {
-                let rendered = render::render_global_menu(
+            let rendered = match overlay {
+                ClientShellOverlay::ContextMenu(menu) => {
+                    render::render_context_menu(&mut composed, menu, &self.config.palette)
+                }
+                ClientShellOverlay::GlobalMenu(menu) => render::render_global_menu(
                     &mut composed,
                     self.hits.global_launcher,
                     menu,
                     snapshot,
                     &self.config.palette,
-                )?;
-                self.hits.global_menu_rows = rendered.menu_rows;
-                None
-            } else {
-                let rendered = render::render_client_overlay(
+                ),
+                _ => render::render_client_overlay(
                     &mut composed,
                     overlay,
                     snapshot,
@@ -512,7 +513,18 @@ impl ClientShellState {
                     &self.active_endpoint_id,
                     &self.config.keybinds,
                     &self.config.palette,
-                )?;
+                ),
+            };
+            if let Some(rendered) = rendered {
+                match overlay {
+                    ClientShellOverlay::ContextMenu(_) => {
+                        self.hits.context_menu_rows = rendered.menu_rows;
+                    }
+                    ClientShellOverlay::GlobalMenu(_) => {
+                        self.hits.global_menu_rows = rendered.menu_rows;
+                    }
+                    _ => {}
+                }
                 self.hits.overlay_primary = rendered.primary;
                 self.hits.overlay_clear = rendered.clear;
                 self.hits.overlay_cancel = rendered.cancel;
@@ -525,9 +537,32 @@ impl ClientShellState {
                 self.hits.help_scrollbar = rendered.help_scrollbar;
                 self.hits.help_scroll_metrics = rendered.help_scroll_metrics;
                 self.hits.help_max_scroll = rendered.help_max_scroll;
-                rendered.cursor
-            };
-            frame.replace_from_ratatui_buffer_preserving_effects(&composed, cursor);
+                frame.replace_from_ratatui_buffer_preserving_effects(&composed, rendered.cursor);
+            } else {
+                // The overlay does not fit this terminal. Its renderer may have drawn part of
+                // itself into `composed` before giving up, so that buffer is dropped and the
+                // frame without the overlay is presented: pane output keeps flowing and a
+                // one-line hint says why the overlay is missing. The overlay stays open (its
+                // keys still work, esc closes it) and reappears once the terminal is large
+                // enough. Overlay hit rects stay empty, so mouse input cannot hit an
+                // invisible popup.
+                let mut hint = frame.to_ratatui_buffer()?;
+                let hint_row = rows.saturating_sub(1);
+                let hint_style = Style::default()
+                    .fg(panel_contrast_fg(&self.config.palette))
+                    .bg(self.config.palette.accent)
+                    .add_modifier(Modifier::BOLD);
+                hint.set_style(Rect::new(0, hint_row, cols, 1.min(rows)), hint_style);
+                render::put_text(
+                    &mut hint,
+                    0,
+                    hint_row,
+                    cols,
+                    " window too small for this popup · esc closes",
+                    hint_style,
+                );
+                frame.replace_from_ratatui_buffer_preserving_effects(&hint, None);
+            }
         }
         if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
             help.scroll = help.scroll.min(self.hits.help_max_scroll);
@@ -537,6 +572,11 @@ impl ClientShellState {
             self.hits.panes.clear();
             self.hits.pane_splits.clear();
         }
+        // This path draws a visible banner and notice unconditionally (above), so this is
+        // where their lifetimes start.
+        let now = std::time::Instant::now();
+        self.config_diagnostic_drawn(now);
+        self.endpoint_notice_drawn(now);
         Some(crate::client::frame_output::ComposedFrame { frame })
     }
 }
@@ -551,6 +591,35 @@ fn client_copy_surface_coherent(copy_mode: Option<&ClientCopyModeState>, hit: &P
                         && scroll.max_offset_from_bottom == copy_mode.max_offset_from_bottom
                 })
         })
+}
+
+/// Screen cell of the copy-mode cursor, when its pane is on screen, coherent with the copy
+/// state, and the cursor row is inside the pane's viewport.
+fn client_copy_cursor_cell(
+    copy_mode: &ClientCopyModeState,
+    hits: &[PaneHit],
+) -> Option<(u16, u16)> {
+    let hit = hits.iter().find(|hit| {
+        hit.pane_id == copy_mode.pane_id && client_copy_surface_coherent(Some(copy_mode), hit)
+    })?;
+    let viewport_top = u32::try_from(
+        copy_mode
+            .max_offset_from_bottom
+            .saturating_sub(copy_mode.offset_from_bottom),
+    )
+    .unwrap_or(u32::MAX);
+    let viewport_row = copy_mode.cursor.row.checked_sub(viewport_top)?;
+    if viewport_row >= u32::from(hit.inner_rect.height)
+        || copy_mode.cursor.col >= hit.inner_rect.width
+    {
+        return None;
+    }
+    Some((
+        hit.inner_rect.x.saturating_add(copy_mode.cursor.col),
+        hit.inner_rect
+            .y
+            .saturating_add(u16::try_from(viewport_row).unwrap_or(u16::MAX)),
+    ))
 }
 
 fn render_client_copy_search_highlights(

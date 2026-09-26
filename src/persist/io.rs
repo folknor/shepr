@@ -122,8 +122,9 @@ pub(super) fn publish_private_file(
 // A crash between creating the temporary and renaming it leaves the file
 // behind, and the exclusive create in `publish_private_file` would then refuse
 // every later save. Unlinking a directory fails, so anything other than a
-// leftover file in the way still fails the save. This assumes one writer per
-// data directory; concurrent servers sharing it are not guarded against here.
+// leftover file in the way still fails the save. Removing it is safe because
+// only one server writes a data directory: `SessionWriter` holds the
+// directory's lock (`lock.rs`) before any write.
 fn remove_stale_temporary(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -137,11 +138,14 @@ pub(super) fn save_to_path(path: &Path, snapshot: &SessionSnapshot) -> std::io::
 }
 
 fn save_json_to_path<T: serde::Serialize>(path: &Path, snapshot: &T) -> std::io::Result<Published> {
+    save_serialized_to_path(path, &serde_json::to_string_pretty(snapshot)?)
+}
+
+fn save_serialized_to_path(path: &Path, json: &str) -> std::io::Result<Published> {
     let target = resolve_write_target(path)?;
     let directory = containing_directory(&target);
     let created = !directory.exists();
     std::fs::create_dir_all(directory)?;
-    let json = serde_json::to_string_pretty(snapshot)?;
     let pending = target.with_extension("json.tmp");
     remove_stale_temporary(&pending)?;
     let published = publish_private_file(&mut json.as_bytes(), &pending, &target, true)?;
@@ -162,11 +166,21 @@ pub(super) fn save_history_to_path(
     history: Option<&SessionHistorySnapshot>,
 ) -> std::io::Result<()> {
     match history {
-        Some(history) => match save_json_to_path(path, history)? {
-            Published::Durable => Ok(()),
-            Published::NotDurable(err) => Err(err),
-        },
+        Some(history) => save_history_json_to_path(path, &serialize_history(history)?),
         None => clear_path(path),
+    }
+}
+
+pub(super) fn serialize_history(history: &SessionHistorySnapshot) -> std::io::Result<String> {
+    Ok(serde_json::to_string_pretty(history)?)
+}
+
+/// Writes history that `serialize_history` already produced, so a caller that
+/// needs the bytes too (to tell whether anything changed) serializes once.
+pub(super) fn save_history_json_to_path(path: &Path, json: &str) -> std::io::Result<()> {
+    match save_serialized_to_path(path, json)? {
+        Published::Durable => Ok(()),
+        Published::NotDurable(err) => Err(err),
     }
 }
 
@@ -185,8 +199,28 @@ pub(super) fn clear_path(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Reads the saved layout for restore. Restoring resumes native agent
+/// sessions, so a server that does not own the data directory must not do it:
+/// the directory's lock is claimed first, and while another server holds it
+/// nothing is restored.
 pub fn load() -> Option<SessionSnapshot> {
     let path = session_path();
+    if let Err(err) = super::lock::claim(containing_directory(&path)) {
+        if super::lock::is_owned_elsewhere(&err) {
+            tracing::error!(
+                event = "persist.restore", subsystem = "persist", outcome = "owned_elsewhere",
+                path = %path.display(), err = %err,
+                "another server owns this session's files; not restoring or saving them"
+            );
+            return None;
+        }
+        warn!(
+            event = "persist.restore", subsystem = "persist", outcome = "lock_error",
+            path = %path.display(), err = %err,
+            "could not lock the session directory; session was not restored"
+        );
+        return None;
+    }
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -315,6 +349,43 @@ mod tests {
 
         assert!(session_path.exists());
         assert!(!history_path.exists());
+    }
+
+    #[test]
+    fn load_refuses_a_session_another_server_owns() {
+        let _guard = crate::config::test_config_env_lock()
+            .lock()
+            .expect("test precondition");
+        let config_home = temp_session_path("owned-elsewhere")
+            .parent()
+            .expect("test precondition")
+            .to_path_buf();
+        // SAFETY: the config env lock serializes every test that touches
+        // these variables, and nothing else in this test runs concurrently.
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", &config_home);
+            std::env::remove_var(crate::session::SESSION_ENV_VAR);
+        }
+        let path = session_path();
+        save_to_path(&path, &empty_snapshot()).expect("test precondition");
+        let directory = containing_directory(&path).to_path_buf();
+        let other_server = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(directory.join(super::super::lock::LOCK_FILE_NAME))
+            .expect("test precondition");
+        other_server.try_lock().expect("test precondition");
+
+        assert!(load().is_none(), "another server's session is not restored");
+
+        drop(other_server);
+        assert!(load().is_some());
+        super::super::lock::release(&directory);
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
+        let _ = std::fs::remove_dir_all(config_home);
     }
 
     #[test]

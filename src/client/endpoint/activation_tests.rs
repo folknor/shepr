@@ -36,16 +36,6 @@ impl super::super::EndpointTransport for FakeTransport {
     }
 }
 
-fn negotiation() -> super::super::EndpointNegotiation {
-    super::super::EndpointNegotiation::new(
-        vec!["client_shell.surface.set".into()],
-        vec![
-            crate::protocol::endpoint::SURFACE_INTEREST_CAPABILITY.into(),
-            crate::protocol::endpoint::PRESENTATION_EFFECTS_FENCE_CAPABILITY.into(),
-        ],
-    )
-}
-
 fn test_snapshot(boot_id: &str, revision: u64) -> crate::protocol::ClientShellSnapshot {
     crate::protocol::ClientShellSnapshot {
         boot_id: boot_id.into(),
@@ -102,7 +92,6 @@ fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> Test
             fail_after_write: source_fail_after_write,
         },
         1,
-        negotiation(),
     );
     endpoints.insert(
         target,
@@ -111,7 +100,6 @@ fn shell_and_registry_with_source_failure(source_fail_after_write: bool) -> Test
             fail_after_write: false,
         },
         7,
-        negotiation(),
         false,
     );
     (shell, endpoints, local_sent, remote_sent)
@@ -999,7 +987,6 @@ fn local_escape(source_state: &str) {
                 fail_after_write: true,
             },
             7,
-            negotiation(),
             true,
         ),
         _ => {}
@@ -1249,7 +1236,6 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
                     fail_after_write: false,
                 },
                 2,
-                negotiation(),
                 false,
             );
         } else {
@@ -1286,7 +1272,6 @@ fn local_selection_waits_for_fresh_metadata_without_abandoning_remote() {
                     fail_after_write: false,
                 },
                 2,
-                negotiation(),
                 false,
             );
         }

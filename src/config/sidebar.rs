@@ -683,9 +683,20 @@ rows = [[{ token = "$status", rules = [{ contains = "error", bold = true }] }]]
 
     #[test]
     fn rejects_unknown_bare_and_malformed_custom_tokens() {
+        let input = |token: &str| format!("[ui.sidebar.agents]\nrows = [[\"{token}\"]]\n");
+        // Controls: the same TOML with valid tokens parses, so the rejections
+        // below are down to the token and not to malformed TOML.
+        for token in ["workspace", "$summary"] {
+            assert!(
+                toml::from_str::<crate::config::Config>(&input(token)).is_ok(),
+                "rejected {token}"
+            );
+        }
         for token in ["summary", "$", "$bad.name"] {
-            let input = format!("[ui.sidebar.agents]\\nrows = [[\"{token}\"]]\\n");
-            assert!(toml::from_str::<crate::config::Config>(&input).is_err());
+            assert!(
+                toml::from_str::<crate::config::Config>(&input(token)).is_err(),
+                "accepted {token}"
+            );
         }
     }
 

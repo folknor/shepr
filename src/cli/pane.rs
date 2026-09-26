@@ -227,7 +227,8 @@ fn read_params(matches: &ArgMatches) -> PaneReadParams {
         source: value::<ReadSource>(matches, "source").unwrap_or(ReadSource::Recent),
         lines: value::<u32>(matches, "lines"),
         format,
-        strip_ansi: true,
+        // Same params as `agent read`: an ANSI read keeps its escapes.
+        strip_ansi: format != ReadFormat::Ansi,
         intent: crate::api::schema::ReadIntent::Interactive,
     }
 }
@@ -888,7 +889,7 @@ mod tests {
         assert_eq!(params.source, ReadSource::Visible);
         assert_eq!(params.lines, Some(5));
         assert_eq!(params.format, ReadFormat::Ansi);
-        assert!(params.strip_ansi);
+        assert!(!params.strip_ansi);
 
         let params = read_params(&pane(&["read", "--source=visible", "--lines=5", "issue-1"]));
         assert_eq!(params.pane_id, "issue-1");

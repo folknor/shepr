@@ -9,6 +9,11 @@ pub fn run_server() -> io::Result<()> {
     // function without having spawned any thread; keep it that way.
     let startup_cwd = take_startup_cwd();
 
+    if let Err(err) = crate::persist::lock::claim(&crate::session::data_dir()) {
+        eprintln!("error: cannot claim shepr session directory: {err}");
+        std::process::exit(1);
+    }
+
     crate::logging::init_file_logging("shepr-server.log");
 
     let loaded_config = config::Config::load();

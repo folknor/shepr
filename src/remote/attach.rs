@@ -235,8 +235,9 @@ impl RemoteShepr {
         };
         let args = Self::session_args(session_name, command);
         // sshd hands this string to the user's login shell, which need not be POSIX
-        // (xonsh, fish, nushell). Run the script under /bin/sh, as discovery and the
-        // API bridge do, so the login shell only has to launch one quoted command.
+        // (xonsh, fish, nushell). Run the script under /bin/sh, as the API bridge does
+        // (discovery feeds its script to `/bin/sh -s` instead), so the login shell only
+        // has to launch one quoted command.
         posix_shell_command(&posix_remote_output_command(&format!(
             "exec {}",
             self.command(&args)
@@ -735,7 +736,7 @@ pub(super) fn discover_remote_api_metadata(
     ssh: &RemoteSsh,
     session: &str,
 ) -> io::Result<crate::client::endpoint::SshMachineMetadata> {
-    let output = ssh.framed_user_shell_output(&posix_remote_api_discovery_command(session))?;
+    let output = ssh.sh_output(&posix_remote_api_discovery_script(session))?;
     if !output.status.success() {
         return Err(command_failed("remote binary discovery failed", &output));
     }
@@ -1115,8 +1116,14 @@ fn read_remote_confirmation(reader: &mut impl io::BufRead, default: bool) -> io:
     }
 }
 
-fn posix_remote_api_discovery_command(session: &str) -> String {
-    let script = format!(
+/// The API-bridge discovery script. It is multi-line and quoted, so it is fed
+/// to `/bin/sh -s` on stdin (see `RemoteSsh::sh_output`) and never passes
+/// through the login shell's parser: sshd only hands the login shell the plain
+/// words `/bin/sh -s`, which xonsh, fish and nushell run like any POSIX shell.
+/// `/bin/sh` still inherits the login shell's environment, so `command -v`
+/// sees the PATH that shell set up.
+fn posix_remote_api_discovery_script(session: &str) -> String {
+    format!(
         r#"set -f
 candidates=$(
 command -v shepr
@@ -1140,8 +1147,7 @@ printf '%s\n' 'remote Shepr does not support machine API forwarding; update Shep
 exit 2"#,
         discovery = known_remote_binary_candidate_script(),
         session = shell_quote(session),
-    );
-    posix_shell_command(&posix_remote_output_command(&script))
+    )
 }
 
 pub(super) const STALE_API_METADATA: &str = "shepr-machine-metadata-stale-v1";
@@ -1152,8 +1158,18 @@ pub(super) fn cached_remote_api_command(
 ) -> String {
     let path = shell_quote(&metadata.executable);
     let session = shell_quote(session);
+    // The API bridge's stdin is the data channel, so unlike discovery this
+    // script cannot be fed to `/bin/sh -s`; it has to reach the login shell as
+    // `/bin/sh -c '<script>'`. Keep it to one line with no single quote,
+    // backslash or double quote inside, so the login shell (xonsh, fish,
+    // nushell or POSIX) sees one plain single-quoted word with nothing to
+    // escape, the same as the client bridge command. `set -f` makes the
+    // unquoted `$capability` safe from globbing; a value with spaces makes
+    // `[` fail, which is the stale branch, as it should be. A path or session
+    // that needs quoting would bring `'\''` back; paths come from discovery
+    // (plain install paths) and session names are validated.
     let script = format!(
-        "if capability=$({path} --session {session} remote-api-bridge --check </dev/null 2>/dev/null) && [ \"$capability\" = shepr-api-bridge-v1 ]; then\n{}\nelse\n    printf '%s\\n' '{STALE_API_METADATA}' >&2\n    exit 78\nfi",
+        "set -f; if capability=$({path} --session {session} remote-api-bridge --check </dev/null 2>/dev/null) && [ x$capability = xshepr-api-bridge-v1 ]; then {}; else echo {STALE_API_METADATA} >&2; exit 78; fi",
         posix_remote_output_command(&format!(
             "exec {path} --session {session} remote-api-bridge"
         )),
@@ -2663,6 +2679,66 @@ mod tests {
         let mut stdout = output.stdout;
         normalize_remote_stdout(&mut stdout, output.status.success()).expect("marker line present");
         assert_eq!(stdout, b"payload");
+    }
+
+    /// The cached API-bridge command reaches the login shell as `/bin/sh -c`
+    /// plus one single-quoted word with no quote, backslash or newline inside,
+    /// and both of its branches behave when a real /bin/sh runs it.
+    #[test]
+    fn cached_api_command_does_not_depend_on_a_posix_login_shell() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = std::env::temp_dir().join(format!(
+            "shepr-api-command-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test precondition")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("test precondition");
+        let fake = dir.join("shepr");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nif [ \"$4\" = --check ]; then echo shepr-api-bridge-v1; else echo bridged-$2; fi\n",
+        )
+        .expect("test precondition");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))
+            .expect("test precondition");
+
+        let run = |executable: &str| {
+            let metadata = crate::client::endpoint::SshMachineMetadata {
+                os: "linux".to_owned(),
+                executable: executable.to_owned(),
+            };
+            let command = cached_remote_api_command(&metadata, "agents");
+            let script = command
+                .strip_prefix("/bin/sh -c '")
+                .and_then(|rest| rest.strip_suffix('\''))
+                .expect("wrapped in /bin/sh -c")
+                .to_owned();
+            for forbidden in ['\'', '\n', '\\', '"'] {
+                assert!(!script.contains(forbidden), "{forbidden:?} in {script}");
+            }
+            std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(&script)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .expect("test precondition")
+        };
+
+        let fake_path = fake.to_str().expect("test precondition").to_owned();
+        let output = run(&fake_path);
+        let mut stdout = output.stdout;
+        assert!(output.status.success());
+        normalize_remote_stdout(&mut stdout, true).expect("marker line present");
+        assert_eq!(stdout, b"bridged-agents\n");
+
+        let output = run("/nonexistent/shepr");
+        assert_eq!(output.status.code(), Some(78));
+        assert!(String::from_utf8_lossy(&output.stderr).contains(STALE_API_METADATA));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

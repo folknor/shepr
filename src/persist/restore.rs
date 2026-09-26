@@ -162,7 +162,8 @@ fn restore_workspace(
         .and_then(|max| max.checked_add(1))
         .unwrap_or(1)
         .max(snap.next_public_pane_number);
-    let public_pane_numbers_by_old_raw = &snap.public_pane_numbers;
+    let public_pane_numbers_by_old_raw =
+        &assign_public_pane_numbers(snap, &mut next_public_pane_number);
     let public_pane_ids_by_old_raw: HashMap<u32, String> = public_pane_numbers_by_old_raw
         .iter()
         .map(|(old_raw, public_number)| {
@@ -233,19 +234,16 @@ fn restore_workspace(
         return None;
     }
 
-    let (cached_git_space, cached_auto_label, cached_git_status_key) =
-        crate::workspace::discover_workspace_git_identity(&snap.identity_cwd);
-
-    Some(Workspace {
+    let mut workspace = Workspace {
         id: workspace_id,
         custom_name: snap.custom_name.clone(),
         identity_cwd: snap.identity_cwd.clone(),
         cached_identity_cwd: snap.identity_cwd.clone(),
-        cached_auto_label,
-        cached_git_status_key,
-        cached_git_branch: crate::workspace::git_branch(&snap.identity_cwd),
+        cached_auto_label: crate::workspace::fallback_label_from_cwd(&snap.identity_cwd),
+        cached_git_status_key: snap.identity_cwd.clone(),
+        cached_git_branch: None,
         cached_git_ahead_behind: None,
-        cached_git_space,
+        cached_git_space: None,
         metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
         metadata_token_sequences: HashMap::new(),
         public_pane_numbers,
@@ -253,10 +251,9 @@ fn restore_workspace(
         next_public_tab_number,
         active_tab: snap.active_tab.min(tabs.len().saturating_sub(1)),
         tabs,
-        #[cfg(test)]
-        test_runtimes: HashMap::new(),
-    })
-    .map(|workspace| (workspace, terminals, terminal_runtimes))
+    };
+    workspace.mark_identity_undiscovered();
+    Some((workspace, terminals, terminal_runtimes))
 }
 
 fn unavailable_restored_terminal(
@@ -403,8 +400,10 @@ fn restore_tab(
             }
             // Native resume owns what this pane shows once it runs, so the
             // saved screen is not replayed. Until a runtime exists, though,
-            // saves must keep writing it: the resume may be deferred for a
-            // while (no client yet) or fail outright (missing cwd or shell),
+            // saves must keep writing it: the resume waits for the event loop
+            // and is spaced out per agent (`startup_per_agent_delay_ms`), so
+            // later panes can wait a while, or it can fail outright (missing
+            // cwd or shell),
             // and neither may cost the pane its saved history.
             super::snapshot::carry_history(&terminal_id, saved_history);
             panes.insert(*id, PaneState::new(terminal_id));
@@ -498,12 +497,7 @@ fn restore_tab(
             root_pane,
             layout,
             panes,
-            #[cfg(test)]
-            runtimes: HashMap::new(),
             zoomed: snap.zoomed,
-            events: runtime_context.events.clone(),
-            render_notify: Arc::clone(&runtime_context.render_notify),
-            render_dirty: Arc::clone(&runtime_context.render_dirty),
         },
         terminals,
         terminal_runtimes,
@@ -674,6 +668,39 @@ fn remap_inner(snap: &LayoutSnapshot, id_map: &mut HashMap<u32, PaneId>) -> Node
                 first: Box::new(first_node),
                 second: Box::new(second_node),
             }
+        }
+    }
+}
+
+/// Public pane numbers for every saved pane of a workspace, keyed by saved
+/// pane ID. Every restored pane needs its public ID before its shell starts:
+/// the ID goes into the shell's SHEPR identity environment, which agent hooks
+/// use to report back. A saved pane without a number (a hand-edited or
+/// damaged file) gets the next free one, in layout order.
+fn assign_public_pane_numbers(
+    snap: &WorkspaceSnapshot,
+    next_public_pane_number: &mut usize,
+) -> HashMap<u32, usize> {
+    let mut numbers = snap.public_pane_numbers.clone();
+    for tab_snap in &snap.tabs {
+        let mut layout_panes = Vec::new();
+        collect_snapshot_pane_ids(&tab_snap.layout, &mut layout_panes);
+        for old_raw in layout_panes {
+            if tab_snap.panes.contains_key(&old_raw) && !numbers.contains_key(&old_raw) {
+                numbers.insert(old_raw, *next_public_pane_number);
+                *next_public_pane_number += 1;
+            }
+        }
+    }
+    numbers
+}
+
+fn collect_snapshot_pane_ids(layout: &LayoutSnapshot, ids: &mut Vec<u32>) {
+    match layout {
+        LayoutSnapshot::Pane(id) => ids.push(*id),
+        LayoutSnapshot::Split { first, second, .. } => {
+            collect_snapshot_pane_ids(first, ids);
+            collect_snapshot_pane_ids(second, ids);
         }
     }
 }
@@ -1380,6 +1407,62 @@ mod tests {
         assert_eq!(workspace.next_public_tab_number, 6);
     }
 
+    #[test]
+    fn every_saved_pane_gets_a_public_number_before_its_shell_starts() {
+        let pane = || super::super::snapshot::PaneSnapshot {
+            cwd: PathBuf::from("/"),
+            label: None,
+            agent_name: None,
+            managed_agent_kind: None,
+            agent_session: None,
+            launch_argv: None,
+        };
+        let tab = |layout: LayoutSnapshot, panes: &[u32]| TabSnapshot {
+            custom_name: None,
+            layout,
+            panes: panes.iter().map(|id| (*id, pane())).collect(),
+            zoomed: false,
+            focused: None,
+            root_pane: None,
+        };
+        let snap = WorkspaceSnapshot {
+            id: Some("w1".into()),
+            custom_name: None,
+            identity_cwd: PathBuf::from("/"),
+            // Only pane 10 kept its number; 30 and 20 lost theirs.
+            public_pane_numbers: HashMap::from([(10, 4)]),
+            next_public_pane_number: 5,
+            public_tab_numbers: Vec::new(),
+            next_public_tab_number: 0,
+            tabs: vec![
+                tab(
+                    LayoutSnapshot::Split {
+                        direction: DirectionSnapshot::Horizontal,
+                        ratio: 0.5,
+                        first: Box::new(LayoutSnapshot::Pane(30)),
+                        second: Box::new(LayoutSnapshot::Split {
+                            direction: DirectionSnapshot::Vertical,
+                            ratio: 0.5,
+                            first: Box::new(LayoutSnapshot::Pane(10)),
+                            // A leaf with no saved pane is dropped by restore
+                            // and needs no number.
+                            second: Box::new(LayoutSnapshot::Pane(99)),
+                        }),
+                    },
+                    &[10, 30],
+                ),
+                tab(LayoutSnapshot::Pane(20), &[20]),
+            ],
+            active_tab: 0,
+        };
+        let mut next = 5;
+
+        let numbers = assign_public_pane_numbers(&snap, &mut next);
+
+        assert_eq!(numbers, HashMap::from([(10, 4), (30, 5), (20, 6)]));
+        assert_eq!(next, 7);
+    }
+
     #[tokio::test]
     async fn cold_restore_with_gapped_public_tab_numbers_drops_unmanaged_agent_name() {
         let cwd = std::env::current_dir().expect("test precondition");
@@ -1547,7 +1630,11 @@ mod tests {
             .expect("native agent restore should create terminal state");
         assert!(
             terminal.pending_agent_resume_plan.is_some(),
-            "restored native agent panes should defer resume until client terminal context is known"
+            // The launch waits for the event loop, not for a client: once a
+            // view exists it starts after a short wait for a host theme, at
+            // the headless size when no client is attached (see the headless
+            // test `headless_scheduled_tasks_start_pending_agent_resume_without_foreground_client`).
+            "restored native agent panes should defer resume to the event loop"
         );
         assert!(
             runtimes.is_empty(),

@@ -7,7 +7,6 @@ use super::{CellData, PaneSurfaceFrame, PaneSurfacePatchRow, ServerMessage};
 
 mod decode;
 
-pub(crate) const CAPABILITY: &str = "surface_delta";
 pub(crate) const MESSAGE_KIND: &str = "endpoint.surface-delta.v1";
 pub(crate) const MAX_SPANS: usize = 4096;
 

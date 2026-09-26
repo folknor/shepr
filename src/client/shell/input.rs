@@ -10,6 +10,66 @@ fn is_retained_selection_copy_key(key: &crate::input::TerminalKey) -> bool {
         && matches!(key.modifiers, KeyModifiers::CONTROL | KeyModifiers::SUPER)
 }
 
+/// How long Ctrl+V in a modal input waits for the clipboard helper before giving up.
+const MODAL_PASTE_CLIPBOARD_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Set while a clipboard helper thread is still running, including one abandoned after a
+/// timeout, so a hung helper is waited on once rather than once per keypress.
+static CLIPBOARD_READ_IN_FLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Reads the host clipboard for a modal paste without letting a hung helper stall the client.
+///
+/// Key routing runs on the client's event loop, so a clipboard owner that never answers
+/// (e.g. `xclip -out` against an unresponsive X selection owner) would freeze rendering and
+/// input for every pane. The platform reader has no timeout of its own and cannot be
+/// cancelled, so it runs on its own thread and the paste is abandoned after
+/// `MODAL_PASTE_CLIPBOARD_TIMEOUT`. An abandoned read keeps its thread (and helper process)
+/// until the helper exits; later pastes are skipped immediately until then.
+fn read_clipboard_text_bounded() -> Option<String> {
+    read_clipboard_text_bounded_with(
+        &CLIPBOARD_READ_IN_FLIGHT,
+        MODAL_PASTE_CLIPBOARD_TIMEOUT,
+        crate::platform::read_clipboard_text,
+    )
+}
+
+fn read_clipboard_text_bounded_with(
+    in_flight: &'static std::sync::atomic::AtomicBool,
+    timeout: std::time::Duration,
+    read: fn() -> Option<String>,
+) -> Option<String> {
+    use std::sync::atomic::Ordering;
+
+    if in_flight.swap(true, Ordering::AcqRel) {
+        tracing::warn!("an earlier clipboard read is still running; paste skipped");
+        return None;
+    }
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let spawned = std::thread::Builder::new()
+        .name("shepr-clipboard-read".into())
+        .spawn(move || {
+            let text = read();
+            in_flight.store(false, Ordering::Release);
+            let _ = sender.send(text);
+        });
+    if let Err(error) = spawned {
+        in_flight.store(false, Ordering::Release);
+        tracing::warn!(%error, "could not start the clipboard reader; paste skipped");
+        return None;
+    }
+    match receiver.recv_timeout(timeout) {
+        Ok(text) => text,
+        Err(_) => {
+            tracing::warn!(
+                timeout_ms = timeout.as_millis(),
+                "clipboard helper did not answer in time; paste skipped"
+            );
+            None
+        }
+    }
+}
+
 pub(super) fn is_modal_paste_shortcut(key: &crate::input::TerminalKey) -> bool {
     key.generated_text.as_deref().is_none_or(str::is_empty)
         && matches!(key.code, KeyCode::Char('v' | 'V'))
@@ -387,8 +447,7 @@ impl ClientShellState {
         key: &crate::input::TerminalKey,
         outcome: &mut ClientShellInput,
     ) -> Option<ClientInputTarget> {
-        if self.handle_modal_paste_shortcut_with(key, outcome, crate::platform::read_clipboard_text)
-        {
+        if self.handle_modal_paste_shortcut_with(key, outcome, read_clipboard_text_bounded) {
             return None;
         }
         if self.overlay.is_some() {
@@ -939,5 +998,47 @@ mod tests {
             RawInputEvent::Paste("b".into()),
         ]);
         assert_eq!(small.requests.len(), 1, "small pastes still batch");
+    }
+
+    #[test]
+    fn bounded_clipboard_read_returns_a_prompt_answer() {
+        static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let text =
+            read_clipboard_text_bounded_with(&IN_FLIGHT, std::time::Duration::from_secs(5), || {
+                Some("clip".to_owned())
+            });
+        assert_eq!(text.as_deref(), Some("clip"));
+    }
+
+    #[test]
+    fn hung_clipboard_helper_is_abandoned_and_not_waited_on_again() {
+        static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        fn hung() -> Option<String> {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            Some("late".to_owned())
+        }
+
+        let started = std::time::Instant::now();
+        let first = read_clipboard_text_bounded_with(
+            &IN_FLIGHT,
+            std::time::Duration::from_millis(20),
+            hung,
+        );
+        assert!(first.is_none());
+        // The abandoned reader is still running: the next paste gives up at once.
+        let second =
+            read_clipboard_text_bounded_with(&IN_FLIGHT, std::time::Duration::from_secs(5), hung);
+        assert!(second.is_none());
+        assert!(started.elapsed() < std::time::Duration::from_millis(300));
+
+        // Once the helper exits, reads work again.
+        while IN_FLIGHT.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let third =
+            read_clipboard_text_bounded_with(&IN_FLIGHT, std::time::Duration::from_secs(5), || {
+                Some("clip".to_owned())
+            });
+        assert_eq!(third.as_deref(), Some("clip"));
     }
 }

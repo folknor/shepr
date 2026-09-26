@@ -11,9 +11,11 @@ impl HeadlessServer {
     ///
     /// Returns true if the event changed visual state (requiring a re-render).
     pub(super) fn handle_internal_event_with_forwarding(&mut self, ev: AppEvent) -> bool {
-        if self.host_shutdown_requested.load(Ordering::Acquire) {
-            return false;
-        }
+        // A host shutdown warning that arrived since the loop last looked is
+        // answered with its checkpoint before this event can change the
+        // layout; after that, saving is frozen and events apply normally.
+        self.sync_host_shutdown_freeze(Instant::now());
+        self.immediate_pty_sources_dirty = true;
         // After a termination signal, the panes are most likely dying from the
         // same teardown. Removing them would save a session with panes missing.
         // The checkpoint taken before a signal-killed pane is removed does not
@@ -33,13 +35,11 @@ impl HeadlessServer {
                 self.send_to_foreground_client(&ServerMessage::Clipboard { data });
                 false
             }
-            AppEvent::StateChanged { .. } => {
-                self.sync_foreground_client_state();
-                self.app.handle_internal_event_with_pane_updates(ev);
-                true
-            }
-            AppEvent::HookStateReported { .. } => {
-                self.sync_foreground_client_state();
+            // Agent state and hook reports read only the foreground focus (whether
+            // a completion counts as seen); neither changes geometry, so the
+            // view is not recomputed for them.
+            AppEvent::StateChanged { .. } | AppEvent::HookStateReported { .. } => {
+                self.sync_foreground_focus_state();
                 self.app.handle_internal_event_with_pane_updates(ev);
                 true
             }
@@ -112,9 +112,6 @@ impl HeadlessServer {
         let mut had_event = false;
         let mut changed = false;
         for _ in 0..limit {
-            if self.host_shutdown_requested.load(Ordering::Acquire) {
-                break;
-            }
             let Ok(ev) = self.app.event_rx.try_recv() else {
                 break;
             };

@@ -531,7 +531,7 @@ mod tests {
                 80, 24, 0, b"", 2,
             );
         runtime.test_process_pty_bytes(b"\x1b[?2004h");
-        app.state.insert_test_runtime(pane_id, runtime);
+        app.insert_test_runtime(pane_id, runtime);
 
         let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
         let bracketed_started = std::time::Instant::now();
@@ -642,7 +642,7 @@ mod tests {
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::GithubCopilot), AgentState::Blocked);
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
-        app.state.insert_test_runtime(pane_id, runtime);
+        app.insert_test_runtime(pane_id, runtime);
 
         let response = run_deferred_agent_prompt(
             &mut app,
@@ -687,7 +687,7 @@ mod tests {
                 80, 24, 0, b"", 3,
             );
         runtime.test_process_pty_bytes(b"\x1b[?2004h");
-        app.state.insert_test_runtime(pane_id, runtime);
+        app.insert_test_runtime(pane_id, runtime);
 
         let response = run_deferred_agent_prompt(
             &mut app,
@@ -732,7 +732,7 @@ mod tests {
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
-        app.state.insert_test_runtime(pane_id, runtime);
+        app.insert_test_runtime(pane_id, runtime);
 
         let rejected = app.handle_agent_send_keys(
             "req-invalid".into(),
@@ -784,7 +784,7 @@ mod tests {
         );
         terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
         let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
-        app.state.insert_test_runtime(pane_id, runtime);
+        app.insert_test_runtime(pane_id, runtime);
 
         let response = run_deferred_agent_prompt(
             &mut app,

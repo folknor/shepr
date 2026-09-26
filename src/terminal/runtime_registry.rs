@@ -33,6 +33,10 @@ impl TerminalRuntimeRegistry {
         self.runtimes.remove(terminal_id)
     }
 
+    pub(crate) fn clear(&mut self) {
+        self.runtimes.clear();
+    }
+
     pub(crate) fn values(&self) -> impl Iterator<Item = &TerminalRuntime> {
         self.runtimes.values()
     }

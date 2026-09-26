@@ -135,9 +135,7 @@ impl App {
             self.state.host_terminal_theme,
             self.state.host_terminal_appearance,
             crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
-            self.event_tx.clone(),
-            std::sync::Arc::clone(&self.render_notify),
-            std::sync::Arc::clone(&self.render_dirty),
+            &self.pane_spawn_handles(),
             extra_env,
         )?;
         self.terminal_runtimes.insert(terminal.id.clone(), runtime);
@@ -367,7 +365,7 @@ impl App {
         crate::api::schema::WorkspaceInfo {
             workspace_id: self.public_workspace_id(index),
             number: index + 1,
-            label: ws.display_name_from(&self.state.terminals, &self.terminal_runtimes),
+            label: ws.display_name(),
             focused: self.state.active == Some(index),
             pane_count: ws.public_pane_numbers.len(),
             tab_count: ws.tabs.len(),

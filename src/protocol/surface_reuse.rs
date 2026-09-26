@@ -3,7 +3,6 @@
 use super::{CellData, PaneSurfaceFrame, ServerMessage};
 use serde::{Deserialize, Serialize};
 
-pub(crate) const CAPABILITY: &str = "surface_reuse";
 pub(crate) const MESSAGE_KIND: &str = "endpoint.surface-reuse.v1";
 
 #[derive(Serialize, Deserialize)]

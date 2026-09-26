@@ -2,7 +2,6 @@
 use crossterm::event::KeyEvent;
 use crossterm::event::{KeyCode, KeyModifiers};
 use serde::{Deserialize, Serialize};
-use tracing::warn;
 
 use super::Config;
 use crate::input::TerminalKey;
@@ -369,6 +368,10 @@ impl BindingRegistry {
 }
 
 impl Config {
+    /// Parse and validate `[keys]`. This is pure and does not log: it runs
+    /// every time `prefix_key()`, `keybinds()` or `collect_diagnostics()` is
+    /// called, so logging here would repeat each warning per call. The
+    /// diagnostics are logged once, by `Config::load`.
     pub(super) fn validated_keybinds(&self) -> (Option<String>, KeyCombo, Vec<String>, Keybinds) {
         let mut diagnostics = Vec::new();
         let (prefix, prefix_diag) = parse_key_combo_with_diagnostic(
@@ -376,10 +379,6 @@ impl Config {
             "keys.prefix",
             (KeyCode::Char('b'), KeyModifiers::CONTROL),
         );
-        if let Some(diag) = &prefix_diag {
-            warn!(message = %diag, "config diagnostic");
-        }
-
         let prefix_source = if self.keys.key_field_is_user_configured("prefix") {
             BindingSource::User
         } else {
@@ -615,12 +614,10 @@ fn parse_action_bindings(
                 let diag = format!(
                     "range keybinding is only valid for indexed actions: {field} = {raw:?}; disabling binding"
                 );
-                warn!(message = %diag, "config diagnostic");
                 diagnostics.push(diag);
             }
             None => {
                 let diag = format!("invalid keybinding: {field} = {raw:?}; disabling binding");
-                warn!(message = %diag, "config diagnostic");
                 diagnostics.push(diag);
             }
         }
@@ -653,12 +650,10 @@ fn parse_navigate_bindings(
                 let diag = format!(
                     "range keybinding is only valid for indexed actions: {field} = {raw:?}; disabling binding"
                 );
-                warn!(message = %diag, "config diagnostic");
                 diagnostics.push(diag);
             }
             None => {
                 let diag = format!("invalid keybinding: {field} = {raw:?}; disabling binding");
-                warn!(message = %diag, "config diagnostic");
                 diagnostics.push(diag);
             }
         }
@@ -697,7 +692,6 @@ fn parse_indexed_bindings(
             }
             None => {
                 let diag = format!("invalid keybinding: {field} = {raw:?}; disabling binding");
-                warn!(message = %diag, "config diagnostic");
                 diagnostics.push(diag);
             }
         }
@@ -718,7 +712,6 @@ fn push_indexed_binding(
             "indexed keybinding must use 1..9: {field} = {:?}; disabling binding",
             binding.label
         );
-        warn!(message = %diag, "config diagnostic");
         diagnostics.push(diag);
         return;
     }
@@ -744,7 +737,6 @@ fn reject_navigate_binding(
             "navigate keybinding must not include prefix: {field} = {:?}; disabling binding",
             binding.label
         );
-        warn!(message = %diag, "config diagnostic");
         diagnostics.push(diag);
         return true;
     }
@@ -754,7 +746,6 @@ fn reject_navigate_binding(
             "navigate keybinding cannot use esc: {field} = {:?}; disabling binding",
             binding.label
         );
-        warn!(message = %diag, "config diagnostic");
         diagnostics.push(diag);
         return true;
     }
@@ -765,7 +756,6 @@ fn reject_navigate_binding(
         }
         let first_field = &first_binding.field;
         let diag = format!("{}: kept {first_field}, disabled {field}", binding.label);
-        warn!(message = %diag, "config diagnostic");
         diagnostics.push(diag);
         return true;
     }
@@ -788,7 +778,6 @@ fn reject_binding(
             "reserved keybinding: {field} = {:?} uses keys.prefix as the prefix-mode key; pressing the prefix twice sends a literal prefix key, so this binding is disabled",
             binding.label
         );
-        warn!(message = %diag, "config diagnostic");
         diagnostics.push(diag);
         return true;
     }
@@ -799,7 +788,6 @@ fn reject_binding(
         }
         let first_field = &first_binding.field;
         let diag = format!("{}: kept {first_field}, disabled {field}", binding.label);
-        warn!(message = %diag, "config diagnostic");
         diagnostics.push(diag);
         return true;
     }
@@ -810,7 +798,6 @@ fn reject_binding(
             "unsafe direct keybinding: {field} = {:?} would intercept typing; use {:?} to require the prefix; disabling binding",
             binding.label, suggestion
         );
-        warn!(message = %diag, "config diagnostic");
         diagnostics.push(diag);
         return true;
     }
@@ -873,7 +860,11 @@ pub fn format_key_combo(binding: KeyCombo) -> String {
     if modifiers.contains(KeyModifiers::CONTROL) {
         parts.push("ctrl".to_string());
     }
-    if modifiers.contains(KeyModifiers::ALT) {
+    // "meta" is a config alias for Alt (the terminal convention: Meta sends an
+    // ESC prefix, and SGR mouse reports carry it in the Alt bit), so no config
+    // token parses to crossterm's separate META flag. Label META as "alt" so a
+    // printed combo reads back as the same binding.
+    if modifiers.intersects(KeyModifiers::ALT | KeyModifiers::META) {
         parts.push("alt".to_string());
     }
     if modifiers.contains(KeyModifiers::SHIFT) && !matches!(code, KeyCode::BackTab) {
@@ -884,9 +875,6 @@ pub fn format_key_combo(binding: KeyCombo) -> String {
     }
     if modifiers.contains(KeyModifiers::HYPER) {
         parts.push("hyper".to_string());
-    }
-    if modifiers.contains(KeyModifiers::META) {
-        parts.push("meta".to_string());
     }
 
     let key = match code {
@@ -985,6 +973,14 @@ pub(crate) fn parse_key_combo(s: &str) -> Option<KeyCombo> {
         "right" => KeyCode::Right,
         "up" => KeyCode::Up,
         "down" => KeyCode::Down,
+        // The names `format_key_combo` prints for these codes, plus the usual
+        // spellings, so `pane send-keys` can send every navigation key.
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "pageup" | "page_up" | "page-up" | "pgup" => KeyCode::PageUp,
+        "pagedown" | "page_down" | "page-down" | "pgdn" => KeyCode::PageDown,
+        "delete" | "del" => KeyCode::Delete,
+        "insert" | "ins" => KeyCode::Insert,
         "minus" => KeyCode::Char('-'),
         "comma" => KeyCode::Char(','),
         "period" => KeyCode::Char('.'),
@@ -1033,7 +1029,6 @@ fn parse_key_combo_with_diagnostic(
         Some(binding) => (binding, None),
         None => {
             let diag = format!("invalid keybinding: {field} = {s:?}; using fallback");
-            warn!(message = %diag, "config diagnostic");
             (fallback, Some(diag))
         }
     }
@@ -1277,6 +1272,47 @@ prefix = "ö"
         assert_eq!(
             parse_key_combo("ampersand"),
             Some((KeyCode::Char('&'), KeyModifiers::empty()))
+        );
+    }
+
+    #[test]
+    fn parse_navigation_key_names_and_round_trip_their_labels() {
+        for (name, code) in [
+            ("home", KeyCode::Home),
+            ("end", KeyCode::End),
+            ("pageup", KeyCode::PageUp),
+            ("PageUp", KeyCode::PageUp),
+            ("pgup", KeyCode::PageUp),
+            ("pagedown", KeyCode::PageDown),
+            ("page_down", KeyCode::PageDown),
+            ("delete", KeyCode::Delete),
+            ("del", KeyCode::Delete),
+            ("insert", KeyCode::Insert),
+        ] {
+            let combo = parse_key_combo(name);
+            assert_eq!(combo, Some((code, KeyModifiers::empty())), "{name}");
+            let label = format_key_combo((code, KeyModifiers::empty()));
+            assert_eq!(parse_key_combo(&label), combo, "{label}");
+        }
+        assert_eq!(
+            parse_key_combo("ctrl+end"),
+            Some((KeyCode::End, KeyModifiers::CONTROL))
+        );
+    }
+
+    #[test]
+    fn meta_is_an_alias_for_alt_in_parsing_and_labels() {
+        assert_eq!(
+            parse_key_combo("meta+x"),
+            Some((KeyCode::Char('x'), KeyModifiers::ALT))
+        );
+        assert_eq!(
+            format_key_combo((KeyCode::Char('x'), KeyModifiers::META)),
+            "alt+x"
+        );
+        assert_eq!(
+            format_key_combo((KeyCode::Char('x'), KeyModifiers::ALT | KeyModifiers::META)),
+            "alt+x"
         );
     }
 

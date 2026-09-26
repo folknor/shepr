@@ -147,6 +147,10 @@ pub(crate) struct ClientConnection {
     pub(crate) host_keyboard_report_all_active: Option<bool>,
     /// Whether an ordinary render was skipped because the render channel was full.
     pub(crate) render_pending: bool,
+    /// Whether the client has been told that its current frame is too large to
+    /// send. Set on the first oversized frame, cleared once a frame goes out, so
+    /// a client whose frames keep failing is warned once rather than per render.
+    pub(crate) oversized_frame_reported: bool,
     /// Whether this connection receives pane surfaces and may affect presentation state.
     pub(crate) shell_surface_active: bool,
     /// Whether this shell wants host mouse capture without pane demand.
@@ -227,6 +231,7 @@ impl ClientConnection {
             outer_terminal_focus: None,
             host_keyboard_report_all_active: None,
             render_pending: false,
+            oversized_frame_reported: false,
             shell_surface_active,
             shell_mouse_capture: false,
             host_mouse_capture_active: None,

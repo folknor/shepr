@@ -12,14 +12,10 @@ use super::{ClientShellSnapshot, ClientSurfaceSize, ServerMessage};
 pub const ENDPOINT_HELLO_KIND: &str = "endpoint.hello.v1";
 pub const ENDPOINT_WELCOME_KIND: &str = "endpoint.welcome.v1";
 pub const ENDPOINT_SNAPSHOT_KIND: &str = "shell.snapshot.v1";
-pub const SURFACE_INTEREST_CAPABILITY: &str = "surface_interest";
-pub const PRESENTATION_EFFECTS_FENCE_CAPABILITY: &str = "presentation_effects_fence";
 pub const PRESENTATION_EFFECTS_SYNC_KIND: &str = "endpoint.presentation.sync.v1";
 pub const PRESENTATION_EFFECTS_READY_KIND: &str = "endpoint.presentation.ready.v1";
-pub const HEALTH_CHECK_CAPABILITY: &str = "health_check";
 pub const HEALTH_PING_KIND: &str = "endpoint.health.ping.v1";
 pub const HEALTH_PONG_KIND: &str = "endpoint.health.pong.v1";
-pub const AGENT_COMPLETIONS_CAPABILITY: &str = "agent_completions";
 pub const AGENT_COMPLETIONS_KIND: &str = "endpoint.agent-completions.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +25,11 @@ pub struct EndpointAgentCompletions {
     pub completions: std::collections::BTreeMap<String, u64>,
 }
 
+/// Client-owned shell hello.
+///
+/// There is no capability or encoding negotiation: client and server are the
+/// same build (the connection preamble guarantees it), so every surface
+/// encoding and endpoint method this build has is available on both sides.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointClientHello {
     /// Must equal the server's `PROTOCOL_VERSION`.
@@ -40,10 +41,6 @@ pub struct EndpointClientHello {
     pub endpoint_keybindings: bool,
     pub mouse_capture: bool,
     pub surface_active: bool,
-    /// Accept the cell-retaining surface encoding on this connection.
-    pub surface_reuse: bool,
-    /// Accept the surface-delta encoding on this connection.
-    pub surface_delta: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,13 +49,11 @@ pub struct EndpointHandshakeError {
     pub message: String,
 }
 
+/// Client-owned shell welcome: the server's version, or why it refused.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointServerWelcome {
     /// The server's `PROTOCOL_VERSION`.
     pub version: u32,
-    pub methods: Vec<String>,
-    pub capabilities: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<EndpointHandshakeError>,
 }
 
@@ -79,18 +74,9 @@ pub fn agent_completions_message(
 }
 
 impl EndpointServerWelcome {
-    pub fn compatible(methods: Vec<String>) -> Self {
+    pub fn compatible() -> Self {
         Self {
             version: super::PROTOCOL_VERSION,
-            methods,
-            capabilities: vec![
-                super::surface_reuse::CAPABILITY.into(),
-                super::surface_delta::CAPABILITY.into(),
-                SURFACE_INTEREST_CAPABILITY.into(),
-                PRESENTATION_EFFECTS_FENCE_CAPABILITY.into(),
-                HEALTH_CHECK_CAPABILITY.into(),
-                AGENT_COMPLETIONS_CAPABILITY.into(),
-            ],
             error: None,
         }
     }
@@ -98,8 +84,6 @@ impl EndpointServerWelcome {
     pub fn incompatible(code: &str, message: impl Into<String>) -> Self {
         Self {
             version: super::PROTOCOL_VERSION,
-            methods: Vec::new(),
-            capabilities: Vec::new(),
             error: Some(EndpointHandshakeError {
                 code: code.into(),
                 message: message.into(),
@@ -145,7 +129,7 @@ mod tests {
 
     #[test]
     fn welcome_roundtrips_through_json() {
-        let welcome = EndpointServerWelcome::compatible(vec!["pane.close".into()]);
+        let welcome = EndpointServerWelcome::compatible();
         let json = serde_json::to_string(&welcome).expect("test precondition");
         let decoded: EndpointServerWelcome =
             serde_json::from_str(&json).expect("test precondition");

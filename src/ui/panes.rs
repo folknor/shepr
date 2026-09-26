@@ -32,16 +32,13 @@ fn pane_border_title(label: &str, pane_width: u16, _focused: bool) -> Option<Str
 
 // Full view computation reaches this helper for active and background panes.
 // Keep terminal queries narrow, allocation-free, and short under the core lock.
+// The gutter rule itself is `terminal_content_rect`, shared with the size a
+// new pane's PTY is spawned at, so the two cannot drift.
 fn terminal_inner_rect(rt: &TerminalRuntime, pane_inner: Rect, pane_scrollbars: bool) -> Rect {
-    if !pane_scrollbars || pane_inner.width <= 4 || rt.alternate_screen_active() {
-        return pane_inner;
-    }
-
-    Rect::new(
-        pane_inner.x,
-        pane_inner.y,
-        pane_inner.width.saturating_sub(1),
-        pane_inner.height,
+    crate::workspace::terminal_content_rect(
+        pane_inner,
+        pane_scrollbars,
+        pane_scrollbars && rt.alternate_screen_active(),
     )
 }
 
@@ -154,23 +151,11 @@ pub(crate) fn apply_pane_chrome(
 }
 
 fn runtime_for_tab_pane<'a>(
-    _app: &'a AppState,
     terminal_runtimes: &'a TerminalRuntimeRegistry,
-    _workspace_index: usize,
     tab: &'a crate::workspace::Tab,
     pane_id: crate::layout::PaneId,
 ) -> Option<(&'a crate::terminal::TerminalId, &'a TerminalRuntime)> {
     let terminal_id = tab.terminal_id(pane_id)?;
-    #[cfg(test)]
-    if let Some(runtime) = _app
-        .workspaces
-        .get(_workspace_index)?
-        .test_runtimes
-        .get(&pane_id)
-        .or_else(|| tab.runtimes.get(&pane_id))
-    {
-        return Some((terminal_id, runtime));
-    }
     terminal_runtimes
         .get(terminal_id)
         .map(|runtime| (terminal_id, runtime))
@@ -203,7 +188,6 @@ fn stable_scrollbar_gutter(
 pub(super) fn resize_tab_panes(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
-    workspace_index: usize,
     tab: &crate::workspace::Tab,
     area: Rect,
     cell_size: crate::terminal_cell_size::HostCellSize,
@@ -212,9 +196,7 @@ pub(super) fn resize_tab_panes(
 
     if tab.zoomed {
         let focused_id = tab.layout.focused();
-        if let Some((terminal_id, rt)) =
-            runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, focused_id)
-        {
+        if let Some((terminal_id, rt)) = runtime_for_tab_pane(terminal_runtimes, tab, focused_id) {
             let borders = if app.pane_borders.shows_borders(multi_pane) && app.pane_outer_borders {
                 Borders::ALL
             } else {
@@ -242,9 +224,7 @@ pub(super) fn resize_tab_panes(
     ) {
         let pane_inner = pane_inner_rect(info.rect, info.borders);
 
-        if let Some((terminal_id, rt)) =
-            runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, info.id)
-        {
+        if let Some((terminal_id, rt)) = runtime_for_tab_pane(terminal_runtimes, tab, info.id) {
             let inner_rect = terminal_inner_rect(rt, pane_inner, app.pane_scrollbars);
             if !app.direct_attach_resize_locks.contains(terminal_id) {
                 rt.resize(
@@ -397,9 +377,7 @@ pub(super) fn render_panes(
 
     for info in pane_infos {
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
-            let show_cursor = info.is_focused
-                && !pane_is_scrolled_back(rt)
-                && app.pane_exposes_host_cursor(ws_idx, info.id);
+            let show_cursor = info.is_focused && !pane_is_scrolled_back(rt);
             rt.render(frame, info.inner_rect, show_cursor);
             render_pane_scrollbar(app, frame, info, rt);
         } else if let Some(reason) = ws
@@ -831,6 +809,24 @@ mod tests {
     use crate::terminal::TerminalState;
     use crate::workspace::Workspace;
 
+    /// A registry holding `runtime` as the live runtime of `pane_id`, keyed
+    /// by the pane's terminal id the way production registers runtimes.
+    fn registry_with_runtime(
+        workspace: &Workspace,
+        pane_id: PaneId,
+        runtime: TerminalRuntime,
+    ) -> TerminalRuntimeRegistry {
+        let mut registry = TerminalRuntimeRegistry::new();
+        registry.insert(
+            workspace
+                .terminal_id(pane_id)
+                .expect("test precondition")
+                .clone(),
+            runtime,
+        );
+        registry
+    }
+
     fn render_view_pane_borders(
         app: &AppState,
         ws: &Workspace,
@@ -1232,9 +1228,10 @@ mod tests {
     #[tokio::test]
     async fn pane_scrollbar_gutter_is_reserved_before_scrollback_exists() {
         let mut app = AppState::test_new();
-        let mut workspace = Workspace::test_new("test");
+        let workspace = Workspace::test_new("test");
         let root_pane = workspace.tabs[0].root_pane;
-        workspace.tabs[0].runtimes.insert(
+        let terminal_runtimes = registry_with_runtime(
+            &workspace,
             root_pane,
             TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
@@ -1242,7 +1239,6 @@ mod tests {
         app.active = Some(0);
 
         let area = Rect::new(10, 3, 40, 8);
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
         let infos = compute_pane_infos(
             &app,
             &terminal_runtimes,
@@ -1260,9 +1256,14 @@ mod tests {
     #[tokio::test]
     async fn alternate_screen_reclaims_scrollbar_gutter_and_restores_it_on_exit() {
         let mut app = AppState::test_new();
-        let mut workspace = Workspace::test_new("test");
+        let workspace = Workspace::test_new("test");
         let root_pane = workspace.tabs[0].root_pane;
-        workspace.tabs[0].runtimes.insert(
+        let terminal_id = workspace
+            .terminal_id(root_pane)
+            .expect("test precondition")
+            .clone();
+        let terminal_runtimes = registry_with_runtime(
+            &workspace,
             root_pane,
             TerminalRuntime::test_with_scrollback_bytes(
                 40,
@@ -1271,11 +1272,13 @@ mod tests {
                 b"one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n",
             ),
         );
+        let runtime = terminal_runtimes
+            .get(&terminal_id)
+            .expect("test precondition");
         app.workspaces = vec![workspace];
         app.active = Some(0);
 
         let area = Rect::new(10, 3, 40, 8);
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
         let assert_geometry = |expected_width, has_scrollbar| {
             let infos = compute_pane_infos(
                 &app,
@@ -1289,16 +1292,13 @@ mod tests {
                 Rect::new(area.x, area.y, expected_width, area.height)
             );
             assert_eq!(infos[0].scrollbar_rect.is_some(), has_scrollbar);
-            assert_eq!(
-                app.workspaces[0].tabs[0].runtimes[&root_pane].current_size(),
-                (area.height, expected_width)
-            );
+            assert_eq!(runtime.current_size(), (area.height, expected_width));
         };
 
         assert_geometry(39, true);
-        app.workspaces[0].tabs[0].runtimes[&root_pane].test_process_pty_bytes(b"\x1b[?1049h");
+        runtime.test_process_pty_bytes(b"\x1b[?1049h");
         assert_geometry(40, false);
-        app.workspaces[0].tabs[0].runtimes[&root_pane].test_process_pty_bytes(b"\x1b[?1049l");
+        runtime.test_process_pty_bytes(b"\x1b[?1049l");
         assert_geometry(39, true);
     }
 
@@ -1306,9 +1306,10 @@ mod tests {
     async fn zoomed_pane_scrollbar_gutter_is_reserved_before_scrollback_exists() {
         let mut app = AppState::test_new();
         let mut workspace = Workspace::test_new("test");
-        workspace.zoomed = true;
+        workspace.tabs[0].zoomed = true;
         let root_pane = workspace.tabs[0].root_pane;
-        workspace.tabs[0].runtimes.insert(
+        let terminal_runtimes = registry_with_runtime(
+            &workspace,
             root_pane,
             TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
@@ -1316,7 +1317,6 @@ mod tests {
         app.active = Some(0);
 
         let area = Rect::new(10, 3, 40, 8);
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
         let infos = compute_pane_infos(
             &app,
             &terminal_runtimes,
@@ -1336,8 +1336,9 @@ mod tests {
         let mut app = AppState::test_new();
         let mut workspace = Workspace::test_new("test");
         let focused_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
-        workspace.zoomed = true;
-        workspace.tabs[0].runtimes.insert(
+        workspace.tabs[0].zoomed = true;
+        let terminal_runtimes = registry_with_runtime(
+            &workspace,
             focused_pane,
             TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
@@ -1345,7 +1346,6 @@ mod tests {
         app.active = Some(0);
 
         let area = Rect::new(10, 3, 40, 8);
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
         let infos = compute_pane_infos(
             &app,
             &terminal_runtimes,
@@ -1364,9 +1364,10 @@ mod tests {
     #[tokio::test]
     async fn tiny_pane_does_not_reserve_scrollbar_gutter() {
         let mut app = AppState::test_new();
-        let mut workspace = Workspace::test_new("test");
+        let workspace = Workspace::test_new("test");
         let root_pane = workspace.tabs[0].root_pane;
-        workspace.tabs[0].runtimes.insert(
+        let terminal_runtimes = registry_with_runtime(
+            &workspace,
             root_pane,
             TerminalRuntime::test_with_scrollback_bytes(4, 8, 1024, b"ready\n"),
         );
@@ -1374,7 +1375,6 @@ mod tests {
         app.active = Some(0);
 
         let area = Rect::new(10, 3, 4, 8);
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
         let infos = compute_pane_infos(
             &app,
             &terminal_runtimes,
@@ -1390,11 +1390,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rendered_content_rect_matches_the_size_new_panes_are_spawned_at() {
+        for pane_borders in [
+            PaneBordersConfig::Off,
+            PaneBordersConfig::Auto,
+            PaneBordersConfig::Always,
+        ] {
+            for pane_scrollbars in [true, false] {
+                let mut app = AppState::test_new();
+                app.pane_borders = pane_borders;
+                app.pane_scrollbars = pane_scrollbars;
+                let area = Rect::new(2, 1, 101, 31);
+                app.view.terminal_area = area;
+                let mut workspace = Workspace::test_new("test");
+                let root = workspace.tabs[0].root_pane;
+                let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
+                let mut terminal_runtimes = TerminalRuntimeRegistry::new();
+                for pane in [root, right] {
+                    terminal_runtimes.insert(
+                        workspace
+                            .terminal_id(pane)
+                            .expect("test precondition")
+                            .clone(),
+                        TerminalRuntime::test_with_scrollback_bytes(20, 5, 1024, b""),
+                    );
+                }
+                app.workspaces = vec![workspace];
+                app.active = Some(0);
+
+                let infos = compute_pane_infos(
+                    &app,
+                    &terminal_runtimes,
+                    area,
+                    false,
+                    crate::terminal_cell_size::HostCellSize::default(),
+                );
+                let geometry = app.pane_geometry();
+                assert_eq!(infos.len(), 2);
+                for info in &infos {
+                    assert_eq!(
+                        geometry.pane_size(&app.workspaces[0].tabs[0].layout, info.id),
+                        Some((info.inner_rect.height, info.inner_rect.width)),
+                        "borders {pane_borders:?}, scrollbars {pane_scrollbars}"
+                    );
+                }
+                for (_, runtime) in terminal_runtimes.drain() {
+                    runtime.shutdown();
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn pane_scrollbar_setting_controls_reserved_column() {
         let mut app = AppState::test_new();
-        let mut workspace = Workspace::test_new("test");
+        let workspace = Workspace::test_new("test");
         let root_pane = workspace.tabs[0].root_pane;
-        workspace.tabs[0].runtimes.insert(
+        let terminal_runtimes = registry_with_runtime(
+            &workspace,
             root_pane,
             TerminalRuntime::test_with_scrollback_bytes(
                 40,
@@ -1407,7 +1460,6 @@ mod tests {
         app.active = Some(0);
 
         let area = Rect::new(10, 3, 40, 8);
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
         let infos = compute_pane_infos(
             &app,
             &terminal_runtimes,

@@ -142,6 +142,7 @@ fn run_client_with_mode(
         host_escape_disambiguation_active: false,
         initial_host_input: Vec::new(),
         endpoint_keybindings,
+        manage_ssh_config: loaded_config.config.remote.manage_ssh_config,
         shell_config,
     };
 
@@ -175,10 +176,10 @@ fn run_client_with_mode(
     let (cols, rows, cell_width_px, cell_height_px, exact_cell_size) =
         initial_terminal_geometry(pixel_geometry_enabled, pixel_geometry_fallback)?;
 
-    let shell_surface_size = loop_config
-        .shell_config
-        .as_ref()
-        .map(|shell| shell.initial_surface_size(cols, rows));
+    let shell_surface_size = loop_config.shell_config.as_ref().map(|shell| {
+        let bounded = protocol::ClientSurfaceSize { cols, rows }.clamped();
+        shell.initial_surface_size(bounded.cols, bounded.rows)
+    });
     // Healthy Local attaches directly; only an actual failure enters background recovery.
     let initial = initial_stream
         .map(|mut stream| {
@@ -195,18 +196,6 @@ fn run_client_with_mode(
                 true,
             )
             .map_err(|error| io::Error::other(error.to_string()))?;
-            if federated
-                && !endpoint::EndpointNegotiation::new(
-                    handshake.endpoint_methods.clone().unwrap_or_default(),
-                    handshake.endpoint_capabilities.clone().unwrap_or_default(),
-                )
-                .supports_surface_interest()
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "Local needs a server update before it can participate in multi-machine viewing",
-                ));
-            }
             if let Some((terminal_id, takeover)) = attach_request {
                 write_to_server(
                     &mut stream,
@@ -337,6 +326,13 @@ async fn run_client_loop(
 ) -> Result<(), ClientError> {
     let draw_host_cursor = attach_escape.is_none() && should_draw_host_cursor(config.host_cursor);
     let local_unavailable = initial.is_none();
+    let client_shell_size = config.shell_config.is_some();
+    let displayed_size = if client_shell_size {
+        let bounded = protocol::ClientSurfaceSize { cols, rows }.clamped();
+        (bounded.cols, bounded.rows)
+    } else {
+        (cols, rows)
+    };
 
     let mut state = ClientState {
         blit_encoder: render_ansi::BlitEncoder::new(),
@@ -349,7 +345,7 @@ async fn run_client_loop(
         direct_keyboard_protocol: crate::terminal_modes::DirectHostKeyboardState::default(),
         pane_keyboard_report_all: false,
         keyboard_report_all_active: false,
-        reported_size: (cols, rows),
+        reported_size: displayed_size,
         reported_cell_size: (initial_cell_width_px, initial_cell_height_px),
         pixel_geometry_enabled: config.pixel_geometry_enabled,
         pixel_geometry_exact: initial_pixel_geometry_exact,
@@ -366,12 +362,6 @@ async fn run_client_loop(
     let federated = endpoint_catalog.has_enabled_ssh();
     if let Some(shell) = state.shell.as_mut() {
         shell.set_endpoint_catalog(&endpoint_catalog.ssh);
-        shell.set_endpoint_methods_for(
-            &endpoint::ClientEndpointId::Local,
-            initial
-                .as_ref()
-                .and_then(|(_, handshake)| handshake.endpoint_methods.clone()),
-        );
         if local_unavailable {
             shell.set_endpoint_status(
                 &endpoint::ClientEndpointId::Local,
@@ -450,16 +440,9 @@ async fn run_client_loop(
         );
     });
 
-    let mut write_stream = if let Some((stream, handshake)) = initial {
+    let mut write_stream = if let Some((stream, _handshake)) = initial {
         let max_frame_size = crate::protocol::MAX_FRAME_SIZE;
-        let negotiation = endpoint::EndpointNegotiation::new(
-            handshake.endpoint_methods.unwrap_or_default(),
-            handshake.endpoint_capabilities.unwrap_or_default(),
-        );
-        let surface_reuse = negotiation.supports_capability(protocol::surface_reuse::CAPABILITY);
-        let surface_delta = negotiation.supports_capability(protocol::surface_delta::CAPABILITY);
-        let surface_decoder = (surface_reuse || surface_delta)
-            .then(|| protocol::surface_reuse::Decoder::new(surface_delta));
+        let surface_decoder = Some(protocol::surface_reuse::Decoder::new(true));
         let transport = start_endpoint_transport(
             stream,
             (),
@@ -469,7 +452,7 @@ async fn run_client_loop(
             max_frame_size,
             surface_decoder,
         )?;
-        let mut registry = endpoint::EndpointRegistry::new(transport, 1, negotiation);
+        let mut registry = endpoint::EndpointRegistry::new(transport, 1);
         if state.shell.is_some() {
             registry.send(&ClientMessage::ClientShellFocus { focused: true });
         }
@@ -477,8 +460,13 @@ async fn run_client_loop(
     } else {
         endpoint::EndpointRegistry::empty()
     };
-    let mut supervisors =
-        endpoint::EndpointSupervisors::new(&endpoint_catalog.ssh, std::time::Instant::now());
+    let mut supervisors = endpoint::EndpointSupervisors::with_ssh_settings(
+        &endpoint_catalog.ssh,
+        crate::remote::SavedSshSettings {
+            manage_ssh_config: config.manage_ssh_config,
+        },
+        std::time::Instant::now(),
+    );
     if federated {
         supervisors.add_local(
             client_socket_path(),
@@ -492,7 +480,7 @@ async fn run_client_loop(
         && let Some(frame) = state
             .shell
             .as_mut()
-            .and_then(|shell| shell.compose(cols, rows))
+            .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
     {
         state.present_frame(frame);
     }
@@ -522,9 +510,11 @@ async fn run_client_loop(
                 endpoint::EndpointConnectOptions {
                     cols: state.reported_size.0,
                     rows: state.reported_size.1,
-                    cell_width_px: state.reported_cell_size.0,
-                    cell_height_px: state.reported_cell_size.1,
-                    pixel_geometry_exact: state.pixel_geometry_exact,
+                    cell_width_px: state.reported_cell_size.0.min(protocol::MAX_CELL_SIZE_PX),
+                    cell_height_px: state.reported_cell_size.1.min(protocol::MAX_CELL_SIZE_PX),
+                    pixel_geometry_exact: state.pixel_geometry_exact
+                        && state.reported_cell_size.0 <= protocol::MAX_CELL_SIZE_PX
+                        && state.reported_cell_size.1 <= protocol::MAX_CELL_SIZE_PX,
                     surface_size: shell.surface_size(state.reported_size.0, state.reported_size.1),
                     endpoint_keybindings: config.endpoint_keybindings,
                     mouse_capture: state.shell_mouse_capture_preference,
@@ -717,7 +707,16 @@ async fn run_client_loop(
                         host_sgr_pixels_active.load(Ordering::Acquire),
                     );
                 }
-                state.reported_size = (new_cols, new_rows);
+                state.reported_size = if client_shell_size {
+                    let bounded = protocol::ClientSurfaceSize {
+                        cols: new_cols,
+                        rows: new_rows,
+                    }
+                    .clamped();
+                    (bounded.cols, bounded.rows)
+                } else {
+                    (new_cols, new_rows)
+                };
                 state.reported_cell_size = (cell_width_px, cell_height_px);
                 state.pixel_geometry_exact = pixel_geometry_exact;
                 // Resizing invalidates both the host-side blit baseline and pane hit geometry.
@@ -728,8 +727,8 @@ async fn run_client_loop(
                 let msg = if let Some(shell) = &state.shell {
                     client_shell_resize_message(
                         shell,
-                        new_cols,
-                        new_rows,
+                        state.reported_size.0,
+                        state.reported_size.1,
                         cell_width_px,
                         cell_height_px,
                         pixel_geometry_exact,
@@ -791,7 +790,6 @@ async fn run_client_loop(
                     generation,
                     reader,
                     writer,
-                    negotiation,
                 } => {
                     if !supervisors.record_status(
                         &endpoint_id,
@@ -801,27 +799,15 @@ async fn run_client_loop(
                     ) {
                         continue;
                     }
-                    let surface_reuse =
-                        negotiation.supports_capability(protocol::surface_reuse::CAPABILITY);
-                    let surface_delta =
-                        negotiation.supports_capability(protocol::surface_delta::CAPABILITY);
                     let frame = state.shell.as_mut().and_then(|shell| {
-                        shell.set_endpoint_methods_for(&endpoint_id, Some(negotiation.methods()));
                         shell.compose(state.reported_size.0, state.reported_size.1)
                     });
                     let reader_quit = writer.stop_handle();
-                    write_stream.insert(
-                        endpoint_id.clone(),
-                        writer,
-                        generation,
-                        negotiation,
-                        false,
-                    );
+                    write_stream.insert(endpoint_id.clone(), writer, generation, false);
                     if let Some(frame) = frame {
                         state.present_frame(frame);
                     }
-                    let surface_decoder = (surface_reuse || surface_delta)
-                        .then(|| protocol::surface_reuse::Decoder::new(surface_delta));
+                    let surface_decoder = Some(protocol::surface_reuse::Decoder::new(true));
                     let reader_tx = event_tx.clone();
                     std::thread::spawn(move || {
                         server_reader_thread(
@@ -1406,7 +1392,8 @@ async fn run_client_loop(
                         }
                         outcome.repaint |= shell.tick_selection_highlight(now)
                             | shell.tick_workspace_highlight(now)
-                            | shell.tick_endpoint_error(now);
+                            | shell.tick_endpoint_error(now)
+                            | shell.tick_transient_banners(now);
                         let frame = outcome
                             .repaint
                             .then(|| shell.compose(state.reported_size.0, state.reported_size.1))

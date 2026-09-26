@@ -8,11 +8,12 @@
 //! builds disagree on it and the handshake, `ping` and `status` report the
 //! mismatch; there is no number to bump by hand.
 //!
-//! The version travels inside a positional message (`TerminalHello`,
-//! `Welcome`, or the JSON endpoint hello inside `EndpointControl`), so a peer
-//! whose layout of that message differs fails to decode the hello at all and
-//! sees a closed connection rather than the mismatch text. The JSON API `ping`
-//! is self-describing and is the path that reports a mismatch reliably.
+//! Before any codec payload, both ends of a client-protocol connection
+//! exchange a fixed raw preamble (magic, `PROTOCOL_VERSION`, `BUILD_ID`; see
+//! `protocol::preamble`). A different build is reported from that preamble,
+//! so it fails with a clear mismatch even when its layout of the hello or
+//! welcome would not decode. The version fields inside `TerminalHello`,
+//! `Welcome` and the endpoint hello are a second check behind it.
 
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
@@ -45,6 +46,27 @@ pub const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 /// before sending so an oversized paste never has to cross the wire.
 pub const MAX_INPUT_PAYLOAD: usize = 1024 * 1024;
 
+/// Encoded bytes budgeted per cell of a full pane surface or terminal redraw.
+///
+/// A typical worst cell is a one-byte symbol with RGB foreground and
+/// background (4-byte varints each), an underline-styled modifier and a
+/// hyperlink index: about 16 bytes. Cells with long grapheme clusters can
+/// still exceed it, so a frame at this budget can be oversized; the render
+/// path has to cope with that, but ordinary content always fits.
+pub const SURFACE_BYTES_PER_CELL: usize = 16;
+
+/// Largest grid, in cells, a client may request for a pane surface or a
+/// direct terminal attach: what one `MAX_FRAME_SIZE` frame carries at
+/// `SURFACE_BYTES_PER_CELL`. The server enforces it; a client of the same
+/// build can clamp to it before asking.
+pub const MAX_SURFACE_CELLS: usize = MAX_FRAME_SIZE / SURFACE_BYTES_PER_CELL;
+
+/// Largest width or height, in cells, a client may request.
+pub const MAX_SURFACE_DIMENSION: u16 = 4096;
+
+/// Largest reported cell width or height in pixels.
+pub const MAX_CELL_SIZE_PX: u32 = 4096;
+
 /// Length of the u32 little-endian length prefix in bytes.
 const LENGTH_PREFIX_BYTES: usize = 4;
 
@@ -66,6 +88,22 @@ pub enum RenderEncoding {
 pub struct ClientSurfaceSize {
     pub cols: u16,
     pub rows: u16,
+}
+
+impl ClientSurfaceSize {
+    /// Fit a requested grid into one ordinary surface frame. Keep its width
+    /// first so the shell layout tracks the host; trim excess height.
+    pub fn clamped(self) -> Self {
+        let cols = self.cols.clamp(1, MAX_SURFACE_DIMENSION);
+        // Bounded by `MAX_SURFACE_DIMENSION` (a u16) via `.min(...)`, so this never truncates.
+        #[allow(clippy::cast_possible_truncation)]
+        let max_rows =
+            (MAX_SURFACE_CELLS / usize::from(cols)).min(usize::from(MAX_SURFACE_DIMENSION)) as u16;
+        Self {
+            cols,
+            rows: self.rows.clamp(1, max_rows),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1198,7 +1236,26 @@ impl From<CodecError> for FramingError {
 /// connection on a larger frame, so refusing here keeps the failure local to
 /// the one message instead of tearing down the peer connection.
 pub fn write_message<W: Write, M: Serialize>(writer: &mut W, msg: &M) -> Result<(), FramingError> {
-    // Encode behind a placeholder prefix so the frame goes out in one write.
+    let frame = encode_frame(msg)?;
+    writer.write_all(&frame)?;
+    writer.flush()?;
+    Ok(())
+}
+
+/// Encodes a message as one complete frame, `[u32LE length][codec payload]`,
+/// in a single buffer that is returned as is.
+///
+/// This is the owned-buffer form of [`write_message`] for callers that queue
+/// frames rather than write them: the payload is encoded straight behind a
+/// placeholder prefix, so no second copy of the frame is ever made. Passing a
+/// `Vec` to `write_message` instead would encode into one buffer and then copy
+/// all of it into the `Vec`.
+///
+/// # Errors
+///
+/// `FramingError::Oversized` if the payload exceeds `MAX_FRAME_SIZE` (the
+/// encoded buffer is dropped), or `FramingError::Codec` if encoding fails.
+pub fn encode_frame<M: Serialize>(msg: &M) -> Result<Vec<u8>, FramingError> {
     let mut frame = vec![0u8; LENGTH_PREFIX_BYTES];
     let len = codec::encode_into(&mut frame, msg)?;
     if len > MAX_FRAME_SIZE {
@@ -1212,10 +1269,7 @@ pub fn write_message<W: Write, M: Serialize>(writer: &mut W, msg: &M) -> Result<
         max: MAX_FRAME_SIZE,
     })?;
     frame[..LENGTH_PREFIX_BYTES].copy_from_slice(&prefix.to_le_bytes());
-
-    writer.write_all(&frame)?;
-    writer.flush()?;
-    Ok(())
+    Ok(frame)
 }
 
 /// Reads and deserializes a length-prefixed frame from a reader.
@@ -1292,6 +1346,22 @@ mod tests {
     use serde::de::DeserializeOwned;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn client_surface_clamp_fits_server_geometry_limit() {
+        let surface = ClientSurfaceSize {
+            cols: u16::MAX,
+            rows: u16::MAX,
+        }
+        .clamped();
+        assert_eq!(surface.cols, MAX_SURFACE_DIMENSION);
+        assert!(surface.rows > 0);
+        assert!(usize::from(surface.cols) * usize::from(surface.rows) <= MAX_SURFACE_CELLS);
+        assert_eq!(
+            ClientSurfaceSize { cols: 80, rows: 24 }.clamped(),
+            ClientSurfaceSize { cols: 80, rows: 24 }
+        );
+    }
 
     /// Encodes and decodes `value` with the wire codec, requiring the decoder
     /// to consume every encoded byte.
@@ -2465,6 +2535,28 @@ mod tests {
             other => panic!("expected Oversized, got {other:?}"),
         }
         assert!(buf.is_empty(), "nothing is written for a rejected frame");
+    }
+
+    #[test]
+    fn encode_frame_matches_write_message_and_enforces_the_cap() {
+        let msg = ServerMessage::WindowTitle {
+            title: Some("frame".into()),
+        };
+        let frame = encode_frame(&msg).expect("test precondition");
+        let mut written = Vec::new();
+        write_message(&mut written, &msg).expect("test precondition");
+        assert_eq!(frame, written);
+        let decoded: ServerMessage =
+            read_message(&mut frame.as_slice(), MAX_FRAME_SIZE).expect("test precondition");
+        assert_eq!(decoded, msg);
+
+        let over_limit = ClientMessage::Input {
+            data: vec![b'x'; MAX_FRAME_SIZE],
+        };
+        assert!(matches!(
+            encode_frame(&over_limit),
+            Err(FramingError::Oversized { max, .. }) if max == MAX_FRAME_SIZE
+        ));
     }
 
     // ---- Unix socketpair integration test ----

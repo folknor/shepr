@@ -28,18 +28,6 @@ pub(crate) struct SavedSshSettings {
     pub(crate) manage_ssh_config: bool,
 }
 
-impl SavedSshSettings {
-    /// Reads the config file. Only for callers that have not loaded it themselves.
-    pub(crate) fn load() -> Self {
-        Self {
-            manage_ssh_config: crate::config::Config::load()
-                .config
-                .remote
-                .manage_ssh_config,
-        }
-    }
-}
-
 /// Connects one saved SSH machine, repeatedly, for the lifetime of a client.
 ///
 /// It owns what used to be rebuilt on every attempt: the ssh settings fixed at

@@ -322,12 +322,31 @@ fn codex_no_match_is_unknown_without_changing_other_agents() {
         explain.fallback_reason.as_deref(),
         Some("codex_state_ambiguous")
     );
-    let other = fallback_explain(Some(Agent::Pi), None);
+    let pi = bundled_loaded(Agent::Pi);
+    let other = fallback_explain(Some(Agent::Pi), Some((&pi, Vec::new())));
     assert_eq!(other.state, AgentState::Idle);
     assert_eq!(
         other.fallback_reason.as_deref(),
         Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
     );
+}
+
+#[test]
+fn agents_without_a_screen_manifest_are_unknown_not_idle() {
+    for agent in [Agent::Omp, Agent::Mastracode] {
+        assert!(!Agent::SCREEN_MANIFEST_AGENTS.contains(&agent));
+        assert!(!has_screen_manifest(agent));
+        let detection = detect_with_manifest(agent, screen_input(" \n"), None);
+        assert_eq!(detection.state, AgentState::Unknown);
+        assert!(!detection.visible_idle);
+        let explain = fallback_explain(Some(agent), None);
+        assert_eq!(explain.state, AgentState::Unknown);
+        assert_eq!(
+            explain.fallback_reason.as_deref(),
+            Some(NO_SCREEN_MANIFEST_FALLBACK)
+        );
+    }
+    assert!(has_screen_manifest(Agent::Pi));
 }
 
 #[test]

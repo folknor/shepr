@@ -60,7 +60,7 @@ impl<'de> Deserialize<'de> for RightClickPassthroughModifierConfig {
             .map(Self)
             .ok_or_else(|| {
                 de::Error::custom(
-                    "right_click_passthrough_modifier must be empty, off, none, disabled, ctrl/control, alt/option, cmd/command/super, meta, hyper, or a + separated combination without shift",
+                    "right_click_passthrough_modifier must be empty, off, none, disabled, ctrl/control, alt/option/meta, cmd/command/super, hyper, or a + separated combination without shift",
                 )
             })
     }
@@ -81,9 +81,11 @@ fn parse_right_click_passthrough_modifier(value: &str) -> Option<Option<KeyModif
         let token = token.trim().to_ascii_lowercase();
         let modifier = match token.as_str() {
             "ctrl" | "control" => KeyModifiers::CONTROL,
-            "alt" | "option" => KeyModifiers::ALT,
+            // "meta" means Alt, as in keybindings: SGR mouse reports carry
+            // Meta in the Alt bit, so crossterm's META flag never appears on
+            // a mouse event and a META mapping could never match.
+            "alt" | "option" | "meta" => KeyModifiers::ALT,
             "cmd" | "command" | "super" => KeyModifiers::SUPER,
-            "meta" => KeyModifiers::META,
             "hyper" => KeyModifiers::HYPER,
             "shift" => return None,
             _ => return None,
@@ -1270,7 +1272,7 @@ right_click_passthrough_modifier = "{value}"
             ("cmd", KeyModifiers::SUPER),
             ("command", KeyModifiers::SUPER),
             ("super", KeyModifiers::SUPER),
-            ("meta", KeyModifiers::META),
+            ("meta", KeyModifiers::ALT),
             ("hyper", KeyModifiers::HYPER),
         ] {
             let toml = format!(

@@ -1055,7 +1055,12 @@ impl AppState {
             // foreground client; they never touch AppState. Kept for AppEvent exhaustiveness.
             AppEvent::ClipboardWrite { .. } => Vec::new(),
             AppEvent::TerminalCwdReported { pane_id, cwd } => {
-                if !cwd.is_absolute() || !cwd.is_dir() {
+                // The PTY reader thread that publishes this event has already
+                // checked that the path is an existing directory. Repeating
+                // that `stat` here would put filesystem IO (possibly a hung
+                // network mount) on the loop that fans frames out to every
+                // client, so only the pure shape check is kept.
+                if !cwd.is_absolute() {
                     return Vec::new();
                 }
                 let Some(terminal_id) = self.workspaces.iter().find_map(|ws| {
@@ -2498,9 +2503,12 @@ mod tests {
             .expect("test precondition")
             .attached_terminal_id
             .clone();
-        let cwd =
-            std::env::temp_dir().join(format!("shepr-cwd-report-test-{}", std::process::id()));
-        std::fs::create_dir_all(&cwd).expect("test precondition");
+        // Deliberately a path that does not exist: the reporting thread
+        // validates the directory, and the main loop must not stat it again.
+        let cwd = std::path::PathBuf::from(format!(
+            "/shepr-cwd-report-test-{}/does-not-exist",
+            std::process::id()
+        ));
         state.session_dirty = false;
 
         let updates = state.handle_app_event(AppEvent::TerminalCwdReported {
@@ -2518,7 +2526,31 @@ mod tests {
             cwd
         );
         assert!(state.session_dirty);
-        let _ = std::fs::remove_dir_all(cwd);
+    }
+
+    #[test]
+    fn relative_terminal_cwd_report_is_ignored() {
+        let mut state = app_with_workspaces(&["active"]);
+        let pane_id = *state.workspaces[0]
+            .panes
+            .keys()
+            .next()
+            .expect("test precondition");
+        let terminal_id = state.workspaces[0]
+            .pane_state(pane_id)
+            .expect("test precondition")
+            .attached_terminal_id
+            .clone();
+        let before = state.terminals[&terminal_id].cwd.clone();
+        state.session_dirty = false;
+
+        state.handle_app_event(AppEvent::TerminalCwdReported {
+            pane_id,
+            cwd: std::path::PathBuf::from("relative/dir"),
+        });
+
+        assert_eq!(state.terminals[&terminal_id].cwd, before);
+        assert!(!state.session_dirty);
     }
 
     #[test]

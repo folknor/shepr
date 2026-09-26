@@ -1,14 +1,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use ratatui::layout::Direction;
-use tokio::sync::{Notify, mpsc};
 
-use crate::events::AppEvent;
+use super::PaneSpawnHandles;
 use crate::layout::{Node, PaneId, TileLayout};
 use crate::pane::{PaneLaunchEnv, PaneState};
-use crate::render_signal::RenderSignal;
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
 
 pub(crate) type DetachedPane = (PaneId, TerminalId);
@@ -32,18 +29,13 @@ pub struct Tab {
     pub layout: TileLayout,
     /// Pane viewport state - always present, testable without PTYs.
     pub panes: HashMap<PaneId, PaneState>,
-    #[cfg(test)]
-    pub runtimes: HashMap<PaneId, TerminalRuntime>,
     pub zoomed: bool,
-    pub events: mpsc::Sender<AppEvent>,
-    pub(crate) render_notify: Arc<Notify>,
-    pub(crate) render_dirty: Arc<RenderSignal>,
 }
 
 impl Tab {
     // Tab construction threads pane runtime geometry, host context, and render hooks.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         number: usize,
         initial_cwd: PathBuf,
         rows: u16,
@@ -53,9 +45,7 @@ impl Tab {
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        spawn: &PaneSpawnHandles,
     ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
         Self::new_with_runtime(
             number,
@@ -67,16 +57,14 @@ impl Tab {
             host_terminal_appearance,
             shell_config,
             launch_env,
-            events,
-            render_notify,
-            render_dirty,
+            spawn,
             None,
         )
     }
 
     // Command tab construction mirrors the shell tab runtime arguments.
     #[allow(clippy::too_many_arguments)]
-    pub fn new_argv_command(
+    pub(crate) fn new_argv_command(
         number: usize,
         initial_cwd: PathBuf,
         rows: u16,
@@ -86,9 +74,7 @@ impl Tab {
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         launch_env: &PaneLaunchEnv,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        spawn: &PaneSpawnHandles,
     ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
         Self::new_with_runtime(
             number,
@@ -100,9 +86,7 @@ impl Tab {
             host_terminal_appearance,
             crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
             launch_env,
-            events,
-            render_notify,
-            render_dirty,
+            spawn,
             Some(argv),
         )
     }
@@ -118,9 +102,7 @@ impl Tab {
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        spawn: &PaneSpawnHandles,
         argv: Option<&[String]>,
     ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
         let (layout, root_id) = TileLayout::new();
@@ -135,9 +117,9 @@ impl Tab {
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,
-                &events,
-                &render_notify,
-                &render_dirty,
+                &spawn.events,
+                &spawn.render_notify,
+                &spawn.render_dirty,
             )?
         } else {
             TerminalRuntime::spawn(
@@ -150,9 +132,9 @@ impl Tab {
                 host_terminal_appearance,
                 shell_config,
                 launch_env,
-                &events,
-                &render_notify,
-                &render_dirty,
+                &spawn.events,
+                &spawn.render_notify,
+                &spawn.render_dirty,
             )?
         };
 
@@ -173,12 +155,7 @@ impl Tab {
                 root_pane: root_id,
                 layout,
                 panes,
-                #[cfg(test)]
-                runtimes: HashMap::new(),
                 zoomed: false,
-                events,
-                render_notify,
-                render_dirty,
             },
             terminal,
             runtime,
@@ -211,6 +188,7 @@ impl Tab {
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
+        spawn: &PaneSpawnHandles,
     ) -> std::io::Result<NewPane> {
         self.split_pane_with_runtime(
             target,
@@ -224,6 +202,7 @@ impl Tab {
             host_terminal_appearance,
             shell_config,
             launch_env,
+            spawn,
             None,
         )
     }
@@ -244,6 +223,7 @@ impl Tab {
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        spawn: &PaneSpawnHandles,
     ) -> std::io::Result<NewPane> {
         self.split_pane_with_runtime(
             target,
@@ -257,6 +237,7 @@ impl Tab {
             host_terminal_appearance,
             crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
             launch_env,
+            spawn,
             Some(argv),
         )
     }
@@ -276,6 +257,7 @@ impl Tab {
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
+        spawn: &PaneSpawnHandles,
         argv: Option<&[String]>,
     ) -> std::io::Result<NewPane> {
         let Some(new_id) = self
@@ -305,9 +287,9 @@ impl Tab {
                 scrollback_limit_bytes,
                 host_terminal_theme,
                 host_terminal_appearance,
-                &self.events,
-                &self.render_notify,
-                &self.render_dirty,
+                &spawn.events,
+                &spawn.render_notify,
+                &spawn.render_dirty,
             ),
             None => TerminalRuntime::spawn(
                 new_id,
@@ -319,9 +301,9 @@ impl Tab {
                 host_terminal_appearance,
                 shell_config,
                 launch_env,
-                &self.events,
-                &self.render_notify,
-                &self.render_dirty,
+                &spawn.events,
+                &spawn.render_notify,
+                &spawn.render_dirty,
             ),
         };
         let runtime = match runtime {
@@ -381,9 +363,6 @@ impl Tab {
         number: usize,
         custom_name: Option<String>,
         moved: MovedPane,
-        events: mpsc::Sender<AppEvent>,
-        render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
     ) -> Self {
         let mut panes = HashMap::new();
         let pane_id = moved.pane_id;
@@ -394,12 +373,7 @@ impl Tab {
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),
             panes,
-            #[cfg(test)]
-            runtimes: HashMap::new(),
             zoomed: false,
-            events,
-            render_notify,
-            render_dirty,
         }
     }
 

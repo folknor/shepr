@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::io;
 
 use crate::api::client::{ApiClient, ConnectionTarget};
@@ -7,6 +7,19 @@ use crate::client::endpoint::{EndpointCatalog, SavedSshEndpoint};
 thread_local! {
     // CLI dispatch is synchronous. Scope routing to this command, never the runtime or TUI.
     static TARGET: RefCell<Option<MachineTarget>> = const { RefCell::new(None) };
+    // Whether the current target's server already passed the protocol check.
+    // One CLI command talks to one server, so the status probe runs once per
+    // command rather than once per request (`agent start` and `agent wait`
+    // poll with many requests). Reset whenever the target changes.
+    static PROTOCOL_CHECKED: Cell<bool> = const { Cell::new(false) };
+}
+
+pub(super) fn protocol_checked() -> bool {
+    PROTOCOL_CHECKED.with(Cell::get)
+}
+
+pub(super) fn mark_protocol_checked() {
+    PROTOCOL_CHECKED.with(|checked| checked.set(true));
 }
 
 struct MachineTarget {
@@ -19,6 +32,7 @@ struct TargetScope(Option<MachineTarget>);
 impl Drop for TargetScope {
     fn drop(&mut self) {
         TARGET.with(|target| *target.borrow_mut() = self.0.take());
+        PROTOCOL_CHECKED.with(|checked| checked.set(false));
     }
 }
 
@@ -46,6 +60,7 @@ pub(super) fn run_on_machine(
             bridge: None,
         })))
     });
+    PROTOCOL_CHECKED.with(|checked| checked.set(false));
     super::dispatch(name, matches)
 }
 

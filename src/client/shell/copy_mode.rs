@@ -451,7 +451,7 @@ impl ClientShellState {
         };
         if let Some(target) = target {
             copy_mode.cursor = target.start;
-            self.reveal_copy_cursor(outcome, true);
+            self.reveal_copy_cursor(outcome);
             self.sync_copy_selection();
         }
         if copy_after_search {
@@ -548,7 +548,7 @@ impl ClientShellState {
                 .saturating_add(u32::from(row_delta.unsigned_abs()))
                 .min(u32::try_from(total_rows.saturating_sub(1)).unwrap_or(u32::MAX));
         }
-        self.reveal_copy_cursor(outcome, false);
+        self.reveal_copy_cursor(outcome);
         self.sync_copy_selection();
         outcome.repaint = true;
     }
@@ -621,7 +621,27 @@ impl ClientShellState {
         }
     }
 
-    fn reveal_copy_cursor(&mut self, outcome: &mut ClientShellInput, reserve_mode_bar_row: bool) {
+    /// Whether the copy-mode bar is drawn over the copy pane's bottom row: true with the tab
+    /// bar on top or hidden (the bar then takes the pane area's bottom row) when the pane
+    /// reaches that row. Unknown geometry counts as covered.
+    fn mode_bar_covers_copy_pane(&self) -> bool {
+        let (Some(hit), Some((cols, rows))) = (self.copy_hit(), self.last_composed_size) else {
+            return true;
+        };
+        let layout = self.layout(cols, rows);
+        if self.config.tab_bar_position == TabBarPositionConfig::Bottom
+            && !layout.tab_bar.is_empty()
+        {
+            return false;
+        }
+        hit.inner_rect.bottom() >= layout.pane_surface.bottom()
+    }
+
+    /// Scrolls the copy pane so the cursor is on screen, keeping it off the row the mode bar
+    /// covers. Motions and search results both go through here. On the very last line of
+    /// history no scroll can lift it; `compose` then moves the bar to the top row instead.
+    fn reveal_copy_cursor(&mut self, outcome: &mut ClientShellInput) {
+        let reserve_mode_bar_row = self.mode_bar_covers_copy_pane();
         let request = self.copy_mode.as_mut().and_then(|copy_mode| {
             let current_top = u32::try_from(
                 copy_mode
@@ -822,7 +842,7 @@ impl ClientShellState {
             return false;
         }
         copy_mode.cursor = cursor;
-        self.reveal_copy_cursor(outcome, false);
+        self.reveal_copy_cursor(outcome);
         self.sync_copy_selection();
         outcome.repaint = true;
         true

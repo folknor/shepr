@@ -272,54 +272,172 @@ impl ActiveSubscription {
             .transpose()
     }
 
-    pub(super) fn poll_batch(
+    /// The hub sequence this subscription has consumed history through, or
+    /// `None` for subscriptions that only sample current state.
+    fn history_cursor(&self) -> Option<u64> {
+        match self {
+            Self::Event(subscription) => Some(subscription.last_sequence),
+            Self::AgentStatusChanged(subscription) => Some(subscription.last_sequence),
+            Self::OutputMatched(_) | Self::ScrollChanged(_) => None,
+        }
+    }
+
+    /// Offers one hub event. Events at or before this subscription's own
+    /// cursor were already consumed (or predate it) and are skipped; later
+    /// ones advance the cursor whether or not they match.
+    fn offer_history(
+        &mut self,
+        sequence: u64,
+        event: &crate::api::schema::EventEnvelope,
+    ) -> Result<Option<serde_json::Value>, ErrorBody> {
+        match self {
+            Self::Event(subscription) => {
+                if sequence <= subscription.last_sequence {
+                    return Ok(None);
+                }
+                subscription.last_sequence = sequence;
+                if event.event != subscription.event_kind {
+                    return Ok(None);
+                }
+                serde_json::to_value(event)
+                    .map(Some)
+                    .map_err(|err| event_encoding_error(&err))
+            }
+            Self::AgentStatusChanged(subscription) => {
+                if sequence <= subscription.last_sequence {
+                    return Ok(None);
+                }
+                subscription.last_sequence = sequence;
+                if event.event != EventKind::PaneAgentStatusChanged {
+                    return Ok(None);
+                }
+                subscription
+                    .event_from_history(event.clone())
+                    .map(|event| {
+                        serde_json::to_value(event).map_err(|err| event_encoding_error(&err))
+                    })
+                    .transpose()
+            }
+            Self::OutputMatched(_) | Self::ScrollChanged(_) => Ok(None),
+        }
+    }
+
+    /// Samples current state for subscriptions that are not (only) history
+    /// backed. Called after history has been offered for this poll.
+    fn poll_sampled(
         &mut self,
         api_tx: &ApiRequestSender,
         event_hub: &EventHub,
-    ) -> Result<Vec<serde_json::Value>, ErrorBody> {
-        match self {
-            Self::Event(subscription) => {
-                let events = subscription_events_after(event_hub, subscription.last_sequence)?;
-                let mut matching = Vec::new();
-                for (sequence, event) in events {
-                    subscription.last_sequence = sequence;
-                    if event.event == subscription.event_kind {
-                        matching.push(
-                            serde_json::to_value(event)
-                                .map_err(|err| event_encoding_error(&err))?,
-                        );
-                    }
-                }
-                Ok(matching)
-            }
+    ) -> Result<Option<serde_json::Value>, ErrorBody> {
+        let event = match self {
+            Self::Event(_) => return Ok(None),
             Self::AgentStatusChanged(subscription) => {
-                let events = subscription_events_after(event_hub, subscription.last_sequence)?;
-                let mut matching = Vec::new();
-                for (sequence, event) in events {
-                    subscription.last_sequence = sequence;
-                    if let Some(event) = subscription.event_from_history(event) {
-                        matching.push(
-                            serde_json::to_value(event)
-                                .map_err(|err| event_encoding_error(&err))?,
-                        );
-                    }
-                }
-                if matching.is_empty()
-                    && let Some(event) = subscription.poll_snapshot(api_tx, event_hub)?
-                {
-                    matching.push(
-                        serde_json::to_value(event).map_err(|err| event_encoding_error(&err))?,
-                    );
-                }
-                Ok(matching)
+                subscription.poll_snapshot(api_tx, event_hub)?
             }
-            // These subscriptions sample current state, not retained event history.
-            // Keep their existing cadence even when a lifecycle batch was nonempty.
-            Self::OutputMatched(_) | Self::ScrollChanged(_) => {
-                Ok(self.poll_for_wait(api_tx, event_hub)?.into_iter().collect())
-            }
+            Self::OutputMatched(subscription) => subscription.poll(api_tx)?,
+            Self::ScrollChanged(subscription) => subscription.poll(api_tx)?,
+        };
+        event
+            .map(|event| serde_json::to_value(event).map_err(|err| event_encoding_error(&err)))
+            .transpose()
+    }
+}
+
+/// Field carrying the event hub's sequence number on every streamed event.
+const STREAM_SEQUENCE_FIELD: &str = "seq";
+
+/// The subscriptions of one `events.subscribe` stream, polled together so
+/// that events reach the client in the hub's global order.
+///
+/// Draining each subscription's history in turn reorders events that land in
+/// one poll window: with `[pane.closed, pane.created]`, a create followed by a
+/// close would arrive as closed, then created. Instead the history is fetched
+/// once, from the oldest subscription cursor, and every event is offered to
+/// each subscription (in request order) before the next event.
+///
+/// Every line carries the hub sequence as `seq`. History events carry their
+/// own sequence, which is strictly increasing across distinct hub events.
+/// Sampled events (`pane.output_matched`, `pane.scroll_changed`, and the
+/// snapshot-derived `pane.agent_status_changed`) are not hub events: they
+/// follow all history delivered in the same poll and carry the sequence of the
+/// last hub event delivered before them, so `seq` never decreases along a
+/// stream.
+pub(super) struct SubscriptionStream {
+    subscriptions: Vec<ActiveSubscription>,
+    delivered_through: u64,
+}
+
+/// One poll's output. `events` are in delivery order; an `error` is final and
+/// goes out after them.
+pub(super) struct SubscriptionPoll {
+    pub(super) events: Vec<serde_json::Value>,
+    pub(super) error: Option<ErrorBody>,
+}
+
+impl SubscriptionStream {
+    pub(super) fn new(subscriptions: Vec<ActiveSubscription>, start_sequence: u64) -> Self {
+        Self {
+            subscriptions,
+            delivered_through: start_sequence,
         }
     }
+
+    pub(super) fn poll(
+        &mut self,
+        api_tx: &ApiRequestSender,
+        event_hub: &EventHub,
+    ) -> SubscriptionPoll {
+        let mut events = Vec::new();
+        let error = self.poll_into(api_tx, event_hub, &mut events).err();
+        SubscriptionPoll { events, error }
+    }
+
+    fn poll_into(
+        &mut self,
+        api_tx: &ApiRequestSender,
+        event_hub: &EventHub,
+        events: &mut Vec<serde_json::Value>,
+    ) -> Result<(), ErrorBody> {
+        let mut history_matched = vec![false; self.subscriptions.len()];
+        let cursor = self
+            .subscriptions
+            .iter()
+            .filter_map(ActiveSubscription::history_cursor)
+            .min();
+        if let Some(cursor) = cursor {
+            for (sequence, event) in subscription_events_after(event_hub, cursor)? {
+                for (subscription, matched) in self
+                    .subscriptions
+                    .iter_mut()
+                    .zip(history_matched.iter_mut())
+                {
+                    if let Some(value) = subscription.offer_history(sequence, &event)? {
+                        *matched = true;
+                        events.push(with_stream_sequence(value, sequence));
+                    }
+                }
+                self.delivered_through = self.delivered_through.max(sequence);
+            }
+        }
+        // A status subscription that delivered history this poll skips its
+        // snapshot, as the history already reflects the newest state.
+        for (subscription, matched) in self.subscriptions.iter_mut().zip(history_matched) {
+            if matched {
+                continue;
+            }
+            if let Some(value) = subscription.poll_sampled(api_tx, event_hub)? {
+                events.push(with_stream_sequence(value, self.delivered_through));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn with_stream_sequence(mut value: serde_json::Value, sequence: u64) -> serde_json::Value {
+    if let serde_json::Value::Object(map) = &mut value {
+        map.insert(STREAM_SEQUENCE_FIELD.into(), sequence.into());
+    }
+    value
 }
 
 pub(super) fn subscription_events_after(
@@ -795,14 +913,180 @@ mod tests {
         ];
         for subscription in &mut subscriptions {
             let error = subscription
-                .poll_batch(&api_tx, &event_hub)
-                .expect_err("a vanished pane must end the subscription");
-            assert_eq!(error.code, "pane_not_found");
-            let error = subscription
                 .poll_for_wait(&api_tx, &event_hub)
                 .expect_err("a vanished pane must end the wait");
             assert_eq!(error.code, "pane_not_found");
         }
+        for subscription in subscriptions {
+            let mut stream = stream_of(subscription, &event_hub);
+            let poll = stream.poll(&api_tx, &event_hub);
+            assert!(poll.events.is_empty());
+            let error = poll
+                .error
+                .expect("a vanished pane must end the subscription");
+            assert_eq!(error.code, "pane_not_found");
+        }
+    }
+
+    fn stream_of(subscription: ActiveSubscription, event_hub: &EventHub) -> SubscriptionStream {
+        let start = subscription
+            .history_cursor()
+            .unwrap_or_else(|| event_hub.current_sequence());
+        SubscriptionStream::new(vec![subscription], start)
+    }
+
+    fn poll_stream(
+        stream: &mut SubscriptionStream,
+        api_tx: &ApiRequestSender,
+        event_hub: &EventHub,
+    ) -> Vec<serde_json::Value> {
+        let poll = stream.poll(api_tx, event_hub);
+        assert!(poll.error.is_none(), "{:?}", poll.error);
+        poll.events
+    }
+
+    fn pane_lifecycle_event(kind: EventKind) -> EventEnvelope {
+        let data = match kind {
+            EventKind::PaneCreated => EventData::PaneCreated {
+                pane: pane_info_with_scroll(None),
+            },
+            EventKind::PaneClosed => EventData::PaneClosed {
+                pane_id: "pane_1".into(),
+                workspace_id: "workspace_1".into(),
+            },
+            other => panic!("not a pane lifecycle kind: {other:?}"),
+        };
+        EventEnvelope { event: kind, data }
+    }
+
+    #[test]
+    fn stream_delivers_events_across_subscriptions_in_hub_order() {
+        let event_hub = EventHub::default();
+        let (api_tx, _api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let start = event_hub.current_sequence();
+        // Subscription order is the reverse of the order events happen in.
+        let subscriptions = [Subscription::PaneClosed {}, Subscription::PaneCreated {}]
+            .into_iter()
+            .enumerate()
+            .map(|(index, subscription)| {
+                ActiveSubscription::new(subscription, "order", index, &api_tx, &event_hub, start)
+                    .expect("test precondition")
+            })
+            .collect();
+        let mut stream = SubscriptionStream::new(subscriptions, start);
+
+        event_hub.push(pane_lifecycle_event(EventKind::PaneCreated));
+        event_hub.push(workspace_focused_event("unsubscribed"));
+        event_hub.push(pane_lifecycle_event(EventKind::PaneClosed));
+
+        let events = poll_stream(&mut stream, &api_tx, &event_hub);
+        let kinds = events
+            .iter()
+            .map(|event| event["event"].as_str().expect("test precondition"))
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, ["pane_created", "pane_closed"]);
+        let sequences = events
+            .iter()
+            .map(|event| {
+                event[STREAM_SEQUENCE_FIELD]
+                    .as_u64()
+                    .expect("sequence on the wire")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, [start + 1, start + 3]);
+        assert!(poll_stream(&mut stream, &api_tx, &event_hub).is_empty());
+    }
+
+    #[test]
+    fn stream_sequences_never_decrease_across_history_and_samples() {
+        let event_hub = EventHub::default();
+        let api_tx = answering_app(|request| {
+            let pane = pane_info_with_scroll(Some(PaneScrollInfo {
+                offset_from_bottom: 3,
+                max_offset_from_bottom: 10,
+                viewport_rows: 5,
+            }));
+            serde_json::to_string(&crate::api::schema::SuccessResponse {
+                id: request.id.clone(),
+                result: crate::api::schema::ResponseResult::PaneInfo { pane },
+            })
+            .expect("test precondition")
+        });
+        let start = event_hub.current_sequence();
+        let focused = ActiveSubscription::new(
+            Subscription::WorkspaceFocused {},
+            "mixed",
+            1,
+            &api_tx,
+            &event_hub,
+            start,
+        )
+        .expect("test precondition");
+        let scroll = ActiveSubscription::ScrollChanged(ActiveScrollChangedSubscription {
+            pane_id: "pane_1".into(),
+            last_scroll: None,
+            request_prefix: "mixed:sub:0".into(),
+        });
+        // The sampled subscription comes first in request order, yet its
+        // event follows the history delivered in the same poll.
+        let mut stream = SubscriptionStream::new(vec![scroll, focused], start);
+        event_hub.push(workspace_focused_event("first"));
+        event_hub.push(workspace_focused_event("second"));
+
+        let events = poll_stream(&mut stream, &api_tx, &event_hub);
+        let summary = events
+            .iter()
+            .map(|event| {
+                (
+                    event["event"]
+                        .as_str()
+                        .expect("test precondition")
+                        .to_string(),
+                    event[STREAM_SEQUENCE_FIELD]
+                        .as_u64()
+                        .expect("sequence on the wire"),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            [
+                ("workspace_focused".to_string(), start + 1),
+                ("workspace_focused".to_string(), start + 2),
+                ("pane.scroll_changed".to_string(), start + 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn stream_emits_history_before_a_final_sampling_error() {
+        let event_hub = EventHub::default();
+        let api_tx = pane_not_found_app();
+        let start = event_hub.current_sequence();
+        let focused = ActiveSubscription::new(
+            Subscription::WorkspaceFocused {},
+            "fail",
+            0,
+            &api_tx,
+            &event_hub,
+            start,
+        )
+        .expect("test precondition");
+        let scroll = ActiveSubscription::ScrollChanged(ActiveScrollChangedSubscription {
+            pane_id: "pane_1".into(),
+            last_scroll: None,
+            request_prefix: "fail:sub:1".into(),
+        });
+        let mut stream = SubscriptionStream::new(vec![focused, scroll], start);
+        event_hub.push(workspace_focused_event("before_close"));
+
+        let poll = stream.poll(&api_tx, &event_hub);
+        assert_eq!(poll.events.len(), 1);
+        assert_eq!(poll.events[0]["data"]["workspace_id"], "before_close");
+        assert_eq!(
+            poll.error.expect("sampling failure ends the stream").code,
+            "pane_not_found"
+        );
     }
 
     #[test]
@@ -898,7 +1182,7 @@ mod tests {
         let start = event_hub.current_sequence();
         event_hub.push(workspace_focused_event("setup"));
         let (api_tx, _api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut subscription = ActiveSubscription::new(
+        let subscription = ActiveSubscription::new(
             Subscription::WorkspaceFocused {},
             "batch",
             0,
@@ -909,19 +1193,13 @@ mod tests {
         .expect("test precondition");
         event_hub.push(presentation_event(None));
         event_hub.push(workspace_focused_event("live"));
-        let events = subscription
-            .poll_batch(&api_tx, &event_hub)
-            .expect("test precondition");
+        let mut stream = SubscriptionStream::new(vec![subscription], start);
+        let events = poll_stream(&mut stream, &api_tx, &event_hub);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0]["data"]["workspace_id"], "setup");
         assert_eq!(events[1]["data"]["workspace_id"], "live");
-        assert!(
-            subscription
-                .poll_batch(&api_tx, &event_hub)
-                .expect("test precondition")
-                .is_empty()
-        );
-        let ActiveSubscription::Event(subscription) = subscription else {
+        assert!(poll_stream(&mut stream, &api_tx, &event_hub).is_empty());
+        let Some(ActiveSubscription::Event(subscription)) = stream.subscriptions.pop() else {
             panic!("expected lifecycle subscription");
         };
         assert_eq!(subscription.last_sequence, event_hub.current_sequence());
@@ -931,7 +1209,7 @@ mod tests {
     fn agent_status_batch_preserves_transitions_filters_and_initial_state_ordering() {
         for filtered in [false, true] {
             let event_hub = EventHub::default();
-            let mut subscription = ActiveSubscription::AgentStatusChanged(Box::new(
+            let subscription = ActiveSubscription::AgentStatusChanged(Box::new(
                 ActiveAgentStatusChangedSubscription {
                     pane_id: "pane_1".into(),
                     status_filter: filtered.then_some(AgentStatus::Working),
@@ -964,9 +1242,8 @@ mod tests {
                 event_hub.push(event);
             }
             let (api_tx, _api_rx) = tokio::sync::mpsc::unbounded_channel();
-            let events = subscription
-                .poll_batch(&api_tx, &event_hub)
-                .expect("test precondition");
+            let mut stream = stream_of(subscription, &event_hub);
+            let events = poll_stream(&mut stream, &api_tx, &event_hub);
             let titles = events
                 .iter()
                 .map(|event| event["data"]["title"].as_str().expect("test precondition"))
@@ -979,7 +1256,9 @@ mod tests {
                     vec!["started", "approval", "finished", "restarted"]
                 }
             );
-            let ActiveSubscription::AgentStatusChanged(subscription) = subscription else {
+            let Some(ActiveSubscription::AgentStatusChanged(subscription)) =
+                stream.subscriptions.pop()
+            else {
                 panic!("expected agent subscription");
             };
             assert_eq!(subscription.last_sequence, event_hub.current_sequence());

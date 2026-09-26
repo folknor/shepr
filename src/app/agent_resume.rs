@@ -32,7 +32,7 @@ impl App {
             self.next_agent_resume_at = None;
             return;
         }
-        if self.pending_agent_resume_candidates().is_empty() {
+        if !self.has_pending_agent_resume_candidates() {
             self.pending_agent_resume_deadline = None;
             return;
         }
@@ -74,18 +74,18 @@ impl App {
             plan,
             rows,
             cols,
-        } in pending
+        } in &pending
         {
-            if self.terminal_runtimes.get(&terminal_id).is_some() {
+            if self.terminal_runtimes.get(terminal_id).is_some() {
                 continue;
             }
             changed |= self.start_pending_agent_resume(
-                pane_id,
-                &terminal_id,
-                &cwd,
-                &plan,
-                rows,
-                cols,
+                *pane_id,
+                terminal_id,
+                cwd,
+                plan,
+                *rows,
+                *cols,
                 allow_empty_theme,
             );
             if changed && !self.startup_per_agent_delay.is_zero() {
@@ -98,7 +98,19 @@ impl App {
         if changed {
             self.schedule_session_save();
         }
-        if !self.has_pending_agent_resumes() || self.pending_agent_resume_candidates().is_empty() {
+        // Launching a resume changes neither the layout nor the terminal area,
+        // so the remaining candidates are exactly the ones collected above
+        // whose plan is still unconsumed and that still have no runtime; no
+        // second layout walk is needed to find out.
+        let candidates_remain = pending.iter().any(|candidate| {
+            self.terminal_runtimes.get(&candidate.terminal_id).is_none()
+                && self
+                    .state
+                    .terminals
+                    .get(&candidate.terminal_id)
+                    .is_some_and(|terminal| terminal.pending_agent_resume_plan.is_some())
+        });
+        if !candidates_remain {
             self.pending_agent_resume_deadline = None;
         } else if self.pending_agent_resume_due(now) {
             // Candidates remain although the wakeup that released them has
@@ -119,6 +131,56 @@ impl App {
         changed
     }
 
+    /// Whether any pane would be a resume candidate right now, without cloning
+    /// plans or collecting them. Same rules as
+    /// `pending_agent_resume_candidates`: a candidate needs a known terminal
+    /// area, a pane in the layout, no runtime yet and an unconsumed plan.
+    fn has_pending_agent_resume_candidates(&self) -> bool {
+        let terminal_area = self.state.view.terminal_area;
+        if terminal_area.width == 0 || terminal_area.height == 0 {
+            return false;
+        }
+        self.state
+            .workspaces
+            .iter()
+            .enumerate()
+            .any(|(ws_idx, ws)| {
+                ws.tabs.iter().enumerate().any(|(tab_idx, tab)| {
+                    self.tab_has_pending_agent_resume(tab)
+                        && self
+                            .pending_agent_resume_pane_infos(ws_idx, tab_idx, tab, terminal_area)
+                            .iter()
+                            .any(|info| self.pane_awaits_agent_resume(tab, info.id))
+                })
+            })
+    }
+
+    /// Cheap pre-filter: whether any pane of `tab` awaits a resume. Lets the
+    /// candidate walks skip the layout computation for every tab with nothing
+    /// pending, which is almost all of them.
+    fn tab_has_pending_agent_resume(&self, tab: &crate::workspace::Tab) -> bool {
+        tab.panes
+            .keys()
+            .any(|pane_id| self.pane_awaits_agent_resume(tab, *pane_id))
+    }
+
+    fn pane_awaits_agent_resume(
+        &self,
+        tab: &crate::workspace::Tab,
+        pane_id: crate::layout::PaneId,
+    ) -> bool {
+        tab.panes.get(&pane_id).is_some_and(|pane| {
+            self.terminal_runtimes
+                .get(&pane.attached_terminal_id)
+                .is_none()
+                && self
+                    .state
+                    .terminals
+                    .get(&pane.attached_terminal_id)
+                    .is_some_and(|terminal| terminal.pending_agent_resume_plan.is_some())
+        })
+    }
+
     fn pending_agent_resume_candidates(&self) -> Vec<PendingAgentResumeCandidate> {
         let terminal_area = self.state.view.terminal_area;
         if terminal_area.width == 0 || terminal_area.height == 0 {
@@ -128,6 +190,9 @@ impl App {
         let mut pending = Vec::new();
         for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
             for (tab_idx, tab) in ws.tabs.iter().enumerate() {
+                if !self.tab_has_pending_agent_resume(tab) {
+                    continue;
+                }
                 for info in
                     self.pending_agent_resume_pane_infos(ws_idx, tab_idx, tab, terminal_area)
                 {
@@ -522,6 +587,48 @@ mod tests {
             app.pending_agent_resume_deadline,
             Some(retry_at + PENDING_AGENT_RESUME_RETRY_INTERVAL)
         );
+    }
+
+    #[tokio::test]
+    async fn candidate_probe_agrees_with_the_collected_candidates() {
+        let mut app = test_app();
+        let pending_workspace = crate::workspace::Workspace::test_new("pending");
+        let pending_pane = pending_workspace.tabs[0].root_pane;
+        let pending_terminal = pending_workspace
+            .terminal_id(pending_pane)
+            .cloned()
+            .expect("test precondition");
+        app.state.workspaces = vec![
+            crate::workspace::Workspace::test_new("idle"),
+            pending_workspace,
+        ];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+
+        // Nothing pending anywhere.
+        app.state.view.terminal_area = Rect::new(0, 0, 100, 30);
+        assert!(!app.has_pending_agent_resume_candidates());
+        assert!(app.pending_agent_resume_candidates().is_empty());
+
+        app.state
+            .terminals
+            .get_mut(&pending_terminal)
+            .expect("test terminal should exist")
+            .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
+            agent: "codex".into(),
+            argv: long_running_test_argv(),
+            dedupe_key: "shepr:codex\0codex\0Id\0probe-session".into(),
+        });
+        assert!(app.has_pending_agent_resume_candidates());
+        let candidates = app.pending_agent_resume_candidates();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].terminal_id, pending_terminal);
+        assert_eq!(candidates[0].pane_id, pending_pane);
+
+        // Without a terminal area there is no geometry to launch with.
+        app.state.view.terminal_area = Rect::new(0, 0, 0, 0);
+        assert!(!app.has_pending_agent_resume_candidates());
+        assert!(app.pending_agent_resume_candidates().is_empty());
     }
 
     fn long_running_test_argv() -> Vec<String> {
