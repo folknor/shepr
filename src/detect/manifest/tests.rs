@@ -36,12 +36,7 @@ struct TestManifests {
 
 impl TestManifests {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "shepr-manifest-loader-{name}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("test precondition");
+        let dir = crate::test_support::ScratchDir::new(name).keep_until_exit();
         let registry = ManifestRegistry::new(&dir);
         Self { dir, registry }
     }

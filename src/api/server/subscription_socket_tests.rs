@@ -6,7 +6,6 @@ use crate::api::schema::{
 use crate::ipc::{LocalStreamReadCount, poll_local_stream_read_count};
 use interprocess::local_socket::traits::Listener as _;
 use serde_json::{Value, json};
-use std::sync::atomic::AtomicU64;
 use tokio::sync::mpsc;
 
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -34,12 +33,9 @@ impl SocketTest {
     }
 
     fn connect(&mut self) -> Client {
-        static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "shepr-sub-{}-{}",
-            std::process::id(),
-            NEXT_SOCKET.fetch_add(1, Ordering::Relaxed)
-        ));
+        let path = crate::test_support::ScratchDir::new("sub")
+            .keep_until_exit()
+            .join("s.sock");
         let listener = crate::ipc::bind_local_listener(&path).expect("test precondition");
         self.paths.push(path.clone());
         let mut stream = crate::ipc::connect_local_stream(&path).expect("test precondition");

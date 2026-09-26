@@ -580,15 +580,13 @@ mod tests {
     const MULTILINE_COMMAND: &str = "printf 'old\\nfinal\\n'";
     const OVER_CAP_COMMAND: &str = "head -c 5000 /dev/zero | tr '\\0' x; printf '\\nREADY\\n'";
 
+    /// A marker path a status command writes to, in a scratch directory kept
+    /// until the test process exits (a descendant may still write after the
+    /// test body ends).
     fn unique_temp_path(name: &str) -> std::path::PathBuf {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock after epoch")
-            .as_nanos();
-        std::path::PathBuf::from("/var/tmp").join(format!(
-            "shepr-tab-status-{name}-{}-{stamp}",
-            std::process::id()
-        ))
+        crate::test_support::ScratchDir::new("tab-status")
+            .keep_until_exit()
+            .join(name)
     }
 
     #[tokio::test]

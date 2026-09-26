@@ -515,11 +515,7 @@ mod registration_tests {
     use crate::integration::IntegrationStatusKind;
 
     fn base(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("shepr-registration-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("test precondition");
-        dir
+        crate::test_support::ScratchDir::new(name).keep_until_exit()
     }
 
     fn write_current_hook(path: &Path) {
@@ -663,29 +659,14 @@ mod registration_tests {
         let _ = fs::remove_dir_all(dir);
     }
 
-    /// Run `install` with `env_var` pointing at `dir`, restoring it after.
-    fn with_config_dir<T>(env_var: &str, dir: &Path, install: impl FnOnce() -> T) -> T {
-        let original = std::env::var_os(env_var);
-        unsafe { std::env::set_var(env_var, dir) };
-        let result = install();
-        match original {
-            Some(value) => unsafe { std::env::set_var(env_var, value) },
-            None => unsafe { std::env::remove_var(env_var) },
-        }
-        result
-    }
-
     #[test]
     fn install_with_unparseable_config_writes_no_hook() {
-        let _lock = crate::integration::integration_env_lock();
+        let env = crate::test_support::IsolatedEnv::new();
 
         let claude = base("claude-malformed");
         fs::write(claude.join("settings.json"), "{ not json").expect("test precondition");
-        let result = with_config_dir(
-            "CLAUDE_CONFIG_DIR",
-            &claude,
-            super::super::targets::install_claude,
-        );
+        env.set("CLAUDE_CONFIG_DIR", &claude);
+        let result = super::super::targets::install_claude();
         assert!(result.is_err());
         assert!(
             !claude
@@ -697,18 +678,16 @@ mod registration_tests {
 
         let codex = base("codex-malformed");
         fs::write(codex.join("hooks.json"), "[1,").expect("test precondition");
-        let result = with_config_dir("CODEX_HOME", &codex, super::super::targets::install_codex);
+        env.set("CODEX_HOME", &codex);
+        let result = super::super::targets::install_codex();
         assert!(result.is_err());
         assert!(!codex.join(super::super::CODEX_HOOK_INSTALL_NAME).exists());
         let _ = fs::remove_dir_all(codex);
 
         let copilot = base("copilot-malformed");
         fs::write(copilot.join("settings.json"), "{\"hooks\": []}").expect("test precondition");
-        let result = with_config_dir(
-            "COPILOT_HOME",
-            &copilot,
-            super::super::targets::install_copilot,
-        );
+        env.set("COPILOT_HOME", &copilot);
+        let result = super::super::targets::install_copilot();
         assert!(result.is_err());
         assert!(!copilot.join("hooks").exists());
         let _ = fs::remove_dir_all(copilot);

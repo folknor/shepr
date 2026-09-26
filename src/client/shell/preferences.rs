@@ -177,11 +177,8 @@ mod tests {
 
     #[test]
     fn concurrent_stores_leave_complete_preferences() {
-        let path = std::env::temp_dir().join(format!(
-            "shepr-shell-concurrent-preferences-{}.json",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let scratch = crate::test_support::ScratchDir::new("prefs-concurrent");
+        let path = scratch.join("preferences.json");
         let writers = (20..28)
             .map(|width| {
                 let path = path.clone();
@@ -209,11 +206,8 @@ mod tests {
 
     #[test]
     fn repeated_store_replaces_existing_preferences() {
-        let path = std::env::temp_dir().join(format!(
-            "shepr-shell-preferences-{}.json",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let scratch = crate::test_support::ScratchDir::new("prefs-replace");
+        let path = scratch.join("preferences.json");
         store(
             &path,
             &ClientChromePreferences {

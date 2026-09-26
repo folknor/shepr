@@ -495,7 +495,8 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.ensure_test_terminals();
-        let cached_cwd = std::env::temp_dir();
+        let scratch = crate::test_support::ScratchDir::new("cached-cwd");
+        let cached_cwd = scratch.to_path_buf();
         let terminal_id = app.state.workspaces[0]
             .terminal_id(focused_pane)
             .cloned()

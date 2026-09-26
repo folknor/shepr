@@ -89,8 +89,9 @@ fn preamble_error(error: protocol::preamble::PreambleError) -> ClientError {
 /// terminal clients then send `TerminalHello`; client-owned shells send a JSON
 /// endpoint hello. Both still carry `PROTOCOL_VERSION`.
 ///
-/// `deadline`, when given, caps the wait for the reply below the usual read timeout: an
-/// saved-machine endpoint supervisor bounds its whole connection attempt to 25 s.
+/// `deadline`, when given, caps the wait for the reply below the usual read timeout: the
+/// saved-machine endpoint supervisor bounds each whole connection attempt by its
+/// attempt budget.
 /// The usual 60 s remote read budget applies to `shepr --remote`.
 pub(super) fn do_handshake(
     stream: &mut LocalStream,
@@ -250,11 +251,10 @@ mod tests {
     use interprocess::local_socket::traits::Listener as _;
 
     fn socket_pair(name: &str) -> (LocalStream, LocalStream, std::path::PathBuf) {
-        let path = std::env::temp_dir().join(format!(
-            "shepr-handshake-{name}-{}.sock",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        // Kept until the test process exits; callers remove the socket.
+        let path = crate::test_support::ScratchDir::new(name)
+            .keep_until_exit()
+            .join("s.sock");
         let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
         let client = crate::ipc::connect_local_stream(&path).expect("test precondition");
         let server = listener.accept().expect("test precondition");

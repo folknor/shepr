@@ -164,14 +164,8 @@ mod tests {
 
     #[test]
     fn upload_cancellation_preserves_pending_endpoint_download() {
-        let path = std::env::temp_dir().join(format!(
-            "shepr-cancel-{}-{}.sock",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        ));
+        let scratch = crate::test_support::ScratchDir::new("cancel");
+        let path = scratch.join("s.sock");
         let listener = crate::ipc::bind_local_listener(&path).expect("test precondition");
         let client = crate::ipc::connect_local_stream(&path).expect("test precondition");
         let mut bridge = listener.accept().expect("test precondition");

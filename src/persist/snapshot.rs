@@ -1020,16 +1020,8 @@ mod tests {
     #[tokio::test]
     async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
         let old = std::env::current_dir().expect("test precondition");
-        let new = std::env::temp_dir().join(format!(
-            "shepr-persist-cwd-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        ));
-        std::fs::create_dir(&new).expect("test precondition");
-        let new = std::fs::canonicalize(new).expect("test precondition");
+        let scratch = crate::test_support::ScratchDir::new("persist-cwd");
+        let new = std::fs::canonicalize(scratch.path()).expect("test precondition");
         let mut state = AppState::test_new();
         state.workspaces = vec![Workspace::test_new("cwd-source")];
         state.workspaces[0].identity_cwd = old.clone();
@@ -1120,7 +1112,6 @@ mod tests {
         for (_, runtime) in runtimes.drain() {
             runtime.shutdown();
         }
-        std::fs::remove_dir(new).expect("test precondition");
     }
 
     #[test]

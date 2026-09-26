@@ -187,7 +187,7 @@ pub struct Workspace {
     /// Cached derived Git repo metadata for status display.
     pub(crate) cached_git_space: Option<GitSpaceMetadata>,
     pub(crate) metadata_tokens: crate::metadata_tokens::MetadataTokens,
-    pub(crate) metadata_token_sequences: HashMap<String, u64>,
+    pub(crate) metadata_token_sequences: crate::metadata_tokens::SequenceMarks,
     /// Public pane numbers within this workspace. Closed pane numbers are not reused.
     pub public_pane_numbers: HashMap<PaneId, usize>,
     pub(crate) next_public_pane_number: usize,
@@ -1363,14 +1363,7 @@ mod tests {
 
     #[test]
     fn display_name_reads_cached_identity_without_rechecking_filesystem() {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be after unix epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "shepr-workspace-label-cache-{}-{stamp}",
-            std::process::id()
-        ));
+        let root = crate::test_support::ScratchDir::new("label-cache").keep_until_exit();
         let cwd = root.join("deep/nested");
         std::fs::create_dir_all(&cwd).expect("create nested cwd");
 

@@ -74,8 +74,8 @@ mod tests {
 
     #[test]
     fn stalled_server_reports_no_status_instead_of_an_error() {
-        let path =
-            std::env::temp_dir().join(format!("shepr-status-stalled-{}.sock", std::process::id()));
+        let scratch = crate::test_support::ScratchDir::new("status");
+        let path = scratch.join("stalled.sock");
         let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let server = std::thread::spawn(move || {
@@ -90,7 +90,6 @@ mod tests {
         let status = read_runtime_status_at(&path, Duration::from_millis(100));
         let _ = release_tx.send(());
         server.join().expect("test precondition");
-        std::fs::remove_file(&path).expect("test precondition");
         assert!(
             matches!(status, Ok(None)),
             "a stalled server must read as no status: {status:?}"

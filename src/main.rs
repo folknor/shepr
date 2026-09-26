@@ -45,6 +45,8 @@ mod terminal_cell_size;
 mod terminal_effects;
 mod terminal_modes;
 mod terminal_theme;
+#[cfg(test)]
+mod test_support;
 mod ui;
 mod workspace;
 

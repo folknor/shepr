@@ -524,12 +524,12 @@ fn selection_path() -> PathBuf {
 mod tests {
     use super::*;
 
+    /// A catalog path whose directory does not exist yet, in a scratch
+    /// directory kept until the test process exits.
     fn path(name: &str) -> PathBuf {
-        std::env::temp_dir()
-            .join(format!(
-                "shepr-endpoint-catalog-{}-{name}",
-                std::process::id()
-            ))
+        crate::test_support::ScratchDir::new(name)
+            .keep_until_exit()
+            .join("client")
             .join("endpoints.json")
     }
 

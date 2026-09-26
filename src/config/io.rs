@@ -17,7 +17,15 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
 ];
 
 pub fn app_dir_name() -> &'static str {
-    if cfg!(debug_assertions) {
+    // Unit tests get a directory name of their own in every profile. `brokkr
+    // test` builds release, where the name would otherwise be the installed
+    // `shepr`, so a test that resolved a config or state path without
+    // isolating `HOME` (`test_support::IsolatedEnv`) would land in the real
+    // `~/.config/shepr`. This keeps such a slip out of both the release and
+    // the dev directory.
+    if cfg!(test) {
+        "shepr-test"
+    } else if cfg!(debug_assertions) {
         "shepr-dev"
     } else {
         "shepr"
@@ -104,8 +112,11 @@ fn read_optional_config(path: &Path) -> std::io::Result<Option<String>> {
 
 impl Config {
     pub fn load() -> LoadedConfig {
-        let path = config_path();
-        match read_optional_config(&path) {
+        Self::load_from_path(&config_path())
+    }
+
+    fn load_from_path(path: &Path) -> LoadedConfig {
+        match read_optional_config(path) {
             Ok(Some(content)) => Self::load_from_str(&content),
             Ok(None) => LoadedConfig {
                 config: Self::default(),
@@ -381,15 +392,9 @@ mod tests {
 
     #[test]
     fn config_load_reports_unreadable_path() {
-        let _guard = crate::config::test_config_env_lock()
-            .lock()
-            .expect("test precondition");
-        let path =
-            std::env::temp_dir().join(format!("shepr-config-unreadable-{}", std::process::id()));
-        std::fs::create_dir_all(&path).expect("test precondition");
-        unsafe { std::env::set_var(CONFIG_PATH_ENV_VAR, &path) };
-
-        let startup = Config::load();
+        // A directory where the config file should be cannot be read.
+        let scratch = crate::test_support::ScratchDir::new("config");
+        let startup = Config::load_from_path(scratch.path());
         assert!(
             startup
                 .diagnostics
@@ -397,9 +402,21 @@ mod tests {
                 .any(|diagnostic| diagnostic.contains("config read error")
                     && diagnostic.contains("using defaults"))
         );
+    }
 
-        unsafe { std::env::remove_var(CONFIG_PATH_ENV_VAR) };
-        let _ = std::fs::remove_dir_all(path);
+    #[test]
+    fn config_path_honours_the_override_variable() {
+        let env = crate::test_support::IsolatedEnv::new();
+        assert_eq!(
+            config_path(),
+            env.home()
+                .join(".config")
+                .join(app_dir_name())
+                .join("config.toml")
+        );
+        let custom = env.path().join("custom.toml");
+        env.set(CONFIG_PATH_ENV_VAR, &custom);
+        assert_eq!(config_path(), custom);
     }
 
     #[test]

@@ -1,3 +1,6 @@
+//! Machine status diagnostics. The badge handler sees every raw input event
+//! first; input content must stay out of logs and error messages here.
+
 use super::*;
 use crate::raw_input::RawInputEvent;
 use crossterm::event::{MouseButton, MouseEventKind};

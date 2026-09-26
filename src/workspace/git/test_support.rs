@@ -1,19 +1,9 @@
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
+/// A fresh directory kept until the test process exits; callers that clean up
+/// remove it themselves.
 pub(super) fn temp_test_dir(name: &str) -> PathBuf {
-    let unique = format!(
-        "shepr-workspace-tests-{}-{}-{}",
-        name,
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("test precondition")
-            .as_nanos()
-    );
-    let path = std::env::temp_dir().join(unique);
-    std::fs::create_dir_all(&path).expect("test precondition");
-    path
+    crate::test_support::ScratchDir::new(name).keep_until_exit()
 }
 
 fn init_repo_with_commit(repo: &Path) {

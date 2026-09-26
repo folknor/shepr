@@ -250,8 +250,8 @@ mod tests {
 
     #[test]
     fn git_refresh_deduplicates_workspaces_with_same_cache_key() {
-        let repo =
-            std::env::temp_dir().join(format!("shepr-git-refresh-dedupe-{}", std::process::id()));
+        let scratch = crate::test_support::ScratchDir::new("git-refresh-dedupe");
+        let repo = scratch.to_path_buf();
         let nested = repo.join("nested");
         let other = repo.join("other");
         std::fs::create_dir_all(&nested).expect("create nested dir");
@@ -290,8 +290,6 @@ mod tests {
         assert_eq!(output.results[0].resolved_identity_cwd, nested);
         assert_eq!(output.results[1].workspace_id, "two");
         assert_eq!(output.results[1].resolved_identity_cwd, other);
-
-        let _ = std::fs::remove_dir_all(repo);
     }
 
     #[test]
@@ -339,7 +337,8 @@ mod tests {
     #[test]
     fn git_refresh_item_collection_does_not_discover_uncached_cwd() {
         let mut app = test_app(&crate::config::Config::default());
-        let cwd = std::env::temp_dir().join(format!("shepr-uncached-cwd-{}", std::process::id()));
+        let scratch = crate::test_support::ScratchDir::new("uncached-cwd");
+        let cwd = scratch.join("cwd");
         let mut ws = Workspace::test_new("test");
         ws.identity_cwd = cwd.clone();
         ws.tabs.clear();
@@ -504,7 +503,8 @@ mod tests {
         let mut ws = Workspace::test_new("test");
         ws.custom_name = None;
         // The shell `cd`ed without reporting OSC 7: only the resolved cwd moved.
-        ws.identity_cwd = std::env::temp_dir().join("shepr-moved-identity-cwd");
+        let scratch = crate::test_support::ScratchDir::new("moved-cwd");
+        ws.identity_cwd = scratch.join("moved");
         ws.tabs.clear();
         app.state.workspaces.push(ws);
         let now = Instant::now();
@@ -554,8 +554,8 @@ mod tests {
     #[test]
     fn explicit_git_refresh_invalidates_cached_non_git_results() {
         let mut app = test_app(&crate::config::Config::default());
-        let cwd = std::env::temp_dir().join(format!("shepr-git-miss-{}", std::process::id()));
-        std::fs::create_dir_all(&cwd).expect("test precondition");
+        let scratch = crate::test_support::ScratchDir::new("git-miss");
+        let cwd = scratch.to_path_buf();
         let (_, entry) = crate::workspace::git_status_snapshot_for_cwd_with_demand(
             &cwd,
             None,
@@ -567,7 +567,6 @@ mod tests {
         app.mark_git_status_refresh_due(Instant::now());
 
         assert!(app.git_status_cache.is_empty());
-        std::fs::remove_dir_all(cwd).expect("test precondition");
     }
 
     #[test]

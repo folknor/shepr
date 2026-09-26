@@ -1,3 +1,7 @@
+//! Client copy mode. Search queries are typed text and the queued keys are
+//! raw input; input content must stay out of logs and error messages here
+//! (log lengths or content-free kinds instead).
+
 use super::*;
 use crossterm::event::{KeyCode, KeyModifiers};
 

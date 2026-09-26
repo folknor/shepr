@@ -278,17 +278,13 @@ mod tests {
         PaneHistorySnapshot, SNAPSHOT_VERSION, TabHistorySnapshot, WorkspaceHistorySnapshot,
     };
 
+    /// A session file whose data directory does not exist yet, so saves
+    /// exercise creating it.
     fn temp_session_path(name: &str) -> PathBuf {
-        let unique = format!(
-            "shepr-session-tests-{}-{}-{}",
-            name,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        );
-        std::env::temp_dir().join(unique).join("session.json")
+        crate::test_support::ScratchDir::new(name)
+            .keep_until_exit()
+            .join("data")
+            .join("session.json")
     }
 
     fn temp_session_paths(name: &str) -> (PathBuf, PathBuf) {
@@ -354,19 +350,8 @@ mod tests {
 
     #[test]
     fn load_refuses_a_session_another_server_owns() {
-        let _guard = crate::config::test_config_env_lock()
-            .lock()
-            .expect("test precondition");
-        let config_home = temp_session_path("owned-elsewhere")
-            .parent()
-            .expect("test precondition")
-            .to_path_buf();
-        // SAFETY: the config env lock serializes every test that touches
-        // these variables, and nothing else in this test runs concurrently.
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", &config_home);
-            std::env::remove_var(crate::session::SESSION_ENV_VAR);
-        }
+        let env = crate::test_support::IsolatedEnv::new();
+        env.set("XDG_CONFIG_HOME", env.path());
         let path = session_path();
         save_to_path(&path, &empty_snapshot()).expect("test precondition");
         let directory = containing_directory(&path).to_path_buf();
@@ -384,9 +369,6 @@ mod tests {
         drop(other_server);
         assert!(load().is_some());
         super::super::lock::release(&directory);
-        // SAFETY: as above.
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-        let _ = std::fs::remove_dir_all(config_home);
     }
 
     #[test]

@@ -277,8 +277,8 @@ mod tests {
     #[test]
     fn status_timeout_closes_a_stalled_probe() {
         use interprocess::local_socket::traits::Listener as _;
-        let path =
-            std::env::temp_dir().join(format!("shepr-status-timeout-{}.sock", std::process::id()));
+        let scratch = crate::test_support::ScratchDir::new("status-timeout");
+        let path = scratch.join("api.sock");
         let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
         let server = std::thread::spawn(move || {
             let stream = listener.accept().expect("test precondition");
@@ -305,8 +305,8 @@ mod tests {
     #[test]
     fn request_timeout_on_a_stalled_server_is_reported_as_timed_out() {
         use interprocess::local_socket::traits::Listener as _;
-        let path =
-            std::env::temp_dir().join(format!("shepr-request-timeout-{}.sock", std::process::id()));
+        let scratch = crate::test_support::ScratchDir::new("request-timeout");
+        let path = scratch.join("api.sock");
         let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let server = std::thread::spawn(move || {
@@ -336,10 +336,8 @@ mod tests {
     #[test]
     fn partial_responses_cannot_extend_the_response_deadline() {
         use interprocess::local_socket::traits::Listener as _;
-        let path = std::env::temp_dir().join(format!(
-            "shepr-partial-response-{}.sock",
-            std::process::id()
-        ));
+        let scratch = crate::test_support::ScratchDir::new("partial-response");
+        let path = scratch.join("api.sock");
         let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
         let server = std::thread::spawn(move || {
             let stream = listener.accept().expect("test precondition");

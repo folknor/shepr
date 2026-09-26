@@ -1,7 +1,10 @@
 use std::io;
 use std::path::PathBuf;
 
-use super::attach::{RemoteShepr, RemoteSsh, SshStdioBridge, find_installed_remote_shepr};
+use super::attach::{
+    DiscoveryProgress, RemoteShepr, RemoteSsh, SshStdioBridge,
+    resume_installed_remote_shepr_discovery,
+};
 
 pub(crate) struct SavedSshBridge {
     bridge: SshStdioBridge,
@@ -44,6 +47,12 @@ pub(crate) struct SavedSshSettings {
 /// reason other than the SSH link itself, the hint is dropped and the same attempt
 /// runs full discovery once more, so a moved, removed or upgraded remote install
 /// costs one extra bridge launch and never a stuck endpoint.
+///
+/// Full discovery may not fit in one attempt on a slow link without connection
+/// sharing. When an attempt ends on a timeout or other link failure, what discovery
+/// completed is kept (`DiscoveryProgress`) and the next attempt
+/// resumes it, so every attempt still ends within its budget and discovery still
+/// finishes.
 pub(crate) struct SavedSshConnector {
     profile_id: String,
     target: String,
@@ -56,6 +65,9 @@ pub(crate) struct SavedSshConnector {
 struct ConnectorState {
     ssh: Option<RemoteSsh>,
     remote_shepr: Option<RemoteShepr>,
+    /// Full discovery's completed round trips, while it has not finished. Only kept while
+    /// there is no remembered executable.
+    discovery: DiscoveryProgress,
     seeded_from_disk: bool,
 }
 
@@ -121,7 +133,10 @@ impl SavedSshConnector {
             ));
         }
         let ConnectorState {
-            ssh, remote_shepr, ..
+            ssh,
+            remote_shepr,
+            discovery,
+            ..
         } = &mut *state;
         let Some(ssh) = ssh.as_mut() else {
             return Err(io::Error::other("saved SSH transport is unavailable"));
@@ -144,13 +159,32 @@ impl SavedSshConnector {
             }
         }
 
-        let discovered = find_installed_remote_shepr(ssh)?;
-        let connected = self.attempt(ssh, &discovered, deadline, &mut establish)?;
-        if let Some(metadata) = discovered.machine_metadata() {
-            metadata_cache.store(&metadata);
+        let discovered =
+            resume_installed_remote_shepr_discovery(ssh, discovery).inspect_err(|error| {
+                if discovery.has_progress() {
+                    tracing::debug!(%error, "SSH discovery stopped; the next attempt resumes it");
+                }
+            })?;
+        *discovery = DiscoveryProgress::default();
+        // Remembered before the bridge starts: when only the bridge runs out of time or
+        // loses the link, the next attempt launches it straight away instead of
+        // discovering again. Any other failure forgets it, so the next attempt discovers
+        // from scratch.
+        *remote_shepr = Some(discovered.clone());
+        match self.attempt(ssh, &discovered, deadline, &mut establish) {
+            Ok(connected) => {
+                if let Some(metadata) = discovered.machine_metadata() {
+                    metadata_cache.store(&metadata);
+                }
+                Ok(connected)
+            }
+            Err(error) => {
+                if !super::attach::is_ssh_link_failure(&error) {
+                    *remote_shepr = None;
+                }
+                Err(error)
+            }
         }
-        *remote_shepr = Some(discovered);
-        Ok(connected)
     }
 
     fn attempt<T>(

@@ -1,3 +1,8 @@
+//! Client shell state. Several types here derive `Debug` while carrying typed
+//! or pasted text (overlay `TextEditor`s, copy-mode search queries, queued
+//! keys, `ClientShellAction::ClipboardWrite` bytes, endpoint requests with
+//! labels): never log them with `{:?}`; log ids, lengths or kinds instead.
+
 use super::*;
 
 pub(super) const MIN_TAB_WIDTH: u16 = 8;

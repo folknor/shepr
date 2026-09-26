@@ -1224,14 +1224,13 @@ mod tests {
         }
     }
 
-    fn unique_test_path(name: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("test precondition")
-            .as_nanos();
-        let filename = format!("h{}-{nanos}.sock", std::process::id());
-        let _ = name;
-        PathBuf::from("/tmp").join(filename)
+    /// A socket path in a scratch directory kept until the test process
+    /// exits; `TestSocketPath` removes the socket itself. The callers' names
+    /// are long, so they stay out of the path to keep it within `sun_path`.
+    fn unique_test_path(_name: &str) -> std::path::PathBuf {
+        crate::test_support::ScratchDir::new("ct")
+            .keep_until_exit()
+            .join("s.sock")
     }
 
     fn local_stream_pair(name: &str) -> (LocalStream, LocalStream, TestSocketPath) {

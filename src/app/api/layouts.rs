@@ -816,7 +816,8 @@ mod tests {
     async fn layout_apply_new_tab_follows_cached_focused_pane_cwd_without_runtime() {
         let mut app = app_with_workspace();
         let focused_pane = app.state.workspaces[0].tabs[0].root_pane;
-        let cached_cwd = std::env::temp_dir();
+        let scratch = crate::test_support::ScratchDir::new("cached-cwd");
+        let cached_cwd = scratch.to_path_buf();
         let terminal_id = app.state.workspaces[0]
             .terminal_id(focused_pane)
             .cloned()

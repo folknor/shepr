@@ -96,6 +96,8 @@ impl From<KeyEvent> for TerminalKey {
 pub(crate) const KITTY_FLAG_REPORT_ALL_KEYS: u16 = 0b0000_1000;
 
 pub fn ime_compatible_keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
+    // Do not request kitty REPORT_ALL_KEYS (flag 8): it breaks IME and compose
+    // input. Text keys therefore have no release events to forward to panes.
     KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
         | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
         | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS

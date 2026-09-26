@@ -1,3 +1,6 @@
+//! Double-click word selection. Cached rows hold pane text read back from the
+//! endpoint; that content must stay out of logs and error messages here.
+
 use super::*;
 use crate::app::word_bounds::word_bounds_at_column;
 

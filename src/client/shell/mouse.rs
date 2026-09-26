@@ -1,3 +1,7 @@
+//! Mouse routing for the client shell. Events here are raw host input bound
+//! for panes; input content must stay out of logs and error messages here
+//! (log content-free kinds instead).
+
 use super::*;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 

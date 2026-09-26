@@ -12,8 +12,6 @@ mod types;
 mod version;
 
 pub(crate) use actions::{install_target, uninstall_target};
-#[cfg(test)]
-pub(crate) use env::integration_env_lock;
 pub(crate) use env::{
     SHEPR_PANE_ID_ENV_VAR, SHEPR_TAB_ID_ENV_VAR, SHEPR_WORKSPACE_ID_ENV_VAR, apply_pane_base_env,
 };

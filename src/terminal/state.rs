@@ -24,15 +24,16 @@ pub use metadata::{AgentMetadata, AgentMetadataReport, EffectivePresentation};
 /// resume, a manual change), and dropping would lose every report until the
 /// clock caught up again. Such a report is accepted and re-anchors the
 /// source's sequence.
-const HOOK_SEQUENCE_REANCHOR_AFTER: Duration = Duration::from_secs(5);
+pub(crate) const HOOK_SEQUENCE_REANCHOR_AFTER: Duration = Duration::from_secs(5);
 
 /// Whether a report carrying `seq` is older than the source's last accepted
 /// `last_seq` (accepted at `last_accepted_at`). The one ordering rule for
-/// every per-source report sequence (hook state and session reports,
-/// metadata reports): a non-increasing `seq` is a straggler unless it
-/// arrives [`HOOK_SEQUENCE_REANCHOR_AFTER`] or more after the last
-/// acceptance, when it is taken as a clock step and re-anchors the source.
-fn report_seq_superseded(
+/// every per-source report sequence (hook state and session reports, pane
+/// metadata reports, workspace metadata reports in `crate::metadata_tokens`):
+/// a non-increasing `seq` is a straggler unless it arrives
+/// [`HOOK_SEQUENCE_REANCHOR_AFTER`] or more after the last acceptance, when
+/// it is taken as a clock step and re-anchors the source.
+pub(crate) fn report_seq_superseded(
     last_seq: u64,
     last_accepted_at: Option<Instant>,
     seq: u64,
@@ -47,11 +48,20 @@ fn report_seq_superseded(
 }
 
 /// The last accepted sequence of one metadata report source, and when it was
-/// accepted (for [`report_seq_superseded`]'s re-anchoring).
+/// accepted (for [`report_seq_superseded`]'s re-anchoring). Pane metadata
+/// and workspace metadata token reports both keep one per source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MetadataReportSeq {
-    seq: u64,
-    accepted_at: Instant,
+pub(crate) struct MetadataReportSeq {
+    pub(crate) seq: u64,
+    pub(crate) accepted_at: Instant,
+}
+
+impl MetadataReportSeq {
+    /// Whether a report carrying `seq`, arriving at `now`, is older than this
+    /// accepted one under [`report_seq_superseded`].
+    pub(crate) fn supersedes(&self, seq: u64, now: Instant) -> bool {
+        report_seq_superseded(self.seq, Some(self.accepted_at), seq, now)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

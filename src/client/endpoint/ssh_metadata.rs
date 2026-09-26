@@ -136,7 +136,10 @@ mod tests {
 
     #[test]
     fn metadata_is_disposable_fingerprinted_and_independent_per_profile() {
-        let root = std::env::temp_dir().join(format!("shepr-ssh-metadata-{}", std::process::id()));
+        // Not created yet: storing creates the cache directory.
+        let root = crate::test_support::ScratchDir::new("ssh-metadata")
+            .keep_until_exit()
+            .join("cache");
         let first = SshMetadataCache {
             path: root.join("first.json"),
             target: "mac".into(),
@@ -199,9 +202,7 @@ mod tests {
 
     #[test]
     fn metadata_does_not_follow_symlinks() {
-        let root =
-            std::env::temp_dir().join(format!("shepr-ssh-metadata-link-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("test precondition");
+        let root = crate::test_support::ScratchDir::new("ssh-metadata-link").keep_until_exit();
         let cache = SshMetadataCache {
             path: root.join("cache.json"),
             target: "mac".into(),

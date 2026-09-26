@@ -28,12 +28,17 @@ mod osc;
 mod state;
 mod terminal;
 
+/// Time allowed for a restored agent to appear after its resume launch.
+pub(crate) const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
 use self::agent_detection::{
-    AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW, DetectionPublishDecision,
-    DetectionScreenReadDecision, DetectionScreenReadInput, PendingIdleConfirmation,
-    ScreenDetectionPublishInput, codex_prompt_ready, decide_detection_screen_read,
-    decide_screen_detection_publish, detection_update_for_publish_with_osc,
-    mark_detection_content_changed, observe_detection_content_change,
+    AGENT_ABSENCE_STARTUP_HOLD, AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
+    DetectionPublishDecision, DetectionScreenReadDecision, DetectionScreenReadInput,
+    PendingIdleConfirmation, ScreenDetectionPublishInput, codex_prompt_ready,
+    decide_detection_screen_read, decide_screen_detection_publish,
+    detection_update_for_publish_with_osc, mark_detection_content_changed,
+    observe_detection_content_change, withhold_agent_absence,
 };
 use self::terminal::{GhosttyPaneTerminal, PaneTerminal};
 pub(crate) use self::terminal::{
@@ -90,6 +95,7 @@ fn apply_pane_terminal_env(cmd: &mut PtyCommand) {
 pub(crate) struct PaneLaunchEnv {
     extra: Vec<(String, String)>,
     identity: PaneLaunchIdentity,
+    agent_absence_startup_hold: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -108,7 +114,13 @@ impl PaneLaunchEnv {
         Self {
             extra,
             identity: PaneLaunchIdentity::Inherit,
+            agent_absence_startup_hold: false,
         }
+    }
+
+    pub(crate) fn for_agent_resume(mut self) -> Self {
+        self.agent_absence_startup_hold = true;
+        self
     }
 
     pub(crate) fn with_identity(
@@ -1170,6 +1182,16 @@ fn is_executable_file(path: &Path) -> bool {
 /// path is checked as given, a bare name is looked up on `PATH`. Used for
 /// every shell mode, to fill in the pane's `SHELL`.
 fn resolve_shell_executable(shell: &str) -> io::Result<String> {
+    resolve_shell_executable_on(shell, std::env::var_os("PATH"))
+}
+
+/// `resolve_shell_executable` against an explicit `PATH` value, so tests need
+/// not change the process-wide one (which every concurrently running test
+/// that spawns a program by bare name would see).
+fn resolve_shell_executable_on(
+    shell: &str,
+    search_path: Option<std::ffi::OsString>,
+) -> io::Result<String> {
     if shell.contains(std::path::MAIN_SEPARATOR) {
         let path = Path::new(shell);
         return is_executable_file(path)
@@ -1182,7 +1204,7 @@ fn resolve_shell_executable(shell: &str) -> io::Result<String> {
             });
     }
 
-    std::env::var_os("PATH")
+    search_path
         .and_then(|path| {
             std::env::split_paths(&path)
                 .map(|dir| dir.join(shell))
@@ -1355,6 +1377,7 @@ impl PaneRuntime {
             &cmd,
             "failed to spawn shell",
             initial_history_ansi,
+            launch_env.agent_absence_startup_hold,
         )
     }
 
@@ -1398,6 +1421,7 @@ impl PaneRuntime {
             &cmd,
             "failed to spawn argv command pane",
             None,
+            launch_env.agent_absence_startup_hold,
         )
     }
 
@@ -1416,6 +1440,7 @@ impl PaneRuntime {
         cmd: &PtyCommand,
         spawn_error_message: &'static str,
         initial_history_ansi: Option<&str>,
+        agent_absence_startup_hold: bool,
     ) -> std::io::Result<Self> {
         let (rows, cols) = clamp_pane_size(rows, cols);
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
@@ -1706,6 +1731,11 @@ impl PaneRuntime {
                 let mut agent_startup_grace_until = None;
                 let mut pending_idle = PendingIdleConfirmation::default();
                 let mut last_codex_prompt_ready = false;
+                // See `withhold_agent_absence`: a restored pane's seeded agent
+                // must not be withdrawn while its resumed process starts.
+                let mut agent_absence_hold_until = agent_absence_startup_hold
+                    .then(|| Instant::now().checked_add(AGENT_ABSENCE_STARTUP_HOLD))
+                    .flatten();
 
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -1880,6 +1910,7 @@ impl PaneRuntime {
                                         previous_agent,
                                     );
                                     if let Some(agent) = agent {
+                                        agent_absence_hold_until = None;
                                         agent_startup_grace_until =
                                             Some(now + AGENT_STARTUP_GRACE_WINDOW);
                                         state = AgentState::Unknown;
@@ -2036,6 +2067,10 @@ impl PaneRuntime {
                         &mut acquisition_started_at,
                         &mut last_content_change_at,
                     );
+                    if withhold_agent_absence(agent, &mut agent_absence_hold_until, now) {
+                        pending_idle.clear();
+                        continue;
+                    }
                     match decide_screen_detection_publish(
                         ScreenDetectionPublishInput {
                             screen_detection,
@@ -2918,15 +2953,7 @@ mod tests {
 
     #[tokio::test]
     async fn cwd_returns_accepted_report_without_rechecking_filesystem() {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be after unix epoch")
-            .as_nanos();
-        let cwd = std::env::temp_dir().join(format!(
-            "shepr-reported-cwd-cache-{}-{stamp}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&cwd).expect("create reported cwd");
+        let cwd = crate::test_support::ScratchDir::new("reported-cwd").keep_until_exit();
 
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let (events, _event_rx) = mpsc::channel(1);
@@ -2950,7 +2977,8 @@ mod tests {
     async fn dropped_cwd_report_is_resent_on_the_next_identical_report() {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let (events, mut event_rx) = mpsc::channel(1);
-        let cwd = std::env::temp_dir();
+        let scratch = crate::test_support::ScratchDir::new("cwd-report");
+        let cwd = scratch.to_path_buf();
         let other = std::path::PathBuf::from("/");
         // Fill the channel so the first cwd report cannot be queued.
         events
@@ -2990,14 +3018,7 @@ mod tests {
     fn process_cwd_does_not_require_traversing_the_directory_path() {
         use std::os::unix::fs::PermissionsExt;
 
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock should be after unix epoch")
-            .as_nanos();
-        let base = std::env::temp_dir().join(format!(
-            "shepr-process-cwd-no-stat-{}-{stamp}",
-            std::process::id()
-        ));
+        let base = crate::test_support::ScratchDir::new("process-cwd").keep_until_exit();
         let private = base.join("private");
         let cwd = private.join("cwd");
         std::fs::create_dir_all(&cwd).expect("create process cwd");
@@ -3033,7 +3054,8 @@ mod tests {
     #[tokio::test]
     async fn follow_cwd_falls_back_to_reported_pane_cwd_without_foreground_group() {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
-        let cwd = std::env::temp_dir();
+        let scratch = crate::test_support::ScratchDir::new("follow-cwd");
+        let cwd = scratch.to_path_buf();
         *runtime.reported_cwd.lock().expect("test precondition") = Some(cwd.clone());
 
         assert_eq!(runtime.follow_cwd(), Some(cwd));
@@ -3139,14 +3161,8 @@ mod tests {
     }
 
     fn capture_shell_output(command: &str, extra_env: &[(&str, &str)]) -> String {
-        let output_path = std::env::temp_dir().join(format!(
-            "shepr-pane-term-test-{}-{}.txt",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        ));
+        let scratch = crate::test_support::ScratchDir::new("pane-term");
+        let output_path = scratch.join("output.txt");
         let mut cmd = PtyCommand::new("/bin/sh");
         cmd.arg("-c");
         cmd.arg(format!("{command} > '{}'", output_path.display()));
@@ -3228,18 +3244,8 @@ mod tests {
     }
 
     #[test]
-    fn login_shell_builder_resolves_bare_shell_names_from_path() {
-        let _lock = crate::integration::integration_env_lock();
-        let base = std::env::temp_dir().join(format!(
-            "shepr-login-shell-path-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        ));
-        let bin = base.join("bin");
-        std::fs::create_dir_all(&bin).expect("test precondition");
+    fn shell_resolution_finds_bare_shell_names_on_path() {
+        let bin = crate::test_support::ScratchDir::new("bin");
         let shell = bin.join("fake-shell");
         std::fs::write(&shell, "#!/bin/sh\nexit 0\n").expect("test precondition");
         {
@@ -3247,11 +3253,24 @@ mod tests {
             std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755))
                 .expect("test precondition");
         }
-        let original_path = std::env::var_os("PATH");
-        unsafe { std::env::set_var("PATH", &bin) };
 
+        let resolved =
+            resolve_shell_executable_on("fake-shell", Some(bin.as_os_str().to_os_string()))
+                .expect("test precondition");
+
+        assert_eq!(Some(resolved.as_str()), shell.to_str());
+        assert_eq!(
+            resolve_shell_executable_on("missing-shell", Some(bin.as_os_str().to_os_string()))
+                .expect_err("test precondition")
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+    }
+
+    #[test]
+    fn login_shell_builder_sets_shell_to_the_resolved_executable() {
         let cmd = pane_shell_command_builder(PaneShellConfig::new(
-            "fake-shell",
+            "/bin/sh",
             crate::config::ShellModeConfig::Login,
         ))
         .expect("test precondition");
@@ -3259,13 +3278,8 @@ mod tests {
         assert!(cmd.is_login_shell());
         assert_eq!(
             cmd.get_env("SHELL").and_then(std::ffi::OsStr::to_str),
-            shell.to_str()
+            Some("/bin/sh")
         );
-        match original_path {
-            Some(path) => unsafe { std::env::set_var("PATH", path) },
-            None => unsafe { std::env::remove_var("PATH") },
-        }
-        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]
@@ -3320,7 +3334,8 @@ mod tests {
     #[tokio::test]
     async fn exited_shell_keeps_persistence_cwd_when_pid_is_reused() {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
-        let saved = std::env::temp_dir().join("saved-exited-cwd");
+        let scratch = crate::test_support::ScratchDir::new("exited-cwd");
+        let saved = scratch.join("saved");
         *runtime.persistence_cwd.lock().expect("test precondition") = Some(saved.clone());
         // A different live process now owns the exited shell's numeric PID.
         runtime

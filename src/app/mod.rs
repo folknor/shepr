@@ -432,8 +432,8 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::detect::{Agent, AgentState};
+    use crate::test_support::IsolatedEnv;
     use crate::workspace::Workspace;
-    use std::sync::Mutex;
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -447,16 +447,12 @@ mod tests {
         app
     }
 
-    fn unique_temp_path(name: &str) -> std::path::PathBuf {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("test precondition")
-            .as_nanos();
-        std::env::temp_dir().join(format!("shepr-{name}-{}-{stamp}", std::process::id()))
-    }
-
-    fn config_env_lock() -> &'static Mutex<()> {
-        crate::config::test_config_env_lock()
+    /// An environment whose config directory is private to the test, for
+    /// tests that save or load the session.
+    fn isolated_config_env() -> IsolatedEnv {
+        let env = IsolatedEnv::new();
+        env.set("XDG_CONFIG_HOME", env.path().join("config"));
+        env
     }
 
     #[test]
@@ -843,14 +839,12 @@ mod tests {
 
     #[test]
     fn new_terminal_cwd_follow_without_source_uses_home() {
-        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
-            return;
-        };
+        let env = IsolatedEnv::new();
 
         let cwd =
             creation::resolve_new_terminal_cwd(&crate::config::NewTerminalCwdConfig::Follow, None);
 
-        assert_eq!(cwd, home);
+        assert_eq!(cwd, env.home());
     }
 
     #[test]
@@ -1156,9 +1150,8 @@ mod tests {
 
     #[tokio::test]
     async fn pane_split_request_focuses_new_pane_when_requested() {
-        let _guard = config_env_lock().lock().expect("test precondition");
-        let original_shell = std::env::var_os("SHELL");
-        unsafe { std::env::set_var("SHELL", exiting_test_command()) };
+        let env = IsolatedEnv::new();
+        env.set("SHELL", exiting_test_command());
 
         let mut app = test_app();
         let mut workspace = Workspace::test_new("api-pane-split-focus-background-tab");
@@ -1204,17 +1197,12 @@ mod tests {
         for (_terminal_id, runtime) in runtimes {
             runtime.shutdown();
         }
-        match original_shell {
-            Some(value) => unsafe { std::env::set_var("SHELL", value) },
-            None => unsafe { std::env::remove_var("SHELL") },
-        }
     }
 
     #[tokio::test]
     async fn pane_split_request_applies_ratio() {
-        let _guard = config_env_lock().lock().expect("test precondition");
-        let original_shell = std::env::var_os("SHELL");
-        unsafe { std::env::set_var("SHELL", exiting_test_command()) };
+        let env = IsolatedEnv::new();
+        env.set("SHELL", exiting_test_command());
 
         let mut app = test_app();
         let workspace = Workspace::test_new("api-pane-split-ratio");
@@ -1268,17 +1256,12 @@ mod tests {
         for (_terminal_id, runtime) in runtimes {
             runtime.shutdown();
         }
-        match original_shell {
-            Some(value) => unsafe { std::env::set_var("SHELL", value) },
-            None => unsafe { std::env::remove_var("SHELL") },
-        }
     }
 
     #[tokio::test]
     async fn pane_split_request_uses_active_focused_pane_when_target_is_omitted() {
-        let _guard = config_env_lock().lock().expect("test precondition");
-        let original_shell = std::env::var_os("SHELL");
-        unsafe { std::env::set_var("SHELL", exiting_test_command()) };
+        let env = IsolatedEnv::new();
+        env.set("SHELL", exiting_test_command());
 
         let mut app = test_app();
         let workspace = Workspace::test_new("api-pane-split-current");
@@ -1315,10 +1298,6 @@ mod tests {
         let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
         for (_terminal_id, runtime) in runtimes {
             runtime.shutdown();
-        }
-        match original_shell {
-            Some(value) => unsafe { std::env::set_var("SHELL", value) },
-            None => unsafe { std::env::remove_var("SHELL") },
         }
     }
 
@@ -1542,12 +1521,7 @@ mod tests {
 
     #[test]
     fn due_session_save_starts_background_writer() {
-        let _guard = crate::config::test_config_env_lock()
-            .lock()
-            .expect("test precondition");
-        let config_home = unique_temp_path("background-session-save");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
-        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
+        let _env = isolated_config_env();
 
         let mut app = test_app();
         app.policy.persist_session = true;
@@ -1561,9 +1535,6 @@ mod tests {
         assert!(app.session_save_deadline.is_none());
         app.save_session_now();
         assert!(crate::session::data_dir().join("session.json").exists());
-
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-        let _ = std::fs::remove_dir_all(config_home);
     }
 
     #[test]
@@ -1609,12 +1580,7 @@ mod tests {
 
     #[tokio::test]
     async fn pane_exit_checkpoint_survives_automatic_workspace_creation_on_shutdown() {
-        let _guard = crate::config::test_config_env_lock()
-            .lock()
-            .expect("test precondition");
-        let config_home = unique_temp_path("signaled-pane-session-checkpoint");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
-        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
+        let _env = isolated_config_env();
 
         let mut app = test_app();
         app.policy.persist_session = true;
@@ -1642,19 +1608,11 @@ mod tests {
         let snapshot = crate::persist::load().expect("checkpointed session should survive");
         assert_eq!(snapshot.workspaces.len(), 1);
         assert_eq!(snapshot.workspaces[0].tabs[0].panes.len(), 2);
-
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-        let _ = std::fs::remove_dir_all(config_home);
     }
 
     #[test]
     fn normal_autosave_replaces_a_signaled_exit_checkpoint() {
-        let _guard = crate::config::test_config_env_lock()
-            .lock()
-            .expect("test precondition");
-        let config_home = unique_temp_path("signaled-pane-autosave");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
-        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
+        let _env = isolated_config_env();
 
         let mut app = test_app();
         app.policy.persist_session = true;
@@ -1678,19 +1636,11 @@ mod tests {
         app.retire_session_writer();
 
         assert!(crate::persist::load().is_none());
-
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-        let _ = std::fs::remove_dir_all(config_home);
     }
 
     #[test]
     fn durable_mutation_after_pane_exit_checkpoint_wins_on_shutdown() {
-        let _guard = crate::config::test_config_env_lock()
-            .lock()
-            .expect("test precondition");
-        let config_home = unique_temp_path("pane-exit-newer-session-state");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
-        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
+        let _env = isolated_config_env();
 
         for another_interrupted_exit in [false, true] {
             let mut app = test_app();
@@ -1722,9 +1672,6 @@ mod tests {
             assert_eq!(snapshot.workspaces.len(), 1);
             assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("newer"));
         }
-
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-        let _ = std::fs::remove_dir_all(config_home);
     }
 
     #[tokio::test]

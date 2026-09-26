@@ -1,3 +1,7 @@
+//! Idle tracking for the SSH bridge's stdio relay. The wrapped streams carry
+//! every remote keystroke and paste: input content must stay out of logs and
+//! error messages here (byte counts and error kinds only, never buffers).
+
 use std::io::{self, Read, Write};
 use std::sync::{
     Arc,

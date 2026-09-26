@@ -5,16 +5,7 @@ struct Directory(PathBuf);
 
 impl Directory {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "shepr-config-write-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        ));
-        fs::create_dir(&path).expect("test precondition");
-        Self(path)
+        Self(crate::test_support::ScratchDir::new("config-write").keep_until_exit())
     }
 }
 

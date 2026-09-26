@@ -42,6 +42,9 @@ pub fn configure(requested: Option<&str>) -> Result<(), String> {
         EXPLICIT_SESSION_REQUESTED.store(false, Ordering::Relaxed);
     } else if let Ok(session) = std::env::var(SESSION_ENV_VAR) {
         if normalize_name(&session)?.is_none() {
+            // SAFETY: `main` calls `configure` before it starts any thread,
+            // so nothing reads the environment concurrently; tests call it
+            // while holding the crate-wide environment lock.
             unsafe { std::env::remove_var(SESSION_ENV_VAR) };
         }
         EXPLICIT_SESSION_REQUESTED.store(false, Ordering::Relaxed);
@@ -433,8 +436,12 @@ pub fn validate_name(name: &str) -> Result<(), String> {
 fn apply_explicit_name(name: &str) -> Result<(), String> {
     let session = normalize_name(name)?;
     if let Some(session) = session {
+        // SAFETY: only `configure` calls this, and `main` calls `configure`
+        // before it starts any thread; tests call it while holding the
+        // crate-wide environment lock.
         unsafe { std::env::set_var(SESSION_ENV_VAR, session) };
     } else {
+        // SAFETY: as above.
         unsafe { std::env::remove_var(SESSION_ENV_VAR) };
     }
     EXPLICIT_SESSION_REQUESTED.store(true, Ordering::Relaxed);
@@ -452,28 +459,27 @@ fn normalize_name(name: &str) -> Result<Option<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{IsolatedEnv, ScratchDir};
     use interprocess::local_socket::traits::Listener as _;
-    use std::sync::{Mutex, OnceLock};
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    fn unique_test_path(name: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("test precondition")
-            .as_nanos();
-        std::env::temp_dir().join(format!("shepr-{name}-{}-{nanos}", std::process::id()))
-    }
-
-    fn local_stream_pair(name: &str) -> (LocalStream, LocalStream, std::path::PathBuf) {
-        let path = unique_test_path(name);
+    /// A connected socket pair; the socket file lives in the returned scratch
+    /// directory.
+    fn local_stream_pair(name: &str) -> (LocalStream, LocalStream, ScratchDir) {
+        let scratch = ScratchDir::new(name);
+        let path = scratch.join("s.sock");
         let listener = crate::ipc::bind_local_listener(&path).expect("test precondition");
         let client = crate::ipc::connect_local_stream(&path).expect("test precondition");
         let server = listener.accept().expect("test precondition");
-        (client, server, path)
+        (client, server, scratch)
+    }
+
+    /// An isolated environment whose config directory is `config` inside the
+    /// test's scratch directory.
+    fn isolated_config_env() -> (IsolatedEnv, PathBuf) {
+        let env = IsolatedEnv::new();
+        let config_home = env.path().join("config");
+        env.set("XDG_CONFIG_HOME", &config_home);
+        (env, config_home)
     }
 
     #[test]
@@ -518,7 +524,7 @@ mod tests {
 
     #[test]
     fn stop_request_empty_response_waits_for_socket_state() {
-        let (client, server, _path) = local_stream_pair("stop-empty-response");
+        let (client, server, _scratch) = local_stream_pair("stop-empty");
         let handle = std::thread::spawn(move || {
             let mut request = String::new();
             let _ = BufReader::new(server).read_line(&mut request);
@@ -549,9 +555,7 @@ mod tests {
 
     #[test]
     fn stop_session_times_out_when_socket_stays_open_without_response() {
-        let _guard = env_lock().lock().expect("test precondition");
-        let config_home = PathBuf::from(format!("/tmp/hs-stop-open-{}", std::process::id()));
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
+        let (_env, _config_home) = isolated_config_env();
         let session_name = "silent";
         let socket_path = api_socket_path_for(Some(session_name));
         std::fs::create_dir_all(socket_path.parent().expect("test precondition"))
@@ -593,8 +597,6 @@ mod tests {
         assert!(err.contains("did not stop"), "{err}");
         keep_running.store(false, Ordering::Relaxed);
         handle.join().expect("test precondition");
-        let _ = std::fs::remove_dir_all(&config_home);
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
     }
 
     // Which argv words name the session is the parser's job (tests in
@@ -602,23 +604,17 @@ mod tests {
 
     #[test]
     fn configure_applies_requested_session() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        clear_explicit_session_for_test();
+        let _env = IsolatedEnv::new();
 
         configure(Some("work")).expect("test precondition");
 
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("work"));
         assert!(explicit_session_requested());
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        clear_explicit_session_for_test();
     }
 
     #[test]
     fn configure_rejects_invalid_requested_session() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        clear_explicit_session_for_test();
+        let _env = IsolatedEnv::new();
 
         assert!(configure(Some("../prod")).is_err());
         assert!(configure(Some("")).is_err());
@@ -628,29 +624,21 @@ mod tests {
 
     #[test]
     fn configure_requested_session_overrides_inherited_env_and_socket() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe { std::env::set_var(SESSION_ENV_VAR, "bad/name") };
-        unsafe { std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock") };
-        clear_explicit_session_for_test();
+        let env = IsolatedEnv::new();
+        env.set(SESSION_ENV_VAR, "bad/name");
+        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
 
         configure(Some("work")).expect("test precondition");
 
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("work"));
         assert!(explicit_session_requested());
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
-        clear_explicit_session_for_test();
     }
 
     #[test]
     fn configure_maps_default_session_name_to_default_path() {
-        let _guard = env_lock().lock().expect("test precondition");
-        let config_home =
-            std::env::temp_dir().join(format!("shepr-session-default-{}", std::process::id()));
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
-        unsafe { std::env::set_var(SESSION_ENV_VAR, "work") };
-        clear_explicit_session_for_test();
-        unsafe { std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock") };
+        let (env, config_home) = isolated_config_env();
+        env.set(SESSION_ENV_VAR, "work");
+        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
 
         configure(Some(DEFAULT_SESSION_NAME)).expect("test precondition");
 
@@ -662,33 +650,24 @@ mod tests {
                 .join(crate::config::app_dir_name())
                 .join("shepr.sock")
         );
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        clear_explicit_session_for_test();
-        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
     }
 
     #[test]
     fn env_session_does_not_mark_session_explicit() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe { std::env::set_var(SESSION_ENV_VAR, "env-session") };
+        let env = IsolatedEnv::new();
+        env.set(SESSION_ENV_VAR, "env-session");
         EXPLICIT_SESSION_REQUESTED.store(true, Ordering::Relaxed);
 
         configure(None).expect("test precondition");
 
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("env-session"));
         assert!(!explicit_session_requested());
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
     }
 
     #[test]
     fn env_default_session_name_uses_default_path() {
-        let _guard = env_lock().lock().expect("test precondition");
-        let config_home =
-            std::env::temp_dir().join(format!("shepr-env-session-default-{}", std::process::id()));
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
-        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
-        unsafe { std::env::set_var(SESSION_ENV_VAR, DEFAULT_SESSION_NAME) };
+        let (env, config_home) = isolated_config_env();
+        env.set(SESSION_ENV_VAR, DEFAULT_SESSION_NAME);
         EXPLICIT_SESSION_REQUESTED.store(true, Ordering::Relaxed);
 
         configure(None).expect("test precondition");
@@ -701,48 +680,36 @@ mod tests {
                 .join(crate::config::app_dir_name())
                 .join("shepr.sock")
         );
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
-        clear_explicit_session_for_test();
     }
 
     #[test]
     fn local_attach_command_uses_default_launch_for_default_session() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
+        let _env = IsolatedEnv::new();
 
         assert_eq!(local_attach_command(), "shepr");
     }
 
     #[test]
     fn local_attach_command_uses_session_attach_for_named_session() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe { std::env::set_var(SESSION_ENV_VAR, "work") };
+        let env = IsolatedEnv::new();
+        env.set(SESSION_ENV_VAR, "work");
 
         assert_eq!(local_attach_command(), "shepr session attach work");
-
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
     }
 
     #[test]
     fn local_stop_command_uses_server_stop_for_default_session() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
+        let _env = IsolatedEnv::new();
 
         assert_eq!(local_stop_command(), "shepr server stop");
-
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
     }
 
     #[test]
     fn local_stop_command_uses_session_stop_for_named_session() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe { std::env::set_var(SESSION_ENV_VAR, "work") };
+        let env = IsolatedEnv::new();
+        env.set(SESSION_ENV_VAR, "work");
 
         assert_eq!(local_stop_command(), "shepr session stop work");
-
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
     }
 
     #[test]
@@ -758,28 +725,21 @@ mod tests {
 
     #[test]
     fn active_restart_after_update_guidance_respects_socket_override() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe { std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/custom-shepr.sock") };
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        clear_explicit_session_for_test();
+        let env = IsolatedEnv::new();
+        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/custom-shepr.sock");
 
         assert_eq!(
             active_restart_after_update_guidance(),
             "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr server stop`, then restart Shepr with the same socket override."
         );
-
-        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
     }
 
     #[test]
     fn explicit_session_socket_ignores_inherited_socket_override() {
-        let _guard = env_lock().lock().expect("test precondition");
-        let config_home =
-            std::env::temp_dir().join(format!("shepr-session-precedence-{}", std::process::id()));
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
-        unsafe { std::env::set_var(SESSION_ENV_VAR, "work") };
+        let (env, config_home) = isolated_config_env();
+        env.set(SESSION_ENV_VAR, "work");
         EXPLICIT_SESSION_REQUESTED.store(true, Ordering::Relaxed);
-        unsafe { std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock") };
+        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
 
         let path = active_api_socket_path();
 
@@ -791,52 +751,36 @@ mod tests {
                 .join("work")
                 .join("shepr.sock")
         );
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        clear_explicit_session_for_test();
-        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
     }
 
     #[test]
     fn env_socket_override_wins_without_explicit_session() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe { std::env::set_var(SESSION_ENV_VAR, "work") };
-        clear_explicit_session_for_test();
-        unsafe { std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/explicit.sock") };
+        let env = IsolatedEnv::new();
+        env.set(SESSION_ENV_VAR, "work");
+        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/explicit.sock");
 
         assert_eq!(
             active_api_socket_path(),
             PathBuf::from("/tmp/explicit.sock")
         );
-
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        clear_explicit_session_for_test();
-        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
     }
 
     #[test]
     fn env_socket_override_skips_invalid_env_session_validation_without_explicit_session() {
-        let _guard = env_lock().lock().expect("test precondition");
-        unsafe { std::env::set_var(SESSION_ENV_VAR, "bad/name") };
-        clear_explicit_session_for_test();
-        unsafe { std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/shepr.sock") };
+        let env = IsolatedEnv::new();
+        env.set(SESSION_ENV_VAR, "bad/name");
+        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/shepr.sock");
 
         configure(None).expect("test precondition");
 
         assert!(!explicit_session_requested());
         assert_eq!(active_api_socket_path(), PathBuf::from("/tmp/shepr.sock"));
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("bad/name"));
-
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        clear_explicit_session_for_test();
-        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
     }
 
     #[test]
     fn stop_session_fails_when_socket_remains_reachable_after_timeout() {
-        let _guard = env_lock().lock().expect("test precondition");
-        let config_home = PathBuf::from(format!("/tmp/hs-stop-{}", std::process::id()));
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
+        let (_env, _config_home) = isolated_config_env();
         let session_name = "slow";
         let socket_path = api_socket_path_for(Some(session_name));
         std::fs::create_dir_all(socket_path.parent().expect("test precondition"))
@@ -881,13 +825,10 @@ mod tests {
         );
         keep_running.store(false, Ordering::Relaxed);
         handle.join().expect("test precondition");
-        let _ = std::fs::remove_dir_all(&config_home);
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
     }
 
     #[test]
     fn invalid_names_are_rejected() {
-        let _guard = env_lock().lock().expect("test precondition");
         assert!(validate_name("../prod").is_err());
         assert!(validate_name("").is_err());
         assert!(validate_name("work session").is_err());
@@ -912,18 +853,13 @@ mod tests {
 
     #[test]
     fn list_sessions_skips_reserved_default_directory() {
-        let _guard = env_lock().lock().expect("test precondition");
-        let config_home =
-            std::env::temp_dir().join(format!("shepr-session-list-{}", std::process::id()));
+        let (_env, config_home) = isolated_config_env();
         let sessions_dir = config_home
             .join(crate::config::app_dir_name())
             .join("sessions");
         std::fs::create_dir_all(sessions_dir.join(DEFAULT_SESSION_NAME))
             .expect("test precondition");
         std::fs::create_dir_all(sessions_dir.join("work")).expect("test precondition");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
-        unsafe { std::env::remove_var(SESSION_ENV_VAR) };
-        clear_explicit_session_for_test();
 
         let sessions = list_sessions().expect("test precondition");
         let names: Vec<_> = sessions
@@ -932,7 +868,5 @@ mod tests {
             .collect();
 
         assert_eq!(names, vec![DEFAULT_SESSION_NAME, "work"]);
-        std::fs::remove_dir_all(&config_home).expect("test precondition");
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
     }
 }

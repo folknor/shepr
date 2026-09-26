@@ -52,17 +52,11 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
     let mut app = crate::app::App::new(&config, crate::app::AppPolicy::TEST, api_rx, event_hub);
 
     app.state.default_shell = crate::app::exiting_test_command().into();
-    let dir = std::env::temp_dir().join(format!(
-        "hh-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    let _ = fs::create_dir_all(&dir);
-    let socket_path = dir.join("client.sock");
-    let _ = fs::remove_file(&socket_path);
+    // The server removes its socket when dropped; the directory goes with the
+    // scratch root at exit.
+    let socket_path = crate::test_support::ScratchDir::new("hh")
+        .keep_until_exit()
+        .join("client.sock");
     let listener = bind_local_listener(&socket_path).expect("bind test listener");
     let client_socket_identity =
         socket_file_identity(&socket_path).expect("test listener socket identity");
@@ -3956,15 +3950,7 @@ async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
 fn client_socket_is_owner_only_from_the_moment_it_is_reachable() {
     use std::os::unix::fs::PermissionsExt as _;
 
-    let dir = std::env::temp_dir().join(format!(
-        "hb-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    fs::create_dir_all(&dir).expect("test precondition");
+    let dir = crate::test_support::ScratchDir::new("hb");
     let path = dir.join("client.sock");
 
     let listener = bind_owner_only_listener(&path).expect("bind");
@@ -3989,7 +3975,6 @@ fn client_socket_is_owner_only_from_the_moment_it_is_reachable() {
     assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
 
     drop(listener);
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]

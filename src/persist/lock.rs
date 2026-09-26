@@ -97,15 +97,12 @@ pub(super) fn release(directory: &Path) {
 mod tests {
     use super::*;
 
+    /// A data directory that does not exist yet, in a scratch directory kept
+    /// until the test process exits.
     fn temp_directory(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "shepr-lock-{name}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        ))
+        crate::test_support::ScratchDir::new(name)
+            .keep_until_exit()
+            .join("data")
     }
 
     /// A lock taken through a separate open file description conflicts with

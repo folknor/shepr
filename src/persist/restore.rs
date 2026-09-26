@@ -407,13 +407,15 @@ fn restored_terminal(
                 terminal.restore_managed_agent_for_resume(name, agent);
             }
             // Seeded so the sidebar shows the agent while its resume waits to
-            // launch. The seed does not outlive a failed resume: once the
-            // shell runs, the pane's detector starts from "no agent, Idle"
-            // and its first screen read publishes a no-agent `Unknown`
-            // update (a differing state always publishes), which replaces
-            // the seed within a tick unless the agent's process was found
-            // first. A resume that can never launch leaves no detector, so
-            // abandoning it withdraws the seed (`abandon_agent_resume`).
+            // launch and while the resumed process starts. Once the shell
+            // runs, the pane's detector holds back its "no agent" report
+            // (`withhold_agent_absence` in `pane/agent_detection.rs`) until
+            // it identifies the agent, which replaces the seed without a gap,
+            // or until the hold expires. The seed does not outlive a failed
+            // resume: at expiry the detector publishes a no-agent `Unknown`
+            // update, which withdraws it. A resume that can never launch
+            // leaves no detector, so abandoning it withdraws the seed
+            // (`abandon_agent_resume`).
             if let Some(agent) = resumed_agent {
                 let _ = terminal.set_detected_state_with_screen_signals_at(
                     Some(agent),
@@ -2216,6 +2218,8 @@ mod tests {
 
     #[tokio::test]
     async fn restore_rejects_history_from_another_layout_or_without_provenance() {
+        // A cwd that differs from the saved layout's, so its fingerprint changes.
+        let moved_cwd = crate::test_support::ScratchDir::new("moved-cwd");
         for missing_fingerprint in [false, true] {
             let (mut snapshot, history) = snapshot_with_saved_pane_history();
             let mut value = serde_json::to_value(history).expect("test precondition");
@@ -2229,7 +2233,7 @@ mod tests {
                     .panes
                     .get_mut(&0)
                     .expect("test precondition")
-                    .cwd = std::env::temp_dir();
+                    .cwd = moved_cwd.to_path_buf();
             }
             let history = serde_json::from_value(value).expect("test precondition");
             let (events, _rx) = mpsc::channel(8);

@@ -12,7 +12,7 @@ const PENDING_AGENT_RESUME_RETRY_INTERVAL: std::time::Duration = std::time::Dura
 /// How long a restored managed agent's name waits, once its resume command is
 /// typed, for the agent's process (or a hook report from it) to appear. Only
 /// the process has to show up, not reach a prompt, so this is generous.
-const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration = crate::pane::MANAGED_AGENT_RESUME_TIMEOUT;
 
 struct PendingAgentResumeCandidate {
     pane_id: crate::layout::PaneId,
@@ -408,6 +408,7 @@ impl App {
         else {
             return false;
         };
+        let launch_env = launch_env.for_agent_resume();
 
         if !cwd.is_dir() {
             if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {

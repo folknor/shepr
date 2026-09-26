@@ -340,26 +340,10 @@ pub(super) fn read_ref_oid(common_dir: &Path, full_ref: &str) -> Option<String> 
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::Path;
 
     use super::*;
-    use crate::workspace::git::test_support::{live_git_space, run_git};
-
-    fn temp_test_dir(name: &str) -> PathBuf {
-        let unique = format!(
-            "shepr-workspace-tests-{}-{}-{}",
-            name,
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        );
-        let path = std::env::temp_dir().join(unique);
-        std::fs::create_dir_all(&path).expect("test precondition");
-        path
-    }
+    use crate::workspace::git::test_support::{live_git_space, run_git, temp_test_dir};
 
     #[test]
     fn oversized_loose_ref_is_unavailable_not_absent() {

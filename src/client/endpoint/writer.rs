@@ -254,14 +254,10 @@ mod tests {
 
     fn streams() -> (LocalStream, LocalStream, std::path::PathBuf) {
         use interprocess::local_socket::traits::Listener as _;
-        let path = std::env::temp_dir().join(format!(
-            "shepr-writer-{}-{}.sock",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        ));
+        // Kept until the test process exits; callers remove the socket.
+        let path = crate::test_support::ScratchDir::new("writer")
+            .keep_until_exit()
+            .join("s.sock");
         let listener = crate::ipc::bind_private_local_listener(&path).expect("test precondition");
         let accepting = std::thread::spawn(move || listener.accept().expect("test precondition"));
         let client = crate::ipc::connect_local_stream(&path).expect("test precondition");

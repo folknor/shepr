@@ -14,29 +14,52 @@ pub(crate) struct MetadataTokens {
 
 pub(crate) const MAX_SEQUENCE_SOURCES: usize = 32;
 
+/// Per-source report sequences of one resource's metadata tokens (a
+/// workspace's), with when each was accepted.
+pub(crate) type SequenceMarks = HashMap<String, crate::terminal::state::MetadataReportSeq>;
+
+/// Whether a report carrying `seq` from `source`, arriving at `now`, is not
+/// older than the source's last accepted one. Ordered by the same rule as
+/// pane hook and metadata reports
+/// (`crate::terminal::state::report_seq_superseded`): reporters take seqs
+/// from their own wall clock, so a non-increasing seq long after the last
+/// acceptance is a clock step and re-anchors the source instead of dropping
+/// every report until the clock catches up.
 pub(crate) fn sequence_is_fresh(
-    sequences: &HashMap<String, u64>,
+    sequences: &SequenceMarks,
     source: &str,
     seq: Option<u64>,
+    now: Instant,
 ) -> bool {
-    seq.is_none_or(|seq| sequences.get(source).is_none_or(|last| seq > *last))
+    seq.is_none_or(|seq| {
+        sequences
+            .get(source)
+            .is_none_or(|last| !last.supersedes(seq, now))
+    })
 }
 
 pub(crate) fn accept_sequence(
-    sequences: &mut HashMap<String, u64>,
+    sequences: &mut SequenceMarks,
     source: &str,
     seq: Option<u64>,
+    now: Instant,
 ) -> Result<bool, ()> {
     let Some(seq) = seq else {
         return Ok(true);
     };
-    if !sequence_is_fresh(sequences, source, Some(seq)) {
+    if !sequence_is_fresh(sequences, source, Some(seq), now) {
         return Ok(false);
     }
     if !sequences.contains_key(source) && sequences.len() >= MAX_SEQUENCE_SOURCES {
         return Err(());
     }
-    sequences.insert(source.to_string(), seq);
+    sequences.insert(
+        source.to_string(),
+        crate::terminal::state::MetadataReportSeq {
+            seq,
+            accepted_at: now,
+        },
+    );
     Ok(true)
 }
 
@@ -116,25 +139,66 @@ mod tests {
 
     #[test]
     fn sequence_sources_are_bounded() {
-        let mut sequences = HashMap::new();
+        let now = Instant::now();
+        let mut sequences = SequenceMarks::new();
         for index in 0..MAX_SEQUENCE_SOURCES {
             assert_eq!(
-                accept_sequence(&mut sequences, &format!("source-{index}"), Some(1)),
+                accept_sequence(&mut sequences, &format!("source-{index}"), Some(1), now),
                 Ok(true)
             );
         }
         assert_eq!(
-            accept_sequence(&mut sequences, "one-too-many", Some(1)),
+            accept_sequence(&mut sequences, "one-too-many", Some(1), now),
             Err(())
         );
         assert_eq!(
-            accept_sequence(&mut sequences, "source-0", Some(1)),
+            accept_sequence(&mut sequences, "source-0", Some(1), now),
             Ok(false)
         );
         assert_eq!(
-            accept_sequence(&mut sequences, "source-0", Some(2)),
+            accept_sequence(&mut sequences, "source-0", Some(2), now),
             Ok(true)
         );
+    }
+
+    #[test]
+    fn sequence_reanchors_after_a_backwards_clock_step() {
+        let start = Instant::now();
+        let mut sequences = SequenceMarks::new();
+        assert_eq!(
+            accept_sequence(&mut sequences, "git", Some(1_000), start),
+            Ok(true)
+        );
+        // A racing straggler moments later is still dropped.
+        let soon = start + Duration::from_millis(50);
+        assert!(!sequence_is_fresh(&sequences, "git", Some(900), soon));
+        assert_eq!(
+            accept_sequence(&mut sequences, "git", Some(900), soon),
+            Ok(false)
+        );
+        // Long after the last acceptance, a lower seq means the reporter's
+        // clock stepped back: it is accepted and becomes the new baseline.
+        let later = start + crate::terminal::state::HOOK_SEQUENCE_REANCHOR_AFTER;
+        assert!(sequence_is_fresh(&sequences, "git", Some(10), later));
+        assert_eq!(
+            accept_sequence(&mut sequences, "git", Some(10), later),
+            Ok(true)
+        );
+        assert_eq!(
+            accept_sequence(
+                &mut sequences,
+                "git",
+                Some(11),
+                later + Duration::from_millis(1)
+            ),
+            Ok(true)
+        );
+        assert!(!sequence_is_fresh(
+            &sequences,
+            "git",
+            Some(10),
+            later + Duration::from_millis(2)
+        ));
     }
 
     #[test]

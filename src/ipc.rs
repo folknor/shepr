@@ -416,15 +416,11 @@ mod tests {
         assert!(!stale_socket_connect_error(io::ErrorKind::WouldBlock));
     }
 
+    /// A socket path in a scratch directory kept until the test process exits.
     fn test_socket_path(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "shepr-ipc-{name}-{}-{}.sock",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        ))
+        crate::test_support::ScratchDir::new(name)
+            .keep_until_exit()
+            .join("s.sock")
     }
 
     #[test]

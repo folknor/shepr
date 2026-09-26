@@ -210,11 +210,8 @@ mod tests {
 
     #[test]
     fn initial_surface_size_uses_persisted_endpoint_chrome() {
-        let path = std::env::temp_dir().join(format!(
-            "shepr-initial-shell-preferences-{}.json",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let scratch = crate::test_support::ScratchDir::new("shell-prefs");
+        let path = scratch.join("preferences.json");
         preferences::store(
             &path,
             &preferences::ClientChromePreferences {
@@ -234,11 +231,8 @@ mod tests {
 
     #[test]
     fn configured_ui_keys_win_over_remembered_chrome() {
-        let path = std::env::temp_dir().join(format!(
-            "shepr-configured-shell-preferences-{}.json",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let scratch = crate::test_support::ScratchDir::new("shell-prefs");
+        let path = scratch.join("preferences.json");
         preferences::store(
             &path,
             &preferences::ClientChromePreferences {

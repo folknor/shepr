@@ -968,25 +968,18 @@ pub(super) fn error_response_json(id: String, code: &str, message: String) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{IsolatedEnv, ScratchDir};
     use interprocess::local_socket::traits::Listener as _;
     use std::collections::HashMap;
     use std::io::{BufRead, BufReader, Read};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
-    use std::sync::{Mutex, OnceLock};
     use tokio::sync::mpsc;
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
+    /// A fresh path in a scratch directory that is kept until the test
+    /// process exits; every caller here removes what it creates itself.
     fn unique_test_path(name: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("test precondition")
-            .as_nanos();
-        std::env::temp_dir().join(format!("shepr-{name}-{}-{nanos}", std::process::id()))
+        ScratchDir::new(name).keep_until_exit().join("s")
     }
 
     fn read_line(stream: &mut LocalStream) -> String {
@@ -1213,43 +1206,31 @@ mod tests {
 
     #[test]
     fn socket_path_prefers_explicit_env_override() {
-        let _guard = env_lock().lock().expect("test precondition");
-        let unique = format!("/tmp/shepr-test-{}.sock", std::process::id());
-        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
-        crate::session::clear_explicit_session_for_test();
-        unsafe { std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, &unique) };
-        assert_eq!(socket_path(), PathBuf::from(&unique));
-        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
+        let env = IsolatedEnv::new();
+        let unique = env.path().join("override.sock");
+        env.set(crate::api::SOCKET_PATH_ENV_VAR, &unique);
+        assert_eq!(socket_path(), unique);
     }
 
     #[test]
     fn socket_path_defaults_to_config_dir_even_when_xdg_runtime_dir_is_set() {
-        let _guard = env_lock().lock().expect("test precondition");
-        let config_home = unique_test_path("socket-default-config-home");
-        let runtime_dir = unique_test_path("socket-default-runtime");
-        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
-        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
-        crate::session::clear_explicit_session_for_test();
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
-        unsafe { std::env::set_var("XDG_RUNTIME_DIR", &runtime_dir) };
+        let env = IsolatedEnv::new();
+        let config_home = env.path().join("config");
+        env.set("XDG_CONFIG_HOME", &config_home);
+        env.set("XDG_RUNTIME_DIR", env.path().join("runtime"));
 
         let expected = config_home
             .join(crate::config::app_dir_name())
             .join("shepr.sock");
         assert_eq!(socket_path(), expected);
-
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
     }
 
     #[test]
     fn socket_path_uses_named_session_dir() {
-        let _guard = env_lock().lock().expect("test precondition");
-        let config_home = unique_test_path("socket-named-config-home");
-        unsafe { std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR) };
-        crate::session::clear_explicit_session_for_test();
-        unsafe { std::env::set_var(crate::session::SESSION_ENV_VAR, "work") };
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &config_home) };
+        let env = IsolatedEnv::new();
+        let config_home = env.path().join("config");
+        env.set(crate::session::SESSION_ENV_VAR, "work");
+        env.set("XDG_CONFIG_HOME", &config_home);
 
         let expected = config_home
             .join(crate::config::app_dir_name())
@@ -1257,15 +1238,11 @@ mod tests {
             .join("work")
             .join("shepr.sock");
         assert_eq!(socket_path(), expected);
-
-        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
-        unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
     }
 
     #[test]
     fn api_socket_is_bound_owner_only() {
-        let dir = unique_test_path("socket-perms");
-        fs::create_dir_all(&dir).expect("test precondition");
+        let dir = ScratchDir::new("socket-perms");
         let path = dir.join("api.sock");
         let listener = bind_private_local_listener(&path).expect("test precondition");
 
@@ -1277,8 +1254,6 @@ mod tests {
         assert_eq!(mode, 0o600);
 
         drop(listener);
-        let _ = fs::remove_file(&path);
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

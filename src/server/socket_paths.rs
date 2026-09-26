@@ -74,7 +74,6 @@ pub(crate) fn prepare_socket_path(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use std::os::unix::net::UnixListener;
     use std::time::Duration;
 
@@ -101,8 +100,7 @@ mod tests {
 
     #[test]
     fn client_socket_path_defaults_to_config_dir() {
-        unsafe { std::env::remove_var(crate::session::SESSION_ENV_VAR) };
-        crate::session::clear_explicit_session_for_test();
+        let _env = crate::test_support::IsolatedEnv::new();
         let path = client_socket_path_from_overrides(None, None);
         assert_eq!(path, crate::config::config_dir().join("shepr-client.sock"));
     }
@@ -115,15 +113,7 @@ mod tests {
 
     #[test]
     fn prepare_socket_path_removes_stale_socket() {
-        let dir = PathBuf::from(format!(
-            "/tmp/hs-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let _ = fs::create_dir_all(&dir);
+        let dir = crate::test_support::ScratchDir::new("stale");
         let socket_path = dir.join("stale.sock");
 
         {
@@ -141,21 +131,11 @@ mod tests {
         let result = prepare_socket_path(&socket_path);
         assert!(result.is_ok(), "should remove stale socket: {result:?}");
         assert!(!socket_path.exists());
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn prepare_socket_path_rejects_live_socket() {
-        let dir = PathBuf::from(format!(
-            "/tmp/hl-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let _ = fs::create_dir_all(&dir);
+        let dir = crate::test_support::ScratchDir::new("live");
         let socket_path = dir.join("live.sock");
 
         let _listener = UnixListener::bind(&socket_path).expect("bind");
@@ -166,7 +146,5 @@ mod tests {
             result.expect_err("test precondition").kind(),
             io::ErrorKind::AddrInUse
         );
-
-        let _ = fs::remove_dir_all(&dir);
     }
 }

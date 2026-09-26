@@ -789,17 +789,12 @@ mod tests {
         }
     }
 
+    /// A path that does not exist yet, in a scratch directory kept until the
+    /// test process exits.
     fn temp_detection_path(name: &str) -> std::path::PathBuf {
-        let unique = format!(
-            "shepr-detect-tests-{}-{}-{}",
-            name,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system time should be after unix epoch")
-                .as_nanos()
-        );
-        std::env::temp_dir().join(unique)
+        crate::test_support::ScratchDir::new(name)
+            .keep_until_exit()
+            .join("path")
     }
 
     // ---- Agent identification ----

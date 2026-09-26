@@ -406,8 +406,7 @@ fn attribute(file: &std::fs::File, name: &std::ffi::CStr) -> Option<Vec<u8>> {
 fn config_metadata_preserves_ownership_and_acl_without_inheriting_extra_access() {
     use std::os::unix::fs::MetadataExt;
 
-    let dir = std::env::temp_dir().join(format!("shepr-config-acl-{}", std::process::id()));
-    std::fs::create_dir(&dir).expect("test precondition");
+    let dir = crate::test_support::ScratchDir::new("config-acl");
     // Linux UAPI posix_acl_xattr_header/entry, version 2, little-endian fields.
     // Owner rw, named user 65534 read, group none, mask read, other none.
     let mut acl = 2_u32.to_le_bytes().to_vec();
@@ -457,7 +456,6 @@ fn config_metadata_preserves_ownership_and_acl_without_inheriting_extra_access()
         assert_eq!(std::fs::read(source).expect("test precondition"), b"old");
         assert_eq!(std::fs::read(target).expect("test precondition"), b"new");
     }
-    std::fs::remove_dir_all(dir).expect("test precondition");
 }
 
 // ---------------------------------------------------------------------------
@@ -1067,17 +1065,8 @@ fn clipboard_deadline() -> Instant {
     Instant::now() + CLIPBOARD_HELPER_TIMEOUT
 }
 
-fn fake_clipboard_dir(name: &str) -> PathBuf {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system time should follow unix epoch")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "shepr-fake-clipboard-{name}-{}-{unique}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).expect("temp dir should be created");
-    dir
+fn fake_clipboard_dir(name: &str) -> crate::test_support::ScratchDir {
+    crate::test_support::ScratchDir::new(name)
 }
 
 /// Write an executable script and return its absolute path as the
@@ -1135,7 +1124,6 @@ fn wl_copy_owner_does_not_block_clipboard_write() {
     use std::sync::mpsc;
 
     struct Cleanup {
-        temp_dir: PathBuf,
         owner_pid: Option<i32>,
     }
 
@@ -1148,15 +1136,13 @@ fn wl_copy_owner_does_not_block_clipboard_write() {
                     libc::kill(pid, libc::SIGTERM);
                 }
             }
-            let _ = std::fs::remove_dir_all(&self.temp_dir);
         }
     }
 
+    // Declared before `cleanup`, so it is dropped (and the directory removed)
+    // after the fake owner has been signalled.
     let temp_dir = fake_clipboard_dir("wl-copy");
-    let mut cleanup = Cleanup {
-        temp_dir: temp_dir.clone(),
-        owner_pid: None,
-    };
+    let mut cleanup = Cleanup { owner_pid: None };
     let marker = temp_dir.join("owner-pid");
     let payload = temp_dir.join("payload");
     let args = temp_dir.join("args");
@@ -1253,7 +1239,6 @@ fn failed_wl_copy_uses_x11_fallback() {
 
     let wrote = write_clipboard_with(&commands, b"clipboard fallback");
     let recorded = std::fs::read(&payload);
-    let _ = std::fs::remove_dir_all(&temp_dir);
 
     assert!(wrote);
     assert_eq!(

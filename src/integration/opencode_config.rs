@@ -255,16 +255,7 @@ mod tests {
     use serde_json::json;
 
     fn unique_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "shepr-opencode-config-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock should be after epoch")
-                .as_nanos()
-        ));
-        fs::create_dir_all(&dir).expect("temporary config directory should be created");
-        dir
+        crate::test_support::ScratchDir::new("opencode").keep_until_exit()
     }
 
     fn parse_config(path: &Path) -> Value {

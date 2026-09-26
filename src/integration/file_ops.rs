@@ -103,14 +103,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "shepr-file-ops-{name}-{}-{}",
-            std::process::id(),
-            NEXT_ASSET_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("test precondition");
-        dir
+        crate::test_support::ScratchDir::new(name).keep_until_exit()
     }
 
     #[test]

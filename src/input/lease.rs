@@ -92,7 +92,9 @@ where
         resulting_context: Option<&Context>,
         target: Option<Target>,
     ) -> RepeatPlan<Context, Target> {
-        // A key that committed text gets no release, so it holds no lease.
+        // Without kitty REPORT_ALL_KEYS on the host (which breaks IME and
+        // compose input), a key that committed text gets no release event.
+        // It therefore holds no lease.
         if key.generated_text.is_some() {
             return RepeatPlan::Ignore;
         }

@@ -2,7 +2,6 @@ use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_millis(300);
@@ -25,12 +24,10 @@ struct Bridge {
 
 impl Bridge {
     fn start(legacy: bool) -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "hbl-{}-{}.sock",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        // Kept until the test process exits; `Drop` removes the socket.
+        let path = crate::test_support::ScratchDir::new("bridge")
+            .keep_until_exit()
+            .join("s.sock");
         let listener = UnixListener::bind(&path).expect("test precondition");
         listener.set_nonblocking(true).expect("test precondition");
         let mut command = Command::new(std::env::current_exe().expect("test precondition"));

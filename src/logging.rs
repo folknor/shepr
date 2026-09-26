@@ -630,17 +630,12 @@ fn rotated_log_path(path: &Path, index: usize) -> PathBuf {
 mod tests {
     use super::*;
 
+    /// A log path in a scratch directory kept until the test process exits;
+    /// each test removes the directory itself.
     fn temp_log_path(name: &str) -> PathBuf {
-        let unique = format!(
-            "shepr-logging-tests-{}-{}-{}",
-            name,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        );
-        std::env::temp_dir().join(unique).join("shepr.log")
+        crate::test_support::ScratchDir::new(name)
+            .keep_until_exit()
+            .join("shepr.log")
     }
 
     #[test]

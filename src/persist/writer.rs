@@ -387,15 +387,7 @@ mod tests {
     use super::*;
 
     fn writer(protect_unloaded: bool) -> SessionWriter {
-        let directory = std::env::temp_dir().join(format!(
-            "shepr-session-recovery-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&directory).expect("test precondition");
+        let directory = crate::test_support::ScratchDir::new("session-recovery").keep_until_exit();
         SessionWriter::at(directory.join("session.json"), protect_unloaded)
     }
 

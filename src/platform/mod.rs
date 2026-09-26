@@ -490,6 +490,10 @@ pub(crate) fn wait_client_stream_readable(stream: &crate::ipc::LocalStream) -> s
 // Remote bridge stdio
 // ---------------------------------------------------------------------------
 
+/// Relay the SSH bridge's stdio to the local server socket. Every remote
+/// keystroke and paste passes through here as raw bytes: input content must
+/// stay out of logs and error messages here and in `remote_bridge` (log byte
+/// counts or error kinds, never the buffers).
 pub(crate) fn forward_remote_bridge_stdio(
     stream: crate::ipc::LocalStream,
     idle_timeout: bool,

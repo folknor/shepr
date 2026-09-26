@@ -1,3 +1,7 @@
+//! Overlay input: rename fields, help and navigator search, menus. Typed text
+//! and pasted text land in these editors; input content must stay out of logs
+//! and error messages here (log lengths or content-free kinds instead).
+
 use super::*;
 
 impl ClientShellState {

@@ -11,6 +11,9 @@ pub(super) const STABLE_VISIBLE_SIGNAL_REFRESH: std::time::Duration =
     std::time::Duration::from_millis(800);
 pub(super) const AGENT_STARTUP_GRACE_WINDOW: std::time::Duration =
     std::time::Duration::from_secs(3);
+/// A restored agent pane holds absence until its resumed process can appear.
+pub(super) const AGENT_ABSENCE_STARTUP_HOLD: std::time::Duration =
+    super::MANAGED_AGENT_RESUME_TIMEOUT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct DetectionPublishState {
@@ -297,6 +300,36 @@ pub(super) fn decide_screen_detection_publish(
     }
 }
 
+/// Whether this tick's "no agent" report is held back. A resumed pane's detector
+/// starts out believing nothing runs, and its first screen read would report
+/// that (a differing state always publishes). For a fresh pane that report
+/// changes nothing: the terminal already has no agent. It matters only
+/// where the terminal already names an agent the detector has not seen yet,
+/// which is a restored pane whose resume command was just typed:
+/// `restored_terminal` seeds the resumed agent as detected so the sidebar
+/// shows it, and withdrawing that seed while the shell is still starting up
+/// makes the agent drop out of the sidebar until its process is identified.
+///
+/// So until `hold_until` passes, an absent agent is not reported. The hold
+/// ends for good as soon as an agent is identified (from then on the
+/// detector's own view is the truth) or once it expires, after which a pane
+/// whose resume never produced the agent reports the absence as usual and
+/// the seed goes.
+pub(super) fn withhold_agent_absence(
+    agent: Option<Agent>,
+    hold_until: &mut Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> bool {
+    let Some(until) = *hold_until else {
+        return false;
+    };
+    if agent.is_some() || now >= until {
+        *hold_until = None;
+        return false;
+    }
+    true
+}
+
 pub(super) fn detection_update_for_publish_with_osc(
     agent: Option<Agent>,
     content: &str,
@@ -396,6 +429,38 @@ mod tests {
             current_detection_content_seq: Some(current_seq),
             last_screen_scan_detection_content_seq: Some(10),
         }
+    }
+
+    #[test]
+    fn agent_absence_is_held_until_the_hold_expires() {
+        let now = std::time::Instant::now();
+        let mut hold = Some(now + AGENT_ABSENCE_STARTUP_HOLD);
+
+        assert!(withhold_agent_absence(None, &mut hold, now));
+        assert!(withhold_agent_absence(
+            None,
+            &mut hold,
+            now + AGENT_ABSENCE_STARTUP_HOLD - std::time::Duration::from_millis(1)
+        ));
+        assert!(!withhold_agent_absence(
+            None,
+            &mut hold,
+            now + AGENT_ABSENCE_STARTUP_HOLD
+        ));
+        assert_eq!(hold, None);
+        // Expired for good: a later absence is reported at once.
+        assert!(!withhold_agent_absence(None, &mut hold, now));
+    }
+
+    #[test]
+    fn identifying_an_agent_ends_the_absence_hold() {
+        let now = std::time::Instant::now();
+        let mut hold = Some(now + AGENT_ABSENCE_STARTUP_HOLD);
+
+        assert!(!withhold_agent_absence(Some(Agent::Codex), &mut hold, now));
+        assert_eq!(hold, None);
+        // The agent leaving again inside the original window is reported.
+        assert!(!withhold_agent_absence(None, &mut hold, now));
     }
 
     #[test]

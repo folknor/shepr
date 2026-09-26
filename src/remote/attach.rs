@@ -726,22 +726,173 @@ fn apply_managed_ssh_options(command: &mut Command, options: Option<&ManagedSshO
 }
 
 fn locate_remote_shepr(ssh: &RemoteSsh, require_surface_interest: bool) -> io::Result<RemoteShepr> {
-    let candidates = remote_binary_candidates(ssh)?;
-    for candidate in candidates {
-        if let Some(status) = remote_client_status(ssh, &candidate)?
-            && status.supports_endpoint_requirement(require_surface_interest)
-        {
-            return Ok(candidate);
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        format!(
-            "matching Shepr is not ready on {}; install or update it there manually and retry",
-            ssh.target(),
-        ),
-    ))
+    DiscoveryProgress::default().advance(&mut SshDiscovery {
+        ssh,
+        require_surface_interest,
+    })
 }
+
+/// The SSH commands full discovery is made of, one method per remote round trip. Only
+/// [`DiscoveryProgress`] sequences them; the seam exists so that sequencing, and resuming
+/// it, can be tested without a remote host.
+pub(super) trait DiscoverySteps {
+    /// `command -v shepr` through the remote login shell, which sets up the user's PATH.
+    fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteShepr>>;
+    /// `command -v shepr` through `/bin/sh`, for login shells (xonsh) that reject it.
+    fn path_via_sh(&mut self) -> io::Result<Option<RemoteShepr>>;
+    /// Executables found at the known install locations.
+    fn known_locations(&mut self) -> io::Result<Vec<RemoteShepr>>;
+    /// Whether `candidate` runs and speaks this build's protocol (its status probe).
+    fn matches(&mut self, candidate: &RemoteShepr) -> io::Result<bool>;
+    fn target(&self) -> &str;
+}
+
+struct SshDiscovery<'a> {
+    ssh: &'a RemoteSsh,
+    require_surface_interest: bool,
+}
+
+impl DiscoverySteps for SshDiscovery<'_> {
+    fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteShepr>> {
+        let output = self.ssh.posix_user_shell_output("command -v shepr")?;
+        path_lookup_result(&output)
+    }
+
+    fn path_via_sh(&mut self) -> io::Result<Option<RemoteShepr>> {
+        let output = self.ssh.sh_output("command -v shepr\n")?;
+        path_lookup_result(&output)
+    }
+
+    fn known_locations(&mut self) -> io::Result<Vec<RemoteShepr>> {
+        let output = self
+            .ssh
+            .sh_output(&known_remote_binary_candidate_script())?;
+        if !output.status.success() {
+            return Err(command_failed("remote binary discovery failed", &output));
+        }
+        Ok(remote_sheprs_from_path_discovery(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
+    }
+
+    fn matches(&mut self, candidate: &RemoteShepr) -> io::Result<bool> {
+        let require_surface_interest = self.require_surface_interest;
+        Ok(remote_client_status(self.ssh, candidate)?
+            .is_some_and(|status| status.supports_endpoint_requirement(require_surface_interest)))
+    }
+
+    fn target(&self) -> &str {
+        self.ssh.target()
+    }
+}
+
+/// Reads a `command -v shepr` result. A failed lookup means no `shepr` on that PATH,
+/// except when ssh itself failed (exit 255): then nothing was learned about the remote,
+/// and recording "not found" would be wrong, so it is the link failure it is.
+fn path_lookup_result(output: &Output) -> io::Result<Option<RemoteShepr>> {
+    if output.status.code() == Some(SSH_OWN_FAILURE_EXIT_CODE) {
+        return Err(command_failed("remote SSH connection failed", output));
+    }
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(remote_shepr_from_path_discovery(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+/// What full discovery of the remote executable has learned so far: the result of every
+/// SSH round trip that already completed.
+///
+/// Discovery is several round trips (a login-shell `command -v`, a `/bin/sh` `command -v`
+/// when that finds nothing, the known-locations script, then a status probe per candidate
+/// until one matches), and without connection sharing each is a cold SSH connect. On a
+/// slow enough link they do not all fit in one saved-machine attempt's budget. A saved
+/// machine's connector keeps its progress across attempts, so the next attempt resumes
+/// with the first round trip that has not completed instead of starting over. Every
+/// round trip is capped well below the attempt budget, so each attempt completes at
+/// least one and discovery finishes after a bounded number of attempts, each of which
+/// still ends within the budget.
+///
+/// Results are kept only when an attempt ended on a link failure (a timeout, the
+/// attempt deadline, a dropped or refused connection): those say nothing about the
+/// remote install. Any other error (a command that ran and failed, the not-ready
+/// outcome, an ssh failure reported through a command's output) clears them, so the
+/// next attempt rediscovers from scratch rather than resuming from facts that error
+/// may have made stale.
+#[derive(Default)]
+pub(super) struct DiscoveryProgress {
+    login_shell_path: Option<Option<RemoteShepr>>,
+    sh_path: Option<Option<RemoteShepr>>,
+    /// Every candidate in probe order, once the known-locations script has run.
+    candidates: Option<Vec<RemoteShepr>>,
+    /// How many of `candidates` were probed and did not match.
+    probed: usize,
+}
+
+impl DiscoveryProgress {
+    /// Runs the round trips not yet completed, in order, stopping at the first error.
+    /// Returns the first candidate that matches, or the not-ready error when none does.
+    /// Progress survives only an error that is a link failure (`is_ssh_link_failure`,
+    /// which includes running out of time); any other error clears it.
+    pub(super) fn advance(&mut self, steps: &mut impl DiscoverySteps) -> io::Result<RemoteShepr> {
+        let result = self.run_remaining(steps);
+        if let Err(error) = &result
+            && !is_ssh_link_failure(error)
+        {
+            *self = Self::default();
+        }
+        result
+    }
+
+    fn run_remaining(&mut self, steps: &mut impl DiscoverySteps) -> io::Result<RemoteShepr> {
+        if self.login_shell_path.is_none() {
+            self.login_shell_path = Some(steps.path_via_login_shell()?);
+        }
+        let mut path_candidate = self.login_shell_path.clone().flatten();
+        if path_candidate.is_none() {
+            // Non-POSIX login shells such as xonsh reject `command -v`; retry through
+            // /bin/sh while retaining the login-shell probe for shell-initialized PATHs.
+            if self.sh_path.is_none() {
+                self.sh_path = Some(steps.path_via_sh()?);
+            }
+            path_candidate = self.sh_path.clone().flatten();
+        }
+        if self.candidates.is_none() {
+            let mut candidates = Vec::new();
+            if let Some(candidate) = path_candidate {
+                push_if_new_remote_binary_candidate(&mut candidates, candidate);
+            }
+            for candidate in steps.known_locations()? {
+                push_if_new_remote_binary_candidate(&mut candidates, candidate);
+            }
+            self.candidates = Some(candidates);
+        }
+        let candidates = self.candidates.clone().unwrap_or_default();
+        while let Some(candidate) = candidates.get(self.probed) {
+            if steps.matches(candidate)? {
+                return Ok(candidate.clone());
+            }
+            self.probed += 1;
+        }
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "matching Shepr is not ready on {}; install or update it there manually and retry",
+                steps.target(),
+            ),
+        ))
+    }
+
+    /// Whether any round trip has completed, so the next `advance` resumes mid-way.
+    pub(super) fn has_progress(&self) -> bool {
+        self.login_shell_path.is_some()
+    }
+}
+
+#[cfg(test)]
+#[path = "attach_discovery_tests.rs"]
+mod discovery_tests;
 
 pub(super) fn prepare_remote_shepr(
     ssh: &RemoteSsh,
@@ -754,6 +905,17 @@ pub(super) fn prepare_remote_shepr(
 
 pub(super) fn find_installed_remote_shepr(ssh: &RemoteSsh) -> io::Result<RemoteShepr> {
     locate_remote_shepr(ssh, true)
+}
+
+/// `find_installed_remote_shepr`, resuming from and recording into `progress`.
+pub(super) fn resume_installed_remote_shepr_discovery(
+    ssh: &RemoteSsh,
+    progress: &mut DiscoveryProgress,
+) -> io::Result<RemoteShepr> {
+    progress.advance(&mut SshDiscovery {
+        ssh,
+        require_surface_interest: true,
+    })
 }
 
 pub(super) fn discover_remote_api_metadata(
@@ -775,25 +937,6 @@ pub(super) fn discover_remote_api_metadata(
         ));
     }
     Ok(metadata)
-}
-
-fn remote_binary_candidates(ssh: &RemoteSsh) -> io::Result<Vec<RemoteShepr>> {
-    let mut candidates = Vec::new();
-
-    if let Some(path_candidate) = remote_binary_on_path_any(ssh)? {
-        push_if_new_remote_binary_candidate(&mut candidates, path_candidate);
-    }
-
-    let output = ssh.sh_output(&known_remote_binary_candidate_script())?;
-    if !output.status.success() {
-        return Err(command_failed("remote binary discovery failed", &output));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for candidate in remote_sheprs_from_path_discovery(&stdout) {
-        push_if_new_remote_binary_candidate(&mut candidates, candidate);
-    }
-
-    Ok(candidates)
 }
 
 fn push_if_new_remote_binary_candidate(candidates: &mut Vec<RemoteShepr>, candidate: RemoteShepr) {
@@ -822,26 +965,6 @@ if [ -n "$home" ]; then
 fi
 "#,
     )
-}
-
-fn remote_binary_on_path_any(ssh: &RemoteSsh) -> io::Result<Option<RemoteShepr>> {
-    let output = ssh.posix_user_shell_output("command -v shepr")?;
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Some(candidate) = remote_shepr_from_path_discovery(&stdout) {
-            return Ok(Some(candidate));
-        }
-    }
-
-    // Non-POSIX login shells such as xonsh reject `command -v`; retry through
-    // /bin/sh while retaining the login-shell probe for shell-initialized PATHs.
-    let output = ssh.sh_output("command -v shepr\n")?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(remote_shepr_from_path_discovery(&stdout))
 }
 
 fn remote_sheprs_from_path_discovery(stdout: &str) -> Vec<RemoteShepr> {
@@ -1221,14 +1344,21 @@ fn reattach_command(
     command
 }
 
+/// An `Other` error for a remote command that exited unsuccessfully. It carries the exit
+/// code (an `SshBridgeExit` inside, same message), so `is_ssh_link_failure` can tell ssh's
+/// own failure (exit 255) from the remote command's.
 fn command_failed(context: &str, output: &Output) -> io::Error {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stderr = stderr.trim();
-    if stderr.is_empty() {
-        io::Error::other(format!("{context}: {}", output.status))
+    let message = if stderr.is_empty() {
+        format!("{context}: {}", output.status)
     } else {
-        io::Error::other(format!("{context}: {stderr}"))
-    }
+        format!("{context}: {stderr}")
+    };
+    io::Error::other(SshBridgeExit {
+        code: output.status.code(),
+        message,
+    })
 }
 
 pub(super) struct SshStdioBridge {
@@ -1692,8 +1822,9 @@ fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io:
     )
 }
 
-/// An ssh bridge process that exited unsuccessfully, keeping its exit code so
-/// callers can tell ssh's own failures from the remote command's.
+/// An ssh process (a bridge or a one-shot remote command) that exited unsuccessfully,
+/// keeping its exit code so callers can tell ssh's own failures from the remote
+/// command's.
 #[derive(Debug)]
 struct SshBridgeExit {
     code: Option<i32>,
@@ -1947,7 +2078,8 @@ mod tests {
     }
 
     fn upload_test_streams(name: &str) -> (crate::ipc::LocalStream, crate::ipc::LocalStream) {
-        let socket = local_forward_socket_path(name, "upload-test");
+        let scratch = crate::test_support::ScratchDir::new(name);
+        let socket = scratch.join("upload.sock");
         let listener = crate::ipc::bind_private_local_listener(&socket).expect("test precondition");
         let client = crate::ipc::connect_local_stream(&socket).expect("test precondition");
         let server = listener.accept().expect("test precondition");
@@ -2093,10 +2225,8 @@ mod tests {
     fn bridge_socket_is_user_only() {
         use std::os::unix::fs::PermissionsExt;
 
-        let socket = std::env::temp_dir().join(format!(
-            "shepr-bridge-permissions-test-{}.sock",
-            std::process::id()
-        ));
+        let scratch = crate::test_support::ScratchDir::new("bridge-mode");
+        let socket = scratch.join("bridge.sock");
         let remote_shepr = RemoteShepr::new("/usr/bin/shepr");
         let bridge = SshStdioBridge::start(
             "example".to_string(),
@@ -2133,11 +2263,8 @@ mod tests {
             flags & libc::O_NONBLOCK != 0
         }
 
-        let socket = std::env::temp_dir().join(format!(
-            "shepr-bridge-blocking-test-{}.sock",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&socket);
+        let scratch = crate::test_support::ScratchDir::new("bridge-blocking");
+        let socket = scratch.join("bridge.sock");
         let listener = crate::ipc::bind_private_local_listener(&socket).expect("bind listener");
         let client = crate::ipc::connect_local_stream(&socket).expect("connect client");
         let mut server = listener.accept().expect("accept client");
@@ -2156,7 +2283,12 @@ mod tests {
 
     #[test]
     fn bridge_drop_while_waiting_for_client_is_bounded() {
+        // The production path is built under TMPDIR; point it at scratch so
+        // the socket never lands in the shared temp directory.
+        let env = crate::test_support::IsolatedEnv::new();
+        env.set("TMPDIR", env.path());
         let socket = local_forward_socket_path("drop-test", "default");
+        assert!(socket.starts_with(env.path()), "{}", socket.display());
         let remote_shepr = RemoteShepr::new("/usr/bin/shepr");
         let bridge = SshStdioBridge::start(
             "example".to_string(),
@@ -2429,13 +2561,7 @@ mod tests {
     #[test]
     fn exit_sweep_removes_what_owners_left_behind() {
         let registry: &'static TeardownRegistry = Box::leak(Box::new(TeardownRegistry::new()));
-        let root = std::env::temp_dir().join(format!(
-            "shepr-teardown-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |elapsed| elapsed.as_nanos())
-        ));
+        let root = crate::test_support::ScratchDir::new("teardown");
         let leaked = root.join("leaked");
         let released = root.join("released");
         fs::create_dir_all(&leaked).expect("test precondition");
@@ -2454,7 +2580,6 @@ mod tests {
             "the sweep removes what is still registered"
         );
         assert!(released.exists(), "deregistered resources are left alone");
-        fs::remove_dir_all(root).expect("test precondition");
     }
 
     #[test]
@@ -2768,15 +2893,7 @@ mod tests {
     fn cached_api_command_does_not_depend_on_a_posix_login_shell() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let dir = std::env::temp_dir().join(format!(
-            "shepr-api-command-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).expect("test precondition");
+        let dir = crate::test_support::ScratchDir::new("api-command");
         let fake = dir.join("shepr");
         std::fs::write(
             &fake,
@@ -2818,7 +2935,6 @@ mod tests {
         let output = run("/nonexistent/shepr");
         assert_eq!(output.status.code(), Some(78));
         assert!(String::from_utf8_lossy(&output.stderr).contains(STALE_API_METADATA));
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -2917,11 +3033,6 @@ mod tests {
         );
     }
 
-    fn remote_env_lock() -> &'static std::sync::Mutex<()> {
-        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-        LOCK.get_or_init(|| std::sync::Mutex::new(()))
-    }
-
     fn socket_path_byte_len(path: &Path) -> usize {
         use std::os::unix::ffi::OsStrExt;
         path.as_os_str().as_bytes().len()
@@ -2929,7 +3040,8 @@ mod tests {
 
     #[test]
     fn local_forward_socket_path_uses_readable_name_when_it_fits() {
-        let _guard = remote_env_lock().lock().expect("test precondition");
+        // The path is built under TMPDIR, which another test changes.
+        let _env = crate::test_support::IsolatedEnv::new();
         // Short target + session leave plenty of room - keep the human-
         // readable form so the socket path stays grep-friendly.
         let path = local_forward_socket_path("dev", "default");
@@ -2953,7 +3065,7 @@ mod tests {
 
     #[test]
     fn local_forward_socket_path_fits_in_sun_path() {
-        let _guard = remote_env_lock().lock().expect("test precondition");
+        let _env = crate::test_support::IsolatedEnv::new();
         // Worst case for the readable form: a 49-char TMPDIR +
         // max-length sanitized components. Should fall back to the hashed
         // short name, which fits under TMPDIR.
@@ -2970,13 +3082,12 @@ mod tests {
 
     #[test]
     fn local_forward_socket_path_falls_back_to_tmp_when_dir_is_long() {
-        let _guard = remote_env_lock().lock().expect("test precondition");
+        let env = crate::test_support::IsolatedEnv::new();
         // Force a TMPDIR long enough that even the hashed short name cannot
         // fit inside it. The fallback should drop to /tmp.
-        let prior = std::env::var_os("TMPDIR");
-        let long_dir = std::env::temp_dir().join("a".repeat(80));
-        let _ = fs::create_dir_all(&long_dir);
-        unsafe { std::env::set_var("TMPDIR", &long_dir) };
+        let long_dir = env.path().join("a".repeat(80));
+        fs::create_dir(&long_dir).expect("test precondition");
+        env.set("TMPDIR", &long_dir);
 
         let path = local_forward_socket_path("longish-host.example.com", "default");
         let fits = fits_unix_socket_path(&path);
@@ -2986,12 +3097,7 @@ mod tests {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_string();
-
-        match prior {
-            Some(v) => unsafe { std::env::set_var("TMPDIR", v) },
-            None => unsafe { std::env::remove_var("TMPDIR") },
-        }
-        let _ = fs::remove_dir_all(&long_dir);
+        drop(env);
 
         assert!(fits, "fallback path still overflows: {}", path.display());
         assert_eq!(parent.as_deref(), Some(Path::new("/tmp")));

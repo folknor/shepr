@@ -30,6 +30,25 @@ const ATTENTION_RETRY_DELAY: Duration = Duration::from_secs(30);
 /// A healthy attempt needs far less: every noninteractive discovery command already had
 /// to fit a cold SSH connect into 15 seconds. It stays below `MAX_RETRY_DELAY` to leave
 /// room for tearing a timed-out bridge down.
+///
+/// The budget is the same for every attempt, including one that has to run full
+/// discovery of the remote executable. Most attempts do not: `shepr machine add` seeds
+/// the metadata cache and a reconnect launches the bridge from the remembered executable.
+/// With the default managed ssh config every command after the first reuses one shared
+/// connection (ControlMaster, persisting ten minutes), so only one cold connect is paid.
+/// The case that can overrun is a cache miss or a stale remembered path on a slow link
+/// without connection sharing, where each of discovery's round trips (up to three
+/// commands, a status probe per candidate, then the bridge) is its own cold connect.
+/// That case is handled by resuming, not by a larger budget: the saved-machine connector
+/// keeps what discovery completed when an attempt ends on a timeout or other link
+/// failure (any other error clears it) and the next attempt continues from there, and it
+/// keeps a freshly discovered executable when only the bridge ran out of time. No
+/// discovery round trip may take longer than 15 seconds, so every attempt that starts
+/// with discovery completes at least one, and discovery finishes after a bounded number
+/// of attempts; after that the bridge and handshake need to fit one attempt, as on every
+/// ordinary reconnect. A larger budget for discovery
+/// attempts would stretch the 30-second reconnect promise exactly where the link is
+/// slowest, and would still fail on a link one step slower.
 const ATTEMPT_BUDGET: Duration = Duration::from_secs(25);
 
 #[derive(Clone, Copy)]

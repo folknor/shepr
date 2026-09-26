@@ -131,9 +131,7 @@ impl TerminalState {
         };
         self.metadata_report_sequences
             .get(source)
-            .is_none_or(|last| {
-                !super::report_seq_superseded(last.seq, Some(last.accepted_at), seq, now)
-            })
+            .is_none_or(|last| !last.supersedes(seq, now))
     }
 
     pub(crate) fn metadata_report_agent(

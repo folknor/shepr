@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use crate::test_support::IsolatedEnv;
+
 #[test]
 fn extract_version_triple_parses_common_outputs() {
     assert_eq!(extract_version_triple("0.14.0"), Some((0, 14, 0)));
@@ -89,21 +91,29 @@ fn enforce_agent_version_accepts_current_version() {
     assert!(result.is_none(), "matching version must not warn");
 }
 
-fn clear_integration_path_env() {
-    unsafe { std::env::remove_var(PI_CODING_AGENT_DIR_ENV_VAR) };
-    unsafe { std::env::remove_var(OMP_CONFIG_DIR_ENV_VAR) };
-    unsafe { std::env::remove_var(CLAUDE_CONFIG_DIR_ENV_VAR) };
-    unsafe { std::env::remove_var(CODEX_HOME_ENV_VAR) };
-    unsafe { std::env::remove_var(COPILOT_HOME_ENV_VAR) };
-    unsafe { std::env::remove_var(KIMI_CODE_HOME_ENV_VAR) };
-    unsafe { std::env::remove_var("XDG_CONFIG_HOME") };
-    unsafe { std::env::remove_var("XDG_STATE_HOME") };
-    unsafe { std::env::remove_var(QODERCLI_CONFIG_DIR_ENV_VAR) };
-    unsafe { std::env::remove_var(QWEN_HOME_ENV_VAR) };
-    unsafe { std::env::remove_var(CURSOR_CONFIG_DIR_ENV_VAR) };
-    unsafe { std::env::remove_var(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR) };
-    unsafe { std::env::remove_var(GROK_CONFIG_DIR_ENV_VAR) };
-    unsafe { std::env::remove_var(GROK_HOME_ENV_VAR) };
+/// Clears every agent config-directory override, so paths resolve against
+/// `HOME` unless a test sets one. `IsolatedEnv` already clears the XDG base
+/// directories; this adds the agent-specific variables it does not know.
+fn clear_integration_path_env(env: &IsolatedEnv) {
+    for key in [
+        PI_CODING_AGENT_DIR_ENV_VAR,
+        OMP_CONFIG_DIR_ENV_VAR,
+        CLAUDE_CONFIG_DIR_ENV_VAR,
+        CODEX_HOME_ENV_VAR,
+        COPILOT_HOME_ENV_VAR,
+        KIMI_CODE_HOME_ENV_VAR,
+        "XDG_CONFIG_HOME",
+        "XDG_STATE_HOME",
+        QODERCLI_CONFIG_DIR_ENV_VAR,
+        QWEN_HOME_ENV_VAR,
+        CURSOR_CONFIG_DIR_ENV_VAR,
+        ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR,
+        GROK_CONFIG_DIR_ENV_VAR,
+        GROK_HOME_ENV_VAR,
+        HERMES_HOME_ENV_VAR,
+    ] {
+        env.remove(key);
+    }
 }
 
 fn kimi_hook_command(hook_path: &Path, action: &str) -> String {
@@ -139,26 +149,21 @@ fn assert_kimi_hook(
     );
 }
 
-fn unique_base() -> PathBuf {
-    clear_integration_path_env();
-    std::env::temp_dir().join(format!(
-        "shepr-integration-install-test-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("test precondition")
-            .as_nanos()
-    ))
+/// The directory a test builds its fake homes and agent directories in,
+/// inside the test's scratch directory. Also clears the agent overrides.
+fn unique_base(env: &IsolatedEnv) -> PathBuf {
+    clear_integration_path_env(env);
+    env.path().join("base")
 }
 
 #[test]
 fn install_pi_writes_embedded_asset_to_pi_extensions_dir() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let ext_dir = home.join(".pi/agent/extensions");
     fs::create_dir_all(&ext_dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let path = install_pi().expect("test precondition");
     let content = fs::read_to_string(&path).expect("test precondition");
@@ -166,18 +171,17 @@ fn install_pi_writes_embedded_asset_to_pi_extensions_dir() {
     assert_eq!(path, ext_dir.join(PI_EXTENSION_INSTALL_NAME));
     assert_eq!(content, PI_EXTENSION_ASSET);
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_pi_creates_extensions_dir_when_agent_dir_exists() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let agent_dir = home.join(".pi/agent");
     fs::create_dir_all(&agent_dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let path = install_pi().expect("test precondition");
 
@@ -187,54 +191,52 @@ fn install_pi_creates_extensions_dir_when_agent_dir_exists() {
     );
     assert!(path.is_file());
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_pi_uses_pi_coding_agent_dir_env() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let agent_dir = base.join("custom-pi-agent");
     let ext_dir = agent_dir.join("extensions");
     fs::create_dir_all(&ext_dir).expect("test precondition");
-    unsafe { std::env::set_var(PI_CODING_AGENT_DIR_ENV_VAR, &agent_dir) };
+    env.set(PI_CODING_AGENT_DIR_ENV_VAR, &agent_dir);
 
     let path = install_pi().expect("test precondition");
 
     assert_eq!(path, ext_dir.join(PI_EXTENSION_INSTALL_NAME));
 
-    clear_integration_path_env();
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_pi_expands_tilde_in_pi_coding_agent_dir_env() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let ext_dir = home.join("custom-pi-agent/extensions");
     fs::create_dir_all(&ext_dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
-    unsafe { std::env::set_var(PI_CODING_AGENT_DIR_ENV_VAR, "~/custom-pi-agent") };
+    env.set("HOME", &home);
+    env.set(PI_CODING_AGENT_DIR_ENV_VAR, "~/custom-pi-agent");
 
     let path = install_pi().expect("test precondition");
 
     assert_eq!(path, ext_dir.join(PI_EXTENSION_INSTALL_NAME));
 
-    unsafe { std::env::remove_var("HOME") };
-    clear_integration_path_env();
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_omp_writes_embedded_asset_to_omp_extensions_dir() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let ext_dir = home.join(".omp/agent/extensions");
     fs::create_dir_all(&ext_dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let installed = install_omp().expect("test precondition");
     let content = fs::read_to_string(&installed.extension_path).expect("test precondition");
@@ -245,19 +247,18 @@ fn install_omp_writes_embedded_asset_to_omp_extensions_dir() {
     );
     assert_eq!(content, OMP_EXTENSION_ASSET);
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_omp_uses_pi_config_dir_env() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let ext_dir = home.join("custom-omp/agent/extensions");
     fs::create_dir_all(&ext_dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
-    unsafe { std::env::set_var(OMP_CONFIG_DIR_ENV_VAR, "custom-omp") };
+    env.set("HOME", &home);
+    env.set(OMP_CONFIG_DIR_ENV_VAR, "custom-omp");
 
     let installed = install_omp().expect("test precondition");
 
@@ -266,22 +267,21 @@ fn install_omp_uses_pi_config_dir_env() {
         ext_dir.join(OMP_EXTENSION_INSTALL_NAME)
     );
 
-    unsafe { std::env::remove_var("HOME") };
-    clear_integration_path_env();
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_omp_refuses_shared_pi_extension_directory() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let agent_dir = base.join("shared-agent");
     let ext_dir = agent_dir.join("extensions");
     let pi_extension = ext_dir.join(PI_EXTENSION_INSTALL_NAME);
     fs::create_dir_all(&ext_dir).expect("test precondition");
     fs::write(&pi_extension, PI_EXTENSION_ASSET).expect("test precondition");
-    unsafe { std::env::set_var(PI_CODING_AGENT_DIR_ENV_VAR, &agent_dir) };
-    unsafe { std::env::set_var(OMP_CONFIG_DIR_ENV_VAR, "ignored-omp-config") };
+    env.set(PI_CODING_AGENT_DIR_ENV_VAR, &agent_dir);
+    env.set(OMP_CONFIG_DIR_ENV_VAR, "ignored-omp-config");
 
     let err = install_omp().expect_err("test precondition").to_string();
 
@@ -290,19 +290,19 @@ fn install_omp_refuses_shared_pi_extension_directory() {
     assert!(pi_extension.is_file());
     assert!(!ext_dir.join(OMP_EXTENSION_INSTALL_NAME).exists());
 
-    clear_integration_path_env();
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_omp_creates_extensions_dir_when_agent_dir_exists() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let agent_dir = home.join(".omp/agent");
     let ext_dir = agent_dir.join("extensions");
     fs::create_dir_all(&agent_dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let installed = install_omp().expect("test precondition");
 
@@ -312,14 +312,13 @@ fn install_omp_creates_extensions_dir_when_agent_dir_exists() {
     );
     assert!(ext_dir.is_dir());
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_omp_removes_embedded_extension_when_present() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let ext_dir = home.join(".omp/agent/extensions");
     fs::create_dir_all(&ext_dir).expect("test precondition");
@@ -328,7 +327,7 @@ fn uninstall_omp_removes_embedded_extension_when_present() {
         OMP_EXTENSION_ASSET,
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let result = uninstall_omp().expect("test precondition");
 
@@ -339,36 +338,34 @@ fn uninstall_omp_removes_embedded_extension_when_present() {
     assert!(result.removed_extension);
     assert!(!result.extension_path.exists());
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_omp_errors_when_extension_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     fs::create_dir_all(&home).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let err = install_omp().expect_err("test precondition").to_string();
 
     assert!(err.contains("omp extension directory not found"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_pi_removes_embedded_extension_when_present() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let ext_dir = home.join(".pi/agent/extensions");
     fs::create_dir_all(&ext_dir).expect("test precondition");
     fs::write(ext_dir.join(PI_EXTENSION_INSTALL_NAME), PI_EXTENSION_ASSET)
         .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let result = uninstall_pi().expect("test precondition");
 
@@ -379,20 +376,19 @@ fn uninstall_pi_removes_embedded_extension_when_present() {
     assert!(result.removed_extension);
     assert!(!result.extension_path.exists());
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn outdated_integrations_treat_missing_version_marker_as_outdated() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let ext_dir = home.join(".pi/agent/extensions");
     fs::create_dir_all(&ext_dir).expect("test precondition");
     let extension_path = ext_dir.join(PI_EXTENSION_INSTALL_NAME);
     fs::write(&extension_path, "// installed by shepr\n").expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let outdated = outdated_installed_integrations();
 
@@ -405,47 +401,44 @@ fn outdated_integrations_treat_missing_version_marker_as_outdated() {
     assert_eq!(outdated[0].installed_version, None);
     assert_eq!(outdated[0].expected_version, PI_INTEGRATION_VERSION);
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn outdated_integrations_accept_current_version_marker() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let ext_dir = home.join(".pi/agent/extensions");
     fs::create_dir_all(&ext_dir).expect("test precondition");
     fs::write(ext_dir.join(PI_EXTENSION_INSTALL_NAME), PI_EXTENSION_ASSET)
         .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     assert!(outdated_installed_integrations().is_empty());
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_pi_errors_when_extension_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     fs::create_dir_all(&home).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let err = install_pi().expect_err("test precondition").to_string();
 
     assert!(err.contains("pi extension directory not found"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_claude_writes_hook_and_updates_settings() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let claude_dir = home.join(".claude");
     fs::create_dir_all(&claude_dir).expect("test precondition");
@@ -454,7 +447,7 @@ fn install_claude_writes_hook_and_updates_settings() {
         r#"{"permissions":{"allow":["Read"]},"hooks":{}}"#,
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let installed = install_claude().expect("test precondition");
     let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
@@ -488,17 +481,16 @@ fn install_claude_writes_hook_and_updates_settings() {
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_claude_uses_claude_config_dir_env() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let claude_dir = base.join("custom-claude");
     fs::create_dir_all(&claude_dir).expect("test precondition");
-    unsafe { std::env::set_var(CLAUDE_CONFIG_DIR_ENV_VAR, &claude_dir) };
+    env.set(CLAUDE_CONFIG_DIR_ENV_VAR, &claude_dir);
 
     let installed = install_claude().expect("test precondition");
 
@@ -508,18 +500,18 @@ fn install_claude_uses_claude_config_dir_env() {
         claude_dir.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME)
     );
 
-    clear_integration_path_env();
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_claude_is_idempotent_for_hook_entries() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let claude_dir = home.join(".claude");
     fs::create_dir_all(&claude_dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     install_claude().expect("test precondition");
     install_claude().expect("test precondition");
@@ -544,14 +536,13 @@ fn install_claude_is_idempotent_for_hook_entries() {
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_claude_removes_shepr_hooks_and_preserves_others() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let claude_dir = home.join(".claude");
     let hooks_dir = claude_dir.join("hooks");
@@ -574,7 +565,7 @@ fn uninstall_claude_removes_shepr_hooks_and_preserves_others() {
         serde_json::to_string(&settings).expect("test precondition"),
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let result = uninstall_claude().expect("test precondition");
     let settings: Value = serde_json::from_str(
@@ -597,35 +588,33 @@ fn uninstall_claude_removes_shepr_hooks_and_preserves_others() {
         "echo keep"
     );
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_claude_errors_when_claude_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     fs::create_dir_all(&home).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let err = install_claude().expect_err("test precondition").to_string();
 
     assert!(err.contains("claude directory not found"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_codex_writes_hook_and_updates_hooks_and_config() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let codex_dir = home.join(".codex");
     fs::create_dir_all(&codex_dir).expect("test precondition");
     fs::write(codex_dir.join("config.toml"), "model = \"gpt-5.4\"\n").expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let installed = install_codex().expect("test precondition");
     let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
@@ -654,18 +643,17 @@ fn install_codex_writes_hook_and_updates_hooks_and_config() {
     assert!(config.contains("hooks = true"));
     assert!(!config.contains("codex_hooks"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_codex_uses_codex_home_env() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let codex_dir = base.join("custom-codex");
     fs::create_dir_all(&codex_dir).expect("test precondition");
     fs::write(codex_dir.join("config.toml"), "model = \"gpt-5.4\"\n").expect("test precondition");
-    unsafe { std::env::set_var(CODEX_HOME_ENV_VAR, &codex_dir) };
+    env.set(CODEX_HOME_ENV_VAR, &codex_dir);
 
     let installed = install_codex().expect("test precondition");
 
@@ -673,14 +661,14 @@ fn install_codex_uses_codex_home_env() {
     assert_eq!(installed.hooks_path, codex_dir.join("hooks.json"));
     assert_eq!(installed.config_path, codex_dir.join("config.toml"));
 
-    clear_integration_path_env();
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_codex_is_idempotent_for_hook_entries_and_feature_flag() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let codex_dir = home.join(".codex");
     fs::create_dir_all(&codex_dir).expect("test precondition");
@@ -689,7 +677,7 @@ fn install_codex_is_idempotent_for_hook_entries_and_feature_flag() {
         "[features]\ncodex_hooks = false\nother = true\n",
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     install_codex().expect("test precondition");
     install_codex().expect("test precondition");
@@ -715,14 +703,13 @@ fn install_codex_is_idempotent_for_hook_entries_and_feature_flag() {
     assert!(!config.contains("codex_hooks"));
     assert!(config.contains("other = true"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_codex_only_migrates_top_level_feature_flags() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let codex_dir = home.join(".codex");
     fs::create_dir_all(&codex_dir).expect("test precondition");
@@ -731,7 +718,7 @@ fn install_codex_only_migrates_top_level_feature_flags() {
             "profile = \"work\"\n\n[profiles.work.features]\nhooks = false\ncodex_hooks = false\n\n[features]\ncodex_hooks = true\nother = true\n",
         )
         .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     install_codex().expect("test precondition");
 
@@ -740,14 +727,13 @@ fn install_codex_only_migrates_top_level_feature_flags() {
     assert!(config.contains("[profiles.work.features]\nhooks = false\ncodex_hooks = false"));
     assert!(config.contains("[features]\nhooks = true\nother = true"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_codex_removes_shepr_hooks_and_leaves_config_alone() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let codex_dir = home.join(".codex");
     fs::create_dir_all(&codex_dir).expect("test precondition");
@@ -771,7 +757,7 @@ fn uninstall_codex_removes_shepr_hooks_and_leaves_config_alone() {
         "[features]\nhooks = true\nother = true\n",
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let result = uninstall_codex().expect("test precondition");
     let hooks: Value = serde_json::from_str(
@@ -797,30 +783,28 @@ fn uninstall_codex_removes_shepr_hooks_and_leaves_config_alone() {
     assert!(config.contains("hooks = true"));
     assert!(config.contains("other = true"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_codex_errors_when_config_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     fs::create_dir_all(&home).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let err = install_codex().expect_err("test precondition").to_string();
 
     assert!(err.contains("codex config directory not found"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_kimi_writes_hook_and_updates_config() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let kimi_dir = home.join(".kimi-code");
     fs::create_dir_all(&kimi_dir).expect("test precondition");
@@ -829,7 +813,7 @@ fn install_kimi_writes_hook_and_updates_config() {
             "default_model = \"moonshot\"\n\n[[hooks]]\nevent = \"Notification\"\nmatcher = \"task.completed\"\ncommand = \"echo keep\"\ntimeout = 3\n",
         )
         .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let installed = install_kimi().expect("test precondition");
     let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
@@ -851,7 +835,6 @@ fn install_kimi_writes_hook_and_updates_config() {
         assert_kimi_hook(&config, &installed.hook_path, event, matcher, action);
     }
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
@@ -877,11 +860,11 @@ fn kimi_question_hooks_report_blocked_until_the_question_finishes() {
 
 #[test]
 fn install_kimi_uses_kimi_code_home_env() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let kimi_dir = base.join("custom-kimi");
     fs::create_dir_all(&kimi_dir).expect("test precondition");
-    unsafe { std::env::set_var(KIMI_CODE_HOME_ENV_VAR, &kimi_dir) };
+    env.set(KIMI_CODE_HOME_ENV_VAR, &kimi_dir);
 
     let installed = install_kimi().expect("test precondition");
 
@@ -891,18 +874,18 @@ fn install_kimi_uses_kimi_code_home_env() {
     );
     assert_eq!(installed.config_path, kimi_dir.join("config.toml"));
 
-    clear_integration_path_env();
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_kimi_is_idempotent_for_config_block() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let kimi_dir = home.join(".kimi-code");
     fs::create_dir_all(&kimi_dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     install_kimi().expect("test precondition");
     install_kimi().expect("test precondition");
@@ -914,18 +897,17 @@ fn install_kimi_is_idempotent_for_config_block() {
     assert_eq!(config.matches(KIMI_CONFIG_BLOCK_END).count(), 1);
     assert_eq!(hooks.len(), KIMI_HOOK_EVENTS.len());
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_kimi_removes_hook_and_config_block_preserves_other_hooks() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let kimi_dir = home.join(".kimi-code");
     fs::create_dir_all(&kimi_dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let installed = install_kimi().expect("test precondition");
     fs::write(
@@ -954,30 +936,28 @@ fn uninstall_kimi_removes_hook_and_config_block_preserves_other_hooks() {
         Some("Notification")
     );
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_kimi_errors_when_config_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     fs::create_dir_all(&home).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let err = install_kimi().expect_err("test precondition").to_string();
 
     assert!(err.contains("kimi code config directory not found"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_copilot_writes_hook_and_updates_settings() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let copilot_dir = home.join(".copilot");
     fs::create_dir_all(&copilot_dir).expect("test precondition");
@@ -986,7 +966,7 @@ fn install_copilot_writes_hook_and_updates_settings() {
         r#"{"theme":"dark","hooks":{"PreToolUse":[{"type":"command","command":"echo keep","timeoutSec":10}]}}"#,
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let installed = install_copilot().expect("test precondition");
     let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
@@ -1017,17 +997,16 @@ fn install_copilot_writes_hook_and_updates_settings() {
             .contains(COPILOT_HOOK_INSTALL_NAME)
     );
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_copilot_uses_copilot_home_env_and_is_idempotent() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let copilot_dir = base.join("custom-copilot");
     fs::create_dir_all(&copilot_dir).expect("test precondition");
-    unsafe { std::env::set_var(COPILOT_HOME_ENV_VAR, &copilot_dir) };
+    env.set(COPILOT_HOME_ENV_VAR, &copilot_dir);
 
     let installed = install_copilot().expect("test precondition");
     install_copilot().expect("test precondition");
@@ -1049,14 +1028,14 @@ fn install_copilot_uses_copilot_home_env_and_is_idempotent() {
         1
     );
 
-    clear_integration_path_env();
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_copilot_removes_shepr_hooks_and_preserves_others() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let copilot_dir = home.join(".copilot");
     let hooks_dir = copilot_dir.join("hooks");
@@ -1080,7 +1059,7 @@ fn uninstall_copilot_removes_shepr_hooks_and_preserves_others() {
         serde_json::to_string(&settings).expect("test precondition"),
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let result = uninstall_copilot().expect("test precondition");
     let settings: Value = serde_json::from_str(
@@ -1100,17 +1079,16 @@ fn uninstall_copilot_removes_shepr_hooks_and_preserves_others() {
     );
     assert_eq!(settings["hooks"]["SessionStart"][0]["command"], "echo keep");
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_copilot_errors_when_config_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     fs::create_dir_all(&home).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let err = install_copilot()
         .expect_err("test precondition")
@@ -1118,14 +1096,13 @@ fn install_copilot_errors_when_config_dir_missing() {
 
     assert!(err.contains("copilot config directory not found"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_devin_writes_hook_and_updates_settings() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let xdg_config = base.join("xdg");
     let devin_dir = xdg_config.join("devin");
     fs::create_dir_all(&devin_dir).expect("test precondition");
@@ -1134,8 +1111,8 @@ fn install_devin_writes_hook_and_updates_settings() {
         r#"{"theme_mode":"dark","hooks":{}}"#,
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("XDG_CONFIG_HOME", &xdg_config) };
-    unsafe { std::env::set_var("HOME", base.join("home")) };
+    env.set("XDG_CONFIG_HOME", &xdg_config);
+    env.set("HOME", base.join("home"));
 
     let installed = install_devin().expect("test precondition");
     let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
@@ -1158,20 +1135,19 @@ fn install_devin_writes_hook_and_updates_settings() {
         );
     }
 
-    clear_integration_path_env();
-    unsafe { std::env::remove_var("HOME") };
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_devin_is_idempotent_for_hook_entries() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let xdg_config = base.join("xdg");
     let devin_dir = xdg_config.join("devin");
     fs::create_dir_all(&devin_dir).expect("test precondition");
-    unsafe { std::env::set_var("XDG_CONFIG_HOME", &xdg_config) };
-    unsafe { std::env::set_var("HOME", base.join("home")) };
+    env.set("XDG_CONFIG_HOME", &xdg_config);
+    env.set("HOME", base.join("home"));
 
     install_devin().expect("test precondition");
     install_devin().expect("test precondition");
@@ -1191,20 +1167,19 @@ fn install_devin_is_idempotent_for_hook_entries() {
         );
     }
 
-    clear_integration_path_env();
-    unsafe { std::env::remove_var("HOME") };
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_devin_removes_shepr_hooks_and_preserves_others() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let xdg_config = base.join("xdg");
     let devin_dir = xdg_config.join("devin");
     fs::create_dir_all(&devin_dir).expect("test precondition");
-    unsafe { std::env::set_var("XDG_CONFIG_HOME", &xdg_config) };
-    unsafe { std::env::set_var("HOME", base.join("home")) };
+    env.set("XDG_CONFIG_HOME", &xdg_config);
+    env.set("HOME", base.join("home"));
 
     install_devin().expect("test precondition");
 
@@ -1256,32 +1231,30 @@ fn uninstall_devin_removes_shepr_hooks_and_preserves_others() {
     assert!(settings["hooks"].get("Stop").is_none());
     assert!(settings["hooks"].get("SessionEnd").is_none());
 
-    clear_integration_path_env();
-    unsafe { std::env::remove_var("HOME") };
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_devin_errors_when_config_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let xdg_config = base.join("xdg");
     fs::create_dir_all(&xdg_config).expect("test precondition");
-    unsafe { std::env::set_var("XDG_CONFIG_HOME", &xdg_config) };
-    unsafe { std::env::set_var("HOME", base.join("home")) };
+    env.set("XDG_CONFIG_HOME", &xdg_config);
+    env.set("HOME", base.join("home"));
 
     let err = install_devin().expect_err("test precondition").to_string();
     assert!(err.contains("devin config directory not found"));
 
-    clear_integration_path_env();
-    unsafe { std::env::remove_var("HOME") };
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_droid_writes_hook_to_settings() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let droid_dir = home.join(".factory");
     fs::create_dir_all(&droid_dir).expect("test precondition");
@@ -1290,7 +1263,7 @@ fn install_droid_writes_hook_to_settings() {
         r#"{"theme":"factory-dark"}"#,
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let installed = install_droid().expect("test precondition");
     let hook_content = fs::read_to_string(&installed.hook_path).expect("test precondition");
@@ -1327,18 +1300,17 @@ fn install_droid_writes_hook_to_settings() {
         );
     }
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_droid_is_idempotent_for_hook_entries() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let droid_dir = home.join(".factory");
     fs::create_dir_all(&droid_dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     install_droid().expect("test precondition");
     install_droid().expect("test precondition");
@@ -1358,14 +1330,13 @@ fn install_droid_is_idempotent_for_hook_entries() {
         );
     }
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_droid_removes_shepr_hooks_and_preserves_others() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let droid_dir = home.join(".factory");
     let hooks_dir = droid_dir.join("hooks");
@@ -1381,7 +1352,7 @@ fn uninstall_droid_removes_shepr_hooks_and_preserves_others() {
             ),
         )
         .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let result = uninstall_droid().expect("test precondition");
     let settings: Value = serde_json::from_str(
@@ -1395,34 +1366,32 @@ fn uninstall_droid_removes_shepr_hooks_and_preserves_others() {
     assert!(settings["hooks"].get("SessionStart").is_none());
     assert_eq!(settings["hooks"]["PostToolUse"][0]["matcher"], "Edit");
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_droid_errors_when_config_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     fs::create_dir_all(&home).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let err = install_droid().expect_err("test precondition").to_string();
 
     assert!(err.contains("droid config directory not found"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_opencode_writes_server_and_tui_plugins() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let opencode_dir = home.join(".config/opencode");
     fs::create_dir_all(&opencode_dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let installed = install_opencode().expect("test precondition");
 
@@ -1459,21 +1428,20 @@ fn install_opencode_writes_server_and_tui_plugins() {
             .expect("test precondition");
     assert_eq!(cli_config["plugins"], json!([OPENCODE_V2_TUI_PLUGIN_SPEC]));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn opencode_reuses_json_registration_in_symlinked_config_directory() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let dotfiles = base.join("dotfiles");
     let dir = home.join(".config/opencode");
     fs::create_dir_all(home.join(".config")).expect("test precondition");
     fs::create_dir_all(&dotfiles).expect("test precondition");
     std::os::unix::fs::symlink(&dotfiles, &dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
     let json_path = dir.join("tui.json");
     let original = "{\n  // User preferences\n  \"theme\":\"system\",\n  \"plugin\":[\"other\",[\"./shepr-tui-session.js\",{\"enabled\":true}]]\n}\n";
     fs::write(&json_path, original).expect("test precondition");
@@ -1535,19 +1503,18 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
     assert_eq!(fs::read_link(&dir).expect("test precondition"), dotfiles);
     assert!(!result.plugin_path.exists());
     assert!(!result.tui_plugin_path.exists());
-    unsafe { std::env::remove_var("HOME") };
     fs::remove_dir_all(base).expect("test precondition");
 }
 
 #[test]
 fn opencode_install_defers_v2_registration_while_migration_pending() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let opencode_dir = home.join(".config/opencode");
     fs::create_dir_all(&opencode_dir).expect("test precondition");
     fs::write(opencode_dir.join("tui.json"), "{}").expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let installed = install_opencode().expect("test precondition");
 
@@ -1560,18 +1527,17 @@ fn opencode_install_defers_v2_registration_while_migration_pending() {
             .is_file()
     );
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn opencode_v2_install_status_and_uninstall_preserve_cli_preferences() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let dir = home.join(".config/opencode");
     fs::create_dir_all(&dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
     let cli = dir.join("cli.json");
     fs::write(
         &cli,
@@ -1608,18 +1574,17 @@ fn opencode_v2_install_status_and_uninstall_preserve_cli_preferences() {
             .expect("test precondition"),
         json!({"theme":{"name":"catppuccin"},"plugins":["other"]})
     );
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn opencode_hard_link_rejection_precedes_install_and_uninstall_asset_changes() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let dir = home.join(".config/opencode");
     fs::create_dir_all(dir.join("plugins")).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
     let plugin = dir.join("plugins").join(OPENCODE_PLUGIN_INSTALL_NAME);
     fs::write(&plugin, "previous integration").expect("test precondition");
     let config = dir.join("cli.json");
@@ -1649,18 +1614,17 @@ fn opencode_hard_link_rejection_precedes_install_and_uninstall_asset_changes() {
     );
     assert!(!dir.join("tui.jsonc").exists());
     assert!(!dir.join(OPENCODE_V2_TUI_PLUGIN_DIR).exists());
-    unsafe { std::env::remove_var("HOME") };
     fs::remove_dir_all(base).expect("test precondition");
 }
 
 #[test]
 fn opencode_json_config_validation_precedes_asset_changes() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let dir = home.join(".config/opencode");
     fs::create_dir_all(dir.join("plugins")).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
     let plugin = dir.join("plugins").join(OPENCODE_PLUGIN_INSTALL_NAME);
     fs::write(&plugin, "previous integration").expect("test precondition");
     let config = dir.join("tui.json");
@@ -1696,18 +1660,17 @@ fn opencode_json_config_validation_precedes_asset_changes() {
     );
     assert!(!dir.join("tui.jsonc").exists());
     assert!(!dir.join(OPENCODE_TUI_PLUGIN_INSTALL_NAME).exists());
-    unsafe { std::env::remove_var("HOME") };
     fs::remove_dir_all(base).expect("test precondition");
 }
 
 #[test]
 fn opencode_invalid_cli_config_does_not_overwrite_existing_plugins() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let dir = home.join(".config/opencode");
     fs::create_dir_all(dir.join("plugins")).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
     let plugin = dir.join("plugins").join(OPENCODE_PLUGIN_INSTALL_NAME);
     fs::write(&plugin, "previous integration").expect("test precondition");
     fs::write(dir.join("cli.json"), r#"{"plugins":{}}"#).expect("test precondition");
@@ -1717,18 +1680,17 @@ fn opencode_invalid_cli_config_does_not_overwrite_existing_plugins() {
         "previous integration"
     );
     assert!(!dir.join("tui.jsonc").exists());
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn opencode_status_requires_the_tui_plugin_and_config_entry() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let opencode_dir = home.join(".config/opencode");
     fs::create_dir_all(&opencode_dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
     let installed = install_opencode().expect("test precondition");
     let status = || {
         integration_status_at(
@@ -1747,18 +1709,17 @@ fn opencode_status_requires_the_tui_plugin_and_config_entry() {
         .expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Outdated);
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_opencode_removes_plugins_and_managed_tui_config_entry() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let opencode_dir = home.join(".config/opencode");
     fs::create_dir_all(&opencode_dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
     let installed = install_opencode().expect("test precondition");
 
     let result = uninstall_opencode().expect("test precondition");
@@ -1779,19 +1740,18 @@ fn uninstall_opencode_removes_plugins_and_managed_tui_config_entry() {
     assert_eq!(tui_config, json!({}));
     assert_eq!(installed.plugin_path, result.plugin_path);
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_opencode_invalid_tui_config_does_not_write_plugins() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let opencode_dir = home.join(".config/opencode");
     fs::create_dir_all(&opencode_dir).expect("test precondition");
     fs::write(opencode_dir.join("tui.jsonc"), r#"{"plugin":{}}"#).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let err = install_opencode()
         .expect_err("test precondition")
@@ -1806,14 +1766,13 @@ fn install_opencode_invalid_tui_config_does_not_write_plugins() {
     );
     assert!(!opencode_dir.join(OPENCODE_TUI_PLUGIN_INSTALL_NAME).exists());
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_opencode_removes_plugins_when_tui_config_is_invalid() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let opencode_dir = home.join(".config/opencode");
     let plugins_dir = opencode_dir.join("plugins");
@@ -1829,7 +1788,7 @@ fn uninstall_opencode_removes_plugins_when_tui_config_is_invalid() {
         r#"{"plugin":["./shepr-tui-session.js","other"]}"#,
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let err = uninstall_opencode()
         .expect_err("test precondition")
@@ -1844,17 +1803,16 @@ fn uninstall_opencode_removes_plugins_when_tui_config_is_invalid() {
         json!({"plugin":["other"]})
     );
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_opencode_errors_when_config_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     fs::create_dir_all(&home).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let err = install_opencode()
         .expect_err("test precondition")
@@ -1862,18 +1820,17 @@ fn install_opencode_errors_when_config_dir_missing() {
 
     assert!(err.contains("opencode config directory not found"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_kilo_writes_plugin_to_plugin_dir() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let kilo_dir = home.join(".config/kilo");
     fs::create_dir_all(&kilo_dir).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let installed = install_kilo().expect("test precondition");
     let plugin_content = fs::read_to_string(&installed.plugin_path).expect("test precondition");
@@ -1884,14 +1841,13 @@ fn install_kilo_writes_plugin_to_plugin_dir() {
     );
     assert_eq!(plugin_content, KILO_PLUGIN_ASSET);
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_kilo_removes_plugin_when_present() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let kilo_plugin_dir = home.join(".config/kilo/plugin");
     fs::create_dir_all(&kilo_plugin_dir).expect("test precondition");
@@ -1900,43 +1856,41 @@ fn uninstall_kilo_removes_plugin_when_present() {
         KILO_PLUGIN_ASSET,
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let result = uninstall_kilo().expect("test precondition");
 
     assert!(result.removed_plugin);
     assert!(!result.plugin_path.exists());
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_kilo_errors_when_config_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     fs::create_dir_all(&home).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let err = install_kilo().expect_err("test precondition").to_string();
 
     assert!(err.contains("kilo config directory not found"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_hermes_writes_plugin_and_enables_it() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let hermes_dir = home.join(".hermes");
     fs::create_dir_all(&hermes_dir).expect("test precondition");
     fs::write(hermes_dir.join("config.yaml"), "model:\n  provider: auto\n")
         .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let installed = install_hermes().expect("test precondition");
     let manifest = fs::read_to_string(
@@ -1957,14 +1911,13 @@ fn install_hermes_writes_plugin_and_enables_it() {
     assert_eq!(init, HERMES_PLUGIN_INIT_ASSET);
     assert!(config.contains("plugins:\n  enabled:\n    - shepr-agent-state"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_hermes_is_idempotent_for_enabled_entry() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let hermes_dir = home.join(".hermes");
     fs::create_dir_all(&hermes_dir).expect("test precondition");
@@ -1973,7 +1926,7 @@ fn install_hermes_is_idempotent_for_enabled_entry() {
         "plugins:\n  enabled:\n    - shepr-agent-state\n",
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     install_hermes().expect("test precondition");
     install_hermes().expect("test precondition");
@@ -1981,14 +1934,13 @@ fn install_hermes_is_idempotent_for_enabled_entry() {
     let config = fs::read_to_string(hermes_dir.join("config.yaml")).expect("test precondition");
     assert_eq!(config.matches("shepr-agent-state").count(), 1);
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_hermes_preserves_flat_plugin_list() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let hermes_dir = home.join(".hermes");
     fs::create_dir_all(&hermes_dir).expect("test precondition");
@@ -1997,7 +1949,7 @@ fn install_hermes_preserves_flat_plugin_list() {
         "plugins:\n  - platforms/discord\n",
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     install_hermes().expect("test precondition");
 
@@ -2007,14 +1959,13 @@ fn install_hermes_preserves_flat_plugin_list() {
         "plugins:\n  - shepr-agent-state\n  - platforms/discord\n"
     );
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_hermes_converts_flow_plugin_list_to_block_list() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let hermes_dir = home.join(".hermes");
     fs::create_dir_all(&hermes_dir).expect("test precondition");
@@ -2023,7 +1974,7 @@ fn install_hermes_converts_flow_plugin_list_to_block_list() {
         "plugins: [platforms/discord]\n",
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     install_hermes().expect("test precondition");
 
@@ -2033,7 +1984,6 @@ fn install_hermes_converts_flow_plugin_list_to_block_list() {
         "plugins:\n  - shepr-agent-state\n  - platforms/discord\n"
     );
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
@@ -2092,8 +2042,8 @@ fn install_hermes_is_idempotent_for_inline_enabled_list_entry() {
 
 #[test]
 fn install_hermes_is_idempotent_for_quoted_flat_plugin_entry() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let hermes_dir = home.join(".hermes");
     fs::create_dir_all(&hermes_dir).expect("test precondition");
@@ -2102,7 +2052,7 @@ fn install_hermes_is_idempotent_for_quoted_flat_plugin_entry() {
         "plugins:\n  - \"shepr-agent-state\" # installed by shepr\n",
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     install_hermes().expect("test precondition");
 
@@ -2112,14 +2062,13 @@ fn install_hermes_is_idempotent_for_quoted_flat_plugin_entry() {
         "plugins:\n  - \"shepr-agent-state\" # installed by shepr\n"
     );
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_hermes_removes_plugin_and_enabled_entry() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let hermes_dir = home.join(".hermes");
     let plugin_dir = hermes_dir.join("plugins").join(HERMES_PLUGIN_INSTALL_NAME);
@@ -2134,7 +2083,7 @@ fn uninstall_hermes_removes_plugin_and_enabled_entry() {
         "plugins:\n  enabled:\n    - other-plugin\n    - shepr-agent-state\n",
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let result = uninstall_hermes().expect("test precondition");
     let config = fs::read_to_string(hermes_dir.join("config.yaml")).expect("test precondition");
@@ -2145,14 +2094,13 @@ fn uninstall_hermes_removes_plugin_and_enabled_entry() {
     assert!(config.contains("    - other-plugin"));
     assert!(!config.contains("shepr-agent-state"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_hermes_preserves_flat_plugin_list() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let hermes_dir = home.join(".hermes");
     let plugin_dir = hermes_dir.join("plugins").join(HERMES_PLUGIN_INSTALL_NAME);
@@ -2167,7 +2115,7 @@ fn uninstall_hermes_preserves_flat_plugin_list() {
         "plugins:\n  - other-plugin\n  - shepr-agent-state\n",
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let result = uninstall_hermes().expect("test precondition");
     let config = fs::read_to_string(hermes_dir.join("config.yaml")).expect("test precondition");
@@ -2176,14 +2124,13 @@ fn uninstall_hermes_preserves_flat_plugin_list() {
     assert!(result.updated_config);
     assert_eq!(config, "plugins:\n  - other-plugin\n");
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_hermes_removes_flow_plugin_list_entry() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let hermes_dir = home.join(".hermes");
     let plugin_dir = hermes_dir.join("plugins").join(HERMES_PLUGIN_INSTALL_NAME);
@@ -2198,7 +2145,7 @@ fn uninstall_hermes_removes_flow_plugin_list_entry() {
         "plugins: [other-plugin, shepr-agent-state]\n",
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let result = uninstall_hermes().expect("test precondition");
     let config = fs::read_to_string(hermes_dir.join("config.yaml")).expect("test precondition");
@@ -2207,7 +2154,6 @@ fn uninstall_hermes_removes_flow_plugin_list_entry() {
     assert!(result.updated_config);
     assert_eq!(config, "plugins:\n  - other-plugin\n");
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
@@ -2237,8 +2183,8 @@ fn uninstall_hermes_converts_single_inline_enabled_entry_to_empty_list() {
 
 #[test]
 fn uninstall_hermes_removes_commented_flat_plugin_entry() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let hermes_dir = home.join(".hermes");
     let plugin_dir = hermes_dir.join("plugins").join(HERMES_PLUGIN_INSTALL_NAME);
@@ -2253,7 +2199,7 @@ fn uninstall_hermes_removes_commented_flat_plugin_entry() {
         "plugins:\n  - other-plugin\n  - shepr-agent-state # installed by shepr\n",
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let result = uninstall_hermes().expect("test precondition");
     let config = fs::read_to_string(hermes_dir.join("config.yaml")).expect("test precondition");
@@ -2262,23 +2208,21 @@ fn uninstall_hermes_removes_commented_flat_plugin_entry() {
     assert!(result.updated_config);
     assert_eq!(config, "plugins:\n  - other-plugin\n");
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_hermes_errors_when_config_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     fs::create_dir_all(&home).expect("test precondition");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let err = install_hermes().expect_err("test precondition").to_string();
 
     assert!(err.contains("hermes config directory not found"));
 
-    unsafe { std::env::remove_var("HOME") };
     let _ = fs::remove_dir_all(base);
 }
 
@@ -2544,8 +2488,8 @@ fn omp_ask_and_approval_events_report_blocked_state() {
 
 #[test]
 fn install_qodercli_writes_hook_and_updates_settings() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let qoder_dir = base.join(".qoder");
     fs::create_dir_all(&qoder_dir).expect("test precondition");
     fs::write(
@@ -2553,7 +2497,7 @@ fn install_qodercli_writes_hook_and_updates_settings() {
         r#"{"permissions":{"allow":["Read"]},"hooks":{}}"#,
     )
     .expect("test precondition");
-    unsafe { std::env::set_var(QODERCLI_CONFIG_DIR_ENV_VAR, &qoder_dir) };
+    env.set(QODERCLI_CONFIG_DIR_ENV_VAR, &qoder_dir);
 
     let installed = install_qodercli().expect("test precondition");
 
@@ -2588,17 +2532,17 @@ fn install_qodercli_writes_hook_and_updates_settings() {
     // Pre-existing settings keys must be preserved.
     assert!(settings.get("permissions").is_some());
 
-    unsafe { std::env::remove_var(QODERCLI_CONFIG_DIR_ENV_VAR) };
+    env.remove(QODERCLI_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_qodercli_is_idempotent_for_hook_entries() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let qoder_dir = base.join(".qoder");
     fs::create_dir_all(&qoder_dir).expect("test precondition");
-    unsafe { std::env::set_var(QODERCLI_CONFIG_DIR_ENV_VAR, &qoder_dir) };
+    env.set(QODERCLI_CONFIG_DIR_ENV_VAR, &qoder_dir);
 
     install_qodercli().expect("test precondition");
     install_qodercli().expect("test precondition");
@@ -2623,17 +2567,17 @@ fn install_qodercli_is_idempotent_for_hook_entries() {
         );
     }
 
-    unsafe { std::env::remove_var(QODERCLI_CONFIG_DIR_ENV_VAR) };
+    env.remove(QODERCLI_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_qodercli_removes_shepr_hooks_and_preserves_others() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let qoder_dir = base.join(".qoder");
     fs::create_dir_all(&qoder_dir).expect("test precondition");
-    unsafe { std::env::set_var(QODERCLI_CONFIG_DIR_ENV_VAR, &qoder_dir) };
+    env.set(QODERCLI_CONFIG_DIR_ENV_VAR, &qoder_dir);
 
     install_qodercli().expect("test precondition");
     // Inject a foreign hook entry the user might have configured by hand.
@@ -2676,16 +2620,16 @@ fn uninstall_qodercli_removes_shepr_hooks_and_preserves_others() {
         .expect("test precondition");
     assert_eq!(cmd, "echo user-defined");
 
-    unsafe { std::env::remove_var(QODERCLI_CONFIG_DIR_ENV_VAR) };
+    env.remove(QODERCLI_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_qodercli_errors_when_config_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let missing = base.join(".qoder");
-    unsafe { std::env::set_var(QODERCLI_CONFIG_DIR_ENV_VAR, &missing) };
+    env.set(QODERCLI_CONFIG_DIR_ENV_VAR, &missing);
 
     let err = install_qodercli()
         .expect_err("test precondition")
@@ -2695,14 +2639,14 @@ fn install_qodercli_errors_when_config_dir_missing() {
         "unexpected error: {err}"
     );
 
-    unsafe { std::env::remove_var(QODERCLI_CONFIG_DIR_ENV_VAR) };
+    env.remove(QODERCLI_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_qwen_writes_session_hook_and_preserves_settings() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let qwen_dir = base.join(".qwen");
     fs::create_dir_all(&qwen_dir).expect("test precondition");
     fs::write(
@@ -2710,7 +2654,7 @@ fn install_qwen_writes_session_hook_and_preserves_settings() {
         r#"{"permissions":{"allow":["Read"]},"hooks":{}}"#,
     )
     .expect("test precondition");
-    unsafe { std::env::set_var(QWEN_HOME_ENV_VAR, &qwen_dir) };
+    env.set(QWEN_HOME_ENV_VAR, &qwen_dir);
 
     let installed = install_qwen().expect("test precondition");
 
@@ -2755,17 +2699,17 @@ fn install_qwen_writes_session_hook_and_preserves_settings() {
         1
     );
 
-    unsafe { std::env::remove_var(QWEN_HOME_ENV_VAR) };
+    env.remove(QWEN_HOME_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_qwen_removes_only_shepr_hook() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let qwen_dir = base.join(".qwen");
     fs::create_dir_all(&qwen_dir).expect("test precondition");
-    unsafe { std::env::set_var(QWEN_HOME_ENV_VAR, &qwen_dir) };
+    env.set(QWEN_HOME_ENV_VAR, &qwen_dir);
 
     install_qwen().expect("test precondition");
     let settings_path = qwen_dir.join("settings.json");
@@ -2798,28 +2742,28 @@ fn uninstall_qwen_removes_only_shepr_hook() {
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0]["hooks"][0]["command"], "echo user-defined");
 
-    unsafe { std::env::remove_var(QWEN_HOME_ENV_VAR) };
+    env.remove(QWEN_HOME_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_qwen_errors_when_config_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let missing = base.join(".qwen");
-    unsafe { std::env::set_var(QWEN_HOME_ENV_VAR, &missing) };
+    env.set(QWEN_HOME_ENV_VAR, &missing);
 
     let err = install_qwen().expect_err("test precondition").to_string();
     assert!(err.contains("qwen code config directory not found"));
 
-    unsafe { std::env::remove_var(QWEN_HOME_ENV_VAR) };
+    env.remove(QWEN_HOME_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let letta_dir = home.join(".letta");
     fs::create_dir_all(&letta_dir).expect("test precondition");
@@ -2829,8 +2773,7 @@ fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
         r#"{"theme":"dark","hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo user"}]}]}}"#,
     )
     .expect("test precondition");
-    let previous_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let installed = install_letta().expect("test precondition");
     assert_eq!(
@@ -2875,11 +2818,6 @@ fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0]["hooks"][0]["command"], "echo user");
 
-    if let Some(home) = previous_home {
-        unsafe { std::env::set_var("HOME", home) };
-    } else {
-        unsafe { std::env::remove_var("HOME") };
-    }
     let _ = fs::remove_dir_all(base);
 }
 
@@ -2889,12 +2827,11 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     use std::os::unix::fs::PermissionsExt;
     use std::process::{Command, Stdio};
 
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     fs::create_dir_all(home.join(".letta")).expect("test precondition");
-    let previous_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
     let installed = install_letta().expect("test precondition");
 
     let capture = base.join("args.txt");
@@ -2943,11 +2880,6 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     assert!(args.contains("--agent-session-id default:agent-123"));
     assert!(args.contains("--session-start-source resume"));
 
-    if let Some(home) = previous_home {
-        unsafe { std::env::set_var("HOME", home) };
-    } else {
-        unsafe { std::env::remove_var("HOME") };
-    }
     let _ = fs::remove_dir_all(base);
 }
 
@@ -3011,12 +2943,12 @@ fn python3_available() -> bool {
 
 #[test]
 fn kimi_hook_reports_state_when_the_payload_is_not_a_json_object() {
-    let _lock = integration_env_lock();
+    let env = IsolatedEnv::new();
     if !python3_available() {
         eprintln!("skipping: python3 is not installed");
         return;
     }
-    let base = unique_base();
+    let base = unique_base(&env);
 
     let payloads: [&[u8]; 5] = [
         b"[1, 2]",
@@ -3100,12 +3032,12 @@ fn run_session_hook(base: &Path, asset: &str, payload: &[u8]) -> (bool, Vec<u8>,
 
 #[test]
 fn session_hooks_ignore_non_object_payloads_quietly() {
-    let _lock = integration_env_lock();
+    let env = IsolatedEnv::new();
     if !python3_available() {
         eprintln!("skipping: python3 is not installed");
         return;
     }
-    let base = unique_base();
+    let base = unique_base(&env);
     let hooks: [(&str, &str, &[u8]); 8] = [
         (
             "claude",
@@ -3208,34 +3140,27 @@ fn shell_hooks_never_let_python_fail_the_hook() {
 
 #[test]
 fn install_letta_errors_when_config_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     fs::create_dir_all(&home).expect("test precondition");
-    let previous_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     let err = install_letta().expect_err("test precondition").to_string();
     assert!(err.contains("letta code config directory not found"));
 
-    if let Some(home) = previous_home {
-        unsafe { std::env::set_var("HOME", home) };
-    } else {
-        unsafe { std::env::remove_var("HOME") };
-    }
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_letta_does_not_publish_hook_when_settings_are_invalid() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let letta_dir = home.join(".letta");
     fs::create_dir_all(&letta_dir).expect("test precondition");
     fs::write(letta_dir.join("settings.json"), "not json").expect("test precondition");
-    let previous_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     assert!(install_letta().is_err());
     assert!(
@@ -3245,18 +3170,13 @@ fn install_letta_does_not_publish_hook_when_settings_are_invalid() {
             .exists()
     );
 
-    if let Some(home) = previous_home {
-        unsafe { std::env::set_var("HOME", home) };
-    } else {
-        unsafe { std::env::remove_var("HOME") };
-    }
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn letta_install_and_uninstall_keep_symlinked_settings_and_reject_hard_links() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home = base.join("home");
     let letta_dir = home.join(".letta");
     let dotfiles = base.join("dotfiles");
@@ -3266,8 +3186,7 @@ fn letta_install_and_uninstall_keep_symlinked_settings_and_reject_hard_links() {
     fs::write(&real_settings, r#"{"theme":"dark"}"#).expect("test precondition");
     let settings_path = letta_dir.join("settings.json");
     std::os::unix::fs::symlink(&real_settings, &settings_path).expect("test precondition");
-    let previous_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", &home) };
+    env.set("HOME", &home);
 
     install_letta().expect("test precondition");
     assert!(
@@ -3309,18 +3228,13 @@ fn letta_install_and_uninstall_keep_symlinked_settings_and_reject_hard_links() {
     );
     assert!(uninstall_letta().is_err());
 
-    if let Some(home) = previous_home {
-        unsafe { std::env::set_var("HOME", home) };
-    } else {
-        unsafe { std::env::remove_var("HOME") };
-    }
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_cursor_writes_hook_and_updates_hooks_json() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let cursor_dir = base.join(".cursor");
     fs::create_dir_all(&cursor_dir).expect("test precondition");
     fs::write(
@@ -3328,7 +3242,7 @@ fn install_cursor_writes_hook_and_updates_hooks_json() {
         r#"{"version":1,"hooks":{"stop":[{"command":"echo keep-me"}]}}"#,
     )
     .expect("test precondition");
-    unsafe { std::env::set_var(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir) };
+    env.set(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir);
 
     let installed = install_cursor().expect("test precondition");
 
@@ -3371,17 +3285,17 @@ fn install_cursor_writes_hook_and_updates_hooks_json() {
         Some("echo keep-me")
     );
 
-    unsafe { std::env::remove_var(CURSOR_CONFIG_DIR_ENV_VAR) };
+    env.remove(CURSOR_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_cursor_is_idempotent_for_hook_entries() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let cursor_dir = base.join(".cursor");
     fs::create_dir_all(&cursor_dir).expect("test precondition");
-    unsafe { std::env::set_var(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir) };
+    env.set(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir);
 
     install_cursor().expect("test precondition");
     install_cursor().expect("test precondition");
@@ -3400,17 +3314,17 @@ fn install_cursor_is_idempotent_for_hook_entries() {
         .expect("test precondition");
     assert_eq!(session_start.len(), 1);
 
-    unsafe { std::env::remove_var(CURSOR_CONFIG_DIR_ENV_VAR) };
+    env.remove(CURSOR_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_cursor_removes_shepr_hooks_and_preserves_others() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let cursor_dir = base.join(".cursor");
     fs::create_dir_all(&cursor_dir).expect("test precondition");
-    unsafe { std::env::set_var(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir) };
+    env.set(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir);
 
     install_cursor().expect("test precondition");
     let mut hooks_file: Value = serde_json::from_str(
@@ -3440,17 +3354,17 @@ fn uninstall_cursor_removes_shepr_hooks_and_preserves_others() {
     assert!(!hooks.contains_key("sessionStart"));
     assert!(hooks.contains_key("beforeSubmitPrompt"));
 
-    unsafe { std::env::remove_var(CURSOR_CONFIG_DIR_ENV_VAR) };
+    env.remove(CURSOR_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_cursor_uses_cursor_config_dir_env() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let cursor_dir = base.join("custom-cursor");
     fs::create_dir_all(&cursor_dir).expect("test precondition");
-    unsafe { std::env::set_var(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir) };
+    env.set(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir);
 
     let installed = install_cursor().expect("test precondition");
 
@@ -3460,17 +3374,17 @@ fn install_cursor_uses_cursor_config_dir_env() {
     );
     assert_eq!(installed.hooks_path, cursor_dir.join("hooks.json"));
 
-    clear_integration_path_env();
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn cursor_integration_status_is_current_after_install() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let cursor_dir = base.join(".cursor");
     fs::create_dir_all(&cursor_dir).expect("test precondition");
-    unsafe { std::env::set_var(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir) };
+    env.set(CURSOR_CONFIG_DIR_ENV_VAR, &cursor_dir);
     // A hook script alone is not enough: the agent's hooks.json must also
     // register it, so install through the real path instead of hand-writing
     // just the script.
@@ -3484,16 +3398,16 @@ fn cursor_integration_status_is_current_after_install() {
     assert_eq!(cursor.state, IntegrationStatusKind::Current);
     assert_eq!(cursor.installed_version, Some(CURSOR_INTEGRATION_VERSION));
 
-    clear_integration_path_env();
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_cursor_errors_when_config_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let missing = base.join(".cursor");
-    unsafe { std::env::set_var(CURSOR_CONFIG_DIR_ENV_VAR, &missing) };
+    env.set(CURSOR_CONFIG_DIR_ENV_VAR, &missing);
 
     let err = install_cursor().expect_err("test precondition").to_string();
     assert!(
@@ -3501,15 +3415,14 @@ fn install_cursor_errors_when_config_dir_missing() {
         "unexpected error: {err}"
     );
 
-    unsafe { std::env::remove_var(CURSOR_CONFIG_DIR_ENV_VAR) };
+    env.remove(CURSOR_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_mastracode_writes_hook_and_updates_hooks_json() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
-    let original_home = std::env::var_os("HOME");
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let mastracode_dir = base.join(".mastracode");
     fs::create_dir_all(&mastracode_dir).expect("test precondition");
     fs::write(
@@ -3517,7 +3430,7 @@ fn install_mastracode_writes_hook_and_updates_hooks_json() {
         r#"{"PostToolUse":[{"type":"command","command":"echo keep-me"}]}"#,
     )
     .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &base) };
+    env.set("HOME", &base);
 
     let installed = install_mastracode().expect("test precondition");
 
@@ -3568,11 +3481,6 @@ fn install_mastracode_writes_hook_and_updates_hooks_json() {
         Some("echo keep-me")
     );
 
-    if let Some(home) = original_home {
-        unsafe { std::env::set_var("HOME", home) };
-    } else {
-        unsafe { std::env::remove_var("HOME") };
-    }
     let _ = fs::remove_dir_all(base);
 }
 
@@ -3585,11 +3493,11 @@ fn grok_session_command(config: &Value) -> String {
 
 #[test]
 fn install_grok_writes_hook_and_config() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    unsafe { std::env::set_var(GROK_CONFIG_DIR_ENV_VAR, &grok_dir) };
+    env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
 
     let installed = install_grok().expect("test precondition");
 
@@ -3618,16 +3526,15 @@ fn install_grok_writes_hook_and_config() {
     assert!(command.contains("shepr-agent-state.sh"));
     assert!(command.ends_with(" session"));
 
-    unsafe { std::env::remove_var(GROK_CONFIG_DIR_ENV_VAR) };
+    env.remove(GROK_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_mastracode_is_idempotent_for_hook_entries() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
-    let original_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", &base) };
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    env.set("HOME", &base);
 
     install_mastracode().expect("test precondition");
     install_mastracode().expect("test precondition");
@@ -3649,21 +3556,16 @@ fn install_mastracode_is_idempotent_for_hook_entries() {
         );
     }
 
-    if let Some(home) = original_home {
-        unsafe { std::env::set_var("HOME", home) };
-    } else {
-        unsafe { std::env::remove_var("HOME") };
-    }
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_grok_is_idempotent() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    unsafe { std::env::set_var(GROK_CONFIG_DIR_ENV_VAR, &grok_dir) };
+    env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
 
     install_grok().expect("test precondition");
     let first = fs::read_to_string(grok_dir.join("hooks").join(GROK_HOOK_CONFIG_INSTALL_NAME))
@@ -3673,16 +3575,15 @@ fn install_grok_is_idempotent() {
         .expect("test precondition");
     assert_eq!(first, second);
 
-    unsafe { std::env::remove_var(GROK_CONFIG_DIR_ENV_VAR) };
+    env.remove(GROK_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_mastracode_removes_shepr_hooks_and_preserves_others() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
-    let original_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", &base) };
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    env.set("HOME", &base);
 
     install_mastracode().expect("test precondition");
     let hooks_path = base.join(".mastracode").join("hooks.json");
@@ -3730,23 +3631,18 @@ fn uninstall_mastracode_removes_shepr_hooks_and_preserves_others() {
         Some("echo user-defined")
     );
 
-    if let Some(home) = original_home {
-        unsafe { std::env::set_var("HOME", home) };
-    } else {
-        unsafe { std::env::remove_var("HOME") };
-    }
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_grok_errors_when_config_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     // Deliberately do not create the ~/.grok directory ahead of time: the
     // installer must refuse instead of conjuring a config dir for an agent
     // that is not installed.
     let missing = base.join(".grok");
-    unsafe { std::env::set_var(GROK_CONFIG_DIR_ENV_VAR, &missing) };
+    env.set(GROK_CONFIG_DIR_ENV_VAR, &missing);
 
     let err = install_grok().expect_err("test precondition").to_string();
     assert!(
@@ -3754,17 +3650,17 @@ fn install_grok_errors_when_config_dir_missing() {
         "unexpected error: {err}"
     );
 
-    unsafe { std::env::remove_var(GROK_CONFIG_DIR_ENV_VAR) };
+    env.remove(GROK_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_grok_removes_files() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    unsafe { std::env::set_var(GROK_CONFIG_DIR_ENV_VAR, &grok_dir) };
+    env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
 
     install_grok().expect("test precondition");
     let result = uninstall_grok().expect("test precondition");
@@ -3778,17 +3674,17 @@ fn uninstall_grok_removes_files() {
     assert!(!again.removed_hook_file);
     assert!(!again.removed_config_file);
 
-    unsafe { std::env::remove_var(GROK_CONFIG_DIR_ENV_VAR) };
+    env.remove(GROK_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_grok_uses_grok_config_dir_env() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let grok_dir = base.join("custom-grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    unsafe { std::env::set_var(GROK_CONFIG_DIR_ENV_VAR, &grok_dir) };
+    env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
 
     let installed = install_grok().expect("test precondition");
 
@@ -3799,20 +3695,19 @@ fn install_grok_uses_grok_config_dir_env() {
         hooks_dir.join(GROK_HOOK_CONFIG_INSTALL_NAME)
     );
 
-    clear_integration_path_env();
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_mastracode_errors_when_event_value_not_array() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
-    let original_home = std::env::var_os("HOME");
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let mastracode_dir = base.join(".mastracode");
     fs::create_dir_all(&mastracode_dir).expect("test precondition");
     fs::write(mastracode_dir.join("hooks.json"), r#"{"SessionStart":{}}"#)
         .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &base) };
+    env.set("HOME", &base);
 
     let err = install_mastracode()
         .expect_err("test precondition")
@@ -3822,24 +3717,18 @@ fn install_mastracode_errors_when_event_value_not_array() {
         "unexpected error: {err}"
     );
 
-    if let Some(home) = original_home {
-        unsafe { std::env::set_var("HOME", home) };
-    } else {
-        unsafe { std::env::remove_var("HOME") };
-    }
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_mastracode_errors_when_event_value_not_array() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
-    let original_home = std::env::var_os("HOME");
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let mastracode_dir = base.join(".mastracode");
     fs::create_dir_all(&mastracode_dir).expect("test precondition");
     fs::write(mastracode_dir.join("hooks.json"), r#"{"SessionStart":{}}"#)
         .expect("test precondition");
-    unsafe { std::env::set_var("HOME", &base) };
+    env.set("HOME", &base);
 
     let err = uninstall_mastracode()
         .expect_err("test precondition")
@@ -3849,18 +3738,13 @@ fn uninstall_mastracode_errors_when_event_value_not_array() {
         "unexpected error: {err}"
     );
 
-    if let Some(home) = original_home {
-        unsafe { std::env::set_var("HOME", home) };
-    } else {
-        unsafe { std::env::remove_var("HOME") };
-    }
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let agy_dir = base.join(".gemini").join("config");
     fs::create_dir_all(&agy_dir).expect("test precondition");
     fs::write(
@@ -3868,7 +3752,7 @@ fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
         r#"{"lint-checker":{"PreInvocation":[{"type":"command","command":"echo keep-me"}]}}"#,
     )
     .expect("test precondition");
-    unsafe { std::env::set_var(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir) };
+    env.set(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir);
 
     let installed = install_antigravity_cli().expect("test precondition");
 
@@ -3950,14 +3834,14 @@ fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
         Some("echo keep-me")
     );
 
-    unsafe { std::env::remove_var(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR) };
+    env.remove(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_antigravity_cli_rewrites_stale_shepr_block() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let agy_dir = base.join(".gemini").join("config");
     fs::create_dir_all(&agy_dir).expect("test precondition");
     fs::write(
@@ -3965,7 +3849,7 @@ fn install_antigravity_cli_rewrites_stale_shepr_block() {
         r#"{"shepr":{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"stale"}]}],"PostInvocation":[{"type":"command","command":"stale idle"}],"Legacy":[]}}"#,
     )
     .expect("test precondition");
-    unsafe { std::env::set_var(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir) };
+    env.set(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir);
 
     install_antigravity_cli().expect("test precondition");
 
@@ -3997,32 +3881,32 @@ fn install_antigravity_cli_rewrites_stale_shepr_block() {
             .is_some_and(|command| command != "stale" && command != "stale idle")
     );
 
-    unsafe { std::env::remove_var(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR) };
+    env.remove(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn install_antigravity_cli_errors_when_config_dir_missing() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let agy_dir = base.join(".gemini").join("config");
-    unsafe { std::env::set_var(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir) };
+    env.set(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir);
 
     let err = install_antigravity_cli().expect_err("test precondition");
     assert!(err.to_string().contains("install antigravity cli first"));
     assert!(!agy_dir.exists(), "install must not create the config dir");
 
-    unsafe { std::env::remove_var(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR) };
+    env.remove(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn grok_integration_status_is_current_after_install() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    unsafe { std::env::set_var(GROK_CONFIG_DIR_ENV_VAR, &grok_dir) };
+    env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
     // A real install writes both the hook script and hooks/shepr.json.
     install_grok().expect("test precondition");
 
@@ -4034,17 +3918,17 @@ fn grok_integration_status_is_current_after_install() {
     assert_eq!(grok.state, IntegrationStatusKind::Current);
     assert_eq!(grok.installed_version, Some(GROK_INTEGRATION_VERSION));
 
-    clear_integration_path_env();
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
-    unsafe { std::env::set_var(GROK_CONFIG_DIR_ENV_VAR, &grok_dir) };
+    env.set(GROK_CONFIG_DIR_ENV_VAR, &grok_dir);
     install_grok().expect("test precondition");
     let config_path = grok_dir.join("hooks").join(GROK_HOOK_CONFIG_INSTALL_NAME);
 
@@ -4131,14 +4015,14 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     install_grok().expect("test precondition");
     assert_eq!(grok_state(), IntegrationStatusKind::Current);
 
-    clear_integration_path_env();
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn uninstall_antigravity_cli_removes_hooks_json_entries_and_hook_file() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let agy_dir = base.join(".gemini").join("config");
     fs::create_dir_all(&agy_dir).expect("test precondition");
     fs::write(
@@ -4146,7 +4030,7 @@ fn uninstall_antigravity_cli_removes_hooks_json_entries_and_hook_file() {
         r#"{"lint-checker":{"PreInvocation":[{"type":"command","command":"echo keep-me"}]}}"#,
     )
     .expect("test precondition");
-    unsafe { std::env::set_var(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir) };
+    env.set(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR, &agy_dir);
 
     // Install first
     let installed = install_antigravity_cli().expect("test precondition");
@@ -4168,18 +4052,18 @@ fn uninstall_antigravity_cli_removes_hooks_json_entries_and_hook_file() {
     assert!(hooks.get(ANTIGRAVITY_CLI_HOOK_BLOCK_NAME).is_none());
     assert!(hooks.contains_key("lint-checker"));
 
-    unsafe { std::env::remove_var(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR) };
+    env.remove(ANTIGRAVITY_CLI_CONFIG_DIR_ENV_VAR);
     let _ = fs::remove_dir_all(base);
 }
 
 #[test]
 fn grok_dir_honors_grok_home_after_config_dir_seam() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let home_dir = base.join("grok-home");
     fs::create_dir_all(&home_dir).expect("test precondition");
-    unsafe { std::env::remove_var(GROK_CONFIG_DIR_ENV_VAR) };
-    unsafe { std::env::set_var(GROK_HOME_ENV_VAR, &home_dir) };
+    env.remove(GROK_CONFIG_DIR_ENV_VAR);
+    env.set(GROK_HOME_ENV_VAR, &home_dir);
 
     // The grok CLI reads its config (and hooks/) from $GROK_HOME, so the
     // integration must install there too.
@@ -4192,15 +4076,15 @@ fn grok_dir_honors_grok_home_after_config_dir_seam() {
     // The shepr-level test seam still wins over GROK_HOME when set.
     let seam_dir = base.join("seam");
     fs::create_dir_all(&seam_dir).expect("test precondition");
-    unsafe { std::env::set_var(GROK_CONFIG_DIR_ENV_VAR, &seam_dir) };
+    env.set(GROK_CONFIG_DIR_ENV_VAR, &seam_dir);
     let installed = install_grok().expect("test precondition");
     assert_eq!(
         installed.hook_path,
         seam_dir.join("hooks").join(GROK_HOOK_INSTALL_NAME)
     );
 
-    unsafe { std::env::remove_var(GROK_HOME_ENV_VAR) };
-    clear_integration_path_env();
+    env.remove(GROK_HOME_ENV_VAR);
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 
@@ -4228,13 +4112,13 @@ fn kimi_block_without_end_marker_is_refused_instead_of_truncating_the_file() {
 
 #[test]
 fn install_kimi_leaves_a_damaged_config_and_no_hook() {
-    let _lock = integration_env_lock();
-    let base = unique_base();
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
     let kimi_dir = base.join("kimi");
     fs::create_dir_all(&kimi_dir).expect("test precondition");
     let damaged = format!("{KIMI_CONFIG_BLOCK_BEGIN}\n[user]\nkeep = true\n");
     fs::write(kimi_dir.join("config.toml"), &damaged).expect("test precondition");
-    unsafe { std::env::set_var(KIMI_CODE_HOME_ENV_VAR, &kimi_dir) };
+    env.set(KIMI_CODE_HOME_ENV_VAR, &kimi_dir);
 
     assert!(install_kimi().is_err());
     assert_eq!(
@@ -4243,7 +4127,7 @@ fn install_kimi_leaves_a_damaged_config_and_no_hook() {
     );
     assert!(!kimi_dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME).exists());
 
-    clear_integration_path_env();
+    clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
 }
 

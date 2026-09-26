@@ -1,7 +1,5 @@
 use std::io;
 use std::path::PathBuf;
-#[cfg(test)]
-use std::sync::{Mutex, MutexGuard, OnceLock};
 
 pub(crate) use crate::pathutil::{expand_tilde_path, home_dir};
 use crate::pty::PtyCommand;
@@ -169,81 +167,37 @@ pub(crate) fn grok_dir() -> io::Result<PathBuf> {
 }
 
 #[cfg(test)]
-pub(crate) struct IntegrationEnvLock {
-    _guard: MutexGuard<'static, ()>,
-}
-
-#[cfg(test)]
-pub(crate) fn integration_env_lock() -> IntegrationEnvLock {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let guard = LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .expect("integration env test lock is not poisoned");
-    IntegrationEnvLock { _guard: guard }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::IsolatedEnv;
 
     #[test]
     fn config_dir_env_override_expands_tilde() {
-        let _lock = integration_env_lock();
-        let home = home_dir().expect("test precondition");
-        let original = std::env::var_os(QWEN_HOME_ENV_VAR);
-        // SAFETY: tests that mutate integration environment variables hold the
-        // integration environment lock and restore the value before returning.
-        unsafe { std::env::set_var(QWEN_HOME_ENV_VAR, "~/qwen-home") };
+        let env = IsolatedEnv::new();
+        env.set(QWEN_HOME_ENV_VAR, "~/qwen-home");
         assert_eq!(
             qwen_dir().expect("test precondition"),
-            home.join("qwen-home")
+            env.home().join("qwen-home")
         );
-        // SAFETY: the integration environment lock is held throughout this restore.
-        unsafe {
-            match original {
-                Some(value) => std::env::set_var(QWEN_HOME_ENV_VAR, value),
-                None => std::env::remove_var(QWEN_HOME_ENV_VAR),
-            }
-        }
     }
 
     #[test]
     fn opencode_state_dir_defaults_to_local_state() {
-        let _lock = integration_env_lock();
-        let original = std::env::var_os("XDG_STATE_HOME");
-        // SAFETY: the integration environment lock serializes this test's mutation.
-        unsafe { std::env::remove_var("XDG_STATE_HOME") };
-        let expected = home_dir()
-            .expect("test precondition")
-            .join(".local/state/opencode");
-        assert_eq!(opencode_state_dir().expect("test precondition"), expected);
-        // SAFETY: the integration environment lock is held throughout this restore.
-        unsafe {
-            match original {
-                Some(value) => std::env::set_var("XDG_STATE_HOME", value),
-                None => std::env::remove_var("XDG_STATE_HOME"),
-            }
-        }
+        let env = IsolatedEnv::new();
+        assert_eq!(
+            opencode_state_dir().expect("test precondition"),
+            env.home().join(".local/state/opencode")
+        );
     }
 
     #[test]
     fn opencode_state_dir_honors_xdg_state_home() {
-        let _lock = integration_env_lock();
-        let original = std::env::var_os("XDG_STATE_HOME");
-        let xdg = std::env::temp_dir().join("shepr-xdg-state");
-        // SAFETY: the integration environment lock serializes this test's mutation.
-        unsafe { std::env::set_var("XDG_STATE_HOME", &xdg) };
+        let env = IsolatedEnv::new();
+        let xdg = env.path().join("state");
+        env.set("XDG_STATE_HOME", &xdg);
         assert_eq!(
             opencode_state_dir().expect("test precondition"),
             xdg.join("opencode")
         );
-        // SAFETY: the integration environment lock is held throughout this restore.
-        unsafe {
-            match original {
-                Some(value) => std::env::set_var("XDG_STATE_HOME", value),
-                None => std::env::remove_var("XDG_STATE_HOME"),
-            }
-        }
     }
 }

@@ -259,10 +259,12 @@ impl App {
         let Some(workspace) = self.state.workspaces.get_mut(index) else {
             return workspace_not_found(id, &params.workspace_id);
         };
+        let now = std::time::Instant::now();
         if !crate::metadata_tokens::sequence_is_fresh(
             &workspace.metadata_token_sequences,
             &source,
             params.seq,
+            now,
         ) {
             return encode_success(id, ResponseResult::Ok {});
         }
@@ -282,6 +284,7 @@ impl App {
             &mut workspace.metadata_token_sequences,
             &source,
             params.seq,
+            now,
         ) {
             Ok(true) => {}
             Ok(false) => return encode_success(id, ResponseResult::Ok {}),
@@ -296,9 +299,7 @@ impl App {
                 );
             }
         }
-        let changed = workspace
-            .metadata_tokens
-            .patch(tokens, ttl, std::time::Instant::now());
+        let changed = workspace.metadata_tokens.patch(tokens, ttl, now);
         if changed {
             self.sync_agent_metadata_deadline();
             self.emit_workspace_token_updated(index);
@@ -386,15 +387,8 @@ mod tests {
         // Drop runtimes so cwd resolution deterministically uses cached state.
         shutdown_test_runtimes(&mut app);
 
-        let focused_cwd = std::env::temp_dir().join(format!(
-            "shepr-ws-follow-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("test precondition")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&focused_cwd).expect("test precondition");
+        let focused_scratch = crate::test_support::ScratchDir::new("ws-follow");
+        let focused_cwd = focused_scratch.to_path_buf();
         let ws = &app.state.workspaces[0];
         let root_cwd = ws.identity_cwd.clone();
         let focused_pane = ws.focused_pane_id().expect("test precondition");
@@ -435,7 +429,6 @@ mod tests {
             std::fs::canonicalize(&root_cwd).unwrap_or_else(|_| root_cwd.clone())
         );
         shutdown_test_runtimes(&mut app);
-        let _ = std::fs::remove_dir_all(&focused_cwd);
     }
 
     #[tokio::test]
@@ -458,9 +451,8 @@ mod tests {
         app.state.ensure_test_terminals();
         shutdown_test_runtimes(&mut app);
 
-        let source_cwd =
-            std::env::temp_dir().join(format!("shepr-ws-explicit-source-{}", std::process::id()));
-        std::fs::create_dir_all(&source_cwd).expect("test precondition");
+        let source_scratch = crate::test_support::ScratchDir::new("ws-source");
+        let source_cwd = source_scratch.to_path_buf();
         let pane_id = app.state.workspaces[1]
             .focused_pane_id()
             .expect("test precondition");

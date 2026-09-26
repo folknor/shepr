@@ -95,6 +95,9 @@ inherited socket overrides so the debug binary talks to its own server:
 - Unit tests live next to the code (`#[cfg(test)] mod tests`). New `AppState`
   or `Workspace` behaviour should be testable with `AppState::test_new()` /
   `Workspace::test_new()`.
+- Tests that touch the process environment hold a
+  `crate::test_support::IsolatedEnv`, and tests that write files use a
+  `ScratchDir` from the same module, never fixed or shared temp paths.
 
 ## Terminal core
 
