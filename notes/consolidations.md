@@ -1,0 +1,744 @@
+# Consolidations
+
+Decisions answered in more than one place, from the 2026-09-26 design hunt. One
+entry per question; every site answering it belongs to that entry.
+
+1. An entry is removed entirely when completely resolved. No historical record
+   stays here.
+2. Stable IDs never change and are never reused; removal leaves a gap.
+3. An entry adjudicated against, verified incorrect, or whose outcome is that no
+   action is taken owes comments at the code sites it names - and, where the
+   claim touches a documented contract, the relevant `reference/` or `docs/`
+   page - before the entry is removed, so the finding is not hunted again.
+4. Once all findings are resolved, the file gets deleted.
+
+## CON-001 - Per-agent facts are scattered across detect, integration and resume
+
+Question: what shepr knows about each agent (label, executable, integration
+source, whether native state is reserved, accepted session-ref kinds, resume
+argv, integration spec, hook-event-to-state mapping, env to scrub, title glyphs).
+
+Sites:
+- `agent_resume.rs`: `is_official_agent_source` (18 pairs), `is_reserved_native_state_source` (9 pairs), the `plan()` match arms (18), the `"pi" | "omp"` path-accepting special case in both `session_ref_from_report` and `session_ref_from_snapshot`.
+- `integration/registry.rs`: `integration_target_label`, the `[..; 18]` `integration_specs` array keyed by `api::schema::IntegrationTarget`; `integration/mod.rs` holds ~60 flat per-agent constants and the `*_HOOK_EVENTS` tables with states as strings (`("Stop", None, "idle")`), which the server re-decides on receipt.
+- `detect`: `agent_label`, `interactive_agent_executable`, `Agent::ALL` and `SCREEN_MANIFEST_AGENTS` (hardcoded arrays with length literals 24/22, not derived from or checked against the bundled manifests).
+- `pane.rs`: the env-scrub list in `apply_pane_launch_env` (`CODEX_THREAD_ID`, `OMPCODE`, `CLAUDECODE`...), `publish_codex_prompt_observation` / `AppEvent::CodexPromptObserved`.
+- `terminal/title.rs`: hard-codes Claude's activity glyphs (terminal-core hunter: check whether manifests also list them).
+
+Already disagree (pane-detection hunter): Antigravity is `"agy"` in `agent_label`,
+`"shepr:antigravity_cli"` as source, `"antigravity-cli"` as integration label.
+Resume argv hardcodes `"cursor-agent"` (and every other argv0) instead of using
+`interactive_agent_executable`. Nothing maps `IntegrationTarget` to `Agent`. The
+reason some official sources (kimi, opencode) are excluded from reserved native
+state is stated only in a test.
+
+Proposed owner: one per-agent descriptor table keyed by `Agent` (in `detect` or a
+new `agents` module); `IntegrationTarget` becomes a subset view. The domain enum
+should live there, with `api::schema` reusing it rather than owning it.
+
+Reported by: pane-detection, terminal-core.
+
+## CON-002 - Agent status: two enums, several mappings, two priority ladders, two status texts
+
+Question: what an agent's presentable status is, how it ranks for attention, and
+what it is called.
+
+Sites:
+- Two enums for one axis: `detect::AgentState` (4 states) and `api::schema::AgentStatus` (5; Done = Idle+unseen), hand-mapped in `app/api_helpers.rs:75,86` (`pane_agent_status`) and in the client projection. Possibly a third copy, `api::schema::PaneAgentState` (unverified).
+- Attention ranking: `workspace/aggregate.rs:8` `pane_attention_priority(AgentState, seen)` and `client/shell.rs:171` `status_priority(AgentStatus)`; the client ladder is used at `agent_sidebar.rs:28`, `aggregate_navigation.rs:88`, `endpoint_agent_state.rs:185,196`. Tie-breaks differ (server prefers unseen among equals), no visible difference yet.
+- Status text: `shell.rs:182 status_text` (Unknown → "unknown", also the `state_labels` key) vs `agent_sidebar.rs:370 sidebar_status_text` (Unknown → "idle"). Already disagree: an Unknown agent shows "idle" in the agent panel and "unknown" in space rows (see BUG-024).
+- Glyph and colour: `status_icon` / `status_color` are one owner but paired by hand at 5+ call sites, with a stale-colour override in endpoint_sidebar.
+- The completion rule `is_background_completion_transition` sits in `app/actions.rs`.
+
+Proposed owner: one `AgentState` plus a separate attention/seen fact, with
+`attention_rank()` / `Ord`, one display-text function, and a `StatusGlyph { text,
+style }` built from (status, indicator style, palette, stale). Completion rule
+next to `AgentState`.
+
+Reported by: ui, app-state.
+
+## CON-003 - Who decides "seen" (Done vs Idle): server and client both do
+
+Sites:
+- Server: `pane.seen` mapped through `app/api_helpers.rs:86 pane_agent_status`, plus the server's tab/workspace aggregate, all still sent.
+- Client: `client/shell/endpoint_agent_state.rs` (`EndpointAgentPresentation`: its own acknowledged/completed/working maps, then `projected_status`).
+- `project_aggregate_status` overwrites the server's tab and workspace `agent_status` only when that tab/workspace has at least one agent; otherwise the server value survives (mixed authority).
+
+Proposed owner (ui hunter): the client, since acknowledgement is per client. The
+server would send raw `AgentState` plus a completion sequence and drop
+server-side `seen`, `pane_agent_status` and the presentation aggregate.
+
+Reported by: ui.
+
+## CON-004 - Is pixel/cell geometry known, and how is cell size clamped for the protocol?
+
+Sites:
+- "Known": `HostCellSize::is_known`, `Terminal::has_pixel_geometry`, `handler::in_band_size_report`, `handler::text_area_pixels_report`, each with its own `w > 0 && h > 0`.
+- Clamp to `MAX_CELL_SIZE_PX` and "exact only if both sides ≤ MAX": `client/handshake.rs:109-113`, `client/shell_runtime.rs:64-70`, `client/mod.rs:550-554`. The direct-attach `ClientMessage::Resize` at `client/mod.rs:791-797` does not clamp at all (already disagrees).
+- Wire: `TerminalHello`, `Resize`, `ClientShellResize`, `EndpointClientHello` each spell out `cols/rows/cell_width_px/cell_height_px/pixel_mouse` with 0 as the "unavailable" sentinel.
+
+Proposed owner: a `CellPx` that can only be built non-zero, a
+`ProtocolCellSize::from_host(...)` constructor in `protocol`, and one wire
+`TerminalGeometry { size, cell_px: Option<CellPx>, pixel_mouse }`.
+
+Reported by: terminal-core, client, protocol.
+
+## CON-005 - What surface size does the client report?
+
+Sites: `ClientSurfaceSize{..}.clamped()` when a shell exists, raw otherwise, at
+`client/mod.rs:189-192`, `351-356` and `764-773`. Agree today.
+
+Proposed owner: one `ClientState::set_host_size(geometry)` or a method on the
+geometry type.
+
+Reported by: client.
+
+## CON-006 - What mouse mode should the host terminal be in?
+
+Sites: the `MouseCapture` handler (`client/mod.rs:1200-1222`),
+`clear_endpoint_host_effects` (`shell_runtime.rs:90-111`) and the `Resize`
+handler (`client/mod.rs:754-763`), each diffing against state split across
+`state.mouse_capture_active`, `state.endpoint_*_requested`, two `*_preference`
+bools and two `Arc<AtomicBool>` mirrors. See BUG-019 for the resulting gap.
+
+Proposed owner: a `HostMouseMode` holding requests and preferences with one
+`desired()` / `apply()` that also publishes to the atomics.
+
+Reported by: client.
+
+## CON-007 - What is this host input chunk, and where does a control string end?
+
+Sites:
+- Classification: `RawInputByteFramer`; `send_unix_input_chunks` (palette/default-colour replies via `terminal_theme` string parsers, `client/input.rs:222-237`); `classify_unix_input` (SGR pixel mouse via `input::mouse::parse_report`); `parse_raw_input_bytes_sync` in the main loop, which builds a fresh framer and reparses. The shell path at `client/mod.rs:586` and `592` parses the same data twice back to back on the per-keystroke path.
+- Grammar: `terminal_setup.rs` `PASTE_START/PASTE_END` and `host_control_string_end` (OSC/DCS/APC/PM/SOS with BEL/ST) for the keyboard probe vs `raw_input.rs` `BRACKETED_PASTE_START/END` and `ControlStringFamily`.
+
+Proposed owner: the framer emits typed `RawInputEvent`s once on the reader
+thread, carrying raw bytes for forwarding; the probe runs through the same
+scanner.
+
+Reported by: client.
+
+## CON-008 - Colour, appearance and default-colour types exist twice
+
+Sites: `ghostty::ColorScheme::report` and
+`terminal_theme::HostAppearance::color_scheme_report` both hard-code
+`\x1b[?997;1n` / `\x1b[?997;2n` over two identical Light/Dark enums;
+`ghostty::RgbColor` vs `terminal_theme::RgbColor`; `ghostty::DefaultColor` vs
+`terminal_theme::DefaultColorKind`; `server/clients.rs:362-393`
+`update_host_theme` maps protocol colour/appearance enums inline (a second
+mapping if the client maps the same enums).
+
+Proposed owner: the vt module owns one set of types; protocol conversions are
+`From` impls next to the protocol types.
+
+Reported by: terminal-core, server.
+
+## CON-009 - What is a cell's text?
+
+Sites: `cell_graphemes`, `cell_text_into`, `RowCellIter::grapheme_text_into` in
+`src/ghostty/`. Already disagree on `KITTY_UNICODE_PLACEHOLDER` (BUG-001).
+
+Proposed owner: one `cell_text(cell) -> CellText` classifier.
+
+Reported by: terminal-core.
+
+## CON-010 - Row wrap flags
+
+Sites: `visit_screen_row_text` and `screen_text_rows_range` each compute
+`soft_wrapped` and `wrap_continuation`; `ScreenTextRow` re-declares the fields
+instead of embedding `RowWrap`.
+
+Reported by: terminal-core.
+
+## CON-011 - DEC private mode numbers and rules
+
+Sites: `mode_get` (numbers → `TermMode` bits); `handler::private_mode` (numbers →
+vte names; disagrees with `mode_get` on 3, 12 and 1042); `CoreHandler::adapter_private_mode`
+plus the set/unset arms; `terminal_modes::DISABLE_HOST_MOUSE_REPORTING_SEQUENCE`
+(includes 1015, which the core does not model); `PrivateMode::Unknown(9 | 1016 |
+2031 | 2048)` literals matched in several places. The X10 mouse exclusivity rule
+is written twice, in the `set_private_mode` and `unset_private_mode` arms.
+
+Proposed owner: one mode table (number, name, getter, setter) over a mode enum.
+
+Reported by: terminal-core.
+
+## CON-012 - How a batch against the term is opened and closed
+
+Sites: the nine-field `CoreHandler` construction wrapped in
+`rows.begin`/`rows.finish` plus `drain_events`, repeated in `advance`,
+`flush_expired_synchronized_output` and `mode_set`. A new entry point could skip
+the row accounting.
+
+Proposed owner: one `with_handler(|h| ...)` method.
+
+Reported by: terminal-core.
+
+## CON-013 - PTY submission lifecycle state
+
+Sites: `SubmissionStage` (shared), `SubmissionPhase` (runner-local) and
+`PendingWrite.boundary` in `pty/actor.rs`, held together only by `debug_assert!`.
+
+Proposed owner: one state machine owned by the actor, with the canceller seeing a
+projection; possibly its own `submission.rs`.
+
+Reported by: terminal-core.
+
+## CON-014 - SHELL fallback and shell resolution
+
+Sites: `base_env` fills `SHELL` from passwd; `PtyCommand::shell()` re-validates
+and falls back again; `to_std_command` re-inserts it. `pane.rs` has its own shell
+resolution (`resolve_shell_executable_on`, `pane_shell_from`).
+
+Proposed owner: resolve once at spawn.
+
+Reported by: terminal-core, pane-detection.
+
+## CON-015 - Is this PATH candidate executable?
+
+Sites: `search_path` duplicates the executable / directory / missing checks
+between its cwd-relative and absolute branches.
+
+Proposed owner: one `classify_candidate`.
+
+Reported by: terminal-core.
+
+## CON-016 - Is the pane's child gone?
+
+Sites: `child_wait_completed: AtomicBool`, `session_leader.has_exited()` /
+`is_unreaped()`, and `child_pid == 0` in `shutdown_pane_processes`;
+`terminate_pane_session` picks between them with `leader_reaped`.
+
+Proposed owner: one `ChildLiveness` on the runtime.
+
+Reported by: pane-detection.
+
+## CON-017 - When to probe processes
+
+Sites: `should_probe_foreground_job`,
+`should_skip_process_probe_for_lifecycle_authority` and
+`sync_content_change_acquisition` each read the acquisition window and
+foreground-group change.
+
+Proposed owner: one scheduler state machine.
+
+Reported by: pane-detection.
+
+## CON-018 - Pane teardown sequence
+
+Sites: `Drop` and `shutdown()` both run abort-io-shutdown-teardown, kept in step
+by `preserve_processes_on_drop`.
+
+Proposed owner: `shutdown()` sets policy, `Drop` owns the work.
+
+Reported by: pane-detection.
+
+## CON-019 - Is this cwd absolute and usable?
+
+Sites: `usable_process_cwd` and `usable_reported_cwd` in `pane.rs`. Agree today.
+
+Proposed owner: one `UsableCwd` constructor.
+
+Reported by: pane-detection.
+
+## CON-020 - Does removing this pane take its tab or workspace with it?
+
+Sites: `Workspace::close_pane` (workspace.rs:890, returns bool); `Tab::close_pane`
+(tab.rs:385); precomputed before mutation in `api/panes.rs::close_pane`
+(`pane_count() <= 1`, then `tab_close_events` / `workspace_close_events`), in
+`api.rs::pane_exit_container_events` (`pane_count() > 1`, `tabs.len() <= 1`) and
+`api/tabs.rs:230` (`closes_workspace = ws.tabs.len() <= 1`); `Workspace::close_tab`
+(`tabs.len() <= 1`); test-only `AppState::close_tab` (actions.rs:859).
+`handle_internal_event_with_pane_updates` runs `find_pane` four times for one
+PaneDied to predict post-mutation facts. The two production close paths already
+differ in teardown order (BUG-006).
+
+Proposed owner: `Workspace::remove_pane(pane) -> Removal { Pane | Tab{idx, panes} |
+Workspace }`, with events derived from the outcome.
+
+Reported by: app-state.
+
+## CON-021 - What creating a pane or workspace entails
+
+Question: insert the runtime into `terminal_runtimes`, insert `TerminalState`,
+focus, set `mode = Terminal`, save the session, emit events.
+
+Sites: inline in `api/panes.rs::handle_pane_split` and
+`creation.rs::create_workspace_with_launch_env`, presumably also keybinding
+paths; events are a separate call the caller must remember
+(`emit_workspace_open_events`). See BUG-005.
+
+Proposed owner: an `AppState`/`Workspace` command returning a typed outcome from
+which `App` applies side effects (see STR-031).
+
+Reported by: app-state.
+
+## CON-022 - Which panes exist in a tab?
+
+Sites: the `layout` tree (`pane_ids()`, `pane_count()`), `Tab.panes: HashMap`,
+`Workspace.public_pane_numbers`. `tab_info.pane_count` uses `tab.panes.len()`,
+`terminal_targets` uses `layout.pane_ids()`, `parse_pane_id` scans
+`public_pane_numbers`. Only test-only `assert_invariants_for_test` checks them.
+
+Proposed owner: the tree, with the others derived, or one map keyed by `PaneId`.
+
+Reported by: app-state.
+
+## CON-023 - Which terminal does this target name?
+
+Sites: `resolve_terminal_target` matches `agent_name` or
+`effective_agent_label()`; `resolve_agent_target` matches only `agent_name` and
+gates pane ids on `is_agent_terminal`. The hunter notes the difference may be
+intended.
+
+Proposed owner: one resolver parameterised by a `TargetKind`.
+
+Reported by: app-state.
+
+## CON-024 - Which workspace or pane when no target is given?
+
+Sites: `handle_pane_split` (`target_pane_id`, else `workspace_id` + focused, else
+`active` + focused); `creation.rs::workspace_creation_source` (Navigate-mode
+`selected`, else `active`); likely other handlers.
+
+Proposed owner: one `resolve_pane_context(Option<pane>, Option<ws>)`.
+
+Reported by: app-state.
+
+## CON-025 - Does this event or API method need a render?
+
+Sites:
+- `handle_internal_event_with_render_impact` special-cases GitStatus and TabBar; `handle_internal_event_with_pane_updates` re-dispatches the same two variants and discards the answer.
+- `api::request_changes_ui` (`src/api/mod.rs:22`), a hand-maintained allowlist separate from dispatch, consulted at `api/server.rs:360` (logging) and `headless.rs:2230` (render). Missing `ClientWindowTitleSet`/`ClientWindowTitleClear`, which headless special-cases to `true` before consulting it. Guarded only by spot-check tests (`app/mod.rs:699-704`, `app/api/panes.rs:2427`).
+- `DeferredRender { None, Full }` and `RenderImpact { None, Full }` are identical enums backed by `render_pending: bool`; the run loop keeps `needs_render` / `needs_full_render` as two bools.
+
+Proposed owner: handlers and event dispatch return an outcome carrying render
+impact, over one `RenderDemand` lattice (None < Partial < Full) with join.
+
+Reported by: app-state, server.
+
+## CON-026 - Per-API-method facts live in separate tables
+
+Question: a method's name, whether it mutates UI, where it is routed, whether it
+is routine for logging.
+
+Sites: `api::request_changes_ui` (see CON-025); `api_method_name`
+(`api/server.rs:571`); routing split three ways between `api/server.rs` (socket
+thread: `ServerSshAgentRegister`, probably wait/subscriptions),
+`headless.rs:2213` (window-title methods, `AgentPrompt`, agent-read idle checks)
+and `app/api/*`; `logging::is_routine_api_method` string-matches method names;
+`session::stop_socket_with_timeout` builds `{"method":"server.stop"}` by hand,
+and its test copies the literal.
+
+Proposed owner: exhaustive `Method::traits() -> MethodTraits { name, mutates_ui,
+runs_on_socket_thread, routine }` with no `_` arm, and one routing match.
+
+Reported by: server, config-cli.
+
+## CON-027 - Public workspace/tab/pane id format
+
+Sites: encoding in `workspace::public_{tab,pane}_id_for_number`; parsing in
+`app/ids.rs` (`rsplit_once(':')` + `strip_prefix('t')`, `rsplit_once(":p")`).
+
+Proposed owner: `PublicTabId` / `PublicPaneId` with `Display` and `FromStr` in one
+place; `ids.rs` becomes lookup only (see STR-001).
+
+Reported by: app-state.
+
+## CON-028 - AppState copies config field by field
+
+Sites: `App::new` builds `PaneGeometry` from `config.ui.*` directly while
+`AppState::pane_geometry_in` builds it from copied state fields; `AppState`
+copies ~20 config fields one by one and `test_new` repeats defaults by hand,
+which can drift from `Config::default()`. The client has the same shape:
+`ClientLoopConfig` fields copied into `ClientState` (mouse_scroll_lines,
+redraw_on_focus_gained, pixel_geometry_enabled, mouse_capture_active) plus
+positional arguments.
+
+Proposed owner: a `UiSettings` (server) / `ClientSettings` (client) built once from
+`Config`, used by `test_new` too.
+
+Reported by: app-state, client.
+
+## CON-029 - Server is shutting down
+
+Sites: rejection built in `headless.rs:2177`, `api/subscriptions.rs:453`,
+`wait.rs:875` (`server_unavailable`); quit sources polled separately:
+`app.state.should_quit`, `should_quit`, `signal_quit_requested`,
+`shutting_down`, `host_shutdown_requested`.
+
+Proposed owner: one `ShutdownPhase` state machine.
+
+Reported by: server.
+
+## CON-030 - Which client is the active shell / foreground, and who owns what
+
+Sites: `is_shell_client`, `is_active_shell_client`, `shell_surface_active`,
+`latest_shell_client`, `render_targets`, `foreground_client_id`,
+`tab_geometry_controllers`, `terminal_attach_owners`. Not audited for
+disagreement; the `ClientConnection` constructor comment shows one near-miss.
+
+Proposed owner: a state-carrying `ClientConnectionMode` and a `ClientRegistry`
+(STR-036).
+
+Reported by: server.
+
+## CON-031 - Config diagnostics are classified by substring and selected per client
+
+Sites: `is_keybinding_config_diagnostic` (looks for `"keybinding"` / `"keys."`,
+excludes `"config parse error:"` / `"config read error:"`);
+`config_diagnostic_summary` (`"using defaults"`, `"unknown config key "`);
+`collect_diagnostics` post-edits with `.replace("using cyan", ...)`; the server
+precomputes `server_config_diagnostic` and `_without_keybindings`.
+
+Proposed owner: typed `ConfigDiagnostic { key, kind, message }`; the per-client
+choice becomes a function of `(diagnostics, KeybindingSource)`.
+
+Reported by: config-cli, server.
+
+## CON-032 - Does this surface update continue the baseline?
+
+Sites (`protocol/surface_reuse.rs`): reuse check (l.82-88) ignores
+projection_revision; patch check (l.122-125) requires `projection_revision ==
+base`; delta check (l.157-162) requires `base_projection_revision == base` and
+`projection_revision >= base`. A patch with no baseline passes silently
+(BUG-012); reuse and delta error. Sender side: `surface_delta::message` checks
+boot, width, height and cell count against `last`.
+
+Proposed owner: one `Baseline::accepts(kind, base_rev, next_rev, proj, boot)`.
+
+Reported by: protocol.
+
+## CON-033 - Does a span fit the grid?
+
+Sites: the patch pre-check in `Decoder::decode`; `decode_rows` in
+`surface_delta/decode.rs` (also requires sorted, non-overlapping, length > 0);
+`apply_rows` (backstop, different formula); `render_ansi::patch_row_fits` plus
+`patch_rows_overlap`. Rules differ (BUG-013).
+
+Proposed owner: a validated `Spans` type built through one checker.
+
+Reported by: protocol.
+
+## CON-034 - Surface size and frame size limits
+
+Sites: `wire.rs` `MAX_SURFACE_DIMENSION = 4096`, `MAX_SURFACE_CELLS =
+MAX_FRAME_SIZE/16 = 131072`; `decode.rs` `MAX_GRID_DIMENSION = 4096`,
+`MAX_GRID_CELLS = 1_000_000` (BUG-014). `decode::metadata_fits` mirrors decoder
+limits on the sender side ("Mirrors all decoder-side metadata limits"), held by
+the pairwise test `sender_eligibility_matches_grid_and_metadata_limits`.
+"Too big to send" is checked in `encode_frame`, three times in
+`surface_delta::message`, in `surface_reuse::message`, and in decode.rs against
+base64 length (BUG-016).
+
+Proposed owner: one set of constants in `wire.rs` and one size decision.
+
+Reported by: protocol.
+
+## CON-035 - Wire layout of surface frames restated in a hand decoder
+
+Sites: `PaneSurfaceFrame`, `FrameData`, `PaneSurfaceSplit` layout restated in
+`surface_delta/decode.rs`, held by struct literals and one layout test.
+
+Proposed owner: bounded collection decoding in the codec (e.g. `BoundedVec<T,
+const MAX>`), deleting the hand decoder.
+
+Reported by: protocol.
+
+## CON-036 - Which surface encoding is in use; was it negotiated?
+
+Sites: `Decoder::new(surface_delta: bool)` and its "surface delta was not
+negotiated" error; `endpoint.rs` says "There is no capability or encoding
+negotiation"; `RenderEncoding` in `Welcome`. The client passes
+`Some(Decoder::new(true))` at every call site (`client/mod.rs:473,880`), so the
+`Option` and flag encode nothing.
+
+Reported by: protocol, client.
+
+## CON-037 - Is the peer compatible / the same build?
+
+Sites: the preamble (magic, version, build id); `check_client_version` on
+`TerminalHello.version`; `EndpointClientHello.version` /
+`EndpointServerWelcome.version`; remote:
+`RemoteClientStatusJson::supports_endpoint_requirement` (protocol compare, unused
+parameter) and `remote_server_restart_reason` (protocol plus three capability
+flags); CLI: `cli/status.rs` computes `protocol == PROTOCOL_VERSION` three times
+(`compatibility_label`, `compatible`, `restart_needed_bool`),
+`cli/protocol_guard::mismatch_response`, `server_binary_stale_bool` compares
+version strings.
+
+Readings: the protocol hunter calls the in-message checks a defensible re-check
+of the preamble but recommends deleting the `version` fields; the remote hunter
+calls the remote checks upstream federation fossils and names the handshake the
+only authority; the config-cli hunter proposes a `protocol::Compatibility::of(status)`
+owner.
+
+Reported by: protocol, remote, config-cli.
+
+## CON-038 - Wire colour and modifier layout
+
+Sites: `color_to_u32`, `u32_to_color`, the underline shift and mask,
+`u16_to_modifier`, and `render_ansi`'s own `REVERSED_MODIFIER = 1 << 6`.
+
+Proposed owner: one `WireStyle` type (see STR-006).
+
+Reported by: protocol.
+
+## CON-039 - Is the client federated; does a Local failure end it?
+
+Sites: `federated = endpoint_catalog.has_enabled_ssh()` computed in
+`run_client_with_mode` and again in the loop (the startup copy has already chosen
+fatal vs non-fatal connect behaviour); "Local failure ends the client" at
+`client/mod.rs:1040`, `1282-1283` (with `endpoint::protocol_failure_is_fatal`),
+and `1405`.
+
+Proposed owner: one `LocalFailurePolicy` query on the registry or supervisor.
+
+Reported by: client.
+
+## CON-040 - Which role is this client process?
+
+Sites: `is_remote_client_process()` called in `run_client_with_mode`,
+`run_client_loop`, `handshake_read_timeout`; the same env var read in
+`errors.rs` for the reattach message and in `handshake.rs:30-39` for
+`ClientShellKeybindingSource` (BUG-021).
+
+Proposed owner: a typed `ClientProcessRole` resolved once at startup.
+
+Reported by: client.
+
+## CON-041 - Which endpoint messages are accepted now?
+
+Sites: `write_stream.accepts(...)`, `endpoint::accepts_endpoint_message(...)`,
+per-arm checks (`!endpoint_active || presentation_frozen` for surfaces, a
+separate `presentation_frozen` for patches); the freeze rule is spread across
+`client/mod.rs:960-1006` and the prose in `state.rs:144-175`.
+
+Proposed owner: a `PresentationGate` returning Apply/Drop/Buffer per message.
+
+Reported by: client.
+
+## CON-042 - Which socket does this process target?
+
+Sites: `session::active_api_socket_path` (explicit session, else
+`SHEPR_SOCKET_PATH`, else session); `server::socket_paths::client_socket_path`
+(same order plus `SHEPR_CLIENT_SOCKET_PATH`);
+`session::active_restart_after_update_guidance` (third time);
+`session::stop_active_server` combines one path from each; `api::socket_path()`
+possibly a fourth (unverified); `api::SOCKET_PATH_ENV_VAR` lives in `api`.
+Client-socket naming disagrees on edge cases: `client_socket_path_for`
+hard-codes `shepr-client.sock`, `derive_client_socket_from_api_socket` produces
+`{stem}-client.sock`.
+
+Proposed owner: a `ServerAddress` value resolved once in `main` (STR-022, STR-037).
+
+Reported by: config-cli, server.
+
+## CON-043 - Is a server alive?
+
+Sites: `session::is_running_at` (`path.exists() && connect().is_ok()`);
+`cli::server_not_running_error` (`NotFound | ConnectionRefused`); `cli/status.rs`
+status probe plus that classifier; `server_not_running` /
+`map_server_not_running_or_io`; `ipc::prepare_socket_path` (stale vs live, not
+read). Already disagree: `PermissionDenied` on connect is "not running" in
+`session list`/`delete` but a transport error in the CLI.
+
+Proposed owner: `ipc::probe(path) -> Liveness { Absent, Stale, Live,
+Unreachable(io::Error) }`.
+
+Reported by: config-cli.
+
+## CON-044 - Which CLI commands exist and which are local vs API-backed?
+
+Sites: the clap spec in `cli/spec.rs`; the `dispatch` string match in `cli.rs`;
+`validate_machine_command` (string match on command/subcommand; `workspace`/
+`tab`/`pane` allowed wholesale, so a new local subcommand there passes);
+`COMMON_COMMANDS` in `main.rs` (held by a test); `print_help`'s hand-written
+lines (untested); `main` string-matches `command_name()` for
+`"remote-api-bridge"`, `"remote-client-bridge"`, `"server"`, `"client"`.
+
+Proposed owner: typed `Launch` / `CliCommand` parsed once from clap, with
+`locality()` on the spec and help generated from it (STR-038).
+
+Reported by: config-cli.
+
+## CON-045 - Config keys, defaults and validation
+
+Sites: `Config` structs (serde source); `KNOWN_TOP_LEVEL_CONFIG_KEYS` (hand
+list; `serde_ignored` already reports unknown keys); `KeysConfig` and the
+parallel `KeysConfigOverlay`; `DEFAULT_CONFIG` text in `main.rs` (a test checks
+keybindings only); `Default` impls; `ui.user_fields: BTreeSet<String>` /
+`keys.user_fields: BTreeSet<&'static str>` with string lookups
+(`is_user_configured("sidebar_width")`), obtained by re-parsing the document;
+validators re-run on every accessor call (`keybinds()` re-runs
+`validated_keybinds()`); `validated_sidebar_bounds` at config time and
+presumably again at clamp sites.
+
+Proposed owner: a `ValidatedConfig` built once at load, `Option<T>` for
+user-overridable fields, overlay generated or removed.
+
+Reported by: config-cli.
+
+## CON-046 - Does this process own the data dir?
+
+Sites: the lock claimed lazily in `persist::io::load` and (per comments) in
+`SessionWriter`; `load_history` does not claim it; global `HELD` list with
+idempotent re-claim.
+
+Proposed owner: a `DataDirLease` acquired once at server start, the only way to
+get a writable session path.
+
+Reported by: config-cli.
+
+## CON-047 - Is this a valid session name?
+
+Sites: `session.rs` `validate_name` / `normalize_name` / `parse_target_name`,
+re-applied in `active_name()` (reads env every call) and `list_sessions`;
+`exact_session_dir_for_delete` does its own scan; `delete_session(&str)`
+re-validates. In `remote/`: `SavedSshEndpoint::validate`,
+`SavedSshConnector::connect`, `validated_saved_ssh`, `check_saved_ssh`,
+`prepare_saved_ssh`. `delete_session` and `list_sessions` also repeat
+`config_dir().join("sessions")` instead of `data_dir_for`.
+
+Proposed owner: `enum SessionId { Default, Named(SessionName) }` minted once.
+
+Reported by: config-cli, remote.
+
+## CON-048 - Where is home?
+
+Sites: `pathutil::home_dir()` (rejects empty `HOME`); `config/io.rs`
+`config_dir()` / `state_dir()` / `platform_config_dir()` (do not use it);
+`platform::remote_ssh_config_paths()` reads `HOME` directly. See BUG-030.
+
+Reported by: config-cli.
+
+## CON-049 - What kind of SSH failure is this?
+
+Sites: `saved::saved_ssh_failure_needs_attention` (ErrorKind plus substrings);
+`attach::is_ssh_link_failure` (downcast to `SshBridgeExit` code 255, else
+kinds); `attach::ssh_error_requires_authentication` (lowercase, includes
+`"signing failed"`); `remote.rs::is_remote_auth_error` (case-sensitive
+`"Permission denied"`, no `"signing failed"` - already disagrees);
+`remote.rs::is_remote_host_key_error`; `SavedSshApiBridge::stale_metadata_failure`
+(marker `STALE_API_METADATA` through remote stderr); `handshake_error` in
+`supervisor.rs` picks an `ErrorKind` to steer the substring classifier;
+`attach.rs:999` hard-codes `255` instead of `SSH_OWN_FAILURE_EXIT_CODE`;
+`EndpointSupervisorEvent::Status { message: String }` loses the class before the
+UI.
+
+Proposed owner: one `SshFailure` enum built where ssh output is interpreted
+(`command_failed`, `ssh_bridge_exit_error`, `path_lookup_result`,
+`remote_client_status`, `handshake_error`), carried typed.
+
+Reported by: remote.
+
+## CON-050 - Which remote executable is right, and is it valid?
+
+Sites: two discovery pipelines - `SavedSshConnector` (`DiscoveryProgress` plus
+`status client --json`) and `SavedSshApiBridge`
+(`posix_remote_api_discovery_script` plus `remote-api-bridge --check`) - share
+one `SshMetadataCache` per profile. Three validity definitions:
+`remote_shepr_from_path`, `SshMachineMetadata::is_valid`, and the shell `case` in
+the discovery script. They disagree (BUG-036, BUG-037).
+
+Proposed owner: one discovery with one definition of "match", one
+`RemoteExecutable` parse, one cache.
+
+Reported by: remote.
+
+## CON-051 - Is this SSH target valid?
+
+Sites: `validate_remote_target` (empty, leading `-`);
+`SavedSshEndpoint::validate` (adds length, control characters, no password);
+`ssh_authentication_command` (`attach.rs:439`, inline empty / `-` / control
+characters). Already disagree (BUG-035).
+
+Proposed owner: one `SshTarget` type.
+
+Reported by: remote.
+
+## CON-052 - Is this profile id valid?
+
+Sites: `ProfileId::parse`; `saved.rs` `validate_profile_path_id` (hand-copied
+32-hex check); `SshMetadataCache::new` parses again; `&profile_id[..16]` slices in
+`saved_bridge_path` and `SavedSshApiBridge::start` rely on the earlier check.
+
+Proposed owner: take `&ProfileId` everywhere.
+
+Reported by: remote.
+
+## CON-053 - Is this machine profile selectable, and is the selection valid?
+
+Sites: `EndpointCatalog::is_selectable`, inline copies in `select_ssh`,
+`validate`, `load_from_paths`; `replace_profiles`, `set_enabled`, `remove_ssh`
+each clear selection; `EndpointSelectionTracker::settle`; `cli/machine.rs`
+`remove` and `set_enabled` rewrite the selection file themselves.
+
+Proposed owner: selection out of the catalog, as `Option<ProfileId>` resolved
+through one `effective_selection(&profiles)` (STR-050).
+
+Reported by: remote.
+
+## CON-054 - Is this machine enabled / live?
+
+Sites: catalog filters; `EndpointCatalogChanges::between` (own "live"
+definition); `EndpointSupervisors::with_ssh_settings`; `resolve_machine`;
+`contains_enabled_target_session`.
+
+Proposed owner: a "live" method on the profile.
+
+Reported by: remote.
+
+## CON-055 - The reconnect retry promise
+
+Sites: `cli/machine.rs` `reconnect` output string ("within 30 seconds");
+`MAX_RETRY_DELAY`, `ATTENTION_RETRY_DELAY`, `ATTEMPT_BUDGET < MAX_RETRY_DELAY`
+(tested in the supervisor; the CLI text is a literal).
+
+Reported by: remote.
+
+## CON-056 - What counts as a machine selector?
+
+Sites: `machine status` / `reconnect` accept label or id through
+`resolve_machine` (which rejects disabled machines); `rename`, `remove`,
+`enable`, `disable` accept only a raw id via `ProfileId::parse`. See BUG-041.
+
+Proposed owner: one resolver with an "include disabled" flag.
+
+Reported by: remote.
+
+## CON-057 - Workspace and agent row presentation in two sidebars
+
+Sites: `client/shell/sidebar.rs` (local) and `client/shell/endpoint_sidebar.rs`
+(multi-endpoint) render collapsed/expanded rows independently; selection
+background private in `sidebar.rs:7` and inlined at `endpoint_sidebar.rs:125`;
+agent rows in `agent_sidebar.rs` vs `endpoint_agents.rs` (seen only via
+references). Already disagree on numbering (BUG-026); stale styling only in the
+endpoint path.
+
+Proposed owner (ui hunter, called the biggest payoff in the client shell): local
+is the one-endpoint case of the endpoint sidebar; delete `sidebar.rs`'s row
+rendering.
+
+Reported by: ui.
+
+## CON-058 - What to do on a poisoned lock
+
+Sites: `pane.rs` `active_pending_release` returns `None` on poison; other pane
+sites use `unwrap_or_else(into_inner)`; ghostty `Listener` recovers with
+`PoisonError::into_inner` everywhere while the PTY actor treats a poisoned core as
+fatal.
+
+Reported by: pane-detection, terminal-core.
+
+## CON-059 - Character width
+
+Sites: the core grid uses unicode-width plus the U+FF9E/U+FF9F special case;
+`copy_mode.rs` counts cells with `ghostty::unicode_codepoint_width`;
+`agent_sidebar.rs:358` `put_text` iterates `chars()` and redefines
+`display_width` locally although `render::display_width` exists. See BUG-003,
+BUG-027.
+
+Proposed owner: one width rule in the vt module.
+
+Reported by: terminal-core, ui.
