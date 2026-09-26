@@ -1,7 +1,7 @@
 use super::*;
 
 /// Run the headless server. This is the entry point called from main.rs.
-pub fn run_server() -> io::Result<()> {
+pub fn run_server(config: &config::Config) -> io::Result<()> {
     // Consume the startup-cwd hint before anything below starts a thread: the
     // API server thread, the tokio workers and session restore all run
     // concurrently afterwards, and unsetting a variable while another thread
@@ -16,7 +16,6 @@ pub fn run_server() -> io::Result<()> {
 
     crate::logging::init_file_logging(crate::logging::SERVER_LOG_FILE);
 
-    let loaded_config = config::Config::load();
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let event_hub = api::EventHub::default();
     let should_quit = Arc::new(AtomicBool::new(false));
@@ -43,21 +42,11 @@ pub fn run_server() -> io::Result<()> {
 
     let result = rt.block_on(async {
         // Create the App (with AppState, event channels, etc.).
-        let mut app = app::App::new(
-            &loaded_config.config,
-            app::AppPolicy::PRODUCTION,
-            api_rx,
-            event_hub,
-        );
+        let mut app = app::App::new(config, app::AppPolicy::PRODUCTION, api_rx, event_hub);
         seed_startup_workspace_if_empty(&mut app, startup_cwd);
 
         // Create the headless server.
-        let mut server = match HeadlessServer::new(
-            app,
-            &loaded_config.diagnostics,
-            Some(_api_server),
-            should_quit,
-        ) {
+        let mut server = match HeadlessServer::new(app, Some(_api_server), should_quit) {
             Ok(server) => server,
             Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
                 eprintln!("error: shepr server is already running");

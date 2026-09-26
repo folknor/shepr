@@ -57,7 +57,7 @@ pub(crate) fn tab_bar_right_diagnostics(entries: &[TabBarRightEntryConfig]) -> V
     let mut diagnostics = Vec::new();
     if entries.len() > MAX_TAB_BAR_RIGHT_ENTRIES {
         diagnostics.push(format!(
-            "ui.tab_bar_right may contain at most {MAX_TAB_BAR_RIGHT_ENTRIES} entries; ignoring extras"
+            "ui.tab_bar_right may contain at most {MAX_TAB_BAR_RIGHT_ENTRIES} entries"
         ));
     }
 
@@ -66,10 +66,10 @@ pub(crate) fn tab_bar_right_diagnostics(entries: &[TabBarRightEntryConfig]) -> V
             TabBarRightEntryConfig::Datetime { format } => {
                 if format.is_empty() {
                     diagnostics.push(format!(
-                        "ui.tab_bar_right[{index}] datetime format is empty; hiding entry"
+                        "ui.tab_bar_right[{index}] datetime format is empty"
                     ));
                 } else if let Err(err) = parse_tab_bar_datetime_format(format) {
-                    diagnostics.push(format!("ui.tab_bar_right[{index}] has {err}; hiding entry"));
+                    diagnostics.push(format!("ui.tab_bar_right[{index}] has {err}"));
                 }
             }
             TabBarRightEntryConfig::Command {
@@ -78,28 +78,26 @@ pub(crate) fn tab_bar_right_diagnostics(entries: &[TabBarRightEntryConfig]) -> V
                 timeout_seconds,
             } => {
                 if command.trim().is_empty() {
-                    diagnostics.push(format!(
-                        "ui.tab_bar_right[{index}] command is empty; hiding entry"
-                    ));
+                    diagnostics.push(format!("ui.tab_bar_right[{index}] command is empty"));
                 }
                 if *interval_seconds == 0 {
                     diagnostics.push(format!(
-                        "ui.tab_bar_right[{index}] interval_seconds must be at least 1; hiding entry"
+                        "ui.tab_bar_right[{index}] interval_seconds must be at least 1"
                     ));
                 }
                 if *interval_seconds > MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS {
                     diagnostics.push(format!(
-                        "ui.tab_bar_right[{index}] interval_seconds may be at most {MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS}; hiding entry"
+                        "ui.tab_bar_right[{index}] interval_seconds may be at most {MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS}"
                     ));
                 }
                 if *timeout_seconds == 0 {
                     diagnostics.push(format!(
-                        "ui.tab_bar_right[{index}] timeout_seconds must be at least 1; hiding entry"
+                        "ui.tab_bar_right[{index}] timeout_seconds must be at least 1"
                     ));
                 }
                 if *timeout_seconds > MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS {
                     diagnostics.push(format!(
-                        "ui.tab_bar_right[{index}] timeout_seconds may be at most {MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS}; hiding entry"
+                        "ui.tab_bar_right[{index}] timeout_seconds may be at most {MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS}"
                     ));
                 }
             }

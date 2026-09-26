@@ -9,7 +9,7 @@ mod window_title;
 #[cfg(test)]
 pub(crate) use self::theme::THEME_NAMES;
 pub use self::{
-    io::{config_diagnostic_summary, config_dir, config_path, state_dir},
+    io::{config_dir, config_path, state_dir, try_config_path},
     keybinds::{
         ActionKeybinds, BindingConfig, IndexedKeybind, Keybinds, LiveKeybindConfig,
         format_key_combo, normalize_key_combo, terminal_key_matches_combo,
@@ -40,24 +40,6 @@ pub(crate) use self::{
 
 pub const CONFIG_PATH_ENV_VAR: &str = "SHEPR_CONFIG_PATH";
 
-pub(crate) fn is_keybinding_config_diagnostic(diagnostic: &str) -> bool {
-    if diagnostic.starts_with("config parse error:") || diagnostic.starts_with("config read error:")
-    {
-        return false;
-    }
-    diagnostic.contains("keybinding") || diagnostic.contains("keys.")
-}
-
-pub(crate) fn config_diagnostic_summary_without_keybindings(
-    diagnostics: &[String],
-) -> Option<String> {
-    let diagnostics = diagnostics
-        .iter()
-        .filter(|diagnostic| !is_keybinding_config_diagnostic(diagnostic))
-        .cloned()
-        .collect::<Vec<_>>();
-    config_diagnostic_summary(&diagnostics)
-}
 pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
 pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
 pub const DEFAULT_HEADLESS_COLS: u16 = 120;
@@ -75,28 +57,14 @@ impl Config {
     }
 
     pub fn collect_diagnostics(&self) -> Vec<String> {
+        // sidebar_section_split is persisted client chrome state, not a Config
+        // field; its finite-range normalization belongs to preference loading.
         let (prefix_diag, _, keybind_diags, _) = self.validated_keybinds();
         prefix_diag
             .into_iter()
             .chain(keybind_diags)
             .chain(self.theme.diagnostics())
-            .chain(
-                theme::color_diagnostic("ui.accent", &self.ui.accent).map(|diagnostic| {
-                    if self
-                        .theme
-                        .custom
-                        .as_ref()
-                        .is_some_and(|custom| custom.accent.is_some())
-                    {
-                        diagnostic.replace(
-                            "using cyan",
-                            "ui.accent is ignored when theme.custom.accent is set",
-                        )
-                    } else {
-                        diagnostic.replace("using cyan", "using the theme accent")
-                    }
-                }),
-            )
+            .chain(theme::color_diagnostic("ui.accent", &self.ui.accent))
             .chain(tab_bar_right_diagnostics(&self.ui.tab_bar_right))
             .chain(window_title_diagnostics(&self.ui.window_title))
             .chain(self.invalid_sidebar_bounds_diagnostic())
@@ -105,11 +73,8 @@ impl Config {
     }
 
     pub(crate) fn headless_size(&self) -> (u16, u16) {
-        if self.invalid_headless_size_diagnostic().is_some() {
-            (DEFAULT_HEADLESS_COLS, DEFAULT_HEADLESS_ROWS)
-        } else {
-            (self.server.headless_cols, self.server.headless_rows)
-        }
+        // `load_validated` rejects zero dimensions before any app is built.
+        (self.server.headless_cols, self.server.headless_rows)
     }
 
     pub(crate) fn invalid_headless_size_diagnostic(&self) -> Option<String> {
@@ -132,22 +97,20 @@ impl Config {
             })
     }
 
-    /// The prefix and keybinds from one validation pass. An invalid prefix
-    /// falls back to ctrl+b, as `prefix_key()` does; use
-    /// `live_keybinds_with_diagnostics` to treat that as an error instead.
+    /// The prefix and keybinds from one validation pass. Launch configs are
+    /// validated first, so nothing reaches here with an invalid binding;
+    /// `validated_live_keybinds` rejects one instead.
     pub(crate) fn live_keybinds(&self) -> LiveKeybindConfig {
         let (_, prefix, _, keybinds) = self.validated_keybinds();
         LiveKeybindConfig { prefix, keybinds }
     }
 
-    pub(crate) fn live_keybinds_with_diagnostics(
-        &self,
-    ) -> Result<(LiveKeybindConfig, Vec<String>), Vec<String>> {
+    pub(crate) fn validated_live_keybinds(&self) -> Result<LiveKeybindConfig, Vec<String>> {
         let (prefix_diag, prefix, keybind_diags, keybinds) = self.validated_keybinds();
-        if let Some(prefix_diag) = prefix_diag {
-            Err(std::iter::once(prefix_diag).chain(keybind_diags).collect())
+        if prefix_diag.is_some() || !keybind_diags.is_empty() {
+            Err(prefix_diag.into_iter().chain(keybind_diags).collect())
         } else {
-            Ok((LiveKeybindConfig { prefix, keybinds }, keybind_diags))
+            Ok(LiveKeybindConfig { prefix, keybinds })
         }
     }
 
@@ -164,17 +127,13 @@ impl Config {
     }
 }
 
-/// Keybinds from an endpoint's published keybinding profile, with the
-/// non-fatal diagnostics its validation produced. Keybinding validation does
-/// not log, and this profile never passes through `Config::load`, so the
-/// caller is the only place those diagnostics can be reported.
-pub(crate) fn keybindings_from_profile_toml(
-    profile: &str,
-) -> Result<(LiveKeybindConfig, Vec<String>), String> {
+/// Keybinds from an endpoint's published keybinding profile. Invalid
+/// bindings reject the profile, just as they reject a local config at launch.
+pub(crate) fn keybindings_from_profile_toml(profile: &str) -> Result<LiveKeybindConfig, String> {
     let config = toml::from_str::<Config>(profile)
         .map_err(|err| format!("invalid keybinding profile: {err}"))?;
     config
-        .live_keybinds_with_diagnostics()
+        .validated_live_keybinds()
         .map_err(|diagnostics| diagnostics.join("; "))
 }
 
@@ -215,31 +174,23 @@ prefix = "ctrl+"
         let profile = config
             .local_keybindings_profile_toml()
             .expect("test precondition");
-        let (keybinds, diagnostics) =
-            keybindings_from_profile_toml(&profile).expect("test precondition");
+        let keybinds = keybindings_from_profile_toml(&profile).expect("test precondition");
 
         assert!(profile.contains("prefix = \"ctrl+b\""));
         assert_eq!(keybinds.prefix, config.live_keybinds().prefix);
-        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]
-    fn keybinding_profile_returns_its_non_fatal_diagnostics() {
-        let (keybinds, diagnostics) = keybindings_from_profile_toml(
+    fn keybinding_profile_rejects_invalid_bindings() {
+        let error = keybindings_from_profile_toml(
             r#"
 [keys]
 zoom = "prefix+nonsense-key"
 "#,
         )
-        .expect("a bad binding is not fatal");
+        .expect_err("a bad binding rejects the profile");
 
-        assert_eq!(keybinds.prefix, Config::default().live_keybinds().prefix);
-        assert!(
-            diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.contains("keys.zoom")),
-            "{diagnostics:?}"
-        );
+        assert!(error.contains("keys.zoom"), "{error}");
     }
 
     #[test]

@@ -24,6 +24,11 @@ pub(crate) const GROK_CONFIG_DIR_ENV_VAR: &str = "GROK_CONFIG_DIR";
 pub(crate) const GROK_HOME_ENV_VAR: &str = "GROK_HOME";
 pub(crate) const HERMES_HOME_ENV_VAR: &str = "HERMES_HOME";
 
+fn absolute_xdg_home(variable: &str) -> Option<PathBuf> {
+    let path = std::env::var_os(variable).map(PathBuf::from)?;
+    path.is_absolute().then_some(path)
+}
+
 pub(crate) fn apply_pane_base_env(cmd: &mut PtyCommand) {
     cmd.env(crate::api::SOCKET_PATH_ENV_VAR, crate::api::socket_path());
     if let Ok(executable) = crate::platform::launch_executable() {
@@ -71,8 +76,10 @@ pub(crate) fn copilot_dir() -> io::Result<PathBuf> {
 }
 
 pub(crate) fn devin_dir() -> io::Result<PathBuf> {
-    if let Some(value) = std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
-        return expand_tilde_path(PathBuf::from(value)).map(|path| path.join("devin"));
+    // Devin's config is another tool's location. Ignore invalid XDG values
+    // per the base-directory spec and use Devin's conventional HOME path.
+    if let Some(path) = absolute_xdg_home("XDG_CONFIG_HOME") {
+        return Ok(path.join("devin"));
     }
 
     Ok(home_dir()?.join(".config").join("devin"))
@@ -102,8 +109,10 @@ pub(crate) fn opencode_dir() -> io::Result<PathBuf> {
 }
 
 pub(crate) fn opencode_state_dir() -> io::Result<PathBuf> {
-    if let Some(value) = std::env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
-        return expand_tilde_path(PathBuf::from(value)).map(|path| path.join("opencode"));
+    // OpenCode's state is another tool's location. Ignore invalid XDG values
+    // per the base-directory spec and use OpenCode's conventional HOME path.
+    if let Some(path) = absolute_xdg_home("XDG_STATE_HOME") {
+        return Ok(path.join("opencode"));
     }
 
     Ok(home_dir()?.join(".local/state/opencode"))
@@ -199,5 +208,33 @@ mod tests {
             opencode_state_dir().expect("test precondition"),
             xdg.join("opencode")
         );
+    }
+
+    #[test]
+    fn devin_dir_ignores_empty_and_relative_xdg_config_home() {
+        let env = IsolatedEnv::new();
+        for invalid in ["", "relative/config"] {
+            env.set("XDG_CONFIG_HOME", invalid);
+            assert_eq!(
+                devin_dir().expect("home fallback"),
+                env.home().join(".config/devin")
+            );
+        }
+
+        let xdg = env.path().join("config");
+        env.set("XDG_CONFIG_HOME", &xdg);
+        assert_eq!(devin_dir().expect("absolute XDG path"), xdg.join("devin"));
+    }
+
+    #[test]
+    fn opencode_state_dir_ignores_empty_and_relative_xdg_state_home() {
+        let env = IsolatedEnv::new();
+        for invalid in ["", "relative/state"] {
+            env.set("XDG_STATE_HOME", invalid);
+            assert_eq!(
+                opencode_state_dir().expect("home fallback"),
+                env.home().join(".local/state/opencode")
+            );
+        }
     }
 }

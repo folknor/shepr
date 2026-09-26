@@ -468,38 +468,21 @@ impl ClientShellState {
         }
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         self.hits.notification_toast = Rect::default();
-        self.hits.config_diagnostic = Rect::default();
-        let has_config_diagnostic = self.visible_config_diagnostic().is_some();
         let active_lifecycle = self
             .endpoints
             .iter()
             .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
             .filter(|endpoint| endpoint.status != ClientEndpointStatus::Online)
             .map(|endpoint| (endpoint.label.clone(), endpoint.status));
-        if has_config_diagnostic
-            || active_lifecycle.is_some()
-            || self.visible_endpoint_notice.is_some()
-        {
+        if active_lifecycle.is_some() || self.visible_endpoint_notice.is_some() {
             let cursor = frame.cursor.clone();
             let mut composed = frame.to_ratatui_buffer()?;
-            if let Some(diagnostic) = self.visible_config_diagnostic() {
-                let diagnostic_area = Rect::new(0, 0, cols, rows);
-                self.hits.config_diagnostic = crate::ui::render_config_diagnostic_buffer(
-                    &mut composed,
-                    diagnostic_area,
-                    diagnostic,
-                    &self.config.palette,
-                );
-            }
-            // A merged client + endpoint diagnostic spans two rows; stack below all of them.
-            let diagnostic_rows = self.hits.config_diagnostic.height;
             let lifecycle_offset = active_lifecycle.as_ref().map_or(0, |(label, status)| {
                 endpoint_notices::render_lifecycle_banner(
                     &mut composed,
                     Rect::new(0, 0, cols, rows),
                     label,
                     *status,
-                    diagnostic_rows,
                     &self.config.palette,
                 );
                 1
@@ -509,7 +492,7 @@ impl ClientShellState {
                     &mut composed,
                     Rect::new(0, 0, cols, rows),
                     notice,
-                    diagnostic_rows.saturating_add(lifecycle_offset),
+                    lifecycle_offset,
                     &self.config.palette,
                 );
             }
@@ -596,11 +579,9 @@ impl ClientShellState {
             self.hits.panes.clear();
             self.hits.pane_splits.clear();
         }
-        // This path draws a visible banner and notice unconditionally (above), so this is
-        // where their lifetimes start.
-        let now = std::time::Instant::now();
-        self.config_diagnostic_drawn(now);
-        self.endpoint_notice_drawn(now);
+        // This path draws a visible notice unconditionally (above), so this is where its
+        // lifetime starts.
+        self.endpoint_notice_drawn(std::time::Instant::now());
         Some(crate::client::frame_output::ComposedFrame { frame })
     }
 }

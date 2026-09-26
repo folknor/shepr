@@ -15,7 +15,10 @@ const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const PANE_SHELL_READINESS_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_AGENT_START_TIMEOUT_MS: u64 = 30_000;
 
-pub(super) fn run_agent_command(matches: &ArgMatches) -> std::io::Result<i32> {
+pub(super) fn run_agent_command(
+    matches: &ArgMatches,
+    config: Option<crate::config::Config>,
+) -> std::io::Result<i32> {
     match matches.subcommand() {
         Some(("list", _)) => agent_list(),
         Some(("get", matches)) => agent_get(required(matches, "target")),
@@ -35,9 +38,11 @@ pub(super) fn run_agent_command(matches: &ArgMatches) -> std::io::Result<i32> {
             until: values::<AgentStatus>(matches, "until"),
             timeout_ms: value::<u64>(matches, "timeout"),
         }),
-        Some(("attach", matches)) => {
-            agent_attach(&required(matches, "target"), flag(matches, "takeover"))
-        }
+        Some(("attach", matches)) => agent_attach(
+            &required(matches, "target"),
+            flag(matches, "takeover"),
+            config,
+        ),
         Some(("start", matches)) => agent_start(matches),
         Some(("explain", matches)) => agent_explain(matches),
         _ => Ok(super::missing_subcommand()),
@@ -314,7 +319,15 @@ fn agent_focus(target: String) -> std::io::Result<i32> {
     })?)
 }
 
-fn agent_attach(target: &str, takeover: bool) -> std::io::Result<i32> {
+fn agent_attach(
+    target: &str,
+    takeover: bool,
+    config: Option<crate::config::Config>,
+) -> std::io::Result<i32> {
+    let config = match config {
+        Some(config) => config,
+        None => super::load_validated_config()?,
+    };
     let response = resolve_agent_target(target, "cli:agent:attach:resolve")?;
     if response.get("error").is_some() {
         eprintln!(
@@ -327,7 +340,7 @@ fn agent_attach(target: &str, takeover: bool) -> std::io::Result<i32> {
         eprintln!("agent attach failed: response did not include terminal_id");
         return Ok(1);
     };
-    crate::client::run_terminal_attach(terminal_id.to_owned(), takeover)?;
+    crate::client::run_terminal_attach(&config, terminal_id.to_owned(), takeover)?;
     Ok(0)
 }
 

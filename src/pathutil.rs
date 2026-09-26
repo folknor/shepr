@@ -2,9 +2,9 @@ use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// `$HOME`. An unset or empty `HOME` is an error rather than a fallback:
-/// every caller builds a path under it, and an empty home would silently turn
-/// `~/x` into the relative path `x`.
+/// `$HOME`. An unset, empty, or relative `HOME` is an error rather than a
+/// fallback: every caller builds a path under it, and an invalid home would
+/// make that path relative to the current directory.
 pub(crate) fn home_dir() -> io::Result<PathBuf> {
     home_dir_from_env(&|key| std::env::var_os(key))
 }
@@ -13,9 +13,9 @@ pub(crate) fn home_dir() -> io::Result<PathBuf> {
 /// untouched: resolving another user's home needs a passwd lookup, and
 /// silently turning `~bob/x` into `$HOME/bob/x` would point at the wrong place.
 ///
-/// A path that needs `$HOME` fails when `HOME` is unset or empty instead of
-/// being returned literally. The literal `~/x` is a relative path, so every
-/// caller would go on to resolve it against its working directory: an
+/// A path that needs `$HOME` fails when `HOME` is unset, empty, or relative
+/// instead of being returned literally. The literal `~/x` is a relative path,
+/// so every caller would go on to resolve it against its working directory: an
 /// integration install would create a directory named `~` there, and
 /// `--cwd ~/x` would name `$PWD/~/x`. Callers that have a sensible default
 /// (the new-terminal cwd policy) apply it on the error themselves.
@@ -24,10 +24,18 @@ pub(crate) fn expand_tilde_path(path: impl AsRef<Path>) -> io::Result<PathBuf> {
 }
 
 fn home_dir_from_env(env: &dyn Fn(&str) -> Option<OsString>) -> io::Result<PathBuf> {
-    env("HOME")
-        .filter(|value| !value.is_empty())
+    home_dir_from_value(env("HOME"))
+}
+
+fn home_dir_from_value(value: Option<OsString>) -> io::Result<PathBuf> {
+    value
         .map(PathBuf::from)
-        .ok_or_else(|| io::Error::other("home directory is not set; cannot locate home directory"))
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| {
+            io::Error::other(
+                "HOME must be set to a non-empty absolute path to locate home directory",
+            )
+        })
 }
 
 fn expand_tilde_path_from_env(
@@ -88,6 +96,13 @@ mod tests {
             expand("relative/x", &home).expect("test precondition"),
             PathBuf::from("relative/x")
         );
+    }
+
+    #[test]
+    fn home_dir_rejects_missing_empty_and_relative_home() {
+        assert!(home_dir_from_value(None).is_err());
+        assert!(home_dir_from_value(Some(OsString::new())).is_err());
+        assert!(home_dir_from_value(Some(OsString::from("relative/home"))).is_err());
     }
 
     #[test]

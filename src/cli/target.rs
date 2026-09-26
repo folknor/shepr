@@ -25,6 +25,7 @@ pub(super) fn mark_protocol_checked() {
 struct MachineTarget {
     profile: SavedSshEndpoint,
     bridge: Option<crate::remote::SavedSshApiBridge>,
+    ssh_settings: crate::remote::SavedSshSettings,
 }
 
 struct TargetScope(Option<MachineTarget>);
@@ -49,6 +50,10 @@ pub(super) fn run_on_machine(
     if let Err(error) = validate_machine_command(name, matches) {
         return usage_error(&error);
     }
+    let config = super::load_validated_config()?;
+    let ssh_settings = crate::remote::SavedSshSettings {
+        manage_ssh_config: config.remote.manage_ssh_config,
+    };
     let profiles = EndpointCatalog::load_profiles().map_err(io::Error::other)?;
     let profile = match resolve_machine(&profiles, selector) {
         Ok(profile) => profile.clone(),
@@ -58,10 +63,11 @@ pub(super) fn run_on_machine(
         TargetScope(target.replace(Some(MachineTarget {
             profile,
             bridge: None,
+            ssh_settings,
         })))
     });
     PROTOCOL_CHECKED.with(|checked| checked.set(false));
-    super::dispatch(name, matches)
+    super::dispatch_with_config(name, matches, Some(config))
 }
 
 fn usage_error(error: &str) -> io::Result<super::CommandOutcome> {
@@ -86,6 +92,7 @@ pub(super) fn api_client() -> io::Result<ApiClient> {
                     &target.profile.target,
                     &target.profile.session,
                     true,
+                    target.ssh_settings,
                 )
                 .map_err(|error| {
                     io::Error::new(
@@ -144,6 +151,7 @@ pub(super) fn server_status(
             &target.profile.target,
             &target.profile.session,
             false,
+            target.ssh_settings,
         )?);
         Ok(())
     })?;

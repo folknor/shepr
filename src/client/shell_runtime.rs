@@ -986,7 +986,6 @@ mod tests {
         Box::new(crate::protocol::ClientShellSnapshot {
             boot_id: boot_id.into(),
             revision: 1,
-            config_diagnostic: None,
             server_keybindings_toml: None,
             focused_workspace_id: None,
             focused_tab_id: None,

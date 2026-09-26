@@ -199,6 +199,14 @@ pub(crate) fn run(invocation: &Invocation) -> std::io::Result<CommandOutcome> {
 }
 
 fn dispatch(name: &str, matches: &ArgMatches) -> std::io::Result<CommandOutcome> {
+    dispatch_with_config(name, matches, None)
+}
+
+pub(super) fn dispatch_with_config(
+    name: &str,
+    matches: &ArgMatches,
+    config: Option<crate::config::Config>,
+) -> std::io::Result<CommandOutcome> {
     let exit_code = match name {
         "server" => {
             let Some(exit_code) = server::run_server_command(matches)? else {
@@ -211,8 +219,8 @@ fn dispatch(name: &str, matches: &ArgMatches) -> std::io::Result<CommandOutcome>
         "machine" => machine::run_machine_command(matches)?,
         "workspace" => workspace::run_workspace_command(matches)?,
         "tab" => tab::run_tab_command(matches)?,
-        "agent" => agent::run_agent_command(matches)?,
-        "terminal" => run_terminal_command(matches)?,
+        "agent" => agent::run_agent_command(matches, config)?,
+        "terminal" => run_terminal_command(matches, config)?,
         "pane" => pane::run_pane_command(matches)?,
         "integration" => integration::run_integration_command(matches)?,
         "session" => {
@@ -249,7 +257,7 @@ fn run_config_command(matches: &ArgMatches) -> i32 {
 }
 
 fn config_check() -> i32 {
-    let diagnostics = crate::config::Config::load().diagnostics;
+    let diagnostics = crate::config::Config::load_for_check().diagnostics;
     if diagnostics.is_empty() {
         println!("config: ok");
     } else {
@@ -262,10 +270,27 @@ fn config_check() -> i32 {
     i32::from(!diagnostics.is_empty())
 }
 
-fn run_terminal_command(matches: &ArgMatches) -> std::io::Result<i32> {
+fn load_validated_config() -> std::io::Result<crate::config::Config> {
+    crate::config::Config::load_validated().map_err(|diagnostics| {
+        std::io::Error::other(format!(
+            "configuration error:\n  {}",
+            diagnostics.join("\n  ")
+        ))
+    })
+}
+
+fn run_terminal_command(
+    matches: &ArgMatches,
+    config: Option<crate::config::Config>,
+) -> std::io::Result<i32> {
     match matches.subcommand() {
         Some(("attach", matches)) => {
+            let config = match config {
+                Some(config) => config,
+                None => load_validated_config()?,
+            };
             crate::client::run_terminal_attach(
+                &config,
                 matches::required(matches, "terminal_id"),
                 matches::flag(matches, "takeover"),
             )?;
@@ -637,6 +662,32 @@ mod tests {
             clap::error::ErrorKind::DisplayHelp
         );
         assert_eq!(parse_error(&["session", "attach", "a", "b"]).exit_code(), 2);
+    }
+
+    #[test]
+    fn terminal_and_agent_attach_reject_invalid_config_before_connecting() {
+        let _env = crate::test_support::IsolatedEnv::new();
+        let scratch = crate::test_support::ScratchDir::new("cli-invalid-config");
+        let config_path = scratch.join("config.toml");
+        std::fs::write(&config_path, "[").expect("write invalid config");
+        _env.set(crate::config::CONFIG_PATH_ENV_VAR, &config_path);
+
+        for args in [
+            &["terminal", "attach", "terminal-1"][..],
+            &["agent", "attach", "agent-1"],
+        ] {
+            let error = match super::run(&parse(args)) {
+                Err(error) => error,
+                Ok(CommandOutcome::Handled(code)) => {
+                    panic!("{args:?} unexpectedly returned exit code {code}")
+                }
+                Ok(CommandOutcome::NotCli) => panic!("{args:?} was not handled as a CLI command"),
+            };
+            assert!(
+                error.to_string().contains("configuration error"),
+                "{args:?} should fail on invalid config before connecting: {error}"
+            );
+        }
     }
 
     #[test]

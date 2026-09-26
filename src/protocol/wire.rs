@@ -781,8 +781,6 @@ pub struct ClientShellSnapshot {
     pub boot_id: String,
     /// Monotonic replacement revision within one endpoint boot.
     pub revision: u64,
-    /// Endpoint startup config warning, filtered for client-owned keybindings.
-    pub config_diagnostic: Option<String>,
     /// Endpoint's normalized built-in keybindings, used only when a remote client selects server bindings.
     pub server_keybindings_toml: Option<String>,
     pub focused_workspace_id: Option<String>,
@@ -1779,7 +1777,6 @@ mod tests {
         let msg = ClientShellSnapshot {
             boot_id: "boot-1".into(),
             revision: 1,
-            config_diagnostic: Some("endpoint config warning".into()),
             server_keybindings_toml: Some("[keys]\nprefix = \"ctrl+a\"\n".into()),
             focused_workspace_id: Some("w1".into()),
             focused_tab_id: Some("w1:t1".into()),

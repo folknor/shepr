@@ -147,7 +147,7 @@ pub fn client_socket_path_for(name: Option<&str>) -> PathBuf {
 }
 
 pub fn list_sessions() -> std::io::Result<Vec<SessionInfo>> {
-    let mut sessions = vec![session_info(None)];
+    let mut sessions = vec![session_info(None)?];
     let sessions_dir = crate::config::config_dir().join("sessions");
     let entries = match std::fs::read_dir(&sessions_dir) {
         Ok(entries) => entries,
@@ -169,22 +169,24 @@ pub fn list_sessions() -> std::io::Result<Vec<SessionInfo>> {
         }
     }
     names.sort();
-    sessions.extend(names.iter().map(|name| session_info(Some(name))));
+    for name in &names {
+        sessions.push(session_info(Some(name))?);
+    }
     Ok(sessions)
 }
 
-pub fn session_info(name: Option<&str>) -> SessionInfo {
+pub fn session_info(name: Option<&str>) -> std::io::Result<SessionInfo> {
     let default = name.is_none();
     let display_name = name.unwrap_or(DEFAULT_SESSION_NAME).to_string();
     let socket_path = api_socket_path_for(name);
     let session_dir = data_dir_for(name);
-    SessionInfo {
+    Ok(SessionInfo {
         name: display_name,
         default,
-        running: is_running_at(&socket_path),
+        running: is_running_at(&socket_path)?,
         socket_path: socket_path.display().to_string(),
         session_dir: session_dir.display().to_string(),
-    }
+    })
 }
 
 pub fn parse_target_name(name: &str) -> Result<Option<String>, String> {
@@ -216,7 +218,7 @@ fn stop_session_with_timeout(name: Option<&str>, timeout: Duration) -> Result<Se
         timeout,
         &label,
     )?;
-    Ok(session_info(name))
+    session_info(name).map_err(|err| err.to_string())
 }
 
 fn stop_socket_with_timeout(
@@ -232,10 +234,12 @@ fn stop_socket_with_timeout(
         "params": {}
     });
     let stream = crate::ipc::connect_local_stream(socket_path).map_err(|err| {
-        format!(
-            "{label} is not running or cannot be reached at {}: {err}",
-            socket_path.display()
-        )
+        let state = if socket_error_means_not_running(&err) {
+            "is not running"
+        } else {
+            "cannot be reached"
+        };
+        format!("{label} {state} at {}: {err}", socket_path.display())
     })?;
     let stop_response = send_stop_request(stream, &request, deadline)?;
     if let Some(response) = stop_response
@@ -243,8 +247,11 @@ fn stop_socket_with_timeout(
     {
         return Err(error.to_string());
     }
-    if !wait_until_stopped_until(stopped_socket_paths, deadline) {
-        let reachable = reachable_socket_paths(stopped_socket_paths);
+    let stopped = wait_until_stopped_until(stopped_socket_paths, deadline)
+        .map_err(|err| format!("could not check whether {label} stopped: {err}"))?;
+    if !stopped {
+        let reachable = reachable_socket_paths(stopped_socket_paths)
+            .map_err(|err| format!("could not check whether {label} stopped: {err}"))?;
         return Err(format!(
             "{label} did not stop within {}ms; sockets are still reachable at {}",
             timeout.as_millis(),
@@ -264,15 +271,25 @@ pub fn delete_session(name: &str) -> Result<SessionInfo, String> {
     }
     validate_name(name)?;
     let Some(dir) = exact_session_dir_for_delete(name)? else {
-        return Ok(session_info(Some(name)));
+        return session_info(Some(name)).map_err(|err| err.to_string());
     };
     let socket_path = dir.join("shepr.sock");
-    if is_running_at(&socket_path) {
+    if is_running_at(&socket_path).map_err(|err| {
+        format!(
+            "failed to inspect session {name} socket {}: {err}",
+            socket_path.display()
+        )
+    })? {
         return Err(format!(
             "session {name} is running; stop it before deleting"
         ));
     }
-    let info = session_info(Some(name));
+    let info = session_info(Some(name)).map_err(|err| {
+        format!(
+            "failed to inspect session {name} socket {}: {err}",
+            socket_path.display()
+        )
+    })?;
     match std::fs::remove_dir_all(&dir) {
         Ok(()) => Ok(info),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(info),
@@ -373,26 +390,52 @@ fn stop_request_error_allows_wait(err: &std::io::Error) -> bool {
     )
 }
 
-fn is_running_at(socket_path: &Path) -> bool {
-    socket_path.exists() && crate::ipc::connect_local_stream(socket_path).is_ok()
+fn is_running_at(socket_path: &Path) -> std::io::Result<bool> {
+    is_running_from_connection(crate::ipc::connect_local_stream(socket_path))
 }
 
-fn wait_until_stopped_until(socket_paths: &[PathBuf], deadline: Instant) -> bool {
+fn is_running_from_connection<T>(connection: std::io::Result<T>) -> std::io::Result<bool> {
+    match connection {
+        Ok(_) => Ok(true),
+        Err(err) if socket_error_means_not_running(&err) => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
+fn socket_error_means_not_running(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+    )
+}
+
+fn all_sockets_stopped(socket_paths: &[PathBuf]) -> std::io::Result<bool> {
+    for path in socket_paths {
+        if is_running_at(path)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn wait_until_stopped_until(socket_paths: &[PathBuf], deadline: Instant) -> std::io::Result<bool> {
     while Instant::now() < deadline {
-        if socket_paths.iter().all(|path| !is_running_at(path)) {
-            return true;
+        if all_sockets_stopped(socket_paths)? {
+            return Ok(true);
         }
         std::thread::sleep(STOP_WAIT_POLL.min(time_until(deadline)));
     }
-    socket_paths.iter().all(|path| !is_running_at(path))
+    all_sockets_stopped(socket_paths)
 }
 
-fn reachable_socket_paths(socket_paths: &[PathBuf]) -> Vec<PathBuf> {
-    socket_paths
-        .iter()
-        .filter(|path| is_running_at(path))
-        .cloned()
-        .collect()
+fn reachable_socket_paths(socket_paths: &[PathBuf]) -> std::io::Result<Vec<PathBuf>> {
+    let mut reachable = Vec::new();
+    for path in socket_paths {
+        if is_running_at(path)? {
+            reachable.push(path.clone());
+        }
+    }
+    Ok(reachable)
 }
 
 fn time_until(deadline: Instant) -> Duration {
@@ -832,6 +875,25 @@ mod tests {
         assert!(validate_name("../prod").is_err());
         assert!(validate_name("").is_err());
         assert!(validate_name("work session").is_err());
+    }
+
+    #[test]
+    fn session_socket_probe_propagates_errors_other_than_not_running() {
+        for kind in [
+            std::io::ErrorKind::NotFound,
+            std::io::ErrorKind::ConnectionRefused,
+        ] {
+            assert!(
+                !is_running_from_connection::<()>(Err(std::io::Error::from(kind)))
+                    .expect("not-running errors are status, not failures")
+            );
+        }
+
+        let error = is_running_from_connection::<()>(Err(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        )))
+        .expect_err("permission errors must remain transport errors");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
     #[test]

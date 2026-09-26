@@ -252,11 +252,25 @@ pub fn load() -> Option<SessionSnapshot> {
 
 pub fn load_history() -> Option<SessionHistorySnapshot> {
     let path = session_history_path();
-    if !path.exists() {
+    if let Err(err) = super::lock::claim(containing_directory(&path)) {
+        if super::lock::is_owned_elsewhere(&err) {
+            tracing::error!(
+                event = "persist.restore", subsystem = "persist", outcome = "owned_elsewhere",
+                path = %path.display(), err = %err,
+                "another server owns this session's files; history was not restored"
+            );
+        } else {
+            warn!(
+                event = "persist.restore", subsystem = "persist", outcome = "lock_error",
+                path = %path.display(), err = %err,
+                "could not lock the session directory; history was not restored"
+            );
+        }
         return None;
     }
     let content = match std::fs::read_to_string(&path) {
         Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
         Err(err) => {
             warn!(err = %err, "failed to read session history file");
             return None;
@@ -368,6 +382,33 @@ mod tests {
 
         drop(other_server);
         assert!(load().is_some());
+        super::super::lock::release(&directory);
+    }
+
+    #[test]
+    fn load_history_refuses_a_session_another_server_owns() {
+        let env = crate::test_support::IsolatedEnv::new();
+        env.set("XDG_CONFIG_HOME", env.path());
+        let path = session_history_path();
+        save_history_to_path(&path, Some(&history_snapshot("history-secret")))
+            .expect("test precondition");
+        let directory = containing_directory(&path).to_path_buf();
+        let other_server = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(directory.join(super::super::lock::LOCK_FILE_NAME))
+            .expect("test precondition");
+        other_server.try_lock().expect("test precondition");
+
+        assert!(
+            load_history().is_none(),
+            "another server's history is not restored"
+        );
+
+        drop(other_server);
+        assert!(load_history().is_some());
         super::super::lock::release(&directory);
     }
 

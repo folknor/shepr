@@ -35,7 +35,7 @@ fn public_tab_id_for_index(ws: &crate::workspace::Workspace, tab_idx: usize) -> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneStateUpdate {
     pub pane_id: PaneId,
-    pub ws_idx: usize,
+    pub workspace_id: String,
     pub previous_agent_label: Option<String>,
     pub previous_known_agent: Option<Agent>,
     pub previous_state: AgentState,
@@ -155,20 +155,28 @@ impl AppState {
             .iter()
             .enumerate()
             .flat_map(|(ws_idx, ws)| {
+                let workspace_id = ws.id.clone();
                 ws.tabs.iter().flat_map(move |tab| {
+                    let workspace_id = workspace_id.clone();
                     tab.layout
                         .pane_ids()
                         .into_iter()
                         .filter_map(move |pane_id| {
-                            ws.pane_state(pane_id)
-                                .map(|pane| (ws_idx, pane_id, pane.attached_terminal_id.clone()))
+                            ws.pane_state(pane_id).map(|pane| {
+                                (
+                                    ws_idx,
+                                    workspace_id.clone(),
+                                    pane_id,
+                                    pane.attached_terminal_id.clone(),
+                                )
+                            })
                         })
                 })
             })
             .collect();
         pane_terminals
             .into_iter()
-            .filter_map(|(ws_idx, pane_id, terminal_id)| {
+            .filter_map(|(ws_idx, workspace_id, pane_id, terminal_id)| {
                 let previous_seen = self.workspaces.get(ws_idx)?.pane_state(pane_id)?.seen;
                 let mutation = self
                     .terminals
@@ -179,7 +187,7 @@ impl AppState {
                 let seen = self.apply_pane_state_change(ws_idx, pane_id, &change, false)?;
                 let update = PaneStateUpdate {
                     pane_id,
-                    ws_idx,
+                    workspace_id,
                     previous_agent_label: change.previous_agent_label.clone(),
                     previous_known_agent: change.previous_known_agent,
                     previous_state: change.previous_state,
@@ -1152,6 +1160,7 @@ impl AppState {
             .workspaces
             .iter()
             .position(|ws| ws.pane_state(pane_id).is_some())?;
+        let workspace_id = self.workspaces[ws_idx].id.clone();
         let terminal_id = self.workspaces[ws_idx]
             .pane_state(pane_id)?
             .attached_terminal_id
@@ -1208,7 +1217,7 @@ impl AppState {
         let seen = self.apply_pane_state_change(ws_idx, pane_id, &change, suppress_completion)?;
         let update = PaneStateUpdate {
             pane_id,
-            ws_idx,
+            workspace_id,
             previous_agent_label: change.previous_agent_label.clone(),
             previous_known_agent: change.previous_known_agent,
             previous_state: change.previous_state,
@@ -1331,9 +1340,9 @@ impl AppState {
         };
 
         let pane_terminal_id = self.terminal_id_for_pane(ws_idx, pane_id);
-        // `close_pane` leaves the workspace untouched when this was its last
-        // pane, so `close_workspace_at` still sees (and tears down) the dead
-        // pane's terminal along with the rest of the workspace.
+        // Final-pane closure goes through `close_workspace_at`, which removes
+        // aliases for the whole workspace. Other deaths prune this pane's
+        // aliases directly below.
         if self.workspaces[ws_idx].close_pane(pane_id) {
             self.close_workspace_at(ws_idx);
             return;
@@ -2944,7 +2953,8 @@ mod tests {
             .publish_pane_process_exit_if_agent(pane_id, false)
             .expect("process exit update");
 
-        assert!(!state.pane_is_observed(update.ws_idx, pane_id));
+        assert_eq!(update.workspace_id, state.workspaces[0].id);
+        assert!(!state.pane_is_observed(0, pane_id));
         assert_eq!(update.previous_state, AgentState::Working);
         assert_eq!(update.state, AgentState::Idle);
         assert_eq!(update.agent_label.as_deref(), Some("pi"));

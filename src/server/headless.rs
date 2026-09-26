@@ -183,13 +183,6 @@ pub struct HeadlessServer {
     /// Window title set through `client.window_title.set`. While present it wins
     /// over the configured `ui.window_title` until the API clears it again.
     api_window_title: Option<String>,
-    /// Full server config warning shown to shell clients that use the server's
-    /// (endpoint) keybindings. Config is read once at launch, so this and the
-    /// variant below are fixed for the server's lifetime; each shell snapshot
-    /// picks one per client.
-    server_config_diagnostic: Option<String>,
-    /// Server config warning with keybinding diagnostics removed for local-keybinding clients.
-    server_config_diagnostic_without_keybindings: Option<String>,
     /// Writable direct attach owner per terminal id string.
     terminal_attach_owners: HashMap<String, u64>,
     /// Deferred application-history reads currently driving alternate-screen viewports.
@@ -257,7 +250,6 @@ impl HeadlessServer {
     /// 3. Returns the server ready to run
     pub fn new(
         app: app::App,
-        config_diagnostics: &[String],
         api_server: Option<api::ServerHandle>,
         should_quit: Arc<AtomicBool>,
     ) -> io::Result<Self> {
@@ -275,8 +267,6 @@ impl HeadlessServer {
         let (server_event_tx, server_event_rx) = mpsc::channel(64);
 
         let headless_size = app.state.headless_size;
-        let (server_config_diagnostic, server_config_diagnostic_without_keybindings) =
-            server_config_diagnostic_summaries(config_diagnostics);
         Ok(Self {
             app,
             _api_server: api_server,
@@ -297,8 +287,6 @@ impl HeadlessServer {
             ),
             sent_window_title: None,
             api_window_title: None,
-            server_config_diagnostic,
-            server_config_diagnostic_without_keybindings,
             terminal_attach_owners: HashMap::new(),
             pending_alt_screen_reads: Vec::new(),
             deferred_alt_screen_reads: Vec::new(),
@@ -1457,7 +1445,6 @@ impl HeadlessServer {
                 cell_width_px,
                 cell_height_px,
                 pixel_mouse,
-                endpoint_keybindings,
                 mouse_capture,
                 surface_active,
                 writer,
@@ -1488,20 +1475,13 @@ impl HeadlessServer {
                     Some(writer),
                 );
                 connection.pixel_mouse = pixel_mouse && observed.is_known();
-                connection.shell_uses_endpoint_keybindings = endpoint_keybindings;
                 connection.shell_mouse_capture = mouse_capture;
                 connection.shell_surface_active = surface_active;
                 connection.shell_projection_revision = 1;
-                let config_diagnostic = if endpoint_keybindings {
-                    self.server_config_diagnostic.as_deref()
-                } else {
-                    self.server_config_diagnostic_without_keybindings.as_deref()
-                };
                 let (seed_snapshot, completion_projection) = client_shell_snapshot(
                     &self.app,
                     &self.client_shell_boot_id,
                     connection.shell_projection_revision,
-                    config_diagnostic,
                     None,
                 );
                 let location =
@@ -2313,8 +2293,6 @@ impl HeadlessServer {
 
         // No resize polling needed - server has no terminal.
         // Client resize messages drive size changes instead.
-        // The config diagnostic never expires on a timer: it is fixed at launch
-        // and carried per client in each shell snapshot.
 
         if self.has_app_client() {
             self.app.start_git_status_refresh_if_due(now);
@@ -2425,13 +2403,6 @@ fn bind_owner_only_listener(path: &Path) -> io::Result<LocalListener> {
             err
         }
     })
-}
-
-fn server_config_diagnostic_summaries(diagnostics: &[String]) -> (Option<String>, Option<String>) {
-    (
-        config::config_diagnostic_summary(diagnostics),
-        config::config_diagnostic_summary_without_keybindings(diagnostics),
-    )
 }
 
 // ---------------------------------------------------------------------------

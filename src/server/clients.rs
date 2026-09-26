@@ -168,8 +168,6 @@ pub(crate) struct ClientConnection {
     pub(crate) shell_projection_revision: u64,
     /// Whether this shell is waiting for one ordered endpoint command response.
     pub(crate) shell_endpoint_command_in_flight: bool,
-    /// Whether this shell uses the endpoint-owned keymap rather than a client-owned keymap.
-    pub(crate) shell_uses_endpoint_keybindings: bool,
     /// Channels for sending framed ServerMessage data to the client writer thread.
     ///
     /// Always `Some` in production: every accepted connection brings a writer,
@@ -240,7 +238,6 @@ impl ClientConnection {
             shell_agent_completions: None,
             shell_projection_revision: 0,
             shell_endpoint_command_in_flight: false,
-            shell_uses_endpoint_keybindings: false,
             writer,
         }
     }

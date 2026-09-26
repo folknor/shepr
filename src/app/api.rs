@@ -235,13 +235,18 @@ impl App {
     }
 
     pub(crate) fn emit_pane_state_update(&mut self, update: &crate::app::actions::PaneStateUpdate) {
-        let Some(pane_id) = self.public_pane_id(update.ws_idx, update.pane_id) else {
+        // Workspace positions can change between state mutation and event emission. Resolve the
+        // stable workspace identity carried by the update before building public IDs.
+        let Some(ws_idx) = self.parse_workspace_id(&update.workspace_id) else {
             return;
         };
-        let workspace_id = self.public_workspace_id(update.ws_idx);
+        let Some(pane_id) = self.public_pane_id(ws_idx, update.pane_id) else {
+            return;
+        };
+        let workspace_id = update.workspace_id.clone();
 
         if update.agent_name_changed {
-            self.emit_pane_updated(update.ws_idx, update.pane_id);
+            self.emit_pane_updated(ws_idx, update.pane_id);
         }
 
         if update.previous_agent_label != update.agent_label || update.agent_released {
@@ -261,7 +266,7 @@ impl App {
         let agent_status = self
             .state
             .workspaces
-            .get(update.ws_idx)
+            .get(ws_idx)
             .and_then(|ws| ws.pane_state(update.pane_id))
             .map(|pane| pane_agent_status(update.state, pane.seen))
             .unwrap_or_else(|| pane_agent_status(update.state, update.seen));
@@ -989,6 +994,60 @@ mod tests {
             crate::api::schema::EventData::LayoutUpdated { layout }
                 if layout.tab_id == tab_id && layout.panes.len() == 1
         ));
+    }
+
+    #[test]
+    fn pane_state_update_resolves_workspace_after_an_earlier_workspace_closes() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            api_rx,
+            event_hub.clone(),
+        );
+        let first = crate::workspace::Workspace::test_new("closing");
+        let target = crate::workspace::Workspace::test_new("target");
+        let pane_id = target.tabs[0].root_pane;
+        let workspace_id = target.id.clone();
+        app.state.workspaces = vec![first, target];
+        app.state.ensure_test_terminals();
+        let presentation = crate::terminal::EffectivePresentation {
+            title: None,
+            display_agent: None,
+            state_labels: std::collections::HashMap::new(),
+        };
+        let update = crate::app::actions::PaneStateUpdate {
+            pane_id,
+            workspace_id: workspace_id.clone(),
+            previous_agent_label: None,
+            previous_known_agent: None,
+            previous_state: AgentState::Unknown,
+            previous_seen: false,
+            previous_presentation: presentation.clone(),
+            agent_label: Some("codex".into()),
+            known_agent: Some(Agent::Codex),
+            state: AgentState::Working,
+            seen: true,
+            presentation,
+            agent_name_changed: false,
+            agent_released: false,
+            agent_release_status: None,
+            suppress_completion: false,
+        };
+
+        app.state.close_workspace_at(0);
+        app.emit_pane_state_update(&update);
+
+        let pane_id = app.public_pane_id(0, pane_id).expect("live pane id");
+        assert!(event_hub.events_after(0).iter().any(|(_, event)| matches!(
+            &event.data,
+            crate::api::schema::EventData::PaneAgentDetected {
+                pane_id: emitted_pane_id,
+                workspace_id: emitted_workspace_id,
+                ..
+            } if emitted_pane_id == &pane_id && emitted_workspace_id == &workspace_id
+        )));
     }
 
     #[test]

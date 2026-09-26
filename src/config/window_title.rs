@@ -123,7 +123,7 @@ impl WindowTitleTemplate {
 pub(crate) fn window_title_diagnostics(template: &str) -> Option<String> {
     WindowTitleTemplate::parse(template)
         .err()
-        .map(|err| format!("ui.window_title {err}; leaving the outer terminal title alone"))
+        .map(|err| format!("ui.window_title {err}"))
 }
 
 #[cfg(test)]

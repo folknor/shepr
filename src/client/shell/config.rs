@@ -1,20 +1,5 @@
 use super::*;
 
-pub(super) fn merged_config_diagnostic(
-    local: Option<&str>,
-    endpoint: Option<&str>,
-) -> Option<String> {
-    match (local, endpoint) {
-        (Some(local), Some(endpoint)) if local == endpoint => {
-            Some(format!("client + endpoint: {local}"))
-        }
-        (Some(local), Some(endpoint)) => Some(format!("client: {local}\nendpoint: {endpoint}")),
-        (Some(local), None) => Some(local.to_owned()),
-        (None, Some(endpoint)) => Some(endpoint.to_owned()),
-        (None, None) => None,
-    }
-}
-
 impl ClientShellState {
     pub(super) fn persist_chrome_preferences(&mut self, outcome: &mut ClientShellInput) {
         let Some(path) = self.config.preferences_path.as_deref() else {
@@ -59,9 +44,7 @@ impl ClientShellConfig {
             status_indicators: config.ui.status_indicators,
             copy_on_select: config.ui.copy_on_select,
             palette: crate::app::palette_from_config(config),
-            // One validation pass. An invalid prefix falls back to ctrl+b here;
-            // its diagnostic was logged by `Config::load` and reaches the banner
-            // through the startup config diagnostic.
+            // One validation pass; the launch already rejected invalid bindings.
             keybinds: config.live_keybinds(),
             keybinding_source: ClientShellKeybindingSource::RemoteLocal,
             prompt_new_tab_name: config.ui.prompt_new_tab_name,
@@ -74,13 +57,7 @@ impl ClientShellConfig {
             preferences_path: None,
             preferences: preferences::ClientChromePreferences::default()
                 .without_configured(preferences::ConfiguredChrome::from_config(config)),
-            startup_config_diagnostic: None,
         }
-    }
-
-    pub(crate) fn with_startup_config_diagnostic(mut self, diagnostic: Option<String>) -> Self {
-        self.startup_config_diagnostic = diagnostic;
-        self
     }
 
     pub(crate) fn with_keybinding_source(mut self, source: ClientShellKeybindingSource) -> Self {
@@ -110,17 +87,9 @@ impl ClientShellConfig {
         profile: Option<&str>,
     ) -> Result<(), String> {
         let keybinds = match self.keybinding_source {
-            ClientShellKeybindingSource::Endpoint => {
-                let (keybinds, diagnostics) = crate::config::keybindings_from_profile_toml(
-                    profile.ok_or("endpoint did not publish its keybindings")?,
-                )?;
-                // Runs only when the endpoint publishes a changed profile, so
-                // each diagnostic is logged once per profile.
-                for diagnostic in &diagnostics {
-                    tracing::warn!(message = %diagnostic, "endpoint keybinding profile diagnostic");
-                }
-                keybinds
-            }
+            ClientShellKeybindingSource::Endpoint => crate::config::keybindings_from_profile_toml(
+                profile.ok_or("endpoint did not publish its keybindings")?,
+            )?,
             ClientShellKeybindingSource::RemoteLocal => return Ok(()),
         };
         self.keybinds = keybinds;

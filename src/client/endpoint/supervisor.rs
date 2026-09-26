@@ -59,7 +59,6 @@ pub(crate) struct EndpointConnectOptions {
     pub(crate) cell_height_px: u32,
     pub(crate) pixel_geometry_exact: bool,
     pub(crate) surface_size: ClientSurfaceSize,
-    pub(crate) endpoint_keybindings: bool,
     pub(crate) mouse_capture: bool,
 }
 
@@ -385,7 +384,6 @@ fn establish(
         options.cell_height_px,
         options.pixel_geometry_exact,
         Some(options.surface_size),
-        options.endpoint_keybindings,
         options.mouse_capture,
         false,
         Some(deadline),

@@ -17,11 +17,15 @@ struct MachineListRow<'a> {
 pub(super) fn run_machine_command(matches: &ArgMatches) -> std::io::Result<i32> {
     match matches.subcommand() {
         Some(("list", matches)) => list(flag(matches, "json")),
-        Some(("status", matches)) => {
-            status(string(matches, "machine").as_deref(), flag(matches, "json"))
+        Some(("status", matches)) => status(
+            string(matches, "machine").as_deref(),
+            flag(matches, "json"),
+            saved_ssh_settings()?,
+        ),
+        Some(("reconnect", matches)) => {
+            reconnect(&required(matches, "machine"), saved_ssh_settings()?)
         }
-        Some(("reconnect", matches)) => reconnect(&required(matches, "machine")),
-        Some(("add", matches)) => add(add_args(matches)),
+        Some(("add", matches)) => add(add_args(matches), saved_ssh_settings()?),
         Some(("rename", matches)) => rename(
             &required(matches, "profile-id"),
             &required(matches, "label"),
@@ -69,7 +73,11 @@ struct MachineStatusRow<'a> {
     error: Option<String>,
 }
 
-fn status(selector: Option<&str>, json: bool) -> std::io::Result<i32> {
+fn status(
+    selector: Option<&str>,
+    json: bool,
+    settings: crate::remote::SavedSshSettings,
+) -> std::io::Result<i32> {
     let catalog = load_catalog()?;
     let profiles = match selector {
         Some(selector) => match super::target::resolve_machine(&catalog.ssh, selector) {
@@ -85,7 +93,7 @@ fn status(selector: Option<&str>, json: bool) -> std::io::Result<i32> {
         .into_iter()
         .map(|profile| {
             let (status, error) =
-                match crate::remote::check_saved_ssh(&profile.target, &profile.session) {
+                match crate::remote::check_saved_ssh(&profile.target, &profile.session, settings) {
                     Ok(()) => ("reachable", None),
                     Err(error) => {
                         let message = error.to_string();
@@ -124,7 +132,7 @@ fn status(selector: Option<&str>, json: bool) -> std::io::Result<i32> {
     Ok(i32::from(rows.iter().any(|row| row.error.is_some())))
 }
 
-fn reconnect(selector: &str) -> std::io::Result<i32> {
+fn reconnect(selector: &str, settings: crate::remote::SavedSshSettings) -> std::io::Result<i32> {
     use std::io::IsTerminal;
     let catalog = load_catalog()?;
     let profile = match super::target::resolve_machine(&catalog.ssh, selector) {
@@ -140,12 +148,12 @@ fn reconnect(selector: &str) -> std::io::Result<i32> {
         );
         return Ok(2);
     }
-    let mut authentication = crate::remote::ssh_authentication_command(&profile.target)?;
+    let mut authentication = crate::remote::ssh_authentication_command(&profile.target, settings)?;
     if !authentication.command.status()?.success() {
         eprintln!("SSH authentication failed; the saved machine was not changed.");
         return Ok(1);
     }
-    crate::remote::check_saved_ssh(&profile.target, &profile.session)?;
+    crate::remote::check_saved_ssh(&profile.target, &profile.session, settings)?;
     println!(
         "Machine {} is reachable. Open Shepr clients retry within 30 seconds.",
         profile.id
@@ -169,7 +177,7 @@ fn add_args(matches: &ArgMatches) -> AddArgs {
     }
 }
 
-fn add(args: AddArgs) -> std::io::Result<i32> {
+fn add(args: AddArgs, settings: crate::remote::SavedSshSettings) -> std::io::Result<i32> {
     let AddArgs {
         target,
         label,
@@ -186,7 +194,7 @@ fn add(args: AddArgs) -> std::io::Result<i32> {
             return Ok(2);
         }
     }
-    let metadata = match crate::remote::prepare_saved_ssh(&target, &session) {
+    let metadata = match crate::remote::prepare_saved_ssh(&target, &session, settings) {
         Ok(metadata) => metadata,
         Err(error) => {
             eprintln!("error: {error}; machine was not saved");
@@ -219,6 +227,13 @@ fn add(args: AddArgs) -> std::io::Result<i32> {
     println!("Saved SSH machine {id}. Remote server is ready.");
     println!("Open Shepr clients connect automatically.");
     Ok(0)
+}
+
+fn saved_ssh_settings() -> std::io::Result<crate::remote::SavedSshSettings> {
+    let config = super::load_validated_config()?;
+    Ok(crate::remote::SavedSshSettings {
+        manage_ssh_config: config.remote.manage_ssh_config,
+    })
 }
 
 fn rename(raw_id: &str, label: &str) -> std::io::Result<i32> {

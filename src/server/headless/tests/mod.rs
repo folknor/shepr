@@ -80,8 +80,6 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         client_shell_boot_id: "test-boot".into(),
         sent_window_title: None,
         api_window_title: None,
-        server_config_diagnostic: None,
-        server_config_diagnostic_without_keybindings: None,
         terminal_attach_owners: HashMap::new(),
         pending_alt_screen_reads: Vec::new(),
         deferred_alt_screen_reads: Vec::new(),
@@ -759,7 +757,6 @@ async fn client_shell_attach_seeds_workspace() {
             cell_width_px: 0,
             cell_height_px: 0,
             pixel_mouse: false,
-            endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
             writer,
@@ -788,7 +785,6 @@ async fn completion_guard_endpoint_pairs_runtime_completions_with_snapshots() {
         cell_width_px: 0,
         cell_height_px: 0,
         pixel_mouse: false,
-        endpoint_keybindings: false,
         mouse_capture: false,
         surface_active: false,
         writer,
@@ -842,7 +838,6 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
             cell_width_px: 0,
             cell_height_px: 0,
             pixel_mouse: false,
-            endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
             writer,
@@ -968,7 +963,6 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     server.app.state.active = Some(0);
     server.app.state.selected = 0;
     server.app.state.mode = crate::app::Mode::Terminal;
-    server.server_config_diagnostic_without_keybindings = Some("endpoint config warning".into());
 
     let (writer, control_rx, render_rx) = test_client_writer();
     assert!(
@@ -979,7 +973,6 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
             cell_width_px: 10,
             cell_height_px: 20,
             pixel_mouse: true,
-            endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
             writer,
@@ -988,10 +981,6 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     let snapshot = client_shell_snapshot(&control_rx);
     assert_eq!(snapshot.workspaces.len(), 1);
     assert_eq!(snapshot.workspaces[0].label, "shell-only-label");
-    assert_eq!(
-        snapshot.config_diagnostic.as_deref(),
-        Some("endpoint config warning")
-    );
     server.render_and_stream();
     let initial_surface = match read_server_message(render_rx.recv().expect("pane surface")) {
         ServerMessage::PaneSurface(surface) => {
@@ -1158,7 +1147,6 @@ fn connect_test_shell(
             cell_width_px: 0,
             cell_height_px: 0,
             pixel_mouse: false,
-            endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
             writer,
@@ -1769,57 +1757,6 @@ async fn full_render_backpressure_does_not_disable_responsive_peer_patches() {
         read_server_message(slow_render.recv().expect("slow full recovery surface")),
         ServerMessage::PaneSurface(_)
     ));
-
-    shutdown_test_runtimes(&mut server);
-}
-
-#[tokio::test]
-async fn client_shell_config_diagnostics_follow_keybinding_ownership() {
-    let mut server = test_headless_server();
-    server.server_config_diagnostic = Some("server keybinding warning\ntheme warning".into());
-    server.server_config_diagnostic_without_keybindings = Some("theme warning".into());
-
-    let (local_writer, local_control, _local_render) = test_client_writer();
-    assert!(
-        server.handle_server_event(ServerEvent::ClientShellConnected {
-            client_id: 13,
-            surface_cols: 80,
-            surface_rows: 23,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            pixel_mouse: false,
-            endpoint_keybindings: false,
-            mouse_capture: false,
-            surface_active: true,
-            writer: local_writer,
-        })
-    );
-    let local_snapshot = client_shell_snapshot(&local_control);
-    assert_eq!(
-        local_snapshot.config_diagnostic.as_deref(),
-        Some("theme warning")
-    );
-
-    let (endpoint_writer, endpoint_control, _endpoint_render) = test_client_writer();
-    assert!(
-        server.handle_server_event(ServerEvent::ClientShellConnected {
-            client_id: 14,
-            surface_cols: 80,
-            surface_rows: 23,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            pixel_mouse: false,
-            endpoint_keybindings: true,
-            mouse_capture: false,
-            surface_active: true,
-            writer: endpoint_writer,
-        })
-    );
-    let endpoint_snapshot = client_shell_snapshot(&endpoint_control);
-    assert_eq!(
-        endpoint_snapshot.config_diagnostic.as_deref(),
-        Some("server keybinding warning\ntheme warning")
-    );
 
     shutdown_test_runtimes(&mut server);
 }
@@ -2652,7 +2589,6 @@ async fn public_api_focus_replaces_every_client_shell_projection() {
             cell_width_px: 0,
             cell_height_px: 0,
             pixel_mouse: false,
-            endpoint_keybindings: false,
             mouse_capture: false,
             surface_active: true,
             writer,
@@ -3132,19 +3068,6 @@ fn retained_test_server_with_control(
     assert!(server.claim_unowned_shell_tab_geometry(1, true));
 
     (server, client_control_rx, client_rx, pane_id)
-}
-
-#[test]
-fn server_keybinding_filter_keeps_whole_config_failures() {
-    assert!(!config::is_keybinding_config_diagnostic(
-        "config parse error: invalid value at `keys.new_tab = @`; using defaults"
-    ));
-    assert!(!config::is_keybinding_config_diagnostic(
-        "config read error: permission denied at keys.toml; using defaults"
-    ));
-    assert!(config::is_keybinding_config_diagnostic(
-        "unsafe direct keybinding: keys.close_pane would intercept typing"
-    ));
 }
 
 #[test]

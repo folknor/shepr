@@ -68,14 +68,12 @@ pub struct ThemeConfig {
 impl ThemeConfig {
     pub(crate) fn diagnostics(&self) -> Vec<String> {
         let valid = THEME_NAMES.join(", ");
-        let name = [("theme.name", self.name.as_deref(), "catppuccin")]
+        let name = [("theme.name", self.name.as_deref())]
             .into_iter()
-            .filter_map(|(field, value, fallback)| {
+            .filter_map(|(field, value)| {
                 let value = value?;
                 canonical_theme_name(value).is_none().then(|| {
-                    format!(
-                        "unknown theme name {field} = {value:?}; using {fallback:?}; valid themes: {valid}"
-                    )
+                    format!("unknown theme name {field} = {value:?}; valid themes: {valid}")
                 })
             });
         let colors = self
@@ -88,13 +86,11 @@ impl ThemeConfig {
 }
 
 /// Diagnostic for a configured colour value that `parse_color` cannot read,
-/// or `None` when the value is valid. Unreadable colours fall back to cyan at
-/// launch, so they must surface in `shepr config check` rather than only as a
-/// log line.
+/// or `None` when the value is valid.
 pub(crate) fn color_diagnostic(field: &str, value: &str) -> Option<String> {
     try_parse_color(value).is_none().then(|| {
         format!(
-            "invalid color {field} = {value:?}; using cyan; expected #rrggbb, #rgb, rgb(r, g, b), a color name, or reset"
+            "invalid color {field} = {value:?}; expected #rrggbb, #rgb, rgb(r, g, b), a color name, or reset"
         )
     })
 }
@@ -151,9 +147,8 @@ impl CustomThemeColors {
     }
 }
 
-/// Parse a color string into a ratatui Color, falling back to cyan (with a
-/// log line) for anything unreadable. `color_diagnostic` reports the same
-/// values to `shepr config check`.
+/// Parse a color string into a ratatui Color. Config loading validates color
+/// strings before they can reach a launched app.
 pub fn parse_color(s: &str) -> ratatui::style::Color {
     try_parse_color(s).unwrap_or_else(|| {
         warn!(color = s, "unknown color, defaulting to cyan");
@@ -258,7 +253,7 @@ name = "catppucin"
         let diagnostics = config.theme.diagnostics();
         assert_eq!(diagnostics.len(), 1);
         assert!(diagnostics[0].contains("theme.name = \"catppucin\""));
-        assert!(diagnostics[0].contains("using \"catppuccin\""));
+        assert!(diagnostics[0].contains("valid themes:"));
     }
 
     #[test]
@@ -355,7 +350,7 @@ peach = "#aééb"
         assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
         assert!(diagnostics[0].contains("theme.custom.red = \"bluish\""));
         assert!(diagnostics[1].contains("theme.custom.peach = \"#aééb\""));
-        assert!(diagnostics.iter().all(|d| d.contains("using cyan")));
+        assert!(diagnostics.iter().all(|d| d.contains("expected #rrggbb")));
     }
 
     #[test]
@@ -369,7 +364,11 @@ peach = "#aééb"
                 .any(|d| d.contains("invalid color ui.accent = \"#aééb\"")),
             "{diagnostics:?}"
         );
-        assert!(diagnostics.iter().all(|d| !d.contains("using cyan")));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.contains("invalid color ui.accent"))
+        );
 
         let custom: Config =
             toml::from_str("[ui]\naccent = \"#aééb\"\n[theme.custom]\naccent = \"#112233\"\n")
@@ -378,7 +377,7 @@ peach = "#aééb"
             custom
                 .collect_diagnostics()
                 .iter()
-                .any(|d| { d.contains("ui.accent is ignored when theme.custom.accent is set") })
+                .any(|d| { d.contains("invalid color ui.accent") })
         );
 
         let valid: Config =

@@ -38,7 +38,6 @@ pub struct EndpointClientHello {
     pub cell_height_px: u32,
     pub surface_size: ClientSurfaceSize,
     pub pixel_mouse: bool,
-    pub endpoint_keybindings: bool,
     pub mouse_capture: bool,
     pub surface_active: bool,
 }
@@ -100,7 +99,6 @@ mod tests {
         ClientShellSnapshot {
             boot_id: "boot".into(),
             revision: 1,
-            config_diagnostic: None,
             server_keybindings_toml: None,
             focused_workspace_id: None,
             focused_tab_id: None,

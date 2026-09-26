@@ -201,6 +201,16 @@ pub struct LoadedConfig {
     pub diagnostics: Vec<String>,
 }
 
+impl LoadedConfig {
+    pub(crate) fn into_validated(self) -> Result<Config, Vec<String>> {
+        if self.diagnostics.is_empty() {
+            Ok(self.config)
+        } else {
+            Err(self.diagnostics)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct KeysConfig {
     /// Prefix key to enter prefix mode (e.g. "ctrl+b", "f12", "esc").
@@ -371,6 +381,7 @@ pub(crate) struct KeysConfigOverlay {
     close_tab: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rename_pane: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     clear_pane: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     copy_mode: Option<BindingConfig>,
@@ -794,6 +805,27 @@ impl Default for RemoteConfig {
     }
 }
 
+fn deserialize_cjk_ime_agents<'de, D>(
+    deserializer: D,
+) -> Result<Vec<crate::detect::Agent>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let names = Vec::<String>::deserialize(deserializer)?;
+    let mut agents = Vec::with_capacity(names.len());
+    for name in names {
+        let Some(agent) = crate::detect::parse_agent_label(&name) else {
+            return Err(de::Error::custom(format!(
+                "unknown agent name {name:?} in experimental.cjk_ime_agents"
+            )));
+        };
+        if !agents.contains(&agent) {
+            agents.push(agent);
+        }
+    }
+    Ok(agents)
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ExperimentalConfig {
@@ -816,13 +848,13 @@ pub struct ExperimentalConfig {
     pub reveal_hidden_cursor_for_cjk_ime: bool,
     /// Restrict `reveal_hidden_cursor_for_cjk_ime` to focused panes whose
     /// detected agent matches one of these names (case-insensitive). Empty
-    /// list means apply to any focused pane. Unknown agent names are ignored;
-    /// if the list contains no valid names, the reveal does not apply.
+    /// list means apply to any focused pane. Unknown names are a config error.
     /// Accepted names: pi, claude, codex, gemini, cursor, devin, cline,
     /// opencode, copilot, kimi, kiro, droid, amp, grok, hermes, kilo,
     /// qodercli, qoder, qwen, qwen-code, letta, letta-code, maki.
     /// Default: empty.
-    pub cjk_ime_agents: Vec<String>,
+    #[serde(deserialize_with = "deserialize_cjk_ime_agents")]
+    pub cjk_ime_agents: Vec<crate::detect::Agent>,
     /// Cursor shape rendered for the IME anchor when
     /// `reveal_hidden_cursor_for_cjk_ime` is enabled. Default: "steady_block".
     pub cjk_ime_cursor_shape: ImeCursorShape,
@@ -1190,8 +1222,27 @@ cjk_ime_agents = ["claude", "codex"]
         let config: Config = toml::from_str(toml).expect("test precondition");
         assert_eq!(
             config.experimental.cjk_ime_agents,
-            vec!["claude".to_string(), "codex".to_string()]
+            vec![crate::detect::Agent::Claude, crate::detect::Agent::Codex]
         );
+    }
+
+    #[test]
+    fn cjk_ime_agents_reject_unknown_names() {
+        let err = toml::from_str::<Config>(
+            r#"
+[experimental]
+cjk_ime_agents = ["claude", "typo"]
+"#,
+        )
+        .expect_err("unknown cjk_ime_agents names are config errors");
+
+        assert!(err.to_string().contains("unknown agent name \"typo\""));
+    }
+
+    #[test]
+    fn default_keys_overlay_omits_unset_clear_pane() {
+        let serialized = toml::to_string(&KeysConfigOverlay::default()).expect("test precondition");
+        assert!(!serialized.contains("clear_pane"));
     }
 
     #[test]
@@ -1424,13 +1475,7 @@ headless_rows = 50
         )
         .expect("test precondition");
         assert!(invalid.invalid_headless_size_diagnostic().is_some());
-        assert_eq!(
-            invalid.headless_size(),
-            (
-                crate::config::DEFAULT_HEADLESS_COLS,
-                crate::config::DEFAULT_HEADLESS_ROWS
-            )
-        );
+        assert_eq!(invalid.headless_size(), (0, 50));
     }
 
     #[test]

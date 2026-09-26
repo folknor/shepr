@@ -70,7 +70,6 @@ pub(super) fn render_lifecycle_banner(
     area: Rect,
     label: &str,
     status: ClientEndpointStatus,
-    top_offset: u16,
     palette: &Palette,
 ) {
     if area.is_empty() || status == ClientEndpointStatus::Online {
@@ -81,11 +80,7 @@ pub(super) fn render_lifecycle_banner(
     let width = u16::try_from(unicode_width::UnicodeWidthStr::width(text.as_str()) + 2)
         .unwrap_or(u16::MAX)
         .min(area.width);
-    let y = area
-        .y
-        .saturating_add(top_offset)
-        .min(area.bottom().saturating_sub(1));
-    let rect = Rect::new(area.right().saturating_sub(width), y, width, 1);
+    let rect = Rect::new(area.right().saturating_sub(width), area.y, width, 1);
     Clear.render(rect, buffer);
     buffer.set_style(rect, Style::default().bg(palette.surface0));
     super::render::put_text(

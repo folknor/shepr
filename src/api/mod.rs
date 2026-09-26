@@ -121,12 +121,9 @@ pub(crate) fn send_api_response(
     request_id: &str,
     method: &'static str,
     response: String,
-) -> bool {
+) {
     if respond_to.send(response).is_err() {
         tracing::debug!(request_id, method, "API response receiver was dropped");
-        false
-    } else {
-        true
     }
 }
 
@@ -198,15 +195,10 @@ mod tests {
     }
 
     #[test]
-    fn disconnected_api_response_receiver_is_detected() {
+    fn api_response_is_sent_to_its_receiver() {
         let (respond_to, response_rx) = std::sync::mpsc::channel();
-        drop(response_rx);
 
-        assert!(!send_api_response(
-            &respond_to,
-            "request-1",
-            "pane.read",
-            "response".into(),
-        ));
+        send_api_response(&respond_to, "request-1", "pane.read", "response".into());
+        assert_eq!(response_rx.recv().expect("response was sent"), "response");
     }
 }

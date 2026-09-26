@@ -35,7 +35,10 @@ const BRIDGE_FAILURE_REPORT_TIMEOUT: Duration = Duration::from_secs(1);
 const REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready:1";
 const SSH_CONTROL_SOCKET_NAME: &str = "ctl";
-pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
+pub(crate) fn run_remote(
+    remote: RemoteLaunch,
+    settings: super::SavedSshSettings,
+) -> io::Result<()> {
     let session_name = crate::session::active_name()
         .unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_string());
     let local_socket = local_forward_socket_path(&remote.target, &session_name);
@@ -44,16 +47,12 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
         .unwrap_or_else(|| "shepr".to_string());
     let reattach_command =
         reattach_command(&program, &remote.target, &session_name, remote.keybindings);
-    let manage_ssh_config = crate::config::Config::load()
-        .config
-        .remote
-        .manage_ssh_config;
     let require_surface_interest = crate::client::endpoint::EndpointCatalog::load()
         .map(|catalog| catalog.contains_target_session(&remote.target, &session_name))
         .unwrap_or(false);
     let remote_ssh = RemoteSsh::new(
         remote.target.clone(),
-        manage_ssh_config,
+        settings.manage_ssh_config,
         session_name.clone(),
     );
     let prepared_remote = prepare_remote_shepr(&remote_ssh, require_surface_interest)?;
@@ -75,12 +74,16 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
     run_client_process(&local_socket, &reattach_command, remote.keybindings)
 }
 
-pub(crate) fn check_saved_ssh(target: &str, session: &str) -> io::Result<()> {
+pub(crate) fn check_saved_ssh(
+    target: &str,
+    session: &str,
+    settings: super::SavedSshSettings,
+) -> io::Result<()> {
     super::validate_remote_target(target)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     crate::session::validate_name(session)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let mut ssh = RemoteSsh::new_noninteractive(target.to_owned());
+    let mut ssh = RemoteSsh::new_noninteractive_with(target.to_owned(), settings.manage_ssh_config);
     ssh.session_name = session.to_owned();
     let remote = find_installed_remote_shepr(&ssh)?;
     match remote_server_status(&ssh, &remote, false)? {
@@ -111,18 +114,15 @@ pub(crate) fn check_saved_ssh(target: &str, session: &str) -> io::Result<()> {
 pub(crate) fn prepare_saved_ssh(
     target: &str,
     session_name: &str,
+    settings: super::SavedSshSettings,
 ) -> io::Result<Option<crate::client::endpoint::SshMachineMetadata>> {
     super::validate_remote_target(target)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     crate::session::validate_name(session_name)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let manage_ssh_config = crate::config::Config::load()
-        .config
-        .remote
-        .manage_ssh_config;
     let ssh = RemoteSsh::new(
         target.to_owned(),
-        manage_ssh_config,
+        settings.manage_ssh_config,
         session_name.to_owned(),
     );
     let prepared = prepare_remote_shepr(&ssh, true)?;
@@ -435,18 +435,17 @@ pub(crate) struct SshAuthenticationCommand {
     _config: ManagedSshConfig,
 }
 
-pub(crate) fn ssh_authentication_command(target: &str) -> io::Result<SshAuthenticationCommand> {
+pub(crate) fn ssh_authentication_command(
+    target: &str,
+    settings: super::SavedSshSettings,
+) -> io::Result<SshAuthenticationCommand> {
     if target.is_empty() || target.starts_with('-') || target.chars().any(char::is_control) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "invalid SSH target",
         ));
     }
-    if !crate::config::Config::load()
-        .config
-        .remote
-        .manage_ssh_config
-    {
+    if !settings.manage_ssh_config {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "interactive SSH recovery requires remote.manage_ssh_config=true",
@@ -510,15 +509,6 @@ impl RemoteSsh {
             noninteractive: false,
             attempt_deadline: None,
         }
-    }
-
-    /// For one-shot CLI commands, which read the config at their own launch.
-    pub(super) fn new_noninteractive(target: String) -> Self {
-        let manage = crate::config::Config::load()
-            .config
-            .remote
-            .manage_ssh_config;
-        Self::new_noninteractive_with(target, manage)
     }
 
     /// For long-lived callers that already hold the launch-time config.
@@ -2472,10 +2462,15 @@ mod tests {
     #[test]
     fn authentication_command_rejects_option_injection() {
         assert_eq!(
-            ssh_authentication_command("-oProxyCommand=bad")
-                .err()
-                .expect("test precondition")
-                .kind(),
+            ssh_authentication_command(
+                "-oProxyCommand=bad",
+                crate::remote::SavedSshSettings {
+                    manage_ssh_config: true,
+                },
+            )
+            .err()
+            .expect("test precondition")
+            .kind(),
             io::ErrorKind::InvalidInput
         );
     }
@@ -2630,7 +2625,7 @@ mod tests {
 
     #[test]
     fn noninteractive_ssh_command_cannot_prompt_or_accept_unknown_hosts() {
-        let ssh = RemoteSsh::new_noninteractive("example".into());
+        let ssh = RemoteSsh::new_noninteractive_with("example".into(), false);
         let args = ssh
             .command()
             .get_args()

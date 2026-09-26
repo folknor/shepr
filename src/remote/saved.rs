@@ -229,8 +229,9 @@ impl SavedSshApiBridge {
         target: &str,
         session: &str,
         use_cached_metadata: bool,
+        settings: SavedSshSettings,
     ) -> io::Result<Self> {
-        let ssh = validated_saved_ssh(profile_id, target, session)?;
+        let ssh = validated_saved_ssh(profile_id, target, session, settings)?;
         let metadata_cache =
             crate::client::endpoint::SshMetadataCache::new(profile_id, target, session)?;
         let cached = use_cached_metadata.then(|| metadata_cache.load()).flatten();
@@ -331,11 +332,19 @@ fn saved_bridge_path(profile_id: &str) -> PathBuf {
     crate::platform::remote_bridge_endpoint_path(&readable, &short)
 }
 
-fn validated_saved_ssh(profile_id: &str, target: &str, session: &str) -> io::Result<RemoteSsh> {
+fn validated_saved_ssh(
+    profile_id: &str,
+    target: &str,
+    session: &str,
+    settings: SavedSshSettings,
+) -> io::Result<RemoteSsh> {
     validate_profile_path_id(profile_id)?;
     crate::session::validate_name(session)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    Ok(RemoteSsh::new_noninteractive(target.to_owned()))
+    Ok(RemoteSsh::new_noninteractive_with(
+        target.to_owned(),
+        settings.manage_ssh_config,
+    ))
 }
 
 fn validate_profile_path_id(profile_id: &str) -> io::Result<()> {

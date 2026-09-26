@@ -74,7 +74,8 @@ impl App {
             .wait
             .as_ref()
             .and_then(|wait| wait.submission_deadline);
-        match self.queue_agent_prompt(request.id, &params) {
+        let request_id = request.id;
+        match self.queue_agent_prompt(request_id.clone(), &params) {
             Ok((id, agent, queued)) => {
                 std::thread::spawn(move || {
                     let response = match await_prompt_submission(&queued, submission_deadline) {
@@ -86,11 +87,16 @@ impl App {
                             encode_error(id, "agent_prompt_failed", message)
                         }
                     };
-                    let _ = respond_to.send(response);
+                    crate::api::send_api_response(
+                        &respond_to,
+                        &request_id,
+                        "agent.prompt",
+                        response,
+                    );
                 });
             }
             Err(response) => {
-                let _ = respond_to.send(response);
+                crate::api::send_api_response(&respond_to, &request_id, "agent.prompt", response);
             }
         }
         true

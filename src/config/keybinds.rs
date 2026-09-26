@@ -370,8 +370,8 @@ impl BindingRegistry {
 impl Config {
     /// Parse and validate `[keys]`. This is pure and does not log: it runs
     /// every time `live_keybinds()`, `keybinds()` or `collect_diagnostics()`
-    /// is called, so logging here would repeat each warning per call. The
-    /// diagnostics are logged once, by `Config::load`.
+    /// is called, so logging here would repeat each issue per call. Config
+    /// loading gathers the result once before a launch continues.
     pub(super) fn validated_keybinds(&self) -> (Option<String>, KeyCombo, Vec<String>, Keybinds) {
         let mut diagnostics = Vec::new();
         let (prefix, prefix_diag) = parse_key_combo_with_diagnostic(
@@ -1028,7 +1028,7 @@ fn parse_key_combo_with_diagnostic(
     match parse_key_combo(s) {
         Some(binding) => (binding, None),
         None => {
-            let diag = format!("invalid keybinding: {field} = {s:?}; using fallback");
+            let diag = format!("invalid keybinding: {field} = {s:?}");
             (fallback, Some(diag))
         }
     }

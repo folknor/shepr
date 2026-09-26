@@ -9,10 +9,6 @@ pub(super) const MIN_TAB_WIDTH: u16 = 8;
 pub(super) const NEW_TAB_WIDTH: u16 = 3;
 pub(super) const WORKSPACE_HEADER_ROWS: u16 = 2;
 const ENDPOINT_ERROR_TIMEOUT_SECS: u64 = 5;
-/// How long a config diagnostic banner stays up before it hides itself. A click on the banner
-/// hides it sooner. Without a lifetime it would sit over the panes for the whole session, and
-/// while any banner is up every pane update takes the full-compose path.
-const CONFIG_DIAGNOSTIC_TIMEOUT_SECS: u64 = 20;
 /// How long an endpoint notice card stays up before it hides itself. A click on the card hides
 /// it sooner; the timeout is what dismisses it when `ui.mouse_capture` is off.
 const ENDPOINT_NOTICE_TIMEOUT_SECS: u64 = 10;
@@ -48,7 +44,6 @@ pub(crate) struct ClientShellConfig {
     pub(super) redraw_on_focus_gained: bool,
     pub(super) preferences_path: Option<std::path::PathBuf>,
     pub(super) preferences: preferences::ClientChromePreferences,
-    pub(super) startup_config_diagnostic: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,7 +80,6 @@ pub(super) struct ShellHitMap {
     pub(super) tab_scroll_right: Rect,
     pub(super) global_launcher: Rect,
     pub(super) notification_toast: Rect,
-    pub(super) config_diagnostic: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
     pub(super) overlay_primary: Rect,
@@ -679,15 +673,6 @@ pub(crate) struct ClientShellState {
         Option<(ClientEndpointNoticeKey, String, std::time::Instant)>,
     pub(super) outer_focused: Option<bool>,
     pub(super) host_background: Option<crate::terminal_theme::RgbColor>,
-    pub(super) local_config_diagnostic: Option<String>,
-    /// The merged client + endpoint config diagnostic. It stays set while the configs are
-    /// broken; whether its banner is drawn is `visible_config_diagnostic`.
-    pub(super) config_diagnostic: Option<String>,
-    /// A diagnostic text the user dismissed or that timed out. The banner comes back only
-    /// when the diagnostic text changes.
-    pub(super) config_diagnostic_hidden: Option<String>,
-    /// Expiry of the banner currently shown, with the text it was started for.
-    pub(super) config_diagnostic_deadline: Option<(String, std::time::Instant)>,
     pub(super) endpoint_error: Option<String>,
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
 }
@@ -700,7 +685,6 @@ pub(super) struct WorkspaceEntry {
 impl ClientShellState {
     pub(crate) fn new(mut config: ClientShellConfig) -> Self {
         let preferences = config.preferences.clone();
-        let local_config_diagnostic = config.startup_config_diagnostic.take();
         let overlay = None;
         let sidebar_collapsed = preferences
             .sidebar_collapsed
@@ -789,10 +773,6 @@ impl ClientShellState {
             endpoint_notice_deadline: None,
             outer_focused: None,
             host_background: None,
-            config_diagnostic: local_config_diagnostic.clone(),
-            config_diagnostic_hidden: None,
-            config_diagnostic_deadline: None,
-            local_config_diagnostic,
             endpoint_error: None,
             endpoint_error_deadline: None,
         }
@@ -923,10 +903,6 @@ impl ClientShellState {
         // keymap built from this client's own config at startup.
         let snapshot_keybindings_changed =
             self.config.uses_endpoint_keybindings() && endpoint_profile_changed;
-        self.config_diagnostic = super::config::merged_config_diagnostic(
-            self.local_config_diagnostic.as_deref(),
-            snapshot.config_diagnostic.as_deref(),
-        );
         let boot_changed = endpoint_boot_changed
             || self
                 .snapshot
@@ -1311,37 +1287,6 @@ impl ClientShellState {
         false
     }
 
-    /// The config diagnostic banner text, unless the user dismissed it or it timed out.
-    pub(super) fn visible_config_diagnostic(&self) -> Option<&str> {
-        self.config_diagnostic
-            .as_deref()
-            .filter(|text| self.config_diagnostic_hidden.as_deref() != Some(*text))
-    }
-
-    /// Hides the config diagnostic banner until its text changes.
-    pub(super) fn dismiss_config_diagnostic(&mut self) {
-        self.config_diagnostic_hidden = self.config_diagnostic.clone();
-        self.config_diagnostic_deadline = None;
-    }
-
-    /// Starts the lifetime of the config diagnostic banner, once per distinct text, when
-    /// `compose` first draws it. A banner never drawn (no presentable frame yet) cannot expire.
-    pub(super) fn config_diagnostic_drawn(&mut self, now: std::time::Instant) {
-        let Some(text) = self.visible_config_diagnostic() else {
-            return;
-        };
-        if self
-            .config_diagnostic_deadline
-            .as_ref()
-            .is_some_and(|(shown, _)| shown == text)
-        {
-            return;
-        }
-        let text = text.to_owned();
-        let deadline = now + std::time::Duration::from_secs(CONFIG_DIAGNOSTIC_TIMEOUT_SECS);
-        self.config_diagnostic_deadline = Some((text, deadline));
-    }
-
     /// Starts the lifetime of the endpoint notice card, once per distinct notice, when a
     /// compose first draws it.
     pub(super) fn endpoint_notice_drawn(&mut self, now: std::time::Instant) {
@@ -1360,22 +1305,11 @@ impl ClientShellState {
         self.endpoint_notice_deadline = Some((started.0, started.1, deadline));
     }
 
-    /// Hides the config diagnostic banner and the endpoint notice card once their lifetimes
-    /// (started when first drawn) run out. A replacement banner or notice carries its own
-    /// lifetime, so it is not cut short by its predecessor's. Returns whether anything was
-    /// hidden.
+    /// Hides the endpoint notice card once its lifetime (started when first drawn) runs
+    /// out. A replacement notice carries its own lifetime, so it is not cut short by its
+    /// predecessor's. Returns whether anything was hidden.
     pub(crate) fn tick_transient_banners(&mut self, now: std::time::Instant) -> bool {
         let mut repaint = false;
-
-        let diagnostic_expired = self.visible_config_diagnostic().is_some_and(|text| {
-            self.config_diagnostic_deadline
-                .as_ref()
-                .is_some_and(|(shown, deadline)| shown == text && now >= *deadline)
-        });
-        if diagnostic_expired {
-            self.dismiss_config_diagnostic();
-            repaint = true;
-        }
 
         let notice_expired = self.visible_endpoint_notice.as_ref().is_some_and(|notice| {
             self.endpoint_notice_deadline

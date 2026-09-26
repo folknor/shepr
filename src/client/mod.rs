@@ -109,40 +109,29 @@ fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
 }
 
 fn run_client_with_mode(
+    config: &crate::config::Config,
     attach_request: Option<(String, bool)>,
     attach_escape: Option<AttachEscapeState>,
     log_message: &'static str,
 ) -> io::Result<()> {
     init_logging();
 
-    let loaded_config = crate::config::Config::load();
-    let attach_escape =
-        attach_escape.map(|_| AttachEscapeState::from_config(&loaded_config.config));
+    let attach_escape = attach_escape.map(|_| AttachEscapeState::from_config(config));
     crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let client_rendered_shell = attach_request.is_none();
     let socket_path = client_socket_path();
     let keybinding_source = client_shell_keybinding_source().map_err(io::Error::other)?;
-    let startup_config_diagnostic =
-        if keybinding_source == shell::ClientShellKeybindingSource::Endpoint {
-            crate::config::config_diagnostic_summary_without_keybindings(&loaded_config.diagnostics)
-        } else {
-            crate::config::config_diagnostic_summary(&loaded_config.diagnostics)
-        };
     let shell_config = client_rendered_shell.then(|| {
-        shell::ClientShellConfig::from_config(&loaded_config.config)
-            .with_startup_config_diagnostic(startup_config_diagnostic)
+        shell::ClientShellConfig::from_config(config)
             .with_keybinding_source(keybinding_source)
             .with_local_endpoint(&socket_path)
     });
-    let mouse_capture = loaded_config.config.ui.mouse_capture;
-    let mouse_scroll_lines = loaded_config.config.ui.mouse_scroll_lines();
-    let redraw_on_focus_gained = loaded_config.config.ui.redraw_on_focus_gained;
-    let host_cursor = loaded_config.config.ui.host_cursor;
+    let mouse_capture = config.ui.mouse_capture;
+    let mouse_scroll_lines = config.ui.mouse_scroll_lines();
+    let redraw_on_focus_gained = config.ui.redraw_on_focus_gained;
+    let host_cursor = config.ui.host_cursor;
     let pixel_geometry_fallback = client_rendered_shell;
     let pixel_geometry_enabled = pixel_geometry_fallback || attach_escape.is_some();
-    let endpoint_keybindings = shell_config
-        .as_ref()
-        .is_some_and(shell::ClientShellConfig::uses_endpoint_keybindings);
     let mut loop_config = ClientLoopConfig {
         mouse_scroll_lines,
         redraw_on_focus_gained,
@@ -152,8 +141,7 @@ fn run_client_with_mode(
         mouse_capture_active: mouse_capture,
         host_escape_disambiguation_active: false,
         initial_host_input: Vec::new(),
-        endpoint_keybindings,
-        manage_ssh_config: loaded_config.config.remote.manage_ssh_config,
+        manage_ssh_config: config.remote.manage_ssh_config,
         shell_config,
     };
 
@@ -202,7 +190,6 @@ fn run_client_with_mode(
                 cell_height_px,
                 exact_cell_size,
                 shell_surface_size,
-                endpoint_keybindings,
                 loop_config.mouse_capture_active,
                 true,
                 None,
@@ -561,7 +548,6 @@ async fn run_client_loop(
                         && state.reported_cell_size.0 <= protocol::MAX_CELL_SIZE_PX
                         && state.reported_cell_size.1 <= protocol::MAX_CELL_SIZE_PX,
                     surface_size: shell.surface_size(state.reported_size.0, state.reported_size.1),
-                    endpoint_keybindings: config.endpoint_keybindings,
                     mouse_capture: state.shell_mouse_capture_preference,
                 },
                 &supervisor_tx,

@@ -2064,8 +2064,7 @@ impl<'a> RowCellIter<'a> {
     }
 
     /// Writes the cell's grapheme into `text` (empty for blank cells, spacers
-    /// and kitty placeholders). `bytes` is scratch space kept for API
-    /// compatibility.
+    /// and kitty placeholders). `bytes` is cleared on each call.
     pub fn grapheme_text_into(&self, bytes: &mut Vec<u8>, text: &mut String) -> Result<(), Error> {
         text.clear();
         bytes.clear();

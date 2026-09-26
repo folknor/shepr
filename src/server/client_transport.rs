@@ -410,7 +410,6 @@ pub(crate) enum ServerEvent {
         cell_width_px: u32,
         cell_height_px: u32,
         pixel_mouse: bool,
-        endpoint_keybindings: bool,
         mouse_capture: bool,
         surface_active: bool,
         writer: ClientWriter,
@@ -726,12 +725,7 @@ pub(crate) fn handle_client_handshake(
                 hello.cell_width_px,
                 hello.cell_height_px,
                 false,
-                Some((
-                    hello.pixel_mouse,
-                    hello.endpoint_keybindings,
-                    hello.mouse_capture,
-                    hello.surface_active,
-                )),
+                Some((hello.pixel_mouse, hello.mouse_capture, hello.surface_active)),
             )
         }
         _ => {
@@ -798,34 +792,30 @@ pub(crate) fn handle_client_handshake(
 
     // Notify the main loop about the new client.
     let endpoint_control_writer = shell_options.as_ref().map(|_| writer.control.clone());
-    let connected =
-        if let Some((pixel_mouse, endpoint_keybindings, mouse_capture, surface_active)) =
-            shell_options
-        {
-            // The build-identity preamble guarantees both surface encodings.
-            ServerEvent::ClientShellConnected {
-                client_id,
-                surface_cols: client_cols,
-                surface_rows: client_rows,
-                cell_width_px,
-                cell_height_px,
-                pixel_mouse,
-                endpoint_keybindings,
-                mouse_capture,
-                surface_active,
-                writer,
-            }
-        } else {
-            ServerEvent::ClientConnected {
-                client_id,
-                cols: client_cols,
-                rows: client_rows,
-                cell_width_px,
-                cell_height_px,
-                pixel_mouse: terminal_pixel_mouse,
-                writer,
-            }
-        };
+    let connected = if let Some((pixel_mouse, mouse_capture, surface_active)) = shell_options {
+        // The build-identity preamble guarantees both surface encodings.
+        ServerEvent::ClientShellConnected {
+            client_id,
+            surface_cols: client_cols,
+            surface_rows: client_rows,
+            cell_width_px,
+            cell_height_px,
+            pixel_mouse,
+            mouse_capture,
+            surface_active,
+            writer,
+        }
+    } else {
+        ServerEvent::ClientConnected {
+            client_id,
+            cols: client_cols,
+            rows: client_rows,
+            cell_width_px,
+            cell_height_px,
+            pixel_mouse: terminal_pixel_mouse,
+            writer,
+        }
+    };
     if let Err(err) = server_event_tx.blocking_send(connected) {
         match err.0 {
             ServerEvent::ClientConnected { writer, .. }
@@ -1252,7 +1242,6 @@ mod tests {
                 rows: surface_rows,
             },
             pixel_mouse: true,
-            endpoint_keybindings: true,
             mouse_capture: true,
             surface_active: true,
         };
@@ -1846,7 +1835,6 @@ mod tests {
                 cell_width_px,
                 cell_height_px,
                 pixel_mouse,
-                endpoint_keybindings,
                 mouse_capture,
                 surface_active,
                 writer,
@@ -1855,7 +1843,6 @@ mod tests {
                 assert_eq!((surface_cols, surface_rows), (80, 29));
                 assert_eq!((cell_width_px, cell_height_px), (8, 16));
                 assert!(pixel_mouse);
-                assert!(endpoint_keybindings);
                 assert!(mouse_capture);
                 assert!(surface_active);
                 drop(writer);

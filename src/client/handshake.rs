@@ -106,7 +106,6 @@ pub(super) fn do_handshake(
     cell_height_px: u32,
     exact_cell_size: bool,
     shell_surface_size: Option<crate::protocol::ClientSurfaceSize>,
-    endpoint_keybindings: bool,
     mouse_capture: bool,
     surface_active: bool,
     deadline: Option<std::time::Instant>,
@@ -129,7 +128,6 @@ pub(super) fn do_handshake(
             cell_height_px,
             surface_size,
             pixel_mouse: exact_cell_size,
-            endpoint_keybindings,
             mouse_capture,
             surface_active,
         };
@@ -297,7 +295,6 @@ mod tests {
             false,
             surface,
             false,
-            false,
             true,
             None,
         )
@@ -340,7 +337,6 @@ mod tests {
             false,
             Some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
             false,
-            false,
             true,
             None,
         )
@@ -364,7 +360,6 @@ mod tests {
             16,
             false,
             Some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
-            false,
             false,
             false,
             Some(started + Duration::from_millis(200)),

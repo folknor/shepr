@@ -671,13 +671,10 @@ and error types. Proposed `remote/ssh.rs`, `remote/discovery.rs`,
 
 Reported by: remote.
 
-## STR-052 - Endpoint subsystems at the client root; Config::load inside remote
+## STR-052 - Endpoint subsystems at the client root
 
 `endpoint_commands.rs` and `endpoint_selection.rs` belong under
-`client/endpoint/`. `RemoteSsh::new_noninteractive`,
-`ssh_authentication_command`, `run_remote` and `prepare_saved_ssh` each call
-`Config::load()` inside the transport while `SavedSshSettings` exists to avoid
-that; proposed: pass settings from CLI entry points.
+`client/endpoint/`.
 
 Reported by: remote.
 

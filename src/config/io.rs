@@ -1,8 +1,7 @@
+use std::io;
 use std::path::{Path, PathBuf};
 
-use tracing::warn;
-
-use super::{CONFIG_PATH_ENV_VAR, Config, model::LoadedConfig};
+use super::{CONFIG_PATH_ENV_VAR, Config, NewTerminalCwdConfig, model::LoadedConfig};
 
 const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "advanced",
@@ -33,32 +32,44 @@ pub fn app_dir_name() -> &'static str {
 }
 
 pub fn config_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
-        return PathBuf::from(dir).join(app_dir_name());
-    }
-    platform_config_dir()
+    resolve_or_exit("config directory", try_config_dir())
 }
 
 pub fn state_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
-        return PathBuf::from(dir).join(app_dir_name());
-    }
-    platform_state_dir()
+    resolve_or_exit("state directory", try_state_dir())
 }
 
-fn platform_config_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(format!(".config/{}", app_dir_name()))
-    } else {
-        std::env::temp_dir().join(app_dir_name())
-    }
+pub fn try_config_dir() -> io::Result<PathBuf> {
+    platform_xdg_dir("XDG_CONFIG_HOME", ".config")
 }
 
-fn platform_state_dir() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(format!(".local/state/{}", app_dir_name()))
-    } else {
-        std::env::temp_dir().join(format!("{}-state", app_dir_name()))
+pub fn try_state_dir() -> io::Result<PathBuf> {
+    platform_xdg_dir("XDG_STATE_HOME", ".local/state")
+}
+
+fn platform_xdg_dir(variable: &str, home_suffix: &str) -> io::Result<PathBuf> {
+    if let Some(value) = std::env::var_os(variable) {
+        let directory = PathBuf::from(value);
+        // The XDG base directory specification says to ignore empty and
+        // relative values. In that case, use the corresponding location under
+        // HOME, which must itself be an absolute path.
+        if directory.is_absolute() {
+            return Ok(directory.join(app_dir_name()));
+        }
+    }
+
+    Ok(crate::pathutil::home_dir()?
+        .join(home_suffix)
+        .join(app_dir_name()))
+}
+
+fn resolve_or_exit(description: &str, result: io::Result<PathBuf>) -> PathBuf {
+    match result {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("shepr: cannot resolve {description}: {err}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -111,8 +122,50 @@ fn read_optional_config(path: &Path) -> std::io::Result<Option<String>> {
 }
 
 impl Config {
-    pub fn load() -> LoadedConfig {
-        Self::load_from_path(&config_path())
+    /// Load config data for the diagnostic-only `config check` command.
+    /// Application entry points must use `load_validated` and reject every issue.
+    /// Both report the same problems, so `config check` passes exactly when a
+    /// launch would accept the config.
+    pub fn load_for_check() -> LoadedConfig {
+        let mut loaded = match try_config_path() {
+            Ok(path) => Self::load_from_path(&path),
+            Err(err) => LoadedConfig {
+                config: Self::default(),
+                diagnostics: vec![format!("config path error: {err}")],
+            },
+        };
+        let config_unavailable = loaded.diagnostics.iter().any(|diagnostic| {
+            diagnostic.starts_with("config path error:")
+                || diagnostic.starts_with("config read error:")
+                || diagnostic.starts_with("config parse error:")
+        });
+        if !config_unavailable && let Some(error) = configured_home_path_error(&loaded.config) {
+            loaded.diagnostics.push(error);
+        }
+        // SHEPR_CONFIG_PATH can name the file while the directories shepr keeps
+        // sessions and state in still cannot be resolved.
+        let path_error_reported = loaded
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.starts_with("config path error:"));
+        if !path_error_reported && let Err(err) = try_config_dir() {
+            loaded
+                .diagnostics
+                .push(format!("config directory error: {err}"));
+        }
+        if let Err(err) = try_state_dir() {
+            loaded
+                .diagnostics
+                .push(format!("state directory error: {err}"));
+        }
+        loaded
+    }
+
+    /// Load a config for an application launch. Every path or validation
+    /// problem is fatal, so a default config from an unsuccessful parse is
+    /// never returned to runtime callers.
+    pub fn load_validated() -> Result<Self, Vec<String>> {
+        Self::load_for_check().into_validated()
     }
 
     fn load_from_path(path: &Path) -> LoadedConfig {
@@ -122,13 +175,10 @@ impl Config {
                 config: Self::default(),
                 diagnostics: Vec::new(),
             },
-            Err(err) => {
-                warn!(err = %err, "config read error, using defaults");
-                LoadedConfig {
-                    config: Self::default(),
-                    diagnostics: vec![format!("config read error: {err}; using defaults")],
-                }
-            }
+            Err(err) => LoadedConfig {
+                config: Self::default(),
+                diagnostics: vec![format!("config read error: {err}")],
+            },
         }
     }
 
@@ -147,67 +197,48 @@ impl Config {
                         .collect(),
                 ));
                 diagnostics.extend(config.collect_diagnostics());
-                // The one place config diagnostics are logged: the validators
-                // behind `collect_diagnostics` are pure and are re-run by
-                // accessors such as `keybinds()`.
-                for diagnostic in &diagnostics {
-                    warn!(message = %diagnostic, "config diagnostic");
-                }
                 LoadedConfig {
                     config,
                     diagnostics,
                 }
             }
-            Err(err) => {
-                warn!(err = %err, "config parse error, using defaults");
-                LoadedConfig {
-                    config: Self::default(),
-                    diagnostics: vec![format!("config parse error: {err}; using defaults")],
-                }
-            }
+            Err(err) => LoadedConfig {
+                config: Self::default(),
+                diagnostics: vec![format!("config parse error: {err}")],
+            },
         }
     }
+}
+
+fn configured_home_path_error(config: &Config) -> Option<String> {
+    let result = match &config.terminal.new_cwd {
+        NewTerminalCwdConfig::Home => crate::pathutil::home_dir(),
+        NewTerminalCwdConfig::Path(path) if path == "~" || path.starts_with("~/") => {
+            crate::pathutil::expand_tilde_path(path)
+        }
+        NewTerminalCwdConfig::Follow
+        | NewTerminalCwdConfig::Current
+        | NewTerminalCwdConfig::Path(_) => return None,
+    };
+    result
+        .err()
+        .map(|err| format!("terminal.new_cwd cannot be resolved: {err}"))
 }
 
 pub fn config_path() -> PathBuf {
-    if let Ok(path) = std::env::var(CONFIG_PATH_ENV_VAR) {
-        return PathBuf::from(path);
-    }
-    config_dir().join("config.toml")
+    resolve_or_exit("config path", try_config_path())
 }
 
-pub fn config_diagnostic_summary(diagnostics: &[String]) -> Option<String> {
-    if diagnostics.is_empty() {
-        return None;
-    }
-
-    let target = config_path()
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("config.toml")
-        .to_string();
-    let read_error = diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.starts_with("config read error:"));
-    let impact = if diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.contains("using defaults"))
-    {
-        if read_error {
-            " unreadable; using defaults"
-        } else {
-            " invalid; using defaults"
+pub fn try_config_path() -> io::Result<PathBuf> {
+    if let Some(path) = std::env::var_os(CONFIG_PATH_ENV_VAR) {
+        if path.is_empty() {
+            return Err(io::Error::other(format!(
+                "{CONFIG_PATH_ENV_VAR} must not be empty"
+            )));
         }
-    } else if diagnostics
-        .iter()
-        .all(|diagnostic| diagnostic.starts_with("unknown config key "))
-    {
-        " has unknown keys"
-    } else {
-        ""
-    };
-
-    Some(format!("{target}{impact}; shepr config check"))
+        return Ok(PathBuf::from(path));
+    }
+    Ok(try_config_dir()?.join("config.toml"))
 }
 
 /// The keys written under `[ui]`, whatever their value. Serde fills unset keys
@@ -257,7 +288,7 @@ fn unknown_top_level_section_diagnostic(key: &str, value: &toml::Value) -> Optio
         return None;
     };
 
-    Some(format!("unknown config section {header}; ignoring section"))
+    Some(format!("unknown config section {header}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -312,12 +343,7 @@ fn unknown_config_key_diagnostics(mut paths: Vec<Vec<ConfigKeyPathSegment>>) -> 
     paths.dedup();
     paths
         .into_iter()
-        .map(|path| {
-            format!(
-                "unknown config key {}; ignoring key",
-                format_config_key_path(&path)
-            )
-        })
+        .map(|path| format!("unknown config key {}", format_config_key_path(&path)))
         .collect()
 }
 
@@ -338,57 +364,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn config_diagnostic_summary_uses_compact_actionable_banner() {
-        let diagnostics = vec![
-            "one".to_string(),
-            "two".to_string(),
-            "three".to_string(),
-            "four".to_string(),
-            "five".to_string(),
-        ];
-
-        assert_eq!(
-            config_diagnostic_summary(&diagnostics).as_deref(),
-            Some("config.toml; shepr config check")
-        );
-    }
-
-    #[test]
-    fn config_diagnostic_summary_reports_unknown_keys_compactly() {
-        let diagnostics = vec![
-            "unknown config key ui.mouse_captur; ignoring key".to_string(),
-            "unknown config key keys.new_tabb; ignoring key".to_string(),
-        ];
-
-        assert_eq!(
-            config_diagnostic_summary(&diagnostics).as_deref(),
-            Some("config.toml has unknown keys; shepr config check")
-        );
-    }
-
-    #[test]
-    fn config_diagnostic_summary_reports_default_fallback() {
-        let diagnostics = vec![
-            "config parse error: TOML parse error at line 33, column 8\n   |\n33 | type = \"bogus\"\n   |        ^^^^^^^\nunknown variant `bogus`; using defaults"
-                .to_string(),
-        ];
-
-        assert_eq!(
-            config_diagnostic_summary(&diagnostics).as_deref(),
-            Some("config.toml invalid; using defaults; shepr config check")
-        );
-    }
-
-    #[test]
-    fn config_diagnostic_summary_reports_unreadable_config_impact() {
-        let startup = vec!["config read error: permission denied; using defaults".to_string()];
-        assert_eq!(
-            config_diagnostic_summary(&startup).as_deref(),
-            Some("config.toml unreadable; using defaults; shepr config check")
-        );
-    }
+    use std::ffi::OsString;
 
     #[test]
     fn config_load_reports_unreadable_path() {
@@ -399,8 +375,90 @@ mod tests {
             startup
                 .diagnostics
                 .iter()
-                .any(|diagnostic| diagnostic.contains("config read error")
-                    && diagnostic.contains("using defaults"))
+                .any(|diagnostic| diagnostic.contains("config read error"))
+        );
+    }
+
+    #[test]
+    fn validated_config_rejects_parse_and_semantic_errors() {
+        for (content, message) in [
+            ("[keys]\nprefix = \"ctrl+\"\n", "keys.prefix"),
+            ("[keys]\nzoom = \"prefix+nonsense\"\n", "keys.zoom"),
+            ("[theme]\nname = \"not-a-theme\"\n", "theme.name"),
+            (
+                "[theme.custom]\nred = \"not-a-color\"\n",
+                "theme.custom.red",
+            ),
+            ("[ui]\naccent = \"not-a-color\"\n", "ui.accent"),
+            ("[ui]\nwindow_title = \"{unknown}\"\n", "ui.window_title"),
+            (
+                "[ui]\nsidebar_min_width = 50\nsidebar_max_width = 30\n",
+                "sidebar_min_width",
+            ),
+            ("[server]\nheadless_cols = 0\n", "headless_cols"),
+            (
+                "[ui]\ntab_bar_right = [{ type = \"datetime\", format = \"%Q\" }]\n",
+                "ui.tab_bar_right[0]",
+            ),
+            (
+                "[ui]\nmouse_captur = true\n",
+                "unknown config key ui.mouse_captur",
+            ),
+        ] {
+            let loaded = Config::load_from_str(content);
+            let errors = loaded
+                .into_validated()
+                .expect_err("invalid config must not be returned for launch");
+            assert!(
+                errors.iter().any(|diagnostic| diagnostic.contains(message)),
+                "expected {message:?} in {errors:?}"
+            );
+        }
+
+        let parse_error = Config::load_from_str("[server]\nheadless_cols = \"wide\"\n");
+        assert!(parse_error.into_validated().is_err());
+    }
+
+    #[test]
+    fn load_validated_rejects_bad_config_file_and_accepts_missing_file() {
+        let env = crate::test_support::IsolatedEnv::new();
+        let scratch = crate::test_support::ScratchDir::new("config-load");
+        let path = scratch.join("config.toml");
+        env.set(CONFIG_PATH_ENV_VAR, &path);
+
+        std::fs::write(&path, "[server]\nheadless_rows = 0\n").expect("write bad config fixture");
+        assert!(Config::load_validated().is_err());
+
+        std::fs::remove_file(&path).expect("remove config fixture");
+        assert!(Config::load_validated().is_ok());
+    }
+
+    #[test]
+    fn load_validated_rejects_home_cwd_without_absolute_home() {
+        let env = crate::test_support::IsolatedEnv::new();
+        let scratch = crate::test_support::ScratchDir::new("config-cwd");
+        let path = scratch.join("config.toml");
+        env.set(CONFIG_PATH_ENV_VAR, &path);
+        env.set("XDG_CONFIG_HOME", scratch.path());
+        env.set("XDG_STATE_HOME", scratch.path());
+        env.set("HOME", "relative/home");
+        std::fs::write(&path, "[terminal]\nnew_cwd = \"home\"\n").expect("write config fixture");
+
+        let report = Config::load_for_check();
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|error| error.contains("terminal.new_cwd")),
+            "{:?}",
+            report.diagnostics
+        );
+        let errors = Config::load_validated().expect_err("home cwd needs absolute HOME");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("terminal.new_cwd")),
+            "{errors:?}"
         );
     }
 
@@ -417,10 +475,14 @@ mod tests {
         let custom = env.path().join("custom.toml");
         env.set(CONFIG_PATH_ENV_VAR, &custom);
         assert_eq!(config_path(), custom);
+
+        env.set(CONFIG_PATH_ENV_VAR, "");
+        assert!(try_config_path().is_err());
+        assert!(Config::load_validated().is_err());
     }
 
     #[test]
-    fn config_load_warns_about_unknown_keys_and_applies_known_siblings() {
+    fn config_load_reports_unknown_keys_and_parses_known_siblings() {
         let loaded = Config::load_from_str(
             r##"
 plugin = []
@@ -445,11 +507,11 @@ mouse_captur = true
         assert_eq!(
             loaded.diagnostics,
             vec![
-                "unknown config key keys.new_tabb; ignoring key",
-                "unknown config key plugin; ignoring key",
-                "unknown config key theme.custom.accentt; ignoring key",
-                "unknown config key ui.\"foo.bar\"; ignoring key",
-                "unknown config key ui.mouse_captur; ignoring key",
+                "unknown config key keys.new_tabb",
+                "unknown config key plugin",
+                "unknown config key theme.custom.accentt",
+                "unknown config key ui.\"foo.bar\"",
+                "unknown config key ui.mouse_captur",
             ]
         );
         assert_eq!(loaded.config.advanced.scrollback_limit_bytes, 42);
@@ -479,7 +541,7 @@ agent_panel_sort = "priority"
     }
 
     #[test]
-    fn config_load_warns_about_unknown_top_level_sections() {
+    fn config_load_reports_unknown_top_level_sections() {
         let loaded = Config::load_from_str(
             r#"
 [[plugin]]
@@ -489,8 +551,47 @@ id = "example"
 
         assert_eq!(
             loaded.diagnostics,
-            vec!["unknown config section [[plugin]]; ignoring section"]
+            vec!["unknown config section [[plugin]]"]
         );
+    }
+
+    #[test]
+    fn xdg_paths_ignore_empty_or_relative_values_and_require_absolute_home() {
+        let env = crate::test_support::IsolatedEnv::new();
+        let expected_config = env.home().join(".config").join(app_dir_name());
+        let expected_state = env.home().join(".local/state").join(app_dir_name());
+
+        for invalid in [OsString::new(), OsString::from("relative/config")] {
+            env.set("XDG_CONFIG_HOME", &invalid);
+            env.set("XDG_STATE_HOME", &invalid);
+            assert_eq!(try_config_dir().expect("home fallback"), expected_config);
+            assert_eq!(try_state_dir().expect("home fallback"), expected_state);
+        }
+
+        let xdg_config = env.path().join("xdg-config");
+        let xdg_state = env.path().join("xdg-state");
+        env.set("XDG_CONFIG_HOME", &xdg_config);
+        env.set("XDG_STATE_HOME", &xdg_state);
+        env.set("HOME", "relative/home");
+        assert_eq!(
+            try_config_dir().expect("absolute XDG config"),
+            xdg_config.join(app_dir_name())
+        );
+        assert_eq!(
+            try_state_dir().expect("absolute XDG state"),
+            xdg_state.join(app_dir_name())
+        );
+
+        env.remove("XDG_CONFIG_HOME");
+        env.remove("XDG_STATE_HOME");
+        assert!(try_config_dir().is_err());
+        assert!(try_state_dir().is_err());
+        env.set("HOME", "");
+        assert!(try_config_dir().is_err());
+        assert!(try_state_dir().is_err());
+        env.remove("HOME");
+        assert!(try_config_dir().is_err());
+        assert!(try_state_dir().is_err());
     }
 
     #[test]

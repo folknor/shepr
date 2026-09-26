@@ -3,7 +3,6 @@ use ratatui::layout::Rect;
 mod panes;
 mod scrollbar;
 mod sidebar;
-mod status;
 mod tab_surface;
 mod text;
 mod widgets;
@@ -20,7 +19,6 @@ pub(crate) use self::sidebar::{
     expanded_sidebar_sections, resolved_token_spans, sidebar_agent_rows,
     sidebar_section_divider_rect, sidebar_space_rows,
 };
-pub(crate) use self::status::render_config_diagnostic_buffer;
 pub(crate) use self::tab_surface::{
     TabSurfaceLayout, TabSurfaceTarget, TabSurfaceView, compute_tab_surface,
     compute_tab_surface_for, render_tab_surface, resize_tab_surface, tab_surface_cursor,

@@ -121,19 +121,20 @@ impl App {
     /// process, so after a server restart they name a different pane. The
     /// `<workspace>-N` form is gone too; nothing emits it.
     pub(crate) fn parse_pane_id(&self, id: &str) -> Option<(usize, crate::layout::PaneId)> {
-        if let Some(alias) = self.state.public_pane_id_aliases.get(id).copied() {
-            return self.find_pane(alias).map(|(ws_idx, _)| (ws_idx, alias));
-        }
-
-        let (ws_raw, pane_number_raw) = id.rsplit_once(":p")?;
-        let ws_idx = self.parse_workspace_id(ws_raw)?;
-        let pane_number = crate::workspace::decode_public_number(pane_number_raw)?;
-        let ws = self.state.workspaces.get(ws_idx)?;
-        let pane_id = ws
-            .public_pane_numbers
-            .iter()
-            .find_map(|(pane_id, number)| (*number == pane_number).then_some(*pane_id))?;
-        Some((ws_idx, pane_id))
+        let current_id = id.rsplit_once(":p").and_then(|(ws_raw, pane_number_raw)| {
+            let ws_idx = self.parse_workspace_id(ws_raw)?;
+            let pane_number = crate::workspace::decode_public_number(pane_number_raw)?;
+            let ws = self.state.workspaces.get(ws_idx)?;
+            let pane_id = ws
+                .public_pane_numbers
+                .iter()
+                .find_map(|(pane_id, number)| (*number == pane_number).then_some(*pane_id))?;
+            Some((ws_idx, pane_id))
+        });
+        current_id.or_else(|| {
+            let alias = self.state.public_pane_id_aliases.get(id).copied()?;
+            self.find_pane(alias).map(|(ws_idx, _)| (ws_idx, alias))
+        })
     }
 
     pub(crate) fn parse_current_public_pane_id(
@@ -174,6 +175,27 @@ mod tests {
         assert_eq!(app.parse_tab_id(&tab_id), Some((1, 0)));
         let pane_id = app.public_pane_id(1, second).expect("public pane id");
         assert_eq!(app.parse_pane_id(&pane_id), Some((1, second)));
+    }
+
+    #[test]
+    fn canonical_public_pane_id_wins_over_a_colliding_alias() {
+        let mut app = test_app_with_workspaces(&["a", "b"]);
+        let current_pane = app.state.workspaces[0].tabs[0].root_pane;
+        let moved_pane = app.state.workspaces[1].tabs[0].root_pane;
+        let current_id = app
+            .public_pane_id(0, current_pane)
+            .expect("test precondition");
+        app.state
+            .public_pane_id_aliases
+            .insert(current_id.clone(), moved_pane);
+
+        assert_eq!(app.parse_pane_id(&current_id), Some((0, current_pane)));
+        assert_eq!(app.parse_pane_id("old-workspace:p9"), None);
+
+        app.state
+            .public_pane_id_aliases
+            .insert("old-workspace:p9".into(), moved_pane);
+        assert_eq!(app.parse_pane_id("old-workspace:p9"), Some((1, moved_pane)));
     }
 
     #[test]

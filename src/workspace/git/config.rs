@@ -130,15 +130,55 @@ pub(super) fn read_config_with_user_paths(
 
 fn git_user_config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    if let Some(xdg_config_home) = std::env::var_os("XDG_CONFIG_HOME") {
-        paths.push(PathBuf::from(xdg_config_home).join("git/config"));
-    } else if let Some(home) = std::env::var_os("HOME") {
-        paths.push(PathBuf::from(home).join(".config/git/config"));
+    let home = crate::pathutil::home_dir().ok();
+    let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    if let Some(xdg_config_home) = xdg_config_home {
+        paths.push(xdg_config_home.join("git/config"));
+    } else if let Some(home) = &home {
+        // This reads Git's user config, not a Shepr location: invalid XDG
+        // values are ignored per spec and fall back under an absolute HOME.
+        paths.push(home.join(".config/git/config"));
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        paths.push(PathBuf::from(home).join(".gitconfig"));
+    if let Some(home) = home {
+        paths.push(home.join(".gitconfig"));
     }
     paths
+}
+
+#[cfg(test)]
+mod xdg_path_tests {
+    use super::*;
+    use crate::test_support::IsolatedEnv;
+
+    #[test]
+    fn git_user_config_ignores_empty_and_relative_xdg_home() {
+        let env = IsolatedEnv::new();
+        let expected = vec![
+            env.home().join(".config/git/config"),
+            env.home().join(".gitconfig"),
+        ];
+        for invalid in ["", "relative/config"] {
+            env.set("XDG_CONFIG_HOME", invalid);
+            assert_eq!(git_user_config_paths(), expected);
+        }
+
+        let xdg = env.path().join("xdg-config");
+        env.set("XDG_CONFIG_HOME", &xdg);
+        assert_eq!(
+            git_user_config_paths(),
+            vec![xdg.join("git/config"), env.home().join(".gitconfig")]
+        );
+    }
+
+    #[test]
+    fn git_user_config_skips_home_fallback_without_absolute_home() {
+        let env = IsolatedEnv::new();
+        env.remove("XDG_CONFIG_HOME");
+        env.set("HOME", "relative/home");
+        assert!(git_user_config_paths().is_empty());
+    }
 }
 
 fn worktree_config_enabled(path: &Path, info: &GitWorktreeInfo, reader: &mut ConfigReader) -> bool {

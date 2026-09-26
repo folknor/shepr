@@ -85,12 +85,10 @@ fn fast_path_blocker(
         Some("client_surface_patch.fallback.overlay")
     } else if state.endpoint_error.is_some() {
         Some("client_surface_patch.fallback.endpoint_error")
-    } else if state.visible_config_diagnostic().is_some() {
-        // Banners and notices are drawn over the panes; while one is up, pane updates go
-        // through a full compose. Both expire (see `tick_transient_banners`), so this only
-        // costs for as long as they are on screen.
-        Some("client_surface_patch.fallback.config_diagnostic")
     } else if state.visible_endpoint_notice.is_some() {
+        // Notices are drawn over the panes; while one is up, pane updates go through a full
+        // compose. Notices expire (see `tick_transient_banners`), so this only costs for as
+        // long as one is on screen.
         Some("client_surface_patch.fallback.endpoint_notice")
     } else if state.selection.is_some() {
         Some("client_surface_patch.fallback.selection")

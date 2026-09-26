@@ -217,7 +217,10 @@ pub fn wait_for_server_socket(socket_path: &Path, timeout: Duration) -> io::Resu
 /// 1. Check if a server is listening on the client socket
 /// 2. If no server → spawn server daemon → wait for socket readiness
 /// 3. Run the thin client (which connects to the server)
-pub fn auto_detect_launch(saved_federation: bool) -> io::Result<()> {
+pub fn auto_detect_launch(
+    saved_federation: bool,
+    config: &crate::config::Config,
+) -> io::Result<()> {
     // The client requires terminal geometry before it can attach. Reject an
     // unusable terminal before socket lookup creates directories or starts a daemon.
     crate::platform::terminal_grid_size().map_err(|err| {
@@ -249,7 +252,7 @@ pub fn auto_detect_launch(saved_federation: bool) -> io::Result<()> {
     }
 
     // Now attach as a thin client.
-    crate::client::run_client()
+    crate::client::run_client(config)
 }
 
 // ---------------------------------------------------------------------------

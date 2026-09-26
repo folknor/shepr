@@ -16,39 +16,13 @@ const MAX_LABEL_BYTES: usize = 128;
 const MAX_TARGET_BYTES: usize = 1024;
 static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct SavedSshEndpoint {
     pub(crate) id: ProfileId,
     pub(crate) label: String,
     pub(crate) target: String,
     pub(crate) session: String,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SavedSshEndpointFile {
-    id: ProfileId,
-    label: String,
-    target: String,
-    session: String,
-    // Older catalogs stored a status bit; presence now means the machine is active.
-    #[serde(default, rename = "enabled")]
-    _legacy_enabled: Option<bool>,
-}
-
-impl<'de> Deserialize<'de> for SavedSshEndpoint {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let saved = SavedSshEndpointFile::deserialize(deserializer)?;
-        Ok(Self {
-            id: saved.id,
-            label: saved.label,
-            target: saved.target,
-            session: saved.session,
-        })
-    }
 }
 
 impl SavedSshEndpoint {
@@ -560,27 +534,6 @@ mod tests {
     }
 
     #[test]
-    fn catalog_ignores_the_legacy_machine_enabled_field() {
-        let old_catalog = r#"{
-            "version": 1,
-            "ssh": [{
-                "id": "0123456789abcdef0123456789abcdef",
-                "label": "Build",
-                "target": "build",
-                "session": "agents",
-                "enabled": false
-            }]
-        }"#;
-        let mut catalog: EndpointCatalog =
-            serde_json::from_str(old_catalog).expect("legacy catalog remains loadable");
-        let id = catalog.ssh[0].id.clone();
-
-        assert!(catalog.select_ssh(&id));
-        let encoded = serde_json::to_string(&catalog).expect("test precondition");
-        assert!(!encoded.contains("enabled"));
-    }
-
-    #[test]
     fn duplicate_target_and_session_profiles_keep_distinct_opaque_ids() {
         let mut catalog = EndpointCatalog::default();
         let first = catalog
@@ -652,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_rejects_unknown_fields_instead_of_retaining_possible_secrets() {
+    fn catalog_rejects_the_removed_enabled_field() {
         let path = path("unknown-field");
         let _ = std::fs::remove_dir_all(path.parent().expect("test precondition"));
         std::fs::create_dir_all(path.parent().expect("test precondition"))
@@ -666,8 +619,7 @@ mod tests {
                 "label": "Build",
                 "target": "build",
                 "session": "default",
-                "enabled": true,
-                "password": "must-not-be-accepted"
+                "enabled": true
               }]
             }"#,
         )
@@ -787,8 +739,7 @@ mod tests {
                 "id": "0123456789abcdef0123456789abcdef",
                 "label": "Build",
                 "target": "build",
-                "session": "default",
-                "enabled": true
+                "session": "default"
               }]
             }"#,
         )

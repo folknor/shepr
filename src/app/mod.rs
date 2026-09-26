@@ -114,21 +114,6 @@ pub struct App {
 pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
 pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
 
-/// Parse the configured agent name list into a deduplicated set of `Agent`
-/// values. Unknown agent names are silently dropped so a typo cannot disable
-/// other valid entries.
-fn parse_cjk_ime_agents(names: &[String]) -> Vec<crate::detect::Agent> {
-    let mut out = Vec::with_capacity(names.len());
-    for name in names {
-        if let Some(agent) = crate::detect::parse_agent_label(name)
-            && !out.contains(&agent)
-        {
-            out.push(agent);
-        }
-    }
-    out
-}
-
 pub(crate) fn palette_from_config(config: &Config) -> state::Palette {
     let name = config.theme.name.as_deref().unwrap_or("catppuccin");
     let mut palette = state::Palette::from_name(name).unwrap_or_else(|| {
@@ -276,7 +261,7 @@ impl App {
             tab_bar_right_separator: String::new(),
             reveal_hidden_cursor_for_cjk_ime: config.experimental.reveal_hidden_cursor_for_cjk_ime,
             cjk_ime_agent_filter_configured: !config.experimental.cjk_ime_agents.is_empty(),
-            cjk_ime_agents: parse_cjk_ime_agents(&config.experimental.cjk_ime_agents),
+            cjk_ime_agents: config.experimental.cjk_ime_agents.clone(),
             cjk_ime_cursor_shape: config.experimental.cjk_ime_cursor_shape.to_decscusr(),
             default_shell: config.terminal.default_shell.clone(),
             shell_mode: config.terminal.shell_mode,
@@ -411,7 +396,8 @@ impl App {
         let preserve_checkpoint = self.pane_exit_checkpoint_pending && !self.state.session_dirty;
 
         match self.create_workspace_with_options(&cwd, true) {
-            Ok(_) => {
+            Ok(index) => {
+                self.emit_workspace_open_events(index);
                 if preserve_checkpoint {
                     // Automatic replacement is part of pane removal, not a new user mutation.
                     self.pane_exit_checkpoint_pending = true;
@@ -727,6 +713,35 @@ mod tests {
         assert_eq!(root_pane.tab_id, tab.tab_id);
         assert!(root_pane.terminal_id.starts_with("term_"));
         assert_ne!(root_pane.terminal_id, root_pane.pane_id);
+    }
+
+    #[tokio::test]
+    async fn ensure_default_workspace_emits_creation_events() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            api_rx,
+            event_hub.clone(),
+        );
+        app.state.default_shell = exiting_test_command().into();
+
+        assert!(app.ensure_default_workspace());
+
+        let events = event_hub.events_after(0);
+        assert_eq!(
+            events
+                .iter()
+                .map(|(_, event)| event.event)
+                .collect::<Vec<_>>(),
+            [
+                crate::api::schema::EventKind::WorkspaceCreated,
+                crate::api::schema::EventKind::TabCreated,
+                crate::api::schema::EventKind::PaneCreated,
+                crate::api::schema::EventKind::LayoutUpdated,
+            ]
+        );
     }
 
     #[test]

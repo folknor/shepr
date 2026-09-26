@@ -23,7 +23,8 @@ impl PaneId {
         self.0
     }
 
-    /// Reconstruct from a saved u32 (persistence only).
+    /// Reconstruct a raw id without advancing the allocator. Live restore must
+    /// remap saved pane IDs through `alloc` before installing the layout.
     pub fn from_raw(id: u32) -> Self {
         Self(id)
     }

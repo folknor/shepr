@@ -519,18 +519,12 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     continue;
                 };
-                let config_diagnostic = if client.shell_uses_endpoint_keybindings {
-                    self.server_config_diagnostic.as_deref()
-                } else {
-                    self.server_config_diagnostic_without_keybindings.as_deref()
-                };
                 let (mut candidate, mut completions) =
                     crate::server::client_shell::snapshot_from_session(
                         &self.app,
                         session,
                         &self.client_shell_boot_id,
                         client.shell_projection_revision,
-                        config_diagnostic,
                         client.shell_location.as_ref(),
                     );
                 if client.shell_snapshot.as_ref() != Some(&candidate)

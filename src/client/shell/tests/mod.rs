@@ -11,7 +11,6 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
         boot_id: "boot-1".into(),
         revision: 1,
-        config_diagnostic: None,
         server_keybindings_toml: None,
         focused_workspace_id: Some("ws_1".into()),
         focused_tab_id: Some("tab_1".into()),

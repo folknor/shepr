@@ -7,35 +7,26 @@ pub(super) fn snapshot_with_completions(
     app: &app::App,
     boot_id: &str,
     revision: u64,
-    config_diagnostic: Option<&str>,
     location: Option<&crate::server::clients::ClientShellLocation>,
 ) -> (
     protocol::ClientShellSnapshot,
     protocol::endpoint::EndpointAgentCompletions,
 ) {
-    snapshot_from_session(
-        app,
-        app.session_snapshot(),
-        boot_id,
-        revision,
-        config_diagnostic,
-        location,
-    )
+    snapshot_from_session(app, app.session_snapshot(), boot_id, revision, location)
 }
 
 /// Projects an already built `app.session_snapshot()` for one shell client.
 ///
 /// A full render diffs every shell client's projection against what it was
 /// last sent. The session snapshot underneath is the same for all of them
-/// (only `location` and `config_diagnostic` are per client), so the render
-/// builds it once and hands each client its own copy instead of rebuilding
-/// the whole session per client.
+/// (only `location` is per client), so the render builds it once and hands
+/// each client its own copy instead of rebuilding the whole session per
+/// client.
 pub(super) fn snapshot_from_session(
     app: &app::App,
     snapshot: crate::api::schema::SessionSnapshot,
     boot_id: &str,
     revision: u64,
-    config_diagnostic: Option<&str>,
     location: Option<&crate::server::clients::ClientShellLocation>,
 ) -> (
     protocol::ClientShellSnapshot,
@@ -241,7 +232,6 @@ pub(super) fn snapshot_from_session(
     let shell = protocol::ClientShellSnapshot {
         boot_id: boot_id.to_owned(),
         revision,
-        config_diagnostic: config_diagnostic.map(str::to_owned),
         server_keybindings_toml: app.client_shell_keybindings_profile().map(str::to_owned),
         focused_workspace_id,
         focused_tab_id,
@@ -509,7 +499,7 @@ mod tests {
 
         let second_workspace_id = app.state.workspaces[1].id.clone();
         let zoomed_tab_id = app.public_tab_id(1, 0).expect("zoomed tab id");
-        let (snapshot, _) = snapshot_with_completions(&app, "boot", 1, None, None);
+        let (snapshot, _) = snapshot_with_completions(&app, "boot", 1, None);
 
         for workspace in &snapshot.workspaces {
             assert_eq!(

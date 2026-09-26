@@ -322,8 +322,8 @@ pane_history = false
 # apps that hide it without painting a replacement (vim normal mode, etc.).
 # reveal_hidden_cursor_for_cjk_ime = false
 # Optional allow-list: only reveal for focused panes whose detected agent
-# matches one of these names. Empty means apply to any focused pane.
-# If the list contains no valid names, the reveal does not apply.
+# matches one of these names. Empty means apply to any focused pane. Unknown
+# names are configuration errors.
 # Accepted: pi, claude, codex, gemini, cursor, devin, cline, opencode,
 # copilot, kimi, kiro, droid, amp, grok, hermes, kilo, qodercli, qoder, qwen,
 # qwen-code, letta, letta-code, maki.
@@ -478,20 +478,28 @@ fn main() -> io::Result<()> {
         Some("remote-client-bridge") => {
             return remote::run_remote_client_bridge(&invocation.bridge_args());
         }
-        // `server` with a subcommand was handled by `cli::run`.
-        Some("server") => return server::headless::run_server(),
-        // Hidden client mode: connect to an existing server's client socket.
-        Some("client") => {
-            let loaded_config = config::Config::load();
-            exit_if_nested_disabled(&loaded_config.config);
-            return client::run_client();
-        }
         _ => {}
+    }
+
+    let loaded_config = load_validated_config_or_exit();
+
+    // `server` with a subcommand was handled by `cli::run`.
+    if invocation.command_name() == Some("server") {
+        return server::headless::run_server(&loaded_config);
+    }
+
+    // Hidden client mode: connect to an existing server's client socket.
+    if invocation.command_name() == Some("client") {
+        exit_if_nested_disabled(&loaded_config);
+        return client::run_client(&loaded_config);
     }
 
     if let Some(remote_launch) = remote_launch {
         let remote_target = remote_launch.target.clone();
-        if let Err(err) = remote::run_remote(remote_launch) {
+        let ssh_settings = remote::SavedSshSettings {
+            manage_ssh_config: loaded_config.remote.manage_ssh_config,
+        };
+        if let Err(err) = remote::run_remote(remote_launch, ssh_settings) {
             eprintln!("error: {err}");
             remote::print_remote_error_hint(&err, &remote_target);
             std::process::exit(1);
@@ -499,16 +507,28 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
-    let loaded_config = config::Config::load();
-    exit_if_nested_disabled(&loaded_config.config);
+    exit_if_nested_disabled(&loaded_config);
 
     let saved_federation =
         client::endpoint::EndpointCatalog::load().is_ok_and(|catalog| catalog.has_ssh());
-    if let Err(err) = server::autodetect::auto_detect_launch(saved_federation) {
+    if let Err(err) = server::autodetect::auto_detect_launch(saved_federation, &loaded_config) {
         eprintln!("shepr: {err}");
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn load_validated_config_or_exit() -> config::Config {
+    match config::Config::load_validated() {
+        Ok(config) => config,
+        Err(diagnostics) => {
+            eprintln!("shepr: configuration error:");
+            for diagnostic in diagnostics {
+                eprintln!("  {diagnostic}");
+            }
+            std::process::exit(1);
+        }
+    }
 }
 
 /// The "Common commands" section of `shepr --help`. A test checks that the
@@ -589,7 +609,10 @@ fn print_help() {
     println!("  --version, -V       Print version and exit");
     println!("  --help, -h          Show this help");
     println!();
-    println!("Config: {}", config::config_path().display());
+    match config::try_config_path() {
+        Ok(path) => println!("Config: {}", path.display()),
+        Err(err) => println!("Config: unavailable ({err})"),
+    }
     println!("Logs:   {}", logging::help_log_paths_summary());
     println!("Env:    SHEPR_CONFIG_PATH overrides config file path");
 }
