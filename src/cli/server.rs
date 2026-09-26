@@ -1,19 +1,51 @@
-use clap::ArgMatches;
-
 use crate::api::schema::{EmptyParams, Method, Request};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Command {
+    Stop,
+    AgentManifests { json: bool },
+    ReloadAgentManifests,
+    Invalid,
+}
+
+impl Command {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Stop => "stop",
+            Self::AgentManifests { .. } => "agent-manifests",
+            Self::ReloadAgentManifests => "reload-agent-manifests",
+            Self::Invalid => "",
+        }
+    }
+
+    pub(super) fn is_api_command(self) -> bool {
+        matches!(
+            self,
+            Self::Stop | Self::AgentManifests { .. } | Self::ReloadAgentManifests
+        )
+    }
+}
+
+pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
+    match matches.subcommand() {
+        Some(("stop", _)) => Command::Stop,
+        Some(("agent-manifests", command)) => Command::AgentManifests {
+            json: super::matches::flag(command, "json"),
+        },
+        Some(("reload-agent-manifests", _)) => Command::ReloadAgentManifests,
+        _ => Command::Invalid,
+    }
+}
+
 pub(super) fn run_server_command(
-    matches: &ArgMatches,
+    command: Command,
     paths: &super::target::CliContext,
 ) -> std::io::Result<i32> {
-    match matches.subcommand() {
-        None => Ok(super::missing_subcommand()),
-        Some(("stop", _)) => server_stop(paths),
-        Some(("agent-manifests", matches)) => {
-            server_agent_manifests(paths, super::matches::flag(matches, "json"))
-        }
-        Some(("reload-agent-manifests", _)) => server_reload_agent_manifests(paths),
-        Some(_) => Ok(super::missing_subcommand()),
+    match command {
+        Command::Stop => server_stop(paths),
+        Command::AgentManifests { json } => server_agent_manifests(paths, json),
+        Command::ReloadAgentManifests => server_reload_agent_manifests(paths),
+        Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 

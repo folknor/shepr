@@ -14,6 +14,13 @@ entry per question; every site answering it belongs to that entry.
 
 ## CON-001 - Per-agent facts are scattered across detect, integration and resume
 
+Decision (owner): a new `src/agents.rs` domain module owns `Agent`, the
+per-agent descriptor table and the integration-target view (`api::schema`
+re-exports it); persisted resume identity is typed end to end, including
+`persist/snapshot.rs`, `persist/restore.rs`, `terminal/state.rs`,
+`app/actions.rs` and `app/api/panes.rs`. Single-agent wave (with STR-014 and
+STR-030).
+
 Question: what shepr knows about each agent (label, executable, integration
 source, whether native state is reserved, accepted session-ref kinds, resume
 argv, integration spec, hook-event-to-state mapping, env to scrub, title glyphs).
@@ -50,22 +57,6 @@ Proposed owner: a `CellPx` that can only be built non-zero, a
 `TerminalGeometry { size, cell_px: Option<CellPx>, pixel_mouse }`.
 
 Reported by: terminal-core, client, protocol.
-
-## CON-007 - What is this host input chunk, and where does a control string end?
-
-Decision (owner): extend the client shell input API to accept parsed mouse events
-with pixel hit-test metadata, then classify all host input once on the reader
-thread with one control-string grammar; no raw-byte exception.
-
-Sites:
-- Classification: `RawInputByteFramer`; `send_unix_input_chunks` (palette/default-colour replies via `terminal_theme` string parsers, `client/input.rs:222-237`); `classify_unix_input` (SGR pixel mouse via `input::mouse::parse_report`); `parse_raw_input_bytes_sync` in the main loop, which builds a fresh framer and reparses. The shell path at `client/mod.rs:586` and `592` parses the same data twice back to back on the per-keystroke path.
-- Grammar: `terminal_setup.rs` `PASTE_START/PASTE_END` and `host_control_string_end` (OSC/DCS/APC/PM/SOS with BEL/ST) for the keyboard probe vs `raw_input.rs` `BRACKETED_PASTE_START/END` and `ControlStringFamily`.
-
-Proposed owner: the framer emits typed `RawInputEvent`s once on the reader
-thread, carrying raw bytes for forwarding; the probe runs through the same
-scanner.
-
-Reported by: client.
 
 ## CON-008 - Colour, appearance and default-colour types exist twice
 
@@ -172,21 +163,6 @@ Proposed owner: a `UiSettings` (server) / `ClientSettings` (client) built once f
 `Config`, used by `test_new` too.
 
 Reported by: app-state, client.
-
-## CON-029 - Server is shutting down
-
-Decision (owner): one server lifecycle state machine covering running, host
-shutdown warning, freeze, cancellation back to running, and terminal stopping;
-every quit source and shutdown rejection reads it.
-
-Sites: rejection built in `headless.rs:2177`, `api/subscriptions.rs:453`,
-`wait.rs:875` (`server_unavailable`); quit sources polled separately:
-`app.state.should_quit`, `should_quit`, `signal_quit_requested`,
-`shutting_down`, `host_shutdown_requested`.
-
-Proposed owner: one `ShutdownPhase` state machine.
-
-Reported by: server.
 
 ## CON-030 - Which client is the active shell / foreground, and who owns what
 

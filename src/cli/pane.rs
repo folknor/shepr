@@ -16,23 +16,227 @@ use crate::api::schema::{
 use super::matches::{flag, report_source, required, string, value, values, words};
 use super::target::CallerPane;
 
+#[derive(Clone)]
+pub(crate) enum Command {
+    List {
+        workspace: Option<String>,
+    },
+    Current {
+        selector: PaneSelectorArgs,
+    },
+    Get {
+        pane_id: String,
+    },
+    Layout {
+        selector: PaneSelectorArgs,
+    },
+    ProcessInfo {
+        selector: PaneSelectorArgs,
+    },
+    Neighbor {
+        selector: PaneSelectorArgs,
+        direction: PaneDirection,
+    },
+    Edges {
+        selector: PaneSelectorArgs,
+    },
+    Focus {
+        selector: PaneSelectorArgs,
+        direction: PaneDirection,
+    },
+    Resize {
+        selector: PaneSelectorArgs,
+        direction: PaneDirection,
+        amount: Option<f32>,
+    },
+    Zoom {
+        selector: PaneSelectorArgs,
+        on: bool,
+        off: bool,
+    },
+    Read(PaneReadParams),
+    Rename(PaneRenameParams),
+    Input {
+        selector: PaneSelectorArgs,
+        right_click: PaneRightClickTarget,
+    },
+    Split(SplitArgs),
+    Swap(SwapArgs),
+    Move(Result<PaneMoveParams, String>),
+    Close {
+        pane_id: String,
+    },
+    SendText(PaneSendTextParams),
+    SendKeys(PaneSendKeysParams),
+    WaitOutput(PaneWaitForOutputParams),
+    ReportAgent(Result<PaneReportAgentParams, String>),
+    ReportAgentSession(Result<PaneReportAgentSessionParams, String>),
+    ReleaseAgent(Result<PaneReleaseAgentParams, String>),
+    ReportMetadata(Result<PaneReportMetadataParams, String>),
+    Run {
+        pane_id: String,
+        command: String,
+    },
+    Invalid,
+}
+
+#[derive(Clone)]
+pub(crate) struct PaneSelectorArgs {
+    pane_id: Option<String>,
+    pane: Option<String>,
+    current: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct SplitArgs {
+    selector: PaneSelectorArgs,
+    direction: SplitDirection,
+    ratio: Option<f32>,
+    cwd: Option<String>,
+    focus: bool,
+    right_click: PaneRightClickTarget,
+    env: HashMap<String, String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SwapArgs {
+    selector: PaneSelectorArgs,
+    direction: Option<PaneDirection>,
+    source_pane_id: Option<String>,
+    target_pane_id: Option<String>,
+}
+
+impl Command {
+    pub(super) fn name(&self) -> &'static str {
+        match self {
+            Self::List { .. } => "list",
+            Self::Current { .. } => "current",
+            Self::Get { .. } => "get",
+            Self::Layout { .. } => "layout",
+            Self::ProcessInfo { .. } => "process-info",
+            Self::Neighbor { .. } => "neighbor",
+            Self::Edges { .. } => "edges",
+            Self::Focus { .. } => "focus",
+            Self::Resize { .. } => "resize",
+            Self::Zoom { .. } => "zoom",
+            Self::Read(_) => "read",
+            Self::Rename(_) => "rename",
+            Self::Input { .. } => "input",
+            Self::Split(_) => "split",
+            Self::Swap(_) => "swap",
+            Self::Move(_) => "move",
+            Self::Close { .. } => "close",
+            Self::SendText(_) => "send-text",
+            Self::SendKeys(_) => "send-keys",
+            Self::WaitOutput(_) => "wait-output",
+            Self::ReportAgent(_) => "report-agent",
+            Self::ReportAgentSession(_) => "report-agent-session",
+            Self::ReleaseAgent(_) => "release-agent",
+            Self::ReportMetadata(_) => "report-metadata",
+            Self::Run { .. } => "run",
+            Self::Invalid => "",
+        }
+    }
+
+    pub(super) fn is_api_command(&self) -> bool {
+        !matches!(self, Self::Invalid)
+    }
+}
+
+pub(super) fn parse(matches: &ArgMatches) -> Command {
+    match matches.subcommand() {
+        Some(("list", command)) => Command::List {
+            workspace: string(command, "workspace"),
+        },
+        Some(("current", command)) => Command::Current {
+            selector: selector(command),
+        },
+        Some(("get", command)) => Command::Get {
+            pane_id: required(command, "pane_id"),
+        },
+        Some(("layout", command)) => Command::Layout {
+            selector: selector(command),
+        },
+        Some(("process-info", command)) => Command::ProcessInfo {
+            selector: selector(command),
+        },
+        Some(("neighbor", command)) => Command::Neighbor {
+            selector: selector(command),
+            direction: direction(command),
+        },
+        Some(("edges", command)) => Command::Edges {
+            selector: selector(command),
+        },
+        Some(("focus", command)) => Command::Focus {
+            selector: selector(command),
+            direction: direction(command),
+        },
+        Some(("resize", command)) => Command::Resize {
+            selector: selector(command),
+            direction: direction(command),
+            amount: value::<f32>(command, "amount"),
+        },
+        Some(("zoom", command)) => {
+            let (selector, on, off) = zoom_args(command);
+            Command::Zoom { selector, on, off }
+        }
+        Some(("read", command)) => Command::Read(read_params(command)),
+        Some(("rename", command)) => Command::Rename(PaneRenameParams {
+            pane_id: required(command, "pane_id"),
+            label: (!flag(command, "clear")).then(|| words(command, "label")),
+        }),
+        Some(("input", command)) => {
+            let (selector, right_click) = input_args(command);
+            Command::Input {
+                selector,
+                right_click,
+            }
+        }
+        Some(("split", command)) => Command::Split(split_args(command)),
+        Some(("swap", command)) => Command::Swap(swap_args(command)),
+        Some(("move", command)) => Command::Move(move_params(command)),
+        Some(("close", command)) => Command::Close {
+            pane_id: required(command, "pane_id"),
+        },
+        Some(("send-text", command)) => Command::SendText(PaneSendTextParams {
+            pane_id: required(command, "pane_id"),
+            text: words(command, "text"),
+        }),
+        Some(("send-keys", command)) => Command::SendKeys(PaneSendKeysParams {
+            pane_id: required(command, "pane_id"),
+            keys: values::<String>(command, "key"),
+        }),
+        Some(("wait-output", command)) => Command::WaitOutput(wait_output_params(command)),
+        Some(("report-agent", command)) => Command::ReportAgent(report_agent_params(command)),
+        Some(("report-agent-session", command)) => {
+            Command::ReportAgentSession(report_agent_session_params(command))
+        }
+        Some(("release-agent", command)) => Command::ReleaseAgent(release_agent_params(command)),
+        Some(("report-metadata", command)) => {
+            Command::ReportMetadata(report_metadata_params(command))
+        }
+        Some(("run", command)) => Command::Run {
+            pane_id: required(command, "pane_id"),
+            command: words(command, "command"),
+        },
+        _ => Command::Invalid,
+    }
+}
+
 pub(super) fn run_pane_command(
-    matches: &ArgMatches,
+    command: Command,
     paths: &super::target::CliContext,
 ) -> std::io::Result<i32> {
     let caller = super::target::caller_pane(paths);
-    // Every command below that takes `--pane`/`--current` resolves it with
-    // `selected_pane`; a `--current` the caller cannot satisfy is a usage error.
-    let pane = |matches: &ArgMatches| selected_pane(matches, &caller);
-    match matches.subcommand() {
-        Some(("list", matches)) => print_request(
+    match command {
+        Command::List { workspace } => print_request(
             paths,
             "cli:pane:list",
             Method::PaneList(PaneListParams {
-                workspace_id: string(matches, "workspace"),
+                workspace_id: workspace,
             }),
         ),
-        Some(("current", matches)) => match pane(matches) {
+        Command::Current { selector } => match selected_pane(&selector, &caller) {
             Ok(caller_pane_id) => print_request(
                 paths,
                 "cli:pane:current",
@@ -40,14 +244,12 @@ pub(super) fn run_pane_command(
             ),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("get", matches)) => print_request(
+        Command::Get { pane_id } => print_request(
             paths,
             "cli:pane:get",
-            Method::PaneGet(PaneTarget {
-                pane_id: required(matches, "pane_id"),
-            }),
+            Method::PaneGet(PaneTarget { pane_id }),
         ),
-        Some(("layout", matches)) => match pane(matches) {
+        Command::Layout { selector } => match selected_pane(&selector, &caller) {
             Ok(pane_id) => print_request(
                 paths,
                 "cli:pane:layout",
@@ -55,7 +257,7 @@ pub(super) fn run_pane_command(
             ),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("process-info", matches)) => match pane(matches) {
+        Command::ProcessInfo { selector } => match selected_pane(&selector, &caller) {
             Ok(pane_id) => print_request(
                 paths,
                 "cli:pane:process_info",
@@ -63,18 +265,18 @@ pub(super) fn run_pane_command(
             ),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("neighbor", matches)) => match pane(matches) {
+        Command::Neighbor {
+            selector,
+            direction,
+        } => match selected_pane(&selector, &caller) {
             Ok(pane_id) => print_request(
                 paths,
                 "cli:pane:neighbor",
-                Method::PaneNeighbor(PaneNeighborParams {
-                    pane_id,
-                    direction: direction(matches),
-                }),
+                Method::PaneNeighbor(PaneNeighborParams { pane_id, direction }),
             ),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("edges", matches)) => match pane(matches) {
+        Command::Edges { selector } => match selected_pane(&selector, &caller) {
             Ok(pane_id) => print_request(
                 paths,
                 "cli:pane:edges",
@@ -82,109 +284,97 @@ pub(super) fn run_pane_command(
             ),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("focus", matches)) => match pane(matches) {
-            Ok(pane_id) => super::runtime::pane_focus(
-                paths,
-                PaneFocusDirectionParams {
-                    pane_id,
-                    direction: direction(matches),
-                },
-            ),
+        Command::Focus {
+            selector,
+            direction,
+        } => match selected_pane(&selector, &caller) {
+            Ok(pane_id) => {
+                super::runtime::pane_focus(paths, PaneFocusDirectionParams { pane_id, direction })
+            }
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("resize", matches)) => match pane(matches) {
+        Command::Resize {
+            selector,
+            direction,
+            amount,
+        } => match selected_pane(&selector, &caller) {
             Ok(pane_id) => super::runtime::pane_resize(
                 paths,
                 PaneResizeParams {
                     pane_id,
-                    direction: direction(matches),
-                    amount: value::<f32>(matches, "amount"),
+                    direction,
+                    amount,
                 },
             ),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("zoom", matches)) => match zoom_params(matches, &caller) {
+        Command::Zoom { selector, on, off } => match zoom_params(&selector, on, off, &caller) {
             Ok(params) => super::runtime::pane_zoom(paths, params),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("read", matches)) => {
+        Command::Read(params) => {
             let response = super::send_request(
                 paths,
                 &Request {
                     id: "cli:pane:read".into(),
-                    method: Method::PaneRead(read_params(matches)),
+                    method: Method::PaneRead(params),
                 },
             )?;
             super::print_read_response(&response)
         }
-        Some(("rename", matches)) => super::runtime::pane_rename(
-            paths,
-            PaneRenameParams {
-                pane_id: required(matches, "pane_id"),
-                label: (!flag(matches, "clear")).then(|| words(matches, "label")),
-            },
-        ),
-        Some(("input", matches)) => match input_params(matches, &caller) {
+        Command::Rename(params) => super::runtime::pane_rename(paths, params),
+        Command::Input {
+            selector,
+            right_click,
+        } => match input_params(&selector, right_click, &caller) {
             Ok(params) => super::runtime::pane_input_set(paths, params),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("split", matches)) => match split_params(matches, &caller, paths) {
+        Command::Split(args) => match split_params(args, &caller, paths) {
             Ok(params) => super::runtime::pane_split(paths, params),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("swap", matches)) => match swap_params(matches, &caller) {
+        Command::Swap(args) => match swap_params(args, &caller) {
             Ok(params) => super::runtime::pane_swap(paths, params),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("move", matches)) => match move_params(matches) {
+        Command::Move(result) => match result {
             Ok(params) => super::runtime::pane_move(paths, params),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("close", matches)) => super::runtime::pane_close(paths, required(matches, "pane_id")),
-        Some(("send-text", matches)) => super::send_ok_request(
-            paths,
-            Method::PaneSendText(PaneSendTextParams {
-                pane_id: required(matches, "pane_id"),
-                text: words(matches, "text"),
-            }),
-        ),
-        Some(("send-keys", matches)) => super::send_ok_request(
-            paths,
-            Method::PaneSendKeys(PaneSendKeysParams {
-                pane_id: required(matches, "pane_id"),
-                keys: values::<String>(matches, "key"),
-            }),
-        ),
-        Some(("wait-output", matches)) => print_request(
+        Command::Close { pane_id } => super::runtime::pane_close(paths, pane_id),
+        Command::SendText(params) => super::send_ok_request(paths, Method::PaneSendText(params)),
+        Command::SendKeys(params) => super::send_ok_request(paths, Method::PaneSendKeys(params)),
+        Command::WaitOutput(params) => print_request(
             paths,
             "cli:pane:wait-output",
-            Method::PaneWaitForOutput(wait_output_params(matches)),
+            Method::PaneWaitForOutput(params),
         ),
-        Some(("report-agent", matches)) => match report_agent_params(matches) {
+        Command::ReportAgent(result) => match result {
             Ok(params) => super::send_ok_request(paths, Method::PaneReportAgent(params)),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("report-agent-session", matches)) => match report_agent_session_params(matches) {
+        Command::ReportAgentSession(result) => match result {
             Ok(params) => super::send_ok_request(paths, Method::PaneReportAgentSession(params)),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("release-agent", matches)) => match release_agent_params(matches) {
+        Command::ReleaseAgent(result) => match result {
             Ok(params) => super::send_ok_request(paths, Method::PaneReleaseAgent(params)),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("report-metadata", matches)) => match report_metadata_params(matches) {
+        Command::ReportMetadata(result) => match result {
             Ok(params) => super::send_ok_request(paths, Method::PaneReportMetadata(params)),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("run", matches)) => super::send_ok_request(
+        Command::Run { pane_id, command } => super::send_ok_request(
             paths,
             Method::PaneSendInput(PaneSendInputParams {
-                pane_id: required(matches, "pane_id"),
-                text: words(matches, "command"),
+                pane_id,
+                text: command,
                 keys: vec!["Enter".into()],
             }),
         ),
-        _ => Ok(super::missing_subcommand()),
+        Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 
@@ -213,18 +403,65 @@ fn print_request(
 ///
 /// So an agent in a background pane that runs `pane resize` resizes its own
 /// pane, not whichever pane the user happens to have focused.
-fn selected_pane(matches: &ArgMatches, caller: &CallerPane) -> Result<Option<String>, String> {
-    if let Some(pane_id) = explicit_pane(matches) {
+fn selector(matches: &ArgMatches) -> PaneSelectorArgs {
+    PaneSelectorArgs {
+        pane_id: string(matches, "pane_id"),
+        pane: string(matches, "pane"),
+        current: flag(matches, "current"),
+    }
+}
+
+fn split_args(matches: &ArgMatches) -> SplitArgs {
+    SplitArgs {
+        selector: selector(matches),
+        direction: value::<SplitDirection>(matches, "direction").unwrap_or(SplitDirection::Right),
+        ratio: value::<f32>(matches, "ratio"),
+        cwd: string(matches, "cwd"),
+        focus: flag(matches, "focus"),
+        right_click: value::<PaneRightClickTarget>(matches, "right-click")
+            .unwrap_or(PaneRightClickTarget::Shepr),
+        env: values::<(String, String)>(matches, "env")
+            .into_iter()
+            .collect(),
+    }
+}
+
+fn swap_args(matches: &ArgMatches) -> SwapArgs {
+    SwapArgs {
+        selector: selector(matches),
+        direction: value::<PaneDirection>(matches, "direction"),
+        source_pane_id: string(matches, "source-pane"),
+        target_pane_id: string(matches, "target-pane"),
+    }
+}
+
+fn zoom_args(matches: &ArgMatches) -> (PaneSelectorArgs, bool, bool) {
+    (selector(matches), flag(matches, "on"), flag(matches, "off"))
+}
+
+fn input_args(matches: &ArgMatches) -> (PaneSelectorArgs, PaneRightClickTarget) {
+    (
+        selector(matches),
+        value::<PaneRightClickTarget>(matches, "right-click")
+            .unwrap_or(PaneRightClickTarget::Shepr),
+    )
+}
+
+fn selected_pane(
+    selector: &PaneSelectorArgs,
+    caller: &CallerPane,
+) -> Result<Option<String>, String> {
+    if let Some(pane_id) = explicit_pane(selector) {
         return Ok(Some(pane_id));
     }
-    if flag(matches, "current") {
+    if selector.current {
         return caller.require().map(Some);
     }
     Ok(caller.id())
 }
 
-fn explicit_pane(matches: &ArgMatches) -> Option<String> {
-    string(matches, "pane_id").or_else(|| string(matches, "pane"))
+fn explicit_pane(selector: &PaneSelectorArgs) -> Option<String> {
+    selector.pane_id.clone().or_else(|| selector.pane.clone())
 }
 
 fn direction(matches: &ArgMatches) -> PaneDirection {
@@ -232,16 +469,21 @@ fn direction(matches: &ArgMatches) -> PaneDirection {
     value::<PaneDirection>(matches, "direction").unwrap_or(PaneDirection::Right)
 }
 
-fn zoom_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneZoomParams, String> {
-    let mode = if flag(matches, "on") {
+fn zoom_params(
+    selector: &PaneSelectorArgs,
+    on: bool,
+    off: bool,
+    caller: &CallerPane,
+) -> Result<PaneZoomParams, String> {
+    let mode = if on {
         PaneZoomMode::On
-    } else if flag(matches, "off") {
+    } else if off {
         PaneZoomMode::Off
     } else {
         PaneZoomMode::Toggle
     };
     Ok(PaneZoomParams {
-        pane_id: selected_pane(matches, caller)?,
+        pane_id: selected_pane(selector, caller)?,
         mode,
     })
 }
@@ -266,47 +508,58 @@ fn read_params(matches: &ArgMatches) -> PaneReadParams {
     }
 }
 
-fn input_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneInputSetParams, String> {
+fn input_params(
+    selector: &PaneSelectorArgs,
+    right_click: PaneRightClickTarget,
+    caller: &CallerPane,
+) -> Result<PaneInputSetParams, String> {
     // The spec requires exactly one of the positional, `--pane` or `--current`,
     // so the no-selector fallback never applies here.
     Ok(PaneInputSetParams {
-        pane_id: selected_pane(matches, caller)?.unwrap_or_default(),
-        right_click: value::<PaneRightClickTarget>(matches, "right-click")
-            .unwrap_or(PaneRightClickTarget::Shepr),
+        pane_id: selected_pane(selector, caller)?.unwrap_or_default(),
+        right_click,
     })
 }
 
 fn split_params(
-    matches: &ArgMatches,
+    args: SplitArgs,
     caller: &CallerPane,
     paths: &super::target::CliContext,
 ) -> Result<PaneSplitParams, String> {
+    let cwd = args
+        .cwd
+        .map(|raw| {
+            super::matches::resolve_cwd(
+                &raw,
+                paths.is_remote(),
+                paths.home_dir(),
+                paths.current_dir(),
+            )
+        })
+        .transpose()?;
     Ok(PaneSplitParams {
         workspace_id: None,
-        target_pane_id: selected_pane(matches, caller)?,
-        direction: value::<SplitDirection>(matches, "direction").unwrap_or(SplitDirection::Right),
-        ratio: value::<f32>(matches, "ratio"),
-        cwd: super::matches::cwd(matches, paths)?,
-        focus: flag(matches, "focus"),
-        right_click: value::<PaneRightClickTarget>(matches, "right-click")
-            .unwrap_or(PaneRightClickTarget::Shepr),
-        env: values::<(String, String)>(matches, "env")
-            .into_iter()
-            .collect::<HashMap<_, _>>(),
+        target_pane_id: selected_pane(&args.selector, caller)?,
+        direction: args.direction,
+        ratio: args.ratio,
+        cwd,
+        focus: args.focus,
+        right_click: args.right_click,
+        env: args.env,
     })
 }
 
-fn swap_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneSwapParams, String> {
+fn swap_params(args: SwapArgs, caller: &CallerPane) -> Result<PaneSwapParams, String> {
     const USAGE: &str = "usage: shepr pane swap --direction left|right|up|down [--pane ID|--current]\n       shepr pane swap --source-pane ID --target-pane ID";
 
-    let direction = value::<PaneDirection>(matches, "direction");
-    let source_pane_id = string(matches, "source-pane");
-    let target_pane_id = string(matches, "target-pane");
+    let direction = args.direction;
+    let source_pane_id = args.source_pane_id;
+    let target_pane_id = args.target_pane_id;
     // `--pane`/`--current` only belong to the directional form.
-    let selector_given = explicit_pane(matches).is_some() || flag(matches, "current");
+    let selector_given = explicit_pane(&args.selector).is_some() || args.selector.current;
     match (direction, source_pane_id, target_pane_id) {
         (Some(direction), None, None) => Ok(PaneSwapParams {
-            pane_id: selected_pane(matches, caller)?,
+            pane_id: selected_pane(&args.selector, caller)?,
             direction: Some(direction),
             ..PaneSwapParams::default()
         }),
@@ -473,6 +726,35 @@ mod tests {
 
     fn known(pane_id: &str) -> CallerPane {
         CallerPane::Known(pane_id.into())
+    }
+
+    fn selected_pane(matches: &ArgMatches, caller: &CallerPane) -> Result<Option<String>, String> {
+        super::selected_pane(&super::selector(matches), caller)
+    }
+
+    fn split_params(
+        matches: &ArgMatches,
+        caller: &CallerPane,
+        paths: &super::super::target::CliContext,
+    ) -> Result<PaneSplitParams, String> {
+        super::split_params(super::split_args(matches), caller, paths)
+    }
+
+    fn swap_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneSwapParams, String> {
+        super::swap_params(super::swap_args(matches), caller)
+    }
+
+    fn input_params(
+        matches: &ArgMatches,
+        caller: &CallerPane,
+    ) -> Result<PaneInputSetParams, String> {
+        let (selector, right_click) = super::input_args(matches);
+        super::input_params(&selector, right_click, caller)
+    }
+
+    fn zoom_params(matches: &ArgMatches, caller: &CallerPane) -> Result<PaneZoomParams, String> {
+        let (selector, on, off) = super::zoom_args(matches);
+        super::zoom_params(&selector, on, off, caller)
     }
 
     fn test_paths() -> super::super::target::CliContext {

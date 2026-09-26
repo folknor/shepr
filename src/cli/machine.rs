@@ -5,6 +5,49 @@ use crate::client::endpoint::EndpointCatalog;
 
 use super::matches::{flag, required, string};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Command {
+    List { json: bool },
+    Status { machine: Option<String>, json: bool },
+    Reconnect { machine: String },
+    Add(AddArgs),
+    Remove { machine: String },
+    Invalid,
+}
+
+impl Command {
+    pub(super) fn name(&self) -> &'static str {
+        match self {
+            Self::List { .. } => "list",
+            Self::Status { .. } => "status",
+            Self::Reconnect { .. } => "reconnect",
+            Self::Add(_) => "add",
+            Self::Remove { .. } => "remove",
+            Self::Invalid => "",
+        }
+    }
+}
+
+pub(super) fn parse(matches: &ArgMatches) -> Command {
+    match matches.subcommand() {
+        Some(("list", command)) => Command::List {
+            json: flag(command, "json"),
+        },
+        Some(("status", command)) => Command::Status {
+            machine: string(command, "machine"),
+            json: flag(command, "json"),
+        },
+        Some(("reconnect", command)) => Command::Reconnect {
+            machine: required(command, "machine"),
+        },
+        Some(("add", command)) => Command::Add(add_args(command)),
+        Some(("remove", command)) => Command::Remove {
+            machine: required(command, "machine"),
+        },
+        _ => Command::Invalid,
+    }
+}
+
 #[derive(Serialize)]
 struct MachineListRow<'a> {
     id: &'a str,
@@ -15,26 +58,19 @@ struct MachineListRow<'a> {
 }
 
 pub(super) fn run_machine_command(
-    matches: &ArgMatches,
+    command: Command,
     context: &super::target::CliContext,
 ) -> std::io::Result<i32> {
     let paths: &crate::config::AppPaths = context;
-    match matches.subcommand() {
-        Some(("list", matches)) => list(paths, flag(matches, "json")),
-        Some(("status", matches)) => status(
-            string(matches, "machine").as_deref(),
-            flag(matches, "json"),
-            paths,
-            saved_ssh_settings(paths)?,
-        ),
-        Some(("reconnect", matches)) => reconnect(
-            paths,
-            &required(matches, "machine"),
-            saved_ssh_settings(paths)?,
-        ),
-        Some(("add", matches)) => add(paths, add_args(matches), saved_ssh_settings(paths)?),
-        Some(("remove", matches)) => remove(paths, &required(matches, "machine")),
-        _ => Ok(super::missing_subcommand()),
+    match command {
+        Command::List { json } => list(paths, json),
+        Command::Status { machine, json } => {
+            status(machine.as_deref(), json, paths, saved_ssh_settings(paths)?)
+        }
+        Command::Reconnect { machine } => reconnect(paths, &machine, saved_ssh_settings(paths)?),
+        Command::Add(args) => add(paths, args, saved_ssh_settings(paths)?),
+        Command::Remove { machine } => remove(paths, &machine),
+        Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 
@@ -175,8 +211,8 @@ fn reconnect(
     Ok(0)
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct AddArgs {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AddArgs {
     target: String,
     label: String,
     session: String,

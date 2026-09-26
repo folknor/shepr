@@ -264,14 +264,17 @@ pub(super) fn store_reported_cell_size(
     }
 }
 
-pub(super) fn reported_cell_size_from_events(
-    events: &[crate::raw_input::RawInputEvent],
+pub(super) fn reported_cell_size_from_events<'a>(
+    events: impl IntoIterator<Item = &'a crate::raw_input::RawInputEvent>,
 ) -> Option<(u32, u32)> {
-    events.iter().rev().find_map(|event| match event {
-        crate::raw_input::RawInputEvent::HostCellSizeReport {
-            width_px,
-            height_px,
-        } => Some((*width_px, *height_px)),
-        _ => None,
-    })
+    events
+        .into_iter()
+        .filter_map(|event| match event {
+            crate::raw_input::RawInputEvent::HostCellSizeReport {
+                width_px,
+                height_px,
+            } => Some((*width_px, *height_px)),
+            _ => None,
+        })
+        .last()
 }

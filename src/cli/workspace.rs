@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-use clap::ArgMatches;
-
 use crate::api::schema::{
     Method, WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams,
     WorkspaceReportMetadataParams,
@@ -9,74 +7,188 @@ use crate::api::schema::{
 
 use super::matches::{flag, required, string, value, values, words};
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Command {
+    List,
+    Create(CreateArgs),
+    Get { workspace_id: String },
+    Focus { workspace_id: String },
+    Rename { workspace_id: String, label: String },
+    ReportMetadata(ReportMetadataArgs),
+    Close { workspace_id: String },
+    Invalid,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CreateArgs {
+    cwd: Option<String>,
+    focus: bool,
+    label: Option<String>,
+    env: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReportMetadataArgs {
+    workspace_id: String,
+    source: String,
+    tokens: HashMap<String, Option<String>>,
+    seq: Option<u64>,
+    ttl_ms: Option<u64>,
+}
+
+impl Command {
+    pub(super) fn name(&self) -> &'static str {
+        match self {
+            Self::List => "list",
+            Self::Create(_) => "create",
+            Self::Get { .. } => "get",
+            Self::Focus { .. } => "focus",
+            Self::Rename { .. } => "rename",
+            Self::ReportMetadata(_) => "report-metadata",
+            Self::Close { .. } => "close",
+            Self::Invalid => "",
+        }
+    }
+
+    pub(super) fn is_api_command(&self) -> bool {
+        !matches!(self, Self::Invalid)
+    }
+}
+
+pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
+    match matches.subcommand() {
+        Some(("list", _)) => Command::List,
+        Some(("create", command)) => Command::Create(CreateArgs {
+            cwd: string(command, "cwd"),
+            focus: flag(command, "focus"),
+            label: string(command, "label"),
+            env: values::<(String, String)>(command, "env")
+                .into_iter()
+                .collect(),
+        }),
+        Some(("get", command)) => Command::Get {
+            workspace_id: required(command, "workspace_id"),
+        },
+        Some(("focus", command)) => Command::Focus {
+            workspace_id: required(command, "workspace_id"),
+        },
+        Some(("rename", command)) => Command::Rename {
+            workspace_id: required(command, "workspace_id"),
+            label: words(command, "label"),
+        },
+        Some(("report-metadata", command)) => Command::ReportMetadata(ReportMetadataArgs {
+            workspace_id: required(command, "workspace_id"),
+            source: required(command, "source"),
+            tokens: super::matches::metadata_tokens(command),
+            seq: value(command, "seq"),
+            ttl_ms: value(command, "ttl-ms"),
+        }),
+        Some(("close", command)) => Command::Close {
+            workspace_id: required(command, "workspace_id"),
+        },
+        _ => Command::Invalid,
+    }
+}
+
 pub(super) fn run_workspace_command(
-    matches: &ArgMatches,
+    command: Command,
     paths: &super::target::CliContext,
 ) -> std::io::Result<i32> {
-    match matches.subcommand() {
-        Some(("list", _)) => super::runtime::workspace_list(paths),
-        Some(("create", matches)) => match create_params(matches, paths) {
+    match command {
+        Command::List => super::runtime::workspace_list(paths),
+        Command::Create(args) => match create_params(args, paths) {
             Ok(params) => super::runtime::workspace_create(paths, params),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("get", matches)) => {
-            super::runtime::workspace_get(paths, required(matches, "workspace_id"))
-        }
-        Some(("focus", matches)) => {
-            super::runtime::workspace_focus(paths, required(matches, "workspace_id"))
-        }
-        Some(("rename", matches)) => super::runtime::workspace_rename(
+        Command::Get { workspace_id } => super::runtime::workspace_get(paths, workspace_id),
+        Command::Focus { workspace_id } => super::runtime::workspace_focus(paths, workspace_id),
+        Command::Rename {
+            workspace_id,
+            label,
+        } => super::runtime::workspace_rename(
             paths,
             WorkspaceRenameParams {
-                workspace_id: required(matches, "workspace_id"),
-                label: words(matches, "label"),
+                workspace_id,
+                label,
             },
         ),
-        Some(("report-metadata", matches)) => match report_metadata_params(matches) {
+        Command::ReportMetadata(args) => match report_metadata_params(args) {
             Ok(params) => super::send_ok_request(paths, Method::WorkspaceReportMetadata(params)),
             Err(message) => Ok(super::usage_error(&message)),
         },
-        Some(("close", matches)) => super::runtime::workspace_close(
-            paths,
-            WorkspaceCloseParams {
-                workspace_id: required(matches, "workspace_id"),
-            },
-        ),
-        _ => Ok(super::missing_subcommand()),
+        Command::Close { workspace_id } => {
+            super::runtime::workspace_close(paths, WorkspaceCloseParams { workspace_id })
+        }
+        Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 
 fn create_params(
-    matches: &ArgMatches,
+    args: CreateArgs,
     paths: &super::target::CliContext,
 ) -> Result<WorkspaceCreateParams, String> {
     Ok(WorkspaceCreateParams {
         source_workspace_id: None,
-        cwd: super::matches::cwd(matches, paths)?,
-        focus: flag(matches, "focus"),
-        label: string(matches, "label"),
-        env: values::<(String, String)>(matches, "env")
-            .into_iter()
-            .collect::<HashMap<_, _>>(),
+        cwd: resolve_cwd(args.cwd, paths)?,
+        focus: args.focus,
+        label: args.label,
+        env: args.env,
     })
 }
 
-fn report_metadata_params(matches: &ArgMatches) -> Result<WorkspaceReportMetadataParams, String> {
-    let Some(source) = string(matches, "source").filter(|source| !source.trim().is_empty()) else {
-        return Err("missing required --source".into());
+fn resolve_cwd(
+    cwd: Option<String>,
+    paths: &super::target::CliContext,
+) -> Result<Option<String>, String> {
+    let Some(raw) = cwd else {
+        return Ok(None);
     };
+    super::matches::resolve_cwd(
+        &raw,
+        paths.is_remote(),
+        paths.home_dir(),
+        paths.current_dir(),
+    )
+    .map(Some)
+}
+
+fn report_metadata_params(
+    args: ReportMetadataArgs,
+) -> Result<WorkspaceReportMetadataParams, String> {
+    let source = args.source;
+    if source.trim().is_empty() {
+        return Err("missing required --source".into());
+    }
     Ok(WorkspaceReportMetadataParams {
-        workspace_id: required(matches, "workspace_id"),
+        workspace_id: args.workspace_id,
         source,
-        tokens: super::matches::metadata_tokens(matches),
-        seq: value::<u64>(matches, "seq"),
-        ttl_ms: value::<u64>(matches, "ttl-ms"),
+        tokens: args.tokens,
+        seq: args.seq,
+        ttl_ms: args.ttl_ms,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::command_matches;
+    use super::super::tests::group_matches;
+
+    fn command(args: &[&str]) -> super::Command {
+        super::parse(&group_matches(args))
+    }
+
+    fn create_args(args: &[&str]) -> super::CreateArgs {
+        let super::Command::Create(args) = command(args) else {
+            panic!("expected workspace create");
+        };
+        args
+    }
+
+    fn report_args(args: &[&str]) -> super::ReportMetadataArgs {
+        let super::Command::ReportMetadata(args) = command(args) else {
+            panic!("expected workspace report-metadata");
+        };
+        args
+    }
 
     fn test_paths() -> super::super::target::CliContext {
         super::super::target::CliContext::test_local(crate::config::AppPaths::test_with_context(
@@ -89,7 +201,7 @@ mod tests {
     #[test]
     fn create_reads_every_option() {
         let params = super::create_params(
-            &command_matches(&[
+            create_args(&[
                 "workspace",
                 "create",
                 "--cwd",
@@ -110,7 +222,7 @@ mod tests {
         assert_eq!(params.env.get("B").map(String::as_str), Some(""));
 
         let params = super::create_params(
-            &command_matches(&["workspace", "create", "--focus", "--no-focus"]),
+            create_args(&["workspace", "create", "--focus", "--no-focus"]),
             &test_paths(),
         )
         .expect("test precondition");
@@ -119,7 +231,7 @@ mod tests {
 
         // A relative directory is the caller's, not the server's.
         let params = super::create_params(
-            &command_matches(&["workspace", "create", "--cwd", "."]),
+            create_args(&["workspace", "create", "--cwd", "."]),
             &test_paths(),
         )
         .expect("test precondition");
@@ -128,7 +240,7 @@ mod tests {
 
     #[test]
     fn report_metadata_requires_a_token_and_a_nonblank_source() {
-        let params = super::report_metadata_params(&command_matches(&[
+        let params = super::report_metadata_params(report_args(&[
             "workspace",
             "report-metadata",
             "w1",
@@ -146,7 +258,7 @@ mod tests {
         assert_eq!(params.tokens.get("branch"), Some(&Some("main".to_string())));
 
         assert!(
-            super::report_metadata_params(&command_matches(&[
+            super::report_metadata_params(report_args(&[
                 "workspace",
                 "report-metadata",
                 "w1",
@@ -161,7 +273,11 @@ mod tests {
 
     #[test]
     fn rename_joins_label_words() {
-        let rename = command_matches(&["workspace", "rename", "w1", "my", "-dev", "box"]);
-        assert_eq!(super::words(&rename, "label"), "my -dev box");
+        let super::Command::Rename { label, .. } =
+            command(&["workspace", "rename", "w1", "my", "-dev", "box"])
+        else {
+            panic!("expected workspace rename");
+        };
+        assert_eq!(label, "my -dev box");
     }
 }

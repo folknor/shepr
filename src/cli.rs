@@ -55,69 +55,189 @@ pub(crate) fn parse_env_assignment(raw: &str) -> Result<(String, String), String
     Ok((key.to_string(), value.to_string()))
 }
 
-/// A top-level command after clap has parsed argv once. The variants make
-/// launch modes and CLI command groups explicit while retaining each group's
-/// parsed values for the existing handlers.
+/// A top-level command after clap has parsed argv once. Launch modes and CLI
+/// command groups are explicit, and CLI groups already contain typed values.
 pub(crate) enum Launch {
     Tui { attached_session: Option<String> },
     HeadlessServer,
     Client,
     ApiBridge { check: bool },
     ClientBridge { idle_timeout_v1: bool },
-    Cli(CliCommand),
+    Cli(Box<CliCommand>),
 }
 
 pub(crate) enum CliCommand {
-    Status(ArgMatches),
-    Config(ArgMatches),
-    Machine(ArgMatches),
-    Server(ArgMatches),
-    Workspace(ArgMatches),
-    Tab(ArgMatches),
-    Agent(ArgMatches),
-    Pane(ArgMatches),
-    Terminal(ArgMatches),
-    Session(ArgMatches),
-    Integration(ArgMatches),
-    Other { name: String, matches: ArgMatches },
+    Status(status::Command),
+    Config(ConfigCommand),
+    Machine(machine::Command),
+    Server(server::Command),
+    Workspace(workspace::Command),
+    Tab(tab::Command),
+    Agent(agent::Command),
+    Pane(pane::Command),
+    Terminal(TerminalCommand),
+    Session(SessionCommand),
+    Integration(integration::Command),
 }
 
 impl CliCommand {
-    fn from_matches(name: &str, matches: &ArgMatches) -> Self {
-        let matches = matches.clone();
-        match name {
-            "status" => Self::Status(matches),
-            "config" => Self::Config(matches),
-            "machine" => Self::Machine(matches),
-            "server" => Self::Server(matches),
-            "workspace" => Self::Workspace(matches),
-            "tab" => Self::Tab(matches),
-            "agent" => Self::Agent(matches),
-            "pane" => Self::Pane(matches),
-            "terminal" => Self::Terminal(matches),
-            "session" => Self::Session(matches),
-            "integration" => Self::Integration(matches),
-            _ => Self::Other {
-                name: name.to_owned(),
-                matches,
-            },
+    fn from_matches(name: &str, matches: &ArgMatches) -> Option<Self> {
+        Some(match name {
+            "status" => Self::Status(status::parse(matches)),
+            "config" => Self::Config(ConfigCommand::parse(matches)),
+            "machine" => Self::Machine(machine::parse(matches)),
+            "server" => Self::Server(server::parse(matches)),
+            "workspace" => Self::Workspace(workspace::parse(matches)),
+            "tab" => Self::Tab(tab::parse(matches)),
+            "agent" => Self::Agent(agent::parse(matches)),
+            "pane" => Self::Pane(pane::parse(matches)),
+            "terminal" => Self::Terminal(TerminalCommand::parse(matches)),
+            "session" => Self::Session(SessionCommand::parse(matches)),
+            "integration" => Self::Integration(integration::parse(matches)),
+            _ => return None,
+        })
+    }
+
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::Status(_) => "status",
+            Self::Config(_) => "config",
+            Self::Machine(_) => "machine",
+            Self::Server(_) => "server",
+            Self::Workspace(_) => "workspace",
+            Self::Tab(_) => "tab",
+            Self::Agent(_) => "agent",
+            Self::Pane(_) => "pane",
+            Self::Terminal(_) => "terminal",
+            Self::Session(_) => "session",
+            Self::Integration(_) => "integration",
         }
     }
 
-    fn parts(&self) -> (&str, &ArgMatches) {
+    pub(crate) fn subcommand_name(&self) -> &'static str {
         match self {
-            Self::Status(matches) => ("status", matches),
-            Self::Config(matches) => ("config", matches),
-            Self::Machine(matches) => ("machine", matches),
-            Self::Server(matches) => ("server", matches),
-            Self::Workspace(matches) => ("workspace", matches),
-            Self::Tab(matches) => ("tab", matches),
-            Self::Agent(matches) => ("agent", matches),
-            Self::Pane(matches) => ("pane", matches),
-            Self::Terminal(matches) => ("terminal", matches),
-            Self::Session(matches) => ("session", matches),
-            Self::Integration(matches) => ("integration", matches),
-            Self::Other { name, matches } => (name, matches),
+            Self::Status(command) => command.name(),
+            Self::Config(command) => command.name(),
+            Self::Machine(command) => command.name(),
+            Self::Server(command) => command.name(),
+            Self::Workspace(command) => command.name(),
+            Self::Tab(command) => command.name(),
+            Self::Agent(command) => command.name(),
+            Self::Pane(command) => command.name(),
+            Self::Terminal(command) => command.name(),
+            Self::Session(command) => command.name(),
+            Self::Integration(command) => command.name(),
+        }
+    }
+
+    pub(crate) fn is_api_command(&self) -> bool {
+        match self {
+            Self::Status(command) => command.is_api_command(),
+            Self::Config(_) | Self::Machine(_) | Self::Session(_) | Self::Integration(_) => false,
+            Self::Server(command) => command.is_api_command(),
+            Self::Workspace(command) => command.is_api_command(),
+            Self::Tab(command) => command.is_api_command(),
+            Self::Pane(command) => command.is_api_command(),
+            Self::Agent(command) => command.is_api_command(),
+            Self::Terminal(command) => command.is_api_command(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConfigCommand {
+    Check,
+    Invalid,
+}
+
+impl ConfigCommand {
+    fn parse(matches: &ArgMatches) -> Self {
+        match matches.subcommand_name() {
+            Some("check") => Self::Check,
+            _ => Self::Invalid,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Check => "check",
+            Self::Invalid => "",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TerminalCommand {
+    Attach { terminal_id: String, takeover: bool },
+    TitleSet { title: String },
+    TitleClear,
+    Invalid,
+}
+
+impl TerminalCommand {
+    fn parse(matches: &ArgMatches) -> Self {
+        match matches.subcommand() {
+            Some(("attach", command)) => Self::Attach {
+                terminal_id: matches::required(command, "terminal_id"),
+                takeover: matches::flag(command, "takeover"),
+            },
+            Some(("title", title)) => match title.subcommand() {
+                Some(("set", command)) => Self::TitleSet {
+                    title: matches::required(command, "title"),
+                },
+                Some(("clear", _)) => Self::TitleClear,
+                _ => Self::Invalid,
+            },
+            _ => Self::Invalid,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Attach { .. } => "attach",
+            Self::TitleSet { .. } | Self::TitleClear => "title",
+            Self::Invalid => "",
+        }
+    }
+
+    fn is_api_command(&self) -> bool {
+        matches!(self, Self::TitleSet { .. } | Self::TitleClear)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SessionCommand {
+    List { json: bool },
+    Stop { name: String, json: bool },
+    Delete { name: String, json: bool },
+    Invalid,
+}
+
+impl SessionCommand {
+    fn parse(matches: &ArgMatches) -> Self {
+        match matches.subcommand() {
+            Some(("list", command)) => Self::List {
+                json: matches::flag(command, "json"),
+            },
+            Some(("stop", command)) => Self::Stop {
+                name: matches::required(command, "name"),
+                json: matches::flag(command, "json"),
+            },
+            Some(("delete", command)) => Self::Delete {
+                name: matches::required(command, "name"),
+                json: matches::flag(command, "json"),
+            },
+            // `session attach` is a launch mode and is handled above.
+            _ => Self::Invalid,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::List { .. } => "list",
+            Self::Stop { .. } => "stop",
+            Self::Delete { .. } => "delete",
+            Self::Invalid => "",
         }
     }
 }
@@ -165,7 +285,16 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
                         .and_then(|(_, attach)| matches::string(attach, "name"));
                     Launch::Tui { attached_session }
                 }
-                Some((name, matches)) => Launch::Cli(CliCommand::from_matches(name, matches)),
+                Some((name, matches)) => match CliCommand::from_matches(name, matches) {
+                    Some(command) => Launch::Cli(Box::new(command)),
+                    None => {
+                        crate::platform::begin_cli_output();
+                        eprintln!(
+                            "error: command '{name}' has no typed parser; run with --help for usage"
+                        );
+                        return Err(2);
+                    }
+                },
             };
             Ok(Invocation {
                 launch,
@@ -293,12 +422,8 @@ pub(crate) fn run(
     command: &CliCommand,
     requested_session: Option<crate::session::SessionId>,
 ) -> std::io::Result<i32> {
-    if let CliCommand::Config(matches) = command
-        && matches
-            .subcommand()
-            .is_some_and(|(name, _)| name == "check")
-    {
-        return Ok(run_config_command(matches));
+    if matches!(command, CliCommand::Config(ConfigCommand::Check)) {
+        return Ok(config_check());
     }
     let paths = resolve_app_paths(requested_session)?;
     let context = target::CliContext::local(paths);
@@ -310,20 +435,23 @@ fn dispatch_with_config(
     config: Option<crate::config::Config>,
     context: &target::CliContext,
 ) -> std::io::Result<i32> {
-    let (_, matches) = command.parts();
     match command {
-        CliCommand::Status(_) => status::run_status_command(matches, context),
-        CliCommand::Config(_) => Ok(run_config_command(matches)),
-        CliCommand::Machine(_) => machine::run_machine_command(matches, context),
-        CliCommand::Server(_) => server::run_server_command(matches, context),
-        CliCommand::Workspace(_) => workspace::run_workspace_command(matches, context),
-        CliCommand::Tab(_) => tab::run_tab_command(matches, context),
-        CliCommand::Agent(_) => agent::run_agent_command(matches, config, context),
-        CliCommand::Pane(_) => pane::run_pane_command(matches, context),
-        CliCommand::Terminal(_) => run_terminal_command(matches, config, context),
-        CliCommand::Session(_) => run_session_command(matches, context),
-        CliCommand::Integration(_) => integration::run_integration_command(matches, context),
-        CliCommand::Other { .. } => Ok(missing_subcommand()),
+        CliCommand::Status(command) => status::run_status_command(*command, context),
+        CliCommand::Config(ConfigCommand::Check) => Ok(config_check()),
+        CliCommand::Config(ConfigCommand::Invalid) => Ok(missing_subcommand()),
+        CliCommand::Machine(command) => machine::run_machine_command(command.clone(), context),
+        CliCommand::Server(command) => server::run_server_command(*command, context),
+        CliCommand::Workspace(command) => {
+            workspace::run_workspace_command(command.clone(), context)
+        }
+        CliCommand::Tab(command) => tab::run_tab_command(command.clone(), context),
+        CliCommand::Agent(command) => agent::run_agent_command(command.clone(), config, context),
+        CliCommand::Pane(command) => pane::run_pane_command(command.clone(), context),
+        CliCommand::Terminal(command) => run_terminal_command(command.clone(), config, context),
+        CliCommand::Session(command) => run_session_command(command.clone(), context),
+        CliCommand::Integration(command) => {
+            integration::run_integration_command(command.clone(), context)
+        }
     }
 }
 
@@ -361,13 +489,6 @@ pub(super) fn usage_error(message: &str) -> i32 {
     2
 }
 
-fn run_config_command(matches: &ArgMatches) -> i32 {
-    match matches.subcommand() {
-        Some(("check", _)) => config_check(),
-        _ => missing_subcommand(),
-    }
-}
-
 fn config_check() -> i32 {
     // Path problems are reported like any other config issue instead of
     // aborting the check.
@@ -399,62 +520,49 @@ fn load_validated_config(
 }
 
 fn run_terminal_command(
-    matches: &ArgMatches,
+    command: TerminalCommand,
     config: Option<crate::config::Config>,
     context: &target::CliContext,
 ) -> std::io::Result<i32> {
-    match matches.subcommand() {
-        Some(("attach", matches)) => {
+    match command {
+        TerminalCommand::Attach {
+            terminal_id,
+            takeover,
+        } => {
             let config = match config {
                 Some(config) => config,
                 None => load_validated_config(context)?,
             };
-            crate::client::run_terminal_attach(
-                &config,
-                context,
-                matches::required(matches, "terminal_id"),
-                matches::flag(matches, "takeover"),
-            )?;
+            crate::client::run_terminal_attach(&config, context, terminal_id, takeover)?;
             Ok(0)
         }
-        Some(("title", matches)) => match matches.subcommand() {
-            Some(("set", matches)) => print_response(&send_request(
-                context,
-                &Request {
-                    id: "cli:terminal:title:set".into(),
-                    method: Method::ClientWindowTitleSet(ClientWindowTitleSetParams {
-                        title: matches::required(matches, "title"),
-                    }),
-                },
-            )?),
-            Some(("clear", _)) => print_response(&send_request(
-                context,
-                &Request {
-                    id: "cli:terminal:title:clear".into(),
-                    method: Method::ClientWindowTitleClear(EmptyParams::default()),
-                },
-            )?),
-            _ => Ok(missing_subcommand()),
-        },
-        _ => Ok(missing_subcommand()),
+        TerminalCommand::TitleSet { title } => print_response(&send_request(
+            context,
+            &Request {
+                id: "cli:terminal:title:set".into(),
+                method: Method::ClientWindowTitleSet(ClientWindowTitleSetParams { title }),
+            },
+        )?),
+        TerminalCommand::TitleClear => print_response(&send_request(
+            context,
+            &Request {
+                id: "cli:terminal:title:clear".into(),
+                method: Method::ClientWindowTitleClear(EmptyParams::default()),
+            },
+        )?),
+        TerminalCommand::Invalid => Ok(missing_subcommand()),
     }
 }
 
-fn run_session_command(matches: &ArgMatches, paths: &target::CliContext) -> std::io::Result<i32> {
-    match matches.subcommand() {
-        Some(("list", matches)) => session_list(paths, matches::flag(matches, "json")),
-        Some(("attach", _)) => Ok(missing_subcommand()),
-        Some(("stop", matches)) => Ok(session_stop(
-            &matches::required(matches, "name"),
-            matches::flag(matches, "json"),
-            paths,
-        )),
-        Some(("delete", matches)) => Ok(session_delete(
-            &matches::required(matches, "name"),
-            matches::flag(matches, "json"),
-            paths,
-        )),
-        _ => Ok(missing_subcommand()),
+fn run_session_command(
+    command: SessionCommand,
+    paths: &target::CliContext,
+) -> std::io::Result<i32> {
+    match command {
+        SessionCommand::List { json } => session_list(paths, json),
+        SessionCommand::Stop { name, json } => Ok(session_stop(&name, json, paths)),
+        SessionCommand::Delete { name, json } => Ok(session_delete(&name, json, paths)),
+        SessionCommand::Invalid => Ok(missing_subcommand()),
     }
 }
 
@@ -713,7 +821,7 @@ fn print_json(value: &serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CliCommand, Invocation, Launch};
+    use super::{CliCommand, Invocation, Launch, SessionCommand};
 
     pub(super) fn parse(args: &[&str]) -> Invocation {
         let mut argv = vec!["shepr".to_string()];
@@ -733,14 +841,25 @@ mod tests {
         }
     }
 
-    /// The sub-matches of `shepr <group> <command> ...`.
-    pub(super) fn command_matches(args: &[&str]) -> clap::ArgMatches {
-        let invocation = parse(args);
-        let Launch::Cli(command) = &invocation.launch else {
+    /// The matches for `shepr <group>` in a command invocation.
+    pub(super) fn group_matches(args: &[&str]) -> clap::ArgMatches {
+        let mut argv = vec!["shepr".to_string()];
+        argv.extend(args.iter().map(ToString::to_string));
+        let matches = super::spec::command()
+            .try_get_matches_from(argv)
+            .unwrap_or_else(|error| panic!("{args:?} should parse: {error}"));
+        let Some((group_name, group)) = matches.subcommand() else {
             panic!("{args:?} is not a CLI command");
         };
-        // A CLI launch carries the group's matches (`pane`, `tab`, ...).
-        let (_, group) = command.parts();
+        if group_name == "session" && group.subcommand_name() == Some("attach") {
+            panic!("{args:?} is a launch mode, not a CLI command");
+        }
+        group.clone()
+    }
+
+    /// The sub-matches of `shepr <group> <command> ...`.
+    pub(super) fn command_matches(args: &[&str]) -> clap::ArgMatches {
+        let group = group_matches(args);
         let Some((_, command)) = group.subcommand() else {
             panic!("{args:?} has no subcommand");
         };
@@ -753,14 +872,14 @@ mod tests {
         assert_eq!(invocation.session().as_deref(), Some("work"));
         assert!(matches!(
             invocation.launch,
-            Launch::Cli(CliCommand::Workspace(_))
+            Launch::Cli(command) if matches!(*command, CliCommand::Workspace(_))
         ));
 
         let invocation = parse(&["--session=api", "server", "stop"]);
         assert_eq!(invocation.session().as_deref(), Some("api"));
         assert!(matches!(
             invocation.launch,
-            Launch::Cli(CliCommand::Server(_))
+            Launch::Cli(command) if matches!(*command, CliCommand::Server(_))
         ));
     }
 
@@ -808,6 +927,19 @@ mod tests {
     }
 
     #[test]
+    fn session_command_arguments_are_typed_before_dispatch() {
+        let invocation = parse(&["session", "stop", "--json", "--", "-work"]);
+        let Launch::Cli(command) = invocation.launch else {
+            panic!("session stop should be a typed CLI command");
+        };
+        let CliCommand::Session(SessionCommand::Stop { name, json }) = *command else {
+            panic!("session stop should be a typed CLI command");
+        };
+        assert_eq!(name, "-work");
+        assert!(json);
+    }
+
+    #[test]
     fn session_attach_is_a_launch_into_the_named_session() {
         let invocation = parse(&["session", "attach", "work"]);
         assert_eq!(invocation.session_attach_name().as_deref(), Some("work"));
@@ -843,7 +975,7 @@ mod tests {
             let Launch::Cli(command) = invocation.launch else {
                 panic!("{args:?} is not a CLI command");
             };
-            let error = match super::run(&command, None) {
+            let error = match super::run(command.as_ref(), None) {
                 Err(error) => error,
                 Ok(code) => {
                     panic!("{args:?} unexpectedly returned exit code {code}")

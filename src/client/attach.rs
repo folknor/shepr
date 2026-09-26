@@ -92,11 +92,12 @@ pub(super) struct AttachKeys {
     prefix: KeyCombo,
     detach_after_prefix: Vec<KeyCombo>,
     detach_direct: Vec<KeyCombo>,
-    /// Byte forms of the keys above for coalesced legacy input, which is
-    /// scanned byte by byte. Only single C0 control bytes are matched outside
-    /// a pending prefix, so a scan can never fire inside an escape sequence.
+    /// Byte forms used by tests for coalesced legacy input.
+    #[cfg(test)]
     legacy_prefix: Option<u8>,
+    #[cfg(test)]
     legacy_detach_direct: Vec<u8>,
+    #[cfg(test)]
     legacy_detach_after_prefix: Vec<Vec<u8>>,
 }
 
@@ -120,11 +121,14 @@ impl AttachKeys {
         }
         Self {
             prefix: live.prefix,
+            #[cfg(test)]
             legacy_prefix: legacy_control_byte(live.prefix),
+            #[cfg(test)]
             legacy_detach_direct: detach_direct
                 .iter()
                 .filter_map(|combo| legacy_control_byte(*combo))
                 .collect(),
+            #[cfg(test)]
             legacy_detach_after_prefix: detach_after_prefix
                 .iter()
                 .filter_map(|combo| legacy_key_bytes(*combo))
@@ -143,6 +147,7 @@ impl Default for AttachKeys {
 
 /// The single C0 byte a legacy terminal sends for `combo`, if it has one.
 /// Escape (ctrl+[) is left out: it starts every escape sequence.
+#[cfg(test)]
 fn legacy_control_byte(combo: KeyCombo) -> Option<u8> {
     let (KeyCode::Char(ch), modifiers) = crate::config::normalize_key_combo(combo) else {
         return None;
@@ -160,6 +165,7 @@ fn legacy_control_byte(combo: KeyCombo) -> Option<u8> {
 
 /// The bytes a legacy terminal sends for `combo`: its control byte, or the
 /// text of an unmodified or shifted character.
+#[cfg(test)]
 fn legacy_key_bytes(combo: KeyCombo) -> Option<Vec<u8>> {
     if let Some(byte) = legacy_control_byte(combo) {
         return Some(vec![byte]);
@@ -230,69 +236,33 @@ impl AttachEscapeState {
         }
     }
 
+    pub(super) fn filter_parsed_input(
+        &mut self,
+        data: Vec<u8>,
+        event: &crate::raw_input::RawInputEvent,
+        viewport_rows: u16,
+        mouse_scroll_lines: usize,
+    ) -> AttachInputAction {
+        self.filter_parsed_input_inner(data, event, viewport_rows, mouse_scroll_lines)
+    }
+
+    #[cfg(test)]
     pub(super) fn filter_input(
         &mut self,
         data: Vec<u8>,
         viewport_rows: u16,
         mouse_scroll_lines: usize,
     ) -> AttachInputAction {
-        if crate::raw_input::is_complete_text_bracketed_paste(&data) {
-            return if let Some(prefix) = self.pending_prefix.take() {
-                AttachInputAction::ForwardPair(prefix, data)
-            } else {
-                AttachInputAction::Forward(data)
-            };
+        let mut events = crate::raw_input::parse_raw_input_bytes_sync(&data);
+        if events.len() == 1 {
+            let event = events.remove(0);
+            return self.filter_parsed_input(data, &event, viewport_rows, mouse_scroll_lines);
         }
+        self.filter_coalesced_test_input(&data)
+    }
 
-        if let Some(key) = single_attach_key(&data) {
-            let press = key.kind == KeyEventKind::Press;
-            let is_prefix = crate::config::terminal_key_matches_combo(&key, self.keys.prefix);
-            let is_direct_detach = press && matches_any(&key, &self.keys.detach_direct);
-
-            if let Some(mut prefix) = self.pending_prefix.take() {
-                if is_prefix && !press {
-                    prefix.extend(data);
-                    self.pending_prefix = Some(prefix);
-                    return AttachInputAction::None;
-                }
-                if press && matches_any(&key, &self.keys.detach_after_prefix) {
-                    return AttachInputAction::Detach;
-                }
-                if is_prefix {
-                    return AttachInputAction::Forward(data);
-                }
-                if is_direct_detach {
-                    return AttachInputAction::ForwardThenDetach(prefix);
-                }
-                if let Some(action) = attach_scroll_action(&data, viewport_rows, mouse_scroll_lines)
-                {
-                    return AttachInputAction::ForwardThenSemantic(prefix, action);
-                }
-                prefix.extend(data);
-                return AttachInputAction::Forward(prefix);
-            }
-
-            if is_direct_detach {
-                return AttachInputAction::Detach;
-            }
-            if is_prefix && press {
-                self.pending_prefix = Some(data);
-                return AttachInputAction::None;
-            }
-        }
-
-        if let Some(action) = attach_scroll_action(&data, viewport_rows, mouse_scroll_lines) {
-            return if let Some(prefix) = self.pending_prefix.take() {
-                AttachInputAction::ForwardThenSemantic(prefix, action)
-            } else {
-                AttachInputAction::Semantic(action)
-            };
-        }
-
-        // The host framer normally supplies one complete event. Preserve the legacy
-        // byte path for coalesced plain input used by older terminals. Only a
-        // prefix and direct detach key with a C0 byte form are recognised here;
-        // any other prefix only works as a separate event.
+    #[cfg(test)]
+    fn filter_coalesced_test_input(&mut self, data: &[u8]) -> AttachInputAction {
         let detach_with = |output: Vec<u8>| {
             if output.is_empty() {
                 AttachInputAction::Detach
@@ -301,7 +271,7 @@ impl AttachEscapeState {
             }
         };
         let mut output = Vec::with_capacity(data.len());
-        let mut rest = data.as_slice();
+        let mut rest = data;
         while let Some(&byte) = rest.first() {
             if let Some(prefix) = self.pending_prefix.take() {
                 if self
@@ -312,7 +282,6 @@ impl AttachEscapeState {
                 {
                     return detach_with(output);
                 }
-                // Prefix twice sends one literal prefix.
                 output.extend(prefix);
                 if self.keys.legacy_prefix == Some(byte) {
                     rest = &rest[1..];
@@ -333,12 +302,78 @@ impl AttachEscapeState {
 
         if output.is_empty() {
             AttachInputAction::None
-        } else if let Some(action) =
-            attach_scroll_action(&output, viewport_rows, mouse_scroll_lines)
-        {
-            AttachInputAction::Semantic(action)
         } else {
             AttachInputAction::Forward(output)
+        }
+    }
+
+    fn filter_parsed_input_inner(
+        &mut self,
+        data: Vec<u8>,
+        event: &crate::raw_input::RawInputEvent,
+        viewport_rows: u16,
+        mouse_scroll_lines: usize,
+    ) -> AttachInputAction {
+        if matches!(event, crate::raw_input::RawInputEvent::Paste(_)) {
+            return if let Some(prefix) = self.pending_prefix.take() {
+                AttachInputAction::ForwardPair(prefix, data)
+            } else {
+                AttachInputAction::Forward(data)
+            };
+        }
+
+        if let crate::raw_input::RawInputEvent::Key(key) = event {
+            let press = key.kind == KeyEventKind::Press;
+            let is_prefix = crate::config::terminal_key_matches_combo(key, self.keys.prefix);
+            let is_direct_detach = press && matches_any(key, &self.keys.detach_direct);
+
+            if let Some(mut prefix) = self.pending_prefix.take() {
+                if is_prefix && !press {
+                    prefix.extend(data);
+                    self.pending_prefix = Some(prefix);
+                    return AttachInputAction::None;
+                }
+                if press && matches_any(key, &self.keys.detach_after_prefix) {
+                    return AttachInputAction::Detach;
+                }
+                if is_prefix {
+                    return AttachInputAction::Forward(data);
+                }
+                if is_direct_detach {
+                    return AttachInputAction::ForwardThenDetach(prefix);
+                }
+                if let Some(action) =
+                    attach_scroll_action(event, &data, viewport_rows, mouse_scroll_lines)
+                {
+                    return AttachInputAction::ForwardThenSemantic(prefix, action);
+                }
+                prefix.extend(data);
+                return AttachInputAction::Forward(prefix);
+            }
+
+            if is_direct_detach {
+                return AttachInputAction::Detach;
+            }
+            if is_prefix && press {
+                self.pending_prefix = Some(data);
+                return AttachInputAction::None;
+            }
+        }
+
+        if let Some(action) = attach_scroll_action(event, &data, viewport_rows, mouse_scroll_lines)
+        {
+            return if let Some(prefix) = self.pending_prefix.take() {
+                AttachInputAction::ForwardThenSemantic(prefix, action)
+            } else {
+                AttachInputAction::Semantic(action)
+            };
+        }
+
+        if let Some(mut prefix) = self.pending_prefix.take() {
+            prefix.extend(data);
+            AttachInputAction::Forward(prefix)
+        } else {
+            AttachInputAction::Forward(data)
         }
     }
 
@@ -347,53 +382,37 @@ impl AttachEscapeState {
     }
 }
 
-fn single_attach_key(data: &[u8]) -> Option<crate::input::TerminalKey> {
-    let mut events = crate::raw_input::parse_raw_input_bytes_sync(data);
-    if events.len() != 1 {
-        return None;
-    }
-    match events.pop()? {
-        crate::raw_input::RawInputEvent::Key(key) => Some(key),
-        _ => None,
-    }
-}
-
 pub(super) fn direct_attach_pixel_mouse(
-    data: &[u8],
-    geometry: crate::input::mouse::HostGeometry,
+    event: &crate::raw_input::RawInputEvent,
+    pixels: crate::input::mouse::HostPixels,
 ) -> Option<(
     crate::protocol::ClientMouseKind,
     crate::protocol::ClientMousePosition,
     u8,
 )> {
-    let (x, y) = crate::input::mouse::parse_report(data)?;
-    let (column, row) = geometry.cell(x, y)?;
-    let cell_report = crate::input::mouse::report_at_cell(data, column, row)?;
-    let mut events = crate::raw_input::parse_raw_input_bytes_sync(&cell_report);
-    if events.len() != 1 {
-        return None;
-    }
-    let crate::raw_input::RawInputEvent::Mouse(mouse) = events.pop()? else {
+    let crate::raw_input::RawInputEvent::Mouse(mouse) = event else {
         return None;
     };
+    let (column, row) = pixels.geometry.cell(pixels.x, pixels.y)?;
     Some((
         crate::protocol::ClientMouseKind::from_crossterm(mouse.kind)?,
-        crate::protocol::ClientMousePosition::Pixels { x, y, column, row },
+        crate::protocol::ClientMousePosition::Pixels {
+            x: pixels.x,
+            y: pixels.y,
+            column,
+            row,
+        },
         mouse.modifiers.bits(),
     ))
 }
 
 fn attach_scroll_action(
+    event: &crate::raw_input::RawInputEvent,
     data: &[u8],
     viewport_rows: u16,
     mouse_scroll_lines: usize,
 ) -> Option<AttachSemanticAction> {
-    let mut events = crate::raw_input::parse_raw_input_bytes_sync(data);
-    if events.len() != 1 {
-        return None;
-    }
-
-    match events.pop()? {
+    match event {
         crate::raw_input::RawInputEvent::Mouse(mouse) => match mouse.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 let direction = if mouse.kind == MouseEventKind::ScrollUp {
@@ -890,8 +909,18 @@ mod tests {
     fn direct_attach_pixel_mouse_keeps_pixels_and_semantic_kind() {
         let geometry =
             crate::input::mouse::HostGeometry::new(80, 24, 800, 480).expect("test precondition");
+        let mut events = crate::raw_input::parse_raw_input_bytes_sync(b"\x1b[<0;21;22M");
+        let Some(crate::raw_input::RawInputEvent::Mouse(mouse)) = events.pop() else {
+            panic!("expected parsed pixel mouse");
+        };
+        let pixels = crate::input::mouse::HostPixels {
+            x: 21,
+            y: 22,
+            geometry,
+        };
         let (kind, position, modifiers) =
-            direct_attach_pixel_mouse(b"\x1b[<0;21;22M", geometry).expect("pixel mouse");
+            direct_attach_pixel_mouse(&crate::raw_input::RawInputEvent::Mouse(mouse), pixels)
+                .expect("pixel mouse");
 
         assert_eq!(
             kind,

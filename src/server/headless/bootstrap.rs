@@ -19,13 +19,13 @@ pub fn run_server(config: &config::Config, paths: &config::AppPaths) -> io::Resu
 
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let event_hub = api::EventHub::default();
-    let should_quit = Arc::new(AtomicBool::new(false));
+    let stop_requested = Arc::new(AtomicBool::new(false));
 
     // Start the JSON API socket server.
     let _api_server = match api::start_server_with_stop_control(
         api_tx.clone(),
         event_hub.clone(),
-        Arc::clone(&should_quit),
+        Arc::clone(&stop_requested),
         paths,
     ) {
         Ok(server) => server,
@@ -49,7 +49,7 @@ pub fn run_server(config: &config::Config, paths: &config::AppPaths) -> io::Resu
         seed_startup_workspace_if_empty(&mut app, startup_cwd);
 
         // Create the headless server.
-        let mut server = match HeadlessServer::new(app, Some(_api_server), should_quit) {
+        let mut server = match HeadlessServer::new(app, Some(_api_server), stop_requested) {
             Ok(server) => server,
             Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
                 eprintln!("error: shepr server is already running");

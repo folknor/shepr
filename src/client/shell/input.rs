@@ -140,7 +140,53 @@ impl ClientShellState {
         self.handle_raw_events(crate::raw_input::parse_raw_input_bytes_sync(data))
     }
 
+    #[cfg(test)]
     pub(crate) fn handle_pixel_mouse(
+        &mut self,
+        mut mouse: crossterm::event::MouseEvent,
+        pixels: crate::input::mouse::HostPixels,
+    ) -> ClientShellInput {
+        let Some((column, row)) = pixels.geometry.cell(pixels.x, pixels.y) else {
+            return ClientShellInput::default();
+        };
+        mouse.column = column;
+        mouse.row = row;
+        let mut outcome = ClientShellInput::default();
+        self.begin_input_batch(true, &mut outcome);
+        let previous = self.host_mouse_pixels.replace(pixels);
+        self.handle_raw_event(RawInputEvent::Mouse(mouse), &mut outcome);
+        self.host_mouse_pixels = previous;
+        outcome
+    }
+
+    pub(in crate::client) fn handle_host_input(
+        &mut self,
+        inputs: Vec<super::super::ParsedHostInput>,
+    ) -> ClientShellInput {
+        let mut outcome = ClientShellInput::default();
+        self.begin_input_batch(!inputs.is_empty(), &mut outcome);
+        for input in inputs {
+            if let Some(pixels) = input.pixel_mouse {
+                let RawInputEvent::Mouse(mut mouse) = input.event else {
+                    continue;
+                };
+                let Some((column, row)) = pixels.geometry.cell(pixels.x, pixels.y) else {
+                    continue;
+                };
+                mouse.column = column;
+                mouse.row = row;
+                let previous = self.host_mouse_pixels.replace(pixels);
+                self.handle_raw_event(RawInputEvent::Mouse(mouse), &mut outcome);
+                self.host_mouse_pixels = previous;
+            } else {
+                self.handle_raw_event(input.event, &mut outcome);
+            }
+        }
+        outcome
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handle_pixel_mouse_bytes(
         &mut self,
         data: &[u8],
         geometry: crate::input::mouse::HostGeometry,
@@ -148,20 +194,83 @@ impl ClientShellState {
         let Some((x, y)) = crate::input::mouse::parse_report(data) else {
             return ClientShellInput::default();
         };
-        let Some((column, row)) = geometry.cell(x, y) else {
-            return ClientShellInput::default();
-        };
-        let Some(cell_report) = crate::input::mouse::report_at_cell(data, column, row) else {
-            return ClientShellInput::default();
-        };
-        let events = crate::raw_input::parse_raw_input_bytes_sync(&cell_report);
-        if events.len() != 1 || !matches!(events[0], RawInputEvent::Mouse(_)) {
+        let mut events = crate::raw_input::parse_raw_input_bytes_sync(data);
+        if events.len() != 1 {
             return ClientShellInput::default();
         }
-        self.host_mouse_pixels = Some(crate::input::mouse::HostPixels { x, y, geometry });
-        let outcome = self.handle_raw_events(events);
-        self.host_mouse_pixels = None;
-        outcome
+        let Some(RawInputEvent::Mouse(mouse)) = events.pop() else {
+            return ClientShellInput::default();
+        };
+        self.handle_pixel_mouse(mouse, crate::input::mouse::HostPixels { x, y, geometry })
+    }
+
+    fn begin_input_batch(&mut self, has_events: bool, outcome: &mut ClientShellInput) {
+        if has_events && self.endpoint_error.take().is_some() {
+            self.endpoint_error_deadline = None;
+            outcome.repaint = true;
+        }
+    }
+
+    fn handle_raw_event(&mut self, event: RawInputEvent, outcome: &mut ClientShellInput) {
+        if self.handle_machine_badge_event(&event, outcome) {
+            return;
+        }
+        if let Some(update) = host_theme_update(&event) {
+            push_host_theme_update(&mut outcome.requests, update);
+        }
+        match event {
+            RawInputEvent::Key(key) => self.handle_key(key, outcome),
+            RawInputEvent::Paste(text) => {
+                if self.prepare_committed_text(&text, outcome) {
+                    return;
+                }
+                if self.insert_overlay_text(&text) {
+                    outcome.repaint = true;
+                } else if self.overlay.is_none() && self.mode == ClientShellMode::Terminal {
+                    self.push_focused_paste(text, outcome);
+                }
+            }
+            RawInputEvent::Mouse(mouse) => self.handle_mouse(mouse, outcome),
+            RawInputEvent::OuterFocusGained => {
+                self.outer_focused = Some(true);
+                outcome.query_host_appearance = true;
+                if self.config.redraw_on_focus_gained {
+                    outcome.repaint = true;
+                    outcome.full_redraw = true;
+                }
+                outcome
+                    .requests
+                    .push(ClientMessage::ClientShellFocus { focused: true });
+            }
+            RawInputEvent::OuterFocusLost => {
+                self.outer_focused = Some(false);
+                self.release_input_leases(outcome);
+                outcome
+                    .requests
+                    .push(ClientMessage::ClientShellFocus { focused: false });
+            }
+            RawInputEvent::HostDefaultColor {
+                kind: crate::terminal_theme::DefaultColorKind::Background,
+                color,
+            } => {
+                if self.host_background != Some(color) {
+                    self.host_background = Some(color);
+                    outcome.repaint = true;
+                }
+            }
+            RawInputEvent::HostColorSchemeChanged(_) => {
+                // A dark/light switch changes the host's default and palette
+                // colours too. Re-query them so panes and the selection
+                // highlight (`host_background`) follow. Direct attach does the
+                // same; the stdin framer arms itself for the replies whenever
+                // it tracks scheme changes.
+                outcome.query_host_theme = true;
+            }
+            RawInputEvent::HostDefaultColor { .. }
+            | RawInputEvent::HostPaletteColors { .. }
+            | RawInputEvent::HostCellSizeReport { .. }
+            | RawInputEvent::Unsupported => {}
+        }
     }
 
     fn prepare_committed_text(&mut self, text: &str, outcome: &mut ClientShellInput) -> bool {
@@ -181,72 +290,12 @@ impl ClientShellState {
         false
     }
 
+    #[cfg(test)]
     pub(crate) fn handle_raw_events(&mut self, events: Vec<RawInputEvent>) -> ClientShellInput {
         let mut outcome = ClientShellInput::default();
-        if !events.is_empty() && self.endpoint_error.take().is_some() {
-            self.endpoint_error_deadline = None;
-            outcome.repaint = true;
-        }
+        self.begin_input_batch(!events.is_empty(), &mut outcome);
         for event in events {
-            if self.handle_machine_badge_event(&event, &mut outcome) {
-                continue;
-            }
-            if let Some(update) = host_theme_update(&event) {
-                push_host_theme_update(&mut outcome.requests, update);
-            }
-            match event {
-                RawInputEvent::Key(key) => self.handle_key(key, &mut outcome),
-                RawInputEvent::Paste(text) => {
-                    if self.prepare_committed_text(&text, &mut outcome) {
-                        continue;
-                    }
-                    if self.insert_overlay_text(&text) {
-                        outcome.repaint = true;
-                    } else if self.overlay.is_none() && self.mode == ClientShellMode::Terminal {
-                        self.push_focused_paste(text, &mut outcome);
-                    }
-                }
-                RawInputEvent::Mouse(mouse) => self.handle_mouse(mouse, &mut outcome),
-                RawInputEvent::OuterFocusGained => {
-                    self.outer_focused = Some(true);
-                    outcome.query_host_appearance = true;
-                    if self.config.redraw_on_focus_gained {
-                        outcome.repaint = true;
-                        outcome.full_redraw = true;
-                    }
-                    outcome
-                        .requests
-                        .push(ClientMessage::ClientShellFocus { focused: true });
-                }
-                RawInputEvent::OuterFocusLost => {
-                    self.outer_focused = Some(false);
-                    self.release_input_leases(&mut outcome);
-                    outcome
-                        .requests
-                        .push(ClientMessage::ClientShellFocus { focused: false });
-                }
-                RawInputEvent::HostDefaultColor {
-                    kind: crate::terminal_theme::DefaultColorKind::Background,
-                    color,
-                } => {
-                    if self.host_background != Some(color) {
-                        self.host_background = Some(color);
-                        outcome.repaint = true;
-                    }
-                }
-                RawInputEvent::HostColorSchemeChanged(_) => {
-                    // A dark/light switch changes the host's default and palette
-                    // colours too. Re-query them so panes and the selection
-                    // highlight (`host_background`) follow. Direct attach does the
-                    // same; the stdin framer arms itself for the replies whenever
-                    // it tracks scheme changes.
-                    outcome.query_host_theme = true;
-                }
-                RawInputEvent::HostDefaultColor { .. }
-                | RawInputEvent::HostPaletteColors { .. }
-                | RawInputEvent::HostCellSizeReport { .. }
-                | RawInputEvent::Unsupported => {}
-            }
+            self.handle_raw_event(event, &mut outcome);
         }
         outcome
     }

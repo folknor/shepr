@@ -4,6 +4,7 @@ use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 ///
 /// This directly extracts events without going through a channel, making it
 /// suitable for synchronous use.
+#[cfg(test)]
 pub fn parse_raw_input_bytes_sync(data: &[u8]) -> Vec<RawInputEvent> {
     let mut framer = RawInputFramer::default();
     let mut events = framer.push(data);
@@ -22,8 +23,8 @@ pub(crate) const RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS: i32 = 10;
 pub(crate) const MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS: i32 = 150;
 pub(crate) const GHOSTTY_COLOR_SCHEME_DARK_REPORT: &[u8] = b"\x1b[?997;1n";
 pub(crate) const GHOSTTY_COLOR_SCHEME_LIGHT_REPORT: &[u8] = b"\x1b[?997;2n";
-const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
-const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
+pub(crate) const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
+pub(crate) const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
 
 /// Largest bracketed paste body the framer holds while waiting for its
 /// terminator. Past this the held part is closed and delivered as one paste and
@@ -103,6 +104,77 @@ pub enum RawInputEvent {
     Unsupported,
 }
 
+#[derive(Debug)]
+pub(crate) struct FramedRawInputEvent {
+    pub(crate) raw: Vec<u8>,
+    pub(crate) event: RawInputEvent,
+}
+
+#[derive(Default)]
+pub(crate) struct HostKeyboardProbeResponses {
+    pub(crate) flags: Option<u16>,
+    pub(crate) primary_device_attributes: bool,
+}
+
+enum HostKeyboardProbeResponse {
+    Flags(u16),
+    PrimaryDeviceAttributes,
+}
+
+/// Removes completed responses to the startup keyboard probe while preserving
+/// every other host byte. Opaque strings use the same terminator scanner as the
+/// normal input framer, so a response-shaped payload cannot escape a paste or
+/// control string.
+pub(crate) fn consume_host_keyboard_probe_responses(
+    buffered_input: &mut Vec<u8>,
+    responses: &mut HostKeyboardProbeResponses,
+) {
+    let mut offset = 0;
+    while offset < buffered_input.len() {
+        if buffered_input[offset..].starts_with(BRACKETED_PASTE_START) {
+            let payload_start = offset + BRACKETED_PASTE_START.len();
+            let Some(relative_end) = buffered_input[payload_start..]
+                .windows(BRACKETED_PASTE_END.len())
+                .position(|bytes| bytes == BRACKETED_PASTE_END)
+            else {
+                break;
+            };
+            offset = payload_start + relative_end + BRACKETED_PASTE_END.len();
+            continue;
+        }
+        if let Some(control) = control_string(&buffered_input[offset..]) {
+            let ControlString::Complete { len, .. } = control else {
+                break;
+            };
+            offset += len;
+            continue;
+        }
+        if !buffered_input[offset..].starts_with(b"\x1b[?") {
+            offset += 1;
+            continue;
+        }
+
+        let Some(sequence_len) = complete_escape_sequence_len(&buffered_input[offset..]) else {
+            break;
+        };
+        let end = offset + sequence_len;
+        let response = parse_host_keyboard_probe_response(&buffered_input[offset..end]);
+        match response {
+            Some(HostKeyboardProbeResponse::Flags(flags)) => {
+                if !responses.primary_device_attributes {
+                    responses.flags = Some(flags);
+                }
+                buffered_input.drain(offset..end);
+            }
+            Some(HostKeyboardProbeResponse::PrimaryDeviceAttributes) => {
+                responses.primary_device_attributes = true;
+                buffered_input.drain(offset..end);
+            }
+            _ => offset += 1,
+        }
+    }
+}
+
 /// A content-free name for an input event, for logging.
 fn raw_input_event_kind(event: &RawInputEvent) -> &'static str {
     match event {
@@ -125,23 +197,81 @@ pub(crate) struct RawInputFramer {
 }
 
 impl RawInputFramer {
+    #[cfg(test)]
     pub(crate) fn push(&mut self, data: &[u8]) -> Vec<RawInputEvent> {
-        Self::events_from_chunks(self.byte_framer.push(data))
+        self.push_framed(data)
+            .into_iter()
+            .map(|input| input.event)
+            .collect()
     }
 
+    #[cfg(test)]
     pub(crate) fn flush_timeout(&mut self) -> Vec<RawInputEvent> {
-        Self::events_from_chunks(self.byte_framer.flush_timeout())
+        self.flush_timeout_framed()
+            .into_iter()
+            .map(|input| input.event)
+            .collect()
     }
 
-    fn events_from_chunks(chunks: Vec<Vec<u8>>) -> Vec<RawInputEvent> {
+    pub(crate) fn push_framed(&mut self, data: &[u8]) -> Vec<FramedRawInputEvent> {
+        Self::framed_events_from_chunks(self.byte_framer.push(data))
+    }
+
+    pub(crate) fn flush_timeout_framed(&mut self) -> Vec<FramedRawInputEvent> {
+        Self::framed_events_from_chunks(self.byte_framer.flush_timeout())
+    }
+
+    pub(crate) fn for_host_input() -> Self {
+        Self {
+            byte_framer: RawInputByteFramer::for_host_input(),
+        }
+    }
+
+    pub(crate) fn set_host_escape_disambiguation_active(&mut self, active: bool) {
+        self.byte_framer
+            .set_host_escape_disambiguation_active(active);
+    }
+
+    pub(crate) fn host_color_query_sent(&mut self) {
+        self.byte_framer.host_color_query_sent();
+    }
+
+    pub(crate) fn host_cell_size_query_sent(&mut self) {
+        self.byte_framer.host_cell_size_query_sent();
+    }
+
+    pub(crate) fn enable_host_color_scheme_change_tracking(&mut self) {
+        self.byte_framer.enable_host_color_scheme_change_tracking();
+    }
+
+    pub(crate) fn enable_host_appearance_query_on_focus(&mut self) {
+        self.byte_framer.enable_host_appearance_query_on_focus();
+    }
+
+    pub(crate) fn has_pending_input(&self) -> bool {
+        self.byte_framer.has_pending_input()
+    }
+
+    pub(crate) fn has_pending_lone_escape(&self) -> bool {
+        self.byte_framer.has_pending_lone_escape()
+    }
+
+    pub(crate) fn has_pending_incomplete_mouse_sequence(&self) -> bool {
+        self.byte_framer.has_pending_incomplete_mouse_sequence()
+    }
+
+    fn framed_events_from_chunks(chunks: Vec<Vec<u8>>) -> Vec<FramedRawInputEvent> {
         chunks
             .into_iter()
             .filter_map(|chunk| {
                 if chunk.as_slice() == [ESC] {
-                    return Some(RawInputEvent::Key(TerminalKey::new(
-                        crossterm::event::KeyCode::Esc,
-                        KeyModifiers::empty(),
-                    )));
+                    return Some(FramedRawInputEvent {
+                        raw: chunk,
+                        event: RawInputEvent::Key(TerminalKey::new(
+                            crossterm::event::KeyCode::Esc,
+                            KeyModifiers::empty(),
+                        )),
+                    });
                 }
                 extract_one_event(&chunk).map(|(event, _consumed)| {
                     // Length and kind only: the bytes and the parsed key are
@@ -152,7 +282,7 @@ impl RawInputFramer {
                         kind = raw_input_event_kind(&event),
                         "raw input event parsed"
                     );
-                    event
+                    FramedRawInputEvent { raw: chunk, event }
                 })
             })
             .collect()
@@ -699,31 +829,37 @@ fn plausible_control_string_tail(family: ControlStringFamily, buffer: &[u8]) -> 
     }
 }
 
-pub(crate) fn events_require_host_surface_redraw(
-    events: &[RawInputEvent],
+pub(crate) fn events_require_host_surface_redraw<'a>(
+    events: impl IntoIterator<Item = &'a RawInputEvent>,
     redraw_on_focus_gained: bool,
 ) -> bool {
     redraw_on_focus_gained
         && events
-            .iter()
+            .into_iter()
             .any(|event| matches!(event, RawInputEvent::OuterFocusGained))
 }
 
-pub(crate) fn events_require_host_mode_refresh(events: &[RawInputEvent]) -> bool {
+pub(crate) fn events_require_host_mode_refresh<'a>(
+    events: impl IntoIterator<Item = &'a RawInputEvent>,
+) -> bool {
     events
-        .iter()
+        .into_iter()
         .any(|event| matches!(event, RawInputEvent::OuterFocusGained))
 }
 
-pub(crate) fn events_require_host_terminal_appearance_query(events: &[RawInputEvent]) -> bool {
+pub(crate) fn events_require_host_terminal_appearance_query<'a>(
+    events: impl IntoIterator<Item = &'a RawInputEvent>,
+) -> bool {
     events
-        .iter()
+        .into_iter()
         .any(|event| matches!(event, RawInputEvent::OuterFocusGained))
 }
 
-pub(crate) fn events_require_host_terminal_theme_query(events: &[RawInputEvent]) -> bool {
+pub(crate) fn events_require_host_terminal_theme_query<'a>(
+    events: impl IntoIterator<Item = &'a RawInputEvent>,
+) -> bool {
     events
-        .iter()
+        .into_iter()
         .any(|event| matches!(event, RawInputEvent::HostColorSchemeChanged(_)))
 }
 
@@ -845,6 +981,25 @@ fn parse_host_cell_size_report(buffer: &[u8]) -> Option<(u32, u32)> {
         return None;
     }
     Some((width_px, height_px))
+}
+
+fn parse_host_keyboard_probe_response(buffer: &[u8]) -> Option<HostKeyboardProbeResponse> {
+    let body = buffer.strip_prefix(b"\x1b[?")?;
+    let (final_byte, parameters) = body.split_last()?;
+    match final_byte {
+        b'u' if !parameters.is_empty() && parameters.iter().all(u8::is_ascii_digit) => {
+            let flags = std::str::from_utf8(parameters).ok()?.parse().ok()?;
+            Some(HostKeyboardProbeResponse::Flags(flags))
+        }
+        b'c' if !parameters.is_empty()
+            && parameters
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || *byte == b';') =>
+        {
+            Some(HostKeyboardProbeResponse::PrimaryDeviceAttributes)
+        }
+        _ => None,
+    }
 }
 
 fn starts_with_incomplete_default_color_response(buffer: &[u8]) -> bool {

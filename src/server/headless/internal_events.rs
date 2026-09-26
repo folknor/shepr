@@ -22,9 +22,7 @@ impl HeadlessServer {
         // help with shells that catch the signal and exit with a status code.
         // Leave the layout as it is for the final save; the process is about
         // to exit anyway.
-        if matches!(ev, AppEvent::PaneDied { .. })
-            && self.signal_quit_requested.load(Ordering::Acquire)
-        {
+        if matches!(ev, AppEvent::PaneDied { .. }) && self.lifecycle.signal_quit_requested() {
             return false;
         }
         match &ev {
@@ -98,7 +96,7 @@ impl HeadlessServer {
             let (had_event, batch_changed) =
                 self.drain_internal_events_with_forwarding_up_to(crate::app::APP_EVENT_DRAIN_LIMIT);
             changed |= batch_changed;
-            if !had_event || self.should_quit.load(Ordering::Acquire) {
+            if !had_event || self.lifecycle.stop_requested(self.app.state.should_quit) {
                 break;
             }
         }

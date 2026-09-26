@@ -15,59 +15,145 @@ const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const PANE_SHELL_READINESS_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_AGENT_START_TIMEOUT_MS: u64 = 30_000;
 
-pub(super) fn run_agent_command(
-    matches: &ArgMatches,
-    config: Option<crate::config::Config>,
-    paths: &super::target::CliContext,
-) -> std::io::Result<i32> {
-    match matches.subcommand() {
-        Some(("list", _)) => agent_list(paths),
-        Some(("get", matches)) => agent_get(paths, required(matches, "target")),
-        Some(("read", matches)) => agent_read(paths, read_params(matches)),
-        Some(("send-keys", matches)) => agent_send_keys(
-            paths,
-            AgentSendKeysParams {
-                target: required(matches, "target"),
-                keys: values::<String>(matches, "key"),
-            },
-        ),
-        Some(("prompt", matches)) => agent_prompt(paths, prompt_params(matches)),
-        Some(("rename", matches)) => agent_rename(
-            paths,
-            AgentRenameParams {
-                target: required(matches, "target"),
-                name: string(matches, "name"),
-            },
-        ),
-        Some(("focus", matches)) => agent_focus(paths, required(matches, "target")),
-        Some(("wait", matches)) => agent_wait(
-            paths,
-            AgentWaitParams {
-                target: required(matches, "target"),
-                until: values::<AgentStatus>(matches, "until"),
-                timeout_ms: value::<u64>(matches, "timeout"),
-            },
-        ),
-        Some(("attach", matches)) => agent_attach(
-            &required(matches, "target"),
-            flag(matches, "takeover"),
-            config,
-            paths,
-        ),
-        Some(("start", matches)) => agent_start(paths, matches),
-        Some(("explain", matches)) => agent_explain(paths, matches),
-        _ => Ok(super::missing_subcommand()),
+#[derive(Clone)]
+pub(crate) enum Command {
+    List,
+    Get { target: String },
+    Read(AgentReadParams),
+    SendKeys(AgentSendKeysParams),
+    Prompt(AgentPromptParams),
+    Rename(AgentRenameParams),
+    Focus { target: String },
+    Wait(AgentWaitParams),
+    Attach { target: String, takeover: bool },
+    Start(AgentStartArgs),
+    Explain(ExplainArgs),
+    Invalid,
+}
+
+#[derive(Clone)]
+pub(crate) struct AgentStartArgs {
+    name: String,
+    kind: String,
+    pane_id: String,
+    timeout_ms: Option<u64>,
+    agent_args: Vec<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ExplainArgs {
+    target: Option<String>,
+    file: Option<String>,
+    agent: Option<String>,
+    json: bool,
+    verbose: bool,
+}
+
+impl Command {
+    pub(super) fn name(&self) -> &'static str {
+        match self {
+            Self::List => "list",
+            Self::Get { .. } => "get",
+            Self::Read(_) => "read",
+            Self::SendKeys(_) => "send-keys",
+            Self::Prompt(_) => "prompt",
+            Self::Rename(_) => "rename",
+            Self::Focus { .. } => "focus",
+            Self::Wait(_) => "wait",
+            Self::Attach { .. } => "attach",
+            Self::Start(_) => "start",
+            Self::Explain(_) => "explain",
+            Self::Invalid => "",
+        }
+    }
+
+    pub(super) fn is_api_command(&self) -> bool {
+        match self {
+            Self::List
+            | Self::Get { .. }
+            | Self::Read(_)
+            | Self::SendKeys(_)
+            | Self::Prompt(_)
+            | Self::Rename(_)
+            | Self::Focus { .. }
+            | Self::Wait(_)
+            | Self::Start(_) => true,
+            Self::Explain(args) => args.file.is_none(),
+            Self::Attach { .. } | Self::Invalid => false,
+        }
     }
 }
 
-fn agent_explain(paths: &super::target::CliContext, matches: &ArgMatches) -> std::io::Result<i32> {
-    // The spec enforces the two forms: `<TARGET>` alone, or `--file` together
-    // with `--agent`.
-    let json = flag(matches, "json") || string(matches, "format").as_deref() == Some("json");
-    let verbose = flag(matches, "verbose");
+pub(super) fn parse(matches: &ArgMatches) -> Command {
+    match matches.subcommand() {
+        Some(("list", _)) => Command::List,
+        Some(("get", command)) => Command::Get {
+            target: required(command, "target"),
+        },
+        Some(("read", command)) => Command::Read(read_params(command)),
+        Some(("send-keys", command)) => Command::SendKeys(AgentSendKeysParams {
+            target: required(command, "target"),
+            keys: values::<String>(command, "key"),
+        }),
+        Some(("prompt", command)) => Command::Prompt(prompt_params(command)),
+        Some(("rename", command)) => Command::Rename(AgentRenameParams {
+            target: required(command, "target"),
+            name: string(command, "name"),
+        }),
+        Some(("focus", command)) => Command::Focus {
+            target: required(command, "target"),
+        },
+        Some(("wait", command)) => Command::Wait(AgentWaitParams {
+            target: required(command, "target"),
+            until: values::<AgentStatus>(command, "until"),
+            timeout_ms: value::<u64>(command, "timeout"),
+        }),
+        Some(("attach", command)) => Command::Attach {
+            target: required(command, "target"),
+            takeover: flag(command, "takeover"),
+        },
+        Some(("start", command)) => Command::Start(AgentStartArgs {
+            name: required(command, "name"),
+            kind: required(command, "kind"),
+            pane_id: required(command, "pane"),
+            timeout_ms: value::<u64>(command, "timeout"),
+            agent_args: values::<String>(command, "agent_args"),
+        }),
+        Some(("explain", command)) => Command::Explain(ExplainArgs {
+            target: string(command, "target"),
+            file: string(command, "file"),
+            agent: string(command, "agent"),
+            json: flag(command, "json") || string(command, "format").as_deref() == Some("json"),
+            verbose: flag(command, "verbose"),
+        }),
+        _ => Command::Invalid,
+    }
+}
 
-    let explain = if let Some(path) = string(matches, "file") {
-        let agent_label = required(matches, "agent");
+pub(super) fn run_agent_command(
+    command: Command,
+    config: Option<crate::config::Config>,
+    paths: &super::target::CliContext,
+) -> std::io::Result<i32> {
+    match command {
+        Command::List => agent_list(paths),
+        Command::Get { target } => agent_get(paths, target),
+        Command::Read(params) => agent_read(paths, params),
+        Command::SendKeys(params) => agent_send_keys(paths, params),
+        Command::Prompt(params) => agent_prompt(paths, params),
+        Command::Rename(params) => agent_rename(paths, params),
+        Command::Focus { target } => agent_focus(paths, target),
+        Command::Wait(params) => agent_wait(paths, params),
+        Command::Attach { target, takeover } => agent_attach(&target, takeover, config, paths),
+        Command::Start(args) => agent_start(paths, args),
+        Command::Explain(args) => agent_explain(paths, args),
+        Command::Invalid => Ok(super::missing_subcommand()),
+    }
+}
+
+fn agent_explain(paths: &super::target::CliContext, args: ExplainArgs) -> std::io::Result<i32> {
+    let explain = if let Some(path) = args.file {
+        let agent_label = args.agent.unwrap_or_default();
         let content = match std::fs::read_to_string(&path) {
             Ok(content) => content,
             Err(err) => {
@@ -93,7 +179,7 @@ fn agent_explain(paths: &super::target::CliContext, matches: &ArgMatches) -> std
             &Request {
                 id: "cli:agent:explain".into(),
                 method: Method::AgentExplain(AgentTarget {
-                    target: required(matches, "target"),
+                    target: args.target.unwrap_or_default(),
                 }),
             },
         )?;
@@ -107,10 +193,10 @@ fn agent_explain(paths: &super::target::CliContext, matches: &ArgMatches) -> std
         response["result"]["explain"].clone()
     };
 
-    if json {
+    if args.json {
         println!("{explain}");
     } else {
-        print_agent_explain_text(&explain, verbose);
+        print_agent_explain_text(&explain, args.verbose);
     }
     Ok(0)
 }
@@ -215,11 +301,14 @@ fn matched_rule_region_preview<'a>(
         .filter(|preview| !preview.is_empty())
 }
 
-fn agent_start(paths: &super::target::CliContext, matches: &ArgMatches) -> std::io::Result<i32> {
-    let name = &required(matches, "name");
-    let kind = required(matches, "kind");
-    let pane_id = required(matches, "pane");
-    let timeout_ms = value::<u64>(matches, "timeout");
+fn agent_start(paths: &super::target::CliContext, args: AgentStartArgs) -> std::io::Result<i32> {
+    let AgentStartArgs {
+        name,
+        kind,
+        pane_id,
+        timeout_ms,
+        agent_args,
+    } = args;
     // `--kind` is limited to the agent labels by the spec; this maps the label
     // to its canonical spelling for comparison with the detected agent.
     let Some(expected_kind) = crate::detect::parse_agent_label(&kind) else {
@@ -228,7 +317,6 @@ fn agent_start(paths: &super::target::CliContext, matches: &ArgMatches) -> std::
         )));
     };
     let expected_kind = crate::detect::agent_label(expected_kind).to_string();
-    let agent_args = values::<String>(matches, "agent_args");
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_AGENT_START_TIMEOUT_MS));
     let retryable_timeout = timeout > crate::app::AGENT_START_SETTLE_DELAY
         && timeout <= crate::app::MAX_AGENT_START_TIMEOUT;
@@ -294,11 +382,11 @@ fn agent_start(paths: &super::target::CliContext, matches: &ArgMatches) -> std::
         .as_deref()
         .is_some_and(|pinned| pinned != expected_terminal_id)
     {
-        return super::print_response(&agent_name_lost_error("cli:agent:start", name));
+        return super::print_response(&agent_name_lost_error("cli:agent:start", &name));
     }
     let waited = wait_for_named_agent(
         paths,
-        name,
+        &name,
         &pane_id,
         timeout,
         &expected_kind,
@@ -664,12 +752,18 @@ fn agent_read(paths: &super::target::CliContext, params: AgentReadParams) -> std
 
 #[cfg(test)]
 mod parse_tests {
-    use super::super::tests::command_matches;
+    use super::super::tests::group_matches;
     use crate::api::schema::{AgentStatus, ReadFormat, ReadSource};
+
+    fn command(args: &[&str]) -> super::Command {
+        super::parse(&group_matches(args))
+    }
 
     #[test]
     fn read_defaults_and_ansi_forms() {
-        let params = super::read_params(&command_matches(&["agent", "read", "worker"]));
+        let super::Command::Read(params) = command(&["agent", "read", "worker"]) else {
+            panic!("expected agent read");
+        };
         assert_eq!(params.target, "worker");
         assert_eq!(params.source, ReadSource::Recent);
         assert_eq!(params.format, ReadFormat::Text);
@@ -685,7 +779,9 @@ mod parse_tests {
                 "7",
             ];
             args.extend_from_slice(form);
-            let params = super::read_params(&command_matches(&args));
+            let super::Command::Read(params) = command(&args) else {
+                panic!("expected agent read");
+            };
             assert_eq!(params.source, ReadSource::Detection);
             assert_eq!(params.lines, Some(7));
             assert_eq!(params.format, ReadFormat::Ansi);
@@ -695,7 +791,7 @@ mod parse_tests {
 
     #[test]
     fn prompt_wait_options_only_with_wait() {
-        let params = super::prompt_params(&command_matches(&[
+        let super::Command::Prompt(params) = command(&[
             "agent",
             "prompt",
             "worker",
@@ -706,19 +802,23 @@ mod parse_tests {
             "--until=blocked",
             "--timeout",
             "500",
-        ]));
+        ]) else {
+            panic!("expected agent prompt");
+        };
         assert_eq!(params.text, "--help me");
         let wait = params.wait.expect("test precondition");
         assert_eq!(wait.until, vec![AgentStatus::Idle, AgentStatus::Blocked]);
         assert_eq!(wait.timeout_ms, Some(500));
 
-        let params = super::prompt_params(&command_matches(&["agent", "prompt", "w", "hi"]));
+        let super::Command::Prompt(params) = command(&["agent", "prompt", "w", "hi"]) else {
+            panic!("expected agent prompt");
+        };
         assert!(params.wait.is_none());
     }
 
     #[test]
     fn start_collects_agent_args_after_separator() {
-        let start = command_matches(&[
+        let super::Command::Start(start) = command(&[
             "agent",
             "start",
             "repro",
@@ -730,12 +830,11 @@ mod parse_tests {
             "--resume",
             "--session",
             "x",
-        ]);
-        assert_eq!(super::required(&start, "name"), "repro");
-        assert_eq!(super::required(&start, "pane"), "p1");
-        assert_eq!(
-            super::values::<String>(&start, "agent_args"),
-            vec!["--resume", "--session", "x"]
-        );
+        ]) else {
+            panic!("expected agent start");
+        };
+        assert_eq!(start.name, "repro");
+        assert_eq!(start.pane_id, "p1");
+        assert_eq!(start.agent_args, vec!["--resume", "--session", "x"]);
     }
 }

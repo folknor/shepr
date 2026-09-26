@@ -1,26 +1,57 @@
-use clap::ArgMatches;
-
 use crate::api::schema::IntegrationTarget;
 
 use super::matches;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Command {
+    Install { target: String },
+    Uninstall { target: String },
+    Status { outdated_only: bool },
+    Invalid,
+}
+
+impl Command {
+    pub(super) fn name(&self) -> &'static str {
+        match self {
+            Self::Install { .. } => "install",
+            Self::Uninstall { .. } => "uninstall",
+            Self::Status { .. } => "status",
+            Self::Invalid => "",
+        }
+    }
+}
+
+pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
+    match matches.subcommand() {
+        Some(("install", command)) => Command::Install {
+            target: matches::required(command, "target"),
+        },
+        Some(("uninstall", command)) => Command::Uninstall {
+            target: matches::required(command, "target"),
+        },
+        Some(("status", command)) => Command::Status {
+            outdated_only: matches::flag(command, "outdated-only"),
+        },
+        _ => Command::Invalid,
+    }
+}
 
 /// `shepr integration <install|uninstall|status>`. The clap spec
 /// (`integration_command` in `spec.rs`) has already required a subcommand and
 /// restricted `TARGET` to the known labels, so usage errors and help never
 /// reach this function.
 pub(super) fn run_integration_command(
-    matches: &ArgMatches,
+    command: Command,
     _paths: &crate::config::AppPaths,
 ) -> std::io::Result<i32> {
     let integration_paths = crate::integration::AgentIntegrationPaths::resolve();
-    match matches.subcommand() {
-        Some(("install", matches)) => Ok(integration_install(matches, &integration_paths)),
-        Some(("uninstall", matches)) => Ok(integration_uninstall(matches, &integration_paths)),
-        Some(("status", matches)) => Ok(integration_status(
-            &integration_paths,
-            matches::flag(matches, "outdated-only"),
-        )),
-        _ => Ok(super::missing_subcommand()),
+    match command {
+        Command::Install { target } => Ok(integration_install(&target, &integration_paths)),
+        Command::Uninstall { target } => Ok(integration_uninstall(&target, &integration_paths)),
+        Command::Status { outdated_only } => {
+            Ok(integration_status(&integration_paths, outdated_only))
+        }
+        Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 
@@ -69,23 +100,17 @@ fn describe_integration_state(
     }
 }
 
-fn integration_install(
-    matches: &ArgMatches,
-    paths: &crate::integration::AgentIntegrationPaths,
-) -> i32 {
-    let Some(target) = command_target(matches) else {
-        return unknown_target(matches);
+fn integration_install(label: &str, paths: &crate::integration::AgentIntegrationPaths) -> i32 {
+    let Some(target) = target_from_label(label) else {
+        return unknown_target(label);
     };
 
     report_outcome(crate::integration::install_target(paths, target))
 }
 
-fn integration_uninstall(
-    matches: &ArgMatches,
-    paths: &crate::integration::AgentIntegrationPaths,
-) -> i32 {
-    let Some(target) = command_target(matches) else {
-        return unknown_target(matches);
+fn integration_uninstall(label: &str, paths: &crate::integration::AgentIntegrationPaths) -> i32 {
+    let Some(target) = target_from_label(label) else {
+        return unknown_target(label);
     };
 
     report_outcome(crate::integration::uninstall_target(paths, target))
@@ -108,15 +133,8 @@ fn report_outcome(outcome: std::io::Result<Vec<String>>) -> i32 {
 
 /// Only reachable if the spec's possible values and [`target_from_label`]
 /// disagree; the test below keeps them in step.
-fn unknown_target(matches: &ArgMatches) -> i32 {
-    super::usage_error(&format!(
-        "unknown integration target: {}",
-        matches::required(matches, "target")
-    ))
-}
-
-fn command_target(matches: &ArgMatches) -> Option<IntegrationTarget> {
-    target_from_label(&matches::required(matches, "target"))
+fn unknown_target(target: &str) -> i32 {
+    super::usage_error(&format!("unknown integration target: {target}"))
 }
 
 /// Maps a `TARGET` value back to its target. The labels are the ones the spec
@@ -138,9 +156,8 @@ mod tests {
         for action in ["install", "uninstall"] {
             for target in IntegrationTarget::ALL {
                 let label = crate::integration::integration_target_label(target);
-                let matches = crate::cli::tests::command_matches(&["integration", action, label]);
                 assert_eq!(
-                    command_target(&matches),
+                    target_from_label(label),
                     Some(target),
                     "{action} {label} does not resolve"
                 );
@@ -163,10 +180,20 @@ mod tests {
 
     #[test]
     fn status_reads_the_outdated_only_flag() {
-        let status = crate::cli::tests::command_matches(&["integration", "status"]);
-        assert!(!matches::flag(&status, "outdated-only"));
+        let status = crate::cli::tests::group_matches(&["integration", "status"]);
+        assert_eq!(
+            super::parse(&status),
+            Command::Status {
+                outdated_only: false
+            }
+        );
         let status =
-            crate::cli::tests::command_matches(&["integration", "status", "--outdated-only"]);
-        assert!(matches::flag(&status, "outdated-only"));
+            crate::cli::tests::group_matches(&["integration", "status", "--outdated-only"]);
+        assert_eq!(
+            super::parse(&status),
+            Command::Status {
+                outdated_only: true
+            }
+        );
     }
 }

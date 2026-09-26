@@ -72,29 +72,7 @@ pub(super) fn metadata_tokens(
         .collect()
 }
 
-/// `--cwd PATH` as the server must receive it. The server resolves a relative
-/// path against its own working directory, which is wherever it was started,
-/// so the CLI makes the path absolute against the caller's directory first
-/// (after expanding a leading `~`). With `--machine` the path names a
-/// directory on that machine, which the local directory says nothing about,
-/// so it must already be absolute.
-pub(super) fn cwd(
-    matches: &ArgMatches,
-    paths: &super::target::CliContext,
-) -> Result<Option<String>, String> {
-    let Some(raw) = string(matches, "cwd") else {
-        return Ok(None);
-    };
-    resolve_cwd(
-        &raw,
-        paths.is_remote(),
-        paths.home_dir(),
-        paths.current_dir(),
-    )
-    .map(Some)
-}
-
-fn resolve_cwd(
+pub(super) fn resolve_cwd(
     raw: &str,
     remote: bool,
     home_dir: Option<&std::path::Path>,

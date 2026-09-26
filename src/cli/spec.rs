@@ -1,8 +1,8 @@
-//! The clap model of the whole command line. This is the only parser: `main`
-//! parses argv with [`command`] once, and every subcommand handler reads its
-//! values from the resulting `ArgMatches`. Value validation (numbers, enums,
-//! `KEY=VALUE` pairs) lives here as value parsers, so a bad value is a usage
-//! error (exit 2) instead of a transport error.
+//! The clap model of the whole command line. This is the only argv parser:
+//! `main` parses argv with [`command`] once, then `cli` converts command
+//! matches into typed arguments before dispatching to a handler. Value
+//! validation (numbers, enums, `KEY=VALUE` pairs) lives here as value parsers,
+//! so a bad value is a usage error (exit 2) instead of a transport error.
 
 use std::ffi::OsStr;
 
@@ -17,113 +17,6 @@ use crate::api::schema::{
 };
 
 mod machine;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CommandLocality {
-    Api,
-    Local,
-}
-
-/// Whether a parsed CLI command can be sent to another host through `--machine`.
-/// Commands default to local so adding a command cannot accidentally gain
-/// remote execution permission.
-pub(super) fn locality(name: &str, matches: &clap::ArgMatches) -> CommandLocality {
-    let subcommand = matches.subcommand();
-    match name {
-        "workspace"
-            if has_subcommand(
-                subcommand,
-                &[
-                    "list",
-                    "create",
-                    "get",
-                    "focus",
-                    "rename",
-                    "report-metadata",
-                    "close",
-                ],
-            ) =>
-        {
-            CommandLocality::Api
-        }
-        "tab"
-            if has_subcommand(
-                subcommand,
-                &["list", "create", "get", "focus", "rename", "close"],
-            ) =>
-        {
-            CommandLocality::Api
-        }
-        "pane"
-            if has_subcommand(
-                subcommand,
-                &[
-                    "list",
-                    "current",
-                    "get",
-                    "layout",
-                    "process-info",
-                    "neighbor",
-                    "edges",
-                    "focus",
-                    "resize",
-                    "zoom",
-                    "read",
-                    "rename",
-                    "input",
-                    "split",
-                    "swap",
-                    "move",
-                    "close",
-                    "send-text",
-                    "send-keys",
-                    "wait-output",
-                    "run",
-                    "report-agent",
-                    "report-agent-session",
-                    "release-agent",
-                    "report-metadata",
-                ],
-            ) =>
-        {
-            CommandLocality::Api
-        }
-        "agent" => match subcommand {
-            Some(("explain", command)) if super::matches::string(command, "file").is_some() => {
-                CommandLocality::Local
-            }
-            Some((
-                "list" | "get" | "read" | "send-keys" | "prompt" | "rename" | "focus" | "wait"
-                | "start" | "explain",
-                _,
-            )) => CommandLocality::Api,
-            _ => CommandLocality::Local,
-        },
-        "status" if matches!(subcommand, Some(("server", _))) => CommandLocality::Api,
-        "server"
-            if matches!(
-                subcommand,
-                Some(("stop" | "agent-manifests" | "reload-agent-manifests", _))
-            ) =>
-        {
-            CommandLocality::Api
-        }
-        "terminal"
-            if matches!(
-                subcommand,
-                Some(("title", title))
-                    if has_subcommand(title.subcommand(), &["set", "clear"])
-            ) =>
-        {
-            CommandLocality::Api
-        }
-        _ => CommandLocality::Local,
-    }
-}
-
-fn has_subcommand(subcommand: Option<(&str, &clap::ArgMatches)>, allowed: &[&str]) -> bool {
-    subcommand.is_some_and(|(name, _)| allowed.contains(&name))
-}
 
 pub(super) fn command() -> Command {
     // Launch options are root arguments, not `global` ones: clap accepts them

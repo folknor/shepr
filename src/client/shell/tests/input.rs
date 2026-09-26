@@ -272,7 +272,7 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
     let x = u32::from(pane.inner_rect.x) * 10 + 21;
     let y = u32::from(pane.inner_rect.y) * 20 + 21;
 
-    let down = state.handle_pixel_mouse(format!("\x1b[<0;{x};{y}M").as_bytes(), geometry);
+    let down = state.handle_pixel_mouse_bytes(format!("\x1b[<0;{x};{y}M").as_bytes(), geometry);
     assert!(matches!(
         &down.requests[..],
         [ClientMessage::ClientShellPaneInput { events, .. }]
@@ -286,7 +286,7 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
     ));
 
     state.hits.panes.clear();
-    let release = state.handle_pixel_mouse(b"\x1b[<0;1;1m", geometry);
+    let release = state.handle_pixel_mouse_bytes(b"\x1b[<0;1;1m", geometry);
     assert!(matches!(
         &release.requests[..],
         [ClientMessage::ClientShellPaneInput { pane_id, events }]

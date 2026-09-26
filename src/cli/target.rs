@@ -93,8 +93,7 @@ pub(super) fn run_on_machine(
     let Some(command) = command else {
         return usage_error("usage: shepr --machine <label-or-id> <command>");
     };
-    let (name, matches) = command.parts();
-    if let Err(error) = validate_machine_command(name, matches) {
+    if let Err(error) = validate_machine_command(command) {
         return usage_error(&error);
     }
     let config = super::load_validated_config(paths)?;
@@ -348,13 +347,14 @@ pub(super) fn resolve_machine<'a>(
 /// Only commands that are pure API requests may run against a saved machine:
 /// no local side effects (config, sessions, integrations, machine catalog), no
 /// TUI or terminal attach, and no local file evaluation (`agent explain --file`).
-fn validate_machine_command(command: &str, matches: &clap::ArgMatches) -> Result<(), String> {
-    if super::spec::locality(command, matches) == super::spec::CommandLocality::Api {
+fn validate_machine_command(command: &super::CliCommand) -> Result<(), String> {
+    if command.is_api_command() {
         Ok(())
     } else {
-        let subcommand = matches.subcommand().map(|(name, _)| name).unwrap_or("");
         Err(format!(
-            "`{command} {subcommand}` is not an API-backed machine command; --machine does not run local management commands or attach a TUI"
+            "`{} {}` is not an API-backed machine command; --machine does not run local management commands or attach a TUI",
+            command.name(),
+            command.subcommand_name(),
         ))
     }
 }
@@ -492,7 +492,10 @@ mod tests {
         let Some((name, matches)) = matches.subcommand() else {
             return false;
         };
-        validate_machine_command(name, matches).is_ok()
+        let Some(command) = super::super::CliCommand::from_matches(name, matches) else {
+            return false;
+        };
+        validate_machine_command(&command).is_ok()
     }
 
     #[test]

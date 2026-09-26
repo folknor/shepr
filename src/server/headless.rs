@@ -64,7 +64,7 @@ mod retained_surface;
 mod surface_interest;
 
 pub use bootstrap::run_server;
-use lifecycle::HostShutdownFreeze;
+use lifecycle::{ShutdownLifecycle, ShutdownPhase};
 
 #[cfg(test)]
 use crate::protocol::MAX_FRAME_SIZE;
@@ -212,30 +212,12 @@ pub struct HeadlessServer {
     /// Shared pane runtime size derived from the foreground client, or the
     /// configured headless size when no clients are connected.
     effective_size: (u16, u16),
-    /// Flag set when shutdown is initiated.
-    shutting_down: bool,
-    /// Flag set by Ctrl+C or `server stop` signal.
-    should_quit: Arc<AtomicBool>,
-    /// Set by the host shutdown monitor on logind's `PrepareForShutdown(true)`.
-    /// See `sync_host_shutdown_freeze` for what the server does with it and
-    /// what the monitor is expected to do in return.
-    host_shutdown_requested: Arc<AtomicBool>,
-    /// Present from the host shutdown warning until the shutdown completes
-    /// (the process exits) or is found to be cancelled.
-    /// This cancellable session-save freeze stays separate from terminal
-    /// server shutdown, which cannot return to a running phase.
-    host_shutdown_freeze: Option<HostShutdownFreeze>,
+    /// Owns running, host-shutdown warning/freeze, cancellation and stopping.
+    lifecycle: ShutdownLifecycle,
     /// Watches logind for shutdown warnings; `None` before `run` and while the
     /// server has dropped it to release its delay lock (see
     /// `freeze_for_host_shutdown`).
     host_shutdown_monitor: Option<crate::platform::HostShutdownMonitor>,
-    /// Set by the SIGINT/SIGTERM/SIGHUP handler before it sets `should_quit`.
-    /// A signal usually arrives as part of an external teardown (logout,
-    /// `kill` of the session) that signals the panes at the same time, so pane
-    /// deaths seen from then on are not removed from the layout that the final
-    /// session save captures. `server stop` does not set it: a deliberate stop
-    /// with live panes still applies deaths the user caused just before.
-    signal_quit_requested: Arc<AtomicBool>,
     /// Channel for receiving server events from client connection threads.
     server_event_rx: mpsc::Receiver<ServerEvent>,
     /// Sender for server events (cloned for each client thread).
@@ -252,7 +234,7 @@ impl HeadlessServer {
     pub fn new(
         app: app::App,
         api_server: Option<api::ServerHandle>,
-        should_quit: Arc<AtomicBool>,
+        stop_requested: Arc<AtomicBool>,
     ) -> io::Result<Self> {
         let client_path = client_socket_path(&app.paths);
         prepare_socket_path(&client_path)?;
@@ -296,12 +278,8 @@ impl HeadlessServer {
             host_input_modes_dirty: true,
             headless_size,
             effective_size: headless_size,
-            shutting_down: false,
-            host_shutdown_requested: Arc::new(AtomicBool::new(false)),
-            host_shutdown_freeze: None,
+            lifecycle: ShutdownLifecycle::new(stop_requested),
             host_shutdown_monitor: None,
-            signal_quit_requested: Arc::new(AtomicBool::new(false)),
-            should_quit,
             server_event_rx,
             server_event_tx,
         })
@@ -320,10 +298,10 @@ impl HeadlessServer {
         crate::logging::startup("server");
 
         // Register SIGINT handler for graceful shutdown.
-        let should_quit = Arc::clone(&self.should_quit);
-        let signal_quit = Arc::clone(&self.signal_quit_requested);
+        let stop_requested = Arc::clone(self.lifecycle.stop_request_flag());
+        let signal_quit = Arc::clone(self.lifecycle.signal_quit_request_flag());
         let quit_notify = self.server_event_tx.clone();
-        ctrlc_handler(should_quit, signal_quit, quit_notify);
+        ctrlc_handler(stop_requested, signal_quit, quit_notify);
         self.start_host_shutdown_monitor();
 
         let mut needs_render = true;
@@ -332,7 +310,7 @@ impl HeadlessServer {
 
         loop {
             // If shutdown has been initiated, complete it and exit.
-            if self.shutting_down {
+            if self.lifecycle.phase() == ShutdownPhase::Stopping {
                 if let Err(err) = self.complete_shutdown().await {
                     run_error.get_or_insert(err);
                 }
@@ -347,7 +325,7 @@ impl HeadlessServer {
             // state and agent-session reports so the final save carries them;
             // after a signal it leaves pane deaths out (see
             // `signal_quit_requested`).
-            if self.app.state.should_quit || self.should_quit.load(Ordering::Acquire) {
+            if self.lifecycle.stop_requested(self.app.state.should_quit) {
                 self.drain_internal_events_with_forwarding_up_to(
                     crate::app::APP_EVENT_CHANNEL_CAPACITY,
                 );
@@ -365,7 +343,7 @@ impl HeadlessServer {
                 needs_render = true;
                 needs_full_render = true;
             }
-            if self.should_quit.load(Ordering::Acquire) {
+            if self.lifecycle.stop_requested(self.app.state.should_quit) {
                 continue;
             }
             if self.app.expire_due_metadata(Instant::now()) {
@@ -378,7 +356,7 @@ impl HeadlessServer {
                 needs_render = true;
                 needs_full_render = true;
             }
-            if self.should_quit.load(Ordering::Acquire) {
+            if self.lifecycle.stop_requested(self.app.state.should_quit) {
                 continue;
             }
 
@@ -397,7 +375,7 @@ impl HeadlessServer {
                 needs_render = true;
                 needs_full_render = true;
             }
-            if self.should_quit.load(Ordering::Acquire) {
+            if self.lifecycle.stop_requested(self.app.state.should_quit) {
                 continue;
             }
 
@@ -519,7 +497,8 @@ impl HeadlessServer {
                 }
             };
 
-            if self.should_quit.load(Ordering::Acquire) {
+            if self.lifecycle.stop_requested(self.app.state.should_quit) {
+                self.initiate_shutdown();
                 match event {
                     LoopEvent::Internal(ev) => {
                         self.handle_internal_event_with_forwarding(ev);
@@ -538,7 +517,7 @@ impl HeadlessServer {
                     }
                     // Already dequeued, so the shutdown drain would never see
                     // it; answer it here.
-                    LoopEvent::Api(msg) => Self::reject_api_request_for_shutdown(&msg),
+                    LoopEvent::Api(msg) => self.reject_api_request_for_shutdown(&msg),
                     _ => {}
                 }
                 continue;
@@ -576,10 +555,7 @@ impl HeadlessServer {
         // (`policy.persist_session` is off), so this writes nothing and the
         // checkpoint taken on the warning stands; the writer is still retired.
         if self.app.policy.persist_session
-            || self
-                .host_shutdown_freeze
-                .as_ref()
-                .is_some_and(|freeze| freeze.persist_session)
+            || self.lifecycle.frozen_session_policy().unwrap_or(false)
         {
             self.app.save_session_before_teardown();
         }
@@ -832,7 +808,7 @@ impl HeadlessServer {
         accept_pending_client_connections(
             &self.client_listener,
             &mut self.next_client_id,
-            &self.should_quit,
+            self.lifecycle.stop_request_flag(),
             &self.server_event_tx,
         )
     }
@@ -840,7 +816,7 @@ impl HeadlessServer {
     /// Drains server events from the dedicated channel.
     fn drain_server_events(&mut self) -> bool {
         let mut changed = false;
-        while !self.should_quit.load(Ordering::Acquire) {
+        while !self.lifecycle.stop_requested(self.app.state.should_quit) {
             let Ok(ev) = self.server_event_rx.try_recv() else {
                 break;
             };
@@ -2063,7 +2039,7 @@ impl HeadlessServer {
     /// During shutdown, remaining requests get a `server_unavailable` error.
     fn drain_api_requests_with_shutdown_check(&mut self) -> bool {
         let mut changed = false;
-        while !self.should_quit.load(Ordering::Acquire) {
+        while !self.lifecycle.stop_requested(self.app.state.should_quit) {
             let Ok(msg) = self.app.api_rx.try_recv() else {
                 break;
             };
@@ -2081,7 +2057,7 @@ impl HeadlessServer {
     fn reject_queued_api_requests_for_shutdown(&mut self) {
         self.app.api_rx.close();
         while let Ok(msg) = self.app.api_rx.try_recv() {
-            Self::reject_api_request_for_shutdown(&msg);
+            self.reject_api_request_for_shutdown(&msg);
         }
     }
 
@@ -2089,24 +2065,28 @@ impl HeadlessServer {
     /// and the traversals themselves, before the loop that drives them exits.
     fn finish_alt_screen_reads_for_shutdown(&mut self) {
         for msg in std::mem::take(&mut self.deferred_alt_screen_reads) {
-            Self::reject_api_request_for_shutdown(&msg);
+            self.reject_api_request_for_shutdown(&msg);
         }
         for read in std::mem::take(&mut self.pending_alt_screen_reads) {
             read.finish_for_shutdown();
         }
     }
 
-    fn reject_api_request_for_shutdown(msg: &api::ApiRequestMessage) {
+    fn reject_api_request_for_shutdown(&self, msg: &api::ApiRequestMessage) {
+        let error = self
+            .lifecycle
+            .shutdown_error()
+            .unwrap_or_else(|| api::schema::ErrorBody {
+                code: "server_unavailable".into(),
+                message: "server is shutting down".into(),
+            });
         let request_id = msg.request.id.clone();
         let method = msg.request.method.traits().name;
         let response = api::serialize_response_or_error(
             &request_id,
             &api::schema::ErrorResponse {
                 id: request_id.clone(),
-                error: api::schema::ErrorBody {
-                    code: "server_unavailable".into(),
-                    message: "server is shutting down".into(),
-                },
+                error,
             },
         );
         api::send_api_response(&msg.respond_to, &request_id, method, response);
@@ -2116,8 +2096,11 @@ impl HeadlessServer {
         &mut self,
         msg: api::ApiRequestMessage,
     ) -> bool {
-        if self.shutting_down {
-            Self::reject_api_request_for_shutdown(&msg);
+        if self.lifecycle.stop_requested(self.app.state.should_quit) {
+            self.initiate_shutdown();
+        }
+        if self.lifecycle.phase() == ShutdownPhase::Stopping {
+            self.reject_api_request_for_shutdown(&msg);
             return false;
         }
         let request_id = msg.request.id.clone();
@@ -2302,17 +2285,17 @@ impl Drop for HeadlessServer {
 // ---------------------------------------------------------------------------
 
 /// Installs the SIGINT/SIGTERM/SIGHUP handler (ctrlc's `termination`
-/// feature). It marks the quit as signal-driven, sets the should_quit flag, and
+/// feature). It marks the quit as signal-driven, sets the stop request flag, and
 /// wakes up the event loop by sending a QuitSignal on the server event channel.
 fn ctrlc_handler(
-    should_quit: Arc<AtomicBool>,
+    stop_requested: Arc<AtomicBool>,
     signal_quit: Arc<AtomicBool>,
     server_event_tx: mpsc::Sender<ServerEvent>,
 ) {
     let _ = ctrlc::set_handler(move || {
-        // Before `should_quit`, so the loop never sees the quit without it.
+        // Before the stop request, so the loop never sees the quit without it.
         signal_quit.store(true, Ordering::Release);
-        should_quit.store(true, Ordering::Release);
+        stop_requested.store(true, Ordering::Release);
         // Wake up the event loop so the quit flag is checked promptly.
         let _ = server_event_tx.try_send(ServerEvent::QuitSignal);
     });

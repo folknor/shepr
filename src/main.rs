@@ -132,7 +132,7 @@ fn main() -> io::Result<()> {
     };
 
     let command = match &invocation.launch {
-        cli::Launch::Cli(command) => Some(command),
+        cli::Launch::Cli(command) => Some(command.as_ref()),
         _ => None,
     };
     if let Some(machine) = invocation.machine() {

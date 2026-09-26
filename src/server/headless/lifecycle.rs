@@ -1,6 +1,15 @@
 use super::*;
 
-/// Session-save freeze held from a host shutdown warning until the shutdown
+/// The server lifecycle states that can affect saves or request handling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ShutdownPhase {
+    Running,
+    HostShutdownWarning,
+    Frozen,
+    Stopping,
+}
+
+/// Session-save freeze held from a host shutdown warning until shutdown
 /// completes or is cancelled.
 pub(super) struct HostShutdownFreeze {
     /// `policy.persist_session` before the freeze turned it off.
@@ -10,58 +19,194 @@ pub(super) struct HostShutdownFreeze {
     generation: Option<u64>,
 }
 
+/// Owns the server's lifecycle phase and the asynchronous request latches that
+/// feed it. The latches are written by signal, API and logind threads; the
+/// event loop is the sole owner of phase transitions and session policy.
+pub(super) struct ShutdownLifecycle {
+    phase: ShutdownPhase,
+    freeze: Option<HostShutdownFreeze>,
+    stop_request: Arc<AtomicBool>,
+    host_shutdown_request: Arc<AtomicBool>,
+    signal_quit_request: Arc<AtomicBool>,
+}
+
+impl ShutdownLifecycle {
+    pub(super) fn new(stop_request: Arc<AtomicBool>) -> Self {
+        Self {
+            phase: ShutdownPhase::Running,
+            freeze: None,
+            stop_request,
+            host_shutdown_request: Arc::new(AtomicBool::new(false)),
+            signal_quit_request: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(super) fn phase(&self) -> ShutdownPhase {
+        self.phase
+    }
+
+    /// Whether any quit source has requested termination, or termination has
+    /// already begun. `app_quit` is the in-process input path; the atomic latch
+    /// is shared with signal and API server-stop handling.
+    pub(super) fn stop_requested(&self, app_quit: bool) -> bool {
+        self.phase == ShutdownPhase::Stopping
+            || app_quit
+            || self.stop_request.load(Ordering::Acquire)
+    }
+
+    pub(super) fn stop_request_flag(&self) -> &Arc<AtomicBool> {
+        &self.stop_request
+    }
+
+    pub(super) fn host_shutdown_request_flag(&self) -> &Arc<AtomicBool> {
+        &self.host_shutdown_request
+    }
+
+    pub(super) fn signal_quit_request_flag(&self) -> &Arc<AtomicBool> {
+        &self.signal_quit_request
+    }
+
+    pub(super) fn signal_quit_requested(&self) -> bool {
+        self.signal_quit_request.load(Ordering::Acquire)
+    }
+
+    pub(super) fn host_shutdown_requested(&self) -> bool {
+        self.host_shutdown_request.load(Ordering::Acquire)
+    }
+
+    pub(super) fn begin_host_shutdown_warning(&mut self) -> bool {
+        if self.phase != ShutdownPhase::Running {
+            return false;
+        }
+        self.phase = ShutdownPhase::HostShutdownWarning;
+        true
+    }
+
+    pub(super) fn finish_host_shutdown_freeze(&mut self, freeze: HostShutdownFreeze) {
+        debug_assert_eq!(self.phase, ShutdownPhase::HostShutdownWarning);
+        self.freeze = Some(freeze);
+        self.phase = ShutdownPhase::Frozen;
+    }
+
+    /// Cancels either a warning not yet checkpointed or a completed freeze.
+    /// A returned freeze needs its saved policy restored by the caller.
+    pub(super) fn cancel_host_shutdown(&mut self) -> Option<HostShutdownFreeze> {
+        match self.phase {
+            ShutdownPhase::HostShutdownWarning => {
+                self.phase = ShutdownPhase::Running;
+                None
+            }
+            ShutdownPhase::Frozen => {
+                self.phase = ShutdownPhase::Running;
+                self.freeze.take()
+            }
+            ShutdownPhase::Running | ShutdownPhase::Stopping => None,
+        }
+    }
+
+    /// Starts a fresh checkpoint after logind issued another warning before
+    /// the loop observed cancellation of the previous one.
+    pub(super) fn restart_host_shutdown_warning(&mut self) -> Option<HostShutdownFreeze> {
+        if self.phase != ShutdownPhase::Frozen {
+            return None;
+        }
+        self.phase = ShutdownPhase::HostShutdownWarning;
+        self.freeze.take()
+    }
+
+    pub(super) fn frozen_session_policy(&self) -> Option<bool> {
+        match self.phase {
+            ShutdownPhase::Frozen | ShutdownPhase::Stopping => {
+                self.freeze.as_ref().map(|freeze| freeze.persist_session)
+            }
+            ShutdownPhase::Running | ShutdownPhase::HostShutdownWarning => None,
+        }
+    }
+
+    pub(super) fn frozen_warning_generation(&self) -> Option<u64> {
+        if self.phase == ShutdownPhase::Frozen {
+            self.freeze.as_ref().and_then(|freeze| freeze.generation)
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn begin_stopping(&mut self) -> bool {
+        if self.phase == ShutdownPhase::Stopping {
+            return false;
+        }
+        self.phase = ShutdownPhase::Stopping;
+        self.stop_request.store(true, Ordering::Release);
+        true
+    }
+
+    /// The canonical rejection used for requests selected after the server
+    /// entered its terminal stopping phase.
+    pub(super) fn shutdown_error(&self) -> Option<api::schema::ErrorBody> {
+        if self.phase == ShutdownPhase::Stopping {
+            Some(api::schema::ErrorBody {
+                code: "server_unavailable".into(),
+                message: "server is shutting down".into(),
+            })
+        } else {
+            None
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_frozen_session_policy_for_test(&mut self, persist_session: bool) {
+        if let Some(freeze) = self.freeze.as_mut() {
+            freeze.persist_session = persist_session;
+        }
+    }
+}
+
 impl HeadlessServer {
     pub(super) fn start_host_shutdown_monitor(&mut self) {
         let quit_notify = self.server_event_tx.clone();
         self.host_shutdown_monitor = Some(crate::platform::HostShutdownMonitor::start(
-            Arc::clone(&self.host_shutdown_requested),
+            Arc::clone(self.lifecycle.host_shutdown_request_flag()),
             move || {
                 let _ = quit_notify.try_send(ServerEvent::QuitSignal);
             },
         ));
     }
 
-    /// Answers host shutdown warnings and their cancellation.
-    ///
-    /// logind announces a shutdown with `PrepareForShutdown(true)` and waits
-    /// for delay locks before it starts killing processes; it may also call the
-    /// shutdown off again with `PrepareForShutdown(false)`. The server must not
-    /// exit on the warning (it would be gone if the shutdown is cancelled), and
-    /// must not let the real shutdown's pane kills reach the saved session
-    /// (they would be restored as closed). So:
-    ///
-    /// - Warning (`host_shutdown_requested` set, not frozen): write a
-    ///   checkpoint synchronously, then freeze saving by turning
-    ///   `policy.persist_session` off. Every save path (debounced, pane-exit
-    ///   checkpoint, final) checks that flag. The server keeps running and
-    ///   keeps applying events; only the disk is frozen.
-    /// - Termination: SIGTERM/SIGINT/SIGHUP (or `server stop`) takes the usual
-    ///   quit path, and the final save writes nothing, so the checkpoint stands.
-    /// - Cancellation (`host_shutdown_requested` cleared while frozen): thaw,
-    ///   restoring `persist_session` and marking the session dirty so the
-    ///   current state is saved again.
-    ///
-    /// The monitor (`platform::shutdown`) reports both warning and cancellation;
-    /// the checkpoint releases its delay inhibitor so logind can proceed.
+    /// Applies warning and cancellation notifications from logind to the
+    /// lifecycle state machine. A warning checkpoints before freezing saves;
+    /// cancellation thaws and marks the live session dirty again.
     pub(super) fn sync_host_shutdown_freeze(&mut self, _now: Instant) {
-        let requested = self.host_shutdown_requested.load(Ordering::Acquire);
-        if self.host_shutdown_freeze.is_none() {
-            if requested && !self.shutting_down {
-                self.freeze_for_host_shutdown();
+        if self.lifecycle.phase() == ShutdownPhase::Stopping {
+            return;
+        }
+
+        if !self.lifecycle.host_shutdown_requested() {
+            if let Some(freeze) = self.lifecycle.cancel_host_shutdown() {
+                self.thaw_after_host_shutdown(&freeze);
             }
             return;
-        };
-        if !requested {
-            self.thaw_after_host_shutdown();
-        } else if let (Some(freeze), Some(monitor)) = (
-            self.host_shutdown_freeze.as_ref(),
-            self.host_shutdown_monitor.as_ref(),
-        ) && freeze.generation != Some(monitor.warning_generation())
-        {
-            let persist_session = freeze.persist_session;
-            self.host_shutdown_freeze = None;
-            self.app.policy.persist_session = persist_session;
-            self.freeze_for_host_shutdown();
+        }
+
+        match self.lifecycle.phase() {
+            ShutdownPhase::Running => {
+                if self.lifecycle.begin_host_shutdown_warning() {
+                    self.freeze_for_host_shutdown();
+                }
+            }
+            ShutdownPhase::HostShutdownWarning => self.freeze_for_host_shutdown(),
+            ShutdownPhase::Frozen => {
+                let generation = self
+                    .host_shutdown_monitor
+                    .as_ref()
+                    .map(crate::platform::HostShutdownMonitor::warning_generation);
+                if self.lifecycle.frozen_warning_generation() != generation
+                    && let Some(freeze) = self.lifecycle.restart_host_shutdown_warning()
+                {
+                    self.app.policy.persist_session = freeze.persist_session;
+                    self.freeze_for_host_shutdown();
+                }
+            }
+            ShutdownPhase::Stopping => {}
         }
     }
 
@@ -81,27 +226,25 @@ impl HeadlessServer {
         {
             monitor.release_delay_lock(generation);
         }
-        self.host_shutdown_freeze = Some(HostShutdownFreeze {
-            persist_session,
-            generation,
-        });
+        self.lifecycle
+            .finish_host_shutdown_freeze(HostShutdownFreeze {
+                persist_session,
+                generation,
+            });
     }
 
-    fn thaw_after_host_shutdown(&mut self) {
-        let Some(freeze) = self.host_shutdown_freeze.take() else {
-            return;
-        };
+    fn thaw_after_host_shutdown(&mut self, freeze: &HostShutdownFreeze) {
         info!("host shutdown cancelled; resuming session saves");
         self.app.policy.persist_session = freeze.persist_session;
         self.app.state.mark_session_dirty();
     }
-    /// Initiates graceful shutdown.
+
+    /// Initiates terminal server shutdown from any quit source.
     pub(super) fn initiate_shutdown(&mut self) {
-        if self.shutting_down {
+        if !self.lifecycle.begin_stopping() {
             return;
         }
         info!("server shutdown initiated");
-        self.shutting_down = true;
 
         // Clear client-local host graphics, then send ServerShutdown to all connected clients.
         let shutdown_msg = ServerMessage::ServerShutdown {
@@ -114,8 +257,6 @@ impl HeadlessServer {
         // we close the connections.
         std::thread::sleep(Duration::from_millis(50));
 
-        // Signal the main loop to exit.
-        self.should_quit.store(true, Ordering::Release);
         self.app.state.should_quit = true;
     }
 
@@ -128,6 +269,7 @@ impl HeadlessServer {
     /// the previous save, or exit on the still-bound API socket and leave the
     /// user waiting out the startup timeout.
     pub(super) async fn complete_shutdown(&mut self) -> io::Result<()> {
+        debug_assert_eq!(self.lifecycle.phase(), ShutdownPhase::Stopping);
         info!("completing server shutdown");
         self.reject_late_client_connections().await;
 

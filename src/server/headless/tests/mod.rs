@@ -44,7 +44,7 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         .set_nonblocking(ListenerNonblockingMode::Accept)
         .expect("set listener nonblocking");
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
-    let should_quit = Arc::new(AtomicBool::new(false));
+    let stop_requested = Arc::new(AtomicBool::new(false));
     let headless_size = app.state.headless_size;
 
     HeadlessServer {
@@ -68,12 +68,8 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         host_input_modes_dirty: true,
         headless_size,
         effective_size: headless_size,
-        shutting_down: false,
-        host_shutdown_requested: Arc::new(AtomicBool::new(false)),
-        host_shutdown_freeze: None,
+        lifecycle: ShutdownLifecycle::new(stop_requested),
         host_shutdown_monitor: None,
-        signal_quit_requested: Arc::new(AtomicBool::new(false)),
-        should_quit,
         server_event_rx,
         server_event_tx,
     }
@@ -232,7 +228,10 @@ fn server_stop_interrupts_server_event_backlog() {
             .expect("test precondition");
     }
 
-    server.should_quit.store(true, Ordering::Release);
+    server
+        .lifecycle
+        .stop_request_flag()
+        .store(true, Ordering::Release);
 
     assert!(!server.drain_server_events());
     assert!(server.server_event_rx.try_recv().is_ok());
@@ -291,9 +290,14 @@ async fn complete_shutdown_answers_queued_and_deferred_requests_and_closes_the_c
 
 #[test]
 fn api_request_selected_during_shutdown_is_answered() {
+    let mut server = test_headless_server();
+    assert!(server.lifecycle.shutdown_error().is_none());
+    server.initiate_shutdown();
+    assert!(server.lifecycle.shutdown_error().is_some());
     let (request, response_rx) = shutdown_test_request("selected");
-    HeadlessServer::reject_api_request_for_shutdown(&request);
+    server.reject_api_request_for_shutdown(&request);
     assert_server_unavailable(&response_rx, "selected");
+    shutdown_test_runtimes(&mut server);
 }
 
 #[test]
@@ -3693,18 +3697,16 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
     server.app.state.ensure_test_terminals();
     server.app.state.active = Some(0);
     server
-        .host_shutdown_requested
+        .lifecycle
+        .host_shutdown_request_flag()
         .store(true, Ordering::Release);
     // The test policy never saves, so the checkpoint writes nothing and the
     // real session file is untouched.
     server.sync_host_shutdown_freeze(Instant::now());
-    let freeze = server
-        .host_shutdown_freeze
-        .as_mut()
-        .expect("warning freezes saving");
-    assert!(!freeze.persist_session);
+    assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
+    assert_eq!(server.lifecycle.frozen_session_policy(), Some(false));
     // Pretend saving was on before the warning, so the thaw has to restore it.
-    freeze.persist_session = true;
+    server.lifecycle.set_frozen_session_policy_for_test(true);
     assert!(!server.app.policy.persist_session);
     assert!(server.app.session_save_deadline.is_none());
 
@@ -3721,15 +3723,19 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
     // Cancellation reported through the flag thaws and re-saves current state.
     server.app.state.session_dirty = false;
     server
-        .host_shutdown_requested
+        .lifecycle
+        .host_shutdown_request_flag()
         .store(false, Ordering::Release);
     server.sync_host_shutdown_freeze(Instant::now());
-    assert!(server.host_shutdown_freeze.is_none());
+    assert_eq!(server.lifecycle.phase(), ShutdownPhase::Running);
     assert!(server.app.policy.persist_session);
     assert!(server.app.state.session_dirty);
     // Not stopping: the warning alone never ends the server.
-    assert!(!server.shutting_down);
-    assert!(!server.should_quit.load(Ordering::Acquire));
+    assert!(
+        !server
+            .lifecycle
+            .stop_requested(server.app.state.should_quit)
+    );
     server.app.policy.persist_session = false;
     shutdown_test_runtimes(&mut server);
 }
@@ -3845,24 +3851,26 @@ fn client_socket_is_owner_only_from_the_moment_it_is_reachable() {
 async fn host_shutdown_freeze_waits_for_monitor_cancellation() {
     let mut server = test_headless_server();
     server
-        .host_shutdown_requested
+        .lifecycle
+        .host_shutdown_request_flag()
         .store(true, Ordering::Release);
     let warned_at = Instant::now();
     server.sync_host_shutdown_freeze(warned_at);
-    assert!(server.host_shutdown_freeze.is_some());
+    assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
 
     server.sync_host_shutdown_freeze(warned_at + Duration::from_secs(30));
-    assert!(server.host_shutdown_freeze.is_some());
-    assert!(server.host_shutdown_requested.load(Ordering::Acquire));
+    assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
+    assert!(server.lifecycle.host_shutdown_requested());
 
     server.sync_host_shutdown_freeze(warned_at + Duration::from_secs(60));
-    assert!(server.host_shutdown_freeze.is_some());
+    assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
     server
-        .host_shutdown_requested
+        .lifecycle
+        .host_shutdown_request_flag()
         .store(false, Ordering::Release);
     server.sync_host_shutdown_freeze(warned_at + Duration::from_secs(61));
-    assert!(server.host_shutdown_freeze.is_none());
-    assert!(!server.host_shutdown_requested.load(Ordering::Acquire));
+    assert_eq!(server.lifecycle.phase(), ShutdownPhase::Running);
+    assert!(!server.lifecycle.host_shutdown_requested());
     // No monitor ran before the warning, so none was started by the thaw.
     assert!(server.host_shutdown_monitor.is_none());
 }
@@ -3883,8 +3891,14 @@ async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
             exit_reason: crate::platform::ChildExitReason::Exited,
         })
         .expect("test precondition");
-    server.signal_quit_requested.store(true, Ordering::Release);
-    server.should_quit.store(true, Ordering::Release);
+    server
+        .lifecycle
+        .signal_quit_request_flag()
+        .store(true, Ordering::Release);
+    server
+        .lifecycle
+        .stop_request_flag()
+        .store(true, Ordering::Release);
 
     // The quit-path drain still consumes the queue ...
     let (had_event, _) =

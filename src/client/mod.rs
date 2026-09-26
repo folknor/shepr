@@ -34,7 +34,7 @@ mod transport;
 #[cfg(test)]
 use clipboard_forwarding::decode_clipboard_payload;
 use clipboard_forwarding::forward_clipboard;
-use events::ClientLoopEvent;
+use events::{ClientLoopEvent, ParsedHostInput};
 use loop_config::ClientLoopConfig;
 use shell_runtime::*;
 use state::ClientState;
@@ -306,7 +306,7 @@ fn run_client_with_mode(
 /// The main client event loop.
 ///
 /// Uses a threaded architecture:
-/// - stdin reader thread → sends raw input bytes to main loop
+/// - stdin reader thread → sends parsed input events with raw bytes retained for attach
 /// - resize poller thread → sends resize events to main loop
 /// - server reader thread → reads ServerMessages and sends to main loop
 /// - main loop: coordinates input, output, and server communication
@@ -561,29 +561,28 @@ async fn run_client_loop(
         let now = std::time::Instant::now();
 
         match event {
-            ClientLoopEvent::StdinInput(data) => {
+            ClientLoopEvent::StdinInput(inputs) => {
                 if state.shell.is_some() {
-                    if will_query_host_cell_size {
-                        let events = crate::raw_input::parse_raw_input_bytes_sync(&data);
-                        if let Some((width_px, height_px)) = reported_cell_size_from_events(&events)
-                        {
-                            store_reported_cell_size(&reported_cell_size, width_px, height_px);
-                        }
-                    }
-                    let events = crate::raw_input::parse_raw_input_bytes_sync(&data);
-                    if crate::raw_input::events_require_host_mode_refresh(&events)
-                        && let Err(err) = state.host_mouse_mode.apply(
-                            state.shell.is_some(),
-                            state.pixel_geometry_exact,
-                            true,
-                        )
+                    let raw_events = inputs.iter().map(|input| &input.event);
+                    if will_query_host_cell_size
+                        && let Some((width_px, height_px)) =
+                            reported_cell_size_from_events(raw_events)
                     {
+                        store_reported_cell_size(&reported_cell_size, width_px, height_px);
+                    }
+                    if crate::raw_input::events_require_host_mode_refresh(
+                        inputs.iter().map(|input| &input.event),
+                    ) && let Err(err) = state.host_mouse_mode.apply(
+                        state.shell.is_some(),
+                        state.pixel_geometry_exact,
+                        true,
+                    ) {
                         warn!(err = %err, "failed to re-assert host mouse capture");
                     }
                     let Some(shell) = state.shell.as_mut() else {
                         continue;
                     };
-                    let outcome = shell.handle_raw_events(events);
+                    let outcome = shell.handle_host_input(inputs);
                     let frame = outcome
                         .repaint
                         .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
@@ -601,13 +600,64 @@ async fn run_client_loop(
                     }
                     continue;
                 }
-                let data = if let Some(attach_escape) = &mut state.attach_escape {
-                    match attach_escape.filter_input(
-                        data,
+                if let Some(attach_escape) = &mut state.attach_escape {
+                    // Palette replies are deliberately grouped by the reader. They cannot
+                    // contain attach keys or mouse events, so retain that transport batch.
+                    if inputs.len() > 1 {
+                        let mut data = attach_escape.take_pending_prefix().unwrap_or_default();
+                        data.extend(inputs.into_iter().flat_map(|input| input.raw));
+                        if let Some(notice) =
+                            attach::forward_input(&mut write_stream, &data).notice()
+                        {
+                            remember_direct_notice(direct_notices, notice);
+                        }
+                        continue;
+                    }
+                    let Some(input) = inputs.into_iter().next() else {
+                        continue;
+                    };
+                    if let Some(pixels) = input.pixel_mouse {
+                        if let Some(prefix) = attach_escape.take_pending_prefix()
+                            && let Some(notice) =
+                                attach::forward_input(&mut write_stream, &prefix).notice()
+                        {
+                            remember_direct_notice(direct_notices, notice);
+                        }
+                        if let Some((kind, position, modifiers)) =
+                            direct_attach_pixel_mouse(&input.event, pixels)
+                        {
+                            let geometry = pixels.geometry;
+                            let message = ClientMessage::AttachMouse {
+                                kind,
+                                position,
+                                geometry: Some(crate::protocol::ClientMouseGeometry {
+                                    cols: geometry.cols,
+                                    rows: geometry.rows,
+                                    width_px: geometry.width_px,
+                                    height_px: geometry.height_px,
+                                }),
+                                modifiers,
+                                lines: u16::try_from(state.mouse_scroll_lines.max(1))
+                                    .unwrap_or(u16::MAX),
+                            };
+                            write_stream.send(&message);
+                        }
+                        continue;
+                    }
+                    let action = attach_escape.filter_parsed_input(
+                        input.raw,
+                        &input.event,
                         state.reported_size.1,
                         state.mouse_scroll_lines,
-                    ) {
-                        AttachInputAction::Forward(data) => data,
+                    );
+                    match action {
+                        AttachInputAction::Forward(data) => {
+                            if let Some(notice) =
+                                attach::forward_input(&mut write_stream, &data).notice()
+                            {
+                                remember_direct_notice(direct_notices, notice);
+                            }
+                        }
                         // Registry sends cannot fail here: a failed write is recorded against
                         // its endpoint and the timer's `take_failures` pass ends a
                         // non-federated client whose Local connection broke.
@@ -619,13 +669,11 @@ async fn run_client_loop(
                                     remember_direct_notice(direct_notices, notice);
                                 }
                             }
-                            continue;
                         }
                         AttachInputAction::Semantic(action) => {
                             if let Some(message) = attach_semantic_message(action) {
                                 write_stream.send(&message);
                             }
-                            continue;
                         }
                         AttachInputAction::ForwardThenSemantic(prefix, action) => {
                             if let Some(notice) =
@@ -636,7 +684,6 @@ async fn run_client_loop(
                             if let Some(message) = attach_semantic_message(action) {
                                 write_stream.send(&message);
                             }
-                            continue;
                         }
                         AttachInputAction::Detach => {
                             let _ = write_to_server(&mut write_stream, &ClientMessage::Detach);
@@ -651,79 +698,41 @@ async fn run_client_loop(
                             let _ = write_to_server(&mut write_stream, &ClientMessage::Detach);
                             return Ok(());
                         }
-                        AttachInputAction::None => continue,
-                    }
-                } else {
-                    let events = crate::raw_input::parse_raw_input_bytes_sync(&data);
-                    if crate::raw_input::events_require_host_surface_redraw(
-                        &events,
-                        state.redraw_on_focus_gained,
-                    ) {
-                        state.request_repaint();
-                    }
-                    if crate::raw_input::events_require_host_terminal_appearance_query(&events) {
-                        query_host_terminal_appearance();
-                    }
-                    if crate::raw_input::events_require_host_terminal_theme_query(&events) {
-                        query_host_terminal_theme();
-                    }
-                    if let Some((width_px, height_px)) = reported_cell_size_from_events(&events) {
-                        store_reported_cell_size(&reported_cell_size, width_px, height_px);
-                    }
-                    data
-                };
-                if let Some(notice) = attach::forward_input(&mut write_stream, &data).notice() {
-                    remember_direct_notice(direct_notices, notice);
-                }
-            }
-            ClientLoopEvent::PixelMouse(data, geometry) => {
-                if let Some(shell) = state.shell.as_mut() {
-                    // Pixel reports still enter the shell as raw bytes because its handler
-                    // brackets cell conversion with transient host-pixel hit-test metadata.
-                    // A reader-side typed event needs that shell API to accept the metadata.
-                    let outcome = shell.handle_pixel_mouse(&data, geometry);
-                    let frame = outcome
-                        .repaint
-                        .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
-                        .flatten();
-                    if finish_client_shell_input(
-                        &mut state,
-                        outcome,
-                        frame,
-                        &mut write_stream,
-                        &mut pending_activation,
-                        &mut endpoint_commands,
-                        &mut scheduled_activation,
-                    )? {
-                        return Ok(());
+                        AttachInputAction::None => {}
                     }
                     continue;
                 }
-                if let Some(attach_escape) = state.attach_escape.as_mut() {
-                    if let Some(prefix) = attach_escape.take_pending_prefix()
-                        && let Some(notice) =
-                            attach::forward_input(&mut write_stream, &prefix).notice()
-                    {
-                        remember_direct_notice(direct_notices, notice);
-                    }
-                    if let Some((kind, position, modifiers)) =
-                        direct_attach_pixel_mouse(&data, geometry)
-                    {
-                        let message = ClientMessage::AttachMouse {
-                            kind,
-                            position,
-                            geometry: Some(crate::protocol::ClientMouseGeometry {
-                                cols: geometry.cols,
-                                rows: geometry.rows,
-                                width_px: geometry.width_px,
-                                height_px: geometry.height_px,
-                            }),
-                            modifiers,
-                            lines: u16::try_from(state.mouse_scroll_lines.max(1))
-                                .unwrap_or(u16::MAX),
-                        };
-                        write_stream.send(&message);
-                    }
+
+                if inputs.iter().any(|input| input.pixel_mouse.is_some()) {
+                    continue;
+                }
+                if crate::raw_input::events_require_host_surface_redraw(
+                    inputs.iter().map(|input| &input.event),
+                    state.redraw_on_focus_gained,
+                ) {
+                    state.request_repaint();
+                }
+                if crate::raw_input::events_require_host_terminal_appearance_query(
+                    inputs.iter().map(|input| &input.event),
+                ) {
+                    query_host_terminal_appearance();
+                }
+                if crate::raw_input::events_require_host_terminal_theme_query(
+                    inputs.iter().map(|input| &input.event),
+                ) {
+                    query_host_terminal_theme();
+                }
+                if let Some((width_px, height_px)) =
+                    reported_cell_size_from_events(inputs.iter().map(|input| &input.event))
+                {
+                    store_reported_cell_size(&reported_cell_size, width_px, height_px);
+                }
+                let data = inputs
+                    .into_iter()
+                    .flat_map(|input| input.raw)
+                    .collect::<Vec<_>>();
+                if let Some(notice) = attach::forward_input(&mut write_stream, &data).notice() {
+                    remember_direct_notice(direct_notices, notice);
                 }
             }
             ClientLoopEvent::TerminalUnavailable(err) => {

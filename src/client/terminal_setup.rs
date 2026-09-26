@@ -108,12 +108,6 @@ pub(super) struct TerminalGuard {
 const HOST_KEYBOARD_QUERY_TIMEOUT: Duration = Duration::from_millis(250);
 const MAX_BUFFERED_HOST_INPUT: usize = 64 * 1024;
 
-#[derive(Default)]
-struct HostKeyboardProbeResponses {
-    flags: Option<u16>,
-    primary_device_attributes: bool,
-}
-
 fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
     const QUERY: &[u8] = b"\x1b[?u\x1b[c";
 
@@ -130,7 +124,7 @@ fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
     let stdin = io::stdin();
     let stdin_fd = stdin.as_raw_fd();
     let deadline = Instant::now() + HOST_KEYBOARD_QUERY_TIMEOUT;
-    let mut responses = HostKeyboardProbeResponses::default();
+    let mut responses = crate::raw_input::HostKeyboardProbeResponses::default();
     while !responses.primary_device_attributes && buffered_input.len() < MAX_BUFFERED_HOST_INPUT {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             break;
@@ -155,7 +149,10 @@ fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
             Ok(0) => break,
             Ok(read) => {
                 buffered_input.extend_from_slice(&scratch[..read]);
-                consume_host_keyboard_probe_responses(&mut buffered_input, &mut responses);
+                crate::raw_input::consume_host_keyboard_probe_responses(
+                    &mut buffered_input,
+                    &mut responses,
+                );
             }
             Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
             Err(err) => {
@@ -171,111 +168,13 @@ fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
     )
 }
 
-fn host_escape_disambiguation_confirmed(responses: &HostKeyboardProbeResponses) -> bool {
+fn host_escape_disambiguation_confirmed(
+    responses: &crate::raw_input::HostKeyboardProbeResponses,
+) -> bool {
     responses.primary_device_attributes
         && responses
             .flags
             .is_some_and(|flags| flags & 0b0000_0001 != 0)
-}
-
-fn consume_host_keyboard_probe_responses(
-    buffered_input: &mut Vec<u8>,
-    responses: &mut HostKeyboardProbeResponses,
-) {
-    const PASTE_START: &[u8] = b"\x1b[200~";
-    const PASTE_END: &[u8] = b"\x1b[201~";
-
-    let mut offset = 0;
-    while offset < buffered_input.len() {
-        if buffered_input[offset..].starts_with(PASTE_START) {
-            let payload_start = offset + PASTE_START.len();
-            let Some(relative_end) = buffered_input[payload_start..]
-                .windows(PASTE_END.len())
-                .position(|bytes| bytes == PASTE_END)
-            else {
-                break;
-            };
-            offset = payload_start + relative_end + PASTE_END.len();
-            continue;
-        }
-        if let Some(control_string_end) = host_control_string_end(&buffered_input[offset..]) {
-            let Some(control_string_end) = control_string_end else {
-                break;
-            };
-            offset += control_string_end;
-            continue;
-        }
-        if !buffered_input[offset..].starts_with(b"\x1b[?") {
-            offset += 1;
-            continue;
-        }
-
-        let start = offset;
-        let mut end = start + 3;
-        while end < buffered_input.len()
-            && (buffered_input[end].is_ascii_digit() || buffered_input[end] == b';')
-        {
-            end += 1;
-        }
-        if end == buffered_input.len() {
-            break;
-        }
-        let body = &buffered_input[start + 3..end];
-        let recognized = match buffered_input[end] {
-            b'u' if !body.is_empty() && body.iter().all(u8::is_ascii_digit) => {
-                std::str::from_utf8(body)
-                    .ok()
-                    .and_then(|flags| flags.parse().ok())
-                    .map(|flags| {
-                        if !responses.primary_device_attributes {
-                            responses.flags = Some(flags);
-                        }
-                    })
-                    .is_some()
-            }
-            b'c' if !body.is_empty()
-                && body
-                    .iter()
-                    .all(|byte| byte.is_ascii_digit() || *byte == b';') =>
-            {
-                responses.primary_device_attributes = true;
-                true
-            }
-            _ => false,
-        };
-        if recognized {
-            buffered_input.drain(start..=end);
-        } else {
-            offset += 1;
-        }
-    }
-}
-
-fn host_control_string_end(bytes: &[u8]) -> Option<Option<usize>> {
-    if bytes.first() != Some(&0x1b) {
-        return None;
-    }
-
-    let allow_bel = if bytes.starts_with(b"\x1b]") {
-        true
-    } else if bytes
-        .get(1)
-        .is_some_and(|byte| matches!(*byte, b'P' | b'_' | b'^' | b'X'))
-    {
-        false
-    } else {
-        return None;
-    };
-
-    for offset in 2..bytes.len() {
-        if allow_bel && bytes[offset] == 0x07 {
-            return Some(Some(offset + 1));
-        }
-        if bytes[offset..].starts_with(b"\x1b\\") {
-            return Some(Some(offset + 2));
-        }
-    }
-    Some(None)
 }
 
 pub(super) fn write_host_color_scheme_report_mode(
@@ -585,11 +484,11 @@ mod tests {
 
         for split in 1..stream.len() {
             let mut buffered = Vec::new();
-            let mut responses = HostKeyboardProbeResponses::default();
+            let mut responses = crate::raw_input::HostKeyboardProbeResponses::default();
             buffered.extend_from_slice(&stream[..split]);
-            consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+            crate::raw_input::consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
             buffered.extend_from_slice(&stream[split..]);
-            consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+            crate::raw_input::consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
 
             assert_eq!(responses.flags, Some(7), "split {split}");
             assert!(responses.primary_device_attributes, "split {split}");
@@ -600,9 +499,9 @@ mod tests {
     #[test]
     fn host_keyboard_probe_preserves_typed_input_before_responses() {
         let mut buffered = b"aPtyped\x1b[?7u\x1b[?1;2c".to_vec();
-        let mut responses = HostKeyboardProbeResponses::default();
+        let mut responses = crate::raw_input::HostKeyboardProbeResponses::default();
 
-        consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+        crate::raw_input::consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
 
         assert!(host_escape_disambiguation_confirmed(&responses));
         assert_eq!(buffered, b"aPtyped");
@@ -612,9 +511,9 @@ mod tests {
     fn host_keyboard_probe_requires_disambiguation_bit_and_device_attributes() {
         for (flags, expected) in [(0, false), (2, false), (7, true)] {
             let mut buffered = format!("\x1b[?{flags}u\x1b[?1;2c").into_bytes();
-            let mut responses = HostKeyboardProbeResponses::default();
+            let mut responses = crate::raw_input::HostKeyboardProbeResponses::default();
 
-            consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+            crate::raw_input::consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
 
             assert_eq!(host_escape_disambiguation_confirmed(&responses), expected);
             assert!(buffered.is_empty());
@@ -624,9 +523,9 @@ mod tests {
     #[test]
     fn host_keyboard_probe_requires_flags_before_device_attributes() {
         let mut buffered = b"\x1b[?1;2c\x1b[?7uinput".to_vec();
-        let mut responses = HostKeyboardProbeResponses::default();
+        let mut responses = crate::raw_input::HostKeyboardProbeResponses::default();
 
-        consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+        crate::raw_input::consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
 
         assert_eq!(responses.flags, None);
         assert!(responses.primary_device_attributes);
@@ -637,9 +536,9 @@ mod tests {
     fn host_keyboard_probe_preserves_response_shaped_payloads() {
         let opaque = b"\x1b[200~paste \x1b[?1u \x1b[?1;2c\x1b[201~-\x1bPdata \x1b[?7u\x1b\\";
         let mut buffered = [opaque.as_slice(), b"\x1b[?7u\x1b[?1;2c"].concat();
-        let mut responses = HostKeyboardProbeResponses::default();
+        let mut responses = crate::raw_input::HostKeyboardProbeResponses::default();
 
-        consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+        crate::raw_input::consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
 
         assert!(host_escape_disambiguation_confirmed(&responses));
         assert_eq!(buffered, opaque);
@@ -648,9 +547,9 @@ mod tests {
     #[test]
     fn host_keyboard_probe_preserves_malformed_responses() {
         let mut buffered = b"a\x1b[?7;1ub\x1b[?65536uc".to_vec();
-        let mut responses = HostKeyboardProbeResponses::default();
+        let mut responses = crate::raw_input::HostKeyboardProbeResponses::default();
 
-        consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
+        crate::raw_input::consume_host_keyboard_probe_responses(&mut buffered, &mut responses);
 
         assert_eq!(responses.flags, None);
         assert!(!responses.primary_device_attributes);

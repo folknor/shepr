@@ -17,21 +17,11 @@ Defects and oddities surfaced while resolving earlier findings.
 always true and nothing on the remote side reads them since the compatibility
 fossils were removed. Drop them. (wave B reviewer)
 
-## BUG-060 - CliCommand typing is thin
-
-`CliCommand` variants each wrap `ArgMatches` and `dispatch_with_config` ignores
-the payload, so the typed launch stops at the group level. (wave B reviewer)
-
 ## BUG-061 - Cached keybinding validation can go stale
 
 Validation is cached in a `OnceLock` while `Config.keys` is a public field;
 nothing mutates it after load today. Dissolves with the immutable
 `ValidatedConfig` (CON-045). (wave B reviewer)
-
-## BUG-062 - PublicPaneId and PublicTabId parse differently
-
-`PublicPaneId` uses `rsplit_once(":p")`, `PublicTabId` uses `rsplit_once(':')`
-plus a prefix strip; equivalent today, inconsistent. (wave B reviewer)
 
 ## BUG-063 - Planning note in a Config doc comment
 

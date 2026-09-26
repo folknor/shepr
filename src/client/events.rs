@@ -1,9 +1,14 @@
 use super::*;
 
 /// Internal events for the client event loop.
+pub(super) struct ParsedHostInput {
+    pub(super) raw: Vec<u8>,
+    pub(super) event: crate::raw_input::RawInputEvent,
+    pub(super) pixel_mouse: Option<crate::input::mouse::HostPixels>,
+}
+
 pub(super) enum ClientLoopEvent {
-    StdinInput(Vec<u8>),
-    PixelMouse(Vec<u8>, crate::input::mouse::HostGeometry),
+    StdinInput(Vec<ParsedHostInput>),
     Resize(u16, u16, u32, u32, bool),
     TerminalUnavailable(io::Error),
     ServerMessage {

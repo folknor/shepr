@@ -3,22 +3,55 @@ use serde::Serialize;
 use crate::api;
 use crate::api::client::ApiClientError;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Command {
+    Overview { json: bool },
+    Server { json: bool },
+    Client { json: bool },
+    Invalid,
+}
+
+impl Command {
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Self::Overview { .. } => "",
+            Self::Server { .. } => "server",
+            Self::Client { .. } => "client",
+            Self::Invalid => "",
+        }
+    }
+
+    pub(super) fn is_api_command(self) -> bool {
+        matches!(self, Self::Server { .. })
+    }
+}
+
+pub(super) fn parse(matches: &clap::ArgMatches) -> Command {
+    let root_json = super::matches::flag(matches, "json");
+    match matches.subcommand() {
+        None => Command::Overview { json: root_json },
+        Some(("server", scope)) => Command::Server {
+            json: root_json || super::matches::flag(scope, "json"),
+        },
+        Some(("client", scope)) => Command::Client {
+            json: root_json || super::matches::flag(scope, "json"),
+        },
+        Some(_) => Command::Invalid,
+    }
+}
+
 pub(super) fn run_status_command(
-    matches: &clap::ArgMatches,
+    command: Command,
     paths: &super::target::CliContext,
 ) -> std::io::Result<i32> {
-    // `--json` may be given on `status` itself or on its scope subcommand.
-    let json = |scope: &clap::ArgMatches| {
-        super::matches::flag(matches, "json") || super::matches::flag(scope, "json")
-    };
-    match matches.subcommand() {
-        None => print_full_status(paths, json(matches)),
-        Some(("server", scope)) => print_server_status(paths, json(scope)),
-        Some(("client", scope)) => {
-            print_client_status(json(scope), paths)?;
+    match command {
+        Command::Overview { json } => print_full_status(paths, json),
+        Command::Server { json } => print_server_status(paths, json),
+        Command::Client { json } => {
+            print_client_status(json, paths)?;
             Ok(0)
         }
-        Some(_) => Ok(super::missing_subcommand()),
+        Command::Invalid => Ok(super::missing_subcommand()),
     }
 }
 

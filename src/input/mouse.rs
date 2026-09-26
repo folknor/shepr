@@ -123,6 +123,7 @@ fn map_axis_within_cell(
         .checked_add(1)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_report(data: &[u8]) -> Option<(u32, u32)> {
     let body = data.strip_prefix(b"\x1b[<")?;
     let body = body
@@ -135,23 +136,7 @@ pub(crate) fn parse_report(data: &[u8]) -> Option<(u32, u32)> {
     fields.next().is_none().then_some((x, y))
 }
 
-pub(crate) fn report_at_cell(data: &[u8], column: u16, row: u16) -> Option<Vec<u8>> {
-    let body = data.strip_prefix(b"\x1b[<")?;
-    let suffix = if body.ends_with(b"M") { 'M' } else { 'm' };
-    let body = body.strip_suffix(&[suffix as u8])?;
-    let buttons = body.split(|byte| *byte == b';').next()?;
-    Some(
-        format!(
-            "\x1b[<{};{};{}{}",
-            std::str::from_utf8(buttons).ok()?,
-            u32::from(column) + 1,
-            u32::from(row) + 1,
-            suffix
-        )
-        .into_bytes(),
-    )
-}
-
+#[cfg(test)]
 fn parse_number(value: &[u8]) -> Option<u32> {
     (!value.is_empty() && value.iter().all(u8::is_ascii_digit))
         .then(|| std::str::from_utf8(value).ok()?.parse().ok())
