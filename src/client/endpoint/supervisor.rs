@@ -53,7 +53,7 @@ const ATTEMPT_BUDGET: Duration = Duration::from_secs(25);
 
 #[derive(Clone, Copy)]
 pub(crate) struct EndpointConnectOptions {
-    pub(crate) geometry: crate::core::geometry::HostGeometry,
+    pub(crate) geometry: shepr_core::geometry::HostGeometry,
     pub(crate) surface_size: ClientSurfaceSize,
     pub(crate) mouse_capture: bool,
 }

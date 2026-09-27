@@ -11,6 +11,6 @@ pub(crate) struct HostCellSize {
 
 impl HostCellSize {
     pub(crate) fn is_known(&self) -> bool {
-        crate::core::geometry::CellPx::new(self.width_px, self.height_px).is_some()
+        shepr_core::geometry::CellPx::new(self.width_px, self.height_px).is_some()
     }
 }

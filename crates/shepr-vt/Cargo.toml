@@ -1,0 +1,19 @@
+[package]
+name = "shepr-vt"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+alacritty_terminal = { workspace = true }
+unicode-width = { workspace = true }
+unicode-segmentation = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+shepr-core = { path = "../shepr-core" }
+
+[dev-dependencies]
+shepr-test-support = { path = "../shepr-test-support" }
+
+[lints]
+workspace = true

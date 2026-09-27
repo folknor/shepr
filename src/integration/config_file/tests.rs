@@ -104,7 +104,7 @@ fn hard_links_are_rejected_before_staging_and_rechecked_before_commit() {
         assert!(error.contains(&candidate.display().to_string()));
         assert_eq!(fs::read(candidate).expect("test precondition"), b"original");
         assert_eq!(
-            crate::platform::config_file_link_count(candidate).expect("test precondition"),
+            shepr_platform::config_file_link_count(candidate).expect("test precondition"),
             2
         );
     }

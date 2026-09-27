@@ -4,10 +4,10 @@ use std::path::PathBuf;
 use ratatui::layout::Direction;
 use serde::{Deserialize, Serialize};
 
-use crate::core::layout::Node;
 use crate::pane::PaneRuntimeRegistry;
 use crate::protocol::TerminalId;
 use crate::workspace::Workspace;
+use shepr_core::layout::Node;
 
 /// Current snapshot format version. Files with any other version are ignored.
 pub(crate) const SNAPSHOT_VERSION: u32 = 1;

@@ -22,17 +22,15 @@ use super::process_probe::*;
 use super::teardown::*;
 use super::terminal::{GhosttyPaneTerminal, PaneTerminal};
 use super::*;
-use crate::core::layout::PaneId;
 use crate::detect::Agent;
 #[cfg(test)]
 use crate::detect::AgentState;
 use crate::events::AppEvent;
-use crate::pty::PtyCommand;
-use crate::pty::actor::{
-    PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult, ReaderExit,
-};
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalReadSnapshot;
+use shepr_core::layout::PaneId;
+use shepr_pty::PtyCommand;
+use shepr_pty::actor::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult, ReaderExit};
 
 pub(crate) struct TerminalDirtyPatchSnapshot {
     pub patch: TerminalDirtyPatchOutcome,
@@ -53,8 +51,8 @@ const MIN_PANE_COLS: u16 = 4;
 /// The smallest geometry a pane's PTY and emulator ever get. Spawn and resize
 /// both go through this so the child never sees a 0-row or 0-column PTY and
 /// the PTY and the emulator always agree on the size.
-fn clamp_pane_size(rows: u16, cols: u16) -> crate::core::geometry::GridSize {
-    crate::core::geometry::GridSize::clamped(cols.max(MIN_PANE_COLS), rows.max(MIN_PANE_ROWS))
+fn clamp_pane_size(rows: u16, cols: u16) -> shepr_core::geometry::GridSize {
+    shepr_core::geometry::GridSize::clamped(cols.max(MIN_PANE_COLS), rows.max(MIN_PANE_ROWS))
 }
 
 /// The render a pane needs once a synchronized update (mode 2026) that never
@@ -72,7 +70,7 @@ impl SyncTimeoutRender {
     /// Ask for a render at `at`. Returns the instant a new task must first
     /// wake at, or `None` when the armed task will cover it.
     fn arm(&self, at: std::time::Instant) -> Option<std::time::Instant> {
-        let mut latest = crate::vt::lock_auxiliary(&self.latest);
+        let mut latest = shepr_vt::lock_auxiliary(&self.latest);
         match *latest {
             Some(armed) => {
                 if at > armed {
@@ -93,7 +91,7 @@ impl SyncTimeoutRender {
     /// the earlier wake is safe: a newer update only begins after the earlier
     /// one ended, and ending an update requests its own render.
     fn next_wake(&self, woke_for: std::time::Instant) -> Option<std::time::Instant> {
-        let mut latest = crate::vt::lock_auxiliary(&self.latest);
+        let mut latest = shepr_vt::lock_auxiliary(&self.latest);
         match *latest {
             Some(later) if later > woke_for => Some(later),
             _ => {
@@ -110,7 +108,7 @@ pub struct PaneRuntime {
     pane_id: PaneId,
     terminal: Arc<PaneTerminal>,
     io: PaneRuntimeIo,
-    current_size: Cell<crate::core::geometry::PaneGeometry>,
+    current_size: Cell<shepr_core::geometry::PaneGeometry>,
     child_liveness: Arc<ChildLiveness>,
     reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
     persistence_cwd: Mutex<Option<std::path::PathBuf>>,
@@ -143,11 +141,7 @@ impl PaneRuntimeIo {
         }
     }
 
-    fn resize(
-        &self,
-        geometry: crate::core::geometry::PaneGeometry,
-        terminal_responses: Vec<Bytes>,
-    ) {
+    fn resize(&self, geometry: shepr_core::geometry::PaneGeometry, terminal_responses: Vec<Bytes>) {
         match self {
             PaneRuntimeIo::Actor(actor) => {
                 actor.resize(geometry, terminal_responses);
@@ -189,7 +183,7 @@ impl PaneRuntimeIo {
         text: Bytes,
         enter: Bytes,
         delay: std::time::Duration,
-    ) -> std::io::Result<crate::pty::actor::QueuedSubmission> {
+    ) -> std::io::Result<shepr_pty::actor::QueuedSubmission> {
         match self {
             PaneRuntimeIo::Actor(actor) => actor.queue_user_input_submission(text, enter, delay),
             #[cfg(test)]
@@ -206,9 +200,9 @@ impl PaneRuntimeIo {
                         });
                     let _ = reply_tx.send(result);
                 });
-                Ok(crate::pty::actor::QueuedSubmission {
+                Ok(shepr_pty::actor::QueuedSubmission {
                     completion: reply_rx,
-                    cancel: crate::pty::actor::SubmissionCancel::untracked(),
+                    cancel: shepr_pty::actor::SubmissionCancel::untracked(),
                 })
             }
         }
@@ -235,7 +229,7 @@ fn publish_reported_cwd(
     let Some(cwd) = usable_reported_cwd(cwd) else {
         return;
     };
-    if crate::vt::lock_auxiliary(reported_cwd).as_ref() == Some(&cwd) {
+    if shepr_vt::lock_auxiliary(reported_cwd).as_ref() == Some(&cwd) {
         return;
     }
     // The dedupe slot is updated only once the event is queued: if the shared
@@ -247,7 +241,7 @@ fn publish_reported_cwd(
         cwd: cwd.clone(),
     }) {
         Ok(()) => {
-            *crate::vt::lock_auxiliary(reported_cwd) = Some(cwd);
+            *shepr_vt::lock_auxiliary(reported_cwd) = Some(cwd);
         }
         Err(err) => {
             warn!(
@@ -415,7 +409,7 @@ impl PaneRuntime {
         let cols = size.cols.get();
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
 
-        let terminal = crate::vt::Terminal::new(cols, rows, scrollback_limit_bytes);
+        let terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
         let pane_terminal = GhosttyPaneTerminal::new(terminal);
         pane_terminal.apply_host_terminal_theme(host_terminal_theme);
         let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
@@ -425,14 +419,14 @@ impl PaneRuntime {
         let terminal = Arc::new(PaneTerminal::new(pane_terminal));
         let content_write_lock = Arc::new(Mutex::new(()));
 
-        let spawned = crate::pty::backend::spawn_pty(rows, cols, cmd)
+        let spawned = shepr_pty::backend::spawn_pty(rows, cols, cmd)
             .inspect_err(|err| error!(pane = pane_id.raw(), err = %err, "{spawn_error_message}"))?;
 
         // --- Child watcher task ---
         let pid = spawned.child.id();
         // Opened before the watcher below exists, so nothing can have reaped
         // the child yet and the pid is certainly still this child's.
-        let leader = crate::platform::ProcessHandle::open(pid);
+        let leader = shepr_platform::ProcessHandle::open(pid);
         if leader.is_none() {
             warn!(
                 pane = pane_id.raw(),
@@ -456,14 +450,14 @@ impl PaneRuntime {
                 // handling is involved.
                 let exit_reason = match child.wait() {
                     Ok(status) => {
-                        let exit_reason = crate::platform::classify_child_exit(&status);
+                        let exit_reason = shepr_platform::classify_child_exit(&status);
                         let status_text = status.to_string();
                         crate::logging::pane_exited(pane_id.raw(), &status_text);
                         exit_reason
                     }
                     Err(e) => {
                         crate::logging::pane_exit_failed(pane_id.raw(), &e.to_string());
-                        crate::platform::ChildExitReason::WaitFailed
+                        shepr_platform::ChildExitReason::WaitFailed
                     }
                 };
                 child_liveness.mark_wait_completed();
@@ -494,7 +488,7 @@ impl PaneRuntime {
             let sync_timeout_render = Arc::new(SyncTimeoutRender::default());
             let timer_writer_for_read = Arc::clone(&timer_writer);
             let on_read = Box::new(move |bytes: &[u8]| {
-                let _content_write_guard = crate::vt::lock_auxiliary(&content_write_lock);
+                let _content_write_guard = shepr_vt::lock_auxiliary(&content_write_lock);
                 content_seq.fetch_add(1, Ordering::AcqRel);
                 let shell_pid = child_liveness.pid();
                 let result = terminal.process_pty_bytes(pane_id, shell_pid, bytes);
@@ -550,7 +544,7 @@ impl PaneRuntime {
                         // their wait off a Tokio worker when a timer fires.
                         tokio::task::spawn_blocking(move || {
                             let _content_write_guard =
-                                crate::vt::lock_auxiliary(&content_write_lock);
+                                shepr_vt::lock_auxiliary(&content_write_lock);
                             content_seq.fetch_add(1, Ordering::AcqRel);
                             let result = terminal.flush_expired_synchronized_output(
                                 pane_id,
@@ -627,7 +621,7 @@ impl PaneRuntime {
                     // which would read history out of the broken core.
                     if let Err(err) = reader_exit_events.blocking_send(AppEvent::PaneDied {
                         pane_id,
-                        exit_reason: crate::platform::ChildExitReason::Exited,
+                        exit_reason: shepr_platform::ChildExitReason::Exited,
                     }) {
                         error!(
                             pane = pane_id.raw(),
@@ -749,7 +743,7 @@ impl PaneRuntime {
                         );
                         if process_change.clear_pending_release {
                             let mut pending_release =
-                                crate::vt::lock_auxiliary(&pending_release_for_task);
+                                shepr_vt::lock_auxiliary(&pending_release_for_task);
                             *pending_release = None;
                         }
                         if process_change.should_clear_osc_evidence {
@@ -930,7 +924,7 @@ impl PaneRuntime {
             pane_id,
             terminal,
             io,
-            current_size: Cell::new(crate::core::geometry::PaneGeometry::new(cols, rows, 0, 0)),
+            current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0)),
             child_liveness,
             reported_cwd,
             persistence_cwd: Mutex::new(None),
@@ -946,7 +940,7 @@ impl PaneRuntime {
     }
 
     pub fn begin_graceful_release(&self, agent: Agent) {
-        *crate::vt::lock_auxiliary(&self.pending_release) = Some(PendingAgentRelease {
+        *shepr_vt::lock_auxiliary(&self.pending_release) = Some(PendingAgentRelease {
             agent,
             until: std::time::Instant::now() + RELEASE_REACQUIRE_SUPPRESSION,
         });
@@ -971,7 +965,7 @@ impl PaneRuntime {
         }
     }
 
-    pub(crate) fn grid_size(&self) -> crate::core::geometry::GridSize {
+    pub(crate) fn grid_size(&self) -> shepr_core::geometry::GridSize {
         self.current_size.get().grid
     }
 
@@ -986,8 +980,8 @@ impl PaneRuntime {
     }
 
     /// Resize if the dimensions actually changed.
-    pub fn resize(&self, geometry: crate::core::geometry::PaneGeometry) {
-        let size = crate::core::geometry::PaneGeometry {
+    pub fn resize(&self, geometry: shepr_core::geometry::PaneGeometry) {
+        let size = shepr_core::geometry::PaneGeometry {
             grid: clamp_pane_size(geometry.rows(), geometry.cols()),
             cell: geometry.cell,
         };
@@ -995,7 +989,7 @@ impl PaneRuntime {
             return;
         }
         self.current_size.set(size);
-        let _content_write_guard = crate::vt::lock_auxiliary(&self.content_write_lock);
+        let _content_write_guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
         self.content_seq.fetch_add(1, Ordering::AcqRel);
         let terminal_responses = self.terminal.resize(size);
         self.content_seq.fetch_add(1, Ordering::Release);
@@ -1015,7 +1009,7 @@ impl PaneRuntime {
     }
 
     pub fn clear_screen(&self) -> Result<(), PaneClearError> {
-        let guard = crate::vt::lock_auxiliary(&self.content_write_lock);
+        let guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
         self.content_seq.fetch_add(1, Ordering::AcqRel);
         let result = self.terminal.clear_screen();
         self.content_seq.fetch_add(1, Ordering::Release);
@@ -1056,7 +1050,7 @@ impl PaneRuntime {
 
     pub(crate) fn word_motion_target(
         &self,
-        row: crate::vt::ScreenRow,
+        row: shepr_vt::ScreenRow,
         col: u16,
         motion: crate::pane::TerminalWordMotion,
     ) -> Option<crate::pane::TerminalTextPoint> {
@@ -1069,7 +1063,7 @@ impl PaneRuntime {
 
     pub(crate) fn paragraph_motion_target(
         &self,
-        row: crate::vt::ScreenRow,
+        row: shepr_vt::ScreenRow,
         direction: i8,
     ) -> Option<crate::pane::TerminalTextPoint> {
         self.terminal.paragraph_motion_target(row, direction)
@@ -1169,7 +1163,7 @@ impl PaneRuntime {
 
     pub fn extract_selection<P>(
         &self,
-        selection: &crate::vt::selection::Selection<P>,
+        selection: &shepr_vt::selection::Selection<P>,
     ) -> Option<String> {
         self.terminal.extract_selection(selection)
     }
@@ -1185,7 +1179,7 @@ impl PaneRuntime {
     ) -> Option<TerminalDirtyPatchSnapshot> {
         // PTY/resize writers announce changes before locking the terminal core.
         // Exclude them until rows and metadata have been paired with their revision.
-        let _content_guard = crate::vt::lock_auxiliary(&self.content_write_lock);
+        let _content_guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
         let revision = self.content_seq();
         if !revision.is_multiple_of(2) {
             return None;
@@ -1233,7 +1227,7 @@ impl PaneRuntime {
         text: Bytes,
         enter: Bytes,
         delay: std::time::Duration,
-    ) -> std::io::Result<crate::pty::actor::QueuedSubmission> {
+    ) -> std::io::Result<shepr_pty::actor::QueuedSubmission> {
         self.io.queue_user_input_submission(text, enter, delay)
     }
 
@@ -1252,12 +1246,12 @@ impl PaneRuntime {
         Bytes::from(payload)
     }
 
-    pub fn try_send_focus_event(&self, event: crate::vt::FocusEvent) -> bool {
+    pub fn try_send_focus_event(&self, event: shepr_vt::FocusEvent) -> bool {
         if !self.focus_reporting_enabled() {
             return false;
         }
 
-        let bytes = crate::vt::encode_focus(event);
+        let bytes = shepr_vt::encode_focus(event);
         if let Err(err) = self.try_send_bytes(Bytes::from_static(bytes)) {
             warn!(err = %err, ?event, "failed to forward pane focus event");
         }
@@ -1270,18 +1264,14 @@ impl PaneRuntime {
 
     pub(crate) fn screen_text_snapshot(
         &self,
-    ) -> Option<(crate::vt::ActiveScreen, crate::terminal::ScreenSnapshot)> {
+    ) -> Option<(shepr_vt::ActiveScreen, crate::terminal::ScreenSnapshot)> {
         let (screen, cols, rows) = self.terminal.screen_text_snapshot()?;
         Some((screen, crate::terminal::ScreenSnapshot { cols, rows }))
     }
 
     pub(crate) fn screen_text_snapshot_with_seq(
         &self,
-    ) -> Option<(
-        crate::vt::ActiveScreen,
-        crate::terminal::ScreenSnapshot,
-        u64,
-    )> {
+    ) -> Option<(shepr_vt::ActiveScreen, crate::terminal::ScreenSnapshot, u64)> {
         for _ in 0..3 {
             let before = self.content_seq();
             if !before.is_multiple_of(2) {
@@ -1362,7 +1352,7 @@ impl PaneRuntime {
 
     /// Get the current working directory of the child shell process.
     pub fn cwd(&self) -> Option<std::path::PathBuf> {
-        if let Some(cwd) = crate::vt::lock_auxiliary(&self.reported_cwd).clone() {
+        if let Some(cwd) = shepr_vt::lock_auxiliary(&self.reported_cwd).clone() {
             return Some(cwd);
         }
 
@@ -1378,12 +1368,12 @@ impl PaneRuntime {
             .filter(|cwd| cwd.is_absolute())
         {
             // Persistence observations must not change OSC authority or follow-cwd behavior.
-            *crate::vt::lock_auxiliary(&self.persistence_cwd) = Some(cwd.clone());
+            *shepr_vt::lock_auxiliary(&self.persistence_cwd) = Some(cwd.clone());
             return Some(cwd);
         }
-        crate::vt::lock_auxiliary(&self.persistence_cwd)
+        shepr_vt::lock_auxiliary(&self.persistence_cwd)
             .clone()
-            .or_else(|| crate::vt::lock_auxiliary(&self.reported_cwd).clone())
+            .or_else(|| shepr_vt::lock_auxiliary(&self.reported_cwd).clone())
     }
 
     pub fn child_pid(&self) -> Option<u32> {
@@ -1462,7 +1452,7 @@ impl PaneRuntime {
         let (start_tx, start_rx) = std::sync::mpsc::channel();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        crate::vt::lock_terminal_core(&self.terminal.ghostty.core)
+        shepr_vt::lock_terminal_core(&self.terminal.ghostty.core)
             .expect("test terminal core lock is not poisoned")
             .dirty_collection_hook = Some(Box::new(move || {
             start_tx.send(()).expect("test start channel is open");
@@ -1474,19 +1464,19 @@ impl PaneRuntime {
             start_rx
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .expect("test start signal arrives within timeout");
-            let guard = crate::vt::try_lock_auxiliary(&write_lock);
+            let guard = shepr_vt::try_lock_auxiliary(&write_lock);
             let announced = guard.is_some();
             if announced {
                 sequence.fetch_add(1, Ordering::AcqRel);
                 assert!(matches!(
-                    crate::vt::try_lock_terminal_core(&terminal.ghostty.core),
-                    Err(crate::vt::TerminalCoreTryLockError::WouldBlock)
+                    shepr_vt::try_lock_terminal_core(&terminal.ghostty.core),
+                    Err(shepr_vt::TerminalCoreTryLockError::WouldBlock)
                 ));
             }
             ready_tx.send(()).expect("test ready channel is open");
             let _ = release_rx.recv();
             let _guard = guard.unwrap_or_else(|| {
-                let guard = crate::vt::lock_auxiliary(&write_lock);
+                let guard = shepr_vt::lock_auxiliary(&write_lock);
                 sequence.fetch_add(1, Ordering::AcqRel);
                 guard
             });
@@ -1498,7 +1488,7 @@ impl PaneRuntime {
     }
 
     pub(crate) fn test_process_pty_bytes(&self, bytes: &[u8]) {
-        let _content_write_guard = crate::vt::lock_auxiliary(&self.content_write_lock);
+        let _content_write_guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
         self.content_seq.fetch_add(1, Ordering::AcqRel);
         let _ = self.terminal.process_pty_bytes(self.pane_id, 0, bytes);
         self.content_seq.fetch_add(1, Ordering::Release);
@@ -1522,7 +1512,7 @@ impl PaneRuntime {
     ) -> (Self, mpsc::Receiver<Bytes>) {
         let (tx, rx) = mpsc::channel(channel_capacity);
         let (resize_tx, _resize_rx) = watch::channel((rows, cols, 0, 0));
-        let mut terminal = crate::vt::Terminal::new(cols, rows, scrollback_limit_bytes);
+        let mut terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
         terminal.write(bytes);
         let pane_id = PaneId::from_raw(0);
         let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));
@@ -1535,7 +1525,7 @@ impl PaneRuntime {
                     sender: tx,
                     resize_tx,
                 },
-                current_size: Cell::new(crate::core::geometry::PaneGeometry::new(cols, rows, 0, 0)),
+                current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0)),
                 child_liveness: Arc::new(ChildLiveness::new(0, None)),
                 reported_cwd: Arc::new(Mutex::new(None)),
                 persistence_cwd: Mutex::new(None),
@@ -1647,7 +1637,7 @@ mod tests {
 
         runtime.test_process_pty_bytes(b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\");
         assert!(runtime.collect_dirty_patch_snapshot(20, 4).is_none());
-        assert!(crate::vt::try_lock_auxiliary(&runtime.content_write_lock).is_some());
+        assert!(shepr_vt::try_lock_auxiliary(&runtime.content_write_lock).is_some());
     }
 
     #[tokio::test]
@@ -1670,7 +1660,7 @@ mod tests {
             1
         );
         runtime.scroll_reset();
-        runtime.resize(crate::core::geometry::PaneGeometry::new(24, 5, 0, 0));
+        runtime.resize(shepr_core::geometry::PaneGeometry::new(24, 5, 0, 0));
         let resized = runtime
             .collect_dirty_patch_snapshot(24, 5)
             .expect("resized snapshot");
@@ -1775,7 +1765,7 @@ mod tests {
         let (events, _event_rx) = mpsc::channel(1);
         publish_reported_cwd(runtime.pane_id, cwd.clone(), &runtime.reported_cwd, &events);
         assert_eq!(
-            crate::vt::lock_auxiliary(&runtime.reported_cwd).as_ref(),
+            shepr_vt::lock_auxiliary(&runtime.reported_cwd).as_ref(),
             Some(&cwd),
             "test setup must pass cache admission"
         );
@@ -1802,7 +1792,7 @@ mod tests {
 
         publish_reported_cwd(runtime.pane_id, cwd.clone(), &runtime.reported_cwd, &events);
         assert!(
-            crate::vt::lock_auxiliary(&runtime.reported_cwd).is_none(),
+            shepr_vt::lock_auxiliary(&runtime.reported_cwd).is_none(),
             "an unsent report must not occupy the dedupe slot"
         );
 
@@ -1813,7 +1803,7 @@ mod tests {
         };
         assert_eq!(sent, cwd);
         assert_eq!(
-            crate::vt::lock_auxiliary(&runtime.reported_cwd).as_ref(),
+            shepr_vt::lock_auxiliary(&runtime.reported_cwd).as_ref(),
             Some(&cwd)
         );
     }
@@ -1860,7 +1850,7 @@ mod tests {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let scratch = crate::test_support::ScratchDir::new("follow-cwd");
         let cwd = scratch.to_path_buf();
-        *crate::vt::lock_auxiliary(&runtime.reported_cwd) = Some(cwd.clone());
+        *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(cwd.clone());
 
         assert_eq!(runtime.follow_cwd(), Some(cwd));
     }
@@ -1890,19 +1880,19 @@ mod tests {
     fn pane_size_clamp_never_yields_an_empty_pty() {
         assert_eq!(
             clamp_pane_size(0, 0),
-            crate::core::geometry::GridSize::clamped(MIN_PANE_COLS, MIN_PANE_ROWS)
+            shepr_core::geometry::GridSize::clamped(MIN_PANE_COLS, MIN_PANE_ROWS)
         );
         assert_eq!(
             clamp_pane_size(1, 80),
-            crate::core::geometry::GridSize::clamped(80, MIN_PANE_ROWS)
+            shepr_core::geometry::GridSize::clamped(80, MIN_PANE_ROWS)
         );
         assert_eq!(
             clamp_pane_size(24, 3),
-            crate::core::geometry::GridSize::clamped(MIN_PANE_COLS, 24)
+            shepr_core::geometry::GridSize::clamped(MIN_PANE_COLS, 24)
         );
         assert_eq!(
             clamp_pane_size(24, 80),
-            crate::core::geometry::GridSize::clamped(80, 24)
+            shepr_core::geometry::GridSize::clamped(80, 24)
         );
     }
 
@@ -1913,16 +1903,16 @@ mod tests {
         // SIGTERM, as a daemonised dev server might.
         let mut cmd = PtyCommand::new("/bin/sh");
         cmd.args(["-c", "trap '' HUP TERM; sleep 30 & exit 0"]);
-        let mut spawned = crate::pty::backend::spawn_pty(24, 80, &cmd).expect("spawn session");
+        let mut spawned = shepr_pty::backend::spawn_pty(24, 80, &cmd).expect("spawn session");
         let leader_pid = spawned.child.id();
-        let leader = crate::platform::ProcessHandle::open(leader_pid).expect("leader pidfd");
+        let leader = shepr_platform::ProcessHandle::open(leader_pid).expect("leader pidfd");
         let child_liveness = Arc::new(ChildLiveness::new(leader_pid, Some(leader)));
         spawned.child.wait().expect("reap the leader");
         assert!(child_liveness.has_exited());
         assert!(child_liveness.is_reaped());
         child_liveness.mark_wait_completed();
 
-        let members = crate::platform::session_member_handles(leader_pid, || true);
+        let members = shepr_platform::session_member_handles(leader_pid, || true);
         assert_eq!(members.len(), 1, "the background job survives its leader");
 
         let started = std::time::Instant::now();
@@ -1935,9 +1925,9 @@ mod tests {
         assert!(wait_for_pane_session_teardowns(
             std::time::Duration::from_secs(10)
         ));
-        let handles: Vec<&crate::platform::ProcessHandle> = members.iter().collect();
+        let handles: Vec<&shepr_platform::ProcessHandle> = members.iter().collect();
         assert!(
-            crate::platform::wait_for_process_exits(&handles, std::time::Duration::from_secs(1)),
+            shepr_platform::wait_for_process_exits(&handles, std::time::Duration::from_secs(1)),
             "the background job is killed once SIGHUP and SIGTERM are ignored"
         );
     }
@@ -1983,7 +1973,7 @@ mod tests {
             cmd.env(key, value);
         }
 
-        let mut spawned = crate::pty::backend::spawn_pty(24, 80, &cmd).expect("spawn in pty");
+        let mut spawned = shepr_pty::backend::spawn_pty(24, 80, &cmd).expect("spawn in pty");
         let status = spawned.child.wait().expect("wait for shell");
         assert!(status.success(), "shell command failed: {status:?}");
 
@@ -2069,12 +2059,12 @@ mod tests {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let scratch = crate::test_support::ScratchDir::new("exited-cwd");
         let saved = scratch.join("saved");
-        *crate::vt::lock_auxiliary(&runtime.persistence_cwd) = Some(saved.clone());
+        *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = Some(saved.clone());
         // A different live process now owns the exited shell's numeric PID.
         runtime.child_liveness.set_pid_for_test(std::process::id());
         runtime.child_liveness.mark_wait_completed();
         assert_eq!(runtime.cwd_for_persistence(), Some(saved));
-        *crate::vt::lock_auxiliary(&runtime.persistence_cwd) = None;
+        *shepr_vt::lock_auxiliary(&runtime.persistence_cwd) = None;
         assert_eq!(runtime.cwd_for_persistence(), None);
     }
 
@@ -2087,12 +2077,12 @@ mod tests {
         let runtime =
             PaneRuntime::test_with_scrollback_bytes(80, 45, 20_000_000, history.as_bytes());
 
-        runtime.resize(crate::core::geometry::PaneGeometry::new(80, 21, 0, 0));
+        runtime.resize(shepr_core::geometry::PaneGeometry::new(80, 21, 0, 0));
         let snapshot = runtime.recent_unwrapped_text_snapshot(usize::MAX);
         assert!(snapshot.text.contains("00001 "));
         assert!(snapshot.text.contains("02000 "));
 
-        runtime.resize(crate::core::geometry::PaneGeometry::new(80, 45, 0, 0));
+        runtime.resize(shepr_core::geometry::PaneGeometry::new(80, 45, 0, 0));
 
         assert_eq!(runtime.current_size(), (45, 80));
         assert_eq!(runtime.terminal_dimensions(), Some((80, 45)));
@@ -2112,9 +2102,9 @@ mod tests {
     async fn focus_events_are_forwarded_when_enabled() {
         let (tx, mut rx) = mpsc::channel(4);
         let (resize_tx, _resize_rx) = watch::channel((80, 24, 0, 0));
-        let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+        let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
         terminal
-            .mode_set(crate::vt::MODE_FOCUS_EVENT, true)
+            .mode_set(shepr_vt::MODE_FOCUS_EVENT, true)
             .expect("test precondition");
         let pane_id = PaneId::from_raw(0);
         let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));
@@ -2126,7 +2116,7 @@ mod tests {
                 sender: tx,
                 resize_tx,
             },
-            current_size: Cell::new(crate::core::geometry::PaneGeometry::new(24, 80, 0, 0)),
+            current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0)),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             reported_cwd: Arc::new(Mutex::new(None)),
             content_seq: Arc::new(AtomicU64::new(0)),
@@ -2139,7 +2129,7 @@ mod tests {
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
         };
 
-        assert!(runtime.try_send_focus_event(crate::vt::FocusEvent::Gained));
+        assert!(runtime.try_send_focus_event(shepr_vt::FocusEvent::Gained));
         assert_eq!(
             rx.recv().await.expect("test precondition"),
             Bytes::from_static(b"\x1b[I")
@@ -2150,7 +2140,7 @@ mod tests {
     async fn focus_events_are_suppressed_when_disabled() {
         let (tx, mut rx) = mpsc::channel(4);
         let (resize_tx, _resize_rx) = watch::channel((80, 24, 0, 0));
-        let terminal = crate::vt::Terminal::new(80, 24, 0);
+        let terminal = shepr_vt::Terminal::new(80, 24, 0);
         let pane_id = PaneId::from_raw(0);
         let terminal = Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));
         let runtime = PaneRuntime {
@@ -2161,7 +2151,7 @@ mod tests {
                 sender: tx,
                 resize_tx,
             },
-            current_size: Cell::new(crate::core::geometry::PaneGeometry::new(24, 80, 0, 0)),
+            current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0)),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             reported_cwd: Arc::new(Mutex::new(None)),
             content_seq: Arc::new(AtomicU64::new(0)),
@@ -2174,7 +2164,7 @@ mod tests {
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
         };
 
-        assert!(!runtime.try_send_focus_event(crate::vt::FocusEvent::Gained));
+        assert!(!runtime.try_send_focus_event(shepr_vt::FocusEvent::Gained));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(10), rx.recv())
                 .await

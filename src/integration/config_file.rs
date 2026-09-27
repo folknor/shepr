@@ -30,7 +30,7 @@ fn reject_hard_links(path: &Path) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
-    if metadata.is_file() && crate::platform::config_file_link_count(path)? > 1 {
+    if metadata.is_file() && shepr_platform::config_file_link_count(path)? > 1 {
         return Err(io::Error::other(format!(
             "cannot update {}: config has multiple hard links; use a separate file or a symlink before retrying",
             path.display()
@@ -108,9 +108,9 @@ impl Replacement {
             // the platform writer preserves the original permissions before publication.
             // New configs retain ordinary create/umask/inherited-ACL defaults.
             let created = if existing.is_some() {
-                crate::platform::create_private_temporary(&temporary)
+                shepr_platform::create_private_temporary(&temporary)
             } else {
-                crate::platform::create_config_temporary(&temporary)
+                shepr_platform::create_config_temporary(&temporary)
             };
             match created {
                 Ok(file) => drop(file),
@@ -121,7 +121,7 @@ impl Replacement {
                 target: target.clone(),
                 temporary,
             };
-            crate::platform::write_config_temporary(existing, &replacement.temporary, contents)?;
+            shepr_platform::write_config_temporary(existing, &replacement.temporary, contents)?;
             return Ok(replacement);
         }
         Err(io::Error::new(

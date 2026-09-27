@@ -23,7 +23,7 @@ impl App {
         // Not raw `current_exe()`: after an install replaces the binary, Linux
         // reports the running one as "/…/shepr (deleted)", which a status
         // command cannot run.
-        if let Ok(current_exe) = crate::platform::launch_executable() {
+        if let Ok(current_exe) = shepr_platform::launch_executable() {
             env.push((
                 "SHEPR_BIN_PATH".to_string(),
                 current_exe.display().to_string(),
@@ -140,7 +140,7 @@ impl App {
                     self.state
                         .tab_bar_right
                         .push(TabBarStatusSegment::Text(sanitize_status_text(
-                            crate::platform::hostname().as_deref().unwrap_or_default(),
+                            shepr_platform::hostname().as_deref().unwrap_or_default(),
                         )));
                 }
                 TabBarRightEntryConfig::Datetime { format } => {
@@ -281,7 +281,7 @@ impl App {
 }
 
 fn format_local_datetime(format: &time::format_description::OwnedFormatItem) -> Option<String> {
-    let datetime = crate::platform::local_datetime()?;
+    let datetime = shepr_platform::local_datetime()?;
     datetime
         .format(format)
         .ok()
@@ -847,7 +847,7 @@ struct StatusCommandGuard {
     process_group_id: Option<i32>,
     /// A handle on the group leader, opened while the child was certainly
     /// unreaped. `None` only if it could not be opened at all.
-    leader: Option<crate::platform::ProcessHandle>,
+    leader: Option<shepr_platform::ProcessHandle>,
 }
 
 impl StatusCommandGuard {
@@ -861,7 +861,7 @@ impl StatusCommandGuard {
             .map_err(|_| std::io::Error::other("status command process id exceeds i32"))?;
         Ok(Self {
             process_group_id: Some(process_group_id),
-            leader: crate::platform::ProcessHandle::open(process_id),
+            leader: shepr_platform::ProcessHandle::open(process_id),
         })
     }
 
@@ -880,7 +880,7 @@ impl StatusCommandGuard {
         let ours = status_group_is_ours(
             leader
                 .as_ref()
-                .map(crate::platform::ProcessHandle::is_unreaped),
+                .map(shepr_platform::ProcessHandle::is_unreaped),
             || Path::new(&format!("/proc/{process_group_id}")).exists(),
         );
         if !ours {

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use tracing::info;
 
-use crate::core::layout::PaneId;
+use shepr_core::layout::PaneId;
 
 use super::terminal::GhosttyPaneCore;
 
@@ -134,16 +134,16 @@ pub(super) struct AgentOscStateTracker {
 impl AgentOscStateTracker {
     /// Collects the title and progress changes the terminal core saw since
     /// the last call. Returns whether the displayed title changed.
-    pub(super) fn apply_terminal_updates(&mut self, terminal: &mut crate::vt::Terminal) -> bool {
+    pub(super) fn apply_terminal_updates(&mut self, terminal: &mut shepr_vt::Terminal) -> bool {
         let mut terminal_title_changed = false;
         if let Some(update) = terminal.take_title_update() {
             let title = match update {
-                crate::vt::TitleUpdate::Set(title) => Some(sanitize_agent_osc_string(
+                shepr_vt::TitleUpdate::Set(title) => Some(sanitize_agent_osc_string(
                     title.as_bytes(),
                     AGENT_OSC_MAX_CHARS,
                 ))
                 .filter(|title| !title.is_empty()),
-                crate::vt::TitleUpdate::Reset => None,
+                shepr_vt::TitleUpdate::Reset => None,
             };
             terminal_title_changed = self.terminal_title != title;
             self.terminal_title.clone_from(&title);
@@ -282,7 +282,7 @@ fn parse_file_uri_cwd(uri: &str) -> Option<PathBuf> {
     // `file://$HOSTNAME/path`, so the machine's own name must be accepted.
     // Looked up per report rather than cached: OSC 7 arrives about once per
     // prompt, and a renamed host keeps matching.
-    parse_file_uri_cwd_for_host(uri, crate::platform::hostname().as_deref())
+    parse_file_uri_cwd_for_host(uri, shepr_platform::hostname().as_deref())
 }
 
 /// Parse a `file://` cwd report, accepting an empty host, `localhost`, or
@@ -409,7 +409,7 @@ pub(super) fn restore_host_terminal_theme_if_needed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::layout::PaneId;
+    use shepr_core::layout::PaneId;
 
     #[test]
     fn bulk_osc_scan_matches_bytewise_state() {
@@ -444,7 +444,7 @@ mod tests {
     fn pane_default_theme(
         pane: &super::super::GhosttyPaneTerminal,
     ) -> crate::host_term::theme::TerminalTheme {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         let super::super::terminal::GhosttyPaneCore {
             terminal,
             render_state,
@@ -491,14 +491,14 @@ mod tests {
     /// A tracker fed the way the pane feeds it: bytes go through the terminal
     /// core, the tracker collects what the core saw.
     struct TrackedTerminal {
-        terminal: crate::vt::Terminal,
+        terminal: shepr_vt::Terminal,
         tracker: AgentOscStateTracker,
     }
 
     impl TrackedTerminal {
         fn new() -> Self {
             Self {
-                terminal: crate::vt::Terminal::new(80, 24, 0),
+                terminal: shepr_vt::Terminal::new(80, 24, 0),
                 tracker: AgentOscStateTracker::default(),
             }
         }
@@ -592,7 +592,7 @@ mod tests {
 
     #[test]
     fn reported_cwd_uses_the_live_hostname() {
-        let Some(hostname) = crate::platform::hostname() else {
+        let Some(hostname) = shepr_platform::hostname() else {
             return;
         };
         let uri = format!("file://{hostname}/tmp/shepr%20repo");
@@ -915,7 +915,7 @@ mod tests {
 
     #[test]
     fn restore_host_terminal_theme_reapplies_cached_colors() {
-        let terminal = crate::vt::Terminal::new(80, 24, 0);
+        let terminal = shepr_vt::Terminal::new(80, 24, 0);
         let pane = super::super::GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
         let shell_pid = 7;
@@ -935,7 +935,7 @@ mod tests {
 
         pane.apply_host_terminal_theme(host_theme);
         {
-            let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+            let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
             core.transient_default_color_owner_pgid = Some(42);
             core.terminal
                 .write(b"\x1b]10;rgb:01/02/03\x1b\\\x1b]11;rgb:dd/ee/ff\x1b\\");
@@ -950,7 +950,7 @@ mod tests {
         );
 
         {
-            let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+            let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
             // The child is mid-sequence when the restore runs: nothing may be
             // written into its stream.
             core.terminal.write(b"\x1b[3");
@@ -965,8 +965,8 @@ mod tests {
             assert_eq!(
                 core.terminal
                     .read_text_viewport(
-                        crate::vt::Point::new(crate::vt::ViewportRow(0), 0),
-                        crate::vt::Point::new(crate::vt::ViewportRow(0), 0),
+                        shepr_vt::Point::new(shepr_vt::ViewportRow(0), 0),
+                        shepr_vt::Point::new(shepr_vt::ViewportRow(0), 0),
                         false,
                     )
                     .expect("test precondition"),

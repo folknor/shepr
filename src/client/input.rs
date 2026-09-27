@@ -296,7 +296,7 @@ fn stdin_read_ready<R: AsRawFd>(reader: &R, timeout_ms: i32) -> Option<bool> {
 }
 
 fn poll_read_ready(fd: i32, timeout_ms: i32) -> Option<bool> {
-    crate::platform::poll_fd_readable(fd, timeout_ms).ok()
+    shepr_platform::poll_fd_readable(fd, timeout_ms).ok()
 }
 
 // ---------------------------------------------------------------------------

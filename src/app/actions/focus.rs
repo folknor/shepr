@@ -127,7 +127,7 @@ impl AppState {
         workspace_index: usize,
         tab_index: usize,
         pane_id: PaneId,
-        prepared_layout: crate::core::layout::TileLayout,
+        prepared_layout: shepr_core::layout::TileLayout,
         terminal: crate::terminal::TerminalState,
         focus: bool,
         right_click_passthrough: bool,

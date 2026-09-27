@@ -215,7 +215,7 @@ fn default_headless_size_is_effective_without_clients() {
 
     assert_eq!(
         server.headless_size,
-        crate::core::geometry::GridSize::clamped(
+        shepr_core::geometry::GridSize::clamped(
             crate::config::DEFAULT_HEADLESS_COLS,
             crate::config::DEFAULT_HEADLESS_ROWS
         )
@@ -1219,7 +1219,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     shutdown_test_runtimes(&mut server);
 }
 
-fn install_shared_view_test_runtime(server: &mut HeadlessServer) -> crate::core::layout::PaneId {
+fn install_shared_view_test_runtime(server: &mut HeadlessServer) -> shepr_core::layout::PaneId {
     let workspace = crate::workspace::Workspace::test_new("shared-view");
     let pane_id = workspace.focused_pane_id().expect("focused pane");
 
@@ -1272,7 +1272,7 @@ fn connect_matching_test_shell(
 
 fn write_shared_test_pane(
     server: &mut HeadlessServer,
-    pane_id: crate::core::layout::PaneId,
+    pane_id: shepr_core::layout::PaneId,
     bytes: &[u8],
 ) {
     server
@@ -2798,7 +2798,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
         11,
         ClientConnection::new_with_mode(
             ClientConnectionMode::shell(),
-            crate::core::geometry::GridSize::clamped(80, 24),
+            shepr_core::geometry::GridSize::clamped(80, 24),
             crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
@@ -2974,7 +2974,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
         11,
         ClientConnection::new_with_mode(
             ClientConnectionMode::shell(),
-            crate::core::geometry::GridSize::clamped(80, 24),
+            shepr_core::geometry::GridSize::clamped(80, 24),
             crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
@@ -3038,7 +3038,7 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
         11,
         ClientConnection::new_with_mode(
             ClientConnectionMode::shell(),
-            crate::core::geometry::GridSize::clamped(80, 24),
+            shepr_core::geometry::GridSize::clamped(80, 24),
             crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
@@ -3084,7 +3084,7 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
         11,
         ClientConnection::new_with_mode(
             ClientConnectionMode::shell(),
-            crate::core::geometry::GridSize::clamped(80, 24),
+            shepr_core::geometry::GridSize::clamped(80, 24),
             crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::SemanticFrame,
@@ -3200,7 +3200,7 @@ fn retained_test_server_with_control(
     HeadlessServer,
     std::sync::mpsc::Receiver<Vec<u8>>,
     std::sync::mpsc::Receiver<Vec<u8>>,
-    crate::core::layout::PaneId,
+    shepr_core::layout::PaneId,
 ) {
     let mut server = test_headless_server();
     let workspace = crate::workspace::Workspace::test_new("test");
@@ -3910,7 +3910,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
     assert!(
         server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
             pane_id,
-            exit_reason: crate::platform::ChildExitReason::Exited,
+            exit_reason: shepr_platform::ChildExitReason::Exited,
         })
     );
     assert!(server.app.find_pane(pane_id).is_none());
@@ -4091,7 +4091,7 @@ async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
         .event_tx
         .try_send(AppEvent::PaneDied {
             pane_id,
-            exit_reason: crate::platform::ChildExitReason::Exited,
+            exit_reason: shepr_platform::ChildExitReason::Exited,
         })
         .expect("test precondition");
     server
@@ -4163,7 +4163,7 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
     assert!(
         server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
             pane_id: dead_pane,
-            exit_reason: crate::platform::ChildExitReason::Exited
+            exit_reason: shepr_platform::ChildExitReason::Exited
         })
     );
 
@@ -4237,7 +4237,7 @@ async fn pane_death_reapplies_controller_geometry() {
     assert!(
         server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
             pane_id: dead_pane,
-            exit_reason: crate::platform::ChildExitReason::Exited
+            exit_reason: shepr_platform::ChildExitReason::Exited
         })
     );
 
@@ -4312,7 +4312,7 @@ fn client_pane_pixel_mouse_uses_runtime_pixel_encoding() {
         b"\x1b[?1003h\x1b[?1006h\x1b[?1016h",
         4,
     );
-    runtime.resize(crate::core::geometry::PaneGeometry::new(20, 5, 10, 20));
+    runtime.resize(shepr_core::geometry::PaneGeometry::new(20, 5, 10, 20));
 
     apply_client_pane_input_events(
         &runtime,
@@ -4353,7 +4353,7 @@ fn client_pane_pixel_mouse_stays_pixel_scaled_when_sgr_is_reasserted() {
         b"\x1b[?1003h\x1b[?1006h\x1b[?1016h\x1b[?1006h",
         4,
     );
-    runtime.resize(crate::core::geometry::PaneGeometry::new(80, 24, 10, 20));
+    runtime.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 10, 20));
 
     apply_client_pane_input_events(
         &runtime,
@@ -4394,7 +4394,7 @@ fn client_pane_pixel_mouse_falls_back_to_canonical_cell_position() {
         b"\x1b[?1003h\x1b[?1006h",
         4,
     );
-    runtime.resize(crate::core::geometry::PaneGeometry::new(20, 5, 10, 20));
+    runtime.resize(shepr_core::geometry::PaneGeometry::new(20, 5, 10, 20));
 
     apply_client_pane_input_events(
         &runtime,
@@ -5110,7 +5110,7 @@ fn pending_terminal_resize_does_not_take_shell_foreground_or_geometry() {
         2,
         ClientConnection::new_with_mode(
             ClientConnectionMode::TerminalPending,
-            crate::core::geometry::GridSize::clamped(80, 24),
+            shepr_core::geometry::GridSize::clamped(80, 24),
             crate::host_term::cell_size::HostCellSize::default(),
             1,
             RenderEncoding::TerminalAnsi,
@@ -5139,7 +5139,7 @@ fn pending_terminal_resize_does_not_take_shell_foreground_or_geometry() {
     assert_eq!(server.effective_size, shell_size);
     assert_eq!(
         server.clients[&2].terminal_size,
-        crate::core::geometry::GridSize::clamped(200, 60)
+        shepr_core::geometry::GridSize::clamped(200, 60)
     );
 }
 
@@ -5158,7 +5158,7 @@ async fn direct_terminal_clients_never_become_foreground_or_claim_tab_geometry()
             client_id,
             ClientConnection::new_with_mode(
                 mode,
-                crate::core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::GridSize::clamped(80, 24),
                 crate::host_term::cell_size::HostCellSize::default(),
                 1,
                 RenderEncoding::TerminalAnsi,
@@ -5442,7 +5442,7 @@ fn direct_terminal_streams_child_keyboard_and_mouse_modes() {
                 ClientConnectionMode::terminal_attach(crate::protocol::TerminalId::test_new(
                     terminal_id.clone(),
                 )),
-                crate::core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::GridSize::clamped(80, 24),
                 crate::host_term::cell_size::HostCellSize::default(),
                 1,
                 RenderEncoding::TerminalAnsi,
@@ -5593,7 +5593,7 @@ fn direct_terminal_mouse_uses_runtime_protocol_encoding() {
                 ClientConnectionMode::terminal_attach(crate::protocol::TerminalId::test_new(
                     terminal_id.clone(),
                 )),
-                crate::core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::GridSize::clamped(80, 24),
                 crate::host_term::cell_size::HostCellSize::default(),
                 1,
                 RenderEncoding::TerminalAnsi,
@@ -5627,7 +5627,7 @@ fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
                 b"\x1b[?1000h\x1b[?1006h\x1b[?1016h",
                 4,
             );
-        runtime.resize(crate::core::geometry::PaneGeometry::new(80, 24, 10, 20));
+        runtime.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 10, 20));
         server
             .app
             .terminal_runtimes
@@ -5638,7 +5638,7 @@ fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
                 ClientConnectionMode::terminal_attach(crate::protocol::TerminalId::test_new(
                     terminal_id.clone(),
                 )),
-                crate::core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::GridSize::clamped(80, 24),
                 crate::host_term::cell_size::HostCellSize {
                     width_px: 10,
                     height_px: 20,

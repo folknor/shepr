@@ -496,14 +496,14 @@ pub(super) fn write_managed_ssh_config(
     app_paths: &crate::config::AppPaths,
 ) -> io::Result<ManagedSshConfig> {
     let config_file = app_paths.config_file();
-    let paths: crate::platform::RemoteSshConfigPaths =
-        crate::platform::remote_ssh_config_paths(app_paths.home_dir());
-    let control_path = Some(crate::platform::shared_ssh_control_path(
+    let paths: shepr_platform::RemoteSshConfigPaths =
+        shepr_platform::remote_ssh_config_paths(app_paths.home_dir());
+    let control_path = Some(shepr_platform::shared_ssh_control_path(
         config_file,
         target,
     )?);
 
-    let dir = crate::platform::create_remote_ssh_config_dir(SSH_CONTROL_SOCKET_NAME)?;
+    let dir = shepr_platform::create_remote_ssh_config_dir(SSH_CONTROL_SOCKET_NAME)?;
     let path = dir.join("config");
     let mut contents = String::new();
     for include in [
@@ -520,7 +520,7 @@ pub(super) fn write_managed_ssh_config(
     contents.push_str("  ServerAliveCountMax 4\n");
 
     let write_result = (|| {
-        let mut file = crate::platform::create_private_file(&path)?;
+        let mut file = shepr_platform::create_private_file(&path)?;
         file.write_all(contents.as_bytes())
     })();
     if let Err(err) = write_result {

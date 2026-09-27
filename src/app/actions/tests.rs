@@ -172,7 +172,7 @@ fn workspace_creation_state_command_commits_spawned_values() {
 fn tab_creation_state_command_commits_spawned_values_and_focus() {
     let mut state = app_with_workspaces(&["one"]);
     let workspace = &state.workspaces[0];
-    let (layout, root_pane) = crate::core::layout::TileLayout::new();
+    let (layout, root_pane) = shepr_core::layout::TileLayout::new();
     let terminal_id = crate::protocol::TerminalId::alloc();
     let mut pane = crate::workspace::TabPane::new(crate::pane::PaneState::new(terminal_id.clone()));
     pane.public_number = workspace.next_public_pane_number();

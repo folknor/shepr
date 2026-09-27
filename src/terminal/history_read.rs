@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::vt::{CellWide, ScreenTextRow};
+use shepr_vt::{CellWide, ScreenTextRow};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct TerminalReadSnapshot {
@@ -238,7 +238,7 @@ fn push_row_text(text: &mut String, row: &ScreenTextRow, skip_spacer_head: bool)
             continue;
         }
         if cell.graphemes.is_empty()
-            || cell.graphemes.first().copied() == Some(crate::vt::KITTY_UNICODE_PLACEHOLDER)
+            || cell.graphemes.first().copied() == Some(shepr_vt::KITTY_UNICODE_PLACEHOLDER)
         {
             text.push(' ');
         } else {
@@ -252,7 +252,7 @@ fn push_row_text(text: &mut String, row: &ScreenTextRow, skip_spacer_head: bool)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vt::{ScreenTextCell, ScreenTextRow};
+    use shepr_vt::{ScreenTextCell, ScreenTextRow};
 
     fn row(text: &str) -> ScreenTextRow {
         ScreenTextRow {

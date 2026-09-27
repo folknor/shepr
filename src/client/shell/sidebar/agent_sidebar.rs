@@ -512,7 +512,7 @@ fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: 
     // The cell holding the last drawn character, so zero-width characters
     // (combining marks, variation selectors) join its grapheme.
     let mut last_column = None;
-    for (unit, char_width) in crate::vt::unicode_display_units(text) {
+    for (unit, char_width) in shepr_vt::unicode_display_units(text) {
         let char_width = usize::from(char_width);
         if char_width == 0 {
             if !unit.chars().all(char::is_control)
@@ -544,7 +544,7 @@ fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: 
 }
 
 fn display_width(text: &str) -> usize {
-    crate::vt::unicode_text_width(text)
+    shepr_vt::unicode_text_width(text)
 }
 
 #[cfg(test)]

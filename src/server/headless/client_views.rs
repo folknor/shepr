@@ -6,7 +6,7 @@ use crate::server::clients::ClientShellTopology;
 pub(super) struct ShellFocusTarget {
     pub(super) tab_id: crate::protocol::PublicTabId,
     pub(super) workspace_id: crate::protocol::WorkspaceId,
-    pub(super) pane_id: crate::core::layout::PaneId,
+    pub(super) pane_id: shepr_core::layout::PaneId,
 }
 
 fn classify_shell_focus_transition<'a>(
@@ -394,7 +394,7 @@ impl HeadlessServer {
     pub(super) fn send_shell_focus_target(
         &self,
         target: &ShellFocusTarget,
-        event: crate::vt::FocusEvent,
+        event: shepr_vt::FocusEvent,
     ) {
         if let Some(workspace_index) = self
             .app
@@ -446,10 +446,10 @@ impl HeadlessServer {
         gained: &HashMap<String, ShellFocusTarget>,
     ) {
         for target in lost.values() {
-            self.send_shell_focus_target(target, crate::vt::FocusEvent::Lost);
+            self.send_shell_focus_target(target, shepr_vt::FocusEvent::Lost);
         }
         for target in gained.values() {
-            self.send_shell_focus_target(target, crate::vt::FocusEvent::Gained);
+            self.send_shell_focus_target(target, shepr_vt::FocusEvent::Gained);
         }
     }
 
@@ -474,10 +474,10 @@ impl HeadlessServer {
         let (lost, gained) =
             classify_shell_focus_transition(before, after, focused_tabs_before, focused_tabs_after);
         if let Some(target) = lost {
-            self.send_shell_focus_target(target, crate::vt::FocusEvent::Lost);
+            self.send_shell_focus_target(target, shepr_vt::FocusEvent::Lost);
         }
         if let Some(target) = gained {
-            self.send_shell_focus_target(target, crate::vt::FocusEvent::Gained);
+            self.send_shell_focus_target(target, shepr_vt::FocusEvent::Gained);
         }
     }
 
@@ -485,7 +485,7 @@ impl HeadlessServer {
         &self,
         client_id: ClientId,
         workspace_index: usize,
-        pane_id: crate::core::layout::PaneId,
+        pane_id: shepr_core::layout::PaneId,
     ) -> bool {
         let Some(target) = self.shell_target_for_client(client_id) else {
             return false;

@@ -8,10 +8,10 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 const SELECTION_AUTOSCROLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(30);
 const SELECTION_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
 
-fn selection_cell(column: u16, row: u16, pane: Rect) -> (crate::vt::ViewportRow, u16) {
+fn selection_cell(column: u16, row: u16, pane: Rect) -> (shepr_vt::ViewportRow, u16) {
     let column = column.clamp(pane.x, pane.x + pane.width.saturating_sub(1));
     let row = row.clamp(pane.y, pane.y + pane.height.saturating_sub(1));
-    (crate::vt::ViewportRow(row - pane.y), column - pane.x)
+    (shepr_vt::ViewportRow(row - pane.y), column - pane.x)
 }
 
 impl ClientShellState {
@@ -212,17 +212,17 @@ impl ClientShellState {
         if self.word_selection_gesture.is_some() {
             let (viewport_row, col) = selection_cell(column, row, hit.inner_rect);
             let absolute_row = metrics.map_or_else(
-                || crate::vt::AbsRow(u64::from(viewport_row.0)),
+                || shepr_vt::AbsRow(u64::from(viewport_row.0)),
                 |metrics| metrics.absolute_row_at_viewport(viewport_row),
             );
             self.drag_word_selection((absolute_row, col), outcome);
         } else if let Some(selection) = self.selection.as_mut() {
             let (viewport_row, col) = selection_cell(column, row, hit.inner_rect);
             let absolute_row = metrics.map_or_else(
-                || crate::vt::AbsRow(u64::from(viewport_row.0)),
+                || shepr_vt::AbsRow(u64::from(viewport_row.0)),
                 |metrics| metrics.absolute_row_at_viewport(viewport_row),
             );
-            selection.drag(crate::vt::Point::new(absolute_row, col));
+            selection.drag(shepr_vt::Point::new(absolute_row, col));
         }
     }
 
@@ -237,11 +237,11 @@ impl ClientShellState {
         let was_dragging = self
             .selection
             .as_ref()
-            .is_some_and(crate::vt::selection::Selection::is_dragging);
+            .is_some_and(shepr_vt::selection::Selection::is_dragging);
         let moved_from_anchor = self.selection.as_ref().is_some_and(|selection| {
             let anchor = selection.anchor_position();
             let top = metrics.map_or(
-                crate::vt::AbsRow(0),
+                shepr_vt::AbsRow(0),
                 crate::pane::ScrollMetrics::viewport_top_row,
             );
             let anchor_row = hit
@@ -452,7 +452,7 @@ impl ClientShellState {
             viewport_rows: hit.scroll.map_or(0, |metrics| metrics.viewport_rows),
             history_origin: hit
                 .scroll
-                .map_or(crate::vt::AbsRow(0), |metrics| metrics.history_origin),
+                .map_or(shepr_vt::AbsRow(0), |metrics| metrics.history_origin),
         };
         self.update_selection_cursor_with_metrics(
             &hit,
@@ -860,7 +860,7 @@ impl ClientShellState {
                                         .path
                                         .into_iter()
                                         .map(|branch| {
-                                            branch == crate::core::geometry::SplitBranch::Second
+                                            branch == shepr_core::geometry::SplitBranch::Second
                                         })
                                         .collect(),
                                     ratio,
@@ -1029,7 +1029,7 @@ impl ClientShellState {
                                             .path
                                             .into_iter()
                                             .map(|branch| {
-                                                branch == crate::core::geometry::SplitBranch::Second
+                                                branch == shepr_core::geometry::SplitBranch::Second
                                             })
                                             .collect(),
                                         ratio,
@@ -1316,14 +1316,14 @@ impl ClientShellState {
             let copied = self
                 .selection
                 .as_mut()
-                .is_some_and(crate::vt::selection::Selection::finish);
+                .is_some_and(shepr_vt::selection::Selection::finish);
             if copied && self.config.copy_on_select {
                 self.request_selection_copy(outcome, true);
                 self.selection = None;
             } else if self
                 .selection
                 .as_ref()
-                .is_some_and(crate::vt::selection::Selection::is_just_click)
+                .is_some_and(shepr_vt::selection::Selection::is_just_click)
             {
                 self.selection = None;
             }
@@ -1823,12 +1823,12 @@ impl ClientShellState {
                             let (viewport_row, col) =
                                 selection_cell(mouse.column, mouse.row, hit.inner_rect);
                             let absolute_row = hit.scroll.map_or_else(
-                                || crate::vt::AbsRow(u64::from(viewport_row.0)),
+                                || shepr_vt::AbsRow(u64::from(viewport_row.0)),
                                 |metrics| metrics.absolute_row_at_viewport(viewport_row),
                             );
-                            self.selection = Some(crate::vt::selection::Selection::anchor(
+                            self.selection = Some(shepr_vt::selection::Selection::anchor(
                                 hit.pane_id.clone(),
-                                crate::vt::Point::new(absolute_row, col),
+                                shepr_vt::Point::new(absolute_row, col),
                             ));
                         }
                     }

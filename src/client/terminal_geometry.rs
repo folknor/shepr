@@ -43,9 +43,8 @@ fn ioctl_terminal_geometry() -> Option<(u16, u16, u32, u32)> {
 #[cfg(test)]
 pub(super) fn cell_size_fallback(reported: u64, last: Option<(u32, u32)>) -> (u32, u32) {
     unpack_cell_size(reported)
-        .or(last.filter(|(width, height)| {
-            crate::core::geometry::CellPx::new(*width, *height).is_some()
-        }))
+        .or(last
+            .filter(|(width, height)| shepr_core::geometry::CellPx::new(*width, *height).is_some()))
         .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX))
 }
 
@@ -75,11 +74,11 @@ pub(super) fn pack_cell_size(width_px: u32, height_px: u32) -> u64 {
 fn unpack_cell_size(packed: u64) -> Option<(u32, u32)> {
     let width_px = (packed >> 32) as u32;
     let height_px = u32::try_from(packed & u64::from(u32::MAX)).unwrap_or(u32::MAX);
-    crate::core::geometry::CellPx::new(width_px, height_px)
+    shepr_core::geometry::CellPx::new(width_px, height_px)
         .map(|cell| (cell.width.get(), cell.height.get()))
 }
 
-type TerminalGeometry = crate::core::geometry::HostGeometry;
+type TerminalGeometry = shepr_core::geometry::HostGeometry;
 
 /// Host grid size as reported by the client. A client-owned shell must keep
 /// its full grid within one surface frame; a direct terminal client reports
@@ -141,9 +140,8 @@ pub(super) fn current_terminal_geometry_with(
     }
     let (cell_width_px, cell_height_px) = reported_cell_size
         .load()
-        .or(last_cell_size.filter(|(width, height)| {
-            crate::core::geometry::CellPx::new(*width, *height).is_some()
-        }))
+        .or(last_cell_size
+            .filter(|(width, height)| shepr_core::geometry::CellPx::new(*width, *height).is_some()))
         .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX));
     Ok(TerminalGeometry::new(
         cols,
@@ -166,7 +164,7 @@ fn current_terminal_geometry(
         reported_cell_size,
         last_cell_size,
         ioctl_terminal_geometry(),
-        crate::platform::terminal_grid_size,
+        shepr_platform::terminal_grid_size,
     )
 }
 
@@ -205,11 +203,11 @@ pub(super) fn resize_poll_loop(
     reported_cell_size: &AtomicCellSize,
     should_quit: &Arc<AtomicBool>,
 ) {
-    crate::platform::watch_terminal_resize_signal();
+    shepr_platform::watch_terminal_resize_signal();
     let mut last_size = initial;
     while !should_quit.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(100));
-        let signalled = crate::platform::take_terminal_resize_signal();
+        let signalled = shepr_platform::take_terminal_resize_signal();
         let new_size = match current_terminal_geometry(
             pixel_geometry_enabled,
             pixel_geometry_fallback,
@@ -249,7 +247,7 @@ pub(super) fn query_host_terminal_theme() {
 
 pub(super) fn write_host_terminal_theme_query(mut writer: impl io::Write) -> io::Result<()> {
     let query = crate::host_term::theme::host_terminal_theme_query_sequence(
-        crate::platform::should_query_host_terminal_palette(),
+        shepr_platform::should_query_host_terminal_palette(),
     );
     writer.write_all(query.as_bytes())?;
     writer.flush()

@@ -270,11 +270,11 @@ async fn api_pane_selection_read_uses_endpoint_terminal_text() {
     let mut params = PaneSelectionReadParams {
         pane_id: public_pane_id.clone(),
         anchor: crate::api::schema::PaneSelectionPoint {
-            row: crate::vt::AbsRow(0),
+            row: shepr_vt::AbsRow(0),
             col: 0,
         },
         cursor: crate::api::schema::PaneSelectionPoint {
-            row: crate::vt::AbsRow(0),
+            row: shepr_vt::AbsRow(0),
             col: 4,
         },
         content_revision: Some(revision),
@@ -312,7 +312,7 @@ async fn api_copy_motion_uses_endpoint_terminal_word_semantics() {
         PaneCopyMotionParams {
             pane_id: public_pane_id.clone(),
             cursor: crate::api::schema::PaneTextPoint {
-                row: crate::vt::ScreenRow(0),
+                row: shepr_vt::ScreenRow(0),
                 col: 0,
             },
             motion: PaneCopyMotion::NextWordStart,
@@ -326,7 +326,7 @@ async fn api_copy_motion_uses_endpoint_terminal_word_semantics() {
         ResponseResult::PaneCopyMotion {
             pane_id: public_pane_id,
             cursor: crate::api::schema::PaneTextPoint {
-                row: crate::vt::ScreenRow(0),
+                row: shepr_vt::ScreenRow(0),
                 col: 6
             },
             content_revision: 0,
@@ -347,7 +347,7 @@ async fn api_paragraph_motion_preserves_the_copy_cursor_column() {
         PaneCopyMotionParams {
             pane_id: public_pane_id.clone(),
             cursor: PaneTextPoint {
-                row: crate::vt::ScreenRow(0),
+                row: shepr_vt::ScreenRow(0),
                 col: 2,
             },
             motion: PaneCopyMotion::NextParagraph,
@@ -360,7 +360,7 @@ async fn api_paragraph_motion_preserves_the_copy_cursor_column() {
         ResponseResult::PaneCopyMotion {
             pane_id: public_pane_id,
             cursor: PaneTextPoint {
-                row: crate::vt::ScreenRow(1),
+                row: shepr_vt::ScreenRow(1),
                 col: 2
             },
             content_revision: 0,
@@ -389,7 +389,7 @@ async fn api_copy_search_uses_endpoint_terminal_matches_and_wraps() {
             query: "alpha".into(),
             direction: PaneCopySearchDirection::Forward,
             cursor: PaneTextPoint {
-                row: crate::vt::ScreenRow(0),
+                row: shepr_vt::ScreenRow(0),
                 col: 0,
             },
             content_revision,
@@ -414,14 +414,14 @@ async fn api_copy_search_uses_endpoint_terminal_matches_and_wraps() {
     assert_eq!(
         matches[0].start,
         PaneTextPoint {
-            row: crate::vt::ScreenRow(0),
+            row: shepr_vt::ScreenRow(0),
             col: 0
         }
     );
     assert_eq!(
         matches[1].start,
         PaneTextPoint {
-            row: crate::vt::ScreenRow(0),
+            row: shepr_vt::ScreenRow(0),
             col: 11
         }
     );
@@ -452,7 +452,7 @@ async fn api_copy_search_bounds_returned_matches_but_keeps_exact_total() {
             query: "a".into(),
             direction: PaneCopySearchDirection::Forward,
             cursor: PaneTextPoint {
-                row: crate::vt::ScreenRow(0),
+                row: shepr_vt::ScreenRow(0),
                 col: 0,
             },
             content_revision,
@@ -482,7 +482,7 @@ async fn api_copy_search_rejects_stale_content_revision() {
             query: "alpha".into(),
             direction: PaneCopySearchDirection::Forward,
             cursor: PaneTextPoint {
-                row: crate::vt::ScreenRow(0),
+                row: shepr_vt::ScreenRow(0),
                 col: 0,
             },
             content_revision: 2,

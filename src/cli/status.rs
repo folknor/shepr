@@ -324,7 +324,7 @@ fn print_json(value: &impl Serialize) -> super::CliResult<()> {
 fn current_exe_label() -> String {
     // Same resolution as every other place that names the binary, so a
     // replaced install reports its path, not "/…/shepr (deleted)".
-    crate::platform::launch_executable()
+    shepr_platform::launch_executable()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|err| format!("unknown ({err})"))
 }

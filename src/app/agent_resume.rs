@@ -15,7 +15,7 @@ const PENDING_AGENT_RESUME_RETRY_INTERVAL: std::time::Duration = std::time::Dura
 const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration = crate::pane::MANAGED_AGENT_RESUME_TIMEOUT;
 
 struct PendingAgentResumeCandidate {
-    pane_id: crate::core::layout::PaneId,
+    pane_id: shepr_core::layout::PaneId,
     terminal_id: crate::protocol::TerminalId,
     cwd: std::path::PathBuf,
     plan: crate::agent::resume::AgentResumePlan,
@@ -233,7 +233,7 @@ impl App {
     fn pane_awaits_agent_resume(
         &self,
         tab: &crate::workspace::Tab,
-        pane_id: crate::core::layout::PaneId,
+        pane_id: shepr_core::layout::PaneId,
     ) -> bool {
         tab.panes.get(&pane_id).is_some_and(|pane| {
             self.terminal_runtimes
@@ -380,7 +380,7 @@ impl App {
 
     fn start_pending_agent_resume(
         &mut self,
-        pane_id: crate::core::layout::PaneId,
+        pane_id: shepr_core::layout::PaneId,
         terminal_id: &crate::protocol::TerminalId,
         cwd: &std::path::Path,
         plan: &crate::agent::resume::AgentResumePlan,

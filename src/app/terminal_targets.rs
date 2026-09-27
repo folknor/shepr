@@ -5,7 +5,7 @@ use crate::protocol::TerminalId;
 pub(crate) struct TerminalTarget {
     pub ws_idx: usize,
     pub tab_idx: usize,
-    pub pane_id: crate::core::layout::PaneId,
+    pub pane_id: shepr_core::layout::PaneId,
     pub terminal_id: TerminalId,
 }
 
@@ -13,7 +13,7 @@ pub(crate) struct TerminalTarget {
 struct TerminalTargetRef<'a> {
     ws_idx: usize,
     tab_idx: usize,
-    pane_id: crate::core::layout::PaneId,
+    pane_id: shepr_core::layout::PaneId,
     terminal_id: &'a TerminalId,
 }
 
@@ -170,7 +170,7 @@ impl App {
     fn terminal_target_for_pane(
         &self,
         ws_idx: usize,
-        pane_id: crate::core::layout::PaneId,
+        pane_id: shepr_core::layout::PaneId,
     ) -> Option<TerminalTarget> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
@@ -186,7 +186,7 @@ impl App {
     fn terminal_target_candidate(
         &self,
         ws_idx: usize,
-        pane_id: crate::core::layout::PaneId,
+        pane_id: shepr_core::layout::PaneId,
     ) -> Option<TerminalTargetCandidate> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab_idx = ws.find_tab_index_for_pane(pane_id)?;

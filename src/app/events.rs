@@ -345,11 +345,7 @@ impl App {
         events
     }
 
-    pub(crate) fn emit_pane_updated(
-        &mut self,
-        ws_idx: usize,
-        pane_id: crate::core::layout::PaneId,
-    ) {
+    pub(crate) fn emit_pane_updated(&mut self, ws_idx: usize, pane_id: shepr_core::layout::PaneId) {
         if let Some(pane) = self.pane_info(ws_idx, pane_id) {
             self.emit_event(crate::api::schema::EventEnvelope {
                 data: crate::api::schema::EventData::PaneUpdated { pane },
@@ -398,7 +394,7 @@ impl App {
     pub(crate) fn emit_focus_api_events(
         &mut self,
         ws_idx: usize,
-        pane_id: crate::core::layout::PaneId,
+        pane_id: shepr_core::layout::PaneId,
     ) {
         self.emit_event(crate::api::schema::EventEnvelope {
             data: crate::api::schema::EventData::WorkspaceFocused {
@@ -428,7 +424,7 @@ impl App {
         }
     }
 
-    fn sync_focus_events_with_outer_event(&mut self, outer_event: Option<crate::vt::FocusEvent>) {
+    fn sync_focus_events_with_outer_event(&mut self, outer_event: Option<shepr_vt::FocusEvent>) {
         let current_focus = self.state.active_index().and_then(|idx| {
             self.state
                 .workspaces
@@ -443,14 +439,14 @@ impl App {
         }
 
         if let Some((ws_idx, pane_id)) = self.last_focus {
-            self.send_pane_focus_event(ws_idx, pane_id, crate::vt::FocusEvent::Lost);
+            self.send_pane_focus_event(ws_idx, pane_id, shepr_vt::FocusEvent::Lost);
         }
         if let Some((ws_idx, pane_id)) = current_focus {
             let event = outer_event.unwrap_or_else(|| {
                 if self.state.outer_terminal_focus == Some(false) {
-                    crate::vt::FocusEvent::Lost
+                    shepr_vt::FocusEvent::Lost
                 } else {
-                    crate::vt::FocusEvent::Gained
+                    shepr_vt::FocusEvent::Gained
                 }
             });
             self.send_pane_focus_event(ws_idx, pane_id, event);
@@ -463,8 +459,8 @@ impl App {
     pub(crate) fn send_pane_focus_event(
         &self,
         ws_idx: usize,
-        pane_id: crate::core::layout::PaneId,
-        event: crate::vt::FocusEvent,
+        pane_id: shepr_core::layout::PaneId,
+        event: shepr_vt::FocusEvent,
     ) {
         let Some(runtime) = self.state.workspaces.get(ws_idx).and_then(|_| {
             self.state

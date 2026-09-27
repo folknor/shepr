@@ -7,3 +7,15 @@ exclude = ["src/detect/manifests"]
 
 [test]
 debug = true
+
+# Name every package because an empty selection checks only a root package.
+[[check]]
+name = "workspace"
+packages = [
+    "shepr",
+    "shepr-core",
+    "shepr-platform",
+    "shepr-pty",
+    "shepr-test-support",
+    "shepr-vt",
+]

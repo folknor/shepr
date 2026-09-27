@@ -15,9 +15,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error};
 use unicode_width::UnicodeWidthStr;
 
-use crate::core::layout::PaneId;
 use crate::protocol::CellData;
-use crate::vt::{AbsRow, Point, ScreenRow, ViewportRow};
+use shepr_core::layout::PaneId;
+use shepr_vt::{AbsRow, Point, ScreenRow, ViewportRow};
 
 #[cfg(test)]
 mod migration_tests;
@@ -41,12 +41,12 @@ pub struct ScrollMetrics {
     pub offset_from_bottom: usize,
     pub max_offset_from_bottom: usize,
     pub viewport_rows: usize,
-    pub history_origin: crate::vt::AbsRow,
+    pub history_origin: shepr_vt::AbsRow,
 }
 
 impl ScrollMetrics {
     /// The stable row ID at the top of the current viewport.
-    pub fn viewport_top_row(self) -> crate::vt::AbsRow {
+    pub fn viewport_top_row(self) -> shepr_vt::AbsRow {
         let screen_row = self
             .max_offset_from_bottom
             .saturating_sub(self.offset_from_bottom);
@@ -55,8 +55,8 @@ impl ScrollMetrics {
     }
 
     /// Convert a viewport-relative row to its stable row ID.
-    pub fn absolute_row_at_viewport(self, row: crate::vt::ViewportRow) -> crate::vt::AbsRow {
-        crate::vt::AbsRow::from_viewport_top(self.viewport_top_row(), row)
+    pub fn absolute_row_at_viewport(self, row: shepr_vt::ViewportRow) -> shepr_vt::AbsRow {
+        shepr_vt::AbsRow::from_viewport_top(self.viewport_top_row(), row)
     }
 }
 
@@ -68,7 +68,7 @@ pub struct ScrollPosition {
 
 impl ScrollPosition {
     #[cfg(test)]
-    pub fn viewport_top_row(self) -> crate::vt::AbsRow {
+    pub fn viewport_top_row(self) -> shepr_vt::AbsRow {
         self.metrics.viewport_top_row()
     }
 }
@@ -87,7 +87,7 @@ pub(crate) struct TerminalTextMatch<R = ScreenRow> {
     pub end: TerminalTextPoint<R>,
     pub source_fingerprint: u64,
     pub scan_cols: u16,
-    pub scan_screen: crate::vt::ActiveScreen,
+    pub scan_screen: shepr_vt::ActiveScreen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,11 +235,11 @@ pub(crate) struct GhosttyPaneTerminal {
 pub(crate) struct GhosttyPaneCore {
     #[cfg(test)]
     pub dirty_collection_hook: Option<Box<dyn FnOnce() + Send>>,
-    pub terminal: crate::vt::Terminal,
+    pub terminal: shepr_vt::Terminal,
     synchronized_output_epoch: u64,
-    pub render_state: crate::vt::RenderState,
-    pub initial_default_foreground: Option<crate::vt::RgbColor>,
-    pub initial_default_background: Option<crate::vt::RgbColor>,
+    pub render_state: shepr_vt::RenderState,
+    pub initial_default_foreground: Option<shepr_vt::RgbColor>,
+    pub initial_default_background: Option<shepr_vt::RgbColor>,
     pub host_terminal_theme: crate::host_term::theme::TerminalTheme,
     /// Process group of the foreground program that last overrode a default
     /// colour (OSC 10/11); its overrides are dropped once the shell is back
@@ -262,7 +262,7 @@ impl PaneTerminal {
     /// Whether a panic while holding the core lock has broken the core. A
     /// single atomic load, taking no lock: the PTY actor asks on every loop.
     pub(crate) fn core_poisoned(&self) -> bool {
-        crate::vt::terminal_core_is_poisoned(&self.ghostty.core)
+        shepr_vt::terminal_core_is_poisoned(&self.ghostty.core)
     }
 
     pub fn process_pty_bytes(
@@ -296,7 +296,7 @@ impl PaneTerminal {
             .flush_expired_synchronized_output(pane_id, shell_pid)
     }
 
-    pub fn resize(&self, geometry: crate::core::geometry::PaneGeometry) -> Vec<Bytes> {
+    pub fn resize(&self, geometry: shepr_core::geometry::PaneGeometry) -> Vec<Bytes> {
         self.ghostty.resize(geometry)
     }
 
@@ -374,7 +374,7 @@ impl PaneTerminal {
         col: u16,
         motion: TerminalWordMotion,
     ) -> Option<TerminalTextPoint> {
-        let core = crate::vt::lock_terminal_core(&self.ghostty.core).ok()?;
+        let core = shepr_vt::lock_terminal_core(&self.ghostty.core).ok()?;
         let origin = core.terminal.history_origin();
         let target = word_motion_in(
             &core.terminal,
@@ -385,7 +385,7 @@ impl PaneTerminal {
     }
 
     pub(crate) fn dimensions(&self) -> Option<(u16, u16)> {
-        let core = crate::vt::lock_terminal_core(&self.ghostty.core).ok()?;
+        let core = shepr_vt::lock_terminal_core(&self.ghostty.core).ok()?;
         Some((core.terminal.cols(), core.terminal.rows()))
     }
 
@@ -396,7 +396,7 @@ impl PaneTerminal {
         row: ScreenRow,
         direction: i8,
     ) -> Option<TerminalTextPoint> {
-        let core = crate::vt::lock_terminal_core(&self.ghostty.core).ok()?;
+        let core = shepr_vt::lock_terminal_core(&self.ghostty.core).ok()?;
         let origin = core.terminal.history_origin();
         let absolute = row.absolute(origin);
         let target = paragraph_motion_in(&core.terminal, absolute, direction)?;
@@ -442,7 +442,7 @@ impl PaneTerminal {
 
     pub(crate) fn screen_text_snapshot(
         &self,
-    ) -> Option<(crate::vt::ActiveScreen, u16, Vec<crate::vt::ScreenTextRow>)> {
+    ) -> Option<(shepr_vt::ActiveScreen, u16, Vec<shepr_vt::ScreenTextRow>)> {
         self.ghostty.screen_text_snapshot()
     }
 
@@ -490,7 +490,7 @@ impl PaneTerminal {
     /// either row has been evicted from terminal history.
     pub fn extract_selection<P>(
         &self,
-        selection: &crate::vt::selection::Selection<P>,
+        selection: &shepr_vt::selection::Selection<P>,
     ) -> Option<String> {
         self.ghostty.extract_selection(selection)
     }
@@ -629,7 +629,7 @@ impl PaneTerminal {
         col: u16,
         motion: TerminalWordMotion,
     ) -> Option<TerminalTextPoint<AbsRow>> {
-        let core = crate::vt::lock_terminal_core(&self.ghostty.core).ok()?;
+        let core = shepr_vt::lock_terminal_core(&self.ghostty.core).ok()?;
         word_motion_in(&core.terminal, TerminalTextPoint { row, col }, motion)
     }
 
@@ -641,7 +641,7 @@ impl PaneTerminal {
         row: AbsRow,
         direction: i8,
     ) -> Option<TerminalTextPoint<AbsRow>> {
-        let core = crate::vt::lock_terminal_core(&self.ghostty.core).ok()?;
+        let core = shepr_vt::lock_terminal_core(&self.ghostty.core).ok()?;
         paragraph_motion_in(&core.terminal, row, direction)
     }
 

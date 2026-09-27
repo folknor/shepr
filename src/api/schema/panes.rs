@@ -232,14 +232,14 @@ pub struct PaneScrollParams {
 /// A terminal text point addressed by retained-screen rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneTextPoint {
-    pub row: crate::vt::ScreenRow,
+    pub row: shepr_vt::ScreenRow,
     pub col: u16,
 }
 
 /// A selection point addressed by stable absolute row IDs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSelectionPoint {
-    pub row: crate::vt::AbsRow,
+    pub row: shepr_vt::AbsRow,
     pub col: u16,
 }
 

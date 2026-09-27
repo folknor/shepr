@@ -3,8 +3,8 @@ use crate::config::NewTerminalCwdConfig;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 
-use crate::core::layout::PaneId;
 use crate::workspace::PaneChromeInfo as PaneInfo;
+use shepr_core::layout::PaneId;
 
 use crate::host_term::theme::{HostAppearance, TerminalTheme};
 use crate::workspace::Workspace;
@@ -89,7 +89,7 @@ pub struct AppState {
 #[derive(Debug, Clone)]
 pub(crate) struct AppSettings {
     /// Virtual terminal size (columns, rows) used when no client is attached.
-    pub(crate) headless_size: crate::core::geometry::GridSize,
+    pub(crate) headless_size: shepr_core::geometry::GridSize,
     pub(crate) sidebar_agents: crate::config::AgentsSidebarConfig,
     pub(crate) sidebar_spaces: crate::config::SpacesSidebarConfig,
     pub(crate) pane_borders: crate::config::PaneBordersConfig,
@@ -224,7 +224,7 @@ impl AppState {
         &'a self,
         terminal_runtimes: &'a crate::pane::PaneRuntimeRegistry,
         ws_idx: usize,
-        pane_id: crate::core::layout::PaneId,
+        pane_id: shepr_core::layout::PaneId,
     ) -> Option<&'a crate::pane::PaneRuntime> {
         let terminal_id = self.workspaces.get(ws_idx)?.terminal_id(pane_id)?;
         terminal_runtimes.get(terminal_id)
@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn pane_geometry_uses_headless_size_before_first_view() {
         let mut state = AppState::test_new();
-        state.settings.headless_size = crate::core::geometry::GridSize::clamped(132, 41);
+        state.settings.headless_size = shepr_core::geometry::GridSize::clamped(132, 41);
         state.settings.pane_scrollbars = false;
 
         assert_eq!(state.pane_geometry().area, Rect::new(0, 0, 132, 41));
@@ -444,7 +444,7 @@ mod tests {
         let geometry = state.pane_geometry();
         assert_eq!(geometry.area, state.view.terminal_area);
 
-        let (mut layout, root) = crate::core::layout::TileLayout::new();
+        let (mut layout, root) = shepr_core::layout::TileLayout::new();
         let new_pane = layout
             .split_pane(root, ratatui::layout::Direction::Horizontal, 0.25)
             .expect("test precondition");

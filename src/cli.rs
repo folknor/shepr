@@ -5,14 +5,14 @@ use crate::api::schema::{ClientWindowTitleSetParams, EmptyParams, Method, Reques
 
 macro_rules! print {
     ($($arg:tt)*) => {{
-        crate::platform::begin_cli_output();
+        shepr_platform::begin_cli_output();
         std::print!($($arg)*);
     }};
 }
 
 macro_rules! println {
     ($($arg:tt)*) => {{
-        crate::platform::begin_cli_output();
+        shepr_platform::begin_cli_output();
         std::println!($($arg)*);
     }};
 }
@@ -293,7 +293,7 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
                 Some((name, matches)) => match CliCommand::from_matches(name, matches) {
                     Some(command) => Launch::Cli(Box::new(command)),
                     None => {
-                        crate::platform::begin_cli_output();
+                        shepr_platform::begin_cli_output();
                         eprintln!(
                             "error: command '{name}' has no typed parser; run with --help for usage"
                         );
@@ -313,7 +313,7 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
             })
         }
         Err(error) => {
-            crate::platform::begin_cli_output();
+            shepr_platform::begin_cli_output();
             if let Err(print_error) = error.print() {
                 std::eprintln!("error: {print_error}");
             }
@@ -385,7 +385,7 @@ impl Invocation {
 }
 
 pub(crate) fn print_help(requested_session: Option<crate::config::SessionId>) {
-    crate::platform::begin_cli_output();
+    shepr_platform::begin_cli_output();
     let help = spec::command().render_help().to_string();
     print!("{help}");
     if !help.ends_with("\n\n") {

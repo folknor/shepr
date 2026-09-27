@@ -2,7 +2,7 @@ use std::io;
 use std::path::PathBuf;
 use std::{collections::HashMap, io::ErrorKind};
 
-pub(crate) use crate::core::pathutil::{expand_tilde_path, home_dir};
+pub(crate) use shepr_core::pathutil::{expand_tilde_path, home_dir};
 
 pub(crate) const PI_CODING_AGENT_DIR_ENV_VAR: &str = "PI_CODING_AGENT_DIR";
 pub(crate) const OMP_CONFIG_DIR_ENV_VAR: &str = "PI_CONFIG_DIR";

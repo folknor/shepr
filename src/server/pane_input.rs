@@ -106,7 +106,7 @@ fn send_error(
 pub(super) fn downgrade_ineligible_pixel_mouse(
     events: &mut [ClientPaneInputEvent],
     pixel_mouse: bool,
-    runtime_size: crate::core::geometry::GridSize,
+    runtime_size: shepr_core::geometry::GridSize,
     runtime_pixels: Option<(u32, u32)>,
 ) {
     let (runtime_rows, runtime_cols) = (runtime_size.rows.get(), runtime_size.cols.get());
@@ -140,7 +140,7 @@ pub(super) fn downgrade_ineligible_pixel_mouse(
 
 pub(super) fn terminal_attach_mouse_position(
     runtime: &crate::pane::PaneRuntime,
-    terminal_size: crate::core::geometry::GridSize,
+    terminal_size: shepr_core::geometry::GridSize,
     cell_size: crate::host_term::cell_size::HostCellSize,
     pixel_mouse: bool,
     host_sgr_pixels_active: bool,
@@ -178,9 +178,8 @@ pub(super) fn terminal_attach_mouse_position(
             || !host_sgr_pixels_active
             || !runtime.sgr_pixel_mouse_enabled()
             || terminal_size
-                != crate::core::geometry::GridSize::clamped(geometry.cols, geometry.rows)
-            || runtime_size
-                != crate::core::geometry::GridSize::clamped(geometry.cols, geometry.rows)
+                != shepr_core::geometry::GridSize::clamped(geometry.cols, geometry.rows)
+            || runtime_size != shepr_core::geometry::GridSize::clamped(geometry.cols, geometry.rows)
             || !cell_size.is_known()
             || average_width != cell_size.width_px
             || average_height != cell_size.height_px
@@ -519,7 +518,7 @@ mod tests {
         assert_eq!(
             terminal_attach_mouse_position(
                 &runtime,
-                crate::core::geometry::GridSize::clamped(20, 5),
+                shepr_core::geometry::GridSize::clamped(20, 5),
                 crate::host_term::cell_size::HostCellSize {
                     width_px: 10,
                     height_px: 20,
@@ -539,7 +538,7 @@ mod tests {
         assert_eq!(
             terminal_attach_mouse_position(
                 &runtime,
-                crate::core::geometry::GridSize::clamped(20, 5),
+                shepr_core::geometry::GridSize::clamped(20, 5),
                 crate::host_term::cell_size::HostCellSize {
                     width_px: 10,
                     height_px: 20,
@@ -564,7 +563,7 @@ mod tests {
         assert_eq!(
             terminal_attach_mouse_position(
                 &runtime,
-                crate::core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::GridSize::clamped(80, 24),
                 crate::host_term::cell_size::HostCellSize::default(),
                 false,
                 false,
@@ -598,7 +597,7 @@ mod tests {
         downgrade_ineligible_pixel_mouse(
             &mut events,
             false,
-            crate::core::geometry::GridSize::clamped(20, 5),
+            shepr_core::geometry::GridSize::clamped(20, 5),
             Some((200, 100)),
         );
 
@@ -635,7 +634,7 @@ mod tests {
         downgrade_ineligible_pixel_mouse(
             &mut events,
             true,
-            crate::core::geometry::GridSize::clamped(20, 5),
+            shepr_core::geometry::GridSize::clamped(20, 5),
             Some((200, 100)),
         );
 
@@ -671,7 +670,7 @@ mod tests {
         downgrade_ineligible_pixel_mouse(
             &mut events,
             true,
-            crate::core::geometry::GridSize::clamped(20, 6),
+            shepr_core::geometry::GridSize::clamped(20, 6),
             Some((200, 120)),
         );
 

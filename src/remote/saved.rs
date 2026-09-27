@@ -247,7 +247,7 @@ impl SavedSshApiBridge {
             }
         };
         let command = super::cached_remote_api_command(&metadata, session);
-        let path = crate::platform::remote_bridge_endpoint_path(
+        let path = shepr_platform::remote_bridge_endpoint_path(
             &format!("shepr-api-ssh-{}-{profile_id}.sock", std::process::id()),
             &format!(
                 "shepr-api-{}-{}.sock",
@@ -299,7 +299,7 @@ fn saved_bridge_path(profile_id: &ProfileId) -> PathBuf {
     let pid = std::process::id();
     let readable = format!("shepr-ssh-{pid}-{profile_id}.sock");
     let short = format!("shepr-s-{pid}-{}.sock", &profile_id.as_str()[..16]);
-    crate::platform::remote_bridge_endpoint_path(&readable, &short)
+    shepr_platform::remote_bridge_endpoint_path(&readable, &short)
 }
 
 fn validated_saved_ssh(

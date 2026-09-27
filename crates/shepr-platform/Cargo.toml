@@ -1,0 +1,22 @@
+[package]
+name = "shepr-platform"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+libc = { workspace = true }
+crossterm = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+interprocess = { workspace = true }
+sha2 = { workspace = true }
+zbus = { workspace = true }
+futures-util = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+shepr-test-support = { path = "../shepr-test-support" }
+
+[lints]
+workspace = true

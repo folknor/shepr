@@ -86,7 +86,7 @@ impl TextBufferBuilder {
         &mut self,
         row: AbsRow,
         col: u16,
-        wide: crate::vt::CellWide,
+        wide: shepr_vt::CellWide,
         text: &str,
     ) {
         if self.line_complete {
@@ -94,8 +94,8 @@ impl TextBufferBuilder {
             self.line_complete = false;
         }
         match wide {
-            crate::vt::CellWide::SpacerTail => {}
-            crate::vt::CellWide::SpacerHead => {
+            shepr_vt::CellWide::SpacerTail => {}
+            shepr_vt::CellWide::SpacerHead => {
                 // The blank a wide character leaves at a soft wrap belongs to
                 // the word around it, and to no text.
                 if self.build_atoms {
@@ -110,8 +110,8 @@ impl TextBufferBuilder {
                     });
                 }
             }
-            crate::vt::CellWide::Narrow | crate::vt::CellWide::Wide => {
-                let width = if wide == crate::vt::CellWide::Wide {
+            shepr_vt::CellWide::Narrow | shepr_vt::CellWide::Wide => {
+                let width = if wide == shepr_vt::CellWide::Wide {
                     2
                 } else {
                     1
@@ -191,7 +191,7 @@ impl RetainedTextBuffer {
     /// A buffer over owned rows 0.., for exercising search and word motion
     /// on hand-built cells; the live terminal streams straight from its grid.
     #[cfg(test)]
-    pub(super) fn new(cols: u16, rows: Vec<crate::vt::ScreenTextRow>) -> Self {
+    pub(super) fn new(cols: u16, rows: Vec<shepr_vt::ScreenTextRow>) -> Self {
         let mut builder = TextBufferBuilder::new(true, true);
         let mut lines = Vec::new();
         for (row, screen_row) in (0u64..).zip(rows) {
@@ -216,14 +216,14 @@ impl RetainedTextBuffer {
     /// Word atoms for screen rows `start..end` of the live terminal, with
     /// absolute rows, plus how the first and last row wrap.
     fn live_words(
-        terminal: &crate::vt::Terminal,
+        terminal: &shepr_vt::Terminal,
         start: usize,
         end: usize,
-    ) -> Option<(Self, crate::vt::RowWrap, crate::vt::RowWrap)> {
+    ) -> Option<(Self, shepr_vt::RowWrap, shepr_vt::RowWrap)> {
         let mut builder = TextBufferBuilder::new(false, true);
         let mut scratch = String::new();
         let mut first = None;
-        let mut last = crate::vt::RowWrap::default();
+        let mut last = shepr_vt::RowWrap::default();
         for y in start..end {
             let screen_row = ScreenRow(y);
             let row = terminal.absolute_row_for_screen(screen_row);
@@ -252,7 +252,7 @@ impl RetainedTextBuffer {
         &self,
         query: &str,
         case_sensitive: bool,
-        active_screen: crate::vt::ActiveScreen,
+        active_screen: shepr_vt::ActiveScreen,
         direction: TerminalSearchDirection,
         cursor: TerminalTextPoint<AbsRow>,
         previous: Option<(TerminalTextPoint<AbsRow>, TerminalTextPoint<AbsRow>)>,
@@ -451,7 +451,7 @@ impl RetainedTextBuffer {
 #[cfg(test)]
 fn terminal_cell_text(graphemes: &[u32]) -> String {
     if graphemes.is_empty()
-        || graphemes.first().copied() == Some(crate::vt::KITTY_UNICODE_PLACEHOLDER)
+        || graphemes.first().copied() == Some(shepr_vt::KITTY_UNICODE_PLACEHOLDER)
     {
         return " ".to_string();
     }
@@ -551,7 +551,7 @@ impl TextSearch {
         &mut self,
         line: &LogicalTextLine,
         cols: u16,
-        screen: crate::vt::ActiveScreen,
+        screen: shepr_vt::ActiveScreen,
     ) {
         for found in self.regex.find_iter(&line.text) {
             // Only matches that start and end on cell boundaries count: a
@@ -690,7 +690,7 @@ impl MatchWindow {
 /// rows around the start and widens it while the answer may lie past its
 /// edge (a word continuing across a soft wrap at the window's edge).
 pub(super) fn word_motion_in(
-    terminal: &crate::vt::Terminal,
+    terminal: &shepr_vt::Terminal,
     point: TerminalTextPoint<AbsRow>,
     motion: TerminalWordMotion,
 ) -> Option<TerminalTextPoint<AbsRow>> {
@@ -741,7 +741,7 @@ pub(super) fn word_motion_in(
 /// The next blank row above (`direction < 0`) or below absolute row `row`,
 /// looking at most 1000 rows away.
 pub(super) fn paragraph_motion_in(
-    terminal: &crate::vt::Terminal,
+    terminal: &shepr_vt::Terminal,
     row: AbsRow,
     direction: i8,
 ) -> Option<TerminalTextPoint<AbsRow>> {

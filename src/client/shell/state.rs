@@ -115,7 +115,7 @@ pub(super) struct PaneSplitHit {
     pub(super) pos: u16,
     pub(super) area: Rect,
     pub(super) hit_rect: Rect,
-    pub(super) path: Vec<crate::core::geometry::SplitBranch>,
+    pub(super) path: Vec<shepr_core::geometry::SplitBranch>,
     pub(super) topology_signature: u64,
 }
 
@@ -440,7 +440,7 @@ pub(super) enum PendingEndpointKind {
     },
     WordSelection {
         pane_id: crate::protocol::PublicPaneId,
-        absolute_row: crate::vt::AbsRow,
+        absolute_row: shepr_vt::AbsRow,
         generation: u64,
     },
     CopyMotion {
@@ -541,10 +541,10 @@ pub(super) struct ClientSelectionAutoscroll {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ClientCopySelection {
     Character {
-        anchor: crate::vt::Point<crate::vt::AbsRow>,
+        anchor: shepr_vt::Point<shepr_vt::AbsRow>,
     },
     Linewise {
-        anchor_row: crate::vt::AbsRow,
+        anchor_row: shepr_vt::AbsRow,
     },
 }
 
@@ -639,7 +639,7 @@ pub(crate) struct ClientShellState {
     pub(super) overlay: Option<ClientShellOverlay>,
     pub(super) previous_pane_id: Option<crate::protocol::PublicPaneId>,
     pub(super) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
-    pub(super) selection: Option<crate::vt::selection::Selection<crate::protocol::PublicPaneId>>,
+    pub(super) selection: Option<shepr_vt::selection::Selection<crate::protocol::PublicPaneId>>,
     /// Pane a mouse selection was started in while another pane held focus.
     /// The click's `PaneFocus` travels the serialized command lane, so
     /// snapshots can still report the old focus for a while; until one shows

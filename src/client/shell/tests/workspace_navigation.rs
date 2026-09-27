@@ -299,7 +299,7 @@ fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 20,
         viewport_rows: 2,
-        history_origin: crate::vt::AbsRow(0),
+        history_origin: shepr_vt::AbsRow(0),
     });
     state.set_pane_surface(pane_surface);
     state.compose(100, 28).expect("test precondition");

@@ -135,7 +135,7 @@ fn foreground_job_for_group(child_pid: u32, process_group_id: u32) -> Option<For
     foreground_job_from_members(
         process_group_id,
         members,
-        crate::platform::running_inside_wsl(),
+        shepr_platform::running_inside_wsl(),
         process_argv,
     )
 }
@@ -415,7 +415,7 @@ pub fn foreground_group_leader_job(process_group_id: u32) -> Option<ForegroundJo
     }
 
     let argv =
-        process_allows_remote_memory_read(state, &name, crate::platform::running_inside_wsl())
+        process_allows_remote_memory_read(state, &name, shepr_platform::running_inside_wsl())
             .then(|| process_argv(process_group_id))
             .flatten();
     Some(ForegroundJob {
@@ -493,7 +493,7 @@ pub fn process_agent_hint(pid: u32) -> Option<crate::detect::Agent> {
         return None;
     }
     let (_, comm, state) = process_pgrp_comm_and_state(pid)?;
-    if !process_allows_remote_memory_read(state, &comm, crate::platform::running_inside_wsl()) {
+    if !process_allows_remote_memory_read(state, &comm, shepr_platform::running_inside_wsl()) {
         return None;
     }
     let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;

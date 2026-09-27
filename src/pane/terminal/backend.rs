@@ -1,11 +1,11 @@
 use super::*;
 
 impl GhosttyPaneTerminal {
-    pub fn new(mut terminal: crate::vt::Terminal) -> Self {
+    pub fn new(mut terminal: shepr_vt::Terminal) -> Self {
         // Replies to anything written before the pane existed have no reader.
         let _ = terminal.take_pty_responses();
 
-        let mut render_state = crate::vt::RenderState::new();
+        let mut render_state = shepr_vt::RenderState::new();
         render_state.update(&terminal);
         let initial_colors = render_state.colors();
         let initial_default_foreground = Some(initial_colors.foreground);
@@ -32,13 +32,13 @@ impl GhosttyPaneTerminal {
     /// colours. They sit under whatever the child set itself (OSC 4/10/11),
     /// which stays in effect; nothing is written into the child's stream.
     pub fn apply_host_terminal_theme(&self, theme: crate::host_term::theme::TerminalTheme) {
-        if let Ok(mut core) = crate::vt::lock_terminal_core(&self.core) {
+        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
             core.host_terminal_theme = theme;
             if !has_default_color_override(&core.terminal) {
                 core.transient_default_color_owner_pgid = None;
             }
 
-            let mut palette = crate::vt::default_palette();
+            let mut palette = shepr_vt::default_palette();
             for (index, color) in theme.palette.iter().enumerate() {
                 if let Some(color) = color {
                     palette[index] = *color;
@@ -54,7 +54,7 @@ impl GhosttyPaneTerminal {
         &self,
         appearance: Option<crate::host_term::theme::HostAppearance>,
     ) -> Option<Bytes> {
-        let mut core = crate::vt::lock_terminal_core(&self.core).ok()?;
+        let mut core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         let color_scheme = appearance;
         let previous = core.terminal.set_color_scheme(color_scheme);
 
@@ -62,21 +62,21 @@ impl GhosttyPaneTerminal {
             (previous, color_scheme),
             (Some(previous), Some(current)) if previous != current
         );
-        if !transitioned || !core.terminal.mode_get(crate::vt::MODE_COLOR_SCHEME_REPORT) {
+        if !transitioned || !core.terminal.mode_get(shepr_vt::MODE_COLOR_SCHEME_REPORT) {
             return None;
         }
         appearance.map(|appearance| Bytes::from_static(appearance.report()))
     }
 
     pub fn has_transient_default_color_override(&self) -> bool {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .map(|core| core.transient_default_color_owner_pgid.is_some())
             .unwrap_or(false)
     }
 
     pub fn maybe_restore_host_terminal_theme(&self, pane_id: PaneId, shell_pid: u32) -> bool {
         {
-            let Ok(core) = crate::vt::lock_terminal_core(&self.core) else {
+            let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
                 return false;
             };
             if !should_probe_host_terminal_theme_restore(&core) {
@@ -85,11 +85,11 @@ impl GhosttyPaneTerminal {
         }
 
         let foreground_job = crate::detect::foreground_job(shell_pid);
-        let Ok(mut core) = crate::vt::lock_terminal_core(&self.core) else {
+        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             return false;
         };
 
-        let alternate_screen = core.terminal.active_screen() == crate::vt::ActiveScreen::Alternate;
+        let alternate_screen = core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate;
         restore_host_terminal_theme_if_needed(
             &mut core,
             pane_id,
@@ -100,7 +100,7 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn terminal_title(&self) -> Option<String> {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .and_then(|core| core.agent_osc_state.terminal_title().map(str::to_string))
     }
@@ -108,7 +108,7 @@ impl GhosttyPaneTerminal {
     /// Returns the latest OSC 0/2 title retained for agent detection, or `""`
     /// if no title has been seen or the last update was an empty clear.
     pub fn agent_osc_title(&self) -> String {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .map(|core| core.agent_osc_state.latest_title().to_owned())
             .unwrap_or_default()
     }
@@ -116,7 +116,7 @@ impl GhosttyPaneTerminal {
     /// Returns the latest OSC 9 progress payload retained for agent detection,
     /// or `""` if none has been seen.
     pub fn agent_osc_progress(&self) -> String {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .map(|core| core.agent_osc_state.latest_progress().to_owned())
             .unwrap_or_default()
     }
@@ -124,7 +124,7 @@ impl GhosttyPaneTerminal {
     /// Clears retained OSC title/progress evidence when the pane's foreground
     /// agent changes, so a new agent process starts from a blank OSC slate.
     pub fn clear_agent_osc_state(&self) {
-        if let Ok(mut core) = crate::vt::lock_terminal_core(&self.core) {
+        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
             core.agent_osc_state.clear_retained();
         }
     }
@@ -135,9 +135,9 @@ impl GhosttyPaneTerminal {
         _shell_pid: u32,
         bytes: &[u8],
     ) -> ProcessBytesResult {
-        let mut core = match crate::vt::lock_terminal_core(&self.core) {
+        let mut core = match shepr_vt::lock_terminal_core(&self.core) {
             Ok(core) => core,
-            Err(crate::vt::TerminalCorePoisoned) => {
+            Err(shepr_vt::TerminalCorePoisoned) => {
                 // The core may be inconsistent after a panic. Fail the pane
                 // so its reader stops and the pane is reported dead.
                 error!(pane = pane_id.raw(), "ghostty core lock poisoned in reader");
@@ -158,8 +158,7 @@ impl GhosttyPaneTerminal {
             );
         }
 
-        let synchronized_output_before =
-            core.terminal.mode_get(crate::vt::MODE_SYNCHRONIZED_OUTPUT);
+        let synchronized_output_before = core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT);
         core.terminal.write(bytes);
         // Everything the core queued is collected here, including the effects
         // of a timed-out synchronized update that a render flushed since the
@@ -167,7 +166,7 @@ impl GhosttyPaneTerminal {
         let effects = collect_core_effects(&mut core);
         let default_color_generation = core.default_color_generation;
 
-        let synchronized_output = core.terminal.mode_get(crate::vt::MODE_SYNCHRONIZED_OUTPUT);
+        let synchronized_output = core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT);
         if synchronized_output != synchronized_output_before {
             core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
         }
@@ -218,7 +217,7 @@ impl GhosttyPaneTerminal {
         let Some(owner_pgid) = current_transient_default_color_owner(shell_pid) else {
             return;
         };
-        let Ok(mut core) = crate::vt::lock_terminal_core(&self.core) else {
+        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             return;
         };
         if core.default_color_generation == generation && has_default_color_override(&core.terminal)
@@ -243,7 +242,7 @@ impl GhosttyPaneTerminal {
         _pane_id: PaneId,
         _shell_pid: u32,
     ) -> ProcessBytesResult {
-        let Ok(mut core) = crate::vt::lock_terminal_core(&self.core) else {
+        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             // A poisoned core is noticed by the PTY actor (its per-loop
             // `core_poisoned` check, or its next read), which ends the pane;
             // this timer has no loop to stop.
@@ -276,7 +275,7 @@ impl GhosttyPaneTerminal {
         if ansi.is_empty() {
             return;
         }
-        let Ok(mut core) = crate::vt::lock_terminal_core(&self.core) else {
+        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             return;
         };
         core.terminal.write(ansi.as_bytes());
@@ -292,11 +291,11 @@ impl GhosttyPaneTerminal {
         discard_core_effects(&mut core.terminal);
     }
 
-    pub fn resize(&self, geometry: crate::core::geometry::PaneGeometry) -> Vec<Bytes> {
+    pub fn resize(&self, geometry: shepr_core::geometry::PaneGeometry) -> Vec<Bytes> {
         let rows = geometry.rows();
-        if let Ok(mut core) = crate::vt::lock_terminal_core(&self.core) {
+        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
             let synchronized_output_before =
-                core.terminal.mode_get(crate::vt::MODE_SYNCHRONIZED_OUTPUT);
+                core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT);
             let offset_from_bottom = core.terminal.scrollbar();
             let offset_from_bottom = offset_from_bottom
                 .total
@@ -318,7 +317,7 @@ impl GhosttyPaneTerminal {
             // cursor behind its back.
             core.terminal.resize(geometry);
             let synchronized_output_after =
-                core.terminal.mode_get(crate::vt::MODE_SYNCHRONIZED_OUTPUT);
+                core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT);
             if synchronized_output_after != synchronized_output_before {
                 core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
             }
@@ -340,54 +339,54 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn scroll_up(&self, lines: usize) {
-        if let Ok(mut core) = crate::vt::lock_terminal_core(&self.core) {
+        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
             let lines = isize::try_from(lines).unwrap_or(isize::MAX);
             core.terminal.scroll_viewport_delta(-lines);
         }
     }
 
     pub fn scroll_down(&self, lines: usize) {
-        if let Ok(mut core) = crate::vt::lock_terminal_core(&self.core) {
+        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
             let lines = isize::try_from(lines).unwrap_or(isize::MAX);
             core.terminal.scroll_viewport_delta(lines);
         }
     }
 
     pub fn scroll_reset(&self) {
-        if let Ok(mut core) = crate::vt::lock_terminal_core(&self.core) {
+        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
             core.terminal.scroll_viewport_bottom();
         }
     }
 
     pub fn clear_screen(&self) -> Result<(), PaneClearError> {
-        let mut core = crate::vt::lock_terminal_core(&self.core)
+        let mut core = shepr_vt::lock_terminal_core(&self.core)
             .map_err(|_| PaneClearError::TerminalLockPoisoned)?;
         let _ = core.terminal.clear_screen();
         Ok(())
     }
 
     pub fn set_scroll_offset_from_bottom(&self, lines: usize) {
-        if let Ok(mut core) = crate::vt::lock_terminal_core(&self.core) {
+        if let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) {
             ghostty_set_scroll_offset_from_bottom(&mut core.terminal, lines);
         }
     }
 
     pub fn scroll_metrics(&self) -> Option<ScrollMetrics> {
-        let Ok(core) = crate::vt::lock_terminal_core(&self.core) else {
+        let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
             return None;
         };
         Some(terminal_scroll_metrics(&core.terminal))
     }
 
     pub fn scroll_position(&self) -> Option<ScrollPosition> {
-        let core = crate::vt::lock_terminal_core(&self.core).ok()?;
+        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         Some(ScrollPosition {
             metrics: terminal_scroll_metrics(&core.terminal),
         })
     }
 
     pub(crate) fn history_origin(&self) -> Option<AbsRow> {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .map(|core| core.terminal.history_origin())
     }
@@ -413,7 +412,7 @@ impl GhosttyPaneTerminal {
         let mut next = None;
         let mut scan = None;
         loop {
-            let Ok(core) = crate::vt::lock_terminal_core(&self.core) else {
+            let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
                 break;
             };
             let terminal = &core.terminal;
@@ -467,7 +466,7 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn keyboard_protocol(&self) -> Option<crate::input::KeyboardProtocol> {
-        let Ok(core) = crate::vt::lock_terminal_core(&self.core) else {
+        let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
             return None;
         };
         Some(crate::input::KeyboardProtocol::from_kitty_flags(
@@ -476,66 +475,66 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn bracketed_paste_enabled(&self) -> bool {
-        self.mode_enabled(crate::vt::MODE_BRACKETED_PASTE)
+        self.mode_enabled(shepr_vt::MODE_BRACKETED_PASTE)
     }
 
     pub fn focus_reporting_enabled(&self) -> bool {
-        self.mode_enabled(crate::vt::MODE_FOCUS_EVENT)
+        self.mode_enabled(shepr_vt::MODE_FOCUS_EVENT)
     }
 
     pub fn mouse_reporting_enabled(&self) -> bool {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .is_ok_and(|core| core.terminal.mouse_tracking_enabled())
     }
 
     pub fn modify_other_keys_level(&self) -> u8 {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .map_or(0, |core| core.terminal.modify_other_keys_level().as_u8())
     }
 
     pub fn sgr_pixel_mouse_enabled(&self) -> bool {
-        self.mode_enabled(crate::vt::MODE_MOUSE_SGR_PIXELS)
+        self.mode_enabled(shepr_vt::MODE_MOUSE_SGR_PIXELS)
     }
 
     fn mode_enabled(&self, mode: u16) -> bool {
-        crate::vt::lock_terminal_core(&self.core).is_ok_and(|core| core.terminal.mode_get(mode))
+        shepr_vt::lock_terminal_core(&self.core).is_ok_and(|core| core.terminal.mode_get(mode))
     }
 
     pub fn plain_page_keys_use_host_scrollback(&self) -> Option<bool> {
-        let core = crate::vt::lock_terminal_core(&self.core).ok()?;
-        let alternate_screen = core.terminal.active_screen() == crate::vt::ActiveScreen::Alternate;
+        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        let alternate_screen = core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate;
         let mouse_reporting = core.terminal.mouse_tracking_enabled();
         let application_cursor = core
             .terminal
-            .mode_get(crate::vt::MODE_APPLICATION_CURSOR_KEYS);
-        let bracketed_paste = core.terminal.mode_get(crate::vt::MODE_BRACKETED_PASTE);
+            .mode_get(shepr_vt::MODE_APPLICATION_CURSOR_KEYS);
+        let bracketed_paste = core.terminal.mode_get(shepr_vt::MODE_BRACKETED_PASTE);
         Some(!alternate_screen && !mouse_reporting && (!application_cursor || bracketed_paste))
     }
 
     pub fn alternate_screen_active(&self) -> bool {
-        crate::vt::lock_terminal_core(&self.core)
-            .is_ok_and(|core| core.terminal.active_screen() == crate::vt::ActiveScreen::Alternate)
+        shepr_vt::lock_terminal_core(&self.core)
+            .is_ok_and(|core| core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate)
     }
 
     // This aggregate snapshot performs multiple terminal queries. Pane-scaled
     // callers should add a narrow accessor instead.
     #[cfg(test)]
     pub fn input_state(&self) -> Option<InputState> {
-        let Ok(core) = crate::vt::lock_terminal_core(&self.core) else {
+        let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
             return None;
         };
-        let alternate_screen = core.terminal.active_screen() == crate::vt::ActiveScreen::Alternate;
+        let alternate_screen = core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate;
         let application_cursor = core
             .terminal
-            .mode_get(crate::vt::MODE_APPLICATION_CURSOR_KEYS);
-        let bracketed_paste = core.terminal.mode_get(crate::vt::MODE_BRACKETED_PASTE);
-        let focus_reporting = core.terminal.mode_get(crate::vt::MODE_FOCUS_EVENT);
-        let mouse_sgr = core.terminal.mode_get(crate::vt::MODE_MOUSE_SGR);
-        let mouse_utf8 = core.terminal.mode_get(crate::vt::MODE_MOUSE_UTF8);
-        let mouse_sgr_pixels = core.terminal.mode_get(crate::vt::MODE_MOUSE_SGR_PIXELS);
+            .mode_get(shepr_vt::MODE_APPLICATION_CURSOR_KEYS);
+        let bracketed_paste = core.terminal.mode_get(shepr_vt::MODE_BRACKETED_PASTE);
+        let focus_reporting = core.terminal.mode_get(shepr_vt::MODE_FOCUS_EVENT);
+        let mouse_sgr = core.terminal.mode_get(shepr_vt::MODE_MOUSE_SGR);
+        let mouse_utf8 = core.terminal.mode_get(shepr_vt::MODE_MOUSE_UTF8);
+        let mouse_sgr_pixels = core.terminal.mode_get(shepr_vt::MODE_MOUSE_SGR_PIXELS);
         let mouse_alternate_scroll = core
             .terminal
-            .mode_get(crate::vt::MODE_MOUSE_ALTERNATE_SCROLL);
+            .mode_get(shepr_vt::MODE_MOUSE_ALTERNATE_SCROLL);
         let mouse_protocol_mode = if core.terminal.mode_get(MODE_MOUSE_ANY_MOTION) {
             crate::input::MouseProtocolMode::AnyMotion
         } else if core.terminal.mode_get(MODE_MOUSE_BUTTON_MOTION) {
@@ -565,19 +564,19 @@ impl GhosttyPaneTerminal {
             mouse_protocol_encoding,
             mouse_alternate_scroll,
             modify_other_keys: core.terminal.modify_other_keys_level()
-                == crate::vt::ModifyOtherKeysLevel::All,
-            color_scheme_reporting: core.terminal.mode_get(crate::vt::MODE_COLOR_SCHEME_REPORT),
+                == shepr_vt::ModifyOtherKeysLevel::All,
+            color_scheme_reporting: core.terminal.mode_get(shepr_vt::MODE_COLOR_SCHEME_REPORT),
         })
     }
 
     pub fn wheel_routing(&self) -> Option<crate::pane::WheelRouting> {
-        let Ok(core) = crate::vt::lock_terminal_core(&self.core) else {
+        let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
             return None;
         };
-        let alternate_screen = core.terminal.active_screen() == crate::vt::ActiveScreen::Alternate;
+        let alternate_screen = core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate;
         let mouse_alternate_scroll = core
             .terminal
-            .mode_get(crate::vt::MODE_MOUSE_ALTERNATE_SCROLL);
+            .mode_get(shepr_vt::MODE_MOUSE_ALTERNATE_SCROLL);
         let mouse_reporting = core.terminal.mode_get(MODE_MOUSE_ANY_MOTION)
             || core.terminal.mode_get(MODE_MOUSE_BUTTON_MOTION)
             || core.terminal.mode_get(MODE_MOUSE_PRESS_RELEASE)
@@ -592,25 +591,25 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn cursor_state(&self) -> Option<TerminalCursorState> {
-        let mut core = crate::vt::lock_terminal_core(&self.core).ok()?;
+        let mut core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         current_cursor_state(&mut core)
     }
 
     pub fn synchronized_output_active(&self) -> bool {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .is_some_and(|mut core| {
                 flush_expired_synchronized_output(&mut core);
-                core.terminal.mode_get(crate::vt::MODE_SYNCHRONIZED_OUTPUT)
+                core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT)
             })
     }
 
     pub(crate) fn synchronized_output_state(&self) -> (bool, u64) {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .map(|mut core| {
                 flush_expired_synchronized_output(&mut core);
                 (
-                    core.terminal.mode_get(crate::vt::MODE_SYNCHRONIZED_OUTPUT),
+                    core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT),
                     core.synchronized_output_epoch,
                 )
             })
@@ -645,13 +644,13 @@ impl GhosttyPaneTerminal {
         if matches!(key.code, crossterm::event::KeyCode::Char(_)) {
             return crate::input::encode_terminal_key(key, protocol);
         }
-        let Some(modes) = crate::vt::lock_terminal_core(&self.core).ok().map(|core| {
+        let Some(modes) = shepr_vt::lock_terminal_core(&self.core).ok().map(|core| {
             crate::input::KeyEncodeModes {
                 kitty_flags: core.terminal.kitty_keyboard_flags(),
                 modify_other_keys: core.terminal.modify_other_keys_level().as_u8(),
                 application_cursor: core
                     .terminal
-                    .mode_get(crate::vt::MODE_APPLICATION_CURSOR_KEYS),
+                    .mode_get(shepr_vt::MODE_APPLICATION_CURSOR_KEYS),
             }
         }) else {
             return crate::input::encode_terminal_key(key, protocol);
@@ -712,7 +711,7 @@ impl GhosttyPaneTerminal {
         position: crate::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        let core = crate::vt::lock_terminal_core(&self.core).ok()?;
+        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         let terminal = &core.terminal;
         let mode_enabled = |mode: u16| terminal.mode_get(mode);
         let mode = if mode_enabled(MODE_MOUSE_ANY_MOTION) {
@@ -726,14 +725,14 @@ impl GhosttyPaneTerminal {
         } else {
             return None;
         };
-        let cell_encoding = if mode_enabled(crate::vt::MODE_MOUSE_SGR) {
+        let cell_encoding = if mode_enabled(shepr_vt::MODE_MOUSE_SGR) {
             crate::input::MouseProtocolEncoding::Sgr
-        } else if mode_enabled(crate::vt::MODE_MOUSE_UTF8) {
+        } else if mode_enabled(shepr_vt::MODE_MOUSE_UTF8) {
             crate::input::MouseProtocolEncoding::Utf8
         } else {
             crate::input::MouseProtocolEncoding::Default
         };
-        let sgr_pixels = mode_enabled(crate::vt::MODE_MOUSE_SGR_PIXELS);
+        let sgr_pixels = mode_enabled(shepr_vt::MODE_MOUSE_SGR_PIXELS);
         // Reports are 1-based. Pixel positions already arrive 1-based; cell
         // positions are shifted here. Under SGR-pixels (mode 1016) a cell
         // position is mapped to the top-left pixel of that cell using the same
@@ -794,32 +793,32 @@ impl GhosttyPaneTerminal {
     /// empty there.
     pub(crate) fn screen_text_snapshot(
         &self,
-    ) -> Option<(crate::vt::ActiveScreen, u16, Vec<crate::vt::ScreenTextRow>)> {
-        let core = crate::vt::lock_terminal_core(&self.core).ok()?;
+    ) -> Option<(shepr_vt::ActiveScreen, u16, Vec<shepr_vt::ScreenTextRow>)> {
+        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
         let screen = core.terminal.active_screen();
         let rows = match screen {
-            crate::vt::ActiveScreen::Alternate => core.terminal.screen_text_rows(),
-            crate::vt::ActiveScreen::Primary => Vec::new(),
+            shepr_vt::ActiveScreen::Alternate => core.terminal.screen_text_rows(),
+            shepr_vt::ActiveScreen::Primary => Vec::new(),
         };
         Some((screen, core.terminal.cols(), rows))
     }
 
     pub fn visible_text(&self) -> String {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .map(|mut core| ghostty_visible_text(&mut core))
             .unwrap_or_default()
     }
 
     pub fn visible_ansi(&self) -> String {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .and_then(|core| ghostty_visible_ansi(&core).ok())
             .unwrap_or_default()
     }
 
     pub fn detection_text(&self) -> String {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| ghostty_detection_text(&mut core).ok())
             .unwrap_or_default()
@@ -831,7 +830,7 @@ impl GhosttyPaneTerminal {
     }
 
     pub(crate) fn recent_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| ghostty_recent_text_snapshot(&mut core, lines).ok())
             .unwrap_or_default()
@@ -843,7 +842,7 @@ impl GhosttyPaneTerminal {
     }
 
     pub(crate) fn recent_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| ghostty_recent_ansi_snapshot(&mut core, lines, false).ok())
             .unwrap_or_default()
@@ -855,14 +854,14 @@ impl GhosttyPaneTerminal {
     }
 
     pub(crate) fn recent_unwrapped_text_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| ghostty_recent_text_unwrapped_snapshot(&mut core, lines).ok())
             .unwrap_or_default()
     }
 
     pub(crate) fn recent_unwrapped_ansi_snapshot(&self, lines: usize) -> TerminalReadSnapshot {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| ghostty_recent_ansi_snapshot(&mut core, lines, true).ok())
             .unwrap_or_default()
@@ -870,16 +869,16 @@ impl GhosttyPaneTerminal {
 
     pub fn extract_selection<P>(
         &self,
-        selection: &crate::vt::selection::Selection<P>,
+        selection: &shepr_vt::selection::Selection<P>,
     ) -> Option<String> {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| ghostty_extract_selection(&mut core, selection))
     }
 
     pub fn primary_history_ansi(&self) -> Option<String> {
-        let mut core = crate::vt::lock_terminal_core(&self.core).ok()?;
-        if core.terminal.active_screen() != crate::vt::ActiveScreen::Primary {
+        let mut core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        if core.terminal.active_screen() != shepr_vt::ActiveScreen::Primary {
             return None;
         }
         ghostty_recent_ansi_snapshot(&mut core, usize::MAX, true)
@@ -888,18 +887,18 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn visible_hyperlinks(&self, area: Rect) -> Vec<((u16, u16), String, String)> {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .and_then(|mut core| ghostty_visible_hyperlinks(&mut core, area).ok())
             .unwrap_or_default()
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) {
-        let Ok(mut core) = crate::vt::lock_terminal_core(&self.core) else {
+        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             return;
         };
         flush_expired_synchronized_output(&mut core);
-        if core.terminal.mode_get(crate::vt::MODE_SYNCHRONIZED_OUTPUT) {
+        if core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT) {
             return;
         }
         let host_theme = core.host_terminal_theme;
@@ -993,11 +992,11 @@ impl GhosttyPaneTerminal {
         area_width: u16,
         area_height: u16,
     ) -> TerminalDirtyPatchOutcome {
-        crate::vt::lock_terminal_core(&self.core)
+        shepr_vt::lock_terminal_core(&self.core)
             .ok()
             .map(|mut core| {
                 flush_expired_synchronized_output(&mut core);
-                if core.terminal.mode_get(crate::vt::MODE_SYNCHRONIZED_OUTPUT) {
+                if core.terminal.mode_get(shepr_vt::MODE_SYNCHRONIZED_OUTPUT) {
                     return TerminalDirtyPatchOutcome::Fallback;
                 }
                 #[cfg(test)]

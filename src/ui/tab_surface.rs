@@ -2,10 +2,10 @@ use ratatui::{Frame, layout::Rect};
 
 use super::panes::{compute_pane_infos_for_tab, render_panes, resize_pane_infos};
 use crate::app::AppState;
-use crate::core::layout::SplitBorder;
 use crate::pane::PaneRuntimeRegistry;
 use crate::protocol::CursorState;
 use crate::workspace::PaneChromeInfo as PaneInfo;
+use shepr_core::layout::SplitBorder;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TabSurfaceTarget {

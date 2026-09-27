@@ -13,7 +13,7 @@ pub(super) fn list_scroll_metrics(
             offset_from_bottom: 0,
             max_offset_from_bottom: 0,
             viewport_rows: 0,
-            history_origin: crate::vt::AbsRow(0),
+            history_origin: shepr_vt::AbsRow(0),
         };
     }
 
@@ -51,7 +51,7 @@ pub(super) fn list_scroll_metrics(
         offset_from_bottom: max_start.saturating_sub(start),
         max_offset_from_bottom: max_start,
         viewport_rows,
-        history_origin: crate::vt::AbsRow(0),
+        history_origin: shepr_vt::AbsRow(0),
     }
 }
 

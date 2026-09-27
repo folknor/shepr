@@ -1,7 +1,7 @@
 //! Cell geometry at the client protocol boundary.
 
-use crate::core::geometry::{CellPx, GridSize};
 use serde::{Deserialize, Serialize};
+use shepr_core::geometry::{CellPx, GridSize};
 
 /// Coherent geometry carried by a direct terminal client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

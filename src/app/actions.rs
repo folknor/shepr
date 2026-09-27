@@ -5,9 +5,6 @@ use std::time::Instant;
 
 use tracing::debug;
 
-use crate::core::layout::PaneId;
-#[cfg(test)]
-use crate::core::layout::{NavDirection, find_in_direction};
 use crate::detect::{Agent, AgentState};
 use crate::events::AppEvent;
 use crate::git::WorkspaceGitStatus;
@@ -15,6 +12,9 @@ use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
 use crate::workspace::{
     PaneRemoval, PaneRemovalPlan as WorkspacePaneRemovalPlan, PaneRemovalScope, TabRemoval,
 };
+use shepr_core::layout::PaneId;
+#[cfg(test)]
+use shepr_core::layout::{NavDirection, find_in_direction};
 
 use super::state::{AppState, Mode, PaneFocusTarget};
 

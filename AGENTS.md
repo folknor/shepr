@@ -22,7 +22,7 @@ Kept:
   several hosts; the owner installs the binary on each host manually, and a
   host never has more than one `shepr` installed)
 - Terminal core: `alacritty_terminal` for emulation, a small libc PTY layer
-  (`src/pty/`), PTY hosting
+  (`crates/shepr-pty/src/`), PTY hosting
 - Workspaces, tabs, panes, layout, the tab bar, the agent sidebar
 - Agent detection from bundled manifests (`src/detect/manifests/*.toml`),
   plus local override files and `shepr server reload-agent-manifests`
@@ -46,6 +46,13 @@ Saved machines are add/remove only. Unreachable ones fail soft. With saved
 machines configured, losing the local server does not end the client either:
 it keeps serving the remote machines and reconnects once the local server is
 restarted.
+
+## Workspace layout
+
+The root `shepr` package is the binary. Extracted libraries live under
+`crates/`. Dependencies follow the documented bottom-up layering: lower
+crates never depend on higher ones. Shared test isolation lives in
+`shepr-test-support`, used only as a dev-dependency.
 
 ## Build and test
 
@@ -81,7 +88,7 @@ inherited socket overrides so the debug binary talks to its own server:
   that way.
 - **Linux only.** No `#[cfg(windows)]`, `#[cfg(target_os = "macos")]` or
   `cfg!` branches for other platforms. libc, `/proc` and helper-program
-  plumbing lives in the flat `src/platform/` module (`mod.rs`, plus
+  plumbing lives in the flat `crates/shepr-platform/src/` crate (`lib.rs`, plus
   self-contained submodules such as the logind shutdown monitor); there is no
   per-OS layer and no shims standing in for other platforms.
 - **Detection is decoupled.** The detector reads a screen snapshot and never
@@ -116,7 +123,7 @@ inherited socket overrides so the debug binary talks to its own server:
 
 The emulator is `alacritty_terminal`, pinned with `=` in `Cargo.toml` (bump it
 deliberately, never through a loose requirement). Everything that touches it
-lives in `src/vt/`: `mod.rs` owns `Terminal` and the adapter boundary;
+lives in `crates/shepr-vt/src/`: `lib.rs` owns `Terminal` and the adapter boundary;
 `color.rs`, `cell.rs`, `render.rs` and `read.rs` hold the focused data and
 methods around it. `format.rs` has the plain/VT formatters used for reads and
 history persistence, while `scan.rs` is a scanner
@@ -131,7 +138,7 @@ under `research/` (`research/alacritty/alacritty_terminal/`, `research/vte/`).
 PTYs do not use `alacritty_terminal::tty`: it can only add environment
 variables (panes must strip inherited host and agent ones), cannot set a
 login-shell argv0, injects its own variables, blocks in `Drop` waiting for the
-child, and exits the process on a failed resize. `src/pty/` owns the PTY on
+child, and exits the process on a failed resize. `crates/shepr-pty/src/` owns the PTY on
 libc instead: `command.rs` (`PtyCommand`: argv or login shell, full env
 control, cwd) builds the launch, `backend.rs` opens the PTY and spawns the
 child as a session leader with the PTY as controlling terminal, and

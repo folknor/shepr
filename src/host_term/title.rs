@@ -30,7 +30,7 @@ fn osc52_sequence(bytes: &[u8]) -> String {
 /// terminal on the user's machine. Some terminals still only honor BEL-
 /// terminated writes, so OSC 52 uses BEL here.
 pub(crate) fn write_clipboard_bytes(bytes: &[u8]) {
-    if !crate::platform::prefers_osc52_clipboard() && crate::platform::write_clipboard(bytes) {
+    if !shepr_platform::prefers_osc52_clipboard() && shepr_platform::write_clipboard(bytes) {
         return;
     }
 

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::core::layout::PaneId;
+use shepr_core::layout::PaneId;
 
 #[derive(Debug, Default)]
 pub(crate) struct RenderRequest {

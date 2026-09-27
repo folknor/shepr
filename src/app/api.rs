@@ -490,7 +490,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: dead_pane,
-            exit_reason: crate::platform::ChildExitReason::Exited,
+            exit_reason: shepr_platform::ChildExitReason::Exited,
         });
 
         let events = event_hub.events_after(0);
@@ -587,7 +587,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: first_root,
-            exit_reason: crate::platform::ChildExitReason::Exited,
+            exit_reason: shepr_platform::ChildExitReason::Exited,
         });
         // Only the removal events are this test's subject.
         let removals = |hub: &crate::api::EventHub, after: u64| {
@@ -624,7 +624,7 @@ mod tests {
         let before = event_hub.current_sequence();
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: second_root,
-            exit_reason: crate::platform::ChildExitReason::Exited,
+            exit_reason: shepr_platform::ChildExitReason::Exited,
         });
         let events = removals(&event_hub, before);
         assert_eq!(

@@ -1,0 +1,16 @@
+[package]
+name = "shepr-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+ratatui = { workspace = true }
+unicode-width = { workspace = true }
+
+[dev-dependencies]
+shepr-test-support = { path = "../shepr-test-support" }
+
+[lints]
+workspace = true

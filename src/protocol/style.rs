@@ -59,7 +59,7 @@ impl WireStyleFlags {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct WireStyle {
     pub flags: WireStyleFlags,
-    pub underline: crate::vt::UnderlineStyle,
+    pub underline: shepr_vt::UnderlineStyle,
 }
 
 // Ratatui stores underline shape in reserved modifier bits while a frame

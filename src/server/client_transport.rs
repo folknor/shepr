@@ -77,7 +77,7 @@ fn client_shell_geometry_error(
 }
 
 /// Direct-attach geometry as the server will use it.
-type TerminalGeometry = crate::core::geometry::HostGeometry;
+type TerminalGeometry = shepr_core::geometry::HostGeometry;
 
 /// Bounds a direct-attach client's reported geometry.
 ///
@@ -812,7 +812,7 @@ fn client_writer_loop(
 }
 
 fn write_framed_bytes(stream: &mut LocalStream, data: &[u8]) -> bool {
-    let result = crate::platform::write_client_stream(stream, data);
+    let result = shepr_platform::write_client_stream(stream, data);
     if let Err(err) = result {
         debug!(err = %err, "client write failed, closing writer");
         return false;
@@ -844,7 +844,7 @@ fn client_read_loop_with_endpoint_controls(
 ) -> io::Result<()> {
     while !should_quit.load(Ordering::Acquire) {
         let message = protocol::read_message(
-            &mut crate::platform::ClientStreamReader(&mut stream),
+            &mut shepr_platform::ClientStreamReader(&mut stream),
             MAX_FRAME_SIZE,
         );
         let msg: ClientMessage = match message {
@@ -1815,7 +1815,7 @@ mod tests {
 
     #[test]
     fn client_shell_validation_rejects_empty_surface() {
-        assert!(crate::core::geometry::GridSize::new(0, 29).is_none());
+        assert!(shepr_core::geometry::GridSize::new(0, 29).is_none());
         assert_eq!(
             client_shell_geometry_error(
                 crate::protocol::ClientSurfaceSize { cols: 0, rows: 29 },

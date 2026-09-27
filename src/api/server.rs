@@ -124,7 +124,7 @@ pub(crate) fn start_server_with_stop_control(
 
 fn default_capabilities() -> Option<ServerCapabilities> {
     Some(ServerCapabilities {
-        detached_server_daemon: crate::platform::current_process_is_detached_server_daemon(),
+        detached_server_daemon: shepr_platform::current_process_is_detached_server_daemon(),
         ssh_agent_registration: false,
     })
 }
@@ -145,8 +145,8 @@ fn start_server_inner(
     let identity = socket_file_identity(&path)?;
     info!(path = %path.display(), "api server listening");
 
-    let ssh_agents = match crate::platform::ssh_agent::SshAgentRegistry::new(
-        crate::platform::ssh_agent::socket_path(&crate::api::socket_path(paths)),
+    let ssh_agents = match shepr_platform::ssh_agent::SshAgentRegistry::new(
+        shepr_platform::ssh_agent::socket_path(&crate::api::socket_path(paths)),
         std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from),
     ) {
         Ok(registry) => Some(registry),
@@ -319,7 +319,7 @@ fn handle_connection_with_stop(
     running: &Arc<AtomicBool>,
     capabilities: Option<ServerCapabilities>,
     server_stop: Option<&Arc<AtomicBool>>,
-    ssh_agents: Option<&crate::platform::ssh_agent::SshAgentRegistry>,
+    ssh_agents: Option<&shepr_platform::ssh_agent::SshAgentRegistry>,
 ) -> std::io::Result<()> {
     if let Err(err) = stream.set_send_timeout(Some(STREAM_WRITE_TIMEOUT)) {
         debug!(err = %err, "api connection write timeout unavailable");
@@ -1083,7 +1083,7 @@ mod tests {
         let agent = directory.join("upstream");
         let _agent = UnixListener::bind(&agent).expect("test precondition");
         let stable = directory.join("stable");
-        let registry = crate::platform::ssh_agent::SshAgentRegistry::new(stable.clone(), None)
+        let registry = shepr_platform::ssh_agent::SshAgentRegistry::new(stable.clone(), None)
             .expect("test precondition");
         let (mut client, server, api_path) = local_stream_pair("agent-api");
         let (tx, _rx) = mpsc::unbounded_channel();

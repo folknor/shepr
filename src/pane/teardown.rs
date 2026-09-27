@@ -4,7 +4,7 @@ use std::sync::{
 };
 use tracing::{info, warn};
 
-use crate::core::layout::PaneId;
+use shepr_core::layout::PaneId;
 
 /// The pane's child identity and the observations used to decide whether it
 /// has exited or has been reaped. Keeping the process handle with the pid and
@@ -14,11 +14,11 @@ pub(super) struct ChildLiveness {
     wait_completed: AtomicBool,
     /// A pidfd or start-time handle opened before the child watcher starts.
     /// Teardown signals through it so a reused pid is never hit.
-    leader: Option<crate::platform::ProcessHandle>,
+    leader: Option<shepr_platform::ProcessHandle>,
 }
 
 impl ChildLiveness {
-    pub(super) fn new(pid: u32, leader: Option<crate::platform::ProcessHandle>) -> Self {
+    pub(super) fn new(pid: u32, leader: Option<shepr_platform::ProcessHandle>) -> Self {
         Self {
             pid: AtomicU32::new(pid),
             wait_completed: AtomicBool::new(false),
@@ -47,7 +47,7 @@ impl ChildLiveness {
     pub(super) fn has_exited(&self) -> bool {
         self.leader
             .as_ref()
-            .map(crate::platform::ProcessHandle::has_exited)
+            .map(shepr_platform::ProcessHandle::has_exited)
             .unwrap_or_else(|| self.wait_completed())
     }
 
@@ -59,7 +59,7 @@ impl ChildLiveness {
             .unwrap_or_else(|| self.wait_completed())
     }
 
-    pub(super) fn leader(&self) -> Option<&crate::platform::ProcessHandle> {
+    pub(super) fn leader(&self) -> Option<&shepr_platform::ProcessHandle> {
         self.leader.as_ref()
     }
 }
@@ -75,10 +75,10 @@ static PANE_TEARDOWNS_DONE: std::sync::Condvar = std::sync::Condvar::new();
 /// after dropping its panes would otherwise cut the SIGTERM/SIGKILL
 /// escalation short.
 pub(crate) fn wait_for_pane_session_teardowns(timeout: std::time::Duration) -> bool {
-    let guard = crate::vt::lock_auxiliary(&PANE_TEARDOWNS_IN_FLIGHT);
+    let guard = shepr_vt::lock_auxiliary(&PANE_TEARDOWNS_IN_FLIGHT);
     match PANE_TEARDOWNS_DONE.wait_timeout_while(guard, timeout, |in_flight| *in_flight > 0) {
         Ok((guard, _)) => *guard == 0,
-        Err(poisoned) => *crate::vt::recover_auxiliary_poison(poisoned).0 == 0,
+        Err(poisoned) => *shepr_vt::recover_auxiliary_poison(poisoned).0 == 0,
     }
 }
 
@@ -86,14 +86,14 @@ struct PaneTeardownInFlight;
 
 impl PaneTeardownInFlight {
     fn start() -> Self {
-        *crate::vt::lock_auxiliary(&PANE_TEARDOWNS_IN_FLIGHT) += 1;
+        *shepr_vt::lock_auxiliary(&PANE_TEARDOWNS_IN_FLIGHT) += 1;
         Self
     }
 }
 
 impl Drop for PaneTeardownInFlight {
     fn drop(&mut self) {
-        let mut in_flight = crate::vt::lock_auxiliary(&PANE_TEARDOWNS_IN_FLIGHT);
+        let mut in_flight = shepr_vt::lock_auxiliary(&PANE_TEARDOWNS_IN_FLIGHT);
         *in_flight = in_flight.saturating_sub(1);
         if *in_flight == 0 {
             PANE_TEARDOWNS_DONE.notify_all();
@@ -123,7 +123,7 @@ pub(super) fn shutdown_pane_processes(pane_id: PaneId, child_liveness: Arc<Child
     if let Some(leader) = child_liveness.leader()
         && !child_liveness.has_exited()
     {
-        leader.signal(crate::platform::Signal::Hangup);
+        leader.signal(shepr_platform::Signal::Hangup);
     }
     // `thread::Builder::spawn` drops its closure on failure, so the work is
     // parked in a shared slot that the inline fallback can still take back.
@@ -148,23 +148,23 @@ pub(super) fn shutdown_pane_processes(pane_id: PaneId, child_liveness: Arc<Child
 type PaneTeardownWork = Mutex<Option<(PaneTeardownInFlight, Arc<ChildLiveness>)>>;
 
 fn run_pane_teardown(pane_id: PaneId, work: &PaneTeardownWork) {
-    let taken = crate::vt::lock_auxiliary(work).take();
+    let taken = shepr_vt::lock_auxiliary(work).take();
     if let Some((_in_flight, child_liveness)) = taken {
         terminate_pane_session(pane_id, &child_liveness);
     }
 }
 
-const PANE_TEARDOWN_STEPS: [(crate::platform::Signal, std::time::Duration); 3] = [
+const PANE_TEARDOWN_STEPS: [(shepr_platform::Signal, std::time::Duration); 3] = [
     (
-        crate::platform::Signal::Hangup,
+        shepr_platform::Signal::Hangup,
         std::time::Duration::from_millis(250),
     ),
     (
-        crate::platform::Signal::Terminate,
+        shepr_platform::Signal::Terminate,
         std::time::Duration::from_millis(250),
     ),
     (
-        crate::platform::Signal::Kill,
+        shepr_platform::Signal::Kill,
         std::time::Duration::from_millis(250),
     ),
 ];
@@ -176,8 +176,8 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
     for (signal, grace) in PANE_TEARDOWN_STEPS {
         // Rescan every round: a process that forked while being hung up is
         // still in the session and must not escape the next signal.
-        members = crate::platform::session_member_handles(session_id, leader_reaped);
-        let handles: Vec<&crate::platform::ProcessHandle> = child_liveness
+        members = shepr_platform::session_member_handles(session_id, leader_reaped);
+        let handles: Vec<&shepr_platform::ProcessHandle> = child_liveness
             .leader()
             .into_iter()
             .chain(members.iter())
@@ -187,11 +187,11 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
                 handle.signal(signal);
             }
         }
-        if crate::platform::wait_for_process_exits(&handles, grace) {
+        if shepr_platform::wait_for_process_exits(&handles, grace) {
             // A signalled member can fork before it exits. The newly forked
             // process was absent from `handles`, so confirm the whole session
             // is empty before ending the escalation.
-            if crate::platform::session_member_handles(session_id, leader_reaped).is_empty() {
+            if shepr_platform::session_member_handles(session_id, leader_reaped).is_empty() {
                 info!(
                     pane = pane_id.raw(),
                     session = session_id,
@@ -208,7 +208,7 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
         .into_iter()
         .chain(members.iter())
         .filter(|handle| !handle.has_exited())
-        .map(crate::platform::ProcessHandle::pid)
+        .map(shepr_platform::ProcessHandle::pid)
         .collect();
     warn!(
         pane = pane_id.raw(),

@@ -1,6 +1,6 @@
 use super::*;
-use crate::core::geometry::SplitBranch;
 use serde::{Deserialize, Serialize};
+use shepr_core::geometry::SplitBranch;
 
 /// Origin-relative geometry for one pane in a rendered pane surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,7 +24,7 @@ pub struct PaneSurfaceScrollMetrics {
     pub offset_from_bottom: u64,
     pub max_offset_from_bottom: u64,
     pub viewport_rows: u64,
-    pub history_origin: crate::vt::AbsRow,
+    pub history_origin: shepr_vt::AbsRow,
 }
 
 /// One draggable BSP split handle relative to a pane surface.

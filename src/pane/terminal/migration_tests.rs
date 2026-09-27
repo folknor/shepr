@@ -20,7 +20,7 @@ struct Effects {
 struct Observation {
     geometry: (u16, u16),
     cells: Vec<CellData>,
-    text_rows: Vec<crate::vt::ScreenTextRow>,
+    text_rows: Vec<shepr_vt::ScreenTextRow>,
     links: Vec<((u16, u16), String, String)>,
     cursor: TerminalCursorState,
     input: InputState,
@@ -32,7 +32,7 @@ struct Observation {
 
 impl Harness {
     fn new(width: u16, height: u16) -> Self {
-        let terminal = crate::vt::Terminal::new(width, height, 256);
+        let terminal = shepr_vt::Terminal::new(width, height, 256);
         Self {
             pane: PaneTerminal::new(GhosttyPaneTerminal::new(terminal)),
             width,
@@ -57,7 +57,7 @@ impl Harness {
     }
 
     fn resize(&mut self, width: u16, height: u16) {
-        for reply in self.pane.resize(crate::core::geometry::PaneGeometry::new(
+        for reply in self.pane.resize(shepr_core::geometry::PaneGeometry::new(
             width, height, 8, 16,
         )) {
             self.effects.replies.extend_from_slice(&reply);
@@ -89,7 +89,7 @@ impl Harness {
 
     fn cursor(&self) -> Option<TerminalCursorState> {
         current_cursor_state(
-            &mut crate::vt::lock_terminal_core(&self.pane.ghostty.core).expect("test precondition"),
+            &mut shepr_vt::lock_terminal_core(&self.pane.ghostty.core).expect("test precondition"),
         )
     }
 
@@ -124,11 +124,11 @@ fn primary_screen_replay_honors_ed3_for_droid_at_chunk_boundaries() {
             let _ = self.0.wait();
         }
     }
-    let pty = crate::pty::backend::open_pty(24, 80).expect("open pty");
-    let mut command = crate::pty::PtyCommand::new("bash");
+    let pty = shepr_pty::backend::open_pty(24, 80).expect("open pty");
+    let mut command = shepr_pty::PtyCommand::new("bash");
     command.args(["-c", "exec -a droid sleep 999"]);
     let child =
-        ChildGuard(crate::pty::backend::spawn_in_pty(&pty.slave, &command).expect("spawn in pty"));
+        ChildGuard(shepr_pty::backend::spawn_in_pty(&pty.slave, &command).expect("spawn in pty"));
     let pid = child.0.id();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -368,7 +368,7 @@ fn sparse_dirty_patches_preserve_coordinates_and_clipped_rows() {
         assert!(patch.rows.iter().all(|(_, cells)| cells.len() == 8));
 
         let core =
-            crate::vt::lock_terminal_core(&terminal.pane.ghostty.core).expect("test precondition");
+            shepr_vt::lock_terminal_core(&terminal.pane.ghostty.core).expect("test precondition");
         for row in core.render_state.iter_rows() {
             assert_eq!(row.is_dirty(), height == 3 && row.y() == 4);
         }
@@ -387,7 +387,7 @@ fn dirty_patch_fallback_keeps_previously_collected_rows_dirty() {
         TerminalDirtyPatchOutcome::Fallback
     ));
     let core =
-        crate::vt::lock_terminal_core(&terminal.pane.ghostty.core).expect("test precondition");
+        shepr_vt::lock_terminal_core(&terminal.pane.ghostty.core).expect("test precondition");
     // `RowView::y` takes `&self`, so it doesn't coerce to the `FnMut(RowView)`
     // that `map` wants here; the closure below is not actually redundant.
     #[allow(clippy::redundant_closure_for_method_calls)]

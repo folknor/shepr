@@ -8,8 +8,13 @@ publish = false
 repository = "https://github.com/folknor/shepr"
 rust-version = "1.99"
 
-[dependencies]
-# Terminal emulation core. Pinned exactly: src/vt/ is written against this
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.dependencies]
+
+# Terminal emulation core. Pinned exactly: crates/shepr-vt/src/ is written against this
 # version's API (reference checkout in research/alacritty).
 alacritty_terminal = { version = "=0.26.0", default-features = false }
 base64 = "0.23.1"
@@ -21,7 +26,7 @@ crossterm = "0.29"
 ctrlc = { version = "3", features = ["termination"] }
 interprocess = "2.4.2"
 jsonc-parser = { version = "0.33.1", default-features = false, features = ["cst", "serde_json"] }
-# Also the PTY layer (src/pty/backend.rs): openpty, session setup, pre-exec.
+# Also the PTY layer (crates/shepr-pty/src/backend.rs): openpty, session setup, pre-exec.
 libc = "0.2"
 ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 regex = "1"
@@ -40,7 +45,8 @@ unicode-segmentation = "1.13.1"
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
-[lints.clippy]
+
+[workspace.lints.clippy]
 # Style: modern idiomatic Rust
 uninlined_format_args = "deny"
 cloned_instead_of_copied = "deny"
@@ -80,3 +86,38 @@ cast_possible_wrap = "deny"
 # Safety: no debug/placeholder code in production
 dbg_macro = "deny"
 todo = "deny"
+
+[dependencies]
+base64 = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+crossterm = { workspace = true }
+ctrlc = { workspace = true }
+interprocess = { workspace = true }
+jsonc-parser = { workspace = true }
+libc = { workspace = true }
+ratatui = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+serde_ignored = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+unicode-width = { workspace = true }
+unicode-segmentation = { workspace = true }
+zbus = { workspace = true }
+futures-util = { workspace = true }
+shepr-core = { path = "crates/shepr-core" }
+shepr-platform = { path = "crates/shepr-platform" }
+shepr-vt = { path = "crates/shepr-vt" }
+shepr-pty = { path = "crates/shepr-pty" }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+shepr-test-support = { path = "crates/shepr-test-support" }

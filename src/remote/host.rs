@@ -21,7 +21,7 @@ pub(crate) fn run_remote_client_bridge(
         )
     })?;
 
-    crate::platform::forward_remote_bridge_stdio(stream, idle_timeout)
+    shepr_platform::forward_remote_bridge_stdio(stream, idle_timeout)
 }
 
 /// Starts the server when none is listening. A running server of another build

@@ -77,7 +77,7 @@ pub struct App {
     pub(crate) event_rx: mpsc::Receiver<AppEvent>,
     pub(crate) api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
     pub(crate) event_hub: crate::api::EventHub,
-    pub(crate) last_focus: Option<(usize, crate::core::layout::PaneId)>,
+    pub(crate) last_focus: Option<(usize, shepr_core::layout::PaneId)>,
     pub(crate) policy: AppPolicy,
     pub(crate) git_refresh: git_refresh::GitRefreshScheduler,
     pub(crate) agent_metadata_deadline: Option<Instant>,
@@ -326,7 +326,7 @@ impl App {
     #[cfg(test)]
     pub(crate) fn insert_test_runtime(
         &mut self,
-        pane_id: crate::core::layout::PaneId,
+        pane_id: shepr_core::layout::PaneId,
         runtime: crate::pane::PaneRuntime,
     ) {
         let terminal_id = self
@@ -343,7 +343,7 @@ impl App {
     #[cfg(test)]
     pub(crate) fn test_runtime(
         &self,
-        pane_id: crate::core::layout::PaneId,
+        pane_id: shepr_core::layout::PaneId,
     ) -> &crate::pane::PaneRuntime {
         self.state
             .workspaces
@@ -1640,11 +1640,11 @@ mod tests {
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: first_pane,
-            exit_reason: crate::platform::ChildExitReason::Interrupted,
+            exit_reason: shepr_platform::ChildExitReason::Interrupted,
         });
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: second_pane,
-            exit_reason: crate::platform::ChildExitReason::Interrupted,
+            exit_reason: shepr_platform::ChildExitReason::Interrupted,
         });
         assert!(app.state.workspaces.is_empty());
         assert!(app.ensure_default_workspace());
@@ -1670,7 +1670,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id,
-            exit_reason: crate::platform::ChildExitReason::Interrupted,
+            exit_reason: shepr_platform::ChildExitReason::Interrupted,
         });
         assert!(crate::persist::load(&crate::session::data_dir(&app.paths)).is_some());
 
@@ -1697,7 +1697,7 @@ mod tests {
 
             app.handle_internal_event(AppEvent::PaneDied {
                 pane_id,
-                exit_reason: crate::platform::ChildExitReason::Interrupted,
+                exit_reason: shepr_platform::ChildExitReason::Interrupted,
             });
             app.state.workspaces = vec![Workspace::test_new("newer")];
             app.state.set_active_index(Some(0));
@@ -1706,7 +1706,7 @@ mod tests {
             if another_interrupted_exit {
                 app.handle_internal_event(AppEvent::PaneDied {
                     pane_id: app.state.workspaces[0].tabs[0].root_pane,
-                    exit_reason: crate::platform::ChildExitReason::Interrupted,
+                    exit_reason: shepr_platform::ChildExitReason::Interrupted,
                 });
             }
             app.save_session_before_teardown();

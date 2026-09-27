@@ -70,10 +70,10 @@ impl App {
         {
             return Err(("stale_content", "pane content changed".to_owned()));
         }
-        let selection = crate::vt::selection::Selection::range(
+        let selection = shepr_vt::selection::Selection::range(
             pane_id,
-            crate::vt::Point::new(params.anchor.row, params.anchor.col),
-            crate::vt::Point::new(params.cursor.row, params.cursor.col),
+            shepr_vt::Point::new(params.anchor.row, params.anchor.col),
+            shepr_vt::Point::new(params.cursor.row, params.cursor.col),
         );
         let Some(text) = runtime.extract_selection(&selection) else {
             return Err((
@@ -131,17 +131,17 @@ impl App {
         }
         let origin = runtime
             .scroll_metrics()
-            .map_or(crate::vt::AbsRow(0), |metrics| metrics.history_origin);
+            .map_or(shepr_vt::AbsRow(0), |metrics| metrics.history_origin);
         let absolute_cursor_row = params.cursor.row.absolute(origin);
         let target = match params.motion {
             PaneCopyMotion::LineEnd | PaneCopyMotion::FirstNonBlank => {
                 let width = runtime
                     .terminal_dimensions()
                     .map_or(1, |(cols, _)| cols.max(1));
-                let selection = crate::vt::selection::Selection::range(
+                let selection = shepr_vt::selection::Selection::range(
                     pane_id,
-                    crate::vt::Point::new(absolute_cursor_row, 0),
-                    crate::vt::Point::new(absolute_cursor_row, width.saturating_sub(1)),
+                    shepr_vt::Point::new(absolute_cursor_row, 0),
+                    shepr_vt::Point::new(absolute_cursor_row, width.saturating_sub(1)),
                 );
                 let Some(text) = runtime.extract_selection(&selection) else {
                     return failure(

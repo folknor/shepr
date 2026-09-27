@@ -385,7 +385,7 @@ pub(super) fn store_private_json(
 
     let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
     let temp_path = parent.join(format!(".endpoints-{}-{sequence}.tmp", std::process::id()));
-    let mut temp = crate::platform::create_private_file(&temp_path)
+    let mut temp = shepr_platform::create_private_file(&temp_path)
         .map_err(|error| format!("failed to create {description}: {error}"))?;
     if let Err(error) = temp.write_all(content).and_then(|()| temp.sync_all()) {
         drop(temp);
@@ -397,7 +397,7 @@ pub(super) fn store_private_json(
         let _ = std::fs::remove_file(&temp_path);
         return Err(format!("failed to activate {description}: {error}"));
     }
-    crate::platform::sync_directory(parent)
+    shepr_platform::sync_directory(parent)
         .map_err(|error| format!("failed to persist {description} directory: {error}"))
 }
 

@@ -18,7 +18,6 @@ pub(crate) use keybindings::{
 };
 pub(crate) use lease::{InputLeaseKey, InputLeaseTable, RepeatPlan};
 pub use model::MouseProtocolMode;
-pub use model::ime_compatible_keyboard_enhancement_flags;
 pub use model::{
     KeyboardProtocol, MouseProtocolEncoding, TerminalKey, host_modify_other_keys_mode,
 };

@@ -41,7 +41,7 @@ impl ClientShellState {
         let Some(metrics) = hit.scroll else {
             return false;
         };
-        let viewport_top = crate::vt::ScreenRow(
+        let viewport_top = shepr_vt::ScreenRow(
             metrics
                 .max_offset_from_bottom
                 .saturating_sub(metrics.offset_from_bottom),
@@ -62,7 +62,7 @@ impl ClientShellState {
                     && cursor.y >= inner.y
                     && cursor.y < inner.y.saturating_add(inner.height))
                 .then_some(crate::api::schema::PaneTextPoint {
-                    row: crate::vt::ScreenRow(
+                    row: shepr_vt::ScreenRow(
                         viewport_top
                             .0
                             .saturating_add(usize::from(cursor.y - inner.y)),
@@ -71,7 +71,7 @@ impl ClientShellState {
                 })
             })
             .unwrap_or(crate::api::schema::PaneTextPoint {
-                row: crate::vt::ScreenRow(
+                row: shepr_vt::ScreenRow(
                     viewport_top
                         .0
                         .saturating_add(usize::from(hit.inner_rect.height.saturating_sub(1))),
@@ -547,7 +547,7 @@ impl ClientShellState {
             .saturating_add(usize::from(height))
             .max(1);
         if row_delta < 0 {
-            copy_mode.cursor.row = crate::vt::ScreenRow(
+            copy_mode.cursor.row = shepr_vt::ScreenRow(
                 copy_mode
                     .cursor
                     .row
@@ -555,7 +555,7 @@ impl ClientShellState {
                     .saturating_sub(usize::from(row_delta.unsigned_abs())),
             );
         } else if row_delta > 0 {
-            copy_mode.cursor.row = crate::vt::ScreenRow(
+            copy_mode.cursor.row = shepr_vt::ScreenRow(
                 copy_mode
                     .cursor
                     .row
@@ -577,7 +577,7 @@ impl ClientShellState {
         let Some((pane_id, next_offset)) = self.copy_mode.as_mut().map(|copy_mode| {
             if direction < 0 {
                 copy_mode.cursor.row =
-                    crate::vt::ScreenRow(copy_mode.cursor.row.0.saturating_sub(lines));
+                    shepr_vt::ScreenRow(copy_mode.cursor.row.0.saturating_sub(lines));
                 copy_mode.offset_from_bottom = copy_mode
                     .offset_from_bottom
                     .saturating_add(lines)
@@ -587,9 +587,8 @@ impl ClientShellState {
                     .max_offset_from_bottom
                     .saturating_add(usize::from(hit.inner_rect.height))
                     .saturating_sub(1);
-                copy_mode.cursor.row = crate::vt::ScreenRow(
-                    copy_mode.cursor.row.0.saturating_add(lines).min(last_row),
-                );
+                copy_mode.cursor.row =
+                    shepr_vt::ScreenRow(copy_mode.cursor.row.0.saturating_add(lines).min(last_row));
                 copy_mode.offset_from_bottom = copy_mode.offset_from_bottom.saturating_sub(lines);
             }
             (copy_mode.pane_id.clone(), copy_mode.offset_from_bottom)
@@ -607,14 +606,14 @@ impl ClientShellState {
         };
         let Some((pane_id, offset_from_bottom)) = self.copy_mode.as_mut().map(|copy_mode| {
             if top {
-                copy_mode.cursor.row = crate::vt::ScreenRow(0);
+                copy_mode.cursor.row = shepr_vt::ScreenRow(0);
                 copy_mode.offset_from_bottom = copy_mode.max_offset_from_bottom;
             } else {
                 let last_row = copy_mode
                     .max_offset_from_bottom
                     .saturating_add(usize::from(hit.inner_rect.height))
                     .saturating_sub(1);
-                copy_mode.cursor.row = crate::vt::ScreenRow(last_row);
+                copy_mode.cursor.row = shepr_vt::ScreenRow(last_row);
                 copy_mode.offset_from_bottom = 0;
             }
             (copy_mode.pane_id.clone(), copy_mode.offset_from_bottom)
@@ -654,7 +653,7 @@ impl ClientShellState {
     fn reveal_copy_cursor(&mut self, outcome: &mut ClientShellInput) {
         let reserve_mode_bar_row = self.mode_bar_covers_copy_pane();
         let request = self.copy_mode.as_mut().and_then(|copy_mode| {
-            let current_top = crate::vt::ScreenRow(
+            let current_top = shepr_vt::ScreenRow(
                 copy_mode
                     .max_offset_from_bottom
                     .saturating_sub(copy_mode.offset_from_bottom),
@@ -664,11 +663,11 @@ impl ClientShellState {
                 .1
                 .saturating_sub(if reserve_mode_bar_row { 2 } else { 1 });
             let bottom =
-                crate::vt::ScreenRow(current_top.0.saturating_add(usize::from(max_cursor_row)));
+                shepr_vt::ScreenRow(current_top.0.saturating_add(usize::from(max_cursor_row)));
             let desired_top = if copy_mode.cursor.row < current_top {
                 copy_mode.cursor.row
             } else if copy_mode.cursor.row > bottom {
-                crate::vt::ScreenRow(
+                shepr_vt::ScreenRow(
                     copy_mode
                         .cursor
                         .row
@@ -697,7 +696,7 @@ impl ClientShellState {
         let width = hit.as_ref().map(|hit| hit.inner_rect.width);
         let history_origin = hit
             .and_then(|hit| hit.scroll)
-            .map_or(crate::vt::AbsRow(0), |metrics| metrics.history_origin);
+            .map_or(shepr_vt::AbsRow(0), |metrics| metrics.history_origin);
         let Some(copy_mode) = self.copy_mode.as_mut() else {
             return;
         };
@@ -705,7 +704,7 @@ impl ClientShellState {
         let row = copy_mode.cursor.row.absolute(history_origin);
         if linewise {
             copy_mode.selection = Some(ClientCopySelection::Linewise { anchor_row: row });
-            self.selection = Some(crate::vt::selection::Selection::line_range(
+            self.selection = Some(shepr_vt::selection::Selection::line_range(
                 copy_mode.pane_id.clone(),
                 row,
                 row,
@@ -713,11 +712,11 @@ impl ClientShellState {
             ));
         } else {
             copy_mode.selection = Some(ClientCopySelection::Character {
-                anchor: crate::vt::Point::new(row, copy_mode.cursor.col),
+                anchor: shepr_vt::Point::new(row, copy_mode.cursor.col),
             });
-            self.selection = Some(crate::vt::selection::Selection::anchor(
+            self.selection = Some(shepr_vt::selection::Selection::anchor(
                 copy_mode.pane_id.clone(),
-                crate::vt::Point::new(row, copy_mode.cursor.col),
+                shepr_vt::Point::new(row, copy_mode.cursor.col),
             ));
         }
     }
@@ -726,7 +725,7 @@ impl ClientShellState {
         let history_origin = self
             .copy_hit()
             .and_then(|hit| hit.scroll)
-            .map_or(crate::vt::AbsRow(0), |metrics| metrics.history_origin);
+            .map_or(shepr_vt::AbsRow(0), |metrics| metrics.history_origin);
         let Some(copy_mode) = self.copy_mode.as_ref() else {
             return;
         };
@@ -734,16 +733,16 @@ impl ClientShellState {
             return;
         };
         self.selection = Some(match selection {
-            ClientCopySelection::Character { anchor } => crate::vt::selection::Selection::range(
+            ClientCopySelection::Character { anchor } => shepr_vt::selection::Selection::range(
                 copy_mode.pane_id.clone(),
                 anchor,
-                crate::vt::Point::new(
+                shepr_vt::Point::new(
                     copy_mode.cursor.row.absolute(history_origin),
                     copy_mode.cursor.col,
                 ),
             ),
             ClientCopySelection::Linewise { anchor_row } => {
-                crate::vt::selection::Selection::line_range(
+                shepr_vt::selection::Selection::line_range(
                     copy_mode.pane_id.clone(),
                     anchor_row,
                     copy_mode.cursor.row.absolute(history_origin),
@@ -874,7 +873,7 @@ impl ClientShellState {
         let live_selection = self
             .selection
             .as_ref()
-            .is_some_and(crate::vt::selection::Selection::is_visible);
+            .is_some_and(shepr_vt::selection::Selection::is_visible);
         if copy
             && !live_selection
             && let Some((pane_id, text_match)) = self.copy_mode.as_ref().and_then(|copy_mode| {
@@ -887,14 +886,14 @@ impl ClientShellState {
             let history_origin = self
                 .copy_hit()
                 .and_then(|hit| hit.scroll)
-                .map_or(crate::vt::AbsRow(0), |metrics| metrics.history_origin);
-            self.selection = Some(crate::vt::selection::Selection::range(
+                .map_or(shepr_vt::AbsRow(0), |metrics| metrics.history_origin);
+            self.selection = Some(shepr_vt::selection::Selection::range(
                 pane_id,
-                crate::vt::Point::new(
+                shepr_vt::Point::new(
                     text_match.start.row.absolute(history_origin),
                     text_match.start.col,
                 ),
-                crate::vt::Point::new(
+                shepr_vt::Point::new(
                     text_match.end.row.absolute(history_origin),
                     text_match.end.col,
                 ),
@@ -908,7 +907,7 @@ impl ClientShellState {
             && self
                 .selection
                 .as_ref()
-                .is_some_and(crate::vt::selection::Selection::is_visible)
+                .is_some_and(shepr_vt::selection::Selection::is_visible)
         {
             // A visible explicit selection is live. If the fallback above supplied
             // a search match, retain the revision that established its boundaries.

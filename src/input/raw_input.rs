@@ -1058,7 +1058,7 @@ fn parse_host_cell_size_report(buffer: &[u8]) -> Option<(u32, u32)> {
     if params.next().is_some() {
         return None;
     }
-    crate::core::geometry::CellPx::new(width_px, height_px)
+    shepr_core::geometry::CellPx::new(width_px, height_px)
         .map(|cell| (cell.width.get(), cell.height.get()))
 }
 

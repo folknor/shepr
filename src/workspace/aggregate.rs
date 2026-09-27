@@ -42,7 +42,7 @@ impl Workspace {
 mod tests {
     use ratatui::layout::Direction;
 
-    use crate::core::layout::PaneId;
+    use shepr_core::layout::PaneId;
 
     use super::*;
 

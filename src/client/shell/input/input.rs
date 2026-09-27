@@ -30,7 +30,7 @@ fn read_clipboard_text_bounded() -> Option<String> {
     read_clipboard_text_bounded_with(
         &CLIPBOARD_READ_IN_FLIGHT,
         MODAL_PASTE_CLIPBOARD_TIMEOUT,
-        crate::platform::read_clipboard_text,
+        shepr_platform::read_clipboard_text,
     )
 }
 
@@ -485,7 +485,7 @@ impl ClientShellState {
             && self
                 .selection
                 .as_ref()
-                .is_some_and(crate::vt::selection::Selection::is_visible)
+                .is_some_and(shepr_vt::selection::Selection::is_visible)
         {
             self.request_selection_copy(outcome, true);
             self.selection = None;
@@ -900,7 +900,7 @@ impl ClientShellState {
             retained_selection: self
                 .selection
                 .as_ref()
-                .is_some_and(crate::vt::selection::Selection::is_visible),
+                .is_some_and(shepr_vt::selection::Selection::is_visible),
         }
     }
 

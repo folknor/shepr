@@ -5,7 +5,6 @@ use ratatui::layout::Direction;
 use tokio::sync::{Notify, mpsc};
 use tracing::{error, warn};
 
-use crate::core::layout::{Node, PaneId, TileLayout};
 use crate::detect::AgentState;
 use crate::events::AppEvent;
 use crate::pane::PaneRuntime;
@@ -14,6 +13,7 @@ use crate::protocol::TerminalId;
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalState;
 use crate::workspace::Workspace;
+use shepr_core::layout::{Node, PaneId, TileLayout};
 
 use super::snapshot::{
     HistoryCarry, PaneAgentSessionSnapshot, PaneHistorySnapshot, TabHistorySnapshot,
@@ -813,7 +813,7 @@ fn remap_inner(snap: &LayoutSnapshot, id_map: &mut HashMap<u32, PaneId>) -> Node
             };
             Node::Split {
                 direction: dir,
-                ratio: crate::core::layout::valid_split_ratio(*ratio),
+                ratio: shepr_core::layout::valid_split_ratio(*ratio),
                 first: Box::new(first_node),
                 second: Box::new(second_node),
             }
@@ -892,11 +892,11 @@ mod tests {
     fn capture_and_restore_node_round_trip() {
         let node = Node::Split {
             direction: Direction::Horizontal,
-            ratio: crate::core::layout::SplitRatio::clamped(0.5),
+            ratio: shepr_core::layout::SplitRatio::clamped(0.5),
             first: Box::new(Node::Pane(PaneId::from_raw(0))),
             second: Box::new(Node::Split {
                 direction: Direction::Vertical,
-                ratio: crate::core::layout::SplitRatio::clamped(0.3),
+                ratio: shepr_core::layout::SplitRatio::clamped(0.3),
                 first: Box::new(Node::Pane(PaneId::from_raw(1))),
                 second: Box::new(Node::Pane(PaneId::from_raw(2))),
             }),
@@ -1401,7 +1401,7 @@ mod tests {
         let missing = PaneId::from_raw(12);
         let node = Node::Split {
             direction: Direction::Horizontal,
-            ratio: crate::core::layout::SplitRatio::clamped(0.5),
+            ratio: shepr_core::layout::SplitRatio::clamped(0.5),
             first: Box::new(Node::Pane(keep)),
             second: Box::new(Node::Pane(missing)),
         };

@@ -8,7 +8,7 @@ use crate::api::schema::{
     PaneReadResult, ResponseResult,
 };
 use crate::app::App;
-use crate::pty::actor::{QueuedSubmission, SubmissionCancelOutcome};
+use shepr_pty::actor::{QueuedSubmission, SubmissionCancelOutcome};
 
 use super::responses::{failure, success};
 
@@ -108,7 +108,7 @@ impl App {
         (
             String,
             crate::api::schema::AgentInfo,
-            crate::pty::actor::QueuedSubmission,
+            shepr_pty::actor::QueuedSubmission,
         ),
         ApiError,
     > {
@@ -163,7 +163,7 @@ impl App {
         }
         if expected_agent == crate::detect::Agent::GithubCopilot {
             // Copilot ignores synthetic Enter after focus loss until it receives focus gained.
-            let focus = crate::vt::encode_focus(crate::vt::FocusEvent::Gained);
+            let focus = shepr_vt::encode_focus(shepr_vt::FocusEvent::Gained);
             if let Err(err) = runtime.try_send_bytes(Bytes::from_static(focus)) {
                 return Err(ApiError::new(
                     ApiErrorCode::AgentPromptFailed,
@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn prompt_submission_wait_honours_the_callers_deadline() {
-        use crate::pty::actor::SubmissionCancel;
+        use shepr_pty::actor::SubmissionCancel;
         // A sender that never replies stands in for a pane that stopped
         // reading stdin; at the deadline the submission is withdrawn.
         let (_stalled_tx, stalled) = std::sync::mpsc::channel::<std::io::Result<()>>();

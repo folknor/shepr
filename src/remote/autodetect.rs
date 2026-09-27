@@ -128,7 +128,7 @@ fn validate_running_server_compatibility(paths: &crate::config::AppPaths) -> io:
 pub fn spawn_server_daemon(paths: &crate::config::AppPaths) -> io::Result<u32> {
     // After an install replaces the binary, raw `current_exe()` names the
     // running one "/…/shepr (deleted)"; this resolves to the new install.
-    let exe = crate::platform::launch_executable().map_err(|err| {
+    let exe = shepr_platform::launch_executable().map_err(|err| {
         io::Error::new(
             err.kind(),
             format!("failed to determine shepr executable path: {err}"),
@@ -159,7 +159,7 @@ fn build_server_daemon_command(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    crate::platform::detach_server_daemon_command(&mut command);
+    shepr_platform::detach_server_daemon_command(&mut command);
 
     if let Some(startup_cwd) = startup_cwd {
         command.env(STARTUP_CWD_ENV_VAR, startup_cwd);
@@ -232,7 +232,7 @@ pub fn auto_detect_launch(
 ) -> io::Result<()> {
     // The client requires terminal geometry before it can attach. Reject an
     // unusable terminal before socket lookup creates directories or starts a daemon.
-    crate::platform::terminal_grid_size().map_err(|err| {
+    shepr_platform::terminal_grid_size().map_err(|err| {
         io::Error::new(
             err.kind(),
             format!("cannot attach without a usable terminal: {err}; run inside a terminal"),
@@ -332,7 +332,7 @@ mod tests {
 test "$sid" = "$$"
 "#,
         );
-        crate::platform::detach_server_daemon_command(&mut command);
+        shepr_platform::detach_server_daemon_command(&mut command);
 
         let status = command.status().expect("test precondition");
         assert!(

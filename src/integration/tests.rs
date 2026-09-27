@@ -1655,7 +1655,7 @@ fn opencode_hard_link_rejection_precedes_install_and_uninstall_asset_changes() {
         original
     );
     assert_eq!(
-        crate::platform::config_file_link_count(&config).expect("test precondition"),
+        shepr_platform::config_file_link_count(&config).expect("test precondition"),
         2
     );
     assert!(!dir.join("tui.jsonc").exists());

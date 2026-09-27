@@ -1,7 +1,7 @@
 use super::style::RATATUI_UNDERLINE_STYLE_SHIFT;
 use super::*;
-use crate::core::geometry::SplitBranch;
 use serde::Serialize;
+use shepr_core::geometry::SplitBranch;
 use std::io::{self, Read};
 
 #[cfg(test)]
@@ -272,7 +272,7 @@ mod tests {
                     bg: WireColor::from_ratatui(Color::Indexed(220)),
                     style: WireStyle {
                         flags: WireStyleFlags::BOLD,
-                        underline: crate::vt::UnderlineStyle::Curly,
+                        underline: shepr_vt::UnderlineStyle::Curly,
                     },
                     skip: false,
                     hyperlink: Some(0),
@@ -560,7 +560,7 @@ mod tests {
     fn direct_terminal_keyboard_mode_roundtrip() -> TestResult {
         let msg = ServerMessage::DirectTerminalKeyboardProtocol {
             flags: KittyKeyboardFlags::from_bits_retain(15),
-            modify_other_keys_level: crate::vt::ModifyOtherKeysLevel::ExceptWellDefined,
+            modify_other_keys_level: shepr_vt::ModifyOtherKeysLevel::ExceptWellDefined,
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
@@ -1044,10 +1044,10 @@ mod tests {
         // The ratatui buffer has no underline-shape field, so the adapter
         // preserves non-single underline styles in its temporary modifier.
         for underline in [
-            crate::vt::UnderlineStyle::Double,
-            crate::vt::UnderlineStyle::Curly,
-            crate::vt::UnderlineStyle::Dotted,
-            crate::vt::UnderlineStyle::Dashed,
+            shepr_vt::UnderlineStyle::Double,
+            shepr_vt::UnderlineStyle::Curly,
+            shepr_vt::UnderlineStyle::Dotted,
+            shepr_vt::UnderlineStyle::Dashed,
         ] {
             let style = WireStyle {
                 flags: WireStyleFlags::BOLD,
@@ -1080,7 +1080,7 @@ mod tests {
             Modifier::BOLD.bits() | (3 << RATATUI_UNDERLINE_STYLE_SHIFT),
         );
         let style = WireStyle::from_ratatui_modifier(stale);
-        assert_eq!(style.underline, crate::vt::UnderlineStyle::None);
+        assert_eq!(style.underline, shepr_vt::UnderlineStyle::None);
         assert_eq!(style.to_ratatui_modifier(), Modifier::BOLD);
     }
 

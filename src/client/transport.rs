@@ -146,7 +146,7 @@ impl io::Read for EndpointReader<'_> {
                 crate::ipc::LocalStreamReadCount::Data(count) => return Ok(count),
                 crate::ipc::LocalStreamReadCount::Closed => return Ok(0),
                 crate::ipc::LocalStreamReadCount::Pending => {
-                    crate::platform::wait_client_stream_readable(self.stream)?;
+                    shepr_platform::wait_client_stream_readable(self.stream)?;
                 }
             }
         }

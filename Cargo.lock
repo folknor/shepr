@@ -1694,7 +1694,6 @@ dependencies = [
 name = "shepr"
 version = "0.1.0"
 dependencies = [
- "alacritty_terminal",
  "base64 0.23.1",
  "bytes",
  "clap",
@@ -1710,6 +1709,11 @@ dependencies = [
  "serde_ignored",
  "serde_json",
  "sha2 0.11.0",
+ "shepr-core",
+ "shepr-platform",
+ "shepr-pty",
+ "shepr-test-support",
+ "shepr-vt",
  "time",
  "tokio",
  "toml",
@@ -1718,6 +1722,64 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "zbus",
+]
+
+[[package]]
+name = "shepr-core"
+version = "0.1.0"
+dependencies = [
+ "ratatui",
+ "serde",
+ "shepr-test-support",
+ "unicode-width",
+]
+
+[[package]]
+name = "shepr-platform"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "futures-util",
+ "interprocess",
+ "libc",
+ "sha2 0.11.0",
+ "shepr-test-support",
+ "time",
+ "tokio",
+ "tracing",
+ "zbus",
+]
+
+[[package]]
+name = "shepr-pty"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "libc",
+ "shepr-core",
+ "shepr-test-support",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "shepr-test-support"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "shepr-vt"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "serde",
+ "shepr-core",
+ "shepr-test-support",
+ "tracing",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

@@ -273,7 +273,7 @@ fn copy_recovery(source: &mut impl io::Read, backup: &Path) -> io::Result<()> {
     // The recovery directory may have just been created; its own entry must be
     // durable too, or the copy is not a recovery copy at all.
     let directory = super::io::containing_directory(backup);
-    if let Err(err) = crate::platform::sync_directory(super::io::containing_directory(directory)) {
+    if let Err(err) = shepr_platform::sync_directory(super::io::containing_directory(directory)) {
         let _ = std::fs::remove_file(backup);
         return Err(err);
     }

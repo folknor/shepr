@@ -128,7 +128,7 @@ fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
         let timeout_ms = i32::try_from(remaining.as_millis())
             .unwrap_or(i32::MAX)
             .max(1);
-        match crate::platform::poll_fd_readable(stdin_fd, timeout_ms) {
+        match shepr_platform::poll_fd_readable(stdin_fd, timeout_ms) {
             Ok(true) => {}
             Ok(false) => break,
             Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
@@ -141,7 +141,7 @@ fn query_host_escape_disambiguation() -> (bool, Vec<u8>) {
         let mut scratch = [0u8; 4096];
         let capacity = MAX_BUFFERED_HOST_INPUT - buffered_input.len();
         let read_limit = capacity.min(scratch.len());
-        match crate::platform::read_fd(stdin_fd, &mut scratch[..read_limit]) {
+        match shepr_platform::read_fd(stdin_fd, &mut scratch[..read_limit]) {
             Ok(0) => break,
             Ok(read) => {
                 buffered_input.extend_from_slice(&scratch[..read]);
@@ -203,7 +203,7 @@ pub(super) fn write_terminal_restore_postlude(
 pub(super) fn should_draw_host_cursor(mode: crate::config::HostCursorModeConfig) -> bool {
     match mode {
         crate::config::HostCursorModeConfig::Auto => {
-            crate::platform::should_draw_host_cursor_by_default()
+            shepr_platform::should_draw_host_cursor_by_default()
         }
         crate::config::HostCursorModeConfig::Native => false,
         crate::config::HostCursorModeConfig::Drawn => true,
@@ -410,7 +410,9 @@ fn restore_terminal_state(
 fn push_keyboard_enhancement_flags() -> io::Result<()> {
     execute!(
         io::stdout(),
-        PushKeyboardEnhancementFlags(crate::input::ime_compatible_keyboard_enhancement_flags())
+        PushKeyboardEnhancementFlags(
+            crate::host_term::modes::ime_compatible_keyboard_enhancement_flags()
+        )
     )
 }
 

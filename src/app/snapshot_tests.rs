@@ -4,10 +4,10 @@ use std::path::PathBuf;
 use ratatui::layout::{Direction, Rect};
 
 use super::{AppState, Mode};
-use crate::core::layout::NavDirection;
 use crate::pane::PaneRuntimeRegistry;
 use crate::persist::snapshot::*;
 use crate::workspace::Workspace;
+use shepr_core::layout::NavDirection;
 
 fn test_session_path(name: &str) -> String {
     std::env::current_dir()
@@ -503,7 +503,7 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
         runtimes.values().next().expect("test precondition").cwd(),
         Some(old.clone())
     );
-    crate::platform::signal_processes(&[pid], crate::platform::Signal::Kill);
+    shepr_platform::signal_processes(&[pid], shepr_platform::Signal::Kill);
     let exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while crate::detect::process_cwd(pid).is_some() && std::time::Instant::now() < exit_deadline {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -638,7 +638,7 @@ async fn capture_contract_tracks_history_for_each_pane() {
 
 fn root_history(
     history: &SessionHistorySnapshot,
-    root: crate::core::layout::PaneId,
+    root: shepr_core::layout::PaneId,
 ) -> Option<&str> {
     history.workspaces[0].tabs[0]
         .panes

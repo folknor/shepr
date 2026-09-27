@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use super::App;
-use crate::core::layout::PaneId;
+use shepr_core::layout::PaneId;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct TerminalTitleChanges {

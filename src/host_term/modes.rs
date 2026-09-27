@@ -1,5 +1,5 @@
 use crate::protocol::KittyKeyboardFlags;
-use crate::vt::ModifyOtherKeysLevel;
+use shepr_vt::ModifyOtherKeysLevel;
 use std::io::{self, Write};
 
 const DISABLE_HOST_MOUSE_REPORTING_SEQUENCE: &[u8] =
@@ -16,7 +16,7 @@ pub(crate) fn set_host_kitty_keyboard_report_all<W: Write>(
     writer: &mut W,
     report_all_keys: bool,
 ) -> io::Result<()> {
-    let mut flags = crate::input::ime_compatible_keyboard_enhancement_flags();
+    let mut flags = ime_compatible_keyboard_enhancement_flags();
     if report_all_keys {
         flags |= crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
         flags = crossterm::event::KeyboardEnhancementFlags::from_bits_retain(
@@ -30,6 +30,12 @@ pub(crate) fn set_host_kitty_keyboard_report_all<W: Write>(
         crossterm::event::PopKeyboardEnhancementFlags,
         crossterm::event::PushKeyboardEnhancementFlags(flags)
     )
+}
+
+pub(crate) fn ime_compatible_keyboard_enhancement_flags()
+-> crossterm::event::KeyboardEnhancementFlags {
+    use crossterm::event::KeyboardEnhancementFlags as Flags;
+    Flags::DISAMBIGUATE_ESCAPE_CODES | Flags::REPORT_EVENT_TYPES | Flags::REPORT_ALTERNATE_KEYS
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +79,16 @@ pub(crate) fn set_direct_host_keyboard_protocol<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyboard_enhancement_flags_stay_ime_compatible() {
+        use crossterm::event::KeyboardEnhancementFlags as Flags;
+        let flags = ime_compatible_keyboard_enhancement_flags();
+        assert!(flags.contains(Flags::DISAMBIGUATE_ESCAPE_CODES));
+        assert!(flags.contains(Flags::REPORT_EVENT_TYPES));
+        assert!(flags.contains(Flags::REPORT_ALTERNATE_KEYS));
+        assert!(!flags.contains(Flags::REPORT_ALL_KEYS_AS_ESCAPE_CODES));
+    }
 
     #[test]
     fn host_keyboard_report_all_replaces_the_current_shepr_stack_entry() {

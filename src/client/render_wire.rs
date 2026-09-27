@@ -63,14 +63,14 @@ impl WireStyle {
         let underline = if modifier.contains(Modifier::UNDERLINED) {
             match (modifier.bits() & RATATUI_UNDERLINE_STYLE_MASK) >> RATATUI_UNDERLINE_STYLE_SHIFT
             {
-                2 => crate::vt::UnderlineStyle::Double,
-                3 => crate::vt::UnderlineStyle::Curly,
-                4 => crate::vt::UnderlineStyle::Dotted,
-                5 => crate::vt::UnderlineStyle::Dashed,
-                _ => crate::vt::UnderlineStyle::Single,
+                2 => shepr_vt::UnderlineStyle::Double,
+                3 => shepr_vt::UnderlineStyle::Curly,
+                4 => shepr_vt::UnderlineStyle::Dotted,
+                5 => shepr_vt::UnderlineStyle::Dashed,
+                _ => shepr_vt::UnderlineStyle::Single,
             }
         } else {
-            crate::vt::UnderlineStyle::None
+            shepr_vt::UnderlineStyle::None
         };
 
         Self {
@@ -136,15 +136,15 @@ impl WireStyle {
         }
 
         let underline_style = match self.underline {
-            crate::vt::UnderlineStyle::None => return modifier,
-            crate::vt::UnderlineStyle::Single => {
+            shepr_vt::UnderlineStyle::None => return modifier,
+            shepr_vt::UnderlineStyle::Single => {
                 modifier |= Modifier::UNDERLINED;
                 return modifier;
             }
-            crate::vt::UnderlineStyle::Double => 2,
-            crate::vt::UnderlineStyle::Curly => 3,
-            crate::vt::UnderlineStyle::Dotted => 4,
-            crate::vt::UnderlineStyle::Dashed => 5,
+            shepr_vt::UnderlineStyle::Double => 2,
+            shepr_vt::UnderlineStyle::Curly => 3,
+            shepr_vt::UnderlineStyle::Dotted => 4,
+            shepr_vt::UnderlineStyle::Dashed => 5,
         };
         modifier |= Modifier::UNDERLINED;
         modifier |= Modifier::from_bits_retain(underline_style << RATATUI_UNDERLINE_STYLE_SHIFT);

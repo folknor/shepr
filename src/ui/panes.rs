@@ -47,7 +47,7 @@ fn terminal_inner_rect(rt: &PaneRuntime, pane_inner: Rect, pane_scrollbars: bool
 fn runtime_for_tab_pane<'a>(
     terminal_runtimes: &'a PaneRuntimeRegistry,
     tab: &'a crate::workspace::Tab,
-    pane_id: crate::core::layout::PaneId,
+    pane_id: shepr_core::layout::PaneId,
 ) -> Option<(&'a crate::protocol::TerminalId, &'a PaneRuntime)> {
     let terminal_id = tab.terminal_id(pane_id)?;
     terminal_runtimes
@@ -100,7 +100,7 @@ pub(super) fn resize_pane_infos(
             continue;
         };
         if !app.direct_attach_resize_locks.contains(terminal_id) {
-            rt.resize(crate::core::geometry::PaneGeometry::new(
+            rt.resize(shepr_core::geometry::PaneGeometry::new(
                 info.inner_rect.width,
                 info.inner_rect.height,
                 cell_size.width_px,
@@ -172,7 +172,7 @@ pub(super) fn render_panes(
     frame: &mut Frame,
     target: Option<&super::tab_surface::TabSurfaceTarget>,
     pane_infos: &[PaneInfo],
-    split_borders: &[crate::core::layout::SplitBorder],
+    split_borders: &[shepr_core::layout::SplitBorder],
 ) {
     let Some(target) = target else {
         return;
@@ -218,7 +218,7 @@ fn render_pane_borders(
     app: &AppState,
     ws: &crate::workspace::Workspace,
     pane_infos: &[PaneInfo],
-    split_borders: &[crate::core::layout::SplitBorder],
+    split_borders: &[shepr_core::layout::SplitBorder],
     frame: &mut Frame,
 ) {
     if !app.settings.pane_borders.draws_borders()
@@ -265,7 +265,7 @@ fn render_pane_borders(
 
 fn add_split_border_cells(
     pane_gaps: bool,
-    split_borders: &[crate::core::layout::SplitBorder],
+    split_borders: &[shepr_core::layout::SplitBorder],
     cells: &mut std::collections::HashMap<(u16, u16), LineCell>,
 ) {
     if pane_gaps {
@@ -462,7 +462,7 @@ fn line_cell_symbol(line: LineCell) -> &'static str {
 }
 
 pub(crate) fn render_selection_highlight<P: PartialEq>(
-    selection: Option<&crate::vt::selection::Selection<P>>,
+    selection: Option<&shepr_vt::selection::Selection<P>>,
     buffer: &mut Buffer,
     pane_id: &P,
     inner: Rect,
@@ -486,14 +486,14 @@ pub(crate) fn render_selection_highlight<P: PartialEq>(
     }
     for screen_y in visible.top()..visible.bottom() {
         let y = screen_y - inner.y;
-        let row = crate::vt::ViewportRow(y);
+        let row = shepr_vt::ViewportRow(y);
         let absolute_row = scroll_metrics.map_or_else(
-            || crate::vt::AbsRow(u64::from(row.0)),
+            || shepr_vt::AbsRow(u64::from(row.0)),
             |metrics| metrics.absolute_row_at_viewport(row),
         );
         for screen_x in visible.left()..visible.right() {
             let x = screen_x - inner.x;
-            if selection.contains(crate::vt::Point::new(absolute_row, x))
+            if selection.contains(shepr_vt::Point::new(absolute_row, x))
                 && let Some(cell) = buffer.cell_mut((screen_x, screen_y))
             {
                 cell.set_style(style);
@@ -624,11 +624,11 @@ fn color_to_rgb(color: Color) -> Option<Rgb> {
 mod tests {
     use super::*;
     use crate::config::PaneBordersConfig;
-    use crate::core::layout::PaneId;
     use crate::pane::PaneRuntime;
     use crate::terminal::TerminalState;
-    use crate::vt::selection::Selection;
     use crate::workspace::Workspace;
+    use shepr_core::layout::PaneId;
+    use shepr_vt::selection::Selection;
 
     /// A registry holding `runtime` as the live runtime of `pane_id`, keyed
     /// by the pane's terminal id the way production registers runtimes.
@@ -651,7 +651,7 @@ mod tests {
     fn render_view_pane_borders(
         app: &AppState,
         ws: &Workspace,
-        split_borders: &[crate::core::layout::SplitBorder],
+        split_borders: &[shepr_core::layout::SplitBorder],
         frame: &mut Frame,
     ) {
         render_pane_borders(app, ws, &app.view.pane_infos, split_borders, frame);
@@ -986,19 +986,19 @@ mod tests {
             },
         ];
         let split_borders = vec![
-            crate::core::layout::SplitBorder {
+            shepr_core::layout::SplitBorder {
                 pos: 2,
                 direction: ratatui::layout::Direction::Horizontal,
                 ratio: 0.5,
                 area: Rect::new(0, 0, 4, 4),
                 path: vec![],
             },
-            crate::core::layout::SplitBorder {
+            shepr_core::layout::SplitBorder {
                 pos: 2,
                 direction: ratatui::layout::Direction::Vertical,
                 ratio: 0.5,
                 area: Rect::new(0, 0, 4, 4),
-                path: vec![crate::core::geometry::SplitBranch::First],
+                path: vec![shepr_core::geometry::SplitBranch::First],
             },
         ];
         let ws = Workspace::test_new("test");
@@ -1288,8 +1288,8 @@ mod tests {
         let expected_style = automatic_selection_style(&palette, host_theme);
         let selection = Some(Selection::range(
             PaneId::from_raw(1),
-            crate::vt::Point::new(crate::vt::AbsRow(0), 0),
-            crate::vt::Point::new(crate::vt::AbsRow(0), 2),
+            shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
+            shepr_vt::Point::new(shepr_vt::AbsRow(0), 2),
         ));
         let backend = ratatui::backend::TestBackend::new(4, 1);
         let mut terminal = ratatui::Terminal::new(backend).expect("test precondition");
@@ -1347,8 +1347,8 @@ mod tests {
         let expected = automatic_selection_style(&palette, host_theme);
         let selection = Some(Selection::range(
             PaneId::from_raw(1),
-            crate::vt::Point::new(crate::vt::AbsRow(0), 0),
-            crate::vt::Point::new(crate::vt::AbsRow(2), 3),
+            shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
+            shepr_vt::Point::new(shepr_vt::AbsRow(2), 3),
         ));
         let mut buffer = Buffer::empty(Rect::new(0, 0, 4, 2));
 

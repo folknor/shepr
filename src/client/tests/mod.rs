@@ -14,22 +14,22 @@ fn atomic_cell_size_keeps_width_and_height_in_one_snapshot() {
 
 #[test]
 fn resize_signal_reports_even_when_polled_size_is_unchanged() {
-    let size = crate::core::geometry::HostGeometry::new(120, 40, 8, 16, true);
+    let size = shepr_core::geometry::HostGeometry::new(120, 40, 8, 16, true);
     assert!(resize_report_required(true, size, size));
     assert!(!resize_report_required(false, size, size));
     assert!(resize_report_required(
         false,
-        crate::core::geometry::HostGeometry::new(120, 41, 8, 16, true),
+        shepr_core::geometry::HostGeometry::new(120, 41, 8, 16, true),
         size
     ));
     assert!(resize_report_required(
         false,
-        crate::core::geometry::HostGeometry::new(120, 40, 9, 18, true),
+        shepr_core::geometry::HostGeometry::new(120, 40, 9, 18, true),
         size
     ));
     assert!(resize_report_required(
         false,
-        crate::core::geometry::HostGeometry::new(120, 40, 8, 16, false),
+        shepr_core::geometry::HostGeometry::new(120, 40, 8, 16, false),
         size
     ));
 }
@@ -63,7 +63,7 @@ fn missing_pixel_geometry_keeps_a_valid_terminal_grid() {
 
     assert_eq!(
         geometry,
-        crate::core::geometry::HostGeometry::new(80, 24, 9, 18, false)
+        shepr_core::geometry::HostGeometry::new(80, 24, 9, 18, false)
     );
 }
 
@@ -170,7 +170,7 @@ fn host_cursor_policy_auto_uses_platform_default() {
     let _env = IsolatedEnv::new();
     assert_eq!(
         should_draw_host_cursor(crate::config::HostCursorModeConfig::Auto),
-        crate::platform::should_draw_host_cursor_by_default()
+        shepr_platform::should_draw_host_cursor_by_default()
     );
 }
 
@@ -201,7 +201,7 @@ fn write_host_terminal_theme_query_emits_osc_queries() {
     assert_eq!(
         output,
         crate::host_term::theme::host_terminal_theme_query_sequence(
-            crate::platform::should_query_host_terminal_palette(),
+            shepr_platform::should_query_host_terminal_palette(),
         )
         .as_bytes()
     );

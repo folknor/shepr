@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ratatui::layout::Direction;
 use tokio::sync::{Notify, mpsc};
 
-use crate::core::layout::{PaneId, TileLayout};
 use crate::events::AppEvent;
 use crate::git::{AheadBehind, GitSpaceMetadata, fallback_label_from_cwd};
 use crate::pane::{PaneLaunchEnv, PaneRuntime, PaneRuntimeRegistry, PaneState};
@@ -16,6 +15,7 @@ use crate::protocol::{
 };
 use crate::render_signal::RenderSignal;
 use crate::terminal::TerminalState;
+use shepr_core::layout::{PaneId, TileLayout};
 
 mod aggregate;
 mod geometry;

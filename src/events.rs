@@ -5,9 +5,9 @@
 
 use std::time::Instant;
 
-use crate::core::layout::PaneId;
 use crate::detect::{Agent, AgentState};
 use crate::git::{GitStatusCacheEntry, WorkspaceGitStatus};
+use shepr_core::layout::PaneId;
 
 /// An event from a background task to the main loop.
 #[derive(Debug)]
@@ -15,7 +15,7 @@ pub enum AppEvent {
     /// A pane's child process exited.
     PaneDied {
         pane_id: PaneId,
-        exit_reason: crate::platform::ChildExitReason,
+        exit_reason: shepr_platform::ChildExitReason,
     },
     /// Process detection identified an agent before its screen state was confirmed.
     AgentProcessDetected {

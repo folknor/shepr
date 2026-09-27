@@ -9,7 +9,7 @@ use crate::input::TerminalKey;
 /// that line "start" one column early.
 pub(crate) fn first_non_blank_col(text: &str) -> Option<u16> {
     let mut col = 0u16;
-    for (unit, width) in crate::vt::unicode_display_units(text) {
+    for (unit, width) in shepr_vt::unicode_display_units(text) {
         let width = u16::from(width);
         if width == 0 {
             continue;
@@ -25,7 +25,7 @@ pub(crate) fn first_non_blank_col(text: &str) -> Option<u16> {
 pub(crate) fn last_character_col(text: &str) -> Option<u16> {
     let mut col = 0u16;
     let mut last_col = None;
-    for (_, width) in crate::vt::unicode_display_units(text) {
+    for (_, width) in shepr_vt::unicode_display_units(text) {
         let width = u16::from(width);
         if width > 0 {
             last_col = Some(col);

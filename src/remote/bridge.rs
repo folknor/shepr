@@ -183,14 +183,14 @@ impl Drop for SshStdioBridge {
 
 pub(super) struct BridgeUploadStop {
     stopped: AtomicBool,
-    pub(super) wake: crate::platform::RemoteBridgeWake,
+    pub(super) wake: shepr_platform::RemoteBridgeWake,
 }
 
 impl BridgeUploadStop {
     pub(super) fn new() -> io::Result<Self> {
         Ok(Self {
             stopped: AtomicBool::new(false),
-            wake: crate::platform::RemoteBridgeWake::new()?,
+            wake: shepr_platform::RemoteBridgeWake::new()?,
         })
     }
 
@@ -597,7 +597,7 @@ pub(super) fn run_client_process(
     reattach_command: &str,
     keybindings: RemoteKeybindings,
 ) -> io::Result<()> {
-    let exe = crate::platform::launch_executable()?;
+    let exe = shepr_platform::launch_executable()?;
     let status = Command::new(exe)
         .arg("client")
         .env(crate::config::CLIENT_SOCKET_PATH_ENV_VAR, local_socket)
@@ -627,12 +627,12 @@ pub(super) fn local_forward_socket_path(target: &str, session_name: &str) -> Pat
     let target_prefix: String = target_clean.chars().take(8).collect();
     let hash = short_socket_hash(target, session_name);
     let short_name = format!("shepr-r-{pid}-{target_prefix}-{hash}.sock");
-    crate::platform::remote_bridge_endpoint_path(&readable_name, &short_name)
+    shepr_platform::remote_bridge_endpoint_path(&readable_name, &short_name)
 }
 
 #[cfg(test)]
 pub(super) fn fits_unix_socket_path(path: &Path) -> bool {
-    crate::platform::fits_unix_socket_path(path)
+    shepr_platform::fits_unix_socket_path(path)
 }
 
 pub(super) fn short_socket_hash(target: &str, session: &str) -> String {

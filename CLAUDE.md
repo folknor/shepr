@@ -29,5 +29,10 @@ Do not use your Memory functionality. Do not read, write, or update memories. Do
 - Has `Cargo.lock` changed? Commit it.
 - Never `git push` unless explicitly asked. Stop after the commit.
 
+## Codex agents (via `review`)
+Never tell a codex agent to read CLAUDE.md (it is Claude-specific and contradicts
+their job), and never tell them to read AGENTS.md (codex loads it automatically).
+Put any rule they need directly in the prompt.
+
 ## Subagents
 Subagents must NOT run any shell commands. They write code only. Integration, building, and testing is done in the main conversation.

@@ -21,7 +21,7 @@ impl App {
                 .map(|template| {
                     // Resolve the hostname once here rather than per render.
                     let hostname = if template.uses(WindowTitleToken::Hostname) {
-                        crate::platform::hostname().unwrap_or_default()
+                        shepr_platform::hostname().unwrap_or_default()
                     } else {
                         String::new()
                     };

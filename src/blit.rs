@@ -39,7 +39,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::protocol::{
     CellData, CursorState, FrameData, PaneSurfacePatchRow, WireColor, WireStyle, WireStyleFlags,
 };
-use crate::vt::UnderlineStyle;
+use shepr_vt::UnderlineStyle;
 
 /// Bytes produced by a [`BlitEncoder`] for one terminal frame.
 pub(crate) struct EncodedBlit {
@@ -1627,7 +1627,7 @@ mod tests {
     fn batched_ascii_diff_replays_to_current_frame() {
         let prev = make_frame(4, 3, vec![default_cell("A"); 12]);
         let curr = make_frame(4, 3, vec![default_cell("B"); 12]);
-        let mut terminal = crate::vt::Terminal::new(4, 3, 0);
+        let mut terminal = shepr_vt::Terminal::new(4, 3, 0);
 
         let mut initial = Vec::new();
         blit_frame_to(&mut initial, &prev, None);
@@ -1640,7 +1640,7 @@ mod tests {
         for row in 0_usize..3 {
             for col in 0..4 {
                 let (_, graphemes) = terminal
-                    .screen_cell(col, crate::vt::ScreenRow(row))
+                    .screen_cell(col, shepr_vt::ScreenRow(row))
                     .expect("test precondition");
                 assert_eq!(graphemes, vec![u32::from('B')]);
             }

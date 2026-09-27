@@ -170,7 +170,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
         offset_from_bottom: 0,
         max_offset_from_bottom: 20,
         viewport_rows: 2,
-        history_origin: crate::vt::AbsRow(0),
+        history_origin: shepr_vt::AbsRow(0),
     });
     state.set_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
@@ -182,21 +182,21 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
     let matches = vec![
         crate::api::schema::PaneTextRange {
             start: crate::api::schema::PaneTextPoint {
-                row: crate::vt::ScreenRow(5),
+                row: shepr_vt::ScreenRow(5),
                 col: 2,
             },
             end: crate::api::schema::PaneTextPoint {
-                row: crate::vt::ScreenRow(5),
+                row: shepr_vt::ScreenRow(5),
                 col: 7,
             },
         },
         crate::api::schema::PaneTextRange {
             start: crate::api::schema::PaneTextPoint {
-                row: crate::vt::ScreenRow(15),
+                row: shepr_vt::ScreenRow(15),
                 col: 1,
             },
             end: crate::api::schema::PaneTextPoint {
-                row: crate::vt::ScreenRow(15),
+                row: shepr_vt::ScreenRow(15),
                 col: 6,
             },
         },
@@ -626,10 +626,10 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
         &[((0, 0), "L".into(), "https://example.test".into())],
     );
     state.set_pane_surface(pane_surface);
-    let mut selection = crate::vt::selection::Selection::range(
+    let mut selection = shepr_vt::selection::Selection::range(
         "pane_1".into(),
-        crate::vt::Point::new(crate::vt::AbsRow(0), 0),
-        crate::vt::Point::new(crate::vt::AbsRow(0), 1),
+        shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
+        shepr_vt::Point::new(shepr_vt::AbsRow(0), 1),
     );
     assert!(selection.finish());
     state.selection = Some(selection);

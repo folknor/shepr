@@ -19,20 +19,20 @@ fn plain_page_keys_host_scroll_for_shell_like_decckm_with_bracketed_paste() {
     );
 }
 
-fn text_cell(text: &str) -> crate::vt::ScreenTextCell {
-    crate::vt::ScreenTextCell {
-        wide: crate::vt::CellWide::Narrow,
+fn text_cell(text: &str) -> shepr_vt::ScreenTextCell {
+    shepr_vt::ScreenTextCell {
+        wide: shepr_vt::CellWide::Narrow,
         graphemes: text.chars().map(u32::from).collect(),
     }
 }
 
-fn rgb(r: u8, g: u8, b: u8) -> crate::vt::RgbColor {
-    crate::vt::RgbColor { r, g, b }
+fn rgb(r: u8, g: u8, b: u8) -> shepr_vt::RgbColor {
+    shepr_vt::RgbColor { r, g, b }
 }
 
 #[test]
 fn dirty_full_collects_bounded_viewport_patch() {
-    let mut terminal = crate::vt::Terminal::new(4, 3, 200);
+    let mut terminal = shepr_vt::Terminal::new(4, 3, 200);
     terminal.write(b"one\r\ntwo\r\nthree");
     let pane = PaneTerminal::new(GhosttyPaneTerminal::new(terminal));
 
@@ -67,17 +67,17 @@ fn redefined_palette_entries_render_as_rgb_and_others_stay_indexed() {
     let overrides = PaletteOverrides::new(&active, &default).expect("index 18 differs");
 
     assert_eq!(
-        ghostty_cell_color(crate::vt::CellColor::Palette(18), Some(&overrides)),
+        ghostty_cell_color(shepr_vt::CellColor::Palette(18), Some(&overrides)),
         Color::Rgb(169, 177, 214)
     );
     // Untouched entries keep being forwarded, so they still follow the host theme.
     assert_eq!(
-        ghostty_cell_color(crate::vt::CellColor::Palette(19), Some(&overrides)),
+        ghostty_cell_color(shepr_vt::CellColor::Palette(19), Some(&overrides)),
         Color::Indexed(19)
     );
     // ...and so does everything when the program never wrote a palette at all.
     assert_eq!(
-        ghostty_cell_color(crate::vt::CellColor::Palette(18), None),
+        ghostty_cell_color(shepr_vt::CellColor::Palette(18), None),
         Color::Indexed(18)
     );
 }
@@ -90,31 +90,31 @@ fn direct_rgb_cells_are_unaffected_by_palette_overrides() {
     let overrides = PaletteOverrides::new(&active, &default).expect("index 18 differs");
     assert_eq!(
         ghostty_cell_color(
-            crate::vt::CellColor::Rgb(rgb(122, 162, 247)),
+            shepr_vt::CellColor::Rgb(rgb(122, 162, 247)),
             Some(&overrides)
         ),
         Color::Rgb(122, 162, 247)
     );
 }
 
-fn wide_text_cells(text: &str) -> [crate::vt::ScreenTextCell; 2] {
+fn wide_text_cells(text: &str) -> [shepr_vt::ScreenTextCell; 2] {
     [
-        crate::vt::ScreenTextCell {
-            wide: crate::vt::CellWide::Wide,
+        shepr_vt::ScreenTextCell {
+            wide: shepr_vt::CellWide::Wide,
             graphemes: text.chars().map(u32::from).collect(),
         },
-        crate::vt::ScreenTextCell {
-            wide: crate::vt::CellWide::SpacerTail,
+        shepr_vt::ScreenTextCell {
+            wide: shepr_vt::CellWide::SpacerTail,
             graphemes: Vec::new(),
         },
     ]
 }
 
 fn text_row(
-    cells: impl IntoIterator<Item = crate::vt::ScreenTextCell>,
+    cells: impl IntoIterator<Item = shepr_vt::ScreenTextCell>,
     soft_wrapped: bool,
-) -> crate::vt::ScreenTextRow {
-    crate::vt::ScreenTextRow {
+) -> shepr_vt::ScreenTextRow {
+    shepr_vt::ScreenTextRow {
         cells: cells.into_iter().collect(),
         soft_wrapped,
         wrap_continuation: false,
@@ -130,7 +130,7 @@ fn search_primary(
         .search_window(
             query,
             case_sensitive,
-            crate::vt::ActiveScreen::Primary,
+            shepr_vt::ActiveScreen::Primary,
             TerminalSearchDirection::Forward,
             TerminalTextPoint {
                 row: AbsRow(0),
@@ -142,13 +142,13 @@ fn search_primary(
         .matches
 }
 
-fn write_numbered_lines(terminal: &mut crate::vt::Terminal, count: usize) {
+fn write_numbered_lines(terminal: &mut shepr_vt::Terminal, count: usize) {
     for i in 0..count {
         terminal.write(format!("{i:06}\r\n").as_bytes());
     }
 }
 
-fn write_wrapped_contract_lines(terminal: &mut crate::vt::Terminal, count: usize) {
+fn write_wrapped_contract_lines(terminal: &mut shepr_vt::Terminal, count: usize) {
     for i in 0..count {
         terminal.write(format!("WRAP-{i:03}-abcdefghijklmnopqrstuvwxyz\r\n").as_bytes());
     }
@@ -218,8 +218,8 @@ fn retained_text_search_skips_wide_spacer_heads_at_soft_wraps() {
         .chars()
         .map(|ch| text_cell(&ch.to_string()))
         .collect::<Vec<_>>();
-    first.push(crate::vt::ScreenTextCell {
-        wide: crate::vt::CellWide::SpacerHead,
+    first.push(shepr_vt::ScreenTextCell {
+        wide: shepr_vt::CellWide::SpacerHead,
         graphemes: Vec::new(),
     });
     let mut second = wide_text_cells("界").to_vec();
@@ -250,8 +250,8 @@ fn retained_text_word_motion_does_not_split_at_a_wide_spacer_head() {
         .chars()
         .map(|ch| text_cell(&ch.to_string()))
         .collect::<Vec<_>>();
-    first.push(crate::vt::ScreenTextCell {
-        wide: crate::vt::CellWide::SpacerHead,
+    first.push(shepr_vt::ScreenTextCell {
+        wide: shepr_vt::CellWide::SpacerHead,
         graphemes: Vec::new(),
     });
     let mut second = wide_text_cells("界").to_vec();
@@ -470,7 +470,7 @@ fn retained_text_big_word_motions_cross_rows_and_blank_lines() {
 
 #[test]
 fn live_terminal_word_motion_expands_across_long_blank_history() {
-    let mut terminal = crate::vt::Terminal::new(10, 3, 200);
+    let mut terminal = shepr_vt::Terminal::new(10, 3, 200);
     terminal.write(b"origin\r\n");
     for _ in 0..80 {
         terminal.write(b"\r\n");
@@ -489,7 +489,7 @@ fn live_terminal_word_motion_expands_across_long_blank_history() {
 
 #[test]
 fn live_terminal_word_end_expands_through_a_long_soft_wrap() {
-    let mut terminal = crate::vt::Terminal::new(2, 3, 200);
+    let mut terminal = shepr_vt::Terminal::new(2, 3, 200);
     let word = "a".repeat(132);
     terminal.write(word.as_bytes());
     let pane = PaneTerminal::new(GhosttyPaneTerminal::new(terminal));
@@ -519,7 +519,7 @@ fn live_terminal_word_end_expands_through_a_long_soft_wrap() {
 
 #[test]
 fn live_terminal_word_end_expands_through_a_long_wide_soft_wrap() {
-    let mut terminal = crate::vt::Terminal::new(2, 3, 200);
+    let mut terminal = shepr_vt::Terminal::new(2, 3, 200);
     let word = "界".repeat(66);
     terminal.write(word.as_bytes());
     let pane = PaneTerminal::new(GhosttyPaneTerminal::new(terminal));
@@ -552,8 +552,8 @@ fn live_terminal_word_end_expands_through_a_long_wide_soft_wrap() {
     );
 }
 
-fn current_palette_color(pane: &GhosttyPaneTerminal, index: u8) -> crate::vt::RgbColor {
-    let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+fn current_palette_color(pane: &GhosttyPaneTerminal, index: u8) -> shepr_vt::RgbColor {
+    let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
     let GhosttyPaneCore {
         terminal,
         render_state,
@@ -563,7 +563,7 @@ fn current_palette_color(pane: &GhosttyPaneTerminal, index: u8) -> crate::vt::Rg
     render_state.colors().palette[usize::from(index)]
 }
 
-fn expected_osc_rgb_response(command: &str, color: crate::vt::RgbColor) -> Bytes {
+fn expected_osc_rgb_response(command: &str, color: shepr_vt::RgbColor) -> Bytes {
     let r = u16::from(color.r) * 257;
     let g = u16::from(color.g) * 257;
     let b = u16::from(color.b) * 257;
@@ -572,7 +572,7 @@ fn expected_osc_rgb_response(command: &str, color: crate::vt::RgbColor) -> Bytes
 
 #[test]
 fn process_pty_bytes_reports_latest_working_directory_report() {
-    let terminal = crate::vt::Terminal::new(80, 24, 100);
+    let terminal = shepr_vt::Terminal::new(80, 24, 100);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -598,7 +598,7 @@ fn process_pty_bytes_reports_latest_working_directory_report() {
 
 #[test]
 fn process_pty_bytes_reports_only_completed_title_changes() {
-    let terminal = crate::vt::Terminal::new(80, 24, 100);
+    let terminal = shepr_vt::Terminal::new(80, 24, 100);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -624,7 +624,7 @@ fn process_pty_bytes_reports_only_completed_title_changes() {
 
 #[test]
 fn process_pty_bytes_surfaces_clipboard_writes_without_other_results() {
-    let terminal = crate::vt::Terminal::new(80, 24, 100);
+    let terminal = shepr_vt::Terminal::new(80, 24, 100);
     let pane = GhosttyPaneTerminal::new(terminal);
 
     let result =
@@ -639,7 +639,7 @@ fn process_pty_bytes_surfaces_clipboard_writes_without_other_results() {
 
 #[test]
 fn seeded_history_clipboard_write_does_not_leak_into_live_output() {
-    let terminal = crate::vt::Terminal::new(80, 24, 100);
+    let terminal = shepr_vt::Terminal::new(80, 24, 100);
     let pane = GhosttyPaneTerminal::new(terminal);
     pane.seed_history_ansi("\x1b]52;c;c3RhbGU=\x07");
 
@@ -650,7 +650,7 @@ fn seeded_history_clipboard_write_does_not_leak_into_live_output() {
 
 #[test]
 fn seeded_history_pwd_does_not_leak_into_live_output() {
-    let terminal = crate::vt::Terminal::new(80, 24, 100);
+    let terminal = shepr_vt::Terminal::new(80, 24, 100);
     let pane = GhosttyPaneTerminal::new(terminal);
     pane.seed_history_ansi("\x1b]7;file:///tmp/restored\x07");
 
@@ -680,38 +680,38 @@ fn append_upper_hex(bytes: &[u8], output: &mut Vec<u8>) {
 #[test]
 fn decscusr_cursor_shape_preserves_blinking_variants() {
     assert_eq!(
-        decscusr_cursor_shape(crate::vt::CursorVisualStyle::Block, true),
+        decscusr_cursor_shape(shepr_vt::CursorVisualStyle::Block, true),
         crate::protocol::CursorShapeParam::BlinkingBlock
     );
     assert_eq!(
-        decscusr_cursor_shape(crate::vt::CursorVisualStyle::Block, false),
+        decscusr_cursor_shape(shepr_vt::CursorVisualStyle::Block, false),
         crate::protocol::CursorShapeParam::SteadyBlock
     );
     assert_eq!(
-        decscusr_cursor_shape(crate::vt::CursorVisualStyle::Underline, true),
+        decscusr_cursor_shape(shepr_vt::CursorVisualStyle::Underline, true),
         crate::protocol::CursorShapeParam::BlinkingUnderline
     );
     assert_eq!(
-        decscusr_cursor_shape(crate::vt::CursorVisualStyle::Underline, false),
+        decscusr_cursor_shape(shepr_vt::CursorVisualStyle::Underline, false),
         crate::protocol::CursorShapeParam::SteadyUnderline
     );
     assert_eq!(
-        decscusr_cursor_shape(crate::vt::CursorVisualStyle::Bar, true),
+        decscusr_cursor_shape(shepr_vt::CursorVisualStyle::Bar, true),
         crate::protocol::CursorShapeParam::BlinkingBar
     );
     assert_eq!(
-        decscusr_cursor_shape(crate::vt::CursorVisualStyle::Bar, false),
+        decscusr_cursor_shape(shepr_vt::CursorVisualStyle::Bar, false),
         crate::protocol::CursorShapeParam::SteadyBar
     );
     assert_eq!(
-        decscusr_cursor_shape(crate::vt::CursorVisualStyle::BlockHollow, false),
+        decscusr_cursor_shape(shepr_vt::CursorVisualStyle::BlockHollow, false),
         crate::protocol::CursorShapeParam::SteadyBlock
     );
 }
 
 #[test]
 fn cursor_state_uses_terminal_default_until_child_sets_shape() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -730,7 +730,7 @@ fn cursor_state_uses_terminal_default_until_child_sets_shape() {
 
 #[test]
 fn cursor_state_returns_terminal_default_after_decscusr_reset() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -750,7 +750,7 @@ fn cursor_state_returns_terminal_default_after_decscusr_reset() {
 
 #[test]
 fn cursor_shape_tracker_handles_split_decscusr_sequences() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -766,7 +766,7 @@ fn cursor_shape_tracker_handles_split_decscusr_sequences() {
 
 #[test]
 fn cursor_state_reports_the_live_position() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -783,7 +783,7 @@ fn cursor_state_reports_the_live_position() {
 
 #[test]
 fn cursor_state_returns_terminal_default_after_ris() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -804,7 +804,7 @@ fn cursor_state_returns_terminal_default_after_ris() {
 /// the child's parser: a CSI the child is halfway through must survive.
 #[test]
 fn host_theme_change_does_not_split_a_partial_child_sequence() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -828,7 +828,7 @@ fn host_theme_change_does_not_split_a_partial_child_sequence() {
 /// a clipboard write is no longer thrown away by the next read.
 #[test]
 fn timed_out_synchronized_update_effects_survive_a_render_flush() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -839,7 +839,7 @@ fn timed_out_synchronized_update_effects_survive_a_render_flush() {
     );
     assert!(begin.terminal_responses.is_empty());
     assert!(begin.clipboard_writes.is_empty());
-    let deadline = crate::vt::lock_terminal_core(&pane.core)
+    let deadline = shepr_vt::lock_terminal_core(&pane.core)
         .expect("test precondition")
         .terminal
         .synchronized_output_deadline()
@@ -855,7 +855,7 @@ fn timed_out_synchronized_update_effects_survive_a_render_flush() {
     ));
     // A resize in between must not take the queued reply with it.
     assert!(
-        pane.resize(crate::core::geometry::PaneGeometry::new(20, 5, 0, 0))
+        pane.resize(shepr_core::geometry::PaneGeometry::new(20, 5, 0, 0))
             .is_empty()
     );
 
@@ -876,7 +876,7 @@ fn timed_out_synchronized_update_effects_survive_a_render_flush() {
 
 #[test]
 fn flush_entry_point_ends_an_expired_update_itself() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -887,7 +887,7 @@ fn flush_entry_point_ends_an_expired_update_itself() {
             .flush_expired_synchronized_output(pane_id, 0)
             .request_render
     );
-    let deadline = crate::vt::lock_terminal_core(&pane.core)
+    let deadline = shepr_vt::lock_terminal_core(&pane.core)
         .expect("test precondition")
         .terminal
         .synchronized_output_deadline()
@@ -907,33 +907,33 @@ fn flush_entry_point_ends_an_expired_update_itself() {
 
 #[test]
 fn host_terminal_theme_restore_probe_skips_when_no_transient_override() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
-    let core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
 
     assert!(!should_probe_host_terminal_theme_restore(&core));
 }
 
 #[test]
 fn host_terminal_theme_restore_probe_skips_when_host_theme_unknown() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.transient_default_color_owner_pgid = Some(42);
     }
-    let core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
 
     assert!(!should_probe_host_terminal_theme_restore(&core));
 }
 
 #[test]
 fn host_terminal_theme_restore_probe_skips_on_alternate_screen() {
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[?1049h");
     let pane = GhosttyPaneTerminal::new(terminal);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.transient_default_color_owner_pgid = Some(42);
         core.host_terminal_theme = crate::host_term::theme::TerminalTheme {
             foreground: Some(crate::host_term::theme::RgbColor {
@@ -949,17 +949,17 @@ fn host_terminal_theme_restore_probe_skips_on_alternate_screen() {
             ..Default::default()
         };
     }
-    let core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
 
     assert!(!should_probe_host_terminal_theme_restore(&core));
 }
 
 #[test]
 fn host_terminal_theme_restore_probe_runs_when_restore_is_pending() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.transient_default_color_owner_pgid = Some(42);
         core.host_terminal_theme = crate::host_term::theme::TerminalTheme {
             foreground: Some(crate::host_term::theme::RgbColor {
@@ -975,18 +975,18 @@ fn host_terminal_theme_restore_probe_runs_when_restore_is_pending() {
             ..Default::default()
         };
     }
-    let core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
 
     assert!(should_probe_host_terminal_theme_restore(&core));
 }
 
 #[test]
 fn ghostty_render_can_suppress_cursor_position() {
-    let mut first_terminal = crate::vt::Terminal::new(20, 5, 0);
+    let mut first_terminal = shepr_vt::Terminal::new(20, 5, 0);
     first_terminal.write(b"left");
     let first = GhosttyPaneTerminal::new(first_terminal);
 
-    let mut second_terminal = crate::vt::Terminal::new(20, 5, 0);
+    let mut second_terminal = shepr_vt::Terminal::new(20, 5, 0);
     second_terminal.write(b"r\r\nb");
     let second = GhosttyPaneTerminal::new(second_terminal);
 
@@ -1004,7 +1004,7 @@ fn ghostty_render_can_suppress_cursor_position() {
 
 #[test]
 fn ghostty_keyboard_protocol_tracks_live_terminal_flags() {
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[>3u");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1016,7 +1016,7 @@ fn ghostty_keyboard_protocol_tracks_live_terminal_flags() {
 
 #[test]
 fn ghostty_plain_text_chars_still_encode_as_text() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
 
     let encoded = pane.encode_terminal_key(
@@ -1036,7 +1036,7 @@ fn ghostty_backtab_preserves_shift_across_keyboard_protocols() {
         (None, b"\x1b[Z".as_slice()),
         (Some(1), b"\x1b[9;2u".as_slice()),
     ] {
-        let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+        let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
         if let Some(flags) = kitty_flags {
             terminal.write(format!("\x1b[>{flags}u").as_bytes());
         }
@@ -1055,7 +1055,7 @@ fn ghostty_backtab_preserves_shift_across_keyboard_protocols() {
         }
     }
 
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let encoded = pane.encode_terminal_key(
         crate::input::TerminalKey::new(
@@ -1069,7 +1069,7 @@ fn ghostty_backtab_preserves_shift_across_keyboard_protocols() {
 
 #[test]
 fn ghostty_ctrl_tab_matches_the_pane_keyboard_protocol() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let legacy = GhosttyPaneTerminal::new(terminal);
     let key = crate::input::TerminalKey::new(
         crossterm::event::KeyCode::Tab,
@@ -1081,7 +1081,7 @@ fn ghostty_ctrl_tab_matches_the_pane_keyboard_protocol() {
         b"\t"
     );
 
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[>3u");
     let kitty = GhosttyPaneTerminal::new(terminal);
     // Flags 3 include REPORT_EVENT_TYPES; shepr's encoder always spells out
@@ -1096,7 +1096,7 @@ fn ghostty_ctrl_tab_matches_the_pane_keyboard_protocol() {
 fn ghostty_legacy_modified_enter_is_shell_compatible() {
     use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let protocol = crate::input::KeyboardProtocol::Legacy;
 
@@ -1140,7 +1140,7 @@ fn ghostty_legacy_modified_enter_is_shell_compatible() {
 fn ghostty_modified_enter_tracks_live_protocol_negotiation() {
     use crossterm::event::{KeyCode, KeyModifiers};
 
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     let legacy = ["\r", "\r", "\r", "\x1b\r"];
@@ -1193,7 +1193,7 @@ fn ghostty_modified_enter_tracks_live_protocol_negotiation() {
 
 #[test]
 fn ghostty_modified_enter_respects_existing_terminal_mode() {
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[>4;2m");
     let pane = GhosttyPaneTerminal::new(terminal);
     let key = crate::input::TerminalKey::new(
@@ -1209,7 +1209,7 @@ fn ghostty_modified_enter_respects_existing_terminal_mode() {
 
 #[test]
 fn ghostty_enter_backspace_release_in_legacy_pane_emits_nothing() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
 
     for code in [
@@ -1236,7 +1236,7 @@ fn ghostty_enter_backspace_release_in_legacy_pane_emits_nothing() {
 #[test]
 fn ghostty_report_event_pane_keeps_basic_compatibility_keys_legacy() {
     // Push kitty flags including REPORT_EVENT_TYPES (0b10) + DISAMBIGUATE (0b1).
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[>3u");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1267,7 +1267,7 @@ fn ghostty_report_event_pane_keeps_basic_compatibility_keys_legacy() {
 
 #[test]
 fn ghostty_char_keys_still_use_shepr_encoding() {
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[>1u");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1284,9 +1284,9 @@ fn ghostty_char_keys_still_use_shepr_encoding() {
 
 #[test]
 fn ghostty_key_encoding_honors_application_cursor_mode() {
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal
-        .mode_set(crate::vt::MODE_APPLICATION_CURSOR_KEYS, true)
+        .mode_set(shepr_vt::MODE_APPLICATION_CURSOR_KEYS, true)
         .expect("test precondition");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1303,7 +1303,7 @@ fn ghostty_key_encoding_honors_application_cursor_mode() {
 
 #[test]
 fn grouped_key_repeats_expand_at_the_destination() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let key = crate::input::TerminalKey::new(
         crossterm::event::KeyCode::Char('x'),
@@ -1332,7 +1332,7 @@ fn grouped_key_repeats_expand_at_the_destination() {
     // (REPORT_ASSOCIATED_TEXT), carries no committed text: the repeat
     // still has to expand to three identical CSI u sequences rather than
     // three literal slashes.
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[>15u");
     let pane = GhosttyPaneTerminal::new(terminal);
     let kitty_protocol = crate::input::KeyboardProtocol::Kitty { flags: 15 };
@@ -1355,7 +1355,7 @@ fn grouped_key_repeats_expand_at_the_destination() {
 
 #[test]
 fn grouped_release_is_encoded_once() {
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[>11u");
     let pane = GhosttyPaneTerminal::new(terminal);
     let protocol = pane.keyboard_protocol().expect("test precondition");
@@ -1377,7 +1377,7 @@ fn grouped_release_is_encoded_once() {
 
 #[test]
 fn ghostty_key_encoder_updates_after_terminal_mode_changes() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -1404,7 +1404,7 @@ fn ghostty_key_encoder_updates_after_terminal_mode_changes() {
 
 #[test]
 fn ghostty_key_encoder_updates_after_kitty_flag_changes() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     let key = crate::input::TerminalKey::new(
@@ -1422,7 +1422,7 @@ fn ghostty_key_encoder_updates_after_kitty_flag_changes() {
 
 #[test]
 fn ghostty_kitty_pane_encodes_shift_enter_as_csi_u() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.process_pty_bytes(pane_id, 0, b"\x1b[>5u");
@@ -1439,7 +1439,7 @@ fn ghostty_kitty_pane_encodes_shift_enter_as_csi_u() {
 
 #[test]
 fn ghostty_modify_other_keys_mode_one_preserves_shift_enter() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let key = crate::input::parse_terminal_key_sequence("\x1b[13;2u").expect("test precondition");
 
@@ -1452,7 +1452,7 @@ fn ghostty_modify_other_keys_mode_one_preserves_shift_enter() {
 
 #[test]
 fn ghostty_kitty_pane_encodes_parsed_legacy_alt_backspace_as_csi_u() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.process_pty_bytes(pane_id, 0, b"\x1b[>1u");
@@ -1465,7 +1465,7 @@ fn ghostty_kitty_pane_encodes_parsed_legacy_alt_backspace_as_csi_u() {
 
 #[test]
 fn ghostty_kitty_pane_preserves_legacy_ctrl_alt_letter() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.process_pty_bytes(pane_id, 0, b"\x1b[>5u");
@@ -1482,7 +1482,7 @@ fn ghostty_kitty_pane_preserves_legacy_ctrl_alt_letter() {
 
 #[test]
 fn ghostty_pane_characterizes_ctrl_backspace_encoding() {
-    let legacy = GhosttyPaneTerminal::new(crate::vt::Terminal::new(80, 24, 0));
+    let legacy = GhosttyPaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
 
     let ctrl_backspace = crate::input::TerminalKey::new(
         crossterm::event::KeyCode::Backspace,
@@ -1505,7 +1505,7 @@ fn ghostty_pane_characterizes_ctrl_backspace_encoding() {
         b"\x7f"
     );
 
-    let kitty = GhosttyPaneTerminal::new(crate::vt::Terminal::new(80, 24, 0));
+    let kitty = GhosttyPaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
     let pane_id = PaneId::from_raw(1);
     kitty.process_pty_bytes(pane_id, 0, b"\x1b[>1u");
 
@@ -1517,8 +1517,8 @@ fn ghostty_pane_characterizes_ctrl_backspace_encoding() {
 
 #[test]
 fn ghostty_key_encoders_are_isolated_per_pane() {
-    let first = GhosttyPaneTerminal::new(crate::vt::Terminal::new(80, 24, 0));
-    let second = GhosttyPaneTerminal::new(crate::vt::Terminal::new(80, 24, 0));
+    let first = GhosttyPaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
+    let second = GhosttyPaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
 
     first.process_pty_bytes(PaneId::from_raw(1), 0, b"\x1b[?1h");
 
@@ -1543,7 +1543,7 @@ fn ghostty_key_encoders_are_isolated_per_pane() {
 
 #[test]
 fn ghostty_mouse_button_encoding_uses_live_terminal_state() {
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[?1000h\x1b[?1006h");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1558,7 +1558,7 @@ fn ghostty_mouse_button_encoding_uses_live_terminal_state() {
 
 #[test]
 fn ghostty_mouse_drag_encoding_uses_motion_reporting_state() {
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[?1002h\x1b[?1006h");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1573,7 +1573,7 @@ fn ghostty_mouse_drag_encoding_uses_motion_reporting_state() {
 
 #[test]
 fn ghostty_mouse_drag_without_motion_reporting_is_not_forwarded() {
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[?1000h\x1b[?1006h");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1588,7 +1588,7 @@ fn ghostty_mouse_drag_without_motion_reporting_is_not_forwarded() {
 
 #[test]
 fn ghostty_mouse_moved_encoding_uses_any_motion_state() {
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[?1003h\x1b[?1006h");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1603,8 +1603,8 @@ fn ghostty_mouse_moved_encoding_uses_any_motion_state() {
 
 #[test]
 fn ghostty_mouse_sgr_pixels_preserves_exact_and_maps_cell_input_to_pixels() {
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
-    terminal.resize(crate::core::geometry::PaneGeometry::new(80, 24, 10, 20));
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 10, 20));
     terminal.write(b"\x1b[?1003h\x1b[?1006h\x1b[?1016h");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1626,8 +1626,8 @@ fn ghostty_mouse_sgr_pixels_preserves_exact_and_maps_cell_input_to_pixels() {
 
 #[test]
 fn ghostty_mouse_sgr_pixels_without_pixel_geometry_sends_cells() {
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
-    terminal.resize(crate::core::geometry::PaneGeometry::new(80, 24, 0, 0));
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0));
     terminal.write(b"\x1b[?1003h\x1b[?1006h\x1b[?1016h");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1649,55 +1649,53 @@ fn ghostty_normalize_buffer_symbol_prefers_grapheme_width_when_metadata_disagree
     const EMOJI_GRAPHEME: &str = "\u{1F4B3}";
 
     assert_eq!(
-        ghostty_normalize_buffer_symbol(WIDE_GRAPHEME, crate::vt::CellWide::Wide),
+        ghostty_normalize_buffer_symbol(WIDE_GRAPHEME, shepr_vt::CellWide::Wide),
         WIDE_GRAPHEME
     );
     assert_eq!(
-        ghostty_normalize_buffer_symbol("a", crate::vt::CellWide::Wide),
+        ghostty_normalize_buffer_symbol("a", shepr_vt::CellWide::Wide),
         "  "
     );
     assert_eq!(
-        ghostty_normalize_buffer_symbol(FLAG_GRAPHEME, crate::vt::CellWide::Wide),
+        ghostty_normalize_buffer_symbol(FLAG_GRAPHEME, shepr_vt::CellWide::Wide),
         FLAG_GRAPHEME
     );
     assert_eq!(
-        ghostty_normalize_buffer_symbol(FAMILY_GRAPHEME, crate::vt::CellWide::Wide),
+        ghostty_normalize_buffer_symbol(FAMILY_GRAPHEME, shepr_vt::CellWide::Wide),
         FAMILY_GRAPHEME
     );
     assert_eq!(
-        ghostty_normalize_buffer_symbol("⌨\u{FE0F}", crate::vt::CellWide::Narrow),
+        ghostty_normalize_buffer_symbol("⌨\u{FE0F}", shepr_vt::CellWide::Narrow),
         "⌨\u{FE0F}"
     );
     assert_eq!(
-        ghostty_normalize_buffer_symbol(VS16_GRAPHEME, crate::vt::CellWide::Narrow),
+        ghostty_normalize_buffer_symbol(VS16_GRAPHEME, shepr_vt::CellWide::Narrow),
         VS16_GRAPHEME
     );
     assert_eq!(
-        ghostty_normalize_buffer_symbol(EMOJI_GRAPHEME, crate::vt::CellWide::Narrow),
+        ghostty_normalize_buffer_symbol(EMOJI_GRAPHEME, shepr_vt::CellWide::Narrow),
         EMOJI_GRAPHEME
     );
     assert_eq!(
-        ghostty_normalize_buffer_symbol(" ", crate::vt::CellWide::SpacerTail),
+        ghostty_normalize_buffer_symbol(" ", shepr_vt::CellWide::SpacerTail),
         ""
     );
     assert_eq!(
-        ghostty_normalize_buffer_symbol("xx", crate::vt::CellWide::SpacerHead),
+        ghostty_normalize_buffer_symbol("xx", shepr_vt::CellWide::SpacerHead),
         " "
     );
     assert_eq!(
-        ghostty_normalize_buffer_symbol("ｶ\u{ff9e}", crate::vt::CellWide::Wide),
+        ghostty_normalize_buffer_symbol("ｶ\u{ff9e}", shepr_vt::CellWide::Wide),
         "ｶ\u{ff9e}"
     );
     assert_eq!(
-        ghostty_normalize_buffer_symbol("ﾊ\u{ff9f}", crate::vt::CellWide::Wide),
+        ghostty_normalize_buffer_symbol("ﾊ\u{ff9f}", shepr_vt::CellWide::Wide),
         "ﾊ\u{ff9f}"
     );
 }
 
-fn render_cells_to_symbols(
-    terminal: &mut crate::vt::Terminal,
-) -> Vec<(crate::vt::CellWide, String)> {
-    let mut render_state = crate::vt::RenderState::new();
+fn render_cells_to_symbols(terminal: &mut shepr_vt::Terminal) -> Vec<(shepr_vt::CellWide, String)> {
+    let mut render_state = shepr_vt::RenderState::new();
     render_state.update(terminal);
 
     let mut symbol_scratch = String::new();
@@ -1725,7 +1723,7 @@ fn multi_codepoint_emoji_render_without_losing_text() {
         "\u{1F468}\u{200d}\u{1F469}\u{200d}\u{1F467}",
         "\u{26A0}\u{fe0f}",
     ] {
-        let mut terminal = crate::vt::Terminal::new(40, 1, 0);
+        let mut terminal = shepr_vt::Terminal::new(40, 1, 0);
         terminal.write(text.as_bytes());
 
         let cells = render_cells_to_symbols(&mut terminal);
@@ -1737,7 +1735,7 @@ fn multi_codepoint_emoji_render_without_losing_text() {
 
 #[test]
 fn halfwidth_katakana_voiced_marks_render() {
-    let mut terminal = crate::vt::Terminal::new(40, 1, 0);
+    let mut terminal = shepr_vt::Terminal::new(40, 1, 0);
     terminal.write("ｱｲｳｴｵ ｶﾞｷﾞｸﾞｹﾞｺﾞ ﾊﾟﾋﾟﾌﾟﾍﾟﾎﾟ".as_bytes());
 
     let cells = render_cells_to_symbols(&mut terminal);
@@ -1751,7 +1749,7 @@ fn halfwidth_katakana_voiced_marks_render() {
 
 #[test]
 fn render_keeps_halfwidth_katakana_and_voiced_mark_in_their_own_cells() {
-    let mut terminal = crate::vt::Terminal::new(20, 1, 0);
+    let mut terminal = shepr_vt::Terminal::new(20, 1, 0);
     terminal.write("ｶﾞZ".as_bytes());
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1770,7 +1768,7 @@ fn render_keeps_halfwidth_katakana_and_voiced_mark_in_their_own_cells() {
 
 #[test]
 fn pane_scrollback_controls_round_trip_and_clamp_without_ui_interference() {
-    let mut terminal = crate::vt::Terminal::new(80, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(80, 3, 100);
     write_numbered_lines(&mut terminal, 1000);
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1798,12 +1796,12 @@ fn pane_scrollback_controls_round_trip_and_clamp_without_ui_interference() {
 #[test]
 fn empty_or_short_resize_keeps_following_bottom_when_output_creates_scrollback() {
     for initial in [b"".as_slice(), b"seed\r\n".as_slice()] {
-        let mut terminal = crate::vt::Terminal::new(10, 3, 100);
+        let mut terminal = shepr_vt::Terminal::new(10, 3, 100);
         terminal.write(initial);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
 
-        pane.resize(crate::core::geometry::PaneGeometry::new(10, 3, 0, 0));
+        pane.resize(shepr_core::geometry::PaneGeometry::new(10, 3, 0, 0));
         pane.process_pty_bytes(
             pane_id,
             0,
@@ -1818,13 +1816,13 @@ fn empty_or_short_resize_keeps_following_bottom_when_output_creates_scrollback()
 
 #[test]
 fn resize_that_removes_scrollback_restores_live_follow() {
-    let mut terminal = crate::vt::Terminal::new(10, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(10, 3, 100);
     terminal.write(b"000000\r\n000001\r\n000002\r\n000003\r\n000004");
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
     pane.set_scroll_offset_from_bottom(1);
-    pane.resize(crate::core::geometry::PaneGeometry::new(10, 5, 0, 0));
+    pane.resize(shepr_core::geometry::PaneGeometry::new(10, 5, 0, 0));
     let resized = pane.scroll_metrics().expect("scroll metrics after resize");
     assert_eq!(resized.max_offset_from_bottom, 0);
 
@@ -1837,7 +1835,7 @@ fn resize_that_removes_scrollback_restores_live_follow() {
 
 #[test]
 fn detection_text_stays_at_bottom_when_viewport_is_scrolled() {
-    let mut terminal = crate::vt::Terminal::new(80, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(80, 3, 100);
     write_numbered_lines(&mut terminal, 10);
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1854,7 +1852,7 @@ fn detection_text_stays_at_bottom_when_viewport_is_scrolled() {
 
 #[test]
 fn extract_selection_uses_stable_rows_after_viewport_moves() {
-    let mut terminal = crate::vt::Terminal::new(8, 3, 1024);
+    let mut terminal = shepr_vt::Terminal::new(8, 3, 1024);
     write_numbered_lines(&mut terminal, 8);
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1862,7 +1860,7 @@ fn extract_selection_uses_stable_rows_after_viewport_moves() {
     let metrics = pane
         .scroll_metrics()
         .expect("scroll metrics after initial scroll");
-    let mut selection = crate::vt::selection::Selection::anchor(
+    let mut selection = shepr_vt::selection::Selection::anchor(
         PaneId::from_raw(1),
         Point::new(metrics.absolute_row_at_viewport(ViewportRow(0)), 0),
     );
@@ -1882,7 +1880,7 @@ fn extract_selection_uses_stable_rows_after_viewport_moves() {
 #[test]
 fn recent_reads_include_viewport_before_scrollback_exists() {
     let mut terminal =
-        crate::vt::Terminal::new(20, 20, crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES);
+        shepr_vt::Terminal::new(20, 20, crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES);
     terminal.write(b"hello123");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1892,7 +1890,7 @@ fn recent_reads_include_viewport_before_scrollback_exists() {
 
 #[test]
 fn alternate_screen_recent_reads_keep_physical_row_ranges() {
-    let mut terminal = crate::vt::Terminal::new(20, 20, 100);
+    let mut terminal = shepr_vt::Terminal::new(20, 20, 100);
     terminal.write(b"\x1b[?1049hhello123");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1902,7 +1900,7 @@ fn alternate_screen_recent_reads_keep_physical_row_ranges() {
 
 #[test]
 fn recent_unwrapped_text_ignores_soft_wraps() {
-    let mut terminal = crate::vt::Terminal::new(5, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(5, 3, 100);
     terminal.write(b"ABCDEFGHIJ");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1912,7 +1910,7 @@ fn recent_unwrapped_text_ignores_soft_wraps() {
 
 #[test]
 fn recent_snapshots_report_omitted_rendered_rows() {
-    let mut terminal = crate::vt::Terminal::new(20, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(20, 3, 100);
     terminal.write(b"one\r\ntwo\r\nthree\r\nfour");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1925,7 +1923,7 @@ fn recent_snapshots_report_omitted_rendered_rows() {
 
 #[test]
 fn recent_snapshots_do_not_count_trailing_blank_rows_as_omitted() {
-    let mut terminal = crate::vt::Terminal::new(20, 10, 100);
+    let mut terminal = shepr_vt::Terminal::new(20, 10, 100);
     terminal.write(b"one\r\ntwo");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1940,7 +1938,7 @@ fn recent_snapshots_do_not_count_trailing_blank_rows_as_omitted() {
 
 #[test]
 fn detection_text_ignores_the_frame_a_clear_pushed_into_history() {
-    let mut terminal = crate::vt::Terminal::new(20, 4, 100);
+    let mut terminal = shepr_vt::Terminal::new(20, 4, 100);
     terminal.write(b"a\r\nb\r\nc\r\nproceed? [y/n]");
     terminal.write(b"\x1b[H\x1b[2Jfresh");
     let pane = GhosttyPaneTerminal::new(terminal);
@@ -1952,7 +1950,7 @@ fn detection_text_ignores_the_frame_a_clear_pushed_into_history() {
 
 #[test]
 fn seeded_history_leaves_the_cursor_on_a_fresh_line() {
-    let terminal = crate::vt::Terminal::new(20, 5, 100);
+    let terminal = shepr_vt::Terminal::new(20, 5, 100);
     let pane = GhosttyPaneTerminal::new(terminal);
     // Saved history is trimmed and ends mid-line on the old prompt.
     pane.seed_history_ansi("output\r\nuser@host $ ");
@@ -1965,7 +1963,7 @@ fn seeded_history_leaves_the_cursor_on_a_fresh_line() {
 
 #[test]
 fn seeded_history_ending_in_a_line_break_gets_no_extra_blank_line() {
-    let terminal = crate::vt::Terminal::new(20, 5, 100);
+    let terminal = shepr_vt::Terminal::new(20, 5, 100);
     let pane = GhosttyPaneTerminal::new(terminal);
     pane.seed_history_ansi("restored\r\n");
     let cursor = pane.cursor_state().expect("test precondition");
@@ -1974,7 +1972,7 @@ fn seeded_history_ending_in_a_line_break_gets_no_extra_blank_line() {
 
 #[test]
 fn plain_text_reads_skip_wide_character_spacer_cells() {
-    let mut terminal = crate::vt::Terminal::new(40, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(40, 3, 100);
     terminal.write("日本語テスト ABC 123".as_bytes());
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -1986,7 +1984,7 @@ fn plain_text_reads_skip_wide_character_spacer_cells() {
 
 #[test]
 fn recent_rows_preserve_combining_text_and_hide_image_placeholders() {
-    let mut terminal = crate::vt::Terminal::new(40, 3, 1024 * 1024);
+    let mut terminal = shepr_vt::Terminal::new(40, 3, 1024 * 1024);
     terminal.write("old\r\n".repeat(100).as_bytes());
     terminal.write("界 e\u{301} \u{10eeee} tail  ".as_bytes());
     let pane = GhosttyPaneTerminal::new(terminal);
@@ -1999,7 +1997,7 @@ fn recent_rows_preserve_combining_text_and_hide_image_placeholders() {
 
 #[test]
 fn visible_ansi_preserves_cell_style_sequences() {
-    let mut terminal = crate::vt::Terminal::new(20, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(20, 3, 100);
     terminal.write(b"\x1b[31;1mred\x1b[0m plain");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -2011,7 +2009,7 @@ fn visible_ansi_preserves_cell_style_sequences() {
 
 #[test]
 fn recent_ansi_can_read_styled_scrollback() {
-    let mut terminal = crate::vt::Terminal::new(20, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(20, 3, 100);
     terminal.write(b"\x1b[34mblue\x1b[0m\r\nline2\r\nline3\r\nline4");
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -2023,11 +2021,11 @@ fn recent_ansi_can_read_styled_scrollback() {
 
 #[test]
 fn resize_shrinks_both_axes_with_cursor_at_old_bottom() {
-    let mut terminal = crate::vt::Terminal::new(8, 4, 10_000);
+    let mut terminal = shepr_vt::Terminal::new(8, 4, 10_000);
     terminal.write(b"alpha\r\nbeta\r\ngamma\r\ndelta");
     let pane = GhosttyPaneTerminal::new(terminal);
 
-    pane.resize(crate::core::geometry::PaneGeometry::new(7, 3, 8, 16));
+    pane.resize(shepr_core::geometry::PaneGeometry::new(7, 3, 8, 16));
 
     assert_eq!(pane.visible_text(), "beta\ngamma\ndelta\n");
     assert_eq!(pane.detection_text(), "beta\ngamma\ndelta\n");
@@ -2044,7 +2042,7 @@ fn resize_shrinks_both_axes_with_cursor_at_old_bottom() {
 
 #[test]
 fn resize_reflow_keeps_scrolled_viewport_and_bottom_detection_sane() {
-    let mut terminal = crate::vt::Terminal::new(12, 4, 10_000);
+    let mut terminal = shepr_vt::Terminal::new(12, 4, 10_000);
     write_wrapped_contract_lines(&mut terminal, 40);
     let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -2058,7 +2056,7 @@ fn resize_reflow_keeps_scrolled_viewport_and_bottom_detection_sane() {
 
     for (rows, cols) in [(4, 10), (4, 7), (6, 18), (3, 9), (5, 12)] {
         let before_resize = pane.scroll_metrics().expect("scroll metrics before resize");
-        pane.resize(crate::core::geometry::PaneGeometry::new(cols, rows, 0, 0));
+        pane.resize(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0));
 
         let metrics = pane.scroll_metrics().expect("scroll metrics after resize");
         assert_eq!(metrics.viewport_rows, rows as usize);
@@ -2089,14 +2087,14 @@ fn resize_reflow_keeps_scrolled_viewport_and_bottom_detection_sane() {
 
 #[test]
 fn resize_recovery_does_not_replay_history_when_visible_screen_was_blank() {
-    let mut terminal = crate::vt::Terminal::new(20, 3, 10_000);
+    let mut terminal = shepr_vt::Terminal::new(20, 3, 10_000);
     terminal.write(b"old history\r\n\x1b[2J\x1b[H");
     let pane = GhosttyPaneTerminal::new(terminal);
 
     assert!(pane.visible_text().trim().is_empty());
     assert!(pane.detection_text().trim().is_empty());
 
-    pane.resize(crate::core::geometry::PaneGeometry::new(20, 3, 0, 0));
+    pane.resize(shepr_core::geometry::PaneGeometry::new(20, 3, 0, 0));
 
     assert!(pane.visible_text().trim().is_empty());
     assert!(pane.detection_text().trim().is_empty());
@@ -2105,7 +2103,7 @@ fn resize_recovery_does_not_replay_history_when_visible_screen_was_blank() {
 
 #[test]
 fn resize_recovery_does_not_replay_scrolled_history_over_blank_bottom() {
-    let mut terminal = crate::vt::Terminal::new(20, 3, 10_000);
+    let mut terminal = shepr_vt::Terminal::new(20, 3, 10_000);
     write_numbered_lines(&mut terminal, 20);
     terminal.write(b"\x1b[2J\x1b[H");
     let pane = GhosttyPaneTerminal::new(terminal);
@@ -2115,7 +2113,7 @@ fn resize_recovery_does_not_replay_scrolled_history_over_blank_bottom() {
     pane.set_scroll_offset_from_bottom(metrics.max_offset_from_bottom);
     assert!(!pane.visible_text().trim().is_empty());
 
-    pane.resize(crate::core::geometry::PaneGeometry::new(20, 3, 0, 0));
+    pane.resize(shepr_core::geometry::PaneGeometry::new(20, 3, 0, 0));
 
     assert!(pane.detection_text().trim().is_empty());
     assert!(pane.recent_text(3).trim().is_empty());
@@ -2123,10 +2121,10 @@ fn resize_recovery_does_not_replay_scrolled_history_over_blank_bottom() {
 
 #[test]
 fn process_pty_bytes_answers_xtwinops_size_queries() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.resize(crate::core::geometry::PaneGeometry::new(80, 24, 9, 18));
+    pane.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 9, 18));
 
     let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[14t\x1b[16t\x1b[18t");
 
@@ -2142,11 +2140,11 @@ fn process_pty_bytes_answers_xtwinops_size_queries() {
 
 #[test]
 fn xtwinops_size_queries_follow_successful_resize() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
-    pane.resize(crate::core::geometry::PaneGeometry::new(80, 24, 9, 18));
-    pane.resize(crate::core::geometry::PaneGeometry::new(100, 30, 10, 20));
+    pane.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 9, 18));
+    pane.resize(shepr_core::geometry::PaneGeometry::new(100, 30, 10, 20));
 
     let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[14t\x1b[16t\x1b[18t");
 
@@ -2162,11 +2160,11 @@ fn xtwinops_size_queries_follow_successful_resize() {
 
 #[test]
 fn xtwinops_size_queries_stay_silent_without_pixel_geometry() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     for (cell_width_px, cell_height_px) in [(0, 0), (0, 18), (9, 0)] {
-        pane.resize(crate::core::geometry::PaneGeometry::new(
+        pane.resize(shepr_core::geometry::PaneGeometry::new(
             80,
             24,
             cell_width_px,
@@ -2185,12 +2183,12 @@ fn xtwinops_size_queries_stay_silent_without_pixel_geometry() {
 
 #[test]
 fn enabling_in_band_size_reports_after_alt_screen_resize_reports_current_size() {
-    let terminal = crate::vt::Terminal::new(91, 24, 0);
+    let terminal = shepr_vt::Terminal::new(91, 24, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.process_pty_bytes(pane_id, 0, b"\x1b[?1049h");
     assert!(
-        pane.resize(crate::core::geometry::PaneGeometry::new(92, 24, 9, 18))
+        pane.resize(shepr_core::geometry::PaneGeometry::new(92, 24, 9, 18))
             .is_empty()
     );
 
@@ -2204,11 +2202,11 @@ fn enabling_in_band_size_reports_after_alt_screen_resize_reports_current_size() 
 
 #[test]
 fn resize_returns_in_band_size_report_response() {
-    let mut terminal = crate::vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.mode_set(2048, true).expect("test precondition");
     let pane = GhosttyPaneTerminal::new(terminal);
 
-    let responses = pane.resize(crate::core::geometry::PaneGeometry::new(100, 40, 9, 18));
+    let responses = pane.resize(shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18));
 
     assert_eq!(
         responses,
@@ -2218,7 +2216,7 @@ fn resize_returns_in_band_size_report_response() {
 
 #[test]
 fn synchronized_output_suppresses_intermediate_render_requests_until_batch_ends() {
-    let terminal = crate::vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane_terminal = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -2241,7 +2239,7 @@ fn synchronized_output_suppresses_intermediate_render_requests_until_batch_ends(
 
 #[test]
 fn seeded_history_is_rendered_on_next_draw() {
-    let terminal = crate::vt::Terminal::new(20, 5, 100);
+    let terminal = shepr_vt::Terminal::new(20, 5, 100);
     let pane = GhosttyPaneTerminal::new(terminal);
     pane.seed_history_ansi("restored history");
 
@@ -2258,10 +2256,10 @@ fn seeded_history_is_rendered_on_next_draw() {
 
 #[test]
 fn render_leaves_unknown_host_default_background_transparent() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.terminal.write(b"hi");
     }
 
@@ -2282,10 +2280,10 @@ fn render_leaves_unknown_host_default_background_transparent() {
 
 #[test]
 fn render_blanks_kitty_unicode_placeholders() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.terminal
             .write("before\u{10eeee}\u{0305}\u{0305}after".as_bytes());
     }
@@ -2306,10 +2304,10 @@ fn render_blanks_kitty_unicode_placeholders() {
 
 #[test]
 fn render_keeps_explicit_cell_foreground_when_host_is_unknown() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.terminal.write(b"\x1b[38;2;68;85;102mhi\x1b[0m");
     }
 
@@ -2329,10 +2327,10 @@ fn render_keeps_explicit_cell_foreground_when_host_is_unknown() {
 
 #[test]
 fn render_keeps_explicit_cell_background_when_host_is_unknown() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.terminal.write(b"\x1b[48;2;68;85;102mhi\x1b[0m");
     }
 
@@ -2352,10 +2350,10 @@ fn render_keeps_explicit_cell_background_when_host_is_unknown() {
 
 #[test]
 fn render_preserves_palette_colors_instead_of_flattening_to_rgb() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.terminal.write(
             b"\x1b[31mR\x1b[0m \x1b[38;5;171mI\x1b[0m \x1b[48;5;4mB\x1b[0m \x1b[38;2;1;2;3mT",
         );
@@ -2380,10 +2378,10 @@ fn render_preserves_palette_colors_instead_of_flattening_to_rgb() {
 
 #[test]
 fn render_preserves_palette_background_fill_cells() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.terminal.write(b"\x1b[48;5;4m\x1b[K");
     }
 
@@ -2402,10 +2400,10 @@ fn render_preserves_palette_background_fill_cells() {
 
 #[test]
 fn render_preserves_rgb_background_fill_cells() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.terminal.write(b"\x1b[48;2;17;34;51m\x1b[K");
     }
 
@@ -2424,7 +2422,7 @@ fn render_preserves_rgb_background_fill_cells() {
 
 #[test]
 fn process_pty_bytes_does_not_advertise_unsupported_glyph_protocol() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -2435,7 +2433,7 @@ fn process_pty_bytes_does_not_advertise_unsupported_glyph_protocol() {
 
 #[test]
 fn process_pty_bytes_returns_core_query_responses_without_queuing_input() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -2447,7 +2445,7 @@ fn process_pty_bytes_returns_core_query_responses_without_queuing_input() {
 
 #[test]
 fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -2488,7 +2486,7 @@ fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
 
 #[test]
 fn process_pty_bytes_returns_xtgettcap_truecolor_query_responses_without_queuing_input() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -2520,7 +2518,7 @@ fn process_pty_bytes_returns_fragmented_c1_xtgettcap_once_in_order() {
         (b"\x90+q5463;524742\x1b\\".as_slice(), false),
     ] {
         for fragmented in [false, true] {
-            let terminal = crate::vt::Terminal::new(20, 5, 0);
+            let terminal = shepr_vt::Terminal::new(20, 5, 0);
             let pane = GhosttyPaneTerminal::new(terminal);
             let pane_id = PaneId::from_raw(1);
             pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
@@ -2566,7 +2564,7 @@ fn process_pty_bytes_returns_fragmented_c1_xtgettcap_once_in_order() {
 
 #[test]
 fn process_pty_bytes_returns_split_xtgettcap_query_response() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -2591,7 +2589,7 @@ fn process_pty_bytes_returns_split_xtgettcap_query_response() {
 
 #[test]
 fn process_pty_bytes_orders_device_attribute_reply_before_following_xtgettcap_reply() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -2607,7 +2605,7 @@ fn process_pty_bytes_orders_device_attribute_reply_before_following_xtgettcap_re
 
 #[test]
 fn process_pty_bytes_orders_xtgettcap_reply_before_following_device_attribute_reply() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -2623,7 +2621,7 @@ fn process_pty_bytes_orders_xtgettcap_reply_before_following_device_attribute_re
 
 #[test]
 fn process_pty_bytes_orders_xtgettcap_reply_before_following_default_color_reply() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
@@ -2649,7 +2647,7 @@ fn process_pty_bytes_orders_xtgettcap_reply_before_following_default_color_reply
 
 #[test]
 fn host_theme_update_preserves_child_default_color_override() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -2675,7 +2673,7 @@ fn host_theme_update_preserves_child_default_color_override() {
 
 #[test]
 fn child_default_color_reset_restores_cached_host_color() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -2701,7 +2699,7 @@ fn child_default_color_reset_restores_cached_host_color() {
 
 #[test]
 fn process_pty_bytes_recovers_xtgettcap_after_osc_bel_terminator() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -2715,7 +2713,7 @@ fn process_pty_bytes_recovers_xtgettcap_after_osc_bel_terminator() {
 
 #[test]
 fn process_pty_bytes_orders_default_color_reset_reply_before_xtgettcap() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
@@ -2745,7 +2743,7 @@ fn process_pty_bytes_orders_default_color_reset_reply_before_xtgettcap() {
 
 #[test]
 fn process_pty_bytes_ignores_unknown_and_unsupported_xtgettcap_queries() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -2756,7 +2754,7 @@ fn process_pty_bytes_ignores_unknown_and_unsupported_xtgettcap_queries() {
 
 #[test]
 fn process_pty_bytes_returns_underline_color_xtgettcap_query_responses() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -2777,10 +2775,10 @@ fn process_pty_bytes_returns_underline_color_xtgettcap_query_responses() {
 
 #[test]
 fn render_preserves_underline_color() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.terminal.write(b"\x1b[4m\x1b[58:2::17:34:51mU");
     }
 
@@ -2797,10 +2795,10 @@ fn render_preserves_underline_color() {
 
 #[test]
 fn full_frame_preserves_curly_underline_style() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.terminal.write(b"\x1b[4:3mU");
     }
 
@@ -2814,13 +2812,13 @@ fn full_frame_preserves_curly_underline_style() {
     assert_eq!(frame.cells[0].symbol, "U");
     assert_eq!(
         frame.cells[0].style.underline,
-        crate::vt::UnderlineStyle::Curly
+        shepr_vt::UnderlineStyle::Curly
     );
 }
 
 #[test]
 fn process_pty_bytes_orders_default_color_reply_before_following_device_attribute_reply() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
@@ -2845,7 +2843,7 @@ fn process_pty_bytes_orders_default_color_reply_before_following_device_attribut
 
 #[test]
 fn process_pty_bytes_returns_host_palette_color_without_queuing_input() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(
@@ -2871,7 +2869,7 @@ fn process_pty_bytes_returns_host_palette_color_without_queuing_input() {
 fn opentui_256_palette_query_burst_uses_host_snapshot() {
     use std::fmt::Write as _;
 
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     let mut theme = crate::host_term::theme::TerminalTheme::default();
@@ -2904,7 +2902,7 @@ fn opentui_256_palette_query_burst_uses_host_snapshot() {
 
 #[test]
 fn child_palette_override_survives_host_refresh_until_reset() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(
@@ -2945,7 +2943,7 @@ fn child_palette_override_survives_host_refresh_until_reset() {
 
 #[test]
 fn process_pty_bytes_returns_split_palette_color_query_response() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     let color = current_palette_color(&pane, 255);
@@ -2965,7 +2963,7 @@ fn process_pty_bytes_returns_split_palette_color_query_response() {
 
 #[test]
 fn process_pty_bytes_ignores_malformed_and_preserves_multi_palette_queries() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -2983,7 +2981,7 @@ fn process_pty_bytes_ignores_malformed_and_preserves_multi_palette_queries() {
 
 #[test]
 fn process_pty_bytes_orders_palette_reply_before_following_terminal_replies() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     let color = current_palette_color(&pane, 0);
@@ -3013,7 +3011,7 @@ fn process_pty_bytes_orders_palette_reply_before_following_terminal_replies() {
 
 #[test]
 fn process_pty_bytes_returns_default_color_query_responses_without_queuing_input() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
@@ -3036,7 +3034,7 @@ fn process_pty_bytes_returns_default_color_query_responses_without_queuing_input
 
 #[test]
 fn process_pty_bytes_preserves_untracked_multi_color_query_responses() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
@@ -3078,14 +3076,14 @@ fn process_pty_bytes_preserves_untracked_multi_color_query_responses() {
             .count(),
         3
     );
-    let core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
     assert!(!has_default_color_override(&core.terminal));
     drop(core);
 }
 
 #[test]
 fn process_pty_bytes_preserves_earlier_aggregate_palette_reply() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -3099,7 +3097,7 @@ fn process_pty_bytes_preserves_earlier_aggregate_palette_reply() {
 
 #[test]
 fn process_pty_bytes_preserves_core_reply_for_child_color_override() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
@@ -3112,28 +3110,28 @@ fn process_pty_bytes_preserves_core_reply_for_child_color_override() {
 
 #[test]
 fn process_pty_bytes_tracks_later_multi_value_color_set() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
 
     pane.process_pty_bytes(pane_id, 0, b"\x1b]10;?;rgb:44/55/66\x1b\\");
 
-    let core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
     assert_eq!(
         core.terminal
-            .default_color_override(crate::vt::DefaultColor::Foreground),
+            .default_color_override(shepr_vt::DefaultColor::Foreground),
         None
     );
     assert_eq!(
         core.terminal
-            .default_color_override(crate::vt::DefaultColor::Background),
+            .default_color_override(shepr_vt::DefaultColor::Background),
         Some(rgb(0x44, 0x55, 0x66))
     );
 }
 
 #[test]
 fn process_pty_bytes_returns_cursor_color_query_response_from_foreground_fallback() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
@@ -3156,7 +3154,7 @@ fn process_pty_bytes_returns_cursor_color_query_response_from_foreground_fallbac
 
 #[test]
 fn process_pty_bytes_returns_cursor_color_query_response_from_child_foreground() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
@@ -3180,7 +3178,7 @@ fn process_pty_bytes_returns_cursor_color_query_response_from_child_foreground()
 
 #[test]
 fn process_pty_bytes_returns_explicit_cursor_color_query_response() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
@@ -3204,7 +3202,7 @@ fn process_pty_bytes_returns_explicit_cursor_color_query_response() {
 
 #[test]
 fn process_pty_bytes_returns_default_color_query_responses_in_order() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
@@ -3235,7 +3233,7 @@ fn process_pty_bytes_returns_default_color_query_responses_in_order() {
 
 #[test]
 fn process_pty_bytes_returns_split_default_color_query_response() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
@@ -3262,7 +3260,7 @@ fn process_pty_bytes_returns_split_default_color_query_response() {
 
 #[test]
 fn process_pty_bytes_returns_split_cursor_color_query_response() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
@@ -3289,7 +3287,7 @@ fn process_pty_bytes_returns_split_cursor_color_query_response() {
 
 #[test]
 fn process_pty_bytes_tracks_default_color_set_and_reset_before_replying() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.apply_host_terminal_theme(crate::host_term::theme::TerminalTheme {
@@ -3317,7 +3315,7 @@ fn process_pty_bytes_tracks_default_color_set_and_reset_before_replying() {
 
 #[test]
 fn render_leaves_host_default_background_transparent() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let host_theme = crate::host_term::theme::TerminalTheme {
         foreground: Some(crate::host_term::theme::RgbColor {
@@ -3334,7 +3332,7 @@ fn render_leaves_host_default_background_transparent() {
     };
     pane.apply_host_terminal_theme(host_theme);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.terminal.write(b"hi");
     }
 
@@ -3355,7 +3353,7 @@ fn render_leaves_host_default_background_transparent() {
 
 #[test]
 fn render_keeps_explicit_default_foreground_when_it_differs_from_host() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let host_theme = crate::host_term::theme::TerminalTheme {
         foreground: Some(crate::host_term::theme::RgbColor {
@@ -3372,7 +3370,7 @@ fn render_keeps_explicit_default_foreground_when_it_differs_from_host() {
     };
     pane.apply_host_terminal_theme(host_theme);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.terminal.write(b"\x1b]10;rgb:44/55/66\x1b\\hi");
     }
 
@@ -3392,7 +3390,7 @@ fn render_keeps_explicit_default_foreground_when_it_differs_from_host() {
 
 #[test]
 fn render_keeps_explicit_default_background_when_it_differs_from_host() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let host_theme = crate::host_term::theme::TerminalTheme {
         foreground: Some(crate::host_term::theme::RgbColor {
@@ -3409,7 +3407,7 @@ fn render_keeps_explicit_default_background_when_it_differs_from_host() {
     };
     pane.apply_host_terminal_theme(host_theme);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         core.terminal.write(b"\x1b]11;rgb:44/55/66\x1b\\hi");
     }
 
@@ -3429,7 +3427,7 @@ fn render_keeps_explicit_default_background_when_it_differs_from_host() {
 
 #[test]
 fn render_inverse_text_swaps_fg_and_resolved_bg_when_bg_is_transparent() {
-    let terminal = crate::vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
     let host_theme = crate::host_term::theme::TerminalTheme {
         foreground: Some(crate::host_term::theme::RgbColor {
@@ -3446,7 +3444,7 @@ fn render_inverse_text_swaps_fg_and_resolved_bg_when_bg_is_transparent() {
     };
     pane.apply_host_terminal_theme(host_theme);
     {
-        let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
         // SGR 7 enables inverse/reverse video
         core.terminal.write(b"\x1b[7mhi\x1b[27m");
     }
@@ -3478,7 +3476,7 @@ fn trim_trailing_blank_rows_drops_empty_viewport_tail() {
 #[test]
 fn absolute_rows_survive_eviction_where_screen_rows_drift() {
     // One byte of budget buys the minimum history.
-    let mut terminal = crate::vt::Terminal::new(10, 3, 1);
+    let mut terminal = shepr_vt::Terminal::new(10, 3, 1);
     write_numbered_lines(&mut terminal, 1_100);
     let pane = PaneTerminal::new(GhosttyPaneTerminal::new(terminal));
     let pane_id = PaneId::from_raw(1);
@@ -3510,7 +3508,7 @@ fn absolute_rows_survive_eviction_where_screen_rows_drift() {
     assert_eq!(found.total, 1);
     let line = found.matches[0].start.row;
     assert_eq!(line, AbsRow(1_050));
-    let selection = crate::vt::selection::Selection::range(
+    let selection = shepr_vt::selection::Selection::range(
         PaneId::from_raw(1),
         Point::new(line, 0),
         Point::new(line, 5),
@@ -3553,7 +3551,7 @@ fn absolute_rows_survive_eviction_where_screen_rows_drift() {
 
     // An evicted row is refused rather than read.
     let evicted = origin.saturating_sub(1);
-    let gone = crate::vt::selection::Selection::range(
+    let gone = shepr_vt::selection::Selection::range(
         PaneId::from_raw(1),
         Point::new(evicted, 0),
         Point::new(evicted, 5),
@@ -3568,7 +3566,7 @@ fn absolute_rows_survive_eviction_where_screen_rows_drift() {
 
 #[test]
 fn paragraph_motion_finds_blank_rows_by_absolute_row() {
-    let mut terminal = crate::vt::Terminal::new(10, 3, 1);
+    let mut terminal = shepr_vt::Terminal::new(10, 3, 1);
     write_numbered_lines(&mut terminal, 1_100);
     terminal.write(b"\r\npara\r\ngraph");
     let pane = PaneTerminal::new(GhosttyPaneTerminal::new(terminal));
@@ -3602,7 +3600,7 @@ fn paragraph_motion_finds_blank_rows_by_absolute_row() {
 /// including a match whose soft-wrapped rows straddle a chunk boundary.
 #[test]
 fn chunked_search_matches_a_whole_buffer_search() {
-    let mut terminal = crate::vt::Terminal::new(10, 3, 1_000_000);
+    let mut terminal = shepr_vt::Terminal::new(10, 3, 1_000_000);
     write_numbered_lines(&mut terminal, 2_046);
     terminal.write(b"abcdefghijklmnopqrstuvwxyz0123\r\n");
     for i in 3_000..3_100 {
@@ -3635,7 +3633,7 @@ fn chunked_search_matches_a_whole_buffer_search() {
         let expected = whole.search_window(
             query,
             true,
-            crate::vt::ActiveScreen::Primary,
+            shepr_vt::ActiveScreen::Primary,
             direction,
             cursor,
             None,
@@ -3683,7 +3681,7 @@ fn match_window_agrees_with_the_complete_match_list() {
             },
             source_fingerprint: row,
             scan_cols: 10,
-            scan_screen: crate::vt::ActiveScreen::Primary,
+            scan_screen: shepr_vt::ActiveScreen::Primary,
         })
         .collect();
     let complete =
@@ -3756,7 +3754,7 @@ fn match_window_agrees_with_the_complete_match_list() {
 /// the next patch still has to send.
 #[test]
 fn full_render_leaves_dirty_rows_for_the_next_patch() {
-    let terminal = crate::vt::Terminal::new(8, 4, 100);
+    let terminal = shepr_vt::Terminal::new(8, 4, 100);
     let pane = PaneTerminal::new(GhosttyPaneTerminal::new(terminal));
     let pane_id = PaneId::from_raw(1);
     pane.collect_dirty_patch(8, 4);
@@ -3777,7 +3775,7 @@ fn full_render_leaves_dirty_rows_for_the_next_patch() {
 /// a taller patch later still sends them.
 #[test]
 fn rows_below_a_patch_area_are_sent_by_a_later_taller_patch() {
-    let terminal = crate::vt::Terminal::new(8, 6, 100);
+    let terminal = shepr_vt::Terminal::new(8, 6, 100);
     let pane = PaneTerminal::new(GhosttyPaneTerminal::new(terminal));
     let pane_id = PaneId::from_raw(1);
     pane.collect_dirty_patch(8, 6);
@@ -3806,9 +3804,9 @@ fn rows_below_a_patch_area_are_sent_by_a_later_taller_patch() {
 
 #[test]
 fn default_color_changes_ask_for_an_owner_only_while_an_override_stands() {
-    let terminal = crate::vt::Terminal::new(20, 3, 0);
+    let terminal = shepr_vt::Terminal::new(20, 3, 0);
     let pane = GhosttyPaneTerminal::new(terminal);
-    let mut core = crate::vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
     core.terminal.write(b"\x1b]11;rgb:10/20/30\x07");
     assert!(note_default_color_change(&mut core));
     // Nothing new since.
@@ -3822,7 +3820,7 @@ fn default_color_changes_ask_for_an_owner_only_while_an_override_stands() {
 
 #[test]
 fn primary_history_is_unavailable_on_the_alternate_screen() {
-    let terminal = crate::vt::Terminal::new(20, 3, 100_000);
+    let terminal = shepr_vt::Terminal::new(20, 3, 100_000);
     let pane = PaneTerminal::new(GhosttyPaneTerminal::new(terminal));
     let pane_id = PaneId::from_raw(1);
     pane.process_pty_bytes(pane_id, 0, b"history one\r\nhistory two\r\nprompt");
@@ -3843,25 +3841,25 @@ fn primary_history_is_unavailable_on_the_alternate_screen() {
 
 #[test]
 fn screen_text_snapshot_copies_rows_only_on_the_alternate_screen() {
-    let terminal = crate::vt::Terminal::new(20, 3, 100_000);
+    let terminal = shepr_vt::Terminal::new(20, 3, 100_000);
     let pane = GhosttyPaneTerminal::new(terminal);
     let pane_id = PaneId::from_raw(1);
     pane.process_pty_bytes(pane_id, 0, b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
 
     let (screen, cols, rows) = pane.screen_text_snapshot().expect("snapshot");
-    assert_eq!(screen, crate::vt::ActiveScreen::Primary);
+    assert_eq!(screen, shepr_vt::ActiveScreen::Primary);
     assert_eq!(cols, 20);
     assert!(rows.is_empty());
 
     pane.process_pty_bytes(pane_id, 0, b"\x1b[?1049h\x1b[2J\x1b[Hframe");
     let (screen, _, rows) = pane.screen_text_snapshot().expect("snapshot");
-    assert_eq!(screen, crate::vt::ActiveScreen::Alternate);
+    assert_eq!(screen, shepr_vt::ActiveScreen::Alternate);
     assert_eq!(rows.len(), 3);
 }
 
 #[test]
 fn a_core_poisoned_off_the_reader_is_reported_to_the_reader() {
-    let terminal = crate::vt::Terminal::new(20, 3, 0);
+    let terminal = shepr_vt::Terminal::new(20, 3, 0);
     let pane = std::sync::Arc::new(PaneTerminal::new(GhosttyPaneTerminal::new(terminal)));
     let pane_id = PaneId::from_raw(1);
     assert!(!pane.process_pty_bytes(pane_id, 0, b"before").core_poisoned);
@@ -3870,7 +3868,7 @@ fn a_core_poisoned_off_the_reader_is_reported_to_the_reader() {
     // A render or API read panicking while it holds the core lock.
     let poisoner = std::sync::Arc::clone(&pane);
     let joined = std::thread::spawn(move || {
-        let _core = crate::vt::lock_terminal_core(&poisoner.ghostty.core);
+        let _core = shepr_vt::lock_terminal_core(&poisoner.ghostty.core);
         panic!("panic while holding the core lock");
     })
     .join();

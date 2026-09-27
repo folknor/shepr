@@ -1,5 +1,5 @@
 use crate::protocol::{PublicPaneId, PublicTabId, WorkspaceId};
-use crate::pty::PtyCommand;
+use shepr_pty::PtyCommand;
 
 /// Time allowed for a restored agent to appear after its resume launch.
 pub(crate) const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration =
@@ -22,7 +22,7 @@ pub(super) fn apply_pane_terminal_env(cmd: &mut PtyCommand) {
     // that launched the app. Advertising the inherited TERM leaks the host terminal
     // identity into shells and across SSH, which breaks redraw and cursor movement
     // when the remote side lacks matching terminfo entries.
-    cmd.env("TERM", crate::vt::PANE_TERM);
+    cmd.env("TERM", shepr_vt::PANE_TERM);
     cmd.env("COLORTERM", PANE_COLORTERM);
     cmd.env("TERM_PROGRAM", "shepr");
     cmd.env("TERM_PROGRAM_VERSION", crate::build_info::version());
@@ -104,7 +104,7 @@ impl PaneLaunchEnv {
 }
 
 pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunchEnv) {
-    if let Some(path) = crate::platform::ssh_agent::pane_agent_socket(&launch_env.api_socket_path) {
+    if let Some(path) = shepr_platform::ssh_agent::pane_agent_socket(&launch_env.api_socket_path) {
         cmd.env("SSH_AUTH_SOCK", path);
     }
     // A new pane is not a child agent of the process that started the server.
@@ -120,7 +120,7 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
         crate::config::SOCKET_PATH_ENV_VAR,
         &launch_env.api_socket_path,
     );
-    if let Ok(executable) = crate::platform::launch_executable() {
+    if let Ok(executable) = shepr_platform::launch_executable() {
         cmd.env("SHEPR_BIN_PATH", executable);
     }
     match &launch_env.identity {

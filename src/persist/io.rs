@@ -83,7 +83,7 @@ pub(super) fn publish_private_file(
     replace: bool,
 ) -> std::io::Result<Published> {
     let directory = containing_directory(target);
-    let mut output = crate::platform::create_private_temporary(pending)?;
+    let mut output = shepr_platform::create_private_temporary(pending)?;
     let mut published = false;
     let result = (|| {
         if !replace {
@@ -103,7 +103,7 @@ pub(super) fn publish_private_file(
         drop(output);
         std::fs::rename(pending, target)?;
         published = true;
-        crate::platform::sync_directory(directory)
+        shepr_platform::sync_directory(directory)
     })();
     match result {
         Ok(()) => Ok(Published::Durable),
@@ -152,7 +152,7 @@ fn save_serialized_to_path(path: &Path, json: &str) -> std::io::Result<Published
     if created && matches!(published, Published::Durable) {
         // A freshly created data directory is itself only an unsynced entry
         // in its parent until that parent is synced.
-        if let Err(err) = crate::platform::sync_directory(containing_directory(directory)) {
+        if let Err(err) = shepr_platform::sync_directory(containing_directory(directory)) {
             return Ok(Published::NotDurable(err));
         }
     }
@@ -193,7 +193,7 @@ pub(super) fn save_history_json_to_path(path: &Path, json: &str) -> std::io::Res
 pub(super) fn clear_path(path: &Path) -> std::io::Result<()> {
     let target = resolve_write_target(path)?;
     match std::fs::remove_file(&target) {
-        Ok(()) => crate::platform::sync_directory(containing_directory(&target)),
+        Ok(()) => shepr_platform::sync_directory(containing_directory(&target)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
     }

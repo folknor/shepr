@@ -22,7 +22,7 @@ use crate::app::App;
 #[cfg(test)]
 use crate::app::Mode;
 use crate::app::actions::{PaneRemovalCommit, PaneZoomCommand, PaneZoomNoopReason};
-use crate::core::layout::{NavDirection, PaneId, find_in_direction};
+use shepr_core::layout::{NavDirection, PaneId, find_in_direction};
 
 use super::super::api_helpers::{
     MAX_METADATA_TOKEN_KEYS_PER_RESOURCE, detect_state_from_api, encode_api_keys,
@@ -687,14 +687,14 @@ impl From<ratatui::layout::Rect> for PaneLayoutRect {
     }
 }
 
-fn split_path_id(idx: usize, path: &[crate::core::geometry::SplitBranch]) -> String {
+fn split_path_id(idx: usize, path: &[shepr_core::geometry::SplitBranch]) -> String {
     if path.is_empty() {
         return format!("split_{idx}_root");
     }
     let path = path
         .iter()
         .map(|branch| {
-            if *branch == crate::core::geometry::SplitBranch::Second {
+            if *branch == shepr_core::geometry::SplitBranch::Second {
                 "1"
             } else {
                 "0"

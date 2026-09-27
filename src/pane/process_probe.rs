@@ -12,9 +12,9 @@ use super::agent_detection::{
 use super::cwd::UsableCwd;
 use super::launch::LaunchPurpose;
 use super::terminal::PaneTerminal;
-use crate::core::layout::PaneId;
 use crate::detect::{Agent, AgentState};
 use crate::events::AppEvent;
+use shepr_core::layout::PaneId;
 
 pub(super) const RELEASE_REACQUIRE_SUPPRESSION: std::time::Duration =
     std::time::Duration::from_secs(1);
@@ -29,7 +29,7 @@ pub(super) fn active_pending_release(
     pending_release: &Mutex<Option<PendingAgentRelease>>,
     now: std::time::Instant,
 ) -> Option<Agent> {
-    let mut pending_release = crate::vt::lock_auxiliary(pending_release);
+    let mut pending_release = shepr_vt::lock_auxiliary(pending_release);
     match *pending_release {
         Some(pending) if now < pending.until => Some(pending.agent),
         Some(_) => {

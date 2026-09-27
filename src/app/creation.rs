@@ -23,14 +23,13 @@ pub(crate) fn resolve_new_terminal_cwd(
         NewTerminalCwdConfig::Current => current_dir
             .map(std::path::Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("/")),
-        NewTerminalCwdConfig::Path(path) => crate::core::pathutil::expand_tilde_path_with_home(
-            path, home_dir,
-        )
-        .unwrap_or_else(|_| {
-            current_dir
-                .map(std::path::Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("/"))
-        }),
+        NewTerminalCwdConfig::Path(path) => {
+            shepr_core::pathutil::expand_tilde_path_with_home(path, home_dir).unwrap_or_else(|_| {
+                current_dir
+                    .map(std::path::Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from("/"))
+            })
+        }
     }
 }
 
@@ -63,7 +62,7 @@ impl App {
     pub(super) fn launch_cwd_for_pane_in_workspace(
         &self,
         ws_idx: usize,
-        pane_id: crate::core::layout::PaneId,
+        pane_id: shepr_core::layout::PaneId,
     ) -> Option<PathBuf> {
         let workspace = self.state.workspaces.get(ws_idx)?;
         let tab = workspace
@@ -278,7 +277,7 @@ impl App {
     pub(super) fn pane_info(
         &self,
         ws_idx: usize,
-        pane_id: crate::core::layout::PaneId,
+        pane_id: shepr_core::layout::PaneId,
     ) -> Option<crate::api::schema::PaneInfo> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let pane = ws.pane_state(pane_id)?;
@@ -335,7 +334,7 @@ impl App {
     pub(super) fn lookup_runtime(
         &self,
         ws_idx: usize,
-        pane_id: crate::core::layout::PaneId,
+        pane_id: shepr_core::layout::PaneId,
     ) -> Option<(&crate::pane::PaneRuntime, String)> {
         let runtime =
             self.state
@@ -346,7 +345,7 @@ impl App {
     pub(super) fn lookup_runtime_sender(
         &self,
         ws_idx: usize,
-        pane_id: crate::core::layout::PaneId,
+        pane_id: shepr_core::layout::PaneId,
     ) -> Option<&crate::pane::PaneRuntime> {
         self.state
             .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)

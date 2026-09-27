@@ -8,7 +8,7 @@ use crate::api::schema::{
     LayoutPane, LayoutSetSplitRatioParams, ResponseResult, SplitDirection,
 };
 use crate::app::{App, Mode};
-use crate::core::layout::{Node, PaneId};
+use shepr_core::layout::{Node, PaneId};
 
 use super::responses::{failure, success};
 

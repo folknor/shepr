@@ -1,5 +1,4 @@
 use crate::protocol::KittyKeyboardFlags;
-use crossterm::event::KeyboardEnhancementFlags;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
 
@@ -109,14 +108,6 @@ impl From<KeyEvent> for TerminalKey {
 }
 
 pub(crate) const KITTY_FLAG_REPORT_ALL_KEYS: u16 = KittyKeyboardFlags::REPORT_ALL_KEYS.bits();
-
-pub fn ime_compatible_keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
-    // Do not request kitty REPORT_ALL_KEYS (flag 8): it breaks IME and compose
-    // input. Text keys therefore have no release events to forward to panes.
-    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModifyOtherKeysMode {
@@ -249,16 +240,6 @@ mod tests {
             KeyboardProtocol::from_kitty_flags(7),
             KeyboardProtocol::Kitty { flags: 7 }
         );
-    }
-
-    #[test]
-    fn keyboard_enhancement_flags_stay_ime_compatible() {
-        let flags = ime_compatible_keyboard_enhancement_flags();
-
-        assert!(flags.contains(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES));
-        assert!(flags.contains(KeyboardEnhancementFlags::REPORT_EVENT_TYPES));
-        assert!(flags.contains(KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS));
-        assert!(!flags.contains(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES));
     }
 
     #[test]

@@ -1417,13 +1417,13 @@ mod tests {
 
     // ---- Process identification (real PTY) ----
 
-    fn open_test_pty() -> crate::pty::backend::OpenedPty {
-        crate::pty::backend::open_pty(24, 80).expect("failed to open pty")
+    fn open_test_pty() -> shepr_pty::backend::OpenedPty {
+        shepr_pty::backend::open_pty(24, 80).expect("failed to open pty")
     }
 
     #[test]
     fn foreground_job_detects_sleep() {
-        use crate::pty::{PtyCommand, backend::spawn_in_pty};
+        use shepr_pty::{PtyCommand, backend::spawn_in_pty};
 
         let pty = open_test_pty();
 
@@ -1454,7 +1454,7 @@ mod tests {
 
     #[test]
     fn foreground_job_detects_shell_running_command() {
-        use crate::pty::{PtyCommand, backend::spawn_in_pty};
+        use shepr_pty::{PtyCommand, backend::spawn_in_pty};
         use std::io::Write;
 
         let pty = open_test_pty();
@@ -1489,7 +1489,7 @@ mod tests {
 
     #[test]
     fn foreground_job_detects_agent_behind_shell_wrapper() {
-        use crate::pty::{PtyCommand, backend::spawn_in_pty};
+        use shepr_pty::{PtyCommand, backend::spawn_in_pty};
 
         let pty = open_test_pty();
 

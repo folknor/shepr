@@ -242,7 +242,7 @@ pub(crate) fn run_remote_api_bridge(
             ),
         )
     })?;
-    crate::platform::forward_remote_bridge_stdio(stream, false)
+    shepr_platform::forward_remote_bridge_stdio(stream, false)
 }
 
 pub(crate) fn print_saved_ssh_error_hint(err: &std::io::Error, target: &str) {

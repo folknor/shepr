@@ -9,7 +9,7 @@ pub(super) struct ParsedHostInput {
 
 pub(super) enum ClientLoopEvent {
     StdinInput(Vec<ParsedHostInput>),
-    Resize(crate::core::geometry::HostGeometry),
+    Resize(shepr_core::geometry::HostGeometry),
     TerminalUnavailable(io::Error),
     ServerMessage {
         endpoint_id: endpoint::ClientEndpointId,

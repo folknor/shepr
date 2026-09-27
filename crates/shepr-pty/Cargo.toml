@@ -1,0 +1,18 @@
+[package]
+name = "shepr-pty"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+libc = { workspace = true }
+bytes = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+shepr-core = { path = "../shepr-core" }
+
+[dev-dependencies]
+shepr-test-support = { path = "../shepr-test-support" }
+
+[lints]
+workspace = true

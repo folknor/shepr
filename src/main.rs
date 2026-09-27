@@ -20,7 +20,6 @@ mod cli;
 mod client;
 mod config;
 mod copy_mode;
-mod core;
 mod detect;
 mod events;
 mod git;
@@ -34,10 +33,7 @@ mod machine;
 mod netside_tests;
 mod pane;
 mod persist;
-mod platform;
 mod protocol;
-mod pty;
-mod vt;
 pub(crate) use input::raw_input;
 mod remote;
 #[path = "server/render_signal.rs"]
@@ -165,13 +161,13 @@ fn main() -> io::Result<()> {
     }
 
     if invocation.version_requested() {
-        platform::begin_cli_output();
+        shepr_platform::begin_cli_output();
         println!("shepr {}", crate::build_info::version());
         return Ok(());
     }
 
     if invocation.default_config_requested() {
-        platform::begin_cli_output();
+        shepr_platform::begin_cli_output();
         print!("{}", config::DEFAULT_CONFIG);
         return Ok(());
     }

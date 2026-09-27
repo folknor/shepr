@@ -203,7 +203,7 @@ pub(crate) enum RenderTargetMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RenderTarget {
     pub(crate) client_id: ClientId,
-    pub(crate) terminal_size: crate::core::geometry::GridSize,
+    pub(crate) terminal_size: shepr_core::geometry::GridSize,
     pub(crate) cell_size: crate::host_term::cell_size::HostCellSize,
     pub(crate) is_foreground: bool,
     pub(crate) mode: RenderTargetMode,
@@ -588,7 +588,7 @@ pub(crate) struct ClientConnection {
     /// State carried by this connection's current client mode.
     pub(crate) mode: ClientConnectionMode,
     /// The client's terminal size after clamping.
-    pub(crate) terminal_size: crate::core::geometry::GridSize,
+    pub(crate) terminal_size: shepr_core::geometry::GridSize,
     /// Pixel size of one client terminal cell.
     pub(crate) cell_size: crate::host_term::cell_size::HostCellSize,
     /// Monotonic activity stamp used to choose the fallback foreground client.
@@ -629,7 +629,7 @@ impl ClientConnection {
     ) -> Self {
         Self::new_with_mode(
             ClientConnectionMode::shell(),
-            crate::core::geometry::GridSize::clamped(terminal_size.0, terminal_size.1),
+            shepr_core::geometry::GridSize::clamped(terminal_size.0, terminal_size.1),
             cell_size,
             last_activity,
             render_encoding,
@@ -639,7 +639,7 @@ impl ClientConnection {
 
     pub(crate) fn new_with_mode(
         mode: ClientConnectionMode,
-        terminal_size: crate::core::geometry::GridSize,
+        terminal_size: shepr_core::geometry::GridSize,
         cell_size: crate::host_term::cell_size::HostCellSize,
         last_activity: impl Into<ActivityStamp>,
         render_encoding: RenderEncoding,
@@ -931,7 +931,7 @@ mod tests {
         let connection = |mode| {
             ClientConnection::new_with_mode(
                 mode,
-                crate::core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::GridSize::clamped(80, 24),
                 crate::host_term::cell_size::HostCellSize::default(),
                 1,
                 crate::protocol::RenderEncoding::TerminalAnsi,
@@ -970,7 +970,7 @@ mod tests {
         );
         let second = ClientConnection::new_with_mode(
             ClientConnectionMode::TerminalPending,
-            crate::core::geometry::GridSize::clamped(80, 24),
+            shepr_core::geometry::GridSize::clamped(80, 24),
             crate::host_term::cell_size::HostCellSize::default(),
             registry.allocate_activity_stamp(),
             crate::protocol::RenderEncoding::TerminalAnsi,

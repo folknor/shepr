@@ -38,7 +38,7 @@ pub(super) fn collect_core_effects(core: &mut GhosttyPaneCore) -> CoreEffects {
 
 /// Drops queued effects that must never reach the live child or the app
 /// (restored history).
-pub(super) fn discard_core_effects(terminal: &mut crate::vt::Terminal) {
+pub(super) fn discard_core_effects(terminal: &mut shepr_vt::Terminal) {
     let _ = terminal.take_pty_responses();
     let _ = terminal.take_clipboard_writes();
     let _ = terminal.take_pwd_changes();
@@ -47,12 +47,12 @@ pub(super) fn discard_core_effects(terminal: &mut crate::vt::Terminal) {
     let _ = terminal.take_default_color_set();
 }
 
-pub(super) fn has_default_color_override(terminal: &crate::vt::Terminal) -> bool {
+pub(super) fn has_default_color_override(terminal: &shepr_vt::Terminal) -> bool {
     terminal
-        .default_color_override(crate::vt::DefaultColor::Foreground)
+        .default_color_override(shepr_vt::DefaultColor::Foreground)
         .is_some()
         || terminal
-            .default_color_override(crate::vt::DefaultColor::Background)
+            .default_color_override(shepr_vt::DefaultColor::Background)
             .is_some()
 }
 
@@ -81,8 +81,8 @@ pub(super) fn drain_terminal_responses(core: &mut GhosttyPaneCore) -> Vec<Bytes>
     let mut replies = Vec::with_capacity(responses.len());
     for response in responses {
         match response {
-            crate::vt::PtyResponse::Bytes(bytes) => replies.push(Bytes::from(bytes)),
-            crate::vt::PtyResponse::ColorQuery(query) => {
+            shepr_vt::PtyResponse::Bytes(bytes) => replies.push(Bytes::from(bytes)),
+            shepr_vt::PtyResponse::ColorQuery(query) => {
                 replies.extend(color_query_response(&query));
             }
         }
@@ -95,16 +95,16 @@ pub(super) fn drain_terminal_responses(core: &mut GhosttyPaneCore) -> Vec<Bytes>
 /// itself is echoed in the form it asked for; everything else is reported
 /// the way shepr reports host colours, ST-terminated. No reply for a
 /// default colour nobody has set.
-pub(super) fn color_query_response(query: &crate::vt::ColorQuery) -> Option<Bytes> {
+pub(super) fn color_query_response(query: &shepr_vt::ColorQuery) -> Option<Bytes> {
     let color = query.core_color()?;
     if query.child_override() {
         return Some(Bytes::from(query.encode(color)));
     }
     let command = match query.target() {
-        crate::vt::ColorQueryTarget::Foreground => "10".to_owned(),
-        crate::vt::ColorQueryTarget::Background => "11".to_owned(),
-        crate::vt::ColorQueryTarget::Cursor => "12".to_owned(),
-        crate::vt::ColorQueryTarget::Palette(index) => format!("4;{index}"),
+        shepr_vt::ColorQueryTarget::Foreground => "10".to_owned(),
+        shepr_vt::ColorQueryTarget::Background => "11".to_owned(),
+        shepr_vt::ColorQueryTarget::Cursor => "12".to_owned(),
+        shepr_vt::ColorQueryTarget::Palette(index) => format!("4;{index}"),
     };
     Some(osc_rgb_response(&command, color.r, color.g, color.b))
 }
@@ -126,7 +126,7 @@ pub(super) fn current_cursor_state(core: &mut GhosttyPaneCore) -> Option<Termina
 }
 
 pub(super) fn cursor_state_from_render_state(
-    render_state: &mut crate::vt::RenderState,
+    render_state: &mut shepr_vt::RenderState,
     cursor_shape_overridden: bool,
 ) -> Option<TerminalCursorState> {
     let cursor = render_state.cursor();
@@ -172,8 +172,8 @@ pub(super) fn ghostty_collect_dirty_patch(
     } = core;
     render_state.update(terminal);
     match render_state.dirty() {
-        crate::vt::Dirty::Clean => finish!(TerminalDirtyPatchOutcome::Clean),
-        crate::vt::Dirty::Partial | crate::vt::Dirty::Full => {}
+        shepr_vt::Dirty::Clean => finish!(TerminalDirtyPatchOutcome::Clean),
+        shepr_vt::Dirty::Partial | shepr_vt::Dirty::Full => {}
     }
 
     let colors = render_state.colors();
@@ -242,9 +242,9 @@ pub(super) fn ghostty_collect_dirty_patch(
         }
     }
     let remaining = if rows_left {
-        crate::vt::Dirty::Partial
+        shepr_vt::Dirty::Partial
     } else {
-        crate::vt::Dirty::Clean
+        shepr_vt::Dirty::Clean
     };
     render_state.set_dirty(remaining);
 
@@ -256,7 +256,7 @@ pub(super) fn ghostty_collect_dirty_patch(
 pub(super) fn ghostty_visible_hyperlinks(
     core: &mut GhosttyPaneCore,
     area: Rect,
-) -> Result<VisibleHyperlinks, crate::vt::Error> {
+) -> Result<VisibleHyperlinks, shepr_vt::Error> {
     let GhosttyPaneCore {
         terminal,
         render_state,
@@ -293,7 +293,7 @@ pub(super) fn ghostty_visible_text(core: &mut GhosttyPaneCore) -> String {
     lines_to_text(&lines)
 }
 
-pub(super) fn ghostty_visible_ansi(core: &GhosttyPaneCore) -> Result<String, crate::vt::Error> {
+pub(super) fn ghostty_visible_ansi(core: &GhosttyPaneCore) -> Result<String, shepr_vt::Error> {
     let rows = core.terminal.rows();
     let cols = core.terminal.cols();
     if rows == 0 || cols == 0 {
@@ -313,7 +313,7 @@ pub(super) fn ghostty_visible_ansi(core: &GhosttyPaneCore) -> Result<String, cra
 /// would hand the detector that stale frame (an old "proceed?" blocker, say).
 pub(super) fn ghostty_detection_text(
     core: &mut GhosttyPaneCore,
-) -> Result<String, crate::vt::Error> {
+) -> Result<String, shepr_vt::Error> {
     let terminal = &core.terminal;
     let screen_rows = usize::from(terminal.rows()).max(1);
     let Some((start, end, _)) = ghostty_recent_read_range(terminal, screen_rows)? else {
@@ -326,7 +326,7 @@ pub(super) fn ghostty_detection_text(
 pub(super) fn ghostty_recent_text_snapshot(
     core: &mut GhosttyPaneCore,
     lines: usize,
-) -> Result<TerminalReadSnapshot, crate::vt::Error> {
+) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
     let terminal = &core.terminal;
     let Some((start, end, _)) = ghostty_recent_read_range(terminal, lines)? else {
         return Ok(TerminalReadSnapshot::default());
@@ -338,7 +338,7 @@ pub(super) fn ghostty_recent_text_snapshot(
 pub(super) fn ghostty_recent_text_unwrapped_snapshot(
     core: &mut GhosttyPaneCore,
     lines: usize,
-) -> Result<TerminalReadSnapshot, crate::vt::Error> {
+) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
     let terminal = &core.terminal;
     let Some((start, end, cols)) = ghostty_recent_read_range(terminal, lines)? else {
         return Ok(TerminalReadSnapshot::default());
@@ -355,7 +355,7 @@ pub(super) fn ghostty_recent_ansi_snapshot(
     core: &mut GhosttyPaneCore,
     lines: usize,
     unwrap: bool,
-) -> Result<TerminalReadSnapshot, crate::vt::Error> {
+) -> Result<TerminalReadSnapshot, shepr_vt::Error> {
     let terminal = &core.terminal;
     let Some((start, end, cols)) = ghostty_recent_read_range(terminal, lines)? else {
         return Ok(TerminalReadSnapshot::default());
@@ -380,11 +380,11 @@ pub(super) fn finish_recent_snapshot(text: String, start: usize) -> TerminalRead
 }
 
 pub(super) fn ghostty_text_rows(
-    terminal: &crate::vt::Terminal,
+    terminal: &shepr_vt::Terminal,
     start: usize,
     end: usize,
     lines: usize,
-) -> Result<String, crate::vt::Error> {
+) -> Result<String, shepr_vt::Error> {
     let mut rows = Vec::with_capacity(end.saturating_sub(start).saturating_add(1));
     let mut scratch = String::new();
     for y in start..=end {
@@ -402,9 +402,9 @@ pub(super) fn ghostty_text_rows(
 /// History persistence must not take that for history; it reads through
 /// [`PaneTerminal::primary_history_ansi`], which says so instead.
 pub(super) fn ghostty_recent_read_range(
-    terminal: &crate::vt::Terminal,
+    terminal: &shepr_vt::Terminal,
     lines: usize,
-) -> Result<Option<(usize, usize, u16)>, crate::vt::Error> {
+) -> Result<Option<(usize, usize, u16)>, shepr_vt::Error> {
     let total_rows = terminal.total_rows();
     let cols = terminal.cols();
     if total_rows == 0 || cols == 0 || lines == 0 {
@@ -412,7 +412,7 @@ pub(super) fn ghostty_recent_read_range(
     }
 
     let physical_end = total_rows.saturating_sub(1);
-    if terminal.active_screen() != crate::vt::ActiveScreen::Primary {
+    if terminal.active_screen() != shepr_vt::ActiveScreen::Primary {
         let start = physical_end.saturating_add(1).saturating_sub(lines);
         return Ok(Some((start, physical_end, cols)));
     }
@@ -442,7 +442,7 @@ pub(super) fn ghostty_recent_read_range(
     Ok(Some((start, end, cols)))
 }
 
-pub(super) fn terminal_scroll_metrics(terminal: &crate::vt::Terminal) -> ScrollMetrics {
+pub(super) fn terminal_scroll_metrics(terminal: &shepr_vt::Terminal) -> ScrollMetrics {
     let scrollbar = terminal.scrollbar();
     ScrollMetrics {
         offset_from_bottom: scrollbar
@@ -455,7 +455,7 @@ pub(super) fn terminal_scroll_metrics(terminal: &crate::vt::Terminal) -> ScrollM
 }
 
 pub(super) fn ghostty_set_scroll_offset_from_bottom(
-    terminal: &mut crate::vt::Terminal,
+    terminal: &mut shepr_vt::Terminal,
     offset_from_bottom: usize,
 ) {
     let scrollbar = terminal.scrollbar();
@@ -470,7 +470,7 @@ pub(super) fn ghostty_set_scroll_offset_from_bottom(
 
 pub(super) fn ghostty_extract_selection<P>(
     core: &mut GhosttyPaneCore,
-    selection: &crate::vt::selection::Selection<P>,
+    selection: &shepr_vt::selection::Selection<P>,
 ) -> Option<String> {
     let (start, end) = selection.ordered_rows();
     let terminal = &core.terminal;
@@ -490,14 +490,14 @@ pub(super) fn ghostty_extract_selection<P>(
 /// (empty for a row that is not retained). Straight from the grid, with no
 /// per-cell copies: this runs per detection tick for every agent pane.
 pub(super) fn ghostty_screen_row_into(
-    terminal: &crate::vt::Terminal,
+    terminal: &shepr_vt::Terminal,
     y: ScreenRow,
     scratch: &mut String,
     line: &mut String,
 ) {
     line.clear();
     terminal.visit_screen_row_text(y, scratch, |_, wide, text| {
-        if wide != crate::vt::CellWide::SpacerTail {
+        if wide != shepr_vt::CellWide::SpacerTail {
             line.push_str(text);
         }
     });
@@ -505,7 +505,7 @@ pub(super) fn ghostty_screen_row_into(
 }
 
 pub(super) fn ghostty_line_from_cells<'a>(
-    cells: impl Iterator<Item = crate::vt::CellView<'a>>,
+    cells: impl Iterator<Item = shepr_vt::CellView<'a>>,
 ) -> String {
     let mut line = String::new();
     for cell in cells {
@@ -514,12 +514,12 @@ pub(super) fn ghostty_line_from_cells<'a>(
     line.trim_end().to_string()
 }
 
-pub(super) fn ghostty_cell_symbol(cells: &crate::vt::CellView<'_>) -> String {
-    if cells.wide() == crate::vt::CellWide::SpacerTail {
+pub(super) fn ghostty_cell_symbol(cells: &shepr_vt::CellView<'_>) -> String {
+    if cells.wide() == shepr_vt::CellWide::SpacerTail {
         return String::new();
     }
     let text = cells.grapheme_text();
-    if text.chars().next().map(u32::from) == Some(crate::vt::KITTY_UNICODE_PLACEHOLDER) {
+    if text.chars().next().map(u32::from) == Some(shepr_vt::KITTY_UNICODE_PLACEHOLDER) {
         return " ".to_string();
     }
     if text.is_empty() {
@@ -528,33 +528,33 @@ pub(super) fn ghostty_cell_symbol(cells: &crate::vt::CellView<'_>) -> String {
     text
 }
 
-pub(super) fn ghostty_blank_symbol_for_width(wide: crate::vt::CellWide) -> &'static str {
+pub(super) fn ghostty_blank_symbol_for_width(wide: shepr_vt::CellWide) -> &'static str {
     match wide {
-        crate::vt::CellWide::Wide => "  ",
-        crate::vt::CellWide::SpacerTail => "",
-        crate::vt::CellWide::Narrow | crate::vt::CellWide::SpacerHead => " ",
+        shepr_vt::CellWide::Wide => "  ",
+        shepr_vt::CellWide::SpacerTail => "",
+        shepr_vt::CellWide::Narrow | shepr_vt::CellWide::SpacerHead => " ",
     }
 }
 
 #[cfg(test)]
-pub(super) fn ghostty_normalize_buffer_symbol(symbol: &str, wide: crate::vt::CellWide) -> String {
+pub(super) fn ghostty_normalize_buffer_symbol(symbol: &str, wide: shepr_vt::CellWide) -> String {
     let expected_width = match wide {
-        crate::vt::CellWide::Wide => 2,
-        crate::vt::CellWide::Narrow | crate::vt::CellWide::SpacerHead => 1,
-        crate::vt::CellWide::SpacerTail => 0,
+        shepr_vt::CellWide::Wide => 2,
+        shepr_vt::CellWide::Narrow | shepr_vt::CellWide::SpacerHead => 1,
+        shepr_vt::CellWide::SpacerTail => 0,
     };
     let actual_width = symbol.width();
     if actual_width == expected_width {
         return symbol.to_string();
     }
 
-    if wide == crate::vt::CellWide::Narrow && actual_width == 2 {
+    if wide == shepr_vt::CellWide::Narrow && actual_width == 2 {
         return symbol.to_string();
     }
-    if wide == crate::vt::CellWide::Narrow && is_halfwidth_katakana_voiced_mark(symbol) {
+    if wide == shepr_vt::CellWide::Narrow && is_halfwidth_katakana_voiced_mark(symbol) {
         return symbol.to_string();
     }
-    if wide == crate::vt::CellWide::Wide && is_halfwidth_katakana_voiced_grapheme(symbol) {
+    if wide == shepr_vt::CellWide::Wide && is_halfwidth_katakana_voiced_grapheme(symbol) {
         return symbol.to_string();
     }
 
@@ -581,20 +581,20 @@ pub(super) fn is_halfwidth_katakana_voiced_grapheme(symbol: &str) -> bool {
 }
 
 pub(super) fn ghostty_buffer_symbol_into<'a>(
-    cells: &crate::vt::CellView<'_>,
-    wide: crate::vt::CellWide,
+    cells: &shepr_vt::CellView<'_>,
+    wide: shepr_vt::CellWide,
     hide_kitty_placeholders: bool,
     symbol_scratch: &'a mut String,
 ) -> &'a str {
     symbol_scratch.clear();
     match wide {
-        crate::vt::CellWide::SpacerTail => {}
-        crate::vt::CellWide::SpacerHead => symbol_scratch.push(' '),
-        crate::vt::CellWide::Narrow | crate::vt::CellWide::Wide => {
+        shepr_vt::CellWide::SpacerTail => {}
+        shepr_vt::CellWide::SpacerHead => symbol_scratch.push(' '),
+        shepr_vt::CellWide::Narrow | shepr_vt::CellWide::Wide => {
             cells.grapheme_text_into(symbol_scratch);
             let hidden_kitty_placeholder = hide_kitty_placeholders
                 && symbol_scratch.chars().next().map(u32::from)
-                    == Some(crate::vt::KITTY_UNICODE_PLACEHOLDER);
+                    == Some(shepr_vt::KITTY_UNICODE_PLACEHOLDER);
             if hidden_kitty_placeholder || symbol_scratch.is_empty() {
                 symbol_scratch.clear();
                 symbol_scratch.push(' ');
@@ -603,16 +603,16 @@ pub(super) fn ghostty_buffer_symbol_into<'a>(
     }
 
     let expected_width = match wide {
-        crate::vt::CellWide::Wide => 2,
-        crate::vt::CellWide::Narrow | crate::vt::CellWide::SpacerHead => 1,
-        crate::vt::CellWide::SpacerTail => 0,
+        shepr_vt::CellWide::Wide => 2,
+        shepr_vt::CellWide::Narrow | shepr_vt::CellWide::SpacerHead => 1,
+        shepr_vt::CellWide::SpacerTail => 0,
     };
     let actual_width = symbol_scratch.width();
     if actual_width != expected_width
-        && !(wide == crate::vt::CellWide::Narrow && actual_width == 2)
-        && !(wide == crate::vt::CellWide::Narrow
+        && !(wide == shepr_vt::CellWide::Narrow && actual_width == 2)
+        && !(wide == shepr_vt::CellWide::Narrow
             && is_halfwidth_katakana_voiced_mark(symbol_scratch))
-        && !(wide == crate::vt::CellWide::Wide
+        && !(wide == shepr_vt::CellWide::Wide
             && is_halfwidth_katakana_voiced_grapheme(symbol_scratch))
     {
         symbol_scratch.clear();
@@ -667,8 +667,8 @@ pub(super) fn ghostty_default_style(default_fg: Option<Color>, default_bg: Optio
 }
 
 pub(super) fn ghostty_cell_style(
-    cells: &crate::vt::CellView<'_>,
-    basic: &crate::vt::CellBasicData,
+    cells: &shepr_vt::CellView<'_>,
+    basic: &shepr_vt::CellBasicData,
     default_fg: Option<Color>,
     default_bg: Option<Color>,
     resolved_fg: Option<Color>,
@@ -741,9 +741,9 @@ pub(super) fn osc_rgb_response(command: &str, r: u8, g: u8, b: u8) -> Bytes {
 }
 
 pub(super) fn ghostty_default_fg(
-    color: crate::vt::RgbColor,
+    color: shepr_vt::RgbColor,
     host_theme: crate::host_term::theme::TerminalTheme,
-    initial_default_foreground: Option<crate::vt::RgbColor>,
+    initial_default_foreground: Option<shepr_vt::RgbColor>,
 ) -> Option<Color> {
     if let Some(host_foreground) = host_theme.foreground {
         if host_foreground == color {
@@ -759,9 +759,9 @@ pub(super) fn ghostty_default_fg(
 }
 
 pub(super) fn ghostty_default_bg(
-    color: crate::vt::RgbColor,
+    color: shepr_vt::RgbColor,
     host_theme: crate::host_term::theme::TerminalTheme,
-    initial_default_background: Option<crate::vt::RgbColor>,
+    initial_default_background: Option<shepr_vt::RgbColor>,
 ) -> Option<Color> {
     if let Some(host_background) = host_theme.background {
         if host_background == color {
@@ -780,12 +780,12 @@ pub(super) fn ghostty_default_bg(
 // host makes it resolve against the host's own palette, discarding the redefinition.
 // Only overridden entries become RGB; the rest stay indexed and keep following the
 // host theme. None when nothing was redefined, which is the common case.
-pub(super) struct PaletteOverrides([Option<crate::vt::RgbColor>; 256]);
+pub(super) struct PaletteOverrides([Option<shepr_vt::RgbColor>; 256]);
 
 impl PaletteOverrides {
     pub(super) fn new(
-        active: &[crate::vt::RgbColor; 256],
-        default: &[crate::vt::RgbColor; 256],
+        active: &[shepr_vt::RgbColor; 256],
+        default: &[shepr_vt::RgbColor; 256],
     ) -> Option<Self> {
         let mut overrides = [None; 256];
         let mut any = false;
@@ -798,27 +798,27 @@ impl PaletteOverrides {
         any.then_some(Self(overrides))
     }
 
-    fn get(&self, index: u8) -> Option<crate::vt::RgbColor> {
+    fn get(&self, index: u8) -> Option<shepr_vt::RgbColor> {
         self.0[usize::from(index)]
     }
 }
 
 pub(super) fn ghostty_cell_color(
-    color: crate::vt::CellColor,
+    color: shepr_vt::CellColor,
     palette_overrides: Option<&PaletteOverrides>,
 ) -> Color {
     match color {
-        crate::vt::CellColor::Palette(index) => {
+        shepr_vt::CellColor::Palette(index) => {
             match palette_overrides.and_then(|overrides| overrides.get(index)) {
                 Some(color) => ghostty_color(color),
                 None => Color::Indexed(index),
             }
         }
-        crate::vt::CellColor::Rgb(color) => ghostty_color(color),
+        shepr_vt::CellColor::Rgb(color) => ghostty_color(color),
     }
 }
 
-pub(super) fn ghostty_color(color: crate::vt::RgbColor) -> Color {
+pub(super) fn ghostty_color(color: shepr_vt::RgbColor) -> Color {
     Color::Rgb(color.r, color.g, color.b)
 }
 
@@ -852,5 +852,5 @@ pub(super) fn should_probe_host_terminal_theme_restore(core: &GhosttyPaneCore) -
         return false;
     }
 
-    core.terminal.active_screen() != crate::vt::ActiveScreen::Alternate
+    core.terminal.active_screen() != shepr_vt::ActiveScreen::Alternate
 }
