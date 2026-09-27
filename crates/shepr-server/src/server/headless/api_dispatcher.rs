@@ -42,10 +42,10 @@ impl ApiDispatcher {
         mut msg: shepr_api::ApiRequestMessage,
     ) -> bool {
         let request_id = msg.request.id.clone();
-        let method = msg.request.method.traits().name;
+        let method_traits = msg.request.method.traits();
+        let method = method_traits.name;
         let target_before = server.default_shell_target();
-        let method_claims_geometry =
-            super::HeadlessServer::public_request_may_change_geometry(&msg.request.method);
+        let method_claims_geometry = method_traits.changes_geometry;
         let explicit_public_focus_target = match &msg.request.method {
             shepr_api::schema::Method::WorkspaceFocus(params) => server
                 .app
@@ -85,9 +85,10 @@ impl ApiDispatcher {
             shepr_api::schema::Method::AgentFocus(params) => Some(params.target.clone()),
             _ => None,
         };
-        let create_focus_requested = match &msg.request.method {
+        let focus_requested = match &msg.request.method {
             shepr_api::schema::Method::WorkspaceCreate(params) => params.focus,
             shepr_api::schema::Method::TabCreate(params) => params.focus,
+            shepr_api::schema::Method::LayoutApply(params) => params.focus,
             _ => false,
         };
         let inspect_pane_move = matches!(
@@ -99,8 +100,7 @@ impl ApiDispatcher {
             let original = std::mem::replace(&mut msg.respond_to, proxy_tx);
             (request_id.clone(), method, original, proxy_rx)
         });
-        let reconcile =
-            super::HeadlessServer::shell_locations_may_need_reconcile(&msg.request.method);
+        let reconcile = method_traits.changes_topology;
         let changed = self.with_server_dispatcher(server, |server| {
             server.handle_api_request_with_shutdown_check_inner(msg)
         });
@@ -134,7 +134,7 @@ impl ApiDispatcher {
             .or(explicit_public_focus_target)
             .is_some_and(|target| server.default_shell_target() == Some(target));
         let public_focus_succeeded = explicit_focus_succeeded
-            || (create_focus_requested && target_changed)
+            || (focus_requested && target_changed)
             || pane_move_focus_succeeded;
         if public_focus_succeeded {
             server.focus_all_shell_clients_on_default_target();
@@ -153,12 +153,11 @@ impl ApiDispatcher {
         client_id: ClientId,
         msg: shepr_api::ApiRequestMessage,
     ) -> bool {
+        let method_traits = msg.request.method.traits();
         let focus_before = server.shell_focus_target(client_id);
         let focused_tabs_before = server.focused_shell_tabs();
-        let method_claims_geometry =
-            super::HeadlessServer::shell_endpoint_claims_geometry(&msg.request.method);
-        let reconcile =
-            super::HeadlessServer::shell_locations_may_need_reconcile(&msg.request.method);
+        let method_claims_geometry = method_traits.claims_shell_geometry;
+        let reconcile = method_traits.changes_topology;
         let all_focus_before = reconcile.then(|| server.shell_focus_targets());
         let navigation_changed =
             server.apply_shell_navigation_request(client_id, &msg.request.method);

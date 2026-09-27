@@ -221,7 +221,7 @@ pub(super) mod test_support {
     pub(crate) fn shutdown_test_runtimes(app: &mut crate::app::App) {
         let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
         for (_terminal_id, runtime) in runtimes {
-            runtime.shutdown();
+            drop(runtime);
         }
     }
 }

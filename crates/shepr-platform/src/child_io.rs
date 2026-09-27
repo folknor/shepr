@@ -5,6 +5,10 @@ pub enum ChildExitReason {
     Exited,
     Interrupted,
     WaitFailed,
+    /// The pane's PTY reader panicked (or found the terminal core poisoned).
+    /// The child may still be running; the pane is ended so its session is
+    /// torn down, and no checkpoint is taken because the core is broken.
+    ReaderPanicked,
 }
 
 impl ChildExitReason {

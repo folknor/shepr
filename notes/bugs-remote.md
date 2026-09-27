@@ -11,15 +11,9 @@
 
 Hunter coverage: all of `crates/shepr-remote` plus the platform code it lands in (`ssh_paths.rs`, `remote_bridge.rs`, `remote_bridge_io.rs`, `ssh_agent.rs`). The hunter found nothing in this crate that stops unreachable machines failing soft. The client-side "keep serving remotes when Local is lost" contract was not traced here (see bugs-client.md).
 
-## RMT-001 - manage_ssh_config=true can be silently dropped
+## RMT-001 - A managed-SSH setup failure surfaces at first connect, not at launch
 
-`remote/ssh.rs`, `RemoteSsh::new`. If `write_managed_ssh_config` fails, the code logs at debug and falls back to plain ssh ("using plain ssh"). One common cause: `shared_ssh_control_path` finds neither a root-owned sticky `/tmp` nor a valid `/run/user/<uid>`.
-- This breaks the "any config problem fails the launch; no fallbacks" rule.
-- It also defeats auth recovery. `ssh_authentication_command` authenticates through the managed ControlPath, but a `RemoteSsh` without a managed config never uses that master.
-- `SavedSshConnector` rebuilds the config on each attempt (`missing_managed_config`), so it recovers eventually. `SavedSshApiBridge::start` (`validated_saved_ssh`) and `run_remote` never retry.
-- Fix: make managed-config creation a hard error, and check it once at launch.
-
-Related: FND-005 (`shared_ssh_control_path` ignores XDG).
+Managed SSH config creation is now a hard error and never falls back to plain ssh; `SavedSshConnector` creates the setup once and caches a failure. But `SavedSshConnector::new` is infallible, so the cached error reaches the client on the first connection attempt instead of failing the client launch. Making it launch-fatal needs the client's endpoint supervisor to surface it.
 
 ## RMT-002 - Saved-machine catalog edits can be lost
 
@@ -74,11 +68,18 @@ Related: CMD-004 (two separate notions of build mismatch in the CLI).
 
 ## RMT-010 - Smaller remote items
 
-- `create_remote_ssh_config_dir` checks that the path fits a `ctl` control socket, but that socket is never created there (the control path is `shared_ssh_control_path`), so the check does nothing. It also caps live config dirs per process at 100 per base directory. With up to 64 saved machines plus API bridges, that can fail with `AlreadyExists`.
 - `remove_ssh` never deletes `state/client/ssh-metadata/<id>.json`, so those files pile up.
 - `EndpointCatalogChanges` has retire-and-restart handling for a changed target/session, but the documented add/remove-only machine commands can never produce that change.
 - `SavedSshApiBridge::start` writes a temporary ssh config dir even when it uses cached metadata.
 - `wait_with_output_timeout` captures remote stdout/stderr with no size limit.
+
+## RMT-012 - The SSH runtime root is derived by stripping a path component, and its length limit is undocumented
+
+`crates/shepr-remote/src/remote/ssh.rs`, `xdg_runtime_dir()`, takes the XDG runtime root as `paths.runtime_dir().parent()`. That works only while `runtime_dir` is exactly `$XDG_RUNTIME_DIR/shepr`; an explicit `AppPaths` accessor would not depend on it. The ControlMaster path budget (16-hex hash, `-%C`, OpenSSH's 17-byte staging suffix) leaves 32 bytes for the directory, so an `XDG_RUNTIME_DIR` longer than that makes managed SSH a hard error. That is intended but documented nowhere a user would see.
+
+## RMT-013 - A saved machine's cached SSH setup error never clears
+
+`crates/shepr-remote/src/remote/saved.rs`. `SavedSshConnector` caches a local managed-SSH setup failure for the connector's whole lifetime. The machine fails soft, but a transient runtime-dir problem can only be cleared by restarting the client.
 
 ## RMT-011 - Idle saved machines may drop every minute without a keepalive (unverified)
 

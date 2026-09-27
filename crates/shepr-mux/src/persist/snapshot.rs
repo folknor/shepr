@@ -12,6 +12,70 @@ use shepr_protocol::TerminalId;
 /// Current snapshot format version. Files with any other version are ignored.
 pub const SNAPSHOT_VERSION: u32 = 1;
 
+/// Paths stay readable when they are UTF-8. Linux paths with arbitrary bytes
+/// use a JSON byte sequence so one pane cannot make the whole save fail.
+mod path_bytes {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::path::{Path, PathBuf};
+
+    use serde::de::{SeqAccess, Visitor};
+    use serde::{Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if let Some(utf8) = path.to_str() {
+            serializer.serialize_str(utf8)
+        } else {
+            path.as_os_str().as_bytes().serialize(serializer)
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<PathBuf, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct PathVisitor;
+
+        impl<'de> Visitor<'de> for PathVisitor {
+            type Value = PathBuf;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a UTF-8 path string or a sequence of path bytes")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(PathBuf::from(value))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(PathBuf::from(value))
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut bytes = Vec::with_capacity(sequence.size_hint().unwrap_or_default());
+                while let Some(byte) = sequence.next_element::<u8>()? {
+                    bytes.push(byte);
+                }
+                Ok(PathBuf::from(OsString::from_vec(bytes)))
+            }
+        }
+
+        deserializer.deserialize_any(PathVisitor)
+    }
+}
+
 /// Serializable snapshot of the entire shepr session.
 #[derive(Serialize, Deserialize)]
 pub struct SessionSnapshot {
@@ -82,6 +146,7 @@ pub struct WorkspaceSnapshot {
     pub id: Option<String>,
     #[serde(default)]
     pub custom_name: Option<String>,
+    #[serde(with = "path_bytes")]
     pub identity_cwd: PathBuf,
     /// Captured from the public numbers in each tab's pane records.
     #[serde(default)]
@@ -112,6 +177,7 @@ pub struct TabSnapshot {
 
 #[derive(Serialize, Deserialize)]
 pub struct PaneSnapshot {
+    #[serde(with = "path_bytes")]
     pub cwd: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -305,9 +371,39 @@ pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
     use sha2::{Digest, Sha256};
     use std::fmt::Write as _;
 
-    // Round-trip through `Value` so JSON object keys serialize in sorted order.
-    let value = serde_json::to_value(snapshot).ok()?;
-    let bytes = serde_json::to_vec(&value).ok()?;
+    #[derive(Serialize)]
+    struct WorkspaceLayout<'a> {
+        tabs: Vec<TabLayout<'a>>,
+    }
+
+    #[derive(Serialize)]
+    struct TabLayout<'a> {
+        layout: &'a LayoutSnapshot,
+        pane_ids: Vec<u32>,
+    }
+
+    let workspaces: Vec<_> = snapshot
+        .workspaces
+        .iter()
+        .map(|workspace| WorkspaceLayout {
+            tabs: workspace
+                .tabs
+                .iter()
+                .map(|tab| {
+                    let mut pane_ids: Vec<_> = tab.panes.keys().copied().collect();
+                    pane_ids.sort_unstable();
+                    TabLayout {
+                        layout: &tab.layout,
+                        pane_ids,
+                    }
+                })
+                .collect(),
+        })
+        .collect();
+    // This projection contains no maps, and pane IDs are sorted explicitly.
+    // Cwd, names, agent state, theme, and current selections do not identify
+    // which saved screen history belongs to each pane.
+    let bytes = serde_json::to_vec(&workspaces).ok()?;
     let digest = Sha256::digest(bytes);
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
@@ -616,4 +712,40 @@ pub(super) fn parse_history_snapshot(content: &str) -> Result<SessionHistorySnap
         ));
     }
     Ok(snapshot)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    use std::path::PathBuf;
+
+    #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+    struct Holder {
+        #[serde(with = "super::path_bytes")]
+        path: PathBuf,
+    }
+
+    #[test]
+    fn utf8_paths_stay_strings_and_other_paths_round_trip_as_bytes() {
+        let readable = Holder {
+            path: PathBuf::from("/home/user/project"),
+        };
+        let json = serde_json::to_string(&readable).expect("test precondition");
+        assert_eq!(json, r#"{"path":"/home/user/project"}"#);
+        assert_eq!(
+            serde_json::from_str::<Holder>(&json).expect("utf-8 path parses"),
+            readable
+        );
+
+        let raw = Holder {
+            path: PathBuf::from(OsString::from_vec(b"/tmp/caf\xe9".to_vec())),
+        };
+        let json = serde_json::to_string(&raw).expect("non-UTF-8 path serializes");
+        assert!(json.contains('['), "{json}");
+        assert_eq!(
+            serde_json::from_str::<Holder>(&json).expect("byte path parses"),
+            raw
+        );
+    }
 }

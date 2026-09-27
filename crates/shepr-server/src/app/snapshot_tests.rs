@@ -527,7 +527,7 @@ async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
         Some(old)
     );
     for (_, runtime) in runtimes.drain() {
-        runtime.shutdown();
+        drop(runtime);
     }
 }
 
@@ -700,7 +700,7 @@ async fn running_pane_saved_on_alternate_screen_keeps_last_primary_history() {
         None
     );
     for (_, runtime) in terminal_runtimes.drain() {
-        runtime.shutdown();
+        drop(runtime);
     }
 }
 
@@ -752,7 +752,7 @@ async fn restored_history_is_carried_until_the_pane_runs_then_superseded() {
     assert!(!ansi.contains("RESTORED_HISTORY"));
 
     if let Some(runtime) = terminal_runtimes.remove(&terminal_id) {
-        runtime.shutdown();
+        drop(runtime);
     }
     let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
     let ansi = root_history(&saved, root).expect("last live history is kept");

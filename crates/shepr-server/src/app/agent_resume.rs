@@ -472,7 +472,7 @@ impl App {
                 err = %err,
                 "failed to send deferred agent resume command to shell"
             );
-            runtime.shutdown();
+            drop(runtime);
             return false;
         }
 
@@ -884,7 +884,7 @@ mod tests {
         );
 
         for (_, runtime) in app.terminal_runtimes.drain() {
-            runtime.shutdown();
+            drop(runtime);
         }
     }
 
@@ -922,7 +922,7 @@ mod tests {
         assert!(app.terminal_runtimes.get(&terminal_id).is_some());
 
         for (_, runtime) in app.terminal_runtimes.drain() {
-            runtime.shutdown();
+            drop(runtime);
         }
     }
 
@@ -980,7 +980,7 @@ mod tests {
         assert!(!app.expire_due_managed_agents(deadline));
 
         for (_, runtime) in app.terminal_runtimes.drain() {
-            runtime.shutdown();
+            drop(runtime);
         }
     }
 
@@ -1050,7 +1050,7 @@ mod tests {
         );
 
         for (_, runtime) in app.terminal_runtimes.drain() {
-            runtime.shutdown();
+            drop(runtime);
         }
     }
 
@@ -1117,7 +1117,7 @@ mod tests {
         );
 
         for (_, runtime) in app.terminal_runtimes.drain() {
-            runtime.shutdown();
+            drop(runtime);
         }
     }
 
@@ -1179,7 +1179,7 @@ mod tests {
         );
 
         for (_, runtime) in app.terminal_runtimes.drain() {
-            runtime.shutdown();
+            drop(runtime);
         }
     }
 
@@ -1240,7 +1240,7 @@ mod tests {
         );
 
         for (_, runtime) in app.terminal_runtimes.drain() {
-            runtime.shutdown();
+            drop(runtime);
         }
     }
 
@@ -1297,7 +1297,7 @@ mod tests {
         );
 
         for (_, runtime) in app.terminal_runtimes.drain() {
-            runtime.shutdown();
+            drop(runtime);
         }
     }
 }

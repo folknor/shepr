@@ -10,7 +10,15 @@ use std::time::{Duration, Instant};
 
 pub(super) const NONINTERACTIVE_SSH_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 pub(super) const NONINTERACTIVE_SSH_STDERR_LIMIT: usize = 16 * 1024;
-pub(super) const SSH_CONTROL_SOCKET_NAME: &str = "ctl";
+
+pub(super) fn xdg_runtime_dir(paths: &shepr_config::AppPaths) -> io::Result<&Path> {
+    paths.runtime_dir().parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "app runtime directory has no XDG runtime parent",
+        )
+    })
+}
 
 #[derive(Clone)]
 pub(crate) struct ManagedSshOptions {
@@ -216,24 +224,20 @@ impl RemoteSsh {
         manage_ssh_config: bool,
         session_name: String,
         paths: &shepr_config::AppPaths,
-    ) -> Self {
+    ) -> io::Result<Self> {
         let managed_config = if manage_ssh_config {
-            write_managed_ssh_config(target.as_str(), paths)
-                .inspect_err(|err| {
-                    tracing::debug!(%err, "could not write managed ssh config; using plain ssh");
-                })
-                .ok()
+            Some(write_managed_ssh_config(target.as_str(), paths)?)
         } else {
             None
         };
 
-        Self {
+        Ok(Self {
             target,
             session_name,
             managed_config,
             noninteractive: false,
             attempt_deadline: None,
-        }
+        })
     }
 
     /// For long-lived callers that already hold the launch-time config.
@@ -241,15 +245,15 @@ impl RemoteSsh {
         target: SshTarget,
         manage_ssh_config: bool,
         paths: &shepr_config::AppPaths,
-    ) -> Self {
+    ) -> io::Result<Self> {
         let mut ssh = Self::new(
             target,
             manage_ssh_config,
             shepr_config::DEFAULT_SESSION_NAME.into(),
             paths,
-        );
+        )?;
         ssh.noninteractive = true;
-        ssh
+        Ok(ssh)
     }
 
     pub(super) fn set_session_name(&mut self, session_name: String) {
@@ -274,11 +278,6 @@ impl RemoteSsh {
             noninteractive,
             attempt_deadline: None,
         }
-    }
-
-    /// Whether this was built to use a managed ssh config but writing it failed.
-    pub(crate) fn missing_managed_config(&self, manage_ssh_config: bool) -> bool {
-        manage_ssh_config && self.managed_config.is_none()
     }
 
     pub(crate) fn set_attempt_deadline(&mut self, deadline: Option<Instant>) {
@@ -496,14 +495,16 @@ pub(super) fn write_managed_ssh_config(
     app_paths: &shepr_config::AppPaths,
 ) -> io::Result<ManagedSshConfig> {
     let config_file = app_paths.config_file();
+    let runtime_dir = xdg_runtime_dir(app_paths)?;
     let paths: shepr_platform::RemoteSshConfigPaths =
         shepr_platform::remote_ssh_config_paths(app_paths.home_dir());
     let control_path = Some(shepr_platform::shared_ssh_control_path(
+        runtime_dir,
         config_file,
         target,
     )?);
 
-    let dir = shepr_platform::create_remote_ssh_config_dir(SSH_CONTROL_SOCKET_NAME)?;
+    let dir = shepr_platform::create_remote_ssh_config_dir(runtime_dir)?;
     let path = dir.join("config");
     let mut contents = String::new();
     for include in [

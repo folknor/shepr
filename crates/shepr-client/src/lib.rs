@@ -161,10 +161,11 @@ fn run_client_with_mode(
     info!(path = %socket_path.display(), "{log_message}");
 
     let endpoint_catalog = if client_rendered_shell && role == ClientProcessRole::Local {
-        endpoint::EndpointCatalog::load(paths).unwrap_or_else(|error| {
-            warn!(%error, "saved SSH endpoint catalog is unavailable");
-            endpoint::EndpointCatalog::default()
-        })
+        endpoint::EndpointCatalog::load(paths).map_err(|error| {
+            io::Error::other(format!(
+                "saved SSH endpoint catalog is unavailable: {error}"
+            ))
+        })?
     } else {
         endpoint::EndpointCatalog::default()
     };
@@ -1545,6 +1546,9 @@ impl ClientLoop<'_> {
         client_timer.fired();
         write_stream.tick_health(now);
         for failure in write_stream.take_failures() {
+            // `record_failure` removes the connection as it queues this failure, so `None` is
+            // expected for its generation. Retirement follows this batch and purges queued
+            // failures; handle_server_disconnected rejects later events without a live match.
             if write_stream.connection(&failure.endpoint_id).is_some()
                 && !write_stream.accepts(&failure.endpoint_id, failure.generation)
             {
@@ -1620,6 +1624,16 @@ impl ClientLoop<'_> {
                     }
                 }
                 *local_failure_policy = endpoint::LocalFailurePolicy::for_catalog(endpoint_catalog);
+                if local_failure_policy.ends_client_for(&endpoint::ClientEndpointId::Local)
+                    && write_stream
+                        .connection(&endpoint::ClientEndpointId::Local)
+                        .is_none()
+                {
+                    return Err(ClientError::ConnectionLost(io::Error::new(
+                        io::ErrorKind::NotConnected,
+                        "Local is unavailable and no saved machines remain",
+                    )));
+                }
             }
             Some(Err(error)) => {
                 warn!(%error, "saved SSH endpoint catalog changed but is unusable; keeping the machines already loaded");

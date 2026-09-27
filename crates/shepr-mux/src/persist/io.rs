@@ -48,6 +48,26 @@ pub(super) fn containing_directory(path: &Path) -> &Path {
     }
 }
 
+/// Directories `create_dir_all` will add, from the requested leaf toward its
+/// nearest existing ancestor. Each new directory's parent needs a sync for
+/// that directory entry to be durable.
+fn missing_directory_chain(directory: &Path) -> Vec<PathBuf> {
+    let mut missing = Vec::new();
+    let mut current = directory;
+    while !current.as_os_str().is_empty() && !current.exists() {
+        missing.push(current.to_path_buf());
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        current = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+    }
+    missing
+}
+
 /// A save whose new content is in place at the target path.
 #[derive(Debug)]
 pub(super) enum Published {
@@ -144,16 +164,20 @@ fn save_json_to_path<T: serde::Serialize>(path: &Path, snapshot: &T) -> std::io:
 fn save_serialized_to_path(path: &Path, json: &str) -> std::io::Result<Published> {
     let target = resolve_write_target(path)?;
     let directory = containing_directory(&target);
-    let created = !directory.exists();
+    let missing_directories = missing_directory_chain(directory);
     std::fs::create_dir_all(directory)?;
     let pending = target.with_extension("json.tmp");
     remove_stale_temporary(&pending)?;
     let published = publish_private_file(&mut json.as_bytes(), &pending, &target, true)?;
-    if created && matches!(published, Published::Durable) {
-        // A freshly created data directory is itself only an unsynced entry
-        // in its parent until that parent is synced.
-        if let Err(err) = shepr_platform::sync_directory(containing_directory(directory)) {
-            return Ok(Published::NotDurable(err));
+    if matches!(published, Published::Durable) {
+        // Publishing synced the leaf directory. Sync each parent that records
+        // a newly created directory, stopping at the existing ancestor.
+        for created_directory in missing_directories {
+            if let Err(err) =
+                shepr_platform::sync_directory(containing_directory(&created_directory))
+            {
+                return Ok(Published::NotDurable(err));
+            }
         }
     }
     Ok(published)

@@ -5,6 +5,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{SessionHistorySnapshot, SessionSnapshot};
 
+enum SnapshotHistoryPlan {
+    /// The previous on-disk layout was just preserved, or the snapshot gate
+    /// is closed until the next interval.
+    Skip,
+    /// The previous on-disk layout already matches the latest recovery copy,
+    /// or there was no usable prior session. Compare the new saved layout to
+    /// the fingerprint read before the write.
+    CompareCurrent { latest_fingerprint: Option<String> },
+    /// The pre-write inspection failed; retry once after the new session is
+    /// committed, as the old two-step flow did.
+    RetryAfterWrite,
+}
+
 /// Shared by autosave, pane-exit checkpoints, and shutdown.
 pub struct SessionWriter {
     path: PathBuf,
@@ -59,18 +72,35 @@ impl SessionWriter {
         if !self.may_write() {
             return;
         }
+        let mut snapshot_history_plan = SnapshotHistoryPlan::RetryAfterWrite;
         let result = self.preserve_unloaded().and_then(|()| {
-            self.preserve_snapshot_history();
+            snapshot_history_plan = self.prepare_snapshot_history();
             super::io::save_to_path(&self.path, snapshot)
         });
-        self.finish_save(result, snapshot, history);
+        self.finish_save_with_snapshot_plan(result, snapshot, history, snapshot_history_plan);
     }
 
+    #[cfg(test)]
     fn finish_save(
         &mut self,
         result: io::Result<super::io::Published>,
         snapshot: &SessionSnapshot,
         history: Option<&SessionHistorySnapshot>,
+    ) {
+        self.finish_save_with_snapshot_plan(
+            result,
+            snapshot,
+            history,
+            SnapshotHistoryPlan::RetryAfterWrite,
+        );
+    }
+
+    fn finish_save_with_snapshot_plan(
+        &mut self,
+        result: io::Result<super::io::Published>,
+        snapshot: &SessionSnapshot,
+        history: Option<&SessionHistorySnapshot>,
+        snapshot_history_plan: SnapshotHistoryPlan,
     ) {
         match result {
             Ok(super::io::Published::Durable) => {}
@@ -92,13 +122,53 @@ impl SessionWriter {
         }
         // Optional history failure must not reclassify our committed layout as unloaded.
         self.protect_unloaded = false;
-        self.preserve_snapshot_history();
+        self.finish_snapshot_history(snapshot, snapshot_history_plan);
         let history_path = self.path.with_file_name("session-history.json");
         if let Err(err) = self.save_history(&history_path, history) {
             self.written_history = None;
             shepr_platform::logging::session_save_failed(&history_path, &err.to_string());
         }
         shepr_platform::logging::session_saved(&self.path, snapshot.workspaces.len());
+    }
+
+    fn prepare_snapshot_history(&self) -> SnapshotHistoryPlan {
+        match prepare_snapshot_history(&self.path) {
+            Ok(plan) => plan,
+            Err(err) => {
+                tracing::warn!(
+                    event = "persist.snapshot", outcome = "error", path = %self.path.display(),
+                    err = %err, "failed to inspect session snapshot history"
+                );
+                SnapshotHistoryPlan::RetryAfterWrite
+            }
+        }
+    }
+
+    fn finish_snapshot_history(&self, snapshot: &SessionSnapshot, plan: SnapshotHistoryPlan) {
+        match plan {
+            SnapshotHistoryPlan::Skip => {}
+            SnapshotHistoryPlan::CompareCurrent { latest_fingerprint } => {
+                if snapshot.version != super::snapshot::SNAPSHOT_VERSION
+                    || snapshot.workspaces.is_empty()
+                {
+                    return;
+                }
+                if super::snapshot::layout_fingerprint(snapshot)
+                    .is_some_and(|fingerprint| latest_fingerprint.as_ref() == Some(&fingerprint))
+                {
+                    return;
+                }
+                if let Err(err) =
+                    preserve_existing_in(&self.path, "session-snapshots", SNAPSHOT_LIMIT)
+                {
+                    tracing::warn!(
+                        event = "persist.snapshot", outcome = "error", path = %self.path.display(),
+                        err = %err, "failed to preserve session snapshot"
+                    );
+                }
+            }
+            SnapshotHistoryPlan::RetryAfterWrite => self.preserve_snapshot_history(),
+        }
     }
 
     /// Writes the history unless the file already holds exactly these bytes
@@ -188,6 +258,60 @@ fn preserve_snapshot_history(path: &Path) -> io::Result<()> {
     }
     preserve_existing_in(path, "session-snapshots", SNAPSHOT_LIMIT)?;
     Ok(())
+}
+
+/// Inspects the session and latest recovery copy before the primary session is
+/// replaced. A changed previous layout is copied immediately; when it already
+/// matches the latest copy, the returned fingerprint lets the caller decide
+/// whether to preserve the newly committed layout without parsing either file
+/// again.
+fn prepare_snapshot_history(path: &Path) -> io::Result<SnapshotHistoryPlan> {
+    let directory = path.with_file_name("session-snapshots");
+    let existing = match recovery_files(&directory) {
+        Ok(files) => files,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => return Err(err),
+    };
+    if let Some((_, latest)) = existing.last() {
+        let modified = std::fs::metadata(latest)?.modified()?;
+        if SystemTime::now()
+            .duration_since(modified)
+            .is_ok_and(|age| age < SNAPSHOT_INTERVAL)
+        {
+            return Ok(SnapshotHistoryPlan::Skip);
+        }
+    }
+
+    let latest_fingerprint = match existing.last() {
+        Some((_, latest)) => {
+            let bytes = std::fs::read(latest)?;
+            serde_json::from_slice::<SessionSnapshot>(&bytes)
+                .ok()
+                .and_then(|snapshot| super::snapshot::layout_fingerprint(&snapshot))
+        }
+        None => None,
+    };
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Ok(SnapshotHistoryPlan::CompareCurrent { latest_fingerprint });
+        }
+        Err(err) => return Err(err),
+    };
+    let Ok(snapshot) = serde_json::from_slice::<SessionSnapshot>(&bytes) else {
+        return Ok(SnapshotHistoryPlan::CompareCurrent { latest_fingerprint });
+    };
+    if snapshot.version != super::snapshot::SNAPSHOT_VERSION || snapshot.workspaces.is_empty() {
+        return Ok(SnapshotHistoryPlan::CompareCurrent { latest_fingerprint });
+    }
+    if super::snapshot::layout_fingerprint(&snapshot)
+        .is_some_and(|fingerprint| latest_fingerprint.as_ref() == Some(&fingerprint))
+    {
+        return Ok(SnapshotHistoryPlan::CompareCurrent { latest_fingerprint });
+    }
+
+    preserve_existing_in(path, "session-snapshots", SNAPSHOT_LIMIT)?;
+    Ok(SnapshotHistoryPlan::Skip)
 }
 
 fn preserve_existing(path: &Path) -> io::Result<bool> {
@@ -484,7 +608,12 @@ mod tests {
             )
             .expect("test precondition");
         let mut changed = snapshot();
-        changed.workspaces[0].custom_name = Some("after clock rollback".into());
+        let tab = &mut changed.workspaces[0].tabs[0];
+        let pane = tab.panes.remove(&0).expect("test precondition");
+        tab.panes.insert(1, pane);
+        tab.layout = super::super::snapshot::LayoutSnapshot::Pane(1);
+        tab.focused = Some(1);
+        tab.root_pane = Some(1);
         writer.save(&changed, None);
         assert_eq!(snapshots(&writer).len(), 2);
         let path = writer.path.clone();

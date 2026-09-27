@@ -154,7 +154,7 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
 
 pub fn shutdown_test_runtimes(server: &mut HeadlessServer) {
     for (_, runtime) in server.app.terminal_runtimes.drain() {
-        runtime.shutdown();
+        drop(runtime);
     }
 }
 

@@ -10,7 +10,8 @@ pub fn run_remote(
     paths: &shepr_config::AppPaths,
 ) -> io::Result<()> {
     let session_name = paths.session_id().display_name().to_owned();
-    let local_socket = local_forward_socket_path(&remote.target, &session_name);
+    let runtime_dir = xdg_runtime_dir(paths)?;
+    let local_socket = local_forward_socket_path(runtime_dir, &remote.target, &session_name)?;
     let program = std::env::args()
         .next()
         .unwrap_or_else(|| "shepr".to_string());
@@ -21,7 +22,7 @@ pub fn run_remote(
         settings.manage_ssh_config,
         session_name.clone(),
         paths,
-    );
+    )?;
     let prepared_remote = prepare_remote_shepr(&remote_ssh)?;
     ensure_remote_server_ready(&remote_ssh, &prepared_remote.remote_shepr)?;
 
@@ -46,7 +47,7 @@ pub fn check_saved_ssh(
     shepr_api::session::validate_name(session)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let mut ssh =
-        RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths);
+        RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths)?;
     ssh.set_session_name(session.to_owned());
     let remote = find_installed_remote_shepr(&ssh)?;
     match remote_server_status(&ssh, &remote)? {
@@ -74,7 +75,7 @@ pub fn prepare_saved_ssh(
         settings.manage_ssh_config,
         session_name.to_owned(),
         paths,
-    );
+    )?;
     let prepared = prepare_remote_shepr(&ssh)?;
     ensure_remote_server_ready(&ssh, &prepared.remote_shepr)?;
 

@@ -415,16 +415,16 @@ impl Terminal {
     /// Everything vte dispatches to a `Handler` (including the adapter's own
     /// modes, RIS, DECRQM and the voiced-mark printing in `handler.rs`) is
     /// applied in byte order, and inside a synchronized update (mode 2026) only
-    /// when vte replays the buffered frame. The scanner's events cannot be: vte
-    /// never hands OSC 7, XTGETTCAP, `CSI ? 996 n` or `CSI 16 t` to a handler,
-    /// and it replays a frame in one call, so there is no point at which to
-    /// slot them in. They are applied as their bytes arrive, which inside a
-    /// frame puts their replies ahead of core replies requested earlier in the
-    /// same frame. Deferring them to the end of the frame instead was
-    /// rejected: queries are almost always followed by a DA1 sentinel, and a
-    /// deferred reply would land after the sentinel's answer, so the program
-    /// would conclude the capability is missing and read the late reply as
-    /// input.
+    /// when vte replays the buffered frame. Scanner events with a spelling vte
+    /// dispatches are fed back through the parser at their byte offset too.
+    /// Queries such as XTGETTCAP, `CSI ? 996 n` and `CSI 16 t` have no such
+    /// dispatch point, so their replies are applied as their bytes arrive. This
+    /// puts scanner replies ahead of core replies requested earlier in the same
+    /// frame. Deferring replies to the end of the frame would put them after a
+    /// DA1 sentinel's answer, so the program could conclude the capability is
+    /// missing and read the late reply as input. Working-directory and progress
+    /// reports are side-band observations of the child's live state; they do
+    /// not change parser or emulator state and are collected as they arrive.
     pub fn write(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
@@ -555,13 +555,25 @@ impl Terminal {
                     self.push_bytes(reply);
                 }
             }
+            // Working-directory and progress payloads describe live child
+            // state, not parser state, so publish them as bytes arrive.
             ScanEvent::WorkingDirectory(payload) => self.pwd_changes.push(payload),
             ScanEvent::Progress(payload) => self.progress_update = Some(payload),
             // The parser has just consumed (and ignored) `CSI ? 3 J`; feed the
             // ED3 spelling it does dispatch. Going through the parser keeps
             // the erase in byte order even inside a synchronized update.
             ScanEvent::EraseScrollback => self.advance(b"\x1b[3J"),
-            ScanEvent::ModifyOtherKeys(level) => self.modes.modify_other_keys = level,
+            // Feed a spelling vte dispatches rather than updating adapter
+            // state here. During synchronized output the parser buffers these
+            // bytes and replays them in order with the surrounding frame.
+            ScanEvent::ModifyOtherKeys(level) => {
+                let sequence = match level {
+                    ModifyOtherKeysLevel::Off => b"\x1b[>4;0m".as_slice(),
+                    ModifyOtherKeysLevel::ExceptWellDefined => b"\x1b[>4;1m".as_slice(),
+                    ModifyOtherKeysLevel::All => b"\x1b[>4;2m".as_slice(),
+                };
+                self.advance(sequence);
+            }
         }
     }
 
@@ -739,6 +751,9 @@ impl Terminal {
     /// and a synchronized update does not defer it. Mode 2026 is refused: it
     /// is parser state, not terminal state.
     pub fn mode_set(&mut self, mode: u16, value: bool) -> Result<(), Error> {
+        if modes::lookup(mode).is_none() {
+            return Err(Error("unsupported DEC private mode"));
+        }
         if mode == MODE_SYNCHRONIZED_OUTPUT {
             return Err(Error("synchronized output is driven by the parser"));
         }

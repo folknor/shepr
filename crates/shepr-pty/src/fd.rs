@@ -51,6 +51,7 @@ impl WakeWriter {
 
             let err = std::io::Error::last_os_error();
             if err.kind() == std::io::ErrorKind::WouldBlock {
+                // A full pipe already contains a readable wake byte.
                 return Ok(());
             }
             if err.kind() != std::io::ErrorKind::Interrupted {
@@ -115,6 +116,7 @@ pub(crate) fn drain_wake_fd(fd: RawFd) -> std::io::Result<()> {
 pub(crate) struct PtyWakeReadiness {
     pub(crate) pty_read_ready: bool,
     pub(crate) pty_write_ready: bool,
+    pub(crate) pty_error: bool,
     pub(crate) wake_ready: bool,
 }
 
@@ -184,16 +186,10 @@ pub(crate) fn poll_pty_and_wake(
                 "poll encountered invalid PTY actor fd",
             ));
         }
-        if pty_revents & libc::POLLERR != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "poll encountered PTY fd error",
-            ));
-        }
-
         return Ok(PtyWakeReadiness {
-            pty_read_ready: pty_revents & (libc::POLLIN | libc::POLLHUP) != 0,
+            pty_read_ready: pty_revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0,
             pty_write_ready: pty_revents & (libc::POLLOUT | libc::POLLHUP) != 0,
+            pty_error: pty_revents & libc::POLLERR != 0,
             wake_ready: wake_revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0,
         });
     }

@@ -23,7 +23,10 @@
 //! interleave the core's own replies with ours in byte order.
 
 const MAX_CSI_BYTES: usize = 64;
-const MAX_OSC_BYTES: usize = 4096;
+// A PATH_MAX path can be percent-encoded to about 12 KiB in a file URI, before
+// its authority and OSC command prefix. Keep room for that while bounding OSC
+// buffering for every pane.
+const MAX_OSC_BYTES: usize = 16 * 1024;
 const MAX_DCS_INTRO_BYTES: usize = 16;
 const MAX_XTGETTCAP_BYTES: usize = 1024;
 

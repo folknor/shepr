@@ -625,7 +625,11 @@ pub(super) fn run_client_process(
     }
 }
 
-pub(super) fn local_forward_socket_path(target: &str, session_name: &str) -> PathBuf {
+pub(super) fn local_forward_socket_path(
+    runtime_dir: &Path,
+    target: &str,
+    session_name: &str,
+) -> io::Result<PathBuf> {
     let pid = std::process::id();
     let target_clean = sanitize_path_component(target);
     let session_clean = sanitize_path_component(session_name);
@@ -633,7 +637,7 @@ pub(super) fn local_forward_socket_path(target: &str, session_name: &str) -> Pat
     let target_prefix: String = target_clean.chars().take(8).collect();
     let hash = short_socket_hash(target, session_name);
     let short_name = format!("shepr-r-{pid}-{target_prefix}-{hash}.sock");
-    shepr_platform::remote_bridge_endpoint_path(&readable_name, &short_name)
+    shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable_name, &short_name)
 }
 
 #[cfg(test)]

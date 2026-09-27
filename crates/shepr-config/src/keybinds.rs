@@ -268,6 +268,8 @@ pub struct Keybinds {
     pub toggle_sidebar: ActionKeybinds,
 }
 
+/// Candidate keybind values accompany diagnostics so config check can report
+/// all problems; launch loading rejects this result when diagnostics exist.
 #[derive(Debug, Clone)]
 pub(crate) struct KeybindValidation {
     pub(super) prefix_diag: Option<String>,
@@ -603,12 +605,12 @@ fn parse_action_bindings(
             }
             Some(ParsedBinding::Range(_)) => {
                 let diag = format!(
-                    "range keybinding is only valid for indexed actions: {field} = {raw:?}; disabling binding"
+                    "range keybinding is only valid for indexed actions: {field} = {raw:?}"
                 );
                 diagnostics.push(diag);
             }
             None => {
-                let diag = format!("invalid keybinding: {field} = {raw:?}; disabling binding");
+                let diag = format!("invalid keybinding: {field} = {raw:?}");
                 diagnostics.push(diag);
             }
         }
@@ -639,12 +641,12 @@ fn parse_navigate_bindings(
             }
             Some(ParsedBinding::Range(_)) => {
                 let diag = format!(
-                    "range keybinding is only valid for indexed actions: {field} = {raw:?}; disabling binding"
+                    "range keybinding is only valid for indexed actions: {field} = {raw:?}"
                 );
                 diagnostics.push(diag);
             }
             None => {
-                let diag = format!("invalid keybinding: {field} = {raw:?}; disabling binding");
+                let diag = format!("invalid keybinding: {field} = {raw:?}");
                 diagnostics.push(diag);
             }
         }
@@ -682,7 +684,7 @@ fn parse_indexed_bindings(
                 }
             }
             None => {
-                let diag = format!("invalid keybinding: {field} = {raw:?}; disabling binding");
+                let diag = format!("invalid keybinding: {field} = {raw:?}");
                 diagnostics.push(diag);
             }
         }
@@ -700,7 +702,7 @@ fn push_indexed_binding(
 ) {
     if !matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9')) {
         let diag = format!(
-            "indexed keybinding must use 1..9: {field} = {:?}; disabling binding",
+            "indexed keybinding must use 1..9: {field} = {:?}",
             binding.label
         );
         diagnostics.push(diag);
@@ -725,7 +727,7 @@ fn reject_navigate_binding(
 ) -> bool {
     if binding.trigger.is_prefix() {
         let diag = format!(
-            "navigate keybinding must not include prefix: {field} = {:?}; disabling binding",
+            "navigate keybinding must not include prefix: {field} = {:?}",
             binding.label
         );
         diagnostics.push(diag);
@@ -734,7 +736,7 @@ fn reject_navigate_binding(
 
     if matches!(normalize_key_combo(binding.trigger.combo()).0, KeyCode::Esc) {
         let diag = format!(
-            "navigate keybinding cannot use esc: {field} = {:?}; disabling binding",
+            "navigate keybinding cannot use esc: {field} = {:?}",
             binding.label
         );
         diagnostics.push(diag);
@@ -742,11 +744,7 @@ fn reject_navigate_binding(
     }
 
     if let Some(first_binding) = registry.conflict(binding) {
-        if source == BindingSource::Default && first_binding.source == BindingSource::User {
-            return true;
-        }
-        let first_field = &first_binding.field;
-        let diag = format!("{}: kept {first_field}, disabled {field}", binding.label);
+        let diag = keybinding_conflict_diagnostic(binding, field, first_binding, source);
         diagnostics.push(diag);
         return true;
     }
@@ -762,23 +760,26 @@ fn reject_binding(
     source: BindingSource,
 ) -> bool {
     if binding.trigger.is_prefix() && registry.prefix_rhs_is_reserved(binding.trigger.combo()) {
-        if source == BindingSource::Default && registry.prefix_source == BindingSource::User {
-            return true;
-        }
-        let diag = format!(
-            "reserved keybinding: {field} = {:?} uses keys.prefix as the prefix-mode key; pressing the prefix twice sends a literal prefix key, so this binding is disabled",
-            binding.label
-        );
+        let prefix = format_key_combo(registry.prefix_combo);
+        let diag = if source == BindingSource::Default
+            && registry.prefix_source == BindingSource::User
+        {
+            format!(
+                "reserved keybinding: default {field} = {:?} conflicts with configured keys.prefix = {prefix:?}; set {field} explicitly to replace or clear its default",
+                binding.label
+            )
+        } else {
+            format!(
+                "reserved keybinding: {field} = {:?} uses keys.prefix = {prefix:?} as the action key; pressing the prefix twice sends a literal prefix key",
+                binding.label
+            )
+        };
         diagnostics.push(diag);
         return true;
     }
 
     if let Some(first_binding) = registry.conflict(binding) {
-        if source == BindingSource::Default && first_binding.source == BindingSource::User {
-            return true;
-        }
-        let first_field = &first_binding.field;
-        let diag = format!("{}: kept {first_field}, disabled {field}", binding.label);
+        let diag = keybinding_conflict_diagnostic(binding, field, first_binding, source);
         diagnostics.push(diag);
         return true;
     }
@@ -786,7 +787,7 @@ fn reject_binding(
     if binding.trigger.is_direct() && is_unmodified_printable(binding.trigger.combo()) {
         let suggestion = format!("prefix+{}", binding.label);
         let diag = format!(
-            "unsafe direct keybinding: {field} = {:?} would intercept typing; use {:?} to require the prefix; disabling binding",
+            "unsafe direct keybinding: {field} = {:?} would intercept typing; use {:?} to require the prefix",
             binding.label, suggestion
         );
         diagnostics.push(diag);
@@ -794,6 +795,25 @@ fn reject_binding(
     }
 
     false
+}
+
+fn keybinding_conflict_diagnostic(
+    binding: &ResolvedBinding,
+    field: &str,
+    first_binding: &RegisteredBinding,
+    source: BindingSource,
+) -> String {
+    if source == BindingSource::Default && first_binding.source == BindingSource::User {
+        format!(
+            "keybinding conflict: default {field} = {:?} conflicts with configured {}; set {field} explicitly to replace or clear its default",
+            binding.label, first_binding.field
+        )
+    } else {
+        format!(
+            "keybinding conflict: {:?} is assigned to both {} and {field}",
+            binding.label, first_binding.field
+        )
+    }
 }
 
 fn parse_binding_string(raw: &str) -> Option<ParsedBinding> {
@@ -994,7 +1014,11 @@ pub fn parse_key_combo(s: &str) -> Option<KeyCombo> {
                 KeyCode::Char(ch)
             }
         }
-        s if s.starts_with('f') => s[1..].parse::<u8>().ok().map(KeyCode::F)?,
+        s if s.starts_with('f') => {
+            let number = s[1..].parse::<u8>().ok()?;
+            // Crossterm's Unix keyboard parser maps extended function keys through F35.
+            (1..=35).contains(&number).then_some(KeyCode::F(number))?
+        }
         _ => return None,
     };
 
@@ -1014,13 +1038,15 @@ fn single_key_char(s: &str) -> Option<char> {
 fn parse_key_combo_with_diagnostic(
     s: &str,
     field: &str,
-    fallback: KeyCombo,
+    placeholder: KeyCombo,
 ) -> (KeyCombo, Option<String>) {
     match parse_key_combo(s) {
         Some(binding) => (binding, None),
         None => {
+            // This placeholder lets config check collect the remaining errors;
+            // load_validated rejects the config while this diagnostic is present.
             let diag = format!("invalid keybinding: {field} = {s:?}");
-            (fallback, Some(diag))
+            (placeholder, Some(diag))
         }
     }
 }
@@ -1412,7 +1438,7 @@ next_tab = ["prefix+n", "ctrl+alt+]"]
     }
 
     #[test]
-    fn unsafe_direct_printable_binding_is_disabled_with_diagnostic() {
+    fn unsafe_direct_printable_binding_has_validation_diagnostic() {
         let config: Config = toml::from_str(
             r#"
 [keys]
@@ -1631,8 +1657,9 @@ navigate_pane_down = "ctrl+j"
                 .matches_direct_key(&TerminalKey::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
         );
         assert!(diagnostics.iter().any(|diag| {
-            diag.contains("kept keys.navigate_workspace_up")
-                && diag.contains("disabled keys.navigate_workspace_down")
+            diag.contains("keybinding conflict")
+                && diag.contains("keys.navigate_workspace_up")
+                && diag.contains("keys.navigate_workspace_down")
         }));
     }
 
@@ -1686,9 +1713,11 @@ navigate_workspace_down = ["n", "f"]
                 .workspace_down
                 .matches_direct_key(&TerminalKey::new(KeyCode::Char('f'), KeyModifiers::empty()))
         );
-        assert!(!diagnostics.iter().any(|diag| {
-            diag.contains("disabled keys.navigate_workspace_down") && diag.contains("keys.next_tab")
-        }));
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diag| diag.contains("keys.next_tab"))
+        );
     }
 
     #[test]
@@ -1731,7 +1760,9 @@ navigate_workspace_down = "ctrl+a"
                 && diag.contains("keys.navigate_workspace_up")
         }));
         assert!(diagnostics.iter().any(|diag| {
-            diag.contains("kept keys.prefix") && diag.contains("keys.navigate_workspace_down")
+            diag.contains("keybinding conflict")
+                && diag.contains("keys.prefix")
+                && diag.contains("keys.navigate_workspace_down")
         }));
     }
 
@@ -1778,7 +1809,9 @@ switch_tab = "prefix+?"
             diag.contains("indexed keybinding must use 1..9") && diag.contains("keys.switch_tab")
         }));
         assert!(!diagnostics.iter().any(|diag| {
-            diag.contains("kept keys.switch_tab") && diag.contains("disabled keys.help")
+            diag.contains("keybinding conflict")
+                && diag.contains("keys.switch_tab")
+                && diag.contains("keys.help")
         }));
     }
 
@@ -1842,7 +1875,7 @@ switch_tab = "prefix+?"
     }
 
     #[test]
-    fn duplicate_prefix_binding_disables_later_binding() {
+    fn duplicate_prefix_bindings_report_conflict() {
         let config: Config = toml::from_str(
             r#"
 [keys]
@@ -1855,47 +1888,80 @@ new_workspace = "prefix+n"
         let kb = config.keybinds();
         assert!(kb.next_tab.bindings.is_empty() || kb.new_workspace.bindings.is_empty());
         assert!(diagnostics.iter().any(|diag| {
-            diag.contains("kept keys.new_workspace") && diag.contains("disabled keys.next_tab")
+            diag.contains("keybinding conflict")
+                && diag.contains("keys.new_workspace")
+                && diag.contains("keys.next_tab")
         }));
     }
 
     #[test]
-    fn user_binding_silently_displaces_default_binding() {
+    fn user_binding_conflicting_with_a_default_is_reported() {
         let config: Config = toml::from_str(
             r#"
 [keys]
-previous_workspace = "prefix+shift+l"
+new_tab = "prefix+z"
 "#,
         )
         .expect("test precondition");
 
-        let (diagnostics, kb) = diagnostics_and_keybinds(&config, &["previous_workspace"]);
+        let (diagnostics, kb) = diagnostics_and_keybinds(&config, &["new_tab"]);
 
-        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert!(diagnostics.iter().any(|diag| {
+            diag.contains("keybinding conflict")
+                && diag.contains("keys.new_tab")
+                && diag.contains("keys.zoom")
+        }));
         assert_eq!(
-            binding_triggers(&kb.previous_workspace),
+            binding_triggers(&kb.new_tab),
             vec![BindingTrigger::Prefix((
-                KeyCode::Char('l'),
-                KeyModifiers::SHIFT
+                KeyCode::Char('z'),
+                KeyModifiers::empty()
             ))]
         );
-        assert!(kb.swap_pane_right.bindings.is_empty());
+        assert!(kb.zoom.bindings.is_empty());
     }
 
     #[test]
-    fn user_prefix_silently_displaces_default_prefix_rhs_binding() {
-        let config: Config = toml::from_str(
-            r#"
-[keys]
-prefix = "n"
-"#,
-        )
-        .expect("test precondition");
+    fn rebinding_the_displaced_action_too_resolves_the_conflict() {
+        for zoom in ["\"prefix+shift+z\"", "\"\"", "[]"] {
+            let config: Config =
+                toml::from_str(&format!("[keys]\nnew_tab = \"prefix+z\"\nzoom = {zoom}\n"))
+                    .expect("test precondition");
 
-        let (diagnostics, kb) = diagnostics_and_keybinds(&config, &["prefix"]);
+            let (diagnostics, kb) = diagnostics_and_keybinds(&config, &["new_tab", "zoom"]);
 
-        assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        assert!(kb.next_tab.bindings.is_empty());
+            assert!(diagnostics.is_empty(), "zoom = {zoom}: {diagnostics:?}");
+            assert_eq!(
+                binding_triggers(&kb.new_tab),
+                vec![BindingTrigger::Prefix((
+                    KeyCode::Char('z'),
+                    KeyModifiers::empty()
+                ))]
+            );
+        }
+    }
+
+    #[test]
+    fn user_prefix_conflicting_with_a_default_binding_is_reported() {
+        for (prefix, field, diagnostic) in [
+            ("h", "keys.navigate_pane_left", "keybinding conflict"),
+            ("n", "keys.next_tab", "reserved keybinding"),
+        ] {
+            let config: Config = toml::from_str(&format!("[keys]\nprefix = {prefix:?}\n"))
+                .expect("test precondition");
+            let (diagnostics, kb) = diagnostics_and_keybinds(&config, &["prefix"]);
+
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diag| diag.contains(diagnostic) && diag.contains(field))
+            );
+            if prefix == "h" {
+                assert!(kb.navigate.pane_left.bindings.is_empty());
+            } else {
+                assert!(kb.next_tab.bindings.is_empty());
+            }
+        }
     }
 
     #[test]
@@ -1921,8 +1987,9 @@ swap_pane_right = "prefix+shift+l"
         );
         assert!(kb.swap_pane_right.bindings.is_empty());
         assert!(diagnostics.iter().any(|diag| {
-            diag.contains("kept keys.previous_workspace")
-                && diag.contains("disabled keys.swap_pane_right")
+            diag.contains("keybinding conflict")
+                && diag.contains("keys.previous_workspace")
+                && diag.contains("keys.swap_pane_right")
         }));
     }
 }

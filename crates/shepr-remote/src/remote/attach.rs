@@ -17,7 +17,9 @@ mod tests {
     use super::*;
 
     fn test_app_paths() -> shepr_config::AppPaths {
-        let root = shepr_test_support::ScratchDir::new("remote-ssh-config").keep_until_exit();
+        // The root doubles as the XDG runtime directory that holds SSH
+        // control sockets, so keep its label short enough for sun_path.
+        let root = shepr_test_support::ScratchDir::new("rs").keep_until_exit();
         shepr_config::AppPaths::test_with_context(&root, Some(&root), None)
     }
 
@@ -235,12 +237,14 @@ mod tests {
 
     #[test]
     fn bridge_drop_while_waiting_for_client_is_bounded() {
-        // The production path is built under TMPDIR; point it at scratch so
-        // the socket never lands in the shared temp directory.
-        let env = shepr_test_support::IsolatedEnv::new();
-        env.set("TMPDIR", env.path());
-        let socket = local_forward_socket_path("drop-test", "default");
-        assert!(socket.starts_with(env.path()), "{}", socket.display());
+        let runtime_dir = shepr_test_support::ScratchDir::new("bb");
+        let socket = local_forward_socket_path(runtime_dir.path(), "drop-test", "default")
+            .expect("test precondition");
+        assert!(
+            socket.starts_with(runtime_dir.path()),
+            "{}",
+            socket.display()
+        );
         let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
         let bridge = SshStdioBridge::start(
             SshTarget::parse("example").expect("test precondition"),
@@ -400,7 +404,8 @@ mod tests {
             true,
             "other-session".into(),
             &paths,
-        );
+        )
+        .expect("managed SSH setup");
         assert_eq!(
             config.options.control_path,
             setup.options().expect("test precondition").control_path
@@ -443,7 +448,8 @@ mod tests {
             false,
             "main".into(),
             &paths,
-        );
+        )
+        .expect("plain SSH setup");
         assert!(ssh.options().is_none());
         assert!(!ssh.command().get_args().any(|arg| arg == "-F"));
     }
@@ -595,7 +601,8 @@ mod tests {
             super::super::SshTarget::parse("example").expect("test precondition"),
             false,
             &paths,
-        );
+        )
+        .expect("plain SSH setup");
         let args = ssh
             .command()
             .get_args()
@@ -1015,11 +1022,11 @@ mod tests {
 
     #[test]
     fn local_forward_socket_path_uses_readable_name_when_it_fits() {
-        // The path is built under TMPDIR, which another test changes.
-        let _env = shepr_test_support::IsolatedEnv::new();
+        let runtime_dir = shepr_test_support::ScratchDir::new("local-forward-readable");
         // Short target + session leave plenty of room - keep the human-
         // readable form so the socket path stays grep-friendly.
-        let path = local_forward_socket_path("dev", "default");
+        let path = local_forward_socket_path(runtime_dir.path(), "dev", "default")
+            .expect("test precondition");
         let filename = path
             .file_name()
             .and_then(|s| s.to_str())
@@ -1040,13 +1047,13 @@ mod tests {
 
     #[test]
     fn local_forward_socket_path_fits_in_sun_path() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        // Worst case for the readable form: a 49-char TMPDIR +
-        // max-length sanitized components. Should fall back to the hashed
-        // short name, which fits under TMPDIR.
+        let runtime_dir = shepr_test_support::ScratchDir::new("lf");
+        // The longer readable name falls back to the hashed name when the
+        // target and session leave less room beneath the runtime directory.
         let target = "longish-host.example.com";
         let session = "a-fairly-long-session-name-here";
-        let path = local_forward_socket_path(target, session);
+        let path = local_forward_socket_path(runtime_dir.path(), target, session)
+            .expect("test precondition");
         assert!(
             fits_unix_socket_path(&path),
             "socket path too long for sun_path: {} ({} bytes)",
@@ -1056,29 +1063,17 @@ mod tests {
     }
 
     #[test]
-    fn local_forward_socket_path_falls_back_to_tmp_when_dir_is_long() {
-        let env = shepr_test_support::IsolatedEnv::new();
-        // Force a TMPDIR long enough that even the hashed short name cannot
-        // fit inside it. The fallback should drop to /tmp.
-        let long_dir = env.path().join("a".repeat(80));
+    fn local_forward_socket_path_reports_an_overlong_runtime_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = shepr_test_support::ScratchDir::new("local-forward-long-runtime");
+        let long_dir = scratch.path().join("a".repeat(80));
         fs::create_dir(&long_dir).expect("test precondition");
-        env.set("TMPDIR", &long_dir);
+        fs::set_permissions(&long_dir, fs::Permissions::from_mode(0o700))
+            .expect("test precondition");
 
-        let path = local_forward_socket_path("longish-host.example.com", "default");
-        let fits = fits_unix_socket_path(&path);
-        let parent = path.parent().map(Path::to_path_buf);
-        let filename = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        drop(env);
-
-        assert!(fits, "fallback path still overflows: {}", path.display());
-        assert_eq!(parent.as_deref(), Some(Path::new("/tmp")));
-        assert!(
-            filename.starts_with("shepr-r-"),
-            "expected hashed fallback, got {filename}"
-        );
+        let error = local_forward_socket_path(&long_dir, "longish-host.example.com", "default")
+            .expect_err("socket path cannot fit beneath the runtime directory");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     }
 }

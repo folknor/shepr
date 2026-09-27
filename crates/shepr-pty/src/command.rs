@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path};
 
@@ -98,7 +98,8 @@ impl PtyCommand {
         self.envs.get(key.as_ref()).map(OsString::as_os_str)
     }
 
-    /// Working directory. A missing or non-directory path falls back to `HOME`.
+    /// Working directory. A missing or non-directory path falls back to a
+    /// usable home directory, then `/` if no home directory is available.
     pub fn cwd<D: AsRef<OsStr>>(&mut self, dir: D) {
         self.cwd = Some(dir.as_ref().to_owned());
     }
@@ -108,13 +109,20 @@ impl PtyCommand {
     /// environment is cleared first). PTY stdio and session setup are added by
     /// `crate::backend`.
     pub fn to_std_command(&self) -> io::Result<std::process::Command> {
-        let home = self.home_dir();
-        let dir: OsString = self
-            .cwd
-            .as_ref()
-            .filter(|dir| Path::new(dir).is_dir())
-            .cloned()
-            .unwrap_or(home);
+        let dir: OsString = match self.cwd.as_ref() {
+            Some(dir) if Path::new(dir).is_dir() => dir.clone(),
+            requested => {
+                let home = self.home_dir();
+                if let Some(requested) = requested {
+                    tracing::warn!(
+                        cwd = %requested.to_string_lossy(),
+                        fallback = %home.to_string_lossy(),
+                        "pty working directory is not a directory; starting in the fallback"
+                    );
+                }
+                home
+            }
+        };
         let (mut cmd, shell) = match &self.program {
             Program::Shell { login } => {
                 let shell = self.resolve_shell(&dir, ShellResolutionPolicy::PaneProgram)?;
@@ -154,12 +162,7 @@ impl PtyCommand {
     /// the environment value is empty and reject an invalid selected shell;
     /// other child commands fall back to passwd, then `/bin/sh`.
     fn resolve_shell(&self, cwd: &OsStr, policy: ShellResolutionPolicy) -> io::Result<OsString> {
-        let inherited = self
-            .get_env("SHELL")
-            .and_then(OsStr::to_str)
-            .map(str::trim)
-            .filter(|shell| !shell.is_empty())
-            .map(OsString::from);
+        let inherited = self.get_env("SHELL").and_then(trimmed_shell);
         let candidate = inherited.clone().unwrap_or_else(|| match policy {
             ShellResolutionPolicy::PaneProgram => OsString::from("/bin/sh"),
             ShellResolutionPolicy::ChildEnvironment => OsString::from(passwd_shell()),
@@ -185,10 +188,14 @@ impl PtyCommand {
     }
 
     fn home_dir(&self) -> OsString {
-        if let Some(home) = self.get_env("HOME") {
+        if let Some(home) = self
+            .get_env("HOME")
+            .filter(|home| Path::new(home).is_absolute() && Path::new(home).is_dir())
+        {
             return home.to_owned();
         }
         passwd_field(|entry| entry.pw_dir.cast_const())
+            .filter(|home| Path::new(home).is_absolute() && Path::new(home).is_dir())
             .map(OsString::from)
             .unwrap_or_else(|| OsString::from("/"))
     }
@@ -294,6 +301,26 @@ fn spawn_error(kind: io::ErrorKind, mut detail: String) -> io::Error {
     io::Error::new(kind, detail)
 }
 
+/// Trim whitespace from `$SHELL` without discarding valid non-UTF-8 path
+/// bytes. Non-UTF-8 values only recognize ASCII whitespace at the edges.
+fn trimmed_shell(shell: &OsStr) -> Option<OsString> {
+    if let Some(shell) = shell.to_str() {
+        let shell = shell.trim();
+        return (!shell.is_empty()).then(|| OsString::from(shell));
+    }
+
+    let bytes = shell.as_bytes();
+    let start = bytes
+        .iter()
+        .position(|byte| !byte.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|byte| !byte.is_ascii_whitespace())
+        .map_or(start, |index| index + 1);
+    (start < end).then(|| OsString::from_vec(bytes[start..end].to_vec()))
+}
+
 /// The server's environment. Shell selection and validation happen at spawn,
 /// after pane policy and launch environment have been applied.
 fn base_env() -> BTreeMap<OsString, OsString> {
@@ -318,8 +345,12 @@ fn passwd_shell() -> String {
 fn passwd_field(select: fn(&libc::passwd) -> *const libc::c_char) -> Option<String> {
     let mut buf: Vec<libc::c_char> = vec![0; 1024];
     loop {
+        // SAFETY: an all-zero passwd value has null pointers and zero scalars,
+        // all valid initial values for getpwuid_r to overwrite.
         let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
         let mut result: *mut libc::passwd = std::ptr::null_mut();
+        // SAFETY: `entry`, `buf`, and `result` are writable values of the
+        // sizes required by getpwuid_r; the function does not retain them.
         let status = unsafe {
             libc::getpwuid_r(
                 libc::getuid(),
@@ -340,7 +371,8 @@ fn passwd_field(select: fn(&libc::passwd) -> *const libc::c_char) -> Option<Stri
         if field.is_null() {
             return None;
         }
-        // The field points into `buf`, which is still alive here.
+        // SAFETY: after a successful getpwuid_r call, the selected field is a
+        // NUL-terminated string inside the still-live result buffer.
         return unsafe { CStr::from_ptr(field) }
             .to_str()
             .ok()
@@ -352,6 +384,8 @@ fn access_ok(path: &Path, mode: libc::c_int) -> bool {
     let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
         return false;
     };
+    // SAFETY: `path` is a live NUL-terminated CString for the duration of
+    // access(2), which reads but does not retain its pointer.
     unsafe { libc::access(path.as_ptr(), mode) == 0 }
 }
 
@@ -459,6 +493,24 @@ mod tests {
             )
         );
         assert_ne!(shell, Some(OsString::from("/__shepr_missing_shell__")));
+    }
+
+    #[test]
+    fn home_fallback_requires_an_existing_absolute_directory() {
+        let scratch = shepr_test_support::ScratchDir::new("pty-home");
+        let mut cmd = PtyCommand::new("/bin/sh");
+        cmd.env("HOME", scratch.path());
+        assert_eq!(cmd.home_dir(), scratch.path().as_os_str());
+
+        for unusable in [
+            OsString::from("relative/home"),
+            scratch.path().join("missing").into_os_string(),
+        ] {
+            cmd.env("HOME", &unusable);
+            let home = cmd.home_dir();
+            assert_ne!(home, unusable);
+            assert!(Path::new(&home).is_absolute() && Path::new(&home).is_dir());
+        }
     }
 
     #[test]

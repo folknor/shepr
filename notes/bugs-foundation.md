@@ -21,16 +21,6 @@ Related: the remote hunter notes that two bridges arriving at once on a remote h
 
 `ipc.rs`, `bind_via_private_staging`. The staged name `.shepr-<pid>-<nanos hex>-<n>/s` adds roughly 35-40 bytes to the socket path. So any path that fits the 107-byte limit but is within about 40 bytes of it takes the bind-then-chmod fallback, which is connectable with umask permissions for a moment. The code documents the fallback, but the staging name is what makes it common. Use a very short staging name, or bind through `/proc/self/fd/<dirfd>/s` on an O_PATH directory fd.
 
-## FND-005 - SSH control directory ignores XDG and escapes test isolation
-
-`crates/shepr-platform/src/ssh_paths.rs`, `shared_ssh_control_path`. The fallback hard-codes `/run/user/<uid>` instead of `$XDG_RUNTIME_DIR`, against "Directories follow the XDG spec". The main path `/tmp/hssh-<uid>` (a leftover "h" prefix from herdr) is shared between a real shepr and any test. `IsolatedEnv` redirects `XDG_RUNTIME_DIR` precisely so tests cannot reach live state, but this function bypasses that, so a test could reuse the real OpenSSH ControlMaster sockets. `create_remote_ssh_config_dir` and `remote_bridge_endpoint_path` likewise use the temp dir or `/tmp`, and the last `/tmp/<short>` fallback in `remote_bridge_endpoint_path` is never checked with `fits_unix_socket_path`.
-
-Related: the remote hunter reports that when `shared_ssh_control_path` finds neither a root-owned sticky `/tmp` nor a valid `/run/user/<uid>`, managed SSH config is silently dropped (RMT-001), and that `create_remote_ssh_config_dir`'s `ctl` length check is vacuous (RMT-010).
-
-## FND-006 - Processes of other users are dropped from session teardown
-
-`crates/shepr-platform/src/process.rs`. For pidfd handles, `ProcessHandle::is_unreaped` is `pidfd_send_signal(0)`, which returns EPERM for a process of another uid (for example setuid `sudo` inside a pane). Those members are silently left out of `session_member_handles` as if already reaped, which contradicts that function's doc ("every live process of session…"). EPERM should count as alive.
-
 ## FND-007 - HostShutdownMonitor: misplaced doc and missed cancellation during D-Bus outage
 
 `crates/shepr-platform/src/shutdown.rs`.

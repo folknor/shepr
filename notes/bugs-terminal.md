@@ -21,17 +21,6 @@ Hunter coverage: shepr-vt findings were checked against the pinned `research/vte
 - This is realistic: a synchronized-update frame is replayed in a single batch (`stop_sync` runs inside one `with_handler`), and vte buffers up to 2 MB. Output full of blank or identical lines, or clear-heavy TUI redraws, will hit it.
 - Fix direction: don't use pointer identity plus a weak hash. Count evictions directly. Either have the handler observe `linefeed`/`scroll_up` at the history limit, or take a real content hash including flags and zerowidth. Better still is a stable per-row sequence number that the tracker owns. It is worth rewriting.
 
-## TRM-002 - modifyOtherKeys is applied out of order inside synchronized updates
-
-`crates/shepr-vt/src/lib.rs`, `apply_scan_event`.
-- `ScanEvent::ModifyOtherKeys` writes `self.modes.modify_other_keys` immediately.
-- The vte-dispatched forms (`CSI > 4 ; 0..2 m`) and RIS go through `handler.rs` and only land when the frame is replayed.
-- Example: `BSU … CSI>4;2m … CSI>m … ESU` ends at level 2 (All) when it should be Off. Likewise, a scanner-set level followed by RIS in the same frame gets reset or not depending on buffering.
-- This breaks the ordering contract that `handler.rs`'s module doc and `scan.rs` both rely on.
-- Fix: do what `EraseScrollback` already does and feed a spelling vte dispatches (`\x1b[>4;0m` / `\x1b[>4;2m`) through `advance`, so the change is queued in byte order.
-
-Same class: `WorkingDirectory` and `Progress` scanner events inside a sync frame are applied as their bytes arrive, not at replay. That is harmless today. A single "queue scanner effects into the parser stream" mechanism would remove the whole class; only replies need to stay immediate, for the DA1-sentinel reason documented in `write`.
-
 ## TRM-003 - unicode_text_width / unicode_display_units do not follow the grid's width rules
 
 `crates/shepr-vt/src/cell.rs`.
@@ -41,20 +30,6 @@ Same class: `WorkingDirectory` and `Progress` scanner events inside a sync frame
   - A ZWJ family emoji is 6 columns in the grid (2+0+2+0+2) but reported as 2.
 - Consumers: `crates/shepr-termio/src/copy_mode.rs` (`first_non_blank_col`, `last_character_col`) measures row text that came from the grid, so copy-mode columns drift. `crates/shepr-client/src/shell/sidebar/agent_sidebar.rs` is also affected.
 - Fix: sum per-char `unicode_codepoint_width`. Do not use grapheme width.
-
-## TRM-004 - Terminal::mode_set reports success for modes it cannot write
-
-`crates/shepr-vt/src/lib.rs`.
-- `modes.rs` says "A number missing from the table is unsupported for both query and write".
-- For an unlisted number, `mode_set` routes `PrivateMode::Unknown` to alacritty, which ignores it, and returns `Ok(())`.
-- It should return `Err` when `modes::lookup` is `None`.
-
-## TRM-005 - Long OSC 7 / 9;9 / 1337 working-directory reports are dropped silently
-
-`crates/shepr-vt/src/scan.rs`, `MAX_OSC_BYTES = 4096`.
-- A `file://host` + percent-encoded path near PATH_MAX (4096) goes over the cap. The report is discarded and the pane's cwd goes stale.
-- The claim "tracks OSC 7" does not hold for long paths.
-- The cap should be sized for PATH_MAX × 3 (percent-encoding) plus the prefix, or the scanner should only buffer up to the first `;` and then stream the payload for those commands.
 
 ## TRM-006 - Scanner framing diverges from vte for XTGETTCAP and DCS
 
@@ -90,26 +65,6 @@ Design note from the hunter: the actor has four synchronisation channels (tokio 
 
 Related: MUX-004 reports that `preserve_processes_on_drop` is `false` in every production constructor.
 
-## TRM-011 - PaneDied from a reader panic says ChildExitReason::Exited
-
-`crates/shepr-mux/src/pane/runtime.rs`, around line 627-629. The child did not exit; it may still be alive. The type's own name is misused, and anything that branches on the exit reason (restore, UI) is told something false.
-
-Surfaced in both the pty and mux scopes.
-
-## TRM-012 - If PtyIoActor::spawn fails, the child is orphaned
-
-`crates/shepr-mux/src/pane/runtime.rs`, around lines 453 and 639-648.
-- The child watcher is started before the actor. If `PtyIoActor::spawn(...)?` fails (wake pipe, fcntl, or thread creation), `spawn_command_builder` returns `Err`.
-- `master_fd` is dropped, so the child gets SIGHUP, but `shutdown_pane_processes` never runs. A child or session member that ignores SIGHUP keeps running, and the watcher later sends `PaneDied` for a pane that never existed.
-- The partial-failure path skips the teardown contract. Fix: create the actor, or at least the wake pipe and fds, before spawning, or run teardown on the error path.
-
-## TRM-013 - POLLERR throws away the child's last output
-
-`crates/shepr-pty/src/fd.rs`, `poll_pty_and_wake`.
-- The actor itself claims that a child's last output is drained before the loop ends (`handle_write_failure` documents this).
-- But `POLLERR` on the PTY fd returns `Err`, and `run()` then breaks with no drain.
-- The hunter believes Linux pty masters usually report `POLLHUP`/`EIO` rather than `POLLERR`, so this may be rare. Still, it is the one exit path that breaks the drain guarantee. Drain here the same way as on a write failure.
-
 ## TRM-014 - Resize replies can be sent out of order relative to earlier replies
 
 `crates/shepr-pty/src/actor.rs`, `apply_pending_controls`.
@@ -123,20 +78,13 @@ Surfaced in both the pty and mux scopes.
 - `PaneRuntime::resize` resizes the emulator first, then asks the actor. If the ioctl fails, the actor logs at `debug!` and nothing else happens.
 - Not exiting the process is correct. But the size contract then breaks silently, and `current_size` already holds the new value, so the next identical resize is skipped as a no-op and nothing retries.
 
-## TRM-016 - Pre-exec signal reset list is narrow
+## TRM-030 - passwd_field drops non-UTF-8 home and shell paths
 
-`crates/shepr-pty/src/backend.rs` `prepare_pty_child`. It resets only SIGCHLD/HUP/INT/QUIT/TERM/ALRM/PIPE. An ignored SIGTSTP/SIGTTOU/SIGTTIN/SIGUSR* in the server (from a parent or a library) would leak into every pane. Resetting all signals 1..NSIG to `SIG_DFL` is cheap and matches the "clear inherited state" intent.
+`crates/shepr-pty/src/command.rs`, `passwd_field`. It converts the passwd entry with `CStr::to_str()`, so a non-UTF-8 home directory or login shell is discarded. `SHELL` and `HOME` from the environment now keep their raw bytes; the passwd path should too (`OsStr::from_bytes`).
 
-## TRM-017 - PtyCommand cwd and SHELL handling diverge from their docs
+## TRM-031 - The old-kernel descriptor-close fallback fails soft
 
-- **Doc wording on `PtyCommand::cwd`.** It says a missing or non-directory path "falls back to HOME". HOME itself is not checked: a relative or missing HOME makes `spawn()` fail with a bare chdir error. The check also runs in the parent (time-of-check/time-of-use gap, harmless).
-- **Non-UTF-8 `SHELL` is silently ignored.** `resolve_shell` uses `OsStr::to_str`, so in pane mode a non-UTF-8 `SHELL` quietly becomes `/bin/sh`, which contradicts "reject an invalid selected shell".
-
-## TRM-018 - Small pty smells
-
-- **Missing SAFETY comments in `command.rs`.** The three `unsafe` blocks in `passwd_field` and `access_ok` have none, although every other unsafe block in the crate is documented.
-- **A burst of wakes delays PTY IO.** When `wake_ready` fires, `run()` does `continue` even if the PTY was also readable or writable, so a steady stream of wakes (keystrokes, timer responses) postpones PTY work. There is no correctness bug, but reads could be serviced in the same iteration.
-- **Missed wakes are only caught by the 1 s idle poll.** The fallback is documented, but wake writes that hit `EAGAIN` are treated as success, which is correct only because the pipe is non-empty at that point. The hunter says that holds as written.
+`crates/shepr-pty/src/backend.rs`, pre-exec. When `close_range` is unavailable, descriptors are marked close-on-exec by walking `/proc/self/fd`. If procfs cannot be opened, the walk silently does nothing and the pane process inherits every server descriptor. Spawn should fail instead.
 
 ## TRM-029 - The raw-input idle flush still ends in a catch-all buffer clear
 

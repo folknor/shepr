@@ -1081,7 +1081,7 @@ mod tests {
                     );
                 }
                 for (_, runtime) in terminal_runtimes.drain() {
-                    runtime.shutdown();
+                    drop(runtime);
                 }
             }
         }

@@ -5,6 +5,7 @@ use crate::machine::{ProfileId, RemoteExecutable, SshMetadataCache, SshTarget};
 
 use super::{
     DiscoveryProgress, RemoteSsh, SshStdioBridge, resume_installed_remote_shepr_discovery,
+    xdg_runtime_dir,
 };
 
 pub struct SavedSshBridge {
@@ -59,13 +60,13 @@ pub struct SavedSshConnector {
     profile_id: ProfileId,
     target: SshTarget,
     session: String,
-    settings: SavedSshSettings,
     state: std::sync::Mutex<ConnectorState>,
 }
 
 #[derive(Default)]
 struct ConnectorState {
     ssh: Option<RemoteSsh>,
+    ssh_setup_error: Option<(io::ErrorKind, String)>,
     remote_shepr: Option<RemoteExecutable>,
     /// Full discovery's completed round trips, while it has not finished. Only kept while
     /// there is no remembered executable.
@@ -81,13 +82,27 @@ impl SavedSshConnector {
         session: &str,
         settings: SavedSshSettings,
     ) -> Self {
+        // Resolve the local SSH setup once when the connector is created.
+        // Cache local setup failures so they cannot become plain-SSH attempts
+        // or trigger config-file creation on every reconnect attempt.
+        let (ssh, ssh_setup_error) = match RemoteSsh::new_noninteractive_with(
+            target.clone(),
+            settings.manage_ssh_config,
+            paths,
+        ) {
+            Ok(ssh) => (Some(ssh), None),
+            Err(error) => (None, Some((error.kind(), error.to_string()))),
+        };
         Self {
             paths: paths.clone(),
             profile_id: profile_id.clone(),
             target: target.clone(),
             session: session.to_owned(),
-            settings,
-            state: std::sync::Mutex::new(ConnectorState::default()),
+            state: std::sync::Mutex::new(ConnectorState {
+                ssh,
+                ssh_setup_error,
+                ..ConnectorState::default()
+            }),
         }
     }
 
@@ -120,20 +135,12 @@ impl SavedSshConnector {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((kind, message)) = &state.ssh_setup_error {
+            return Err(io::Error::new(*kind, message.clone()));
+        }
         if !state.seeded_from_disk {
             state.seeded_from_disk = true;
             state.remote_shepr = metadata_cache.load();
-        }
-        if state
-            .ssh
-            .as_ref()
-            .is_none_or(|ssh| ssh.missing_managed_config(self.settings.manage_ssh_config))
-        {
-            state.ssh = Some(RemoteSsh::new_noninteractive_with(
-                target.clone(),
-                self.settings.manage_ssh_config,
-                &self.paths,
-            ));
         }
         let ConnectorState {
             ssh,
@@ -201,7 +208,7 @@ impl SavedSshConnector {
         if std::time::Instant::now() >= deadline {
             return Err(super::attempt_deadline_passed());
         }
-        let path = saved_bridge_path(&self.profile_id);
+        let path = saved_bridge_path(xdg_runtime_dir(&self.paths)?, &self.profile_id)?;
         let bridge = SshStdioBridge::start(
             target.clone(),
             remote_shepr,
@@ -248,13 +255,14 @@ impl SavedSshApiBridge {
         };
         let command = super::cached_remote_api_command(&metadata, session);
         let path = shepr_platform::remote_bridge_endpoint_path(
+            xdg_runtime_dir(paths)?,
             &format!("shepr-api-ssh-{}-{profile_id}.sock", std::process::id()),
             &format!(
                 "shepr-api-{}-{}.sock",
                 std::process::id(),
                 &profile_id.as_str()[..16]
             ),
-        );
+        )?;
         let bridge = SshStdioBridge::start_command(
             target.clone(),
             command,
@@ -295,11 +303,11 @@ pub fn saved_ssh_bootstrap_command(target: &str, session: &str) -> String {
     )
 }
 
-fn saved_bridge_path(profile_id: &ProfileId) -> PathBuf {
+fn saved_bridge_path(runtime_dir: &std::path::Path, profile_id: &ProfileId) -> io::Result<PathBuf> {
     let pid = std::process::id();
     let readable = format!("shepr-ssh-{pid}-{profile_id}.sock");
     let short = format!("shepr-s-{pid}-{}.sock", &profile_id.as_str()[..16]);
-    shepr_platform::remote_bridge_endpoint_path(&readable, &short)
+    shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable, &short)
 }
 
 fn validated_saved_ssh(
@@ -310,11 +318,7 @@ fn validated_saved_ssh(
 ) -> io::Result<RemoteSsh> {
     shepr_api::session::validate_name(session)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    Ok(RemoteSsh::new_noninteractive_with(
-        target.clone(),
-        settings.manage_ssh_config,
-        paths,
-    ))
+    RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths)
 }
 
 #[cfg(test)]
@@ -323,12 +327,17 @@ mod tests {
 
     #[test]
     fn bridge_paths_use_profile_identity_not_target_or_session() {
+        let runtime_dir = shepr_test_support::ScratchDir::new("saved-bridge-paths");
         let first = saved_bridge_path(
+            runtime_dir.path(),
             &ProfileId::parse("0123456789abcdef0123456789abcdef").expect("test precondition"),
-        );
+        )
+        .expect("test precondition");
         let second = saved_bridge_path(
+            runtime_dir.path(),
             &ProfileId::parse("fedcba9876543210fedcba9876543210").expect("test precondition"),
-        );
+        )
+        .expect("test precondition");
         assert_ne!(first, second);
         assert!(!first.to_string_lossy().contains("example.com"));
         assert!(!first.to_string_lossy().contains("default"));

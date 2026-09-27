@@ -711,6 +711,31 @@ fn modify_other_keys_level_is_terminal_state() {
     );
 }
 
+/// `CSI > 4 n` is a spelling vte drops; the scanner's replacement goes back
+/// through the parser, so a synchronized update defers it with its frame.
+#[test]
+fn scanner_modify_other_keys_change_waits_for_the_synchronized_frame() {
+    let mut terminal = Terminal::new(8, 2, 0);
+    terminal.write(b"\x1b[>4;2m");
+    terminal.write(b"\x1b[?2026h\x1b[>4n");
+    assert_eq!(
+        terminal.modify_other_keys_level(),
+        ModifyOtherKeysLevel::All
+    );
+    terminal.write(b"\x1b[?2026l");
+    assert_eq!(
+        terminal.modify_other_keys_level(),
+        ModifyOtherKeysLevel::Off
+    );
+}
+
+#[test]
+fn mode_set_rejects_modes_missing_from_the_table() {
+    let mut terminal = Terminal::new(8, 2, 0);
+    assert!(terminal.mode_set(47, true).is_err());
+    assert!(terminal.mode_set(65_000, true).is_err());
+}
+
 /// The pinned alacritty evicts from the title stack when the keyboard-mode
 /// stack is full: with no title pushed that panics the reader thread, with one
 /// pushed the keyboard stack grows without bound. The adapter caps it first.

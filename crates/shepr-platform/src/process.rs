@@ -147,7 +147,25 @@ impl ProcessHandle {
     /// neither can a process-group or session id equal to it.
     pub fn is_unreaped(&self) -> bool {
         match &self.identity {
-            ProcessIdentity::Pidfd(_) => self.send(0),
+            ProcessIdentity::Pidfd(fd) => {
+                // SAFETY: pidfd_send_signal(2) with signal zero and a null
+                // siginfo only probes the process identified by this live fd.
+                let result = unsafe {
+                    libc::syscall(
+                        libc::SYS_pidfd_send_signal,
+                        fd.as_raw_fd(),
+                        0,
+                        std::ptr::null::<libc::siginfo_t>(),
+                        0_u32,
+                    )
+                };
+                if result == 0 {
+                    return true;
+                }
+                // EPERM means the pidfd still names a live process that this
+                // uid cannot signal. Only ESRCH proves the process was reaped.
+                pidfd_probe_error_means_unreaped(&std::io::Error::last_os_error())
+            }
             ProcessIdentity::StartTime(start_time) => {
                 self.state_by_start_time(*start_time).is_some()
             }
@@ -173,6 +191,10 @@ impl ProcessHandle {
             ),
         }
     }
+}
+
+fn pidfd_probe_error_means_unreaped(error: &std::io::Error) -> bool {
+    error.raw_os_error() != Some(libc::ESRCH)
 }
 
 /// The state letter and start time (clock ticks since boot) from a

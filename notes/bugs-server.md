@@ -31,17 +31,6 @@ Hot path; breaks "Hot paths multiply".
 
 Related: CFG-005.
 
-## SRV-003 - Layout-changing API methods are missing from the reconcile and geometry lists
-
-`server/headless/client_views.rs:228-298`.
-- `LayoutApply` replaces or creates a tab, spawning and closing panes (`app/api/layouts.rs`). It is not in `shell_locations_may_need_reconcile`, `public_request_may_change_geometry` or `shell_endpoint_claims_geometry`.
-- After a `layout.apply`:
-  - shell clients whose location pointed at the replaced tab are not reconciled;
-  - geometry-controller entries for the dead tab are not pruned;
-  - the new tab's panes are not resized to the controlling client (they keep `sole_pane_size` of the headless geometry) until some unrelated event reapplies geometry.
-- `PaneMove` is in the reconcile list but not in either geometry list, even though it changes the layout of two tabs.
-- These hand-maintained `matches!` lists are fragile. Put a `changes_topology` / `changes_geometry` flag on `Method::traits()` next to `mutates_ui`, so a new method can't miss them.
-
 ## SRV-004 - The exhaustive internal-event drain before each API request can starve it
 
 - `handle_api_request_with_shutdown_check_inner` calls `drain_all_internal_events_with_forwarding` (`headless/internal_events.rs:93-104`). That loops until a batch finds no event.
@@ -77,19 +66,15 @@ Related: API-001 (a request that times out still runs later).
 - When the last client leaves, `sync_foreground_client_state` only recomputes the view (`compute_view_without_resizing_panes`). `render_and_stream` with no targets resizes panes only when `view.pane_infos.is_empty()` (`render.rs:370`), which is false after a session has had a client.
 - So panes appear to keep the departed client's geometry. The hunter did not read `resize_tabs_for_only_shell_client`; check it before acting.
 
-## SRV-010 - workspace_info fallback names a tab by position
+## SRV-010 - API handlers still name a tab by position when the stable-number lookup fails
 
-`creation.rs:368-370`: its fallback builds `active_tab_id` from `ws.active_tab + 1`, a position. Tabs use stable public numbers, and a bare position is explicitly rejected elsewhere (test `bare_tab_position_is_rejected...`). If this fallback ever fires, it can name a different tab. It should be `None` or an error.
+`workspace_info` no longer invents a tab id, but the same `position + 1` fallback remains in `app/api/tabs.rs` (~111), `app/api/agents.rs` (~213) and `app/api/panes.rs` (~314). Tabs use stable public numbers and a bare position is rejected elsewhere, so if the lookup ever fails these can report a different tab's id. They should report no id or an error.
 
 Related: MUX-009.
 
 ## SRV-011 - ServerAgentManifests is a status read that mutates state
 
 `ServerAgentManifests` is a status read but mutates state (`refresh_agent_manifest_summaries`).
-
-## SRV-012 - normalize_metadata_tokens deletes control characters instead of replacing them
-
-"review\nready" becomes "reviewready", which its own test pins.
 
 ## SRV-013 - ApiDispatcher swap dance
 

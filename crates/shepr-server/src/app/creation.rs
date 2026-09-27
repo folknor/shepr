@@ -365,9 +365,9 @@ impl App {
             focused: self.state.active_index() == Some(index),
             pane_count: ws.pane_count(),
             tab_count: ws.tabs.len(),
-            active_tab_id: self.public_tab_id(index, ws.active_tab).unwrap_or_else(|| {
-                shepr_mux::workspace::public_tab_id_for_number(&ws.id, ws.active_tab + 1)
-            }),
+            // A missing active tab has no stable public identity; omit this
+            // workspace snapshot instead of manufacturing one from its index.
+            active_tab_id: self.public_tab_id(index, ws.active_tab)?,
             agent_status: pane_agent_status(agg_state),
             tokens: ws.metadata_tokens.values(),
         })

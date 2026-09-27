@@ -412,12 +412,18 @@ impl PtyIoActorRunner {
                 self.poll_timeout_ms(),
             ) {
                 Ok(readiness) => {
-                    if readiness.wake_ready {
-                        if let Err(err) = fd::drain_wake_fd(self.wake_read_fd.as_raw_fd()) {
-                            debug!(pane = self.pane_id.raw(), err = %err, "PTY actor wake drain failed");
-                            break;
-                        }
-                        continue;
+                    if readiness.wake_ready
+                        && let Err(err) = fd::drain_wake_fd(self.wake_read_fd.as_raw_fd())
+                    {
+                        debug!(pane = self.pane_id.raw(), err = %err, "PTY actor wake drain failed");
+                        break;
+                    }
+                    if readiness.pty_error {
+                        self.handle_write_failure(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "poll encountered PTY fd error",
+                        ));
+                        break;
                     }
                     if readiness.pty_read_ready && !self.read_once() {
                         break;

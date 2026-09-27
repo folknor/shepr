@@ -484,7 +484,7 @@ mod tests {
                 .is_none()
         );
         for (_, runtime) in registry.drain() {
-            runtime.shutdown();
+            drop(runtime);
         }
     }
 

@@ -25,6 +25,7 @@ fn child_exit_classification_only_checkpoints_interruptions() {
     assert_eq!(classify_child_exit(&status), ChildExitReason::Interrupted);
     assert!(classify_child_exit(&status).requires_session_checkpoint());
     assert!(!ChildExitReason::WaitFailed.requires_session_checkpoint());
+    assert!(!ChildExitReason::ReaderPanicked.requires_session_checkpoint());
 }
 
 #[test]
@@ -148,11 +149,16 @@ fn bridge_socket_names_carry_a_random_token_before_the_extension() {
     assert_eq!(with_name_token("bridge", 1), "bridge.0000000000000001");
     assert_eq!(with_name_token(".sock", 1), ".sock.0000000000000001");
 
-    let first = remote_bridge_endpoint_path("shepr-t-1-a.sock", "shepr-t-1.sock");
-    let second = remote_bridge_endpoint_path("shepr-t-1-a.sock", "shepr-t-1.sock");
+    let runtime_dir = shepr_test_support::ScratchDir::new("bridge-endpoints");
+    let first =
+        remote_bridge_endpoint_path(runtime_dir.path(), "shepr-t-1-a.sock", "shepr-t-1.sock")
+            .expect("test precondition");
+    let second =
+        remote_bridge_endpoint_path(runtime_dir.path(), "shepr-t-1-a.sock", "shepr-t-1.sock")
+            .expect("test precondition");
     assert_ne!(
         first, second,
-        "a squatter must not be able to predict the path"
+        "concurrent bridges must receive distinct socket paths"
     );
     for path in [&first, &second] {
         assert!(fits_unix_socket_path(path), "{}", path.display());
@@ -203,26 +209,47 @@ fn unix_socket_paths_may_use_the_whole_linux_limit() {
 }
 
 #[test]
-fn remote_ssh_config_dir_rejects_overlong_control_socket_name() {
-    let err = create_remote_ssh_config_dir(&"x".repeat(200)).expect_err("test precondition");
-    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+fn remote_ssh_config_dir_is_private_and_under_the_runtime_directory() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let runtime_dir = shepr_test_support::ScratchDir::new("ssh-config-runtime");
+    let first = create_remote_ssh_config_dir(runtime_dir.path()).expect("test precondition");
+    let second = create_remote_ssh_config_dir(runtime_dir.path()).expect("test precondition");
+    assert!(first.starts_with(runtime_dir.path()));
+    assert_ne!(first, second);
+    assert_eq!(
+        std::fs::metadata(&first)
+            .expect("test precondition")
+            .permissions()
+            .mode()
+            & 0o7777,
+        0o700
+    );
+    std::fs::remove_dir_all(first).expect("test precondition");
+    std::fs::remove_dir_all(second).expect("test precondition");
 }
 
 #[test]
 fn shared_ssh_control_path_is_stable_scoped_and_bounded() {
-    let path =
-        shared_ssh_control_path(Path::new("/config/one"), "user@host").expect("test precondition");
+    // A short label: the control socket name leaves little of sun_path for
+    // the runtime directory.
+    let runtime_dir = shepr_test_support::ScratchDir::new("sc");
+    let path = shared_ssh_control_path(runtime_dir.path(), Path::new("/config/one"), "user@host")
+        .expect("test precondition");
     assert_eq!(
         path,
-        shared_ssh_control_path(Path::new("/config/one"), "user@host").expect("test precondition")
+        shared_ssh_control_path(runtime_dir.path(), Path::new("/config/one"), "user@host")
+            .expect("test precondition")
     );
     assert_ne!(
         path,
-        shared_ssh_control_path(Path::new("/config/two"), "user@host").expect("test precondition")
+        shared_ssh_control_path(runtime_dir.path(), Path::new("/config/two"), "user@host")
+            .expect("test precondition")
     );
     assert_ne!(
         path,
-        shared_ssh_control_path(Path::new("/config/one"), "other@host").expect("test precondition")
+        shared_ssh_control_path(runtime_dir.path(), Path::new("/config/one"), "other@host")
+            .expect("test precondition")
     );
     let expanded = path.to_string_lossy().replace("%C", &"f".repeat(40));
     assert!(fits_unix_socket_path(&PathBuf::from(&expanded)));
@@ -234,32 +261,24 @@ fn shared_ssh_control_path_is_stable_scoped_and_bounded() {
 }
 
 #[test]
-fn shared_ssh_staging_path_fits_with_maximum_uid_width() {
-    let path =
-        shared_ssh_control_path(Path::new("/config/one"), "user@host").expect("test precondition");
-    let directory = path.parent().expect("test precondition");
-    let name = directory
-        .file_name()
-        .expect("test precondition")
-        .to_string_lossy();
-    let prefix = name.trim_end_matches(|ch: char| ch.is_ascii_digit());
-    let maximum_uid_directory = directory
-        .parent()
-        .expect("test precondition")
-        .join(format!("{prefix}{}", u32::MAX));
-    let expanded = maximum_uid_directory
-        .join(path.file_name().expect("test precondition"))
-        .to_string_lossy()
-        .replace("%C", &"f".repeat(40));
-    assert!(fits_unix_socket_path(&PathBuf::from(format!(
-        "{expanded}.QuuYe7ZFE2HYeAE4"
-    ))));
+fn shared_ssh_control_path_rejects_a_runtime_dir_that_cannot_fit_open_ssh_staging() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = shepr_test_support::ScratchDir::new("ssh-control-long-runtime");
+    let runtime_dir = scratch.path().join("x".repeat(90));
+    std::fs::create_dir(&runtime_dir).expect("test precondition");
+    std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700))
+        .expect("test precondition");
+    let error = shared_ssh_control_path(&runtime_dir, Path::new("/config/one"), "user@host")
+        .expect_err("the OpenSSH staging path must fit");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
 }
 
 #[test]
 fn shared_ssh_directory_rejects_symlinks_and_public_modes() {
     use std::os::unix::fs::{PermissionsExt, symlink};
-    let dir = create_remote_ssh_config_dir("ctl").expect("test precondition");
+    let runtime_dir = shepr_test_support::ScratchDir::new("ssh-directory-validation");
+    let dir = create_remote_ssh_config_dir(runtime_dir.path()).expect("test precondition");
     let link = dir.join("link");
     symlink(&dir, &link).expect("test precondition");
     assert_eq!(

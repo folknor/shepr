@@ -379,7 +379,7 @@ pub(super) fn normalize_metadata_tokens(
                 let normalized = value
                     .trim()
                     .chars()
-                    .filter(|ch| !ch.is_control())
+                    .map(|ch| if ch.is_control() { ' ' } else { ch })
                     .take(MAX_METADATA_TOKEN_VALUE_LEN)
                     .collect::<String>();
                 (!normalized.trim().is_empty()).then(|| normalized.trim().to_string())
@@ -402,7 +402,7 @@ mod metadata_token_tests {
         ]))
         .expect("test precondition");
 
-        assert_eq!(tokens["summary"].as_deref(), Some("reviewready"));
+        assert_eq!(tokens["summary"].as_deref(), Some("review ready"));
         assert_eq!(tokens["empty"], None);
         assert_eq!(tokens["clear"], None);
     }

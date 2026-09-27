@@ -93,8 +93,8 @@ pub fn spawn_in_pty(slave: &OwnedFd, cmd: &PtyCommand) -> io::Result<Child> {
         .stdin(Stdio::from(slave.try_clone()?))
         .stdout(Stdio::from(slave.try_clone()?))
         .stderr(Stdio::from(slave.try_clone()?));
-    // SAFETY: `prepare_pty_child` only makes raw syscalls on the child's own
-    // process state (see its comment for the one allocating fallback).
+    // SAFETY: `prepare_pty_child` only uses async-signal-safe operations on
+    // the child's own process state.
     unsafe {
         command.pre_exec(prepare_pty_child);
     }
@@ -123,25 +123,36 @@ pub fn spawn_pty(rows: u16, cols: u16, cmd: &PtyCommand) -> io::Result<SpawnedPt
 /// fds 0-2 and changed directory.
 ///
 /// Every call here is async-signal-safe (the forked child of a multithreaded
-/// process may only make such calls), apart from the old-kernel fallback in
-/// `mark_inherited_fds_cloexec`, and touches only this child's own process
+/// process may only make such calls) and touches only this child's own process
 /// state, never memory shared with the parent.
 fn prepare_pty_child() -> io::Result<()> {
     // Clear dispositions and the signal mask inherited from the server
     // (ignored signals survive exec; handlers do not).
-    for signo in [
-        libc::SIGCHLD,
-        libc::SIGHUP,
-        libc::SIGINT,
-        libc::SIGQUIT,
-        libc::SIGTERM,
-        libc::SIGALRM,
-        libc::SIGPIPE,
-    ] {
-        // SAFETY: signal(2) with SIG_DFL installs no Rust handler and reads
-        // no memory; the child has not exec'd yet and runs no other threads.
-        unsafe {
-            libc::signal(signo, libc::SIG_DFL);
+    // Linux architectures use signal numbers up to 64 or 128. SIGKILL and
+    // SIGSTOP cannot have their dispositions changed; unsupported numbers and
+    // libc-reserved signals report EINVAL and are skipped below.
+    // SAFETY: sigaction is async-signal-safe; this stack value is zeroed and
+    // then initialized as a default action with an empty mask.
+    let mut default_action: libc::sigaction = unsafe { std::mem::zeroed() };
+    default_action.sa_sigaction = libc::SIG_DFL;
+    default_action.sa_flags = 0;
+    // SAFETY: `default_action.sa_mask` is a live, writable sigset_t.
+    if unsafe { libc::sigemptyset(&mut default_action.sa_mask) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    for signo in 1..=128 {
+        if matches!(signo, libc::SIGKILL | libc::SIGSTOP) {
+            continue;
+        }
+        // SAFETY: sigaction is async-signal-safe. The signal number is in the
+        // Linux range that can be changed, and both pointers remain valid for
+        // the duration of the call; the null old-action pointer is permitted.
+        if unsafe { libc::sigaction(signo, &default_action, std::ptr::null_mut()) } != 0 {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINVAL) {
+                continue;
+            }
+            return Err(err);
         }
     }
     // SAFETY: sigset_t is a plain bit array; all-zero is a valid value, and
@@ -190,28 +201,95 @@ fn mark_inherited_fds_cloexec() {
         return;
     }
 
-    // Kernels before 5.11 lack CLOSE_RANGE_CLOEXEC. This fallback allocates
-    // after fork, which is tolerable because glibc resets its malloc locks in
-    // the child.
-    let Ok(entries) = std::fs::read_dir("/proc/self/fd") else {
-        return;
+    // Kernels before 5.11 lack CLOSE_RANGE_CLOEXEC. Walk procfs with raw
+    // syscalls and a stack buffer so the fallback stays async-signal-safe.
+    const PROC_SELF_FD: &[u8] = b"/proc/self/fd\0";
+    // SAFETY: `PROC_SELF_FD` is a live, NUL-terminated path and open(2) reads
+    // it during the call without retaining the pointer.
+    let directory_fd = unsafe {
+        libc::open(
+            PROC_SELF_FD.as_ptr().cast(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
     };
-    let fds: Vec<libc::c_int> = entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter_map(|name| name.parse::<libc::c_int>().ok())
-        .filter(|fd| *fd > 2)
-        .collect();
-    for fd in fds {
-        // SAFETY: F_GETFD/F_SETFD take and return integers only. An fd that
-        // closed since the listing (the read_dir handle's own) fails with
-        // EBADF, which is ignored.
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-        if flags >= 0 {
-            // SAFETY: as above.
-            unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+    if directory_fd < 0 {
+        return;
+    }
+
+    const DIRENT_RECLEN_OFFSET: usize = 16;
+    const DIRENT_NAME_OFFSET: usize = 19;
+    let mut buffer = [0u8; 4096];
+    loop {
+        // SAFETY: getdents64 writes at most `buffer.len()` bytes into this
+        // live stack buffer and reads only the integer directory fd.
+        let bytes_read = unsafe {
+            libc::syscall(
+                libc::SYS_getdents64,
+                directory_fd,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+            )
+        };
+        if bytes_read == 0 {
+            break;
+        }
+        if bytes_read < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            break;
+        }
+
+        let Ok(bytes_read) = usize::try_from(bytes_read) else {
+            break;
+        };
+        if bytes_read > buffer.len() {
+            break;
+        }
+        let mut offset = 0;
+        while offset + DIRENT_NAME_OFFSET <= bytes_read {
+            let reclen_offset = offset + DIRENT_RECLEN_OFFSET;
+            let record_len =
+                u16::from_ne_bytes([buffer[reclen_offset], buffer[reclen_offset + 1]]) as usize;
+            if record_len <= DIRENT_NAME_OFFSET || offset + record_len > bytes_read {
+                break;
+            }
+            let name = &buffer[offset + DIRENT_NAME_OFFSET..offset + record_len];
+            let Some(name_len) = name.iter().position(|byte| *byte == 0) else {
+                break;
+            };
+            let mut fd = 0i32;
+            let mut valid_fd = name_len > 0;
+            for byte in &name[..name_len] {
+                if !byte.is_ascii_digit() {
+                    valid_fd = false;
+                    break;
+                }
+                let Some(next_fd) = fd
+                    .checked_mul(10)
+                    .and_then(|fd| fd.checked_add(i32::from(*byte - b'0')))
+                else {
+                    valid_fd = false;
+                    break;
+                };
+                fd = next_fd;
+            }
+            if valid_fd && fd > 2 {
+                // SAFETY: fcntl only reads integer arguments. A descriptor
+                // closed since the directory snapshot simply reports EBADF.
+                let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+                if flags >= 0 {
+                    // SAFETY: as above; this changes only the child's own
+                    // descriptor flags and reads no memory.
+                    unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+                }
+            }
+            offset += record_len;
         }
     }
+
+    // SAFETY: `directory_fd` was returned by open above and is owned here.
+    unsafe { libc::close(directory_fd) };
 }
 
 #[cfg(test)]

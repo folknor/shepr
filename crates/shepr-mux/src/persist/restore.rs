@@ -1019,7 +1019,7 @@ mod tests {
         assert_eq!(panes.len(), 1);
         assert!(panes.values().all(|pane| pane.cwd == cwd));
         for (_, runtime) in runtimes.drain() {
-            runtime.shutdown();
+            drop(runtime);
         }
     }
 
@@ -1162,7 +1162,7 @@ mod tests {
                 assert!(!kept.ansi.contains("RESTORED_HISTORY"));
             }
             for (_, runtime) in runtimes.drain() {
-                runtime.shutdown();
+                drop(runtime);
             }
         }
     }
@@ -2264,22 +2264,19 @@ mod tests {
 
     #[tokio::test]
     async fn restore_rejects_history_from_another_layout_or_without_provenance() {
-        // A cwd that differs from the saved layout's, so its fingerprint changes.
-        let moved_cwd = crate::test_support::ScratchDir::new("moved-cwd");
         for missing_fingerprint in [false, true] {
-            let (mut snapshot, history) = snapshot_with_saved_pane_history();
+            let (snapshot, history) = snapshot_with_saved_pane_history();
             let mut value = serde_json::to_value(history).expect("test precondition");
+            let fields = value.as_object_mut().expect("test precondition");
             if missing_fingerprint {
-                value
-                    .as_object_mut()
-                    .expect("test precondition")
-                    .remove("layout_fingerprint");
+                fields.remove("layout_fingerprint");
             } else {
-                snapshot.workspaces[0].tabs[0]
-                    .panes
-                    .get_mut(&0)
-                    .expect("test precondition")
-                    .cwd = moved_cwd.to_path_buf();
+                // History recorded against a different layout: the fingerprint
+                // covers only layout structure and pane ids, so name another.
+                fields.insert(
+                    "layout_fingerprint".into(),
+                    serde_json::Value::String("0".repeat(64)),
+                );
             }
             let history = serde_json::from_value(value).expect("test precondition");
             let (events, _rx) = mpsc::channel(8);
@@ -2307,7 +2304,7 @@ mod tests {
                 "screen history must belong to the exact saved layout"
             );
             for (_, runtime) in runtimes {
-                runtime.shutdown();
+                drop(runtime);
             }
         }
     }

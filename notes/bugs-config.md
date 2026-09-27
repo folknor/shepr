@@ -37,21 +37,11 @@ Proposed rewrite:
 4. The wire form sends that typed struct (or re-runs validation on receipt).
 5. `headless_size()` can then no longer fail and the `expect` disappears.
 
+Keybinding fallbacks belong to the same rewrite. Diagnostic wording no longer says bindings are "disabled", but validation still builds candidate values while collecting errors: an invalid prefix becomes a `ctrl+b` placeholder and invalid entries are skipped when building `Keybinds`. Only the launch-time diagnostics gate stops them, and the public raw `Config::keybinds()` accessor can hand those candidates to a caller that skips validation (in-tree only tests do).
+
 Related gap: `ui.sidebar_width` is never checked against min and max. What happens to an out-of-range width is decided by the consumer, which the hunter could not trace.
 
 Related: SRV-002 (the server re-encodes `ValidatedConfig` per render with an `expect`).
-
-## CFG-006 - Keybinding diagnostics say "disabling binding", but the launch fails
-
-`keybinds.rs` lines 606, 611, 642, 647, 685, 702, 728, 737, 769 and 789. Every one of them is turned into a fatal launch error (`io.rs:477-482` → `into_validated`), so the wording describes the fallback behaviour the project says it removed. The fallback code is also still there: an invalid prefix falls back to `ctrl+b` (`keybinds.rs:363-367`), and invalid entries are skipped when building `Keybinds`. Only the diagnostics gate stops them.
-
-## CFG-007 - One user binding silently removes a default binding on another action
-
-`keybinds.rs:744-747` and `776-779`. For example, `new_tab = "prefix+z"` quietly unbinds `zoom`, and a user `prefix = "h"` quietly drops `navigate_pane_left`. No diagnostic is produced, so `config check` passes and the default action silently ends up with no key.
-
-## CFG-008 - parse_key_combo accepts keys that do not exist
-
-`keybinds.rs:997`. `f0` and `f200` parse to `KeyCode::F(0)` and `KeyCode::F(200)`, so a mistyped binding passes validation and can never fire.
 
 ## CFG-009 - terminal.new_cwd is only partly checked
 

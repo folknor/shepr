@@ -1243,7 +1243,7 @@ mod tests {
 
         let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
         for (_terminal_id, runtime) in runtimes {
-            runtime.shutdown();
+            drop(runtime);
         }
     }
 
@@ -1302,7 +1302,7 @@ mod tests {
 
         let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
         for (_terminal_id, runtime) in runtimes {
-            runtime.shutdown();
+            drop(runtime);
         }
     }
 
@@ -1345,7 +1345,7 @@ mod tests {
 
         let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
         for (_terminal_id, runtime) in runtimes {
-            runtime.shutdown();
+            drop(runtime);
         }
     }
 
@@ -1680,6 +1680,25 @@ mod tests {
         app.save_session_before_teardown();
         app.retire_session_writer();
 
+        assert!(shepr_mux::persist::load(&shepr_api::session::data_dir(&app.paths)).is_none());
+    }
+
+    #[test]
+    fn reader_panic_removes_the_pane_without_a_checkpoint() {
+        let mut app = test_app();
+        app.policy = AppPolicy::PRODUCTION;
+        let workspace = Workspace::test_new("broken");
+        let pane_id = workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![workspace];
+        app.state.set_active_index(Some(0));
+        app.state.ensure_test_terminals();
+
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id,
+            exit_reason: shepr_platform::ChildExitReason::ReaderPanicked,
+        });
+
+        assert!(app.state.workspaces.is_empty());
         assert!(shepr_mux::persist::load(&shepr_api::session::data_dir(&app.paths)).is_none());
     }
 
