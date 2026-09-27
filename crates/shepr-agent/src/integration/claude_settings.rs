@@ -342,7 +342,7 @@ fn append_hooks_property_compact(
 ) -> io::Result<String> {
     let root = parse_ast_root_object(content, settings_path)?;
     let value = format!("{{\"SessionStart\":[{}]}}", canonical_hook_json(hook_path)?);
-    Ok(append_object_property(content, &root, "hooks", &value))
+    append_object_property(content, &root, "hooks", &value)
 }
 
 fn append_session_property_compact(
@@ -358,12 +358,7 @@ fn append_session_property_compact(
         ))
     })?;
     let value = format!("[{}]", canonical_hook_json(hook_path)?);
-    Ok(append_object_property(
-        content,
-        hooks,
-        "SessionStart",
-        &value,
-    ))
+    append_object_property(content, hooks, "SessionStart", &value)
 }
 
 fn append_session_entry_compact(
@@ -405,8 +400,12 @@ fn append_object_property(
     object: &AstObject<'_>,
     name: &str,
     value: &str,
-) -> String {
-    let key = serde_json::to_string(name).expect("JSON object keys are serializable");
+) -> io::Result<String> {
+    let key = serde_json::to_string(name).map_err(|err| {
+        io::Error::other(format!(
+            "failed to encode Claude settings property name: {err}"
+        ))
+    })?;
     let key_value_separator = object
         .properties
         .first()
@@ -414,13 +413,13 @@ fn append_object_property(
         .unwrap_or(":");
     let insertion = format!("{key}{key_value_separator}{value}");
     let delimiter = object_delimiter(content, object);
-    append_to_container(
+    Ok(append_to_container(
         content,
         object.range,
         !object.properties.is_empty(),
         delimiter,
         &insertion,
-    )
+    ))
 }
 
 fn append_array_element(content: &str, array: &AstArray<'_>, value: &str) -> String {

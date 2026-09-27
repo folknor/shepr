@@ -19,15 +19,7 @@ Related: the remote hunter notes that two bridges arriving at once on a remote h
 
 ## FND-002 - Private-socket binding often falls back to the less safe path
 
-`ipc.rs`, `bind_via_private_staging`. The staged name `.shepr-<pid>-<nanos hex>-<n>/s` adds roughly 35–40 bytes to the socket path. So any path that fits the 107-byte limit but is within about 40 bytes of it takes the bind-then-chmod fallback, which is connectable with umask permissions for a moment. The code documents the fallback, but the staging name is what makes it common. Use a very short staging name, or bind through `/proc/self/fd/<dirfd>/s` on an O_PATH directory fd.
-
-## FND-003 - Saved layouts are trusted without checks, and bad data panics
-
-`crates/shepr-core/src/layout.rs`. `TileLayout::from_saved` does not check that `focus` is in the tree, that ids are unique, or that no id is 0 (0 is the placeholder id). `close_focused` then `expect`s the focused pane to be present, so a restored session with a stale focus id panics the server. `split_focused` also `expect`s (production `expect` on data that came from disk goes against "no unwrap in production"). `from_saved` should validate and return `Option`/`Result`, or fall back to the first leaf.
-
-## FND-004 - SplitRatio does not leave room for both panes; unchecked u16 addition
-
-`layout.rs`. The doc says `SplitRatio` is "constrained to leave room for both panes", but the clamp to 0.1–0.9 plus `round()` in `split_rect` gives a 0-width or 0-height child for small areas (width 3 × 0.1 rounds to 0). A rule in cells, not a fraction, is needed. Separately, `find_in_direction` and `ranges_overlap` use unchecked `u16` addition (`r.x + r.width`) while other helpers in the same file use saturating arithmetic.
+`ipc.rs`, `bind_via_private_staging`. The staged name `.shepr-<pid>-<nanos hex>-<n>/s` adds roughly 35-40 bytes to the socket path. So any path that fits the 107-byte limit but is within about 40 bytes of it takes the bind-then-chmod fallback, which is connectable with umask permissions for a moment. The code documents the fallback, but the staging name is what makes it common. Use a very short staging name, or bind through `/proc/self/fd/<dirfd>/s` on an O_PATH directory fd.
 
 ## FND-005 - SSH control directory ignores XDG and escapes test isolation
 
@@ -80,3 +72,11 @@ Related: TRM-011 (reader panic reported as `Exited`).
 - `create_private_temporary` is a pure alias of `create_private_file`.
 - `poll_local_stream_read` throws away the byte count it computes.
 - `ssh_agent`: the server's inherited fallback agent always takes priority over every attached client's agent. This is intentional per the comment, but it means a stale inherited sshd socket that still accepts connections wins over a fresh one.
+
+## FND-016 - Per-crate test builds rely on workspace feature unification
+
+shepr-termio, shepr-client and shepr-mux tests only compiled under the whole workspace until their `test-support` features were enabled through dev-dependencies. shepr-api and shepr-server build alone; shepr-remote and shepr-vt have not been checked for the same gap.
+
+## FND-015 - PaneId::alloc wraps to the placeholder id
+
+`PaneId::alloc()` uses a wrapping `AtomicU32`. After about 4.3 billion allocations it returns 0, the placeholder id that `TileLayout` now rejects, and then reuses live ids. Unlikely in practice, but it breaks the layout identity invariant that `from_saved` and `insert_pane_near` enforce.

@@ -28,10 +28,11 @@ pub(super) fn wait_for_output(
     api_tx: &ApiRequestSender,
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<Option<String>> {
+    let deadline = match checked_timeout_deadline(params.timeout_ms) {
+        Ok(deadline) => deadline,
+        Err(error) => return Ok(Some(crate::error::encode_result(request_id, Err(error)))),
+    };
     shepr_platform::logging::api_wait_started(&request_id, &params.pane_id, params.timeout_ms);
-    let deadline = params
-        .timeout_ms
-        .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
 
     let regex = match &params.r#match {
         crate::schema::OutputMatch::Regex { value } => match Regex::new(value) {
@@ -382,9 +383,14 @@ fn wait_for_resolved_agent(
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<Option<AgentWaitOutcome>> {
-    let deadline = wait
-        .timeout_ms
-        .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+    let deadline = match checked_timeout_deadline(wait.timeout_ms) {
+        Ok(deadline) => deadline,
+        Err(error) => {
+            return Ok(Some(AgentWaitOutcome::Response(
+                crate::error::encode_result(request_id, Err(error)),
+            )));
+        }
+    };
     let expected_terminal_id = wait.initial.terminal_id.clone();
     let expected_name = wait
         .initial
@@ -720,9 +726,10 @@ pub(super) fn wait_for_event(
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<Option<String>> {
-    let deadline = params
-        .timeout_ms
-        .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+    let deadline = match checked_timeout_deadline(params.timeout_ms) {
+        Ok(deadline) => deadline,
+        Err(error) => return Ok(Some(crate::error::encode_result(request_id, Err(error)))),
+    };
 
     let subscription = event_match_subscription(params.match_event);
     let mut active = match ActiveSubscription::new(
@@ -777,6 +784,23 @@ pub(super) fn wait_for_event(
 
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
     }
+}
+
+fn checked_timeout_deadline(
+    timeout_ms: Option<u64>,
+) -> Result<Option<std::time::Instant>, crate::error::ApiError> {
+    timeout_ms
+        .map(|ms| {
+            std::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(ms))
+                .ok_or_else(|| {
+                    crate::error::ApiError::new(
+                        crate::error::ApiErrorCode::InvalidRequest,
+                        "timeout_ms exceeds the supported deadline range",
+                    )
+                })
+        })
+        .transpose()
 }
 
 /// `EventMatch` only has variants this function can serve, so an unsupported

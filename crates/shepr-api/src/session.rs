@@ -685,9 +685,8 @@ mod tests {
         env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
         let requested = SessionId::parse("work").expect("test precondition");
 
-        let (resolved, explicit) =
-            SessionId::resolve(Some(requested.clone()), Some("bad/name"), true)
-                .expect("explicit selection wins");
+        let (resolved, explicit) = SessionId::resolve(Some(requested.clone()), Some("bad/name"))
+            .expect("explicit selection wins");
 
         assert_eq!(resolved, requested);
         assert!(explicit);
@@ -862,15 +861,17 @@ mod tests {
     }
 
     #[test]
-    fn env_socket_override_skips_invalid_env_session_validation_without_explicit_session() {
+    fn env_socket_override_does_not_excuse_invalid_env_session() {
         let env = IsolatedEnv::new();
         env.set(SESSION_ENV_VAR, "bad/name");
         env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/shepr.sock");
-        let paths =
-            shepr_config::AppPaths::resolve().expect("socket override skips session validation");
-        assert_eq!(
-            active_api_socket_path(&paths),
-            PathBuf::from("/tmp/shepr.sock")
+        let errors = shepr_config::AppPaths::resolve()
+            .expect_err("a malformed SHEPR_SESSION fails even with a socket override");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("session selection error")),
+            "{errors:?}"
         );
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("bad/name"));
     }

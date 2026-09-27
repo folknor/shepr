@@ -279,7 +279,7 @@ fn color_scheme_reports_are_enabled_only_for_full_clients() {
 #[test]
 fn terminal_restore_postlude_restores_visible_default_cursor() {
     let mut output = Vec::new();
-    write_terminal_restore_postlude(&mut output, false).expect("test precondition");
+    write_terminal_restore_postlude(&mut output).expect("test precondition");
     assert_eq!(output, b"\x1b[?25h\x1b[0 q");
 }
 
@@ -293,16 +293,19 @@ fn direct_attach_mouse_capture_combines_local_preference_with_child_demand() {
 }
 
 #[test]
-fn terminal_restore_postlude_disables_color_scheme_reports_when_enabled() {
+fn host_modes_restore_color_scheme_reports_when_enabled() {
     let mut output = Vec::new();
-    write_terminal_restore_postlude(&mut output, true).expect("test precondition");
+    let host_modes = HostModes::new(false, false, false);
+    host_modes
+        .enable_color_scheme_reports(&mut output)
+        .expect("test precondition");
+    output.clear();
+    host_modes.restore(&mut output).expect("test precondition");
 
-    let mut expected = Vec::new();
-    expected.extend_from_slice(
-        shepr_termio::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
+    assert_eq!(
+        output,
+        shepr_termio::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes()
     );
-    expected.extend_from_slice(b"\x1b[?25h\x1b[0 q");
-    assert_eq!(output, expected);
 }
 
 #[test]

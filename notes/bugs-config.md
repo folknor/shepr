@@ -11,26 +11,11 @@
 
 Hunter coverage: every source file in the crate except `theme.rs`, `diagnostic.rs`, `default.toml` and the test tail of `keybinds.rs`. The hunter could not follow values into shepr-server or shepr-client; findings that depend on a consumer say so.
 
-## CFG-001 - Socket path overrides are never validated
-
-`io.rs:192-193`, `address.rs:52-66`. The `AppPaths` doc says production constructors "reject unresolved path inputs that would put files relative to the working directory". But `SHEPR_SOCKET_PATH` and `SHEPR_CLIENT_SOCKET_PATH` are passed straight into `PathBuf::from` with no checks.
-- A relative value is accepted as is.
-- An empty `SHEPR_SOCKET_PATH=` gives api socket `""` and client socket `shepr-client.sock` (the `derive_client_socket_from_api_socket` fallback), both relative to the working directory.
-- `SHEPR_CONFIG_PATH` is checked (it must not be empty, and relative paths are joined to the working directory), so the socket overrides are the inconsistent ones.
-
-## CFG-002 - Non-UTF-8 environment values are silently treated as unset
-
-`io.rs:192-194`. `std::env::var(..).ok()` turns an invalid `SHEPR_SOCKET_PATH`, `SHEPR_CLIENT_SOCKET_PATH` or `SHEPR_SESSION` into `None`. The process then quietly routes to the default session or socket instead of failing, which contradicts "no fallbacks". It should use `var_os`, and either reject such values or accept them as paths.
-
 ## CFG-003 - XDG handling contradicts "Directories follow the XDG spec"
 
 `io.rs:160-176`, `215-219`. The spec says an empty `XDG_CONFIG_HOME` or `XDG_STATE_HOME` means the default applies, and relative values are ignored. shepr fails the launch in both cases, and the test at `io.rs:975-979` locks that in. Two ways to resolve it:
 - implement the spec (treat empty as unset), or
 - reword the claim to "XDG, strict: a set variable must be absolute".
-
-## CFG-004 - A malformed SHEPR_SESSION is ignored whenever SHEPR_SOCKET_PATH is set
-
-`session_id.rs:76`. The code comments this as "matching the legacy behavior". That is a fallback plus legacy compatibility, both of which the project says it drops. After this the session is `Default`, so `data_dir` and the printed `attach_command` (`SHEPR_SESSION=default …`) describe a different session than the one the user named.
 
 ## CFG-005 - Config::headless_size() panics on unvalidated configs
 
@@ -88,13 +73,13 @@ Related: SRV-002 (the server re-encodes `ValidatedConfig` per render with an `ex
 - `RawSidebarToken` is `#[serde(untagged)]` (`sidebar.rs:199-204`), so a bad `fg` or a bad rule in a styled token is reported as "data did not match any variant", not the specific error.
 - When the config fails to parse, `load_for_check` skips the `new_cwd` home check, so `config check` hides that second error until the first is fixed.
 
-## CFG-012 - Stale "legacy fallback" wording for SHEPR_CLIENT_SOCKET_PATH
-
-`address.rs:5-9` calls `SHEPR_CLIENT_SOCKET_PATH` a "legacy" variable "kept as a fallback". The project has no legacy to keep: either it is a real feature and should be described as one, or it should go.
-
 ## CFG-013 - Small config smells
 
 - `ValidatedConfig`'s `PartialEq` ignores the palette and the keybind cache, and treats a failed serialization as "not equal".
 - `ConfigProvenance::defaults` swallows its error and returns an empty record.
 - `PathProvenance.current_dir` is always `Default`.
 - `tab_bar_right_diagnostics` only checks the first 16 entries. That is harmless, because more than 16 entries is already an error.
+
+## CFG-014 - ServerAddress::resolve accepts relative paths directly
+
+`address.rs`. `AppPaths` now validates socket overrides (non-empty, absolute, UTF-8) before resolving them, but `ServerAddress::resolve` stays a public, infallible constructor that takes any path, relative included. Its only external callers found are tests in `crates/shepr-server/src/server/socket_paths.rs`, which also still say "legacy" in a client-override test name and fixture path. Either make the constructor crate-private or validate inside it.

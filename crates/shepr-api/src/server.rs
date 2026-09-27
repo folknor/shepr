@@ -18,10 +18,9 @@ use crate::subscriptions::{ActiveSubscription, SubscriptionStream};
 use crate::wait::{prompt_agent, wait_for_agent, wait_for_event, wait_for_output};
 use crate::{ApiRequestMessage, ApiRequestSender, EventHub, socket_path};
 use shepr_platform::ipc::{
-    LocalStream, LocalStreamRead, SocketFileIdentity, bind_private_local_listener,
-    is_connection_closed_error, local_stream_peer_closed, peer_is_same_user,
-    poll_local_stream_read, remove_socket_file_if_owned, set_local_stream_polling,
-    socket_file_identity,
+    LocalStream, SocketFileIdentity, bind_private_local_listener, is_connection_closed_error,
+    local_stream_peer_closed, peer_is_same_user, remove_socket_file_if_owned,
+    set_local_stream_polling, socket_file_identity,
 };
 
 #[cfg(test)]
@@ -409,17 +408,13 @@ fn handle_connection_with_stop(
                     result: ResponseResult::Ok {},
                 },
             )?;
-            set_local_stream_polling(&mut stream, true)?;
-            let mut byte = [0];
             while running.load(Ordering::Relaxed) {
-                match poll_local_stream_read(&mut stream, &mut byte)? {
-                    LocalStreamRead::Pending => {
-                        // SSH can unlink an inherited socket after its bridge's lease closes.
-                        lease.refresh()?;
-                        std::thread::sleep(CONNECTION_POLL_INTERVAL);
-                    }
-                    _ => break,
+                if local_stream_peer_closed(&stream)? {
+                    break;
                 }
+                // SSH can unlink an inherited socket after its bridge's lease closes.
+                lease.refresh()?;
+                std::thread::sleep(CONNECTION_POLL_INTERVAL);
             }
             Ok(())
         }

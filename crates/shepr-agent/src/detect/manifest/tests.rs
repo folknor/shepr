@@ -31,18 +31,26 @@ id = "codex"
 /// bundled manifests.
 struct TestManifests {
     dir: PathBuf,
+    override_dir: PathBuf,
     registry: ManifestRegistry,
 }
 
 impl TestManifests {
     fn new(name: &str) -> Self {
         let dir = shepr_test_support::ScratchDir::new(name).keep_until_exit();
-        let registry = ManifestRegistry::new(Some(&dir));
-        Self { dir, registry }
+        let override_dir = manifest_override_dir(&dir);
+        std::fs::create_dir_all(&override_dir).expect("create manifest override directory");
+        let registry = ManifestRegistry::new(Some(&override_dir));
+        Self {
+            dir,
+            override_dir,
+            registry,
+        }
     }
 
     fn write_codex_without_reload(&self, content: &str) {
-        std::fs::write(override_path(&self.dir, Agent::Codex), content).expect("test precondition");
+        std::fs::write(override_path(&self.override_dir, Agent::Codex), content)
+            .expect("test precondition");
     }
 
     fn write_codex(&self, content: &str) {
@@ -51,7 +59,7 @@ impl TestManifests {
     }
 
     fn reload(&self) {
-        self.registry.reload(&self.dir);
+        self.registry.reload(&self.override_dir);
     }
 
     fn get(&self, agent: Agent) -> Option<Arc<LoadedManifest>> {
@@ -871,35 +879,32 @@ contains = ["ready"]
 }
 
 #[test]
-fn manifest_validation_rejects_excessive_gate_depth() {
-    let manifest = r#"
+fn manifest_validation_caps_gate_depth_at_eight_levels() {
+    fn manifest_with_nested_gates(operator: &str, nested_levels: usize) -> String {
+        let mut nested = r#"{ contains = ["leaf"] }"#.to_string();
+        for _ in 1..nested_levels {
+            nested = format!(r#"{{ contains = ["nested"], {operator} = [{nested}] }}"#);
+        }
+        format!(
+            r#"
 id = "codex"
 
 [[rules]]
 id = "deep"
 state = "idle"
 contains = ["ready"]
-all = [
-  { contains = ["1"], all = [
-    { contains = ["2"], all = [
-      { contains = ["3"], all = [
-        { contains = ["4"], all = [
-          { contains = ["5"], all = [
-            { contains = ["6"], all = [
-              { contains = ["7"], all = [
-                { contains = ["8"], all = [
-                  { contains = ["9"] },
-                ] },
-              ] },
-            ] },
-          ] },
-        ] },
-      ] },
-    ] },
-  ] },
-]
-"#;
-    assert!(parse_manifest(manifest).is_err());
+{operator} = [{nested}]
+"#
+        )
+    }
+
+    for operator in ["all", "not"] {
+        let at_limit = manifest_with_nested_gates(operator, MAX_GATE_DEPTH - 1);
+        assert!(parse_manifest(&at_limit).is_ok(), "operator={operator}");
+
+        let over_limit = manifest_with_nested_gates(operator, MAX_GATE_DEPTH);
+        assert!(parse_manifest(&over_limit).is_err(), "operator={operator}");
+    }
 }
 
 #[test]
@@ -954,14 +959,19 @@ fn top_non_empty_lines_uses_top_occurrence_for_repeated_text() {
 }
 
 #[test]
-fn top_non_empty_lines_requires_a_canonical_positive_bounded_count() {
-    let name = "top_non_empty_lines";
-    assert!(validate_region_name(&format!("{name}(1)")).is_ok());
-    assert!(validate_region_name(&format!("{name}({})", u16::MAX)).is_ok());
-    for count in ["0", "01", "+1", "65536", "999999999999999999999999"] {
-        assert!(
-            validate_region_name(&format!("{name}({count})")).is_err(),
-            "{name} accepted invalid count {count}"
-        );
+fn manifest_validation_rejects_invalid_counted_line_regions() {
+    for name in [
+        "bottom_lines",
+        "bottom_non_empty_lines",
+        "top_non_empty_lines",
+    ] {
+        assert!(validate_region_name(&format!("{name}(1)")).is_ok());
+        assert!(validate_region_name(&format!("{name}({})", u16::MAX)).is_ok());
+        for count in ["0", "00", "01", "+1", "65536", "999999999999999999999999"] {
+            assert!(
+                validate_region_name(&format!("{name}({count})")).is_err(),
+                "{name} accepted invalid count {count}"
+            );
+        }
     }
 }

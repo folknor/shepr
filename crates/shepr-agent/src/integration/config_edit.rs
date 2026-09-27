@@ -2,6 +2,7 @@ use std::io;
 use std::path::Path;
 
 use serde_json::{Map, Value, json};
+use toml_edit::{DocumentMut, Item, Table, Value as TomlValue};
 
 use super::command::hook_command;
 use super::{
@@ -354,31 +355,44 @@ pub(crate) fn is_matching_command_hook(hook: &Value, command: &str) -> bool {
         && hook.get("command").and_then(Value::as_str) == Some(command)
 }
 
-pub(crate) fn ensure_hermes_plugin_enabled(content: &str) -> String {
-    update_hermes_enabled_plugin(content, true)
+pub(crate) fn ensure_hermes_plugin_enabled(content: &str) -> io::Result<String> {
+    try_update_hermes_enabled_plugin(content, true)
 }
 
-pub(crate) fn remove_hermes_plugin_enabled(content: &str) -> String {
-    update_hermes_enabled_plugin(content, false)
+pub(crate) fn remove_hermes_plugin_enabled(content: &str) -> io::Result<String> {
+    try_update_hermes_enabled_plugin(content, false)
 }
 
-pub(crate) fn update_hermes_enabled_plugin(content: &str, enabled: bool) -> String {
+fn try_update_hermes_enabled_plugin(content: &str, enabled: bool) -> io::Result<String> {
     let trailing_newline = content.ends_with('\n');
     let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
     let Some(plugins_index) = top_level_yaml_key_index(&lines, "plugins") else {
         if !enabled {
-            return content.to_string();
+            return Ok(content.to_string());
         }
         let mut result = content.trim_end_matches('\n').to_string();
         if !result.is_empty() {
             result.push('\n');
         }
         result.push_str("plugins:\n  enabled:\n    - shepr-agent-state\n");
-        return result;
+        return Ok(result);
     };
 
     let plugins_end =
         next_top_level_yaml_key_index(&lines, plugins_index + 1).unwrap_or(lines.len());
+    if !hermes_yaml_layout_is_editable(&lines, plugins_index, plugins_end) {
+        // The refusal asks the user to make the edit by hand, so a retry must
+        // accept a hand-edited file: an unsupported layout that already names
+        // the plugin (outside comments) counts as enabled, one that does not
+        // counts as disabled. Anything else still needs the manual edit.
+        let mentions_plugin = lines[plugins_index..plugins_end]
+            .iter()
+            .any(|line| strip_yaml_inline_comment(line).contains(HERMES_PLUGIN_INSTALL_NAME));
+        if mentions_plugin == enabled {
+            return Ok(content.to_string());
+        }
+        return Err(hermes_yaml_manual_edit_error(enabled));
+    }
     let plugins_inline_items = yaml_key_value_at_indent(&lines[plugins_index], 0, "plugins")
         .and_then(yaml_flow_sequence_items);
     let enabled_index = lines[plugins_index + 1..plugins_end]
@@ -399,7 +413,7 @@ pub(crate) fn update_hermes_enabled_plugin(content: &str, enabled: bool) -> Stri
                 .position(|item| yaml_scalar_value(item) == HERMES_PLUGIN_INSTALL_NAME);
 
             match (enabled, existing_item_index) {
-                (true, Some(_)) | (false, None) => return content.to_string(),
+                (true, Some(_)) | (false, None) => return Ok(content.to_string()),
                 (true, None) => items.insert(0, HERMES_PLUGIN_INSTALL_NAME.to_string()),
                 (false, Some(index)) => {
                     items.remove(index);
@@ -409,7 +423,7 @@ pub(crate) fn update_hermes_enabled_plugin(content: &str, enabled: bool) -> Stri
             let comment = yaml_inline_comment(&lines[enabled_index]);
             let replacement = hermes_enabled_plugin_lines(&items, comment);
             lines.splice(enabled_index..enabled_index + 1, replacement);
-            return join_yaml_lines(&lines, trailing_newline);
+            return Ok(join_yaml_lines(&lines, trailing_newline));
         }
 
         let list_start = enabled_index + 1;
@@ -426,13 +440,13 @@ pub(crate) fn update_hermes_enabled_plugin(content: &str, enabled: bool) -> Stri
             .map(|offset| list_start + offset);
 
         match (enabled, existing_item_index) {
-            (true, Some(_)) | (false, None) => return content.to_string(),
+            (true, Some(_)) | (false, None) => return Ok(content.to_string()),
             (true, None) => lines.insert(list_start, "    - shepr-agent-state".to_string()),
             (false, Some(index)) => {
                 lines.remove(index);
             }
         }
-        return join_yaml_lines(&lines, trailing_newline);
+        return Ok(join_yaml_lines(&lines, trailing_newline));
     }
 
     if let Some(mut items) = plugins_inline_items {
@@ -441,7 +455,7 @@ pub(crate) fn update_hermes_enabled_plugin(content: &str, enabled: bool) -> Stri
             .position(|item| yaml_scalar_value(item) == HERMES_PLUGIN_INSTALL_NAME);
 
         match (enabled, existing_item_index) {
-            (true, Some(_)) | (false, None) => return content.to_string(),
+            (true, Some(_)) | (false, None) => return Ok(content.to_string()),
             (true, None) => items.insert(0, HERMES_PLUGIN_INSTALL_NAME.to_string()),
             (false, Some(index)) => {
                 items.remove(index);
@@ -451,7 +465,7 @@ pub(crate) fn update_hermes_enabled_plugin(content: &str, enabled: bool) -> Stri
         let comment = yaml_inline_comment(&lines[plugins_index]);
         let replacement = hermes_flat_plugin_lines(&items, comment);
         lines.splice(plugins_index..plugins_end, replacement);
-        return join_yaml_lines(&lines, trailing_newline);
+        return Ok(join_yaml_lines(&lines, trailing_newline));
     }
 
     if let Some(flat_list_start) = flat_list_start {
@@ -461,22 +475,104 @@ pub(crate) fn update_hermes_enabled_plugin(content: &str, enabled: bool) -> Stri
             .map(|offset| plugins_index + 1 + offset);
 
         match (enabled, existing_item_index) {
-            (true, Some(_)) | (false, None) => return content.to_string(),
+            (true, Some(_)) | (false, None) => return Ok(content.to_string()),
             (true, None) => lines.insert(flat_list_start, "  - shepr-agent-state".to_string()),
             (false, Some(index)) => {
                 lines.remove(index);
             }
         }
-        return join_yaml_lines(&lines, trailing_newline);
+        return Ok(join_yaml_lines(&lines, trailing_newline));
     }
 
     if enabled {
         lines.insert(plugins_index + 1, "  enabled:".to_string());
         lines.insert(plugins_index + 2, "    - shepr-agent-state".to_string());
-        return join_yaml_lines(&lines, trailing_newline);
+        return Ok(join_yaml_lines(&lines, trailing_newline));
     }
 
-    content.to_string()
+    Ok(content.to_string())
+}
+
+/// The Hermes editor preserves the user's source text, so it only edits layouts
+/// its line-based parser understands. A flow mapping or non-canonical block
+/// indentation cannot safely receive the canonical two-space insertion, and a
+/// block `enabled:` list must hold its items at four spaces so the canonical
+/// `    - shepr-agent-state` line joins the same sequence.
+fn hermes_yaml_layout_is_editable(
+    lines: &[String],
+    plugins_index: usize,
+    plugins_end: usize,
+) -> bool {
+    let plugin_value = yaml_key_value_at_indent(&lines[plugins_index], 0, "plugins")
+        .map(strip_yaml_inline_comment)
+        .map(str::trim)
+        .unwrap_or_default();
+    if !plugin_value.is_empty() && yaml_flow_sequence_items(plugin_value).is_none() {
+        return false;
+    }
+
+    let Some(child_index) =
+        (plugins_index + 1..plugins_end).find(|index| yaml_indent(&lines[*index]).is_some())
+    else {
+        return true;
+    };
+    if yaml_indent(&lines[child_index]) != Some(2) {
+        return false;
+    }
+
+    for index in plugins_index + 1..plugins_end {
+        if yaml_key_name(&lines[index]) != Some("enabled") {
+            continue;
+        }
+        if yaml_indent(&lines[index]) != Some(2) {
+            return false;
+        }
+        let value = yaml_key_value_at_indent(&lines[index], 2, "enabled")
+            .map(strip_yaml_inline_comment)
+            .map(str::trim)
+            .unwrap_or_default();
+        if !value.is_empty() {
+            if yaml_flow_sequence_items(value).is_none() {
+                return false;
+            }
+            continue;
+        }
+        for line in &lines[index + 1..plugins_end] {
+            let Some(indent) = yaml_indent(line) else {
+                continue;
+            };
+            if indent <= 2 && yaml_key_name(line).is_some() {
+                break;
+            }
+            // Items at the key's own indent, or a nested mapping, would not
+            // share a sequence with the inserted four-space item.
+            if indent < 4 || (indent == 4 && yaml_list_item_value(line).is_none()) {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+fn hermes_yaml_manual_edit_error(enabled: bool) -> io::Error {
+    let edit = if enabled {
+        "add `shepr-agent-state` to"
+    } else {
+        "remove `shepr-agent-state` from"
+    };
+    io::Error::other(format!(
+        "Hermes config.yaml uses a YAML layout shepr cannot safely edit; {edit} `plugins.enabled` \
+         by hand and retry"
+    ))
+}
+
+/// String-returning wrapper for unit tests of supported layouts; it panics on
+/// a refusal so a test cannot mistake one for an unchanged file.
+#[cfg(test)]
+pub(crate) fn update_hermes_enabled_plugin(content: &str, enabled: bool) -> String {
+    try_update_hermes_enabled_plugin(content, enabled)
+        .unwrap_or_else(|err| panic!("Hermes layout refused: {err}"))
 }
 
 pub(crate) fn hermes_flat_plugin_lines(items: &[String], comment: Option<&str>) -> Vec<String> {
@@ -595,6 +691,7 @@ pub(crate) fn yaml_flow_sequence_items(value: &str) -> Option<Vec<String>> {
     let mut current = String::new();
     let mut quote = None;
     let mut escaped = false;
+    let mut nested_collections = Vec::new();
 
     for ch in inner.chars() {
         if let Some(quote_char) = quote {
@@ -615,7 +712,21 @@ pub(crate) fn yaml_flow_sequence_items(value: &str) -> Option<Vec<String>> {
                 quote = Some(ch);
                 current.push(ch);
             }
-            ',' => {
+            '[' | '{' => {
+                nested_collections.push(ch);
+                current.push(ch);
+            }
+            ']' | '}' => {
+                let expected_open = if ch == ']' { '[' } else { '{' };
+                if nested_collections.pop() != Some(expected_open) {
+                    return None;
+                }
+                current.push(ch);
+            }
+            ',' if nested_collections.is_empty() => {
+                if current.trim().is_empty() {
+                    return None;
+                }
                 items.push(current.trim().to_string());
                 current.clear();
             }
@@ -623,10 +734,16 @@ pub(crate) fn yaml_flow_sequence_items(value: &str) -> Option<Vec<String>> {
         }
     }
 
-    if quote.is_some() {
+    if quote.is_some() || !nested_collections.is_empty() {
         return None;
     }
 
+    if current.trim().is_empty() {
+        if inner.ends_with(',') {
+            return Some(items);
+        }
+        return None;
+    }
     items.push(current.trim().to_string());
     Some(items)
 }
@@ -688,126 +805,33 @@ pub(crate) fn join_yaml_lines(lines: &[String], trailing_newline: bool) -> Strin
     result
 }
 
-/// Enable `features.hooks` in a Codex `config.toml`, in whichever shape the
-/// user already declared `features`: a `[features]` table, root-level dotted
-/// keys (`features.x = ...`), or not at all (a `[features]` table is appended).
-/// A root-level inline table (`features = { ... }`) is refused rather than
-/// rewritten; appending a `[features]` table next to either of the other
-/// shapes would define the table twice and make the file invalid TOML.
+/// Enable `features.hooks` in a Codex `config.toml`, preserving source layout
+/// when `features` is a table or root-level dotted table.
 pub(crate) fn build_codex_config_with_hooks(content: &str) -> io::Result<String> {
-    let mut lines: Vec<Option<String>> =
-        content.lines().map(|line| Some(line.to_string())).collect();
-    let trailing_newline = content.ends_with('\n');
-    let mut in_root = true;
-    let mut in_top_level_features = false;
-    let mut features_header_index = None;
-    let mut hooks_index = None;
-    let mut root_dotted_hooks_index = None;
-    let mut last_root_dotted_features_index = None;
-    let mut deprecated_hooks_indexes = Vec::new();
+    let mut document = content
+        .parse::<DocumentMut>()
+        .map_err(|error| io::Error::other(format!("could not parse Codex config.toml: {error}")))?;
 
-    for (index, line) in content.lines().enumerate() {
-        if let Some(header) = toml_table_header(line) {
-            in_root = false;
-            in_top_level_features = header == "[features]";
-            if in_top_level_features && features_header_index.is_none() {
-                features_header_index = Some(index);
-            }
-            continue;
-        }
-
-        let Some(key) = toml_line_key(line) else {
-            continue;
-        };
-
-        if in_root {
-            match key.as_str() {
-                "features" => {
-                    return Err(io::Error::other(
-                        "codex config.toml declares `features` as an inline table; move it to a \
-                         [features] table (or `features.<key> = ...` lines) and retry",
-                    ));
-                }
-                "features.hooks" => {
-                    root_dotted_hooks_index = Some(index);
-                    last_root_dotted_features_index = Some(index);
-                }
-                "features.codex_hooks" => {
-                    deprecated_hooks_indexes.push(index);
-                    last_root_dotted_features_index = Some(index);
-                }
-                other if other.starts_with("features.") => {
-                    last_root_dotted_features_index = Some(index);
-                }
-                _ => {}
-            }
-            continue;
-        }
-
-        if !in_top_level_features {
-            continue;
-        }
-
-        match key.as_str() {
-            "codex_hooks" => deprecated_hooks_indexes.push(index),
-            "hooks" => hooks_index = Some(index),
-            _ => {}
-        }
-    }
-
-    if let Some(index) = hooks_index {
-        lines[index] = Some("hooks = true".to_string());
-    }
-    if let Some(index) = root_dotted_hooks_index {
-        lines[index] = Some("features.hooks = true".to_string());
-    }
-
-    let insertion = if hooks_index.is_some() || root_dotted_hooks_index.is_some() {
-        None
-    } else if let Some(index) = features_header_index {
-        Some((index, "hooks = true"))
-    } else if let Some(index) = last_root_dotted_features_index {
-        Some((index, "features.hooks = true"))
-    } else {
-        let mut result = content.trim_end_matches('\n').to_string();
-        if !result.is_empty() {
-            result.push('\n');
-            result.push('\n');
-        }
-        result.push_str("[features]\nhooks = true\n");
-        return Ok(result);
+    let Some(features) = document.as_table_mut().get_mut("features") else {
+        let mut features = Table::new();
+        features.insert("hooks", Item::Value(TomlValue::from(true)));
+        document
+            .as_table_mut()
+            .insert("features", Item::Table(features));
+        return Ok(document.to_string());
     };
 
-    for index in deprecated_hooks_indexes {
-        lines[index] = None;
+    if let Some(features) = features.as_table_mut() {
+        features.remove("codex_hooks");
+        features.insert("hooks", Item::Value(TomlValue::from(true)));
+    } else {
+        return Err(io::Error::other(
+            "codex config.toml declares `features` as an inline table or non-table value; move it \
+             to a [features] table (or `features.<key> = ...` lines) and retry",
+        ));
     }
 
-    let mut output = Vec::with_capacity(lines.len() + 1);
-    for (index, line) in lines.into_iter().enumerate() {
-        if let Some(line) = line {
-            output.push(line);
-        }
-        if let Some((after, inserted)) = insertion
-            && after == index
-        {
-            output.push(inserted.to_string());
-        }
-    }
-
-    Ok(join_toml_lines(&output, trailing_newline))
-}
-
-/// Key path of a `key = value` line with whitespace around dots removed
-/// (`features . hooks = 1` gives `features.hooks`). `None` for comments,
-/// table headers and lines without an assignment.
-fn toml_line_key(line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('[') {
-        return None;
-    }
-    let (key, _) = trimmed.split_once('=')?;
-    let key: String = key.chars().filter(|ch| !ch.is_whitespace()).collect();
-    (!key.is_empty()).then_some(key)
+    Ok(document.to_string())
 }
 
 pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> io::Result<String> {
@@ -935,24 +959,4 @@ pub(crate) fn join_toml_lines(lines: &[String], trailing_newline: bool) -> Strin
         result.push('\n');
     }
     result
-}
-
-pub(crate) fn toml_table_header(line: &str) -> Option<&str> {
-    let trimmed = line.trim_start();
-    if trimmed.starts_with('#') || !trimmed.starts_with('[') {
-        return None;
-    }
-
-    let header_end = if trimmed.starts_with("[[") {
-        trimmed.find("]]").map(|index| index + 2)?
-    } else {
-        trimmed.find(']').map(|index| index + 1)?
-    };
-    let header = &trimmed[..header_end];
-    let rest = trimmed[header_end..].trim_start();
-    if !rest.is_empty() && !rest.starts_with('#') {
-        return None;
-    }
-
-    Some(header)
 }

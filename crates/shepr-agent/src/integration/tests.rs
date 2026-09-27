@@ -252,7 +252,7 @@ fn install_omp_writes_embedded_asset_to_omp_extensions_dir() {
 }
 
 #[test]
-fn install_omp_uses_pi_config_dir_env() {
+fn install_omp_uses_omp_config_dir_env() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let home = base.join("home");
@@ -273,25 +273,29 @@ fn install_omp_uses_pi_config_dir_env() {
 }
 
 #[test]
-fn install_omp_refuses_shared_pi_extension_directory() {
+fn install_omp_uses_its_own_config_when_pi_agent_dir_is_set() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
+    let home = base.join("home");
     let agent_dir = base.join("shared-agent");
     let ext_dir = agent_dir.join("extensions");
     let pi_extension = ext_dir.join(PI_EXTENSION_INSTALL_NAME);
     fs::create_dir_all(&ext_dir).expect("test precondition");
     fs::write(&pi_extension, PI_EXTENSION_ASSET).expect("test precondition");
+    let omp_dir = home.join("ignored-omp-config/agent");
+    fs::create_dir_all(&omp_dir).expect("test precondition");
+    env.set("HOME", &home);
     env.set(PI_CODING_AGENT_DIR_ENV_VAR, &agent_dir);
     env.set(OMP_CONFIG_DIR_ENV_VAR, "ignored-omp-config");
 
-    let err = install_omp(&AgentIntegrationPaths::resolve())
-        .expect_err("test precondition")
-        .to_string();
+    let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
-    assert!(err.contains("Pi and OMP resolve to the same extension directory"));
-    assert!(err.contains(&ext_dir.display().to_string()));
+    assert_eq!(
+        installed.extension_path,
+        omp_dir.join("extensions").join(OMP_EXTENSION_INSTALL_NAME)
+    );
     assert!(pi_extension.is_file());
-    assert!(!ext_dir.join(OMP_EXTENSION_INSTALL_NAME).exists());
+    assert!(installed.extension_path.is_file());
 
     clear_integration_path_env(&env);
     let _ = fs::remove_dir_all(base);
@@ -731,7 +735,15 @@ fn install_codex_only_migrates_top_level_feature_flags() {
     let config = fs::read_to_string(codex_dir.join("config.toml")).expect("test precondition");
 
     assert!(config.contains("[profiles.work.features]\nhooks = false\ncodex_hooks = false"));
-    assert!(config.contains("[features]\nhooks = true\nother = true"));
+    let parsed: toml::Table = toml::from_str(&config).expect("valid TOML");
+    let features = parsed
+        .get("features")
+        .and_then(toml::Value::as_table)
+        .expect("features table");
+    assert_eq!(features.get("hooks"), Some(&toml::Value::Boolean(true)));
+    assert_eq!(features.get("other"), Some(&toml::Value::Boolean(true)));
+    assert!(!features.contains_key("codex_hooks"), "{config}");
+    assert_eq!(config.matches("[features]").count(), 1, "{config}");
 
     let _ = fs::remove_dir_all(base);
 }
@@ -1025,6 +1037,12 @@ fn install_copilot_writes_hook_and_updates_settings() {
             .expect("test precondition")
             .contains(COPILOT_HOOK_INSTALL_NAME)
     );
+    // The hook action travels in the command, never as a tool matcher.
+    for (event, entries) in settings["hooks"].as_object().expect("hooks object") {
+        for entry in entries.as_array().expect("hook list") {
+            assert!(entry.get("matcher").is_none(), "{event}: {entry}");
+        }
+    }
 
     let _ = fs::remove_dir_all(base);
 }
@@ -2227,6 +2245,73 @@ fn uninstall_hermes_preserves_quoted_inline_enabled_items() {
 fn uninstall_hermes_converts_single_inline_enabled_entry_to_empty_list() {
     let config = update_hermes_enabled_plugin("plugins:\n  enabled: [shepr-agent-state]\n", false);
     assert_eq!(config, "plugins:\n  enabled: []\n");
+}
+
+#[test]
+fn hermes_editor_refuses_layouts_it_cannot_edit() {
+    for config in [
+        // Four-space block indentation.
+        "plugins:\n    enabled:\n      - other-plugin\n",
+        // Flow mapping.
+        "plugins: {enabled: [other-plugin]}\n",
+        // Block sequence at the `enabled` key's own indent.
+        "plugins:\n  enabled:\n  - other-plugin\n",
+        // `enabled` holding a mapping instead of a sequence.
+        "plugins:\n  enabled:\n    other: true\n",
+    ] {
+        let err = ensure_hermes_plugin_enabled(config)
+            .expect_err("unsupported layout must be refused")
+            .to_string();
+        assert!(
+            err.contains("add `shepr-agent-state` to"),
+            "{config:?}: {err}"
+        );
+        // Nothing to remove: an unsupported layout without the entry is fine.
+        assert_eq!(
+            remove_hermes_plugin_enabled(config).expect("no entry to remove"),
+            config
+        );
+    }
+}
+
+#[test]
+fn hermes_editor_accepts_hand_edited_unsupported_layout() {
+    let config = "plugins:\n    enabled:\n      - shepr-agent-state\n";
+    assert_eq!(
+        ensure_hermes_plugin_enabled(config).expect("hand-made entry counts as enabled"),
+        config
+    );
+    let err = remove_hermes_plugin_enabled(config)
+        .expect_err("removal from an unsupported layout must be refused")
+        .to_string();
+    assert!(err.contains("remove `shepr-agent-state` from"), "{err}");
+
+    // A commented-out mention does not count as enabled.
+    let commented = "plugins:\n    enabled:\n      - other # shepr-agent-state\n";
+    assert!(ensure_hermes_plugin_enabled(commented).is_err());
+}
+
+#[test]
+fn uninstall_hermes_refusal_keeps_plugin_dir() {
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    let home = base.join("home");
+    let hermes_dir = home.join(".hermes");
+    let plugin_dir = hermes_dir.join("plugins").join(HERMES_PLUGIN_INSTALL_NAME);
+    fs::create_dir_all(&plugin_dir).expect("test precondition");
+    let config = "plugins: {enabled: [shepr-agent-state]}\n";
+    fs::write(hermes_dir.join("config.yaml"), config).expect("test precondition");
+    env.set("HOME", &home);
+
+    uninstall_hermes(&AgentIntegrationPaths::resolve()).expect_err("layout must be refused");
+
+    assert!(plugin_dir.is_dir());
+    assert_eq!(
+        fs::read_to_string(hermes_dir.join("config.yaml")).expect("test precondition"),
+        config
+    );
+
+    let _ = fs::remove_dir_all(base);
 }
 
 #[test]
@@ -3607,6 +3692,7 @@ fn install_grok_writes_hook_and_config() {
 fn install_mastracode_is_idempotent_for_hook_entries() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
+    fs::create_dir_all(base.join(".mastracode")).expect("test precondition");
     env.set("HOME", &base);
 
     install_mastracode(&AgentIntegrationPaths::resolve()).expect("test precondition");
@@ -3653,9 +3739,30 @@ fn install_grok_is_idempotent() {
 }
 
 #[test]
+fn install_mastracode_refuses_when_config_dir_missing() {
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    fs::create_dir_all(&base).expect("test precondition");
+    env.set("HOME", &base);
+
+    let err = install_mastracode(&AgentIntegrationPaths::resolve())
+        .expect_err("missing mastracode directory must be refused")
+        .to_string();
+
+    assert!(
+        err.contains("mastracode config directory not found"),
+        "{err}"
+    );
+    assert!(!base.join(".mastracode").exists());
+
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
 fn uninstall_mastracode_removes_shepr_hooks_and_preserves_others() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
+    fs::create_dir_all(base.join(".mastracode")).expect("test precondition");
     env.set("HOME", &base);
 
     install_mastracode(&AgentIntegrationPaths::resolve()).expect("test precondition");

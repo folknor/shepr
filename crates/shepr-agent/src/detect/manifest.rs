@@ -73,8 +73,8 @@
 //!   progress string, not the screen.
 //! - `bottom_lines(N)`: the last N lines.
 //! - `bottom_non_empty_lines(N)`: from the Nth-last non-empty line to the end.
-//! - `top_non_empty_lines(N)`: from the start through the Nth non-empty line;
-//!   N is 1..=65535 written without a leading zero.
+//! - `top_non_empty_lines(N)`: from the start through the Nth non-empty line.
+//!   For all three regions, N is 1..=65535 written without a leading zero.
 //! - `after_last_horizontal_rule`: text after the last `─` rule line.
 //! - `prompt_box_body`: lines between the top border of the bottom-most
 //!   `─`-bordered box and the next rule.
@@ -82,7 +82,8 @@
 //!   there is no box); `last_non_empty_above_prompt_box` is its last non-empty
 //!   line.
 //! - Codex prompt structure, where a prompt line is `›` or starts with `› `,
-//!   a block marker line starts with `•`, `■`, `[ ]` or `[x]`, and the current
+//!   a block marker line starts with `•`, `■`, a cross mark (U+2717) or a
+//!   check mark (U+2713), and the current
 //!   prompt is the last prompt line with no block marker below it:
 //!   `after_last_prompt_marker`, `before_current_prompt_marker`,
 //!   `whole_recent_without_current_prompt_marker` (empty while a current
@@ -94,6 +95,8 @@
 //! Rule count, gate depth, gate count, matchers per gate, total matchers and
 //! matcher length are capped by the `MAX_*` constants below. Every gate needs a positive matcher (`contains`, `regex`, `line_regex`,
 //! `all` or `any`); a gate inside `not` may consist of nested `not` gates only.
+//! Gate depth counts the rule's root matcher as level one, with at most eight
+//! levels total.
 //! Unknown keys are rejected.
 
 use std::{
@@ -359,7 +362,7 @@ impl RegionSpec {
                 } else if let Some(count) = region_count(trimmed, "bottom_non_empty_lines") {
                     Self::BottomNonEmptyLines(count)
                 } else {
-                    Self::TopNonEmptyLines(top_region_count(trimmed)?)
+                    Self::TopNonEmptyLines(region_count(trimmed, "top_non_empty_lines")?)
                 }
             }
         })
@@ -519,8 +522,9 @@ impl ManifestRegistry {
     }
 }
 
-pub fn reload_manifests(override_dir: &Path) -> Vec<AgentManifestSummary> {
-    registry().reload(override_dir)
+/// Reload manifests, reading local overrides from `<config_dir>/agent-detection`.
+pub fn reload_manifests(config_dir: &Path) -> Vec<AgentManifestSummary> {
+    registry().reload(&manifest_override_dir(config_dir))
 }
 
 fn registry() -> &'static ManifestRegistry {
@@ -1037,7 +1041,7 @@ fn validate_gate(
     depth: usize,
     complexity: &mut ManifestComplexity,
 ) -> Result<(), String> {
-    if depth > MAX_GATE_DEPTH {
+    if depth >= MAX_GATE_DEPTH {
         return Err(format!("{context} exceeds max gate depth {MAX_GATE_DEPTH}"));
     }
     complexity.total_gates += 1;
@@ -1071,7 +1075,7 @@ fn validate_not_gate(
     depth: usize,
     complexity: &mut ManifestComplexity,
 ) -> Result<(), String> {
-    if depth > MAX_GATE_DEPTH {
+    if depth >= MAX_GATE_DEPTH {
         return Err(format!("not gate exceeds max gate depth {MAX_GATE_DEPTH}"));
     }
     complexity.total_gates += 1;
@@ -1154,6 +1158,10 @@ fn validate_region_name(spec: &str) -> Result<(), String> {
     RegionSpec::parse(spec)
         .map(|_| ())
         .ok_or_else(|| spec.trim().to_string())
+}
+
+fn manifest_override_dir(config_dir: &Path) -> PathBuf {
+    config_dir.join("agent-detection")
 }
 
 fn override_path(override_dir: &Path, agent: Agent) -> PathBuf {
@@ -1430,27 +1438,23 @@ fn region<'a>(input: DetectionInput<'a>, spec: &str) -> &'a str {
     RegionSpec::parse(spec).map_or("", |spec| spec.extract(input, &mut None))
 }
 
+const MAX_REGION_LINE_COUNT: usize = u16::MAX as usize;
+
 fn region_count(spec: &str, name: &str) -> Option<usize> {
-    spec.strip_prefix(name)
-        .and_then(|rest| rest.strip_prefix('('))
-        .and_then(|rest| rest.strip_suffix(')'))
-        .and_then(|count| count.parse::<usize>().ok())
-}
-
-const MAX_TOP_REGION_LINE_COUNT: usize = u16::MAX as usize;
-
-fn top_region_count(spec: &str) -> Option<usize> {
     let count = spec
-        .strip_prefix("top_non_empty_lines")?
+        .strip_prefix(name)?
         .strip_prefix('(')?
         .strip_suffix(')')?;
-    if count.starts_with('0') || !count.bytes().all(|byte| byte.is_ascii_digit()) {
+    if count.is_empty()
+        || count.starts_with('0')
+        || !count.bytes().all(|byte| byte.is_ascii_digit())
+    {
         return None;
     }
     count
         .parse::<usize>()
         .ok()
-        .filter(|count| *count <= MAX_TOP_REGION_LINE_COUNT)
+        .filter(|count| (1..=MAX_REGION_LINE_COUNT).contains(count))
 }
 
 fn bottom_lines<'a>(content: &'a str, lines: &[&'a str], count: usize) -> &'a str {

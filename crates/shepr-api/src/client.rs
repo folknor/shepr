@@ -106,14 +106,7 @@ impl ApiClient {
         };
         let response = match timeout {
             Some(timeout) => {
-                let mut stream = self.connect()?;
-                write_request(&mut stream, &request)?;
-                let deadline = deadline_after(timeout)?;
-                let mut reader = BufReader::new(shepr_platform::ipc::DeadlineReader::new(
-                    &mut stream,
-                    deadline,
-                ));
-                parse_response_value(read_json_line(&mut reader)?)?
+                parse_response_value(self.request_value_with_timeout(&request, timeout)?)?
             }
             None => self.request(&request)?,
         };
@@ -248,17 +241,12 @@ fn read_json_line<T: DeserializeOwned>(reader: &mut impl BufRead) -> Result<T, A
     serde_json::from_str(&line).map_err(ApiClientError::Json)
 }
 
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum WireResponse {
-    Success(Box<SuccessResponse>),
-    Error(ErrorResponse),
-}
-
 pub fn parse_response_value(value: serde_json::Value) -> Result<SuccessResponse, ApiClientError> {
-    match serde_json::from_value(value)? {
-        WireResponse::Success(response) => Ok(*response),
-        WireResponse::Error(response) => Err(ApiClientError::ErrorResponse(response)),
+    if value.get("error").is_some() {
+        let response: ErrorResponse = serde_json::from_value(value)?;
+        Err(ApiClientError::ErrorResponse(response))
+    } else {
+        Ok(serde_json::from_value(value)?)
     }
 }
 
@@ -299,9 +287,10 @@ mod tests {
         let error = client
             .status_with_timeout(Duration::from_millis(100))
             .expect_err("test precondition");
-        assert!(
-            matches!(error, ApiClientError::Io(error) if matches!(error.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock))
-        );
+        assert!(matches!(
+            error,
+            ApiClientError::Io(error) if error.kind() == io::ErrorKind::TimedOut
+        ));
         server.join().expect("test precondition");
         std::fs::remove_file(path).expect("test precondition");
     }

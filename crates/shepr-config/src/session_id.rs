@@ -57,24 +57,19 @@ impl SessionId {
         }
     }
 
-    /// Resolve the command-line selection or inherited session value. An API
-    /// socket override makes an inherited session irrelevant to socket
-    /// routing, matching the legacy behavior for malformed inherited values.
+    /// Resolve the command-line selection or inherited session value. The
+    /// flag reports whether the session was requested explicitly. A malformed
+    /// inherited value is an error even when a socket override is set.
     pub fn resolve(
         requested: Option<Self>,
         inherited: Option<&str>,
-        api_socket_override_present: bool,
     ) -> Result<(Self, bool), SessionNameError> {
         if let Some(requested) = requested {
             return Ok((requested, true));
         }
-        let Some(inherited) = inherited else {
-            return Ok((Self::Default, false));
-        };
-        match Self::parse(inherited) {
-            Ok(session) => Ok((session, false)),
-            Err(_) if api_socket_override_present => Ok((Self::Default, false)),
-            Err(error) => Err(error),
+        match inherited {
+            Some(inherited) => Self::parse(inherited).map(|session| (session, false)),
+            None => Ok((Self::Default, false)),
         }
     }
 

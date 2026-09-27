@@ -86,36 +86,31 @@ pub(super) fn sync_client_shell_keyboard_report_all(
     let Some(shell) = state.mode.shell() else {
         return Ok(());
     };
-    let desired = state.pane_keyboard_report_all || shell.host_keyboard_report_all_requested();
-    if desired == state.keyboard_report_all_active {
-        return Ok(());
-    }
-    shepr_termio::host_term::modes::set_host_kitty_keyboard_report_all(&mut io::stdout(), desired)
-        .map_err(ClientError::HostTerminal)?;
-    state.keyboard_report_all_active = desired;
-    Ok(())
+    state
+        .host_modes
+        .sync_shell_keyboard_report_all(
+            &mut io::stdout(),
+            shell.host_keyboard_report_all_requested(),
+        )
+        .map_err(ClientError::HostTerminal)
 }
 
 pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) {
-    state.host_mouse_mode.clear_endpoint_request();
+    state.host_modes.clear_mouse_endpoint_request();
     let _ =
         state
-            .host_mouse_mode
-            .apply(state.mode.is_shell(), state.reported_geometry.exact, false);
-
-    state.pane_keyboard_report_all = false;
-    let _ = sync_client_shell_keyboard_report_all(state);
-    let _ = reset_window_title(state, &mut std::io::stdout());
-}
-
-/// Undoes an outer window title only if this client set one. With
-/// `ui.window_title` empty nothing was ever written, and the host's own title
-/// must stay.
-fn reset_window_title(state: &mut ClientState, writer: &mut impl io::Write) -> io::Result<()> {
-    if std::mem::take(&mut state.window_title_written) {
-        shepr_termio::host_term::title::write_window_title(writer, None)?;
-    }
-    Ok(())
+            .host_modes
+            .apply_mouse(state.mode.is_shell(), state.reported_geometry.exact, false);
+    let shell_requests_report_all = state
+        .mode
+        .shell()
+        .is_some_and(ShellSession::host_keyboard_report_all_requested);
+    let _ = state.host_modes.set_pane_keyboard_report_all(
+        &mut std::io::stdout(),
+        false,
+        shell_requests_report_all,
+    );
+    let _ = state.host_modes.reset_window_title(&mut std::io::stdout());
 }
 
 fn install_pending_activation(
@@ -1193,18 +1188,30 @@ mod tests {
 
     #[test]
     fn window_title_reset_only_undoes_a_title_this_client_wrote() {
-        let mut state = ClientState::test_new();
+        let state = ClientState::test_new();
         let mut output = Vec::new();
-        reset_window_title(&mut state, &mut output).expect("write to a Vec");
+        state
+            .host_modes
+            .reset_window_title(&mut output)
+            .expect("write to a Vec");
         assert!(output.is_empty(), "an untouched host title must stay");
 
-        state.window_title_written = true;
-        reset_window_title(&mut state, &mut output).expect("write to a Vec");
+        state
+            .host_modes
+            .write_window_title(&mut output, Some("agent"))
+            .expect("write to a Vec");
+        output.clear();
+        state
+            .host_modes
+            .reset_window_title(&mut output)
+            .expect("write to a Vec");
         assert_eq!(output, b"\x1b]0;shepr\x07");
-        assert!(!state.window_title_written);
 
         output.clear();
-        reset_window_title(&mut state, &mut output).expect("write to a Vec");
+        state
+            .host_modes
+            .reset_window_title(&mut output)
+            .expect("write to a Vec");
         assert!(output.is_empty(), "one reset per written title");
     }
 }

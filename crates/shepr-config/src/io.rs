@@ -95,7 +95,7 @@ impl AppPaths {
     /// Resolve XDG directories, session identity and socket target once from
     /// the inherited process environment.
     pub fn resolve() -> Result<Self, Vec<String>> {
-        resolve_paths_from_env(None, None)
+        resolve_paths_from_env(None, None, false)
     }
 
     /// Resolve paths and the local session/socket target from one environment
@@ -107,13 +107,13 @@ impl AppPaths {
         let session_source = requested_session
             .as_ref()
             .map(|_| ConfigSource::CliFlag("--session".to_owned()));
-        resolve_paths_from_env(requested_session, session_source)
+        resolve_paths_from_env(requested_session, session_source, false)
     }
 
     /// Resolve only the machine catalog's local paths, without allowing local
     /// session or socket environment values to affect a remote command.
     pub fn resolve_for_machine() -> Result<Self, Vec<String>> {
-        resolve_paths_from_env(Some(super::SessionId::Default), None)
+        resolve_paths_from_env(Some(super::SessionId::Default), None, true)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -184,23 +184,71 @@ fn platform_xdg_dir(
     ))
 }
 
+fn socket_path_override(variable: &str, diagnostics: &mut Vec<String>) -> Option<PathBuf> {
+    let value = std::env::var_os(variable)?;
+    if value.to_str().is_none() {
+        diagnostics.push(format!("{variable} must be valid UTF-8"));
+        return None;
+    }
+    let path = PathBuf::from(value);
+    if path.as_os_str().is_empty() {
+        diagnostics.push(format!("{variable} must not be empty"));
+        return None;
+    }
+    if !path.is_absolute() {
+        diagnostics.push(format!("{variable} must be an absolute path"));
+        return None;
+    }
+    Some(path)
+}
+
 fn resolve_paths_from_env(
     requested_session: Option<super::SessionId>,
     requested_session_source: Option<ConfigSource>,
+    ignore_local_target_env: bool,
 ) -> Result<AppPaths, Vec<String>> {
     let session_selection_was_forced = requested_session.is_some();
-    let api_socket_override = std::env::var(super::SOCKET_PATH_ENV_VAR).ok();
-    let client_socket_override = std::env::var(super::CLIENT_SOCKET_PATH_ENV_VAR).ok();
-    let inherited_session = std::env::var(super::SESSION_ENV_VAR).ok();
+    let mut target_env_diagnostics = Vec::new();
+    let (api_socket_override, client_socket_override, inherited_session) =
+        if ignore_local_target_env {
+            (None, None, None)
+        } else {
+            let api_socket_override =
+                socket_path_override(super::SOCKET_PATH_ENV_VAR, &mut target_env_diagnostics);
+            let client_socket_override = socket_path_override(
+                super::CLIENT_SOCKET_PATH_ENV_VAR,
+                &mut target_env_diagnostics,
+            );
+            let inherited_session = if requested_session.is_some() {
+                None
+            } else {
+                match std::env::var_os(super::SESSION_ENV_VAR) {
+                    None => None,
+                    Some(value) => match value.into_string() {
+                        Ok(value) => Some(value),
+                        Err(_) => {
+                            target_env_diagnostics
+                                .push(format!("{} must be valid UTF-8", super::SESSION_ENV_VAR));
+                            None
+                        }
+                    },
+                }
+            };
+            (
+                api_socket_override,
+                client_socket_override,
+                inherited_session,
+            )
+        };
+    if !target_env_diagnostics.is_empty() {
+        return Err(target_env_diagnostics);
+    }
     let inherited_session_accepted = inherited_session
         .as_deref()
         .is_some_and(|name| super::SessionId::parse(name).is_ok());
-    let (session_id, session_was_requested) = super::SessionId::resolve(
-        requested_session,
-        inherited_session.as_deref(),
-        api_socket_override.is_some(),
-    )
-    .map_err(|error| vec![format!("session selection error: {error}")])?;
+    let (session_id, session_was_requested) =
+        super::SessionId::resolve(requested_session, inherited_session.as_deref())
+            .map_err(|error| vec![format!("session selection error: {error}")])?;
 
     let home_dir = shepr_core::pathutil::home_dir().map_err(|error| vec![error.to_string()])?;
     let current_dir = std::env::current_dir().ok();
@@ -283,7 +331,7 @@ fn resolve_paths_from_env(
         (Some(config_dir), Some(state_dir), Some(runtime_dir), Some(config_file))
             if diagnostics.is_empty() =>
         {
-            let server_address = super::ServerAddress::resolve(
+            let server_address = super::ServerAddress::resolve_paths(
                 &runtime_dir,
                 &session_id,
                 session_was_requested,
@@ -832,6 +880,40 @@ mod tests {
         assert_eq!(
             paths.provenance().client_socket,
             ConfigSource::EnvironmentVariable(crate::CLIENT_SOCKET_PATH_ENV_VAR.to_owned())
+        );
+    }
+
+    #[test]
+    fn invalid_socket_and_session_environment_fails_resolution() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        for variable in [
+            crate::SOCKET_PATH_ENV_VAR,
+            crate::CLIENT_SOCKET_PATH_ENV_VAR,
+        ] {
+            for (value, expected) in [("", "must not be empty"), ("rel.sock", "absolute path")] {
+                env.set(variable, value);
+                let errors = AppPaths::resolve().expect_err("invalid socket override");
+                assert!(
+                    errors
+                        .iter()
+                        .any(|error| error.contains(variable) && error.contains(expected)),
+                    "{variable}={value:?}: {errors:?}"
+                );
+                // Remote commands never consult the local target environment.
+                assert!(AppPaths::resolve_for_machine().is_ok());
+            }
+            env.remove(variable);
+        }
+
+        // A socket override does not excuse a malformed inherited session.
+        env.set(crate::SOCKET_PATH_ENV_VAR, env.path().join("api.sock"));
+        env.set(crate::SESSION_ENV_VAR, "bad/name");
+        let errors = AppPaths::resolve().expect_err("malformed SHEPR_SESSION");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("session selection error")),
+            "{errors:?}"
         );
     }
 

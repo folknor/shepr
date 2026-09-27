@@ -22,7 +22,7 @@ use super::config_file::{check_config_targets, write_config};
 use super::env::AgentIntegrationPaths;
 use super::file_ops::{remove_dir_all_if_exists, remove_file_if_exists, write_managed_asset};
 use super::opencode_config::{
-    add_cli_plugin, add_tui_plugin, remove_cli_plugin, remove_tui_plugin,
+    PluginConfigEdit, prepare_cli_plugin, prepare_tui_plugin, remove_cli_plugin, remove_tui_plugin,
     validate_tui_plugin_config,
 };
 use super::types::{
@@ -213,8 +213,6 @@ pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiInst
     }
 
     let hooks_dir = dir.join("hooks");
-    fs::create_dir_all(&hooks_dir)?;
-
     let hook_path = hooks_dir.join(KIMI_HOOK_INSTALL_NAME);
     let config_path = dir.join("config.toml");
     let existing_config = if config_path.is_file() {
@@ -226,6 +224,7 @@ pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiInst
     // be edited safely leaves nothing installed.
     let new_config = build_kimi_config_with_hooks(&existing_config, &hook_path)?;
 
+    fs::create_dir_all(&hooks_dir)?;
     write_hook_script(Target::Kimi, &hook_path)?;
 
     if new_config != existing_config {
@@ -271,7 +270,7 @@ pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<Copil
             hook.event,
             hook_command(&hook_path, action),
             10,
-            action,
+            None,
         )?;
     }
     let settings_contents = serde_json::to_string_pretty(&settings)?;
@@ -391,6 +390,13 @@ pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<Open
     }
 
     validate_tui_plugin_config(&dir)?;
+    let tui_config_edit = prepare_tui_plugin(&dir, OPENCODE_TUI_PLUGIN_SPEC)?;
+    let cli_config_edit = prepare_cli_plugin(
+        &dir,
+        &paths.directory("opencode_state")?,
+        super::OPENCODE_V2_TUI_PLUGIN_SPEC,
+    )?;
+
     let plugins_dir = dir.join("plugins");
     fs::create_dir_all(&plugins_dir)?;
 
@@ -402,7 +408,6 @@ pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<Open
         OPENCODE_TUI_PLUGIN_ASSET.as_bytes(),
         false,
     )?;
-    let tui_config_path = add_tui_plugin(&dir, OPENCODE_TUI_PLUGIN_SPEC)?;
     let v2_dir = dir.join(super::OPENCODE_V2_TUI_PLUGIN_DIR);
     fs::create_dir_all(&v2_dir)?;
     write_managed_asset(
@@ -410,11 +415,10 @@ pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<Open
         super::OPENCODE_V2_TUI_PLUGIN_ASSET.as_bytes(),
         false,
     )?;
-    let cli_config_path = add_cli_plugin(
-        &dir,
-        &paths.directory("opencode_state")?,
-        super::OPENCODE_V2_TUI_PLUGIN_SPEC,
-    )?;
+    // Both configs were parsed and edited in memory before any plugin files
+    // were written; publish their edits after the assets are in place.
+    let tui_config_path = tui_config_edit.write()?;
+    let cli_config_path = cli_config_edit.map(PluginConfigEdit::write).transpose()?;
 
     Ok(OpenCodeInstallPaths {
         plugin_path,
@@ -458,7 +462,9 @@ pub(crate) fn install_hermes(paths: &AgentIntegrationPaths) -> io::Result<Hermes
     } else {
         String::new()
     };
-    let new_config = ensure_hermes_plugin_enabled(&existing_config);
+    // Prepare the config edit before writing assets; persist it after the
+    // plugin files are in place so Hermes never enables a missing plugin.
+    let new_config = ensure_hermes_plugin_enabled(&existing_config)?;
 
     let plugin_dir = paths.directory("hermes_plugin")?;
     fs::create_dir_all(&plugin_dir)?;
@@ -807,15 +813,20 @@ pub(crate) fn uninstall_hermes(paths: &AgentIntegrationPaths) -> io::Result<Herm
     let plugin_dir = paths.directory("hermes_plugin")?;
     let config_path = dir.join("config.yaml");
 
-    let removed_plugin_dir = remove_dir_all_if_exists(&plugin_dir)?;
-    let mut updated_config = false;
-    if config_path.is_file() {
+    // Edit the config in memory first: a layout the editor refuses leaves the
+    // plugin in place instead of enabling a plugin that no longer exists.
+    let config_edit = if config_path.is_file() {
         let existing_config = fs::read_to_string(&config_path)?;
-        let new_config = remove_hermes_plugin_enabled(&existing_config);
-        if new_config != existing_config {
-            write_config(&config_path, new_config)?;
-            updated_config = true;
-        }
+        let new_config = remove_hermes_plugin_enabled(&existing_config)?;
+        (new_config != existing_config).then_some(new_config)
+    } else {
+        None
+    };
+
+    let removed_plugin_dir = remove_dir_all_if_exists(&plugin_dir)?;
+    let updated_config = config_edit.is_some();
+    if let Some(new_config) = config_edit {
+        write_config(&config_path, new_config)?;
     }
 
     Ok(HermesUninstallResult {
@@ -962,8 +973,6 @@ pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<LettaIn
     }
 
     let hooks_dir = dir.join("hooks");
-    fs::create_dir_all(&hooks_dir)?;
-
     let hook_path = hooks_dir.join(LETTA_HOOK_INSTALL_NAME);
 
     let settings_path = dir.join("settings.json");
@@ -993,6 +1002,7 @@ pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<LettaIn
     // rejection, symlink targets kept, permissions preserved, atomic replace);
     // the hook script is a managed asset and is written like every other one.
     let settings_contents = serde_json::to_string_pretty(&settings)?;
+    fs::create_dir_all(&hooks_dir)?;
     let previous_hook = match fs::read(&hook_path) {
         Ok(contents) => Some(contents),
         Err(err) if err.kind() == io::ErrorKind::NotFound => None,
@@ -1251,6 +1261,12 @@ pub(crate) fn install_mastracode(
 ) -> io::Result<MastracodeInstallPaths> {
     let mastracode_home = paths.directory("mastracode")?;
     check_config_targets(&mastracode_home, &["hooks.json"])?;
+    if !mastracode_home.is_dir() {
+        return Err(io::Error::other(format!(
+            "mastracode config directory not found at {}. install mastracode first",
+            mastracode_home.display()
+        )));
+    }
     let hook_dir = mastracode_home.join("hooks");
     let hook_path = hook_dir.join(MASTRACODE_HOOK_INSTALL_NAME);
 
@@ -1264,6 +1280,8 @@ pub(crate) fn install_mastracode(
         ))
     })?;
 
+    // This helper writes the Mastracode-specific description, so keep its use
+    // scoped to the target that owns that description.
     for hook in MASTRACODE_HOOK_EVENTS {
         let Some(action) = hook.action.map(crate::agent::IntegrationHookAction::as_str) else {
             continue;

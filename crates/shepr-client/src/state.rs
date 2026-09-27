@@ -48,13 +48,10 @@ impl SessionMode {
 pub(super) struct ClientState {
     /// Stateful semantic-frame encoder used when the server sends FrameData.
     pub(super) blit_encoder: render_ansi::BlitEncoder,
-    pub(super) host_mouse_mode: terminal_setup::HostMouseMode,
+    pub(super) host_modes: terminal_setup::HostModes,
     /// Latest physical host theme observations, retained so an endpoint selected after the
     /// observation receives the same client-owned baseline.
     pub(super) host_theme_updates: Vec<shepr_protocol::ClientHostThemeUpdate>,
-    pub(super) direct_keyboard_protocol: shepr_termio::host_term::modes::DirectHostKeyboardState,
-    pub(super) pane_keyboard_report_all: bool,
-    pub(super) keyboard_report_all_active: bool,
     pub(super) settings: ClientSettings,
     pub(super) reported_geometry: shepr_core::geometry::HostGeometry,
     pub(super) mode: SessionMode,
@@ -65,23 +62,6 @@ pub(super) struct ClientState {
     /// Latest explicit Local selection awaiting this client's replacement Local connection.
     pub(super) deferred_local_activation: Option<endpoint::EndpointActivationIntent>,
     pub(super) draw_host_cursor: bool,
-    /// Whether this client has written an outer window title since the last
-    /// reset. An empty `ui.window_title` means the server never sends one, and
-    /// then the host title must be left alone rather than reset to "shepr".
-    pub(super) window_title_written: bool,
-}
-
-impl Drop for ClientState {
-    fn drop(&mut self) {
-        if self.mode.is_escape_attach() {
-            let _ = shepr_termio::host_term::modes::set_direct_host_keyboard_protocol(
-                &mut io::stdout(),
-                &mut self.direct_keyboard_protocol,
-                shepr_protocol::KittyKeyboardFlags::NONE,
-                shepr_vt::ModifyOtherKeysLevel::Off,
-            );
-        }
-    }
 }
 
 impl ClientState {
@@ -90,11 +70,8 @@ impl ClientState {
         let config = shepr_config::ValidatedConfig::test_default();
         Self {
             blit_encoder: render_ansi::BlitEncoder::new(),
-            host_mouse_mode: terminal_setup::HostMouseMode::new(false, false, false),
+            host_modes: terminal_setup::HostModes::new(false, false, false),
             host_theme_updates: Vec::new(),
-            direct_keyboard_protocol: Default::default(),
-            pane_keyboard_report_all: false,
-            keyboard_report_all_active: false,
             settings: ClientSettings::from_config(&config),
             reported_geometry: shepr_core::geometry::HostGeometry::new(100, 30, 0, 0, false),
             mode: SessionMode::Shell(Box::new(shell::ClientShellState::new(
@@ -104,7 +81,6 @@ impl ClientState {
             presentation_frozen: false,
             deferred_local_activation: None,
             draw_host_cursor: false,
-            window_title_written: false,
         }
     }
 

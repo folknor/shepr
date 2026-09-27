@@ -10,6 +10,27 @@ use super::config_file::{check_config_target, write_config};
 
 const TUI_CONFIG_NAME: &str = "tui.jsonc";
 
+pub(crate) struct PluginConfigEdit {
+    path: PathBuf,
+    updated_contents: Option<String>,
+}
+
+impl PluginConfigEdit {
+    fn unchanged(path: PathBuf) -> Self {
+        Self {
+            path,
+            updated_contents: None,
+        }
+    }
+
+    pub(crate) fn write(self) -> io::Result<PathBuf> {
+        if let Some(contents) = self.updated_contents {
+            write_config(&self.path, contents)?;
+        }
+        Ok(self.path)
+    }
+}
+
 fn tui_config_paths(config_dir: &Path) -> [PathBuf; 2] {
     [
         config_dir.join(TUI_CONFIG_NAME),
@@ -41,21 +62,29 @@ fn validate_plugin_config(config_path: &Path, key: &str) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn add_tui_plugin(config_dir: &Path, plugin_spec: &str) -> io::Result<PathBuf> {
+pub(crate) fn prepare_tui_plugin(
+    config_dir: &Path,
+    plugin_spec: &str,
+) -> io::Result<PluginConfigEdit> {
     for path in tui_config_paths(config_dir) {
         if plugin_is_configured(&path, "plugin", plugin_spec) {
-            return Ok(path);
+            return Ok(PluginConfigEdit::unchanged(path));
         }
     }
     // Keep tui.json absent on fresh installs so OpenCode can migrate its settings.
-    add_plugin(config_dir.join(TUI_CONFIG_NAME), "plugin", plugin_spec)
+    prepare_plugin(config_dir.join(TUI_CONFIG_NAME), "plugin", plugin_spec)
 }
 
-pub(crate) fn add_cli_plugin(
+#[cfg(test)]
+pub(crate) fn add_tui_plugin(config_dir: &Path, plugin_spec: &str) -> io::Result<PathBuf> {
+    prepare_tui_plugin(config_dir, plugin_spec)?.write()
+}
+
+pub(crate) fn prepare_cli_plugin(
     config_dir: &Path,
     state_dir: &Path,
     plugin_spec: &str,
-) -> io::Result<Option<PathBuf>> {
+) -> io::Result<Option<PluginConfigEdit>> {
     let path = config_dir.join("cli.json");
     check_config_target(&path)?;
     // OpenCode imports V1 TUI preferences (`tui.json`, `kv.json`) into cli.json on
@@ -66,14 +95,29 @@ pub(crate) fn add_cli_plugin(
     if !path.is_file() && cli_migration_pending(config_dir, state_dir) {
         return Ok(None);
     }
-    add_plugin(path, "plugins", plugin_spec).map(Some)
+    prepare_plugin(path, "plugins", plugin_spec).map(Some)
+}
+
+#[cfg(test)]
+pub(crate) fn add_cli_plugin(
+    config_dir: &Path,
+    state_dir: &Path,
+    plugin_spec: &str,
+) -> io::Result<Option<PathBuf>> {
+    prepare_cli_plugin(config_dir, state_dir, plugin_spec)?
+        .map(PluginConfigEdit::write)
+        .transpose()
 }
 
 fn cli_migration_pending(config_dir: &Path, state_dir: &Path) -> bool {
     config_dir.join("tui.json").is_file() || state_dir.join("kv.json").is_file()
 }
 
-fn add_plugin(config_path: PathBuf, key: &str, plugin_spec: &str) -> io::Result<PathBuf> {
+fn prepare_plugin(
+    config_path: PathBuf,
+    key: &str,
+    plugin_spec: &str,
+) -> io::Result<PluginConfigEdit> {
     check_config_target(&config_path)?;
     let content = if config_path.is_file() {
         fs::read_to_string(&config_path)?
@@ -93,7 +137,7 @@ fn add_plugin(config_path: PathBuf, key: &str, plugin_spec: &str) -> io::Result<
                     .to_serde_value()
                     .is_some_and(|entry| plugin_entry_matches(&entry, plugin_spec))
             }) {
-                return Ok(config_path);
+                return Ok(PluginConfigEdit::unchanged(config_path));
             }
             plugins.append(CstInputValue::String(plugin_spec.to_string()));
         }
@@ -105,8 +149,10 @@ fn add_plugin(config_path: PathBuf, key: &str, plugin_spec: &str) -> io::Result<
         }
     }
 
-    write_config(&config_path, root.to_string())?;
-    Ok(config_path)
+    Ok(PluginConfigEdit {
+        path: config_path,
+        updated_contents: Some(root.to_string()),
+    })
 }
 
 pub(crate) fn remove_tui_plugin(config_dir: &Path, plugin_spec: &str) -> io::Result<Vec<PathBuf>> {

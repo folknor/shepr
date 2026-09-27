@@ -959,14 +959,42 @@ fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
     }
 
     if buffer[0] == ESC {
-        let seq_len = complete_escape_sequence_len(buffer)?;
+        if let Some(invalid_mouse_len) = malformed_double_escaped_sgr_mouse_len(buffer) {
+            return Some((RawInputEvent::Unsupported, invalid_mouse_len));
+        }
+
+        let Some(seq_len) = complete_escape_sequence_len(buffer) else {
+            // Keep valid partial escapes buffered, but let malformed UTF-8
+            // Alt input and malformed CSI prefixes release the bytes behind
+            // them. These are framed as one unsupported escape prefix so a
+            // one-byte ESC chunk is not mistaken for a standalone Escape key.
+            if let Some(invalid_len) = invalid_utf8_prefix_len(&buffer[1..]) {
+                return Some((RawInputEvent::Unsupported, 1 + invalid_len));
+            }
+            if let Some(invalid_csi_len) = malformed_incomplete_csi_len(buffer) {
+                return Some((RawInputEvent::Unsupported, invalid_csi_len));
+            }
+            // A doubled ESC wraps an inner sequence; when that inner sequence
+            // is malformed, drop both escapes with it.
+            if buffer.starts_with(b"\x1b\x1b")
+                && let Some((RawInputEvent::Unsupported, inner_len)) =
+                    extract_one_event(&buffer[1..])
+            {
+                return Some((RawInputEvent::Unsupported, 1 + inner_len));
+            }
+            return None;
+        };
         if buffer[..seq_len].starts_with(b"\x1b[M") {
             let event = parse_default_mouse(&buffer[..seq_len])
                 .map(RawInputEvent::Mouse)
                 .unwrap_or(RawInputEvent::Unsupported);
             return Some((event, seq_len));
         }
-        let seq = std::str::from_utf8(&buffer[..seq_len]).ok()?;
+        let Ok(seq) = std::str::from_utf8(&buffer[..seq_len]) else {
+            // A completed escape sequence with invalid UTF-8 is one malformed
+            // input event. Drop that sequence and continue with later input.
+            return Some((RawInputEvent::Unsupported, seq_len));
+        };
 
         if let Some((kind, color)) = parse_default_color_response(seq) {
             return Some((RawInputEvent::HostDefaultColor { kind, color }, seq_len));
@@ -1012,10 +1040,62 @@ fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
         return Some((RawInputEvent::Unsupported, seq_len));
     }
 
-    let consumed = first_complete_utf8_char_len(buffer)?;
-    let text = std::str::from_utf8(&buffer[..consumed]).ok()?;
-    let key = parse_terminal_key_sequence(text)?.with_text_commit();
+    let Some(consumed) = first_complete_utf8_char_len(buffer) else {
+        return invalid_utf8_prefix_len(buffer).map(|_| (RawInputEvent::Unsupported, 1));
+    };
+    let Ok(text) = std::str::from_utf8(&buffer[..consumed]) else {
+        return Some((RawInputEvent::Unsupported, 1));
+    };
+    let Some(key) = parse_terminal_key_sequence(text) else {
+        return Some((RawInputEvent::Unsupported, consumed));
+    };
+    let key = key.with_text_commit();
     Some((RawInputEvent::Key(key), consumed))
+}
+
+/// Returns the malformed UTF-8 prefix length when the first character is
+/// invalid, while leaving a valid but incomplete multibyte character pending.
+fn invalid_utf8_prefix_len(buffer: &[u8]) -> Option<usize> {
+    match std::str::from_utf8(buffer) {
+        Err(error) if error.valid_up_to() == 0 => error.error_len(),
+        _ => None,
+    }
+}
+
+/// Returns the prefix length through an invalid byte in an unterminated CSI.
+/// Bytes in a CSI before its final byte are ASCII parameter/intermediate bytes;
+/// anything outside those ranges makes the sequence unrecoverable. The invalid
+/// byte is consumed with the prefix: framed chunks are parsed again on their
+/// own, so the chunk must still read as malformed without its successor.
+fn malformed_incomplete_csi_len(buffer: &[u8]) -> Option<usize> {
+    if !buffer.starts_with(b"\x1b[") {
+        return None;
+    }
+
+    for (index, byte) in buffer.iter().enumerate().skip(2) {
+        if (0x40..=0x7e).contains(byte) {
+            return None;
+        }
+        if !(0x20..=0x3f).contains(byte) {
+            return Some(index + 1);
+        }
+    }
+    None
+}
+
+/// Returns the complete double-escaped SGR mouse frame when its payload is not
+/// valid UTF-8. `complete_escape_sequence_len` uses the UTF-8 mouse parser for
+/// this one disambiguation case and otherwise leaves such a frame pending.
+fn malformed_double_escaped_sgr_mouse_len(buffer: &[u8]) -> Option<usize> {
+    if !buffer.starts_with(b"\x1b\x1b[<") {
+        return None;
+    }
+
+    let sequence_len = find_csi_final(&buffer[1..], b"Mm")?;
+    let full_len = 1 + sequence_len;
+    std::str::from_utf8(&buffer[1..full_len])
+        .is_err()
+        .then_some(full_len)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1696,6 +1776,91 @@ mod tests {
             KeyCode::Char('x'),
             KeyModifiers::empty(),
         );
+    }
+
+    #[test]
+    fn invalid_utf8_bytes_do_not_stall_later_keys() {
+        for invalid_byte in [0x80, 0xf8] {
+            let mut framer = RawInputFramer::default();
+            let events = framer.push(&[invalid_byte, b'a', b'b']);
+
+            assert_eq!(events.len(), 3, "invalid byte: {invalid_byte:#x}");
+            assert!(matches!(&events[0], RawInputEvent::Unsupported));
+            for (event, character) in events.into_iter().skip(1).zip(['a', 'b']) {
+                assert_raw_key(event, KeyCode::Char(character), KeyModifiers::empty());
+            }
+            assert!(!framer.has_pending_input());
+        }
+    }
+
+    #[test]
+    fn invalid_utf8_after_escape_does_not_stall_later_keys() {
+        let mut framer = RawInputFramer::default();
+
+        let events = framer.push(b"\x1b\xffab");
+
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], RawInputEvent::Unsupported));
+        for (event, character) in events.into_iter().skip(1).zip(['a', 'b']) {
+            assert_raw_key(event, KeyCode::Char(character), KeyModifiers::empty());
+        }
+        assert!(!framer.has_pending_input());
+    }
+
+    #[test]
+    fn invalid_utf8_in_complete_csi_does_not_stall_later_keys() {
+        let mut framer = RawInputFramer::default();
+
+        let events = framer.push(b"\x1b[1\xffAab");
+
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], RawInputEvent::Unsupported));
+        for (event, character) in events.into_iter().skip(1).zip(['a', 'b']) {
+            assert_raw_key(event, KeyCode::Char(character), KeyModifiers::empty());
+        }
+        assert!(!framer.has_pending_input());
+    }
+
+    #[test]
+    fn invalid_utf8_in_incomplete_csi_does_not_stall_later_keys() {
+        let mut framer = RawInputFramer::default();
+
+        let events = framer.push(b"\x1b[1\xff12");
+
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], RawInputEvent::Unsupported));
+        for (event, character) in events.into_iter().skip(1).zip(['1', '2']) {
+            assert_raw_key(event, KeyCode::Char(character), KeyModifiers::empty());
+        }
+        assert!(!framer.has_pending_input());
+    }
+
+    #[test]
+    fn invalid_utf8_after_doubled_escape_does_not_stall_later_keys() {
+        let mut framer = RawInputFramer::default();
+
+        let events = framer.push(b"\x1b\x1b\xffab");
+
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], RawInputEvent::Unsupported));
+        for (event, character) in events.into_iter().skip(1).zip(['a', 'b']) {
+            assert_raw_key(event, KeyCode::Char(character), KeyModifiers::empty());
+        }
+        assert!(!framer.has_pending_input());
+    }
+
+    #[test]
+    fn invalid_utf8_in_coalesced_sgr_mouse_does_not_stall_later_keys() {
+        let mut framer = RawInputFramer::default();
+
+        let events = framer.push(b"\x1b\x1b[<0;\xff;10Mab");
+
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], RawInputEvent::Unsupported));
+        for (event, character) in events.into_iter().skip(1).zip(['a', 'b']) {
+            assert_raw_key(event, KeyCode::Char(character), KeyModifiers::empty());
+        }
+        assert!(!framer.has_pending_input());
     }
 
     #[test]
@@ -2795,11 +2960,13 @@ mod tests {
     }
 
     #[test]
-    fn invalid_utf8_lead_byte_is_flushed_instead_of_buffered_forever() {
+    fn invalid_utf8_lead_byte_does_not_block_trailing_raw_input() {
         let mut framer = RawInputByteFramer::default();
 
-        assert!(framer.push(&[0xC0]).is_empty());
-        assert!(framer.flush_timeout().is_empty());
+        assert_eq!(
+            framer.push(&[0xC0, b'a', b'b']),
+            vec![vec![0xC0], vec![b'a'], vec![b'b']]
+        );
         assert!(!framer.has_pending_input());
     }
 

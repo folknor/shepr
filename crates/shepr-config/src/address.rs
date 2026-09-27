@@ -2,11 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Legacy environment variable for overriding the client socket path.
-///
-/// Contractual override behavior for auto-detect uses `SHEPR_SOCKET_PATH`.
-/// This variable is kept as a fallback for callers that explicitly need a
-/// client-only override when `SHEPR_SOCKET_PATH` is not set.
+/// Environment variable for overriding the client socket path when
+/// `SHEPR_SOCKET_PATH` is not set.
 pub const CLIENT_SOCKET_PATH_ENV_VAR: &str = "SHEPR_CLIENT_SOCKET_PATH";
 pub const SOCKET_PATH_ENV_VAR: &str = "SHEPR_SOCKET_PATH";
 
@@ -18,7 +15,7 @@ pub struct ServerAddress {
 }
 
 // Only for `AppPaths::default()` in tests; production addresses come from
-// `resolve`, never from relative placeholder paths.
+// `AppPaths::resolve`, which validates process environment paths.
 #[cfg(any(test, feature = "test-support"))]
 impl Default for ServerAddress {
     fn default() -> Self {
@@ -38,6 +35,8 @@ enum AddressSource {
 }
 
 impl ServerAddress {
+    /// Builds an address from pre-validated path overrides. Production
+    /// environment values must be resolved through `AppPaths::resolve`.
     pub fn resolve(
         runtime_dir: &Path,
         session: &super::SessionId,
@@ -45,12 +44,28 @@ impl ServerAddress {
         api_socket_override: Option<&str>,
         client_socket_override: Option<&str>,
     ) -> Self {
+        Self::resolve_paths(
+            runtime_dir,
+            session,
+            session_was_requested,
+            api_socket_override.map(Path::new),
+            client_socket_override.map(Path::new),
+        )
+    }
+
+    pub(crate) fn resolve_paths(
+        runtime_dir: &Path,
+        session: &super::SessionId,
+        session_was_requested: bool,
+        api_socket_override: Option<&Path>,
+        client_socket_override: Option<&Path>,
+    ) -> Self {
         let session_api = session.api_socket_path_under(runtime_dir);
         if session_was_requested {
             return Self::for_session(session_api);
         }
         if let Some(api_socket) = api_socket_override {
-            let api_socket = PathBuf::from(api_socket);
+            let api_socket = api_socket.to_path_buf();
             return Self {
                 client_socket: derive_client_socket_from_api_socket(&api_socket),
                 api_socket,
@@ -60,7 +75,7 @@ impl ServerAddress {
         if let Some(client_socket) = client_socket_override {
             return Self {
                 api_socket: session_api,
-                client_socket: PathBuf::from(client_socket),
+                client_socket: client_socket.to_path_buf(),
                 source: AddressSource::ClientOverride,
             };
         }

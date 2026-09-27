@@ -8,7 +8,7 @@ use super::PaneSpawnHandles;
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::pane::{PaneRuntime, PaneRuntimeRegistry};
 use crate::terminal::TerminalState;
-use shepr_core::layout::{Node, PaneId, TileLayout};
+use shepr_core::layout::{PaneId, TileLayout};
 use shepr_protocol::TerminalId;
 
 pub(crate) type DetachedPane = (PaneId, TerminalId);
@@ -419,7 +419,7 @@ impl Tab {
             custom_name,
             number,
             root_pane: pane_id,
-            layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),
+            layout: TileLayout::from_live_pane(pane_id),
             panes,
             zoomed: false,
         }

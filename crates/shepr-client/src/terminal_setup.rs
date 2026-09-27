@@ -2,14 +2,13 @@
 
 use std::io::{self, Write as _};
 use std::os::fd::AsRawFd as _;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, EnableMouseCapture, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    EnableFocusChange, EnableMouseCapture,
 };
 use crossterm::execute;
 use crossterm::terminal::{DisableLineWrap, EnableLineWrap};
@@ -39,34 +38,36 @@ pub(super) fn setup_terminal_with_capabilities(
     mouse_capture: bool,
 ) -> io::Result<TerminalGuard> {
     ratatui::init();
+    let host_modes = HostModes::new(false, false, mouse_capture);
     let mut terminal_guard = TerminalGuard {
         host_escape_disambiguation_active: false,
         buffered_host_input: Vec::new(),
-        reset_keyboard_enhancements: false,
-        reset_modify_other_keys: false,
-        reset_host_color_scheme_reports: false,
         restore_claimed: Arc::new(AtomicBool::new(false)),
+        host_modes: host_modes.clone(),
         restored: false,
     };
-    shepr_termio::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let host_color_scheme_reports =
         should_enable_host_color_scheme_reports(enable_client_protocols);
 
     let (host_escape_disambiguation_active, buffered_host_input) = if enable_client_protocols {
-        terminal_guard.reset_keyboard_enhancements = true;
-        push_keyboard_enhancement_flags()?;
+        host_modes.set_keyboard_enhancement_flags(
+            &mut io::stdout(),
+            shepr_termio::host_term::modes::ime_compatible_keyboard_enhancement_flags(),
+        )?;
         let (active, buffered_input) = query_host_escape_disambiguation();
-        set_mouse_capture(mouse_capture, false)?;
-        execute!(io::stdout(), EnableBracketedPaste, EnableFocusChange)?;
+        host_modes.apply_mouse(true, false, true)?;
+        host_modes.enable_bracketed_paste(&mut io::stdout())?;
+        host_modes.enable_focus_change(&mut io::stdout())?;
         if host_color_scheme_reports {
-            terminal_guard.reset_host_color_scheme_reports = true;
-            write_host_color_scheme_report_mode(&mut io::stdout(), true)?;
+            host_modes.enable_color_scheme_reports(&mut io::stdout())?;
         }
         (active, buffered_input)
     } else {
+        // Keep color-scheme reports out of the attached PTY's input. Direct
+        // attach never enables them, so there is nothing to restore on exit.
         write_host_color_scheme_report_mode(&mut io::stdout(), false)?;
-        set_mouse_capture(mouse_capture, false)?;
-        execute!(io::stdout(), EnableBracketedPaste)?;
+        host_modes.apply_mouse(false, false, true)?;
+        host_modes.enable_bracketed_paste(&mut io::stdout())?;
         (false, Vec::new())
     };
 
@@ -74,12 +75,16 @@ pub(super) fn setup_terminal_with_capabilities(
         .then(shepr_termio::input::host_modify_other_keys_mode)
         .flatten();
     if let Some(mode) = modify_other_keys_mode {
-        terminal_guard.reset_modify_other_keys = true;
-        io::stdout().write_all(mode.set_sequence())?;
-        io::stdout().flush()?;
+        let parameter = if mode.set_sequence().ends_with(b";1m") {
+            1
+        } else {
+            2
+        };
+        let level = shepr_vt::ModifyOtherKeysLevel::from_parameter(parameter);
+        host_modes.set_modify_other_keys(&mut io::stdout(), level)?;
     }
 
-    execute!(io::stdout(), DisableLineWrap)?;
+    host_modes.disable_line_wrap(&mut io::stdout())?;
 
     terminal_guard.host_escape_disambiguation_active = host_escape_disambiguation_active;
     terminal_guard.buffered_host_input = buffered_host_input;
@@ -94,10 +99,8 @@ pub(super) fn should_enable_host_color_scheme_reports(enable_client_protocols: b
 pub(super) struct TerminalGuard {
     host_escape_disambiguation_active: bool,
     buffered_host_input: Vec<u8>,
-    reset_keyboard_enhancements: bool,
-    reset_modify_other_keys: bool,
-    reset_host_color_scheme_reports: bool,
     restore_claimed: Arc<AtomicBool>,
+    host_modes: HostModes,
     restored: bool,
 }
 
@@ -186,15 +189,7 @@ pub(super) fn write_host_color_scheme_report_mode(
     writer.flush()
 }
 
-pub(super) fn write_terminal_restore_postlude(
-    writer: &mut impl io::Write,
-    reset_host_color_scheme_reports: bool,
-) -> io::Result<()> {
-    if reset_host_color_scheme_reports {
-        writer.write_all(
-            shepr_termio::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
-        )?;
-    }
+pub(super) fn write_terminal_restore_postlude(writer: &mut impl io::Write) -> io::Result<()> {
     // Restore a visible cursor and reset DECSCUSR back to the terminal default.
     writer.write_all(b"\x1b[?25h\x1b[0 q")?;
     writer.flush()
@@ -231,8 +226,8 @@ struct EndpointMouseRequest {
     sgr_pixels: bool,
 }
 
-/// Owns endpoint mouse requests, the local preferences used before an endpoint
-/// takes control and after it releases control, and the mirrors read by stdin.
+/// Tracks endpoint mouse requests, local preferences, and mirrors read by stdin.
+/// The containing `HostModes` owner performs terminal teardown.
 pub(super) struct HostMouseMode {
     direct_preference: bool,
     shell_preference: bool,
@@ -335,6 +330,365 @@ impl HostMouseMode {
     }
 }
 
+const RESTORE_KITTY_KEYBOARD_ENTRY: u8 = 1 << 0;
+const RESTORE_MODIFY_OTHER_KEYS: u8 = 1 << 1;
+const RESTORE_COLOR_SCHEME_REPORTS: u8 = 1 << 2;
+const RESTORE_FOCUS_CHANGE: u8 = 1 << 3;
+const RESTORE_BRACKETED_PASTE: u8 = 1 << 4;
+const RESTORE_LINE_WRAP: u8 = 1 << 5;
+const RESTORE_MOUSE_CAPTURE: u8 = 1 << 6;
+const RESTORE_KEYBOARD_MASK: u8 = RESTORE_KITTY_KEYBOARD_ENTRY | RESTORE_MODIFY_OTHER_KEYS;
+
+/// XTWINOPS: save and restore the icon and window title together.
+const PUSH_WINDOW_TITLE: &[u8] = b"\x1b[22;0t";
+const POP_WINDOW_TITLE: &[u8] = b"\x1b[23;0t";
+
+struct HostModesState {
+    mouse: HostMouseMode,
+    keyboard: shepr_termio::host_term::modes::DirectHostKeyboardState,
+    pane_keyboard_report_all: bool,
+    keyboard_report_all_active: bool,
+}
+
+struct HostModesInner {
+    state: Mutex<HostModesState>,
+    restore_state: AtomicU8,
+    window_title_written: AtomicBool,
+    title_stack_pushed: AtomicBool,
+}
+
+/// Shared owner for host modes changed while a client session is active.
+/// `TerminalGuard` keeps the restoring handle; `ClientState` uses a clone to
+/// apply endpoint requests without owning a separate copy of restoration state.
+#[derive(Clone)]
+pub(super) struct HostModes {
+    inner: Arc<HostModesInner>,
+}
+
+impl HostModes {
+    pub(super) fn new(
+        direct_preference: bool,
+        shell_preference: bool,
+        initially_active: bool,
+    ) -> Self {
+        Self {
+            inner: Arc::new(HostModesInner {
+                state: Mutex::new(HostModesState {
+                    mouse: HostMouseMode::new(
+                        direct_preference,
+                        shell_preference,
+                        initially_active,
+                    ),
+                    keyboard: shepr_termio::host_term::modes::DirectHostKeyboardState::default(),
+                    pane_keyboard_report_all: false,
+                    keyboard_report_all_active: false,
+                }),
+                restore_state: AtomicU8::new(0),
+                window_title_written: AtomicBool::new(false),
+                title_stack_pushed: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    fn state(&self) -> MutexGuard<'_, HostModesState> {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn record_keyboard_restore_state(&self, kitty_entry: bool, modify_other_keys: bool) {
+        let mut state = 0;
+        if kitty_entry {
+            state |= RESTORE_KITTY_KEYBOARD_ENTRY;
+        }
+        if modify_other_keys {
+            state |= RESTORE_MODIFY_OTHER_KEYS;
+        }
+        self.inner
+            .restore_state
+            .update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current & !RESTORE_KEYBOARD_MASK) | state
+            });
+    }
+
+    fn record_keyboard_entry(&self) {
+        self.inner
+            .restore_state
+            .fetch_or(RESTORE_KITTY_KEYBOARD_ENTRY, Ordering::AcqRel);
+    }
+
+    fn record_restore_flag(&self, flag: u8) {
+        self.inner.restore_state.fetch_or(flag, Ordering::AcqRel);
+    }
+
+    pub(super) fn enable_bracketed_paste(&self, writer: &mut impl io::Write) -> io::Result<()> {
+        self.record_restore_flag(RESTORE_BRACKETED_PASTE);
+        execute!(writer, EnableBracketedPaste)
+    }
+
+    pub(super) fn enable_focus_change(&self, writer: &mut impl io::Write) -> io::Result<()> {
+        self.record_restore_flag(RESTORE_FOCUS_CHANGE);
+        execute!(writer, EnableFocusChange)
+    }
+
+    pub(super) fn disable_line_wrap(&self, writer: &mut impl io::Write) -> io::Result<()> {
+        self.record_restore_flag(RESTORE_LINE_WRAP);
+        execute!(writer, DisableLineWrap)
+    }
+
+    pub(super) fn enable_color_scheme_reports(
+        &self,
+        writer: &mut impl io::Write,
+    ) -> io::Result<()> {
+        self.record_restore_flag(RESTORE_COLOR_SCHEME_REPORTS);
+        write_host_color_scheme_report_mode(writer, true)
+    }
+
+    pub(super) fn configure_mouse_mode(&self, mouse: HostMouseMode) {
+        self.state().mouse = mouse;
+    }
+
+    pub(super) fn mouse_input_mirrors(&self) -> (Arc<AtomicBool>, Arc<AtomicBool>) {
+        self.state().mouse.input_mirrors()
+    }
+
+    pub(super) fn mouse_shell_preference(&self) -> bool {
+        self.state().mouse.shell_preference()
+    }
+
+    pub(super) fn set_mouse_endpoint_request(&self, enabled: bool, sgr_pixels: bool) {
+        self.state().mouse.set_endpoint_request(enabled, sgr_pixels);
+    }
+
+    pub(super) fn clear_mouse_endpoint_request(&self) {
+        self.state().mouse.clear_endpoint_request();
+    }
+
+    pub(super) fn apply_mouse(
+        &self,
+        client_shell: bool,
+        exact_geometry: bool,
+        reassert: bool,
+    ) -> io::Result<()> {
+        if reassert {
+            self.record_restore_flag(RESTORE_MOUSE_CAPTURE);
+        }
+        self.state()
+            .mouse
+            .apply(client_shell, exact_geometry, reassert)
+    }
+
+    pub(super) fn set_keyboard_enhancement_flags(
+        &self,
+        writer: &mut impl io::Write,
+        flags: crossterm::event::KeyboardEnhancementFlags,
+    ) -> io::Result<()> {
+        let flags = shepr_protocol::KittyKeyboardFlags::from_bits_retain(u16::from(flags.bits()));
+        let mut state = self.state();
+        let kitty_entry = !flags.is_empty();
+        self.record_keyboard_restore_state(
+            state.keyboard.has_kitty_keyboard_entry() || kitty_entry,
+            state.keyboard.modify_other_keys_active(),
+        );
+        let result = shepr_termio::host_term::modes::set_direct_host_keyboard_protocol(
+            writer,
+            &mut state.keyboard,
+            flags,
+            shepr_vt::ModifyOtherKeysLevel::Off,
+        );
+        if result.is_ok() {
+            self.record_keyboard_restore_state(kitty_entry, false);
+        }
+        result
+    }
+
+    pub(super) fn set_direct_keyboard_protocol(
+        &self,
+        writer: &mut impl io::Write,
+        flags: shepr_protocol::KittyKeyboardFlags,
+        modify_other_keys_level: shepr_vt::ModifyOtherKeysLevel,
+    ) -> io::Result<()> {
+        let mut state = self.state();
+        let kitty_entry = !flags.is_empty();
+        let modify_other_keys = modify_other_keys_level != shepr_vt::ModifyOtherKeysLevel::Off;
+        self.record_keyboard_restore_state(
+            state.keyboard.has_kitty_keyboard_entry() || kitty_entry,
+            state.keyboard.modify_other_keys_active() || modify_other_keys,
+        );
+        let result = shepr_termio::host_term::modes::set_direct_host_keyboard_protocol(
+            writer,
+            &mut state.keyboard,
+            flags,
+            modify_other_keys_level,
+        );
+        if result.is_ok() {
+            self.record_keyboard_restore_state(kitty_entry, modify_other_keys);
+        }
+        result
+    }
+
+    pub(super) fn set_modify_other_keys(
+        &self,
+        writer: &mut impl io::Write,
+        level: shepr_vt::ModifyOtherKeysLevel,
+    ) -> io::Result<()> {
+        let mut state = self.state();
+        let modify_other_keys = level != shepr_vt::ModifyOtherKeysLevel::Off;
+        let kitty_entry = state.keyboard.has_kitty_keyboard_entry();
+        self.record_keyboard_restore_state(
+            kitty_entry,
+            state.keyboard.modify_other_keys_active() || modify_other_keys,
+        );
+        let result = shepr_termio::host_term::modes::set_host_modify_other_keys(
+            writer,
+            &mut state.keyboard,
+            level,
+        );
+        if result.is_ok() {
+            self.record_keyboard_restore_state(kitty_entry, modify_other_keys);
+        }
+        result
+    }
+
+    pub(super) fn set_pane_keyboard_report_all(
+        &self,
+        writer: &mut impl io::Write,
+        enabled: bool,
+        shell_requests_report_all: bool,
+    ) -> io::Result<()> {
+        let mut state = self.state();
+        state.pane_keyboard_report_all = enabled;
+        let desired = state.pane_keyboard_report_all || shell_requests_report_all;
+        if desired == state.keyboard_report_all_active {
+            return Ok(());
+        }
+        // Report-all replaces the client's current entry. The helper tracks
+        // whether that entry exists, so its first use never pops an outer one.
+        self.record_keyboard_entry();
+        shepr_termio::host_term::modes::set_host_kitty_keyboard_report_all(
+            writer,
+            &mut state.keyboard,
+            desired,
+        )?;
+        state.keyboard_report_all_active = desired;
+        Ok(())
+    }
+
+    pub(super) fn sync_shell_keyboard_report_all(
+        &self,
+        writer: &mut impl io::Write,
+        shell_requests_report_all: bool,
+    ) -> io::Result<()> {
+        let mut state = self.state();
+        let desired = state.pane_keyboard_report_all || shell_requests_report_all;
+        if desired == state.keyboard_report_all_active {
+            return Ok(());
+        }
+        self.record_keyboard_entry();
+        shepr_termio::host_term::modes::set_host_kitty_keyboard_report_all(
+            writer,
+            &mut state.keyboard,
+            desired,
+        )?;
+        state.keyboard_report_all_active = desired;
+        Ok(())
+    }
+
+    pub(super) fn write_window_title(
+        &self,
+        writer: &mut impl io::Write,
+        title: Option<&str>,
+    ) -> io::Result<()> {
+        // Save the host's own title once, before the first write, so exit can
+        // put it back (XTWINOPS 22/23; terminals without a title stack ignore
+        // both and keep the "shepr" reset instead).
+        if !self.inner.title_stack_pushed.swap(true, Ordering::AcqRel) {
+            writer.write_all(PUSH_WINDOW_TITLE)?;
+        }
+        // Mark before writing so a partial write still gets a reset attempt.
+        self.inner
+            .window_title_written
+            .store(true, Ordering::Release);
+        shepr_termio::host_term::title::write_window_title(writer, title)
+    }
+
+    pub(super) fn reset_window_title(&self, writer: &mut impl io::Write) -> io::Result<()> {
+        if self
+            .inner
+            .window_title_written
+            .swap(false, Ordering::AcqRel)
+        {
+            shepr_termio::host_term::title::write_window_title(writer, None)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn restore(&self, writer: &mut impl io::Write) -> io::Result<()> {
+        // These atomics let the panic hook restore without locking state that
+        // may still be on the panicking thread's stack.
+        let restore_state = self.inner.restore_state.swap(0, Ordering::AcqRel);
+        let mut result = Ok(());
+        if restore_state & RESTORE_MODIFY_OTHER_KEYS != 0 {
+            let next = writer.write_all(b"\x1b[>4;0m");
+            if result.is_ok() {
+                result = next;
+            }
+        }
+        if restore_state & RESTORE_KITTY_KEYBOARD_ENTRY != 0 {
+            let next = writer.write_all(b"\x1b[<1u");
+            if result.is_ok() {
+                result = next;
+            }
+        }
+        if restore_state & RESTORE_COLOR_SCHEME_REPORTS != 0 {
+            let next = write_host_color_scheme_report_mode(writer, false);
+            if result.is_ok() {
+                result = next;
+            }
+        }
+        if restore_state & RESTORE_FOCUS_CHANGE != 0 {
+            let next = execute!(writer, DisableFocusChange);
+            if result.is_ok() {
+                result = next;
+            }
+        }
+        if restore_state & RESTORE_BRACKETED_PASTE != 0 {
+            let next = execute!(writer, DisableBracketedPaste);
+            if result.is_ok() {
+                result = next;
+            }
+        }
+        if restore_state & RESTORE_LINE_WRAP != 0 {
+            let next = execute!(writer, EnableLineWrap);
+            if result.is_ok() {
+                result = next;
+            }
+        }
+        if restore_state & RESTORE_MOUSE_CAPTURE != 0 {
+            let next = set_mouse_capture_with_writer(writer, false, false);
+            if result.is_ok() {
+                result = next;
+            }
+        }
+        let next = self.reset_window_title(writer);
+        if result.is_ok() {
+            result = next;
+        }
+        if self.inner.title_stack_pushed.swap(false, Ordering::AcqRel) {
+            let next = writer.write_all(POP_WINDOW_TITLE);
+            if result.is_ok() {
+                result = next;
+            }
+        }
+        let next = writer.flush();
+        if result.is_ok() {
+            result = next;
+        }
+        result
+    }
+}
+
 pub(super) fn host_mouse_capture_update(
     current_enabled: bool,
     current_sgr_pixels: bool,
@@ -348,76 +702,44 @@ pub(super) fn host_mouse_capture_update(
 }
 
 pub(super) fn set_mouse_capture(enabled: bool, sgr_pixels: bool) -> io::Result<()> {
-    shepr_termio::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
+    set_mouse_capture_with_writer(&mut io::stdout(), enabled, sgr_pixels)
+}
+
+fn set_mouse_capture_with_writer(
+    writer: &mut impl io::Write,
+    enabled: bool,
+    sgr_pixels: bool,
+) -> io::Result<()> {
+    shepr_termio::host_term::modes::clear_host_mouse_reporting(writer)?;
     if enabled {
-        execute!(io::stdout(), EnableMouseCapture)?;
+        execute!(writer, EnableMouseCapture)?;
         if sgr_pixels {
-            io::stdout().write_all(b"\x1b[?1016h")?;
-            io::stdout().flush()?;
+            writer.write_all(b"\x1b[?1016h")?;
+            writer.flush()?;
         }
         Ok(())
     } else {
-        execute!(io::stdout(), DisableMouseCapture)
+        execute!(writer, DisableMouseCapture)
     }
 }
 
 fn restore_terminal_state_once(
     restore_claimed: &AtomicBool,
-    reset_keyboard_enhancements: bool,
-    reset_modify_other_keys: bool,
-    reset_host_color_scheme_reports: bool,
+    host_modes: &HostModes,
 ) -> io::Result<()> {
     if restore_claimed.swap(true, Ordering::AcqRel) {
         return Ok(());
     }
-    restore_terminal_state(
-        reset_keyboard_enhancements,
-        reset_modify_other_keys,
-        reset_host_color_scheme_reports,
-    )
+    restore_terminal_state(host_modes)
 }
 
-fn restore_terminal_state(
-    reset_keyboard_enhancements: bool,
-    reset_modify_other_keys: bool,
-    reset_host_color_scheme_reports: bool,
-) -> io::Result<()> {
-    // Reset modifyOtherKeys if we enabled it.
-    if reset_modify_other_keys {
-        let _ = io::stdout().write_all(b"\x1b[>4;0m");
-        let _ = io::stdout().flush();
-    }
-
-    if reset_keyboard_enhancements {
-        let _ = pop_keyboard_enhancement_flags();
-    }
-
-    let _ = execute!(
-        io::stdout(),
-        EnableLineWrap,
-        DisableFocusChange,
-        DisableBracketedPaste
-    );
-    let _ = set_mouse_capture(false, false);
+fn restore_terminal_state(host_modes: &HostModes) -> io::Result<()> {
+    let _ = host_modes.restore(&mut io::stdout());
 
     let restore_result = ratatui::try_restore();
-    let postlude_result =
-        write_terminal_restore_postlude(&mut io::stdout(), reset_host_color_scheme_reports);
+    let postlude_result = write_terminal_restore_postlude(&mut io::stdout());
 
     restore_result.and(postlude_result)
-}
-
-fn push_keyboard_enhancement_flags() -> io::Result<()> {
-    execute!(
-        io::stdout(),
-        PushKeyboardEnhancementFlags(
-            shepr_termio::host_term::modes::ime_compatible_keyboard_enhancement_flags()
-        )
-    )
-}
-
-fn pop_keyboard_enhancement_flags() -> io::Result<()> {
-    execute!(io::stdout(), PopKeyboardEnhancementFlags)
 }
 
 impl TerminalGuard {
@@ -429,42 +751,29 @@ impl TerminalGuard {
         std::mem::take(&mut self.buffered_host_input)
     }
 
+    pub(super) fn host_modes(&self) -> HostModes {
+        self.host_modes.clone()
+    }
+
     /// Captures the restoration state for use by the process panic hook.
     pub(super) fn panic_restore(&self) -> impl Fn() + Send + Sync + 'static {
         let restore_claimed = Arc::clone(&self.restore_claimed);
-        let reset_keyboard_enhancements = self.reset_keyboard_enhancements;
-        let reset_modify_other_keys = self.reset_modify_other_keys;
-        let reset_host_color_scheme_reports = self.reset_host_color_scheme_reports;
+        let host_modes = self.host_modes.clone();
         move || {
-            let _ = restore_terminal_state_once(
-                &restore_claimed,
-                reset_keyboard_enhancements,
-                reset_modify_other_keys,
-                reset_host_color_scheme_reports,
-            );
+            let _ = restore_terminal_state_once(&restore_claimed, &host_modes);
         }
     }
 
     pub(super) fn restore(mut self) -> io::Result<()> {
         self.restored = true;
-        restore_terminal_state_once(
-            &self.restore_claimed,
-            self.reset_keyboard_enhancements,
-            self.reset_modify_other_keys,
-            self.reset_host_color_scheme_reports,
-        )
+        restore_terminal_state_once(&self.restore_claimed, &self.host_modes)
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         if !self.restored {
-            let _ = restore_terminal_state_once(
-                &self.restore_claimed,
-                self.reset_keyboard_enhancements,
-                self.reset_modify_other_keys,
-                self.reset_host_color_scheme_reports,
-            );
+            let _ = restore_terminal_state_once(&self.restore_claimed, &self.host_modes);
         }
     }
 }
@@ -588,6 +897,45 @@ mod tests {
             host_mouse_capture_update(true, true, true, true, true),
             None
         );
+    }
+
+    #[test]
+    fn host_modes_restore_undoes_direct_keyboard_protocol_and_title_once() {
+        let modes = HostModes::new(false, false, false);
+        let mut output = Vec::new();
+        modes
+            .set_direct_keyboard_protocol(
+                &mut output,
+                shepr_protocol::KittyKeyboardFlags::from_bits_retain(3),
+                shepr_vt::ModifyOtherKeysLevel::from_parameter(2),
+            )
+            .expect("write to a Vec");
+        modes
+            .write_window_title(&mut output, Some("agent"))
+            .expect("write to a Vec");
+        assert!(output.starts_with(b"\x1b[>3u\x1b[>4;2m\x1b[22;0t"));
+
+        output.clear();
+        modes.restore(&mut output).expect("write to a Vec");
+        assert_eq!(output, b"\x1b[>4;0m\x1b[<1u\x1b]0;shepr\x07\x1b[23;0t");
+
+        output.clear();
+        modes.restore(&mut output).expect("write to a Vec");
+        assert!(output.is_empty(), "restore runs once per change");
+    }
+
+    #[test]
+    fn host_modes_report_all_without_a_prior_entry_pushes_and_restore_pops_it() {
+        let modes = HostModes::new(false, false, false);
+        let mut output = Vec::new();
+        modes
+            .set_pane_keyboard_report_all(&mut output, true, false)
+            .expect("write to a Vec");
+        assert_eq!(output, b"\x1b[>31u");
+
+        output.clear();
+        modes.restore(&mut output).expect("write to a Vec");
+        assert_eq!(output, b"\x1b[<1u");
     }
 
     #[test]

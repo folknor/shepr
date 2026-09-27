@@ -72,7 +72,7 @@ except = ["shepr-vt"]
 [[dependency_rule]]
 name = "shepr-agent-layer"
 from = "shepr-agent"
-allow = ["jsonc-parser", "libc", "regex", "serde", "serde_json", "shepr-core", "shepr-platform", "toml", "tracing"]
+allow = ["jsonc-parser", "libc", "regex", "serde", "serde_json", "shepr-core", "shepr-platform", "toml", "toml_edit", "tracing"]
 kinds = ["normal"]
 
 [[dependency_rule]]

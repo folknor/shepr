@@ -11,23 +11,6 @@
 
 Hunter coverage: `lib.rs`, `endpoint.rs`, `endpoint/supervisor.rs`, `endpoint/local_failure.rs`, `terminal_setup.rs`, `shell_runtime.rs`, plus `shepr-termio/src/host_term/modes.rs`. Not read: activation, registry, commands, selection, the `shell/` presentation code, the tab bar, the sidebar and keybinding help.
 
-## CLT-001 - Direct attach leaves keyboard protocols set on the host terminal after exit
-
-Breaks the promise in `lib.rs:9` ("Restores terminal on exit").
-- In attach mode, `ServerMessage::DirectTerminalKeyboardProtocol` (`lib.rs:1397-1410`) calls `set_direct_host_keyboard_protocol`, which pushes kitty flags (`\x1b[>Nu`) and sets modifyOtherKeys (`\x1b[>4;Nm`).
-- `setup_direct_attach_terminal` calls `setup_terminal_with_capabilities(false, ..)`, which leaves `reset_keyboard_enhancements` and `reset_modify_other_keys` false. So `restore_terminal_state` (`terminal_setup.rs:380`) never pops the kitty entry or resets modifyOtherKeys.
-- `ClientState.direct_keyboard_protocol` is dropped with the loop, and nothing resets it on detach, error or panic.
-- Result: detaching from a pane whose program enabled the kitty protocol or modifyOtherKeys (vim, most agent TUIs) leaves the user's shell receiving CSI-u or modifyOtherKeys sequences.
-- Fix: make `TerminalGuard` own the direct keyboard state (for example a shared `Arc<Mutex<DirectHostKeyboardState>>`) and reset it in restore and in the panic hook.
-
-Structural note from the hunter: host terminal mode ownership is split — mouse lives in `HostMouseMode`, report-all in `ClientState`, direct keyboard in `ClientState`, title in a flag. The teardown gaps in this entry and CLT-002 come directly from that split. A single `HostModes` owner that the guard restores would fix both. Related: TRM-023.
-
-## CLT-002 - The window title shepr set is never reset when the client exits
-
-Contradicts the stated intent at `shell_runtime.rs:111-113` ("Undoes an outer window title only if this client set one").
-- `reset_window_title` only runs from `clear_endpoint_host_effects`, i.e. when the endpoint that owns the screen disconnects or is retired.
-- A normal exit (detach, Ctrl-C, `ServerShutdown`, errors) goes through `TerminalGuard::restore`, which does not touch the title. `window_title_written` exists but is ignored on exit, so the host tab keeps the last agent or workspace title after shepr is gone.
-
 ## CLT-003 - A saved-machines file that fails to load is silently treated as empty
 
 `lib.rs:163-170`, `unwrap_or_else(.. EndpointCatalog::default())`. Two things follow:

@@ -630,9 +630,26 @@ fn restore_tab(
         .focused
         .and_then(|old_id| id_map.get(&old_id))
         .is_some_and(|pane_id| surviving.contains(pane_id));
+    // A stale saved focus falls back to the first surviving leaf before the
+    // checked layout constructor is called.
     let focus = resolve_restored_pane(snap.focused, &id_map, &surviving, &pane_ids)?;
     let root_pane = resolve_restored_pane(snap.root_pane, &id_map, &surviving, &pane_ids)?;
-    let layout = TileLayout::from_saved(node, focus);
+    // Every leaf got a fresh `PaneId::alloc` in `restore_node_remapped` and
+    // focus was just resolved to a surviving leaf, so the saved-file defects
+    // `from_saved` checks for cannot reach it; a rejection here means an
+    // internal invariant broke. The tab is dropped like the other unusable
+    // tabs above, loudly, rather than guessed back into shape.
+    let layout = match TileLayout::from_saved(node, focus) {
+        Ok(layout) => layout,
+        Err(error) => {
+            error!(
+                tab = ?snap.custom_name,
+                ?error,
+                "restored tab failed layout validation after remapping; dropping it"
+            );
+            return None;
+        }
+    };
 
     Some((
         crate::workspace::Tab {

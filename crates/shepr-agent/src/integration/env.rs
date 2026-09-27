@@ -97,12 +97,6 @@ pub(crate) fn pi_extension_dir() -> io::Result<PathBuf> {
 }
 
 pub(crate) fn omp_extension_dir() -> io::Result<PathBuf> {
-    if let Some(value) =
-        std::env::var_os(PI_CODING_AGENT_DIR_ENV_VAR).filter(|value| !value.is_empty())
-    {
-        return expand_tilde_path(PathBuf::from(value)).map(|path| path.join("extensions"));
-    }
-
     let config_dir = std::env::var_os(OMP_CONFIG_DIR_ENV_VAR)
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| ".omp".into());
@@ -158,6 +152,10 @@ pub(crate) fn config_dir_from_env_or_home(
 }
 
 pub(crate) fn opencode_dir() -> io::Result<PathBuf> {
+    if let Some(path) = absolute_xdg_home("XDG_CONFIG_HOME") {
+        return Ok(path.join("opencode"));
+    }
+
     Ok(home_dir()?.join(".config/opencode"))
 }
 
@@ -172,6 +170,10 @@ pub(crate) fn opencode_state_dir() -> io::Result<PathBuf> {
 }
 
 pub(crate) fn kilo_dir() -> io::Result<PathBuf> {
+    if let Some(path) = absolute_xdg_home("XDG_CONFIG_HOME") {
+        return Ok(path.join("kilo"));
+    }
+
     Ok(home_dir()?.join(".config/kilo"))
 }
 
@@ -277,6 +279,28 @@ mod tests {
         let xdg = env.path().join("config");
         env.set("XDG_CONFIG_HOME", &xdg);
         assert_eq!(devin_dir().expect("absolute XDG path"), xdg.join("devin"));
+    }
+
+    #[test]
+    fn opencode_and_kilo_dirs_honor_absolute_xdg_config_home() {
+        let env = IsolatedEnv::new();
+        assert_eq!(
+            opencode_dir().expect("home fallback"),
+            env.home().join(".config/opencode")
+        );
+        env.set("XDG_CONFIG_HOME", "relative/config");
+        assert_eq!(
+            kilo_dir().expect("home fallback"),
+            env.home().join(".config/kilo")
+        );
+
+        let xdg = env.path().join("config");
+        env.set("XDG_CONFIG_HOME", &xdg);
+        assert_eq!(
+            opencode_dir().expect("absolute XDG path"),
+            xdg.join("opencode")
+        );
+        assert_eq!(kilo_dir().expect("absolute XDG path"), xdg.join("kilo"));
     }
 
     #[test]

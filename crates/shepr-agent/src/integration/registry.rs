@@ -533,7 +533,8 @@ fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_pa
                 .is_file()
                 && ancestor(hook_path, 3).is_some_and(|dir| {
                     fs::read_to_string(dir.join("config.yaml")).is_ok_and(|config| {
-                        super::config_edit::ensure_hermes_plugin_enabled(&config) == config
+                        super::config_edit::ensure_hermes_plugin_enabled(&config)
+                            .is_ok_and(|updated| updated == config)
                     })
                 })
         }

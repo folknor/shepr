@@ -52,14 +52,6 @@ Related smell from the same hunter: `SyncTimeoutRender` plus the timer path copi
 - `SessionSnapshot.host_theme` is documented as "retained for headless resumes" (`SavedHostTheme::to_theme`), but `restore()` never reads it.
 - Unless the server re-applies it afterwards (the hunter did not check `shepr-server`), restored panes answer OSC 10/11/4 colour queries with defaults.
 
-## MUX-006 - Pane history is formatted on the event loop under the terminal-core lock
-
-`snapshot.rs:573`. Filed by the hunter as a weaker finding to check before acting.
-- `live_history_read` formats each pane's whole scrollback on the event loop, under one hold of the terminal-core lock. This stalls that pane's PTY reader and every other event-loop task on each autosave.
-- The comment admits it, but it breaks the "keep terminal-core locks short" principle.
-- The writer's SHA-256 digest (`writer.rs:107`) only skips the disk write. The formatting and hashing still run every time.
-- Structural fix: expose a `Send` terminal-core handle, or cache per-pane history keyed by `content_seq`.
-
 ## MUX-007 - Ahead/behind never retries after a failed git rev-list
 
 `git/status.rs`. Filed by the hunter as a weaker finding to check before acting.

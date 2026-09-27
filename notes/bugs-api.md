@@ -23,22 +23,6 @@ Related: SRV-004 (the pre-request internal-event drain can stall the app loop, m
 
 (The server hunter reports the app-side rejection of API requests during shutdown as consistent; this entry concerns the socket-thread methods that never reach it.)
 
-## API-003 - A large timeout_ms panics the connection thread
-
-`wait.rs` line 34 (`wait_for_output`) and line 387 (`wait_for_resolved_agent`) compute `Instant::now() + Duration::from_millis(ms)`, which panics on overflow (for example with `timeout_ms` near `u64::MAX`). The shipped client refuses such values (`deadline_after` uses `checked_add`), but any other JSON API caller, such as hooks or scripts, gets a panicking thread and a bare EOF instead of a structured error. Use `checked_add` and return an `invalid_request` error.
-
-## API-004 - Stray bytes end an SSH-agent lease, contrary to the doc comment
-
-`server.rs`, lines ~412–423. The loop breaks on any result other than `Pending`, and a byte of data counts. The comment on `read_request_line_blocking` says the lease loop "ends on EOF whether or not stray bytes preceded it". In fact any byte that arrives after the request line ends the lease at once, and the forwarded agent symlink is removed. Only data that was already read in the same chunk as the request line gets dropped harmlessly.
-
-## API-005 - status_with_timeout can report WouldBlock instead of TimedOut
-
-`client.rs` `read_status`. This path does not run `normalize_socket_timeout` and sets no send timeout. The file itself says "callers decide 'stalled server' on `TimedOut` alone", and its own test accepts `WouldBlock`, which confirms the inconsistency. A caller relying on the documented kind will misclassify a stalled server.
-
-## API-006 - Response parsing throws away the real error
-
-`client.rs` `WireResponse`. It uses `#[serde(untagged)]` over Success and Error. If a success response fails to decode, for example because of a schema mismatch in `ResponseResult`, serde reports only "data did not match any variant". The actual field error is lost, and a malformed error body is reported the same way. Dispatching on the presence of the `error` key would keep the error.
-
 ## API-007 - MAX_FRAME_SIZE is used as a field cap inside a frame capped at MAX_FRAME_SIZE
 
 `message.rs` `TerminalFrame.bytes` and `ClientShellEndpointResponseChunk.data`, both bounded by `serialize_bounded_bytes::<MAX_FRAME_SIZE>`. A field at its stated limit can never fit, because the variant tag and length prefix push the payload over. The per-field cap should be `MAX_FRAME_SIZE` minus the envelope, or chunkers should size against a dedicated constant. As written, the cap promises something the frame cannot carry.
@@ -54,10 +38,6 @@ Related: SRV-004 (the pre-request internal-event drain can stall the app loop, m
 ## API-010 - EventHub poisoning restarts cursors from zero
 
 `EventHub::push` silently drops events once its mutex is poisoned. `events_after_checked` reports that as Unavailable, but `current_sequence` returns 0, which would restart cursors from zero.
-
-## API-011 - Waits and subscriptions poll the app loop; unbounded connection threads
-
-The API server spawns one OS thread per connection with no cap (same-user peers only). Its subscription and wait loops poll every 100 ms and send a fresh `pane.read` or `pane.get` to the app loop each time, so N waiters put N×10 requests per second into the main loop. Structurally, waits should be event-driven off the `EventHub` rather than polling the app.
 
 ## API-012 - agent.prompt with wait and no timeout is unbounded end to end
 

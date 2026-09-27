@@ -12,8 +12,13 @@ pub fn clear_host_mouse_reporting<W: Write>(writer: &mut W) -> io::Result<()> {
     writer.flush()
 }
 
+/// Selects the client's keyboard enhancement entry for shell input.
+///
+/// A first enable pushes without popping; later changes replace only the
+/// entry recorded in `active`.
 pub fn set_host_kitty_keyboard_report_all<W: Write>(
     writer: &mut W,
+    active: &mut DirectHostKeyboardState,
     report_all_keys: bool,
 ) -> io::Result<()> {
     let mut flags = ime_compatible_keyboard_enhancement_flags();
@@ -25,11 +30,22 @@ pub fn set_host_kitty_keyboard_report_all<W: Write>(
                     .unwrap_or_default(),
         );
     }
-    crossterm::execute!(
+    let modify_other_keys_level = active.modify_other_keys_level;
+    set_direct_host_keyboard_protocol(
         writer,
-        crossterm::event::PopKeyboardEnhancementFlags,
-        crossterm::event::PushKeyboardEnhancementFlags(flags)
+        active,
+        KittyKeyboardFlags::from_bits_retain(u16::from(flags.bits())),
+        modify_other_keys_level,
     )
+}
+
+pub fn set_host_modify_other_keys<W: Write>(
+    writer: &mut W,
+    active: &mut DirectHostKeyboardState,
+    level: ModifyOtherKeysLevel,
+) -> io::Result<()> {
+    let flags = active.kitty_flags.unwrap_or(KittyKeyboardFlags::NONE);
+    set_direct_host_keyboard_protocol(writer, active, flags, level)
 }
 
 pub fn ime_compatible_keyboard_enhancement_flags() -> crossterm::event::KeyboardEnhancementFlags {
@@ -41,6 +57,16 @@ pub fn ime_compatible_keyboard_enhancement_flags() -> crossterm::event::Keyboard
 pub struct DirectHostKeyboardState {
     kitty_flags: Option<KittyKeyboardFlags>,
     modify_other_keys_level: ModifyOtherKeysLevel,
+}
+
+impl DirectHostKeyboardState {
+    pub fn has_kitty_keyboard_entry(&self) -> bool {
+        self.kitty_flags.is_some()
+    }
+
+    pub fn modify_other_keys_active(&self) -> bool {
+        self.modify_other_keys_level != ModifyOtherKeysLevel::Off
+    }
 }
 
 pub fn set_direct_host_keyboard_protocol<W: Write>(
@@ -92,11 +118,14 @@ mod tests {
     #[test]
     fn host_keyboard_report_all_replaces_the_current_shepr_stack_entry() {
         let mut output = Vec::new();
+        let mut active = DirectHostKeyboardState::default();
 
-        set_host_kitty_keyboard_report_all(&mut output, true).expect("test precondition");
-        set_host_kitty_keyboard_report_all(&mut output, false).expect("test precondition");
+        set_host_kitty_keyboard_report_all(&mut output, &mut active, true)
+            .expect("test precondition");
+        set_host_kitty_keyboard_report_all(&mut output, &mut active, false)
+            .expect("test precondition");
 
-        assert_eq!(output, b"\x1b[<1u\x1b[>31u\x1b[<1u\x1b[>7u");
+        assert_eq!(output, b"\x1b[>31u\x1b[<1u\x1b[>7u");
     }
 
     #[test]

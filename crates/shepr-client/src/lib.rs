@@ -38,7 +38,7 @@ use clipboard_forwarding::forward_clipboard;
 use events::{ClientLoopEvent, ParsedHostInput};
 use loop_config::{ClientLoopConfig, ClientSettings};
 use shell_runtime::*;
-use state::{AttachSession, ClientState, SessionMode};
+use state::{AttachSession, ClientState, SessionMode, ShellSession};
 use transport::*;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -64,8 +64,9 @@ use terminal_setup::{
 
 #[cfg(test)]
 use terminal_setup::{
-    effective_mouse_capture, effective_sgr_pixel_mouse, should_enable_host_color_scheme_reports,
-    write_host_color_scheme_report_mode, write_terminal_restore_postlude,
+    HostModes, effective_mouse_capture, effective_sgr_pixel_mouse,
+    should_enable_host_color_scheme_reports, write_host_color_scheme_report_mode,
+    write_terminal_restore_postlude,
 };
 
 use attach::AttachEscapeState;
@@ -127,7 +128,6 @@ fn run_client_with_mode(
         shepr_platform::logging::CLIENT_LOG_FILE,
     );
 
-    shepr_termio::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let client_rendered_shell = attach_request.is_none();
     let socket_path = paths.server_address().client_socket().to_path_buf();
     let error_context = ClientErrorContext::new(
@@ -334,7 +334,7 @@ async fn run_client_loop(
     mut config: ClientLoopConfig,
     attach_escape: Option<AttachEscapeState>,
     direct_notices: &mut VecDeque<String>,
-    _terminal_guard: &TerminalGuard,
+    terminal_guard: &TerminalGuard,
 ) -> Result<(), ClientError> {
     let (cols, rows) = (initial_geometry.cols(), initial_geometry.rows());
     let (initial_cell_width_px, initial_cell_height_px, initial_pixel_geometry_exact) = (
@@ -352,18 +352,16 @@ async fn run_client_loop(
             initial_pixel_geometry_exact,
         );
 
+    let host_modes = terminal_guard.host_modes();
+    host_modes.configure_mouse_mode(HostMouseMode::new(
+        attach_escape.is_some() && config.settings.mouse_capture_active,
+        config.settings.mouse_capture_active,
+        config.settings.mouse_capture_active,
+    ));
     let mut state = ClientState {
         blit_encoder: render_ansi::BlitEncoder::new(),
-        host_mouse_mode: HostMouseMode::new(
-            attach_escape.is_some() && config.settings.mouse_capture_active,
-            config.settings.mouse_capture_active,
-            config.settings.mouse_capture_active,
-        ),
+        host_modes,
         host_theme_updates: Vec::new(),
-        direct_keyboard_protocol: shepr_termio::host_term::modes::DirectHostKeyboardState::default(
-        ),
-        pane_keyboard_report_all: false,
-        keyboard_report_all_active: false,
         reported_geometry: shepr_core::geometry::HostGeometry::new(
             cols,
             rows,
@@ -382,7 +380,6 @@ async fn run_client_loop(
         presentation_frozen: false,
         deferred_local_activation: None,
         draw_host_cursor,
-        window_title_written: false,
     };
     state.set_host_size(cols, rows);
     // Only a client that loaded the saved machines follows them; attach and remote-client
@@ -403,7 +400,7 @@ async fn run_client_loop(
     // Zero means the host has not reported one.
     let reported_cell_size = Arc::new(AtomicCellSize::new());
     let (stdin_mouse_capture_active, stdin_sgr_pixels_active) =
-        state.host_mouse_mode.input_mirrors();
+        state.host_modes.mouse_input_mirrors();
 
     // Channel for events from the resize and server reader threads.
     let (event_tx, event_rx) = tokio::sync::mpsc::channel::<ClientLoopEvent>(256);
@@ -625,7 +622,7 @@ impl ClientLoop<'_> {
                             self.state.reported_geometry.cols(),
                             self.state.reported_geometry.rows(),
                         ),
-                        mouse_capture: self.state.host_mouse_mode.shell_preference(),
+                        mouse_capture: self.state.host_modes.mouse_shell_preference(),
                     },
                     &self.supervisor_tx,
                 );
@@ -726,8 +723,8 @@ impl ClientLoop<'_> {
                 inputs.iter().map(|input| &input.event),
             ) && let Err(err) =
                 state
-                    .host_mouse_mode
-                    .apply(shell_mode, state.reported_geometry.exact, true)
+                    .host_modes
+                    .apply_mouse(shell_mode, state.reported_geometry.exact, true)
             {
                 warn!(err = %err, "failed to re-assert host mouse capture");
             }
@@ -919,8 +916,8 @@ impl ClientLoop<'_> {
             pixel_geometry_exact,
         );
         state
-            .host_mouse_mode
-            .apply(state.mode.is_shell(), pixel_geometry_exact, false)
+            .host_modes
+            .apply_mouse(state.mode.is_shell(), pixel_geometry_exact, false)
             .map_err(ClientError::HostTerminal)?;
         state.set_host_size(new_cols, new_rows);
         // Resizing invalidates the host-side blit baseline. The retained pane surface
@@ -1376,22 +1373,20 @@ impl ClientLoop<'_> {
                 // cleared, or every template token resolved empty) and
                 // resets to Shepr's default. A disabled `ui.window_title`
                 // never reaches here: the server sends nothing at all.
-                state.window_title_written = true;
-                let _ = shepr_termio::host_term::title::write_window_title(
-                    &mut io::stdout(),
-                    title.as_deref(),
-                );
+                let _ = state
+                    .host_modes
+                    .write_window_title(&mut io::stdout(), title.as_deref());
             }
             ServerMessage::MouseCapture {
                 enabled,
                 sgr_pixels,
             } => {
                 state
-                    .host_mouse_mode
-                    .set_endpoint_request(enabled, sgr_pixels);
+                    .host_modes
+                    .set_mouse_endpoint_request(enabled, sgr_pixels);
                 state
-                    .host_mouse_mode
-                    .apply(state.mode.is_shell(), state.reported_geometry.exact, false)
+                    .host_modes
+                    .apply_mouse(state.mode.is_shell(), state.reported_geometry.exact, false)
                     .map_err(ClientError::HostTerminal)?;
             }
             ServerMessage::DirectTerminalKeyboardProtocol {
@@ -1399,19 +1394,30 @@ impl ClientLoop<'_> {
                 modify_other_keys_level,
             } => {
                 if state.mode.is_escape_attach() {
-                    shepr_termio::host_term::modes::set_direct_host_keyboard_protocol(
-                        &mut io::stdout(),
-                        &mut state.direct_keyboard_protocol,
-                        flags,
-                        modify_other_keys_level,
-                    )
-                    .map_err(ClientError::HostTerminal)?;
+                    state
+                        .host_modes
+                        .set_direct_keyboard_protocol(
+                            &mut io::stdout(),
+                            flags,
+                            modify_other_keys_level,
+                        )
+                        .map_err(ClientError::HostTerminal)?;
                 }
             }
             ServerMessage::ClientShellKeyboardReportAll { enabled } => {
                 if state.mode.is_shell() {
-                    state.pane_keyboard_report_all = enabled;
-                    sync_client_shell_keyboard_report_all(state)?;
+                    let shell_requests_report_all = state
+                        .mode
+                        .shell()
+                        .is_some_and(ShellSession::host_keyboard_report_all_requested);
+                    state
+                        .host_modes
+                        .set_pane_keyboard_report_all(
+                            &mut io::stdout(),
+                            enabled,
+                            shell_requests_report_all,
+                        )
+                        .map_err(ClientError::HostTerminal)?;
                 }
             }
             ServerMessage::PresentationReady(data) => {

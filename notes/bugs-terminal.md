@@ -37,7 +37,7 @@ Same class: `WorkingDirectory` and `Progress` scanner events inside a sync frame
 `crates/shepr-vt/src/cell.rs`.
 - Their docs claim "Width of text under the terminal grid's grapheme and voiced-mark rules". But alacritty sizes each char on its own (`c.width()`, with zero-width chars attached to the previous cell) and does no grapheme clustering.
 - `unicode_grapheme_cell_width` uses `str::width()` over a whole grapheme, clamped to 2. Two mismatches:
-  - `☺\u{FE0F}` is 1 column in the grid but reported as 2.
+  - `\u{263A}\u{FE0F}` (smiley plus VS16) is 1 column in the grid but reported as 2.
   - A ZWJ family emoji is 6 columns in the grid (2+0+2+0+2) but reported as 2.
 - Consumers: `crates/shepr-termio/src/copy_mode.rs` (`first_non_blank_col`, `last_character_col`) measures row text that came from the grid, so copy-mode columns drift. `crates/shepr-client/src/shell/sidebar/agent_sidebar.rs` is also affected.
 - Fix: sum per-char `unicode_codepoint_width`. Do not use grapheme width.
@@ -58,7 +58,7 @@ Same class: `WorkingDirectory` and `Progress` scanner events inside a sync frame
 
 ## TRM-006 - Scanner framing diverges from vte for XTGETTCAP and DCS
 
-- **XTGETTCAP body:** vte's passthrough ignores DEL and bytes 0x80–0xFF other than 0x9C. The scanner buffers them, so a request containing them gets no reply.
+- **XTGETTCAP body:** vte's passthrough ignores DEL and bytes 0x80-0xFF other than 0x9C. The scanner buffers them, so a request containing them gets no reply.
 - **DCS ignore vs passthrough:** the scanner merges vte's `DcsIgnore` (which ignores 0x9C) with `DcsPassthrough` (which ends on 0x9C). The hunter found no observable difference, because both only resync on ESC. The module doc's claim of "mirroring framing" is slightly overstated.
 
 ## TRM-007 - OSC 8 hyperlink ids are mangled on replay
@@ -138,24 +138,17 @@ Surfaced in both the pty and mux scopes.
 - **A burst of wakes delays PTY IO.** When `wake_ready` fires, `run()` does `continue` even if the PTY was also readable or writable, so a steady stream of wakes (keystrokes, timer responses) postpones PTY work. There is no correctness bug, but reads could be serviced in the same iteration.
 - **Missed wakes are only caught by the 1 s idle poll.** The fallback is documented, but wake writes that hit `EAGAIN` are treated as success, which is correct only because the pipe is non-empty at that point. The hunter says that holds as written.
 
-## TRM-019 - One invalid byte stalls the input framer, then deletes the input queued behind it
+## TRM-029 - The raw-input idle flush still ends in a catch-all buffer clear
 
-`crates/shepr-termio/src/input/raw_input.rs`.
-- `extract_one_event` returns `None` in these cases:
-  - a stray continuation byte or a 0xF8+ lead byte (`first_complete_utf8_char_len` gives `None`);
-  - ESC followed by such a byte (`complete_escape_sequence_len` gives `None` via `utf8_char_width`);
-  - a complete CSI that isn't UTF-8 (the `from_utf8(...).ok()?` at about line 969).
-- `drain_available_chunks` then `break`s and everything typed afterwards waits behind that byte. When `flush_timeout` finally runs, parsing fails and `starts_with_incomplete_utf8_char` is false (because `error_len` is `Some`). It reaches "dropping incomplete raw input buffer" and runs `self.buffer.clear()`, which deletes every keystroke and mouse report typed after the bad byte.
-- If input never goes idle (for example a stream of mouse motion), the stall has no end.
-- Fix: whenever the head of the buffer can't start a valid event, consume exactly that one byte as `Unsupported` so the rest keeps flowing. Never clear the whole buffer.
+`crates/shepr-termio/src/input/raw_input.rs`, `RawInputByteFramer::flush_timeout`. Malformed heads are now consumed one event at a time, so by the idle flush only a single incomplete trailing sequence should remain. The flush still finishes with `self.buffer.clear()`, which would silently eat anything else if that invariant ever slips. It should drop exactly the incomplete sequence, or assert the invariant in tests.
 
 ## TRM-020 - Kitty keys that shepr parses cannot be encoded again, so they are dropped
 
 `crates/shepr-termio/src/input/encode.rs`, `parse.rs`.
-- `kitty_codepoint_to_keycode` produces F13–F35, `CapsLock`/`ScrollLock`/`NumLock`/`PrintScreen`/`Pause`/`Menu`, `KeypadBegin`, `Media(..)` and `Modifier(..)` keys.
-- `encode_kitty_functional_key` handles only arrows, Home/End/Ins/Del/PgUp/PgDn and F1–F12. For anything else `try_encode_csi_u` returns `None`, and `encode_legacy_inner` returns `vec![]` (as does `encode_f_key` for n>12).
+- `kitty_codepoint_to_keycode` produces F13-F35, `CapsLock`/`ScrollLock`/`NumLock`/`PrintScreen`/`Pause`/`Menu`, `KeypadBegin`, `Media(..)` and `Modifier(..)` keys.
+- `encode_kitty_functional_key` handles only arrows, Home/End/Ins/Del/PgUp/PgDn and F1-F12. For anything else `try_encode_csi_u` returns `None`, and `encode_legacy_inner` returns `vec![]` (as does `encode_f_key` for n>12).
 - So a pane that pushed REPORT_ALL_KEYS never receives modifier-key or lock-key events, and F13+ is lost under every protocol. This breaks `encode_terminal_key`'s own doc: "Encode a key event for a PTY child using the pane's negotiated keyboard protocol."
-- Related: keypad codepoints 57399–57426 are collapsed into `Char('0')` / `Up` and so on, so a REPORT_ALL_KEYS child can never see keypad identity. `TerminalKey` has nowhere to carry it.
+- Related: keypad codepoints 57399-57426 are collapsed into `Char('0')` / `Up` and so on, so a REPORT_ALL_KEYS child can never see keypad identity. `TerminalKey` has nowhere to carry it.
 - Fix: keep the kitty functional codepoint in `TerminalKey`, and emit `CSI <cp>;mods[:ev]u` for it when REPORT_ALL_KEYS (or DISAMBIGUATE, for the keys the spec lists) is active.
 
 Structural suggestion from the hunter: `TerminalKey` built on crossterm's `KeyCode` is the root of this entry and TRM-021: it can't represent kitty functional codepoints, keypad identity or lock state. A shepr-owned key model (kitty codepoint, shifted and base-layout alternates, a keypad flag, full modifier and lock bits) would make a lossless round trip possible. It would also let one encoder handle kitty, modifyOtherKeys and legacy output from the same data, replacing today's three layered fallbacks in `encode_terminal_key`.
@@ -174,15 +167,6 @@ Structural suggestion from the hunter: `TerminalKey` built on crossterm's `KeyCo
 - But `host_term/modes.rs::set_host_kitty_keyboard_report_all(true)` pushes flags 31 (report-all plus associated text). In that mode every text key arrives as CSI u with associated text, gets `generated_text`, and does get Release and Repeat events.
 - Those releases and repeats have no lease. So they aren't routed to the pane that got the press, and `plan_repeat` falls into untracked reprocessing.
 - Needs confirming against the server-side caller. The rule should depend on the host mode, not on whether `generated_text` is present.
-
-## TRM-023 - set_host_kitty_keyboard_report_all always pops before it pushes
-
-`crates/shepr-termio/src/host_term/modes.rs`.
-- Its own test shows the very first call emitting `\x1b[<1u\x1b[>31u`. If nothing earlier in the client pushed a shepr entry, that pop removes the enclosing program's kitty stack entry, for example an outer shepr or tmux on a nested/SSH host.
-- The test name says it "replaces the current shepr stack entry". That only holds if the caller always pushed first. The hunter did not verify the caller.
-- `set_direct_host_keyboard_protocol` handles this properly by tracking `active` state. The two paths should be unified on that pattern.
-
-Related: CLT-001 (direct keyboard protocol state is not restored on exit).
 
 ## TRM-024 - Legacy Ctrl/Shift encoding is incomplete and disagrees with copy mode
 
