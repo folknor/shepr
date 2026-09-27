@@ -5,7 +5,7 @@ fn workspaces(count: usize) -> ClientShellSnapshot {
     projected.workspaces = (1..=count)
         .map(|number| {
             let mut workspace = projected.workspaces[0].clone();
-            workspace.workspace_id = format!("ws_{number}");
+            workspace.workspace_id = format!("ws_{number}").into();
             workspace.number = number;
             workspace.focused = number == 1;
             workspace
@@ -800,7 +800,7 @@ fn direct_agent_focus_repaints_when_releasing_a_workspace_highlight() {
         assert!(
             matches!(outcome.actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
             if matches!(&request.method, crate::api::schema::Method::PaneFocus(params)
-                if params.pane_id == "pane_1"))
+                if params.pane_id == "ws_1:p1"))
         );
         assert!(state.pending_workspace_highlight.is_none());
         assert_eq!(outcome.repaint, pending);

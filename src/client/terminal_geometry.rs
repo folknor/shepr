@@ -43,7 +43,7 @@ fn ioctl_terminal_geometry() -> Option<(u16, u16, u32, u32)> {
 #[cfg(test)]
 pub(super) fn cell_size_fallback(reported: u64, last: Option<(u32, u32)>) -> (u32, u32) {
     unpack_cell_size(reported)
-        .or(last.filter(|(width, height)| *width > 0 && *height > 0))
+        .or(last.filter(|(width, height)| crate::geometry::CellPx::new(*width, *height).is_some()))
         .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX))
 }
 
@@ -73,10 +73,11 @@ pub(super) fn pack_cell_size(width_px: u32, height_px: u32) -> u64 {
 fn unpack_cell_size(packed: u64) -> Option<(u32, u32)> {
     let width_px = (packed >> 32) as u32;
     let height_px = u32::try_from(packed & u64::from(u32::MAX)).unwrap_or(u32::MAX);
-    (width_px > 0 && height_px > 0).then_some((width_px, height_px))
+    crate::geometry::CellPx::new(width_px, height_px)
+        .map(|cell| (cell.width.get(), cell.height.get()))
 }
 
-type TerminalGeometry = (u16, u16, u32, u32, bool);
+type TerminalGeometry = crate::geometry::HostGeometry;
 
 /// Host grid size as reported by the client. A client-owned shell must keep
 /// its full grid within one surface frame; a direct terminal client reports
@@ -103,13 +104,12 @@ pub(super) fn bounded_cell_geometry(
     cell_height_px: u32,
     pixel_geometry_exact: bool,
 ) -> (u32, u32, bool) {
-    (
-        cell_width_px.min(crate::protocol::MAX_CELL_SIZE_PX),
-        cell_height_px.min(crate::protocol::MAX_CELL_SIZE_PX),
-        pixel_geometry_exact
-            && cell_width_px <= crate::protocol::MAX_CELL_SIZE_PX
-            && cell_height_px <= crate::protocol::MAX_CELL_SIZE_PX,
-    )
+    let size = crate::protocol::ProtocolCellSize::from_host(
+        cell_width_px,
+        cell_height_px,
+        pixel_geometry_exact,
+    );
+    (size.width(), size.height(), size.exact)
 }
 
 pub(super) fn current_terminal_geometry_with(
@@ -122,20 +122,33 @@ pub(super) fn current_terminal_geometry_with(
 ) -> io::Result<TerminalGeometry> {
     if !pixel_geometry_enabled {
         let (cols, rows) = terminal_grid_size()?;
-        return Ok((cols, rows, 0, 0, false));
+        return Ok(TerminalGeometry::new(cols, rows, 0, 0, false));
     }
     if let Some((cols, rows, cell_width_px, cell_height_px)) = exact_geometry {
-        return Ok((cols, rows, cell_width_px, cell_height_px, true));
+        return Ok(TerminalGeometry::new(
+            cols,
+            rows,
+            cell_width_px,
+            cell_height_px,
+            true,
+        ));
     }
     let (cols, rows) = terminal_grid_size()?;
     if !pixel_geometry_fallback {
-        return Ok((cols, rows, 0, 0, false));
+        return Ok(TerminalGeometry::new(cols, rows, 0, 0, false));
     }
     let (cell_width_px, cell_height_px) = reported_cell_size
         .load()
-        .or(last_cell_size.filter(|(width, height)| *width > 0 && *height > 0))
+        .or(last_cell_size
+            .filter(|(width, height)| crate::geometry::CellPx::new(*width, *height).is_some()))
         .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX));
-    Ok((cols, rows, cell_width_px, cell_height_px, false))
+    Ok(TerminalGeometry::new(
+        cols,
+        rows,
+        cell_width_px,
+        cell_height_px,
+        false,
+    ))
 }
 
 fn current_terminal_geometry(
@@ -170,8 +183,8 @@ pub(super) fn initial_terminal_geometry(
 
 pub(super) fn resize_report_required(
     signalled: bool,
-    new_size: (u16, u16, u32, u32, bool),
-    last_size: (u16, u16, u32, u32, bool),
+    new_size: TerminalGeometry,
+    last_size: TerminalGeometry,
 ) -> bool {
     signalled || new_size != last_size
 }
@@ -181,27 +194,16 @@ pub(super) fn resize_report_required(
 /// The baseline cell size must match what the handshake sent to the server:
 /// reading a fresh one here would race the host cell size reply and could
 /// swallow the first change.
-#[allow(clippy::too_many_arguments)] // The arguments are one immutable launch snapshot, not shared state.
 pub(super) fn resize_poll_loop(
     resize_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
-    initial_cols: u16,
-    initial_rows: u16,
-    initial_cell_width: u32,
-    initial_cell_height: u32,
-    initial_pixel_geometry_exact: bool,
+    initial: TerminalGeometry,
     pixel_geometry_enabled: bool,
     pixel_geometry_fallback: bool,
     reported_cell_size: &AtomicCellSize,
     should_quit: &Arc<AtomicBool>,
 ) {
     crate::platform::watch_terminal_resize_signal();
-    let mut last_size = (
-        initial_cols,
-        initial_rows,
-        initial_cell_width,
-        initial_cell_height,
-        initial_pixel_geometry_exact,
-    );
+    let mut last_size = initial;
     while !should_quit.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(100));
         let signalled = crate::platform::take_terminal_resize_signal();
@@ -209,7 +211,7 @@ pub(super) fn resize_poll_loop(
             pixel_geometry_enabled,
             pixel_geometry_fallback,
             reported_cell_size,
-            Some((last_size.2, last_size.3)),
+            Some((last_size.cell_width(), last_size.cell_height())),
         ) {
             Ok(size) => size,
             Err(err) => {
@@ -220,9 +222,7 @@ pub(super) fn resize_poll_loop(
         if resize_report_required(signalled, new_size, last_size) {
             last_size = new_size;
             if resize_tx
-                .blocking_send(ClientLoopEvent::Resize(
-                    new_size.0, new_size.1, new_size.2, new_size.3, new_size.4,
-                ))
+                .blocking_send(ClientLoopEvent::Resize(new_size))
                 .is_err()
             {
                 break;

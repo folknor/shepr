@@ -28,7 +28,7 @@ impl ClientShellState {
     ) {
         self.focus_or_activate(
             press.endpoint_id,
-            ClientEndpointFocusTarget::Workspace(press.workspace_id),
+            ClientEndpointFocusTarget::Workspace(press.workspace_id.to_string()),
             outcome,
         );
     }
@@ -119,7 +119,7 @@ impl ClientShellState {
                                     snapshot.workspaces.get(entry).map(|workspace| {
                                         (
                                             endpoint.endpoint_id.clone(),
-                                            workspace.workspace_id.clone(),
+                                            workspace.workspace_id.to_string(),
                                         )
                                     })
                                 })
@@ -269,7 +269,7 @@ impl ClientShellState {
                 }
                 ClientEndpointFocusTarget::Pane(pane_id) => {
                     crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
-                        pane_id,
+                        pane_id: pane_id.to_string(),
                     })
                 }
             };

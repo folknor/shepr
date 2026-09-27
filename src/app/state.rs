@@ -25,7 +25,7 @@ pub enum Mode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PaneFocusTarget {
-    pub workspace_id: String,
+    pub workspace_id: crate::workspace::WorkspaceId,
     pub pane_id: PaneId,
 }
 
@@ -48,11 +48,13 @@ pub struct AppState {
     pub direct_attach_resize_locks: std::collections::HashSet<crate::terminal::TerminalId>,
     /// Keeps a pane's pre-move public id (`<old workspace>:p<n>`) resolving
     /// after a cross-workspace pane move.
-    pub(crate) public_pane_id_aliases: std::collections::HashMap<String, PaneId>,
+    pub(crate) public_pane_id_aliases:
+        std::collections::HashMap<crate::workspace::PublicPaneId, PaneId>,
     pub workspaces: Vec<Workspace>,
-    pub active: Option<usize>,
+    pub active: Option<crate::workspace::WorkspaceId>,
+    pub(crate) active_tab_id: Option<crate::workspace::PublicTabId>,
     pub(crate) previous_pane_focus: Option<PaneFocusTarget>,
-    pub selected: usize,
+    pub selected: Option<crate::workspace::WorkspaceId>,
     pub mode: Mode,
     pub should_quit: bool,
     // Geometry of the most recently computed server pane surface.
@@ -87,7 +89,7 @@ pub struct AppState {
 #[derive(Debug, Clone)]
 pub(crate) struct AppSettings {
     /// Virtual terminal size (columns, rows) used when no client is attached.
-    pub(crate) headless_size: (u16, u16),
+    pub(crate) headless_size: crate::geometry::GridSize,
     pub(crate) sidebar_agents: crate::config::AgentsSidebarConfig,
     pub(crate) sidebar_spaces: crate::config::SpacesSidebarConfig,
     pub(crate) pane_borders: crate::config::PaneBordersConfig,
@@ -134,6 +136,50 @@ impl AppSettings {
 }
 
 impl AppState {
+    pub(crate) fn active_index(&self) -> Option<usize> {
+        let id = self.active.as_ref()?;
+        self.workspaces
+            .iter()
+            .position(|workspace| &workspace.id == id)
+    }
+
+    pub(crate) fn selected_index(&self) -> Option<usize> {
+        let id = self.selected.as_ref()?;
+        self.workspaces
+            .iter()
+            .position(|workspace| &workspace.id == id)
+    }
+
+    pub(crate) fn set_active_index(&mut self, index: Option<usize>) {
+        self.active = index.and_then(|index| {
+            self.workspaces
+                .get(index)
+                .map(|workspace| workspace.id.clone())
+        });
+        if self.selected.is_none() {
+            self.selected = self.active.clone();
+        }
+        self.refresh_active_tab_id();
+    }
+
+    pub(crate) fn refresh_active_tab_id(&mut self) {
+        self.active_tab_id = self.active_index().and_then(|index| {
+            let workspace = self.workspaces.get(index)?;
+            let tab = workspace.tabs.get(workspace.active_tab)?;
+            Some(crate::workspace::PublicTabId::new(
+                workspace.id.to_string(),
+                tab.number,
+            ))
+        });
+    }
+
+    pub(crate) fn set_selected_index(&mut self, index: Option<usize>) {
+        self.selected = index.and_then(|index| {
+            self.workspaces
+                .get(index)
+                .map(|workspace| workspace.id.clone())
+        });
+    }
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
     }
@@ -150,8 +196,8 @@ impl AppState {
             Rect::new(
                 0,
                 0,
-                self.settings.headless_size.0,
-                self.settings.headless_size.1,
+                self.settings.headless_size.cols.get(),
+                self.settings.headless_size.rows.get(),
             )
         } else {
             self.view.terminal_area
@@ -211,8 +257,9 @@ impl AppState {
             public_pane_id_aliases: std::collections::HashMap::new(),
             workspaces: Vec::new(),
             active: None,
+            active_tab_id: None,
             previous_pane_focus: None,
-            selected: 0,
+            selected: None,
             mode: Mode::Navigate,
             should_quit: false,
             view: ViewState {
@@ -256,8 +303,8 @@ impl AppState {
     pub fn test_with_adversarial_identity_state() -> Self {
         let mut state = Self::test_new();
         state.workspaces = vec![crate::workspace::Workspace::test_adversarial_identity_state()];
-        state.active = Some(0);
-        state.selected = 0;
+        state.set_active_index(Some(0));
+        state.set_selected_index(Some(0));
         state.ensure_test_terminals();
         state
     }
@@ -266,12 +313,15 @@ impl AppState {
         if self.workspaces.is_empty() {
             assert!(
                 self.active.is_none(),
-                "empty app state must not have active workspace {:?}",
-                self.active
+                "empty app state must not have an active workspace"
             );
-            assert_eq!(
-                self.selected, 0,
-                "empty app state should keep selected workspace at 0"
+            assert!(
+                self.active_tab_id.is_none(),
+                "empty app state must not have an active tab"
+            );
+            assert!(
+                self.selected.is_none(),
+                "empty app state must not have a selected workspace"
             );
             assert!(
                 self.public_pane_id_aliases.is_empty(),
@@ -285,14 +335,22 @@ impl AppState {
         }
 
         assert!(
-            self.selected < self.workspaces.len(),
-            "selected workspace {} out of bounds for {} workspaces",
-            self.selected,
-            self.workspaces.len()
+            self.selected_index().is_some(),
+            "selected workspace id must resolve"
         );
         let active = self
-            .active
+            .active_index()
             .expect("non-empty app state must have active workspace");
+        let active_workspace = &self.workspaces[active];
+        let active_tab = &active_workspace.tabs[active_workspace.active_tab];
+        assert_eq!(
+            self.active_tab_id.as_ref(),
+            Some(&crate::workspace::PublicTabId::new(
+                active_workspace.id.to_string(),
+                active_tab.number
+            )),
+            "active tab id must follow the active workspace tab"
+        );
         assert!(
             active < self.workspaces.len(),
             "active workspace {} out of bounds for {} workspaces",
@@ -341,7 +399,9 @@ impl AppState {
                 "{context} references missing pane {pane_id:?}"
             );
         };
-        let assert_workspace_pane = |workspace_id: &str, pane_id: PaneId, context: &str| {
+        let assert_workspace_pane = |workspace_id: &crate::workspace::WorkspaceId,
+                                     pane_id: PaneId,
+                                     context: &str| {
             let ws_idx = workspace_id_to_idx
                 .get(workspace_id)
                 .copied()
@@ -368,7 +428,7 @@ mod tests {
     #[test]
     fn pane_geometry_uses_headless_size_before_first_view() {
         let mut state = AppState::test_new();
-        state.settings.headless_size = (132, 41);
+        state.settings.headless_size = crate::geometry::GridSize::clamped(132, 41);
         state.settings.pane_scrollbars = false;
 
         assert_eq!(state.pane_geometry().area, Rect::new(0, 0, 132, 41));

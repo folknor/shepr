@@ -68,7 +68,7 @@ impl App {
                 );
             };
             ws_idx
-        } else if let Some(active) = self.state.active {
+        } else if let Some(active) = self.state.active_index() {
             active
         } else {
             return failure(id, ApiErrorCode::WorkspaceNotFound, "no active workspace");
@@ -91,7 +91,7 @@ impl App {
                 .clone()
         });
         let replace_was_active = replace_target.is_some_and(|(target_ws, target_tab)| {
-            self.state.active == Some(target_ws)
+            self.state.active_index() == Some(target_ws)
                 && self
                     .state
                     .workspaces
@@ -309,7 +309,7 @@ impl App {
                 Some((ws_idx, tab_idx))
             }
             (None, None) => {
-                let ws_idx = self.state.active?;
+                let ws_idx = self.state.active_index()?;
                 let tab_idx = self.state.workspaces.get(ws_idx)?.active_tab_index();
                 Some((ws_idx, tab_idx))
             }
@@ -467,12 +467,9 @@ fn stage_layout_node(
                 .map_err(crate::api::error::ApiError::into_message)?;
             let command = layout_command(second_leaf)?;
             let launch_env = crate::pane::PaneLaunchEnv::from_extra(extra_env).with_identity(
-                staging.workspace_id.to_string(),
-                crate::workspace::public_tab_id_for_number(
-                    staging.workspace_id,
-                    staging.tab_number,
-                ),
-                crate::workspace::public_pane_id_for_number(
+                crate::workspace::WorkspaceId::new(staging.workspace_id),
+                crate::workspace::PublicTabId::new(staging.workspace_id, staging.tab_number),
+                crate::workspace::PublicPaneId::new(
                     staging.workspace_id,
                     *staging.next_pane_number,
                 ),
@@ -658,8 +655,8 @@ mod tests {
         app.state.settings.default_shell = exiting_test_command().into();
         app.state.settings.login_shell = false;
         app.state.workspaces = vec![Workspace::test_new("layout")];
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         app.state.ensure_test_terminals();
         app
     }

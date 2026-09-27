@@ -168,7 +168,8 @@ impl App {
             // (what the server lays out against until a client attaches); the
             // first view computation resizes each to its split. The saved
             // host theme supplies colours until a live client reports its own.
-            let (headless_cols, headless_rows) = settings.headless_size;
+            let headless_cols = settings.headless_size.cols.get();
+            let headless_rows = settings.headless_size.rows.get();
             let (restore_rows, restore_cols) = crate::workspace::PaneGeometry {
                 area: Rect::new(0, 0, headless_cols, headless_rows),
                 pane_borders: settings.pane_borders,
@@ -223,14 +224,20 @@ impl App {
         #[cfg(test)]
         let agent_manifest_summaries = Vec::new();
 
+        let active_id =
+            active.and_then(|index| workspaces.get(index).map(|workspace| workspace.id.clone()));
+        let selected_id = workspaces
+            .get(selected)
+            .map(|workspace| workspace.id.clone());
         let mut state = AppState {
             terminals: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
             public_pane_id_aliases: std::collections::HashMap::new(),
             workspaces,
-            active,
+            active: active_id,
+            active_tab_id: None,
             previous_pane_focus: None,
-            selected,
+            selected: selected_id,
             mode,
             should_quit: false,
             view: state::ViewState {
@@ -251,6 +258,7 @@ impl App {
             terminal_runtime_shutdowns: Vec::new(),
         };
 
+        state.refresh_active_tab_id();
         state.terminals = restored_terminals;
         // Restored workspaces get their Git identity (label, branch, space)
         // from the first background Git refresh, not from a synchronous walk
@@ -258,7 +266,7 @@ impl App {
         // `last_git_remote_status_refresh` below) and discovers every
         // workspace whose resolved cwd differs from its cached identity.
 
-        let last_focus = state.active.and_then(|idx| {
+        let last_focus = state.active_index().and_then(|idx| {
             state
                 .workspaces
                 .get(idx)
@@ -461,7 +469,7 @@ mod tests {
         let mut app = test_app();
         app.state.workspaces.push(Workspace::test_new("one"));
         let _ = app.render_dirty.take();
-        let workspace_id = app.state.workspaces[0].id.clone();
+        let workspace_id = app.state.workspaces[0].id.to_string();
         let resolved_identity_cwd = app.state.workspaces[0]
             .resolved_identity_cwd()
             .expect("test precondition");
@@ -672,8 +680,8 @@ mod tests {
         let mut app = test_app();
         app.state.workspaces = vec![Workspace::test_new("api-root-pane")];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
 
         let crate::api::schema::ResponseResult::WorkspaceCreated {
             workspace,
@@ -728,8 +736,8 @@ mod tests {
         workspace.test_add_tab(None);
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
 
         let crate::api::schema::ResponseResult::TabCreated { tab, root_pane } =
             app.tab_created_result(0, 1).expect("test precondition")
@@ -752,8 +760,8 @@ mod tests {
         assert!(workspace.close_tab(removed_tab).is_some());
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let survivor_idx = app.state.workspaces[0]
             .find_tab_index_for_pane(survivor_pane)
             .expect("test precondition");
@@ -806,8 +814,8 @@ mod tests {
         second.identity_cwd = std::path::PathBuf::from("/tmp/pion");
 
         app.state.workspaces = vec![first, second];
-        app.state.active = Some(0);
-        app.state.selected = 1;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(1));
         app.state.mode = Mode::Navigate;
 
         let context = app
@@ -886,8 +894,8 @@ mod tests {
         let pane = workspace.tabs[0].root_pane;
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
 
         let pane_id = app.pane_info(0, pane).expect("test precondition").pane_id;
         let response = app.handle_api_request(crate::api::schema::Request {
@@ -949,17 +957,17 @@ mod tests {
             .expect("test precondition")
             .to_string();
         app.state.workspaces = vec![workspace];
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
 
         let resolved = app
             .resolve_terminal_target(&terminal_id)
             .expect("test precondition");
         assert_eq!(resolved.pane_id, pane);
-        assert_eq!(resolved.terminal_id, terminal_id);
+        assert_eq!(resolved.terminal_id.as_str(), terminal_id);
 
         assert!(matches!(
-            app.resolve_agent_target(&resolved.terminal_id),
+            app.resolve_agent_target(resolved.terminal_id.as_str()),
             Err(crate::app::terminal_targets::TerminalTargetError::NotFound { .. })
         ));
     }
@@ -1012,8 +1020,8 @@ mod tests {
                 Some(crate::detect::Agent::Pi),
                 crate::detect::AgentState::Idle,
             );
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let pane_id = app.public_pane_id(0, pane).expect("test precondition");
 
         let resolved = app
@@ -1021,7 +1029,7 @@ mod tests {
             .expect("test precondition");
 
         assert_eq!(resolved.pane_id, pane);
-        assert_eq!(resolved.terminal_id, terminal_id);
+        assert_eq!(resolved.terminal_id.as_str(), terminal_id);
     }
 
     #[test]
@@ -1045,15 +1053,15 @@ mod tests {
             .get_mut(&attached_terminal_id)
             .expect("test precondition")
             .set_agent_name("reviewer".into());
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
 
         let resolved = app
             .resolve_terminal_target("reviewer")
             .expect("test precondition");
 
         assert_eq!(resolved.pane_id, pane);
-        assert_eq!(resolved.terminal_id, terminal_id);
+        assert_eq!(resolved.terminal_id.as_str(), terminal_id);
     }
 
     #[test]
@@ -1111,15 +1119,15 @@ mod tests {
         let resolved = app.resolve_agent_target("p_1").expect("test precondition");
 
         assert_eq!(resolved.pane_id, pane);
-        assert_eq!(resolved.terminal_id, terminal_id.to_string());
+        assert_eq!(resolved.terminal_id, terminal_id);
     }
 
     #[test]
     fn terminal_target_reports_missing_target() {
         let mut app = test_app();
         app.state.workspaces = vec![Workspace::test_new("terminal-target-missing")];
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
 
         let err = app
             .resolve_terminal_target("missing-agent")
@@ -1161,8 +1169,8 @@ mod tests {
             .get_mut(&second_terminal_id)
             .expect("test precondition")
             .set_agent_name("worker".into());
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
 
         let err = app
             .resolve_terminal_target("worker")
@@ -1176,8 +1184,11 @@ mod tests {
         assert_eq!(target, "worker");
         assert_eq!(candidates.len(), 2);
         assert!(candidates.iter().all(|candidate| {
-            candidate.terminal_id.starts_with("term_")
-                && candidate.pane_id.starts_with(&app.state.workspaces[0].id)
+            candidate.terminal_id.as_str().starts_with("term_")
+                && candidate
+                    .pane_id
+                    .to_string()
+                    .starts_with(app.state.workspaces[0].id.as_str())
                 && candidate.workspace_id == app.state.workspaces[0].id
                 && candidate.cwd.is_some()
         }));
@@ -1194,8 +1205,8 @@ mod tests {
         workspace.switch_tab(0);
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
 
         let target_pane = app.state.workspaces[0].tabs[background_tab].root_pane;
         let target_pane_id = app
@@ -1225,7 +1236,7 @@ mod tests {
         assert_eq!(response["result"]["type"], "pane_info");
         assert_eq!(response["result"]["pane"]["tab_id"], target_tab_id);
         assert_eq!(response["result"]["pane"]["focused"], true);
-        assert_eq!(app.state.active, Some(0));
+        assert_eq!(app.state.active_index(), Some(0));
         assert_eq!(app.state.workspaces[0].active_tab, background_tab);
 
         let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
@@ -1244,8 +1255,8 @@ mod tests {
         let target_pane = workspace.tabs[0].root_pane;
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
 
         let target_pane_id = app
             .pane_info(0, target_pane)
@@ -1303,8 +1314,8 @@ mod tests {
         let target_pane = workspace.tabs[0].root_pane;
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         app.state.focus_pane_in_workspace(0, target_pane);
 
         let response = app.handle_api_request(crate::api::schema::Request {
@@ -1343,8 +1354,8 @@ mod tests {
         let root = workspace.tabs[0].root_pane;
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let pane_id = app.pane_info(0, root).expect("test precondition").pane_id;
 
         let response = app.handle_api_request(crate::api::schema::Request {
@@ -1372,8 +1383,8 @@ mod tests {
         let root = workspace.tabs[0].root_pane;
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let pane_id = app.pane_info(0, root).expect("test precondition").pane_id;
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&root]
             .attached_terminal_id
@@ -1465,8 +1476,8 @@ mod tests {
         workspace.switch_tab(second_tab);
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
 
         let target_pane = app.state.workspaces[0].tabs[second_tab].root_pane;
         let target_pane_id = app
@@ -1495,8 +1506,8 @@ mod tests {
         let workspace = Workspace::test_new("api-pane-close-last");
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
 
         let target_pane = app.state.workspaces[0].tabs[0].root_pane;
         let target_pane_id = app
@@ -1623,7 +1634,7 @@ mod tests {
         let first_pane = workspace.tabs[0].root_pane;
         let second_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
         app.state.workspaces = vec![workspace];
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
 
         app.handle_internal_event(AppEvent::PaneDied {
@@ -1653,7 +1664,7 @@ mod tests {
         let workspace = Workspace::test_new("closed");
         let pane_id = workspace.tabs[0].root_pane;
         app.state.workspaces = vec![workspace];
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
 
         app.handle_internal_event(AppEvent::PaneDied {
@@ -1680,7 +1691,7 @@ mod tests {
             let workspace = Workspace::test_new("old");
             let pane_id = workspace.tabs[0].root_pane;
             app.state.workspaces = vec![workspace];
-            app.state.active = Some(0);
+            app.state.set_active_index(Some(0));
             app.state.ensure_test_terminals();
 
             app.handle_internal_event(AppEvent::PaneDied {
@@ -1688,7 +1699,7 @@ mod tests {
                 exit_reason: crate::platform::ChildExitReason::Interrupted,
             });
             app.state.workspaces = vec![Workspace::test_new("newer")];
-            app.state.active = Some(0);
+            app.state.set_active_index(Some(0));
             app.state.ensure_test_terminals();
             app.state.mark_session_dirty();
             if another_interrupted_exit {
@@ -1715,8 +1726,8 @@ mod tests {
 
         app.state.workspaces = vec![ws];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         app.state.mode = Mode::Terminal;
 
         let terminal_id = app.state.workspaces[0]

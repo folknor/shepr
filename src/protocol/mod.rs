@@ -4,6 +4,8 @@ pub mod codec;
 pub mod endpoint;
 mod frame;
 mod framing;
+mod geometry;
+mod identity;
 mod input;
 mod limits;
 mod message;
@@ -20,6 +22,8 @@ pub(crate) use limits::frame_payload_fits;
 
 pub use frame::*;
 pub use framing::*;
+pub(crate) use geometry::*;
+pub use identity::*;
 pub use input::*;
 pub use limits::*;
 pub use message::*;

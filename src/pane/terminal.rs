@@ -304,15 +304,8 @@ impl PaneTerminal {
             .flush_expired_synchronized_output(pane_id, shell_pid)
     }
 
-    pub fn resize(
-        &self,
-        rows: u16,
-        cols: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-    ) -> Vec<Bytes> {
-        self.ghostty
-            .resize(rows, cols, cell_width_px, cell_height_px)
+    pub fn resize(&self, geometry: crate::geometry::PaneGeometry) -> Vec<Bytes> {
+        self.ghostty.resize(geometry)
     }
 
     pub fn scroll_up(&self, lines: usize) {
@@ -1732,13 +1725,8 @@ impl GhosttyPaneTerminal {
         discard_core_effects(&mut core.terminal);
     }
 
-    pub fn resize(
-        &self,
-        rows: u16,
-        cols: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-    ) -> Vec<Bytes> {
+    pub fn resize(&self, geometry: crate::geometry::PaneGeometry) -> Vec<Bytes> {
+        let rows = geometry.rows();
         if let Ok(mut core) = crate::ghostty::lock_terminal_core(&self.core) {
             let synchronized_output_before = core
                 .terminal
@@ -1762,8 +1750,7 @@ impl GhosttyPaneTerminal {
             // iTerm do), and a replay fed bytes through the child's parser,
             // cutting into any sequence it had half-written and moving its
             // cursor behind its back.
-            core.terminal
-                .resize(cols, rows, cell_width_px, cell_height_px);
+            core.terminal.resize(geometry);
             let synchronized_output_after = core
                 .terminal
                 .mode_get(crate::ghostty::MODE_SYNCHRONIZED_OUTPUT);
@@ -4193,7 +4180,10 @@ mod tests {
             TerminalDirtyPatchOutcome::Patch(_) | TerminalDirtyPatchOutcome::Clean
         ));
         // A resize in between must not take the queued reply with it.
-        assert!(pane.resize(5, 20, 0, 0).is_empty());
+        assert!(
+            pane.resize(crate::geometry::PaneGeometry::new(20, 5, 0, 0))
+                .is_empty()
+        );
 
         let flushed = pane.flush_expired_synchronized_output(pane_id, 0);
         assert!(!flushed.request_render, "the render already flushed it");
@@ -4945,7 +4935,7 @@ mod tests {
     #[test]
     fn ghostty_mouse_sgr_pixels_preserves_exact_and_maps_cell_input_to_pixels() {
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0);
-        terminal.resize(80, 24, 10, 20);
+        terminal.resize(crate::geometry::PaneGeometry::new(80, 24, 10, 20));
         terminal.write(b"\x1b[?1003h\x1b[?1006h\x1b[?1016h");
         let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -4968,7 +4958,7 @@ mod tests {
     #[test]
     fn ghostty_mouse_sgr_pixels_without_pixel_geometry_sends_cells() {
         let mut terminal = crate::ghostty::Terminal::new(80, 24, 0);
-        terminal.resize(80, 24, 0, 0);
+        terminal.resize(crate::geometry::PaneGeometry::new(80, 24, 0, 0));
         terminal.write(b"\x1b[?1003h\x1b[?1006h\x1b[?1016h");
         let pane = GhosttyPaneTerminal::new(terminal);
 
@@ -5144,7 +5134,7 @@ mod tests {
             let pane = GhosttyPaneTerminal::new(terminal);
             let pane_id = PaneId::from_raw(1);
 
-            pane.resize(3, 10, 0, 0);
+            pane.resize(crate::geometry::PaneGeometry::new(10, 3, 0, 0));
             pane.process_pty_bytes(
                 pane_id,
                 0,
@@ -5165,7 +5155,7 @@ mod tests {
         let pane_id = PaneId::from_raw(1);
 
         pane.set_scroll_offset_from_bottom(1);
-        pane.resize(5, 10, 0, 0);
+        pane.resize(crate::geometry::PaneGeometry::new(10, 5, 0, 0));
         let resized = pane.scroll_metrics().expect("scroll metrics after resize");
         assert_eq!(resized.max_offset_from_bottom, 0);
 
@@ -5368,7 +5358,7 @@ mod tests {
         terminal.write(b"alpha\r\nbeta\r\ngamma\r\ndelta");
         let pane = GhosttyPaneTerminal::new(terminal);
 
-        pane.resize(3, 7, 8, 16);
+        pane.resize(crate::geometry::PaneGeometry::new(7, 3, 8, 16));
 
         assert_eq!(pane.visible_text(), "beta\ngamma\ndelta\n");
         assert_eq!(pane.detection_text(), "beta\ngamma\ndelta\n");
@@ -5399,7 +5389,7 @@ mod tests {
 
         for (rows, cols) in [(4, 10), (4, 7), (6, 18), (3, 9), (5, 12)] {
             let before_resize = pane.scroll_metrics().expect("scroll metrics before resize");
-            pane.resize(rows, cols, 0, 0);
+            pane.resize(crate::geometry::PaneGeometry::new(cols, rows, 0, 0));
 
             let metrics = pane.scroll_metrics().expect("scroll metrics after resize");
             assert_eq!(metrics.viewport_rows, rows as usize);
@@ -5437,7 +5427,7 @@ mod tests {
         assert!(pane.visible_text().trim().is_empty());
         assert!(pane.detection_text().trim().is_empty());
 
-        pane.resize(3, 20, 0, 0);
+        pane.resize(crate::geometry::PaneGeometry::new(20, 3, 0, 0));
 
         assert!(pane.visible_text().trim().is_empty());
         assert!(pane.detection_text().trim().is_empty());
@@ -5456,7 +5446,7 @@ mod tests {
         pane.set_scroll_offset_from_bottom(metrics.max_offset_from_bottom);
         assert!(!pane.visible_text().trim().is_empty());
 
-        pane.resize(3, 20, 0, 0);
+        pane.resize(crate::geometry::PaneGeometry::new(20, 3, 0, 0));
 
         assert!(pane.detection_text().trim().is_empty());
         assert!(pane.recent_text(3).trim().is_empty());
@@ -5467,7 +5457,7 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(80, 24, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        pane.resize(24, 80, 9, 18);
+        pane.resize(crate::geometry::PaneGeometry::new(80, 24, 9, 18));
 
         let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[14t\x1b[16t\x1b[18t");
 
@@ -5486,8 +5476,8 @@ mod tests {
         let terminal = crate::ghostty::Terminal::new(80, 24, 0);
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
-        pane.resize(24, 80, 9, 18);
-        pane.resize(30, 100, 10, 20);
+        pane.resize(crate::geometry::PaneGeometry::new(80, 24, 9, 18));
+        pane.resize(crate::geometry::PaneGeometry::new(100, 30, 10, 20));
 
         let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[14t\x1b[16t\x1b[18t");
 
@@ -5507,7 +5497,12 @@ mod tests {
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
         for (cell_width_px, cell_height_px) in [(0, 0), (0, 18), (9, 0)] {
-            pane.resize(24, 80, cell_width_px, cell_height_px);
+            pane.resize(crate::geometry::PaneGeometry::new(
+                80,
+                24,
+                cell_width_px,
+                cell_height_px,
+            ));
             let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[14t\x1b[16t\x1b[18t");
             // CSI 14 t (pixel geometry) and CSI 16 t (cell size in pixels) stay
             // silent without pixel geometry, but CSI 18 t reports characters,
@@ -5525,7 +5520,10 @@ mod tests {
         let pane = GhosttyPaneTerminal::new(terminal);
         let pane_id = PaneId::from_raw(1);
         pane.process_pty_bytes(pane_id, 0, b"\x1b[?1049h");
-        assert!(pane.resize(24, 92, 9, 18).is_empty());
+        assert!(
+            pane.resize(crate::geometry::PaneGeometry::new(92, 24, 9, 18))
+                .is_empty()
+        );
 
         let result = pane.process_pty_bytes(pane_id, 0, b"\x1b[?2048h");
 
@@ -5541,7 +5539,7 @@ mod tests {
         terminal.mode_set(2048, true).expect("test precondition");
         let pane = GhosttyPaneTerminal::new(terminal);
 
-        let responses = pane.resize(40, 100, 9, 18);
+        let responses = pane.resize(crate::geometry::PaneGeometry::new(100, 40, 9, 18));
 
         assert_eq!(
             responses,

@@ -437,7 +437,7 @@ impl App {
                 .map(|(ws_idx, tab_idx, _)| (ws_idx, tab_idx))
                 .or_else(|| target.map(|(ws_idx, tab_idx, _)| (ws_idx, tab_idx)))
                 .or_else(|| {
-                    let ws_idx = self.state.active?;
+                    let ws_idx = self.state.active_index()?;
                     let tab_idx = self.state.workspaces.get(ws_idx)?.active_tab_index();
                     Some((ws_idx, tab_idx))
                 });
@@ -831,31 +831,37 @@ impl App {
             if let Some(ws) = self.state.workspaces.get_mut(source_ws_idx) {
                 ws.unregister_moved_pane(source_pane_id);
             }
-            self.state
-                .public_pane_id_aliases
-                .insert(previous_pane_id.clone(), source_pane_id);
+            if let Ok(alias) = previous_pane_id.parse() {
+                self.state
+                    .public_pane_id_aliases
+                    .insert(alias, source_pane_id);
+            }
         }
 
         let mut closed_workspace_id = None;
         if source_workspace_empty && cross_workspace {
+            let active_was_source = self
+                .state
+                .active
+                .as_ref()
+                .is_some_and(|id| id.as_str() == previous_workspace_id);
+            let selected_was_source = self
+                .state
+                .selected
+                .as_ref()
+                .is_some_and(|id| id.as_str() == previous_workspace_id);
             self.state.workspaces.remove(source_ws_idx);
             closed_workspace_id = Some(previous_workspace_id.clone());
             if self.state.workspaces.is_empty() {
-                self.state.active = None;
-                self.state.selected = 0;
+                self.state.set_active_index(None);
+                self.state.set_selected_index(None);
             } else {
-                if let Some(active) = self.state.active {
-                    if active == source_ws_idx {
-                        self.state.active =
-                            Some(source_ws_idx.min(self.state.workspaces.len() - 1));
-                    } else if active > source_ws_idx {
-                        self.state.active = Some(active - 1);
-                    }
+                let replacement = source_ws_idx.min(self.state.workspaces.len() - 1);
+                if active_was_source {
+                    self.state.set_active_index(Some(replacement));
                 }
-                if self.state.selected == source_ws_idx {
-                    self.state.selected = source_ws_idx.min(self.state.workspaces.len() - 1);
-                } else if self.state.selected > source_ws_idx {
-                    self.state.selected -= 1;
+                if selected_was_source {
+                    self.state.set_selected_index(Some(replacement));
                 }
             }
         }
@@ -957,7 +963,8 @@ impl App {
             }
         };
 
-        if focus || self.state.active.is_none() {
+        self.state.refresh_active_tab_id();
+        if focus || self.state.active_index().is_none() {
             self.state
                 .switch_workspace_tab(target_ws_idx, target_tab_idx);
             self.state
@@ -1078,16 +1085,8 @@ impl App {
                 &context.identity_cwd,
                 moved,
             );
-            workspace.id = context.previous_workspace_id;
+            workspace.id = context.previous_workspace_id.into();
             let insert_idx = context.source_ws_idx.min(self.state.workspaces.len());
-            if let Some(active) = self.state.active
-                && active >= insert_idx
-            {
-                self.state.active = Some(active + 1);
-            }
-            if self.state.selected >= insert_idx && !self.state.workspaces.is_empty() {
-                self.state.selected += 1;
-            }
             self.state.workspaces.insert(insert_idx, workspace);
         }
         self.state.mark_session_dirty();

@@ -28,10 +28,15 @@ pub(super) fn snapshot_from_session(
 ) -> protocol::ClientShellSnapshot {
     let focused_workspace_id = location
         .and_then(|location| location.focused_workspace_id.clone())
-        .or_else(|| snapshot.focused_workspace_id.clone());
+        .or_else(|| snapshot.focused_workspace_id.clone().map(Into::into));
     let focused_tab_id = location
-        .and_then(|location| location.focused_tab_id().map(str::to_owned))
-        .or_else(|| snapshot.focused_tab_id.clone());
+        .and_then(|location| location.focused_tab_id().cloned())
+        .or_else(|| {
+            snapshot
+                .focused_tab_id
+                .as_deref()
+                .and_then(|id| id.parse().ok())
+        });
     let focused_pane_id = focused_tab_id
         .as_deref()
         .and_then(|tab_id| app.parse_tab_id(tab_id))
@@ -45,8 +50,14 @@ pub(super) fn snapshot_from_session(
                 .layout
                 .focused();
             app.public_pane_id(workspace_index, pane_id)
+                .and_then(|id| id.parse().ok())
         })
-        .or_else(|| snapshot.focused_pane_id.clone());
+        .or_else(|| {
+            snapshot
+                .focused_pane_id
+                .as_deref()
+                .and_then(|id| id.parse().ok())
+        });
     // Snapshot entries are joined to live state by their public ids, never by
     // position: a snapshot that filtered or reordered entries would otherwise
     // hand one workspace's or tab's labels, branch and zoom to another. The
@@ -56,7 +67,7 @@ pub(super) fn snapshot_from_session(
         .workspaces
         .into_iter()
         .enumerate()
-        .map(|(position, workspace)| {
+        .filter_map(|(position, workspace)| {
             let mut tokens = workspace.tokens.into_iter().collect::<Vec<_>>();
             tokens.sort_by(|left, right| left.0.cmp(&right.0));
             let workspace_id = workspace.workspace_id;
@@ -69,9 +80,13 @@ pub(super) fn snapshot_from_session(
                 .or_else(|| app.parse_workspace_id(&workspace_id));
             let state = workspace_index.and_then(|index| app.state.workspaces.get(index));
             let active_tab_id = location
-                .and_then(|location| location.active_tab_ids.get(&workspace_id))
+                .and_then(|location| {
+                    location
+                        .active_tab_ids
+                        .get(&crate::workspace::WorkspaceId::new(workspace_id.as_str()))
+                })
                 .cloned()
-                .unwrap_or(workspace.active_tab_id);
+                .or_else(|| workspace.active_tab_id.parse().ok())?;
             let new_workspace_cwd = workspace_index
                 .map(|workspace_index| {
                     let active_tab_index = app.parse_tab_id(&active_tab_id).and_then(
@@ -84,9 +99,9 @@ pub(super) fn snapshot_from_session(
                         .to_string()
                 })
                 .unwrap_or_default();
-            protocol::ClientShellWorkspace {
+            Some(protocol::ClientShellWorkspace {
                 focused: focused_workspace_id.as_deref() == Some(workspace_id.as_str()),
-                workspace_id,
+                workspace_id: workspace_id.into(),
                 active_tab_id,
                 new_workspace_cwd,
                 number: workspace.number,
@@ -98,14 +113,14 @@ pub(super) fn snapshot_from_session(
                     .map(|counts| (counts.ahead, counts.behind)),
                 tokens,
                 agent_status: workspace.agent_status,
-            }
+            })
         })
         .collect();
     let tabs = snapshot
         .tabs
         .into_iter()
-        .map(|tab| {
-            let tab_id = tab.tab_id;
+        .filter_map(|tab| {
+            let tab_id: crate::workspace::PublicTabId = tab.tab_id.parse().ok()?;
             let state = app
                 .parse_tab_id(&tab_id)
                 .and_then(|(workspace_index, tab_index)| {
@@ -115,23 +130,23 @@ pub(super) fn snapshot_from_session(
                         .tabs
                         .get(tab_index)
                 });
-            protocol::ClientShellTab {
+            Some(protocol::ClientShellTab {
                 focused: focused_tab_id.as_deref() == Some(tab_id.as_str()),
                 tab_id,
-                workspace_id: tab.workspace_id,
+                workspace_id: tab.workspace_id.into(),
                 number: tab.number,
                 label: tab.label,
                 custom_label: state.is_some_and(|state| !state.is_auto_named()),
                 zoomed: state.is_some_and(|state| state.zoomed),
                 agent_status: tab.agent_status,
-            }
+            })
         })
         .collect();
     let panes = snapshot
         .panes
         .into_iter()
-        .map(|pane| {
-            let pane_id = pane.pane_id;
+        .filter_map(|pane| {
+            let pane_id: crate::workspace::PublicPaneId = pane.pane_id.parse().ok()?;
             let focused = focused_pane_id.as_deref() == Some(pane_id.as_str());
             let right_click_passthrough = app
                 .parse_pane_id(&pane_id)
@@ -142,32 +157,32 @@ pub(super) fn snapshot_from_session(
                         .pane_state(pane_id)
                 })
                 .is_some_and(|pane| pane.right_click_passthrough);
-            protocol::ClientShellPane {
+            Some(protocol::ClientShellPane {
                 pane_id,
-                workspace_id: pane.workspace_id,
-                tab_id: pane.tab_id,
+                workspace_id: pane.workspace_id.into(),
+                tab_id: pane.tab_id.parse().ok()?,
                 label: pane.label,
                 cwd: pane.cwd,
                 foreground_cwd: pane.foreground_cwd,
                 focused,
                 right_click_passthrough,
-            }
+            })
         })
         .collect();
     let agents = snapshot
         .agents
         .into_iter()
-        .map(|agent| {
-            let pane_id = agent.pane_id;
-            let focused = focused_pane_id.as_deref() == Some(pane_id.as_str());
+        .filter_map(|agent| {
+            let focused = focused_pane_id.as_deref() == Some(agent.pane_id.as_str());
+            let pane_id = agent.pane_id.parse().ok()?;
             let mut state_labels = agent.state_labels.into_iter().collect::<Vec<_>>();
             state_labels.sort_by(|left, right| left.0.cmp(&right.0));
             let mut tokens = agent.tokens.into_iter().collect::<Vec<_>>();
             tokens.sort_by(|left, right| left.0.cmp(&right.0));
-            protocol::ClientShellAgent {
+            Some(protocol::ClientShellAgent {
                 pane_id,
-                workspace_id: agent.workspace_id,
-                tab_id: agent.tab_id,
+                workspace_id: agent.workspace_id.into(),
+                tab_id: agent.tab_id.parse().ok()?,
                 name: agent.name,
                 display_agent: agent.display_agent,
                 agent: agent.agent,
@@ -179,7 +194,7 @@ pub(super) fn snapshot_from_session(
                 state_labels,
                 tokens,
                 focused,
-            }
+            })
         })
         .collect();
 
@@ -217,7 +232,7 @@ pub(super) fn snapshot_from_session(
         .collect();
 
     protocol::ClientShellSnapshot {
-        boot_id: boot_id.to_owned(),
+        boot_id: boot_id.into(),
         revision: revision.into(),
         resolved_config: app.resolved_config().clone(),
         focused_workspace_id,
@@ -246,18 +261,25 @@ pub(super) enum SurfaceRenderDeferred {
 
 pub(super) fn render_pane_surface(
     app: &mut app::App,
-    target: Option<crate::ui::TabSurfaceTarget>,
+    target: Option<&crate::ui::TabSurfaceTarget>,
     area: Rect,
     cell_size: crate::host_term::cell_size::HostCellSize,
 ) -> Result<RenderedPaneSurface, SurfaceRenderDeferred> {
-    let layout =
-        crate::ui::compute_tab_surface_for(&app.state, &app.terminal_runtimes, target, area);
+    let layout = crate::ui::compute_tab_surface_for(
+        &app.state,
+        &app.terminal_runtimes,
+        target.cloned(),
+        area,
+    );
     let mut content_revisions_before = std::collections::HashMap::new();
-    if let Some(target) = target {
+    if let Some(target) = &target {
+        let Some((workspace_index, _)) = target.resolve(&app.state) else {
+            return Err(SurfaceRenderDeferred::Changed);
+        };
         for pane in &layout.pane_infos {
             if let Some(runtime) = app.state.runtime_for_pane_in_workspace(
                 &app.terminal_runtimes,
-                target.workspace_index,
+                workspace_index,
                 pane.id,
             ) {
                 let (synchronized, epoch) = runtime.synchronized_output_state();
@@ -277,66 +299,72 @@ pub(super) fn render_pane_surface(
             area,
         );
     let panes = target
-        .map(|target| {
-            let workspace_index = target.workspace_index;
+        .as_ref()
+        .and_then(|target| target.resolve(&app.state))
+        .map(|(workspace_index, _)| {
             layout
                 .pane_infos
                 .iter()
                 .filter_map(|pane| {
-                    app.public_pane_id(workspace_index, pane.id).map(|pane_id| {
-                        let runtime = app.state.runtime_for_pane_in_workspace(
-                            &app.terminal_runtimes,
-                            workspace_index,
-                            pane.id,
-                        );
-                        let mouse_reporting = runtime
-                            .is_some_and(crate::terminal::TerminalRuntime::mouse_reporting_enabled);
-                        let sgr_pixel_mouse = runtime
-                            .is_some_and(crate::terminal::TerminalRuntime::sgr_pixel_mouse_enabled);
-                        let (pixel_width, pixel_height) = if cell_size.is_known() {
-                            (
-                                u32::from(pane.inner_rect.width) * cell_size.width_px,
-                                u32::from(pane.inner_rect.height) * cell_size.height_px,
-                            )
-                        } else {
-                            (0, 0)
-                        };
-                        let content_revision = runtime.map_or(0, |runtime| {
-                            let after = runtime.content_seq();
-                            if content_revisions_before
-                                .get(&pane.id)
-                                .is_some_and(|&(_, before)| before == after)
-                                && after.is_multiple_of(2)
-                            {
-                                after
+                    app.public_pane_id(workspace_index, pane.id)
+                        .and_then(|pane_id| {
+                            let pane_id = pane_id.parse().ok()?;
+                            let runtime = app.state.runtime_for_pane_in_workspace(
+                                &app.terminal_runtimes,
+                                workspace_index,
+                                pane.id,
+                            );
+                            let mouse_reporting = runtime.is_some_and(
+                                crate::terminal::TerminalRuntime::mouse_reporting_enabled,
+                            );
+                            let sgr_pixel_mouse = runtime.is_some_and(
+                                crate::terminal::TerminalRuntime::sgr_pixel_mouse_enabled,
+                            );
+                            let (pixel_width, pixel_height) = if cell_size.is_known() {
+                                (
+                                    u32::from(pane.inner_rect.width) * cell_size.width_px,
+                                    u32::from(pane.inner_rect.height) * cell_size.height_px,
+                                )
                             } else {
-                                after | 1
-                            }
-                        });
-                        protocol::PaneSurfacePane {
-                            pane_id,
-                            content_revision,
-                            rect: pane.rect.into(),
-                            inner_rect: pane.inner_rect.into(),
-                            scrollbar_rect: pane.scrollbar_rect.map(Into::into),
-                            scroll: runtime
-                                .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
-                                .map(|metrics| protocol::PaneSurfaceScrollMetrics {
-                                    offset_from_bottom: metrics.offset_from_bottom as u64,
-                                    max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
-                                    viewport_rows: metrics.viewport_rows as u64,
-                                    history_origin: metrics.history_origin,
-                                }),
-                            focused: pane.is_focused,
-                            mouse_reporting,
-                            sgr_pixel_mouse,
-                            alternate_screen_active: runtime.is_some_and(
-                                crate::terminal::TerminalRuntime::alternate_screen_active,
-                            ),
-                            pixel_width,
-                            pixel_height,
-                        }
-                    })
+                                (0, 0)
+                            };
+                            let content_revision = runtime.map_or(0, |runtime| {
+                                let after = runtime.content_seq();
+                                if content_revisions_before
+                                    .get(&pane.id)
+                                    .is_some_and(|&(_, before)| before == after)
+                                    && after.is_multiple_of(2)
+                                {
+                                    after
+                                } else {
+                                    after | 1
+                                }
+                            });
+                            Some(protocol::PaneSurfacePane {
+                                pane_id,
+                                content_revision,
+                                rect: pane.rect.into(),
+                                inner_rect: pane.inner_rect.into(),
+                                scrollbar_rect: pane.scrollbar_rect.map(Into::into),
+                                scroll: runtime
+                                    .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
+                                    .map(|metrics| protocol::PaneSurfaceScrollMetrics {
+                                        offset_from_bottom: metrics.offset_from_bottom as u64,
+                                        max_offset_from_bottom: metrics.max_offset_from_bottom
+                                            as u64,
+                                        viewport_rows: metrics.viewport_rows as u64,
+                                        history_origin: metrics.history_origin,
+                                    }),
+                                focused: pane.is_focused,
+                                mouse_reporting,
+                                sgr_pixel_mouse,
+                                alternate_screen_active: runtime.is_some_and(
+                                    crate::terminal::TerminalRuntime::alternate_screen_active,
+                                ),
+                                pixel_width,
+                                pixel_height,
+                            })
+                        })
                 })
                 .collect()
         })
@@ -373,11 +401,14 @@ pub(super) fn render_pane_surface(
             })
         })
         .collect();
-    if let Some(target) = target {
+    if let Some(target) = &target {
+        let Some((workspace_index, _)) = target.resolve(&app.state) else {
+            return Err(SurfaceRenderDeferred::Changed);
+        };
         for (&pane_id, &(epoch, _)) in &content_revisions_before {
             if let Some(runtime) = app.state.runtime_for_pane_in_workspace(
                 &app.terminal_runtimes,
-                target.workspace_index,
+                workspace_index,
                 pane_id,
             ) {
                 let (synchronized, after_epoch) = runtime.synchronized_output_state();
@@ -475,7 +506,7 @@ mod tests {
         second.tabs[0].zoomed = true;
         app.state.workspaces = vec![first, second];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
 
         let second_workspace_id = app.state.workspaces[1].id.clone();
         let zoomed_tab_id = app.public_tab_id(1, 0).expect("zoomed tab id");

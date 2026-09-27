@@ -56,9 +56,7 @@ pub(super) struct ClientState {
     pub(super) pane_keyboard_report_all: bool,
     pub(super) keyboard_report_all_active: bool,
     pub(super) settings: ClientSettings,
-    pub(super) reported_size: (u16, u16),
-    pub(super) reported_cell_size: (u32, u32),
-    pub(super) pixel_geometry_exact: bool,
+    pub(super) reported_geometry: crate::geometry::HostGeometry,
     pub(super) mode: SessionMode,
     pub(super) repaint_pending: bool,
     /// During a source-off-first endpoint activation the currently blitted frame remains
@@ -98,9 +96,7 @@ impl ClientState {
             pane_keyboard_report_all: false,
             keyboard_report_all_active: false,
             settings: ClientSettings::from_config(&config),
-            reported_size: (100, 30),
-            reported_cell_size: (0, 0),
-            pixel_geometry_exact: false,
+            reported_geometry: crate::geometry::HostGeometry::new(100, 30, 0, 0, false),
             mode: SessionMode::Shell(Box::new(shell::ClientShellState::new(
                 shell::ClientShellConfig::from_validated_config(&config),
             ))),
@@ -118,7 +114,13 @@ impl ClientState {
 
     pub(super) fn set_host_size(&mut self, cols: u16, rows: u16) {
         let size = terminal_geometry::ClientHostSize::new(cols, rows, self.mode.is_shell());
-        self.reported_size = (size.cols, size.rows);
+        self.reported_geometry = crate::geometry::HostGeometry::new(
+            size.cols,
+            size.rows,
+            self.reported_geometry.cell_width(),
+            self.reported_geometry.cell_height(),
+            self.reported_geometry.exact,
+        );
     }
 
     pub(super) fn freeze_presentation(&mut self) {

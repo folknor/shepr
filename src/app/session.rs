@@ -91,8 +91,8 @@ impl App {
                 self.paths
                     .current_dir()
                     .unwrap_or_else(|| std::path::Path::new("/")),
-                self.state.active,
-                self.state.selected,
+                self.state.active_index(),
+                self.state.selected_index().unwrap_or(0),
                 self.state.host_terminal_theme,
             );
             let history = self.persist_pane_history.then(|| {

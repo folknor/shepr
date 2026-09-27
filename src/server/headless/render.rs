@@ -1,4 +1,5 @@
 use super::*;
+use crate::server::ClientId;
 use crate::server::clients::RenderTargetMode;
 
 /// The session snapshot a shell projection is built from. The projection never
@@ -13,24 +14,21 @@ fn shell_session_snapshot(app: &app::App) -> crate::api::schema::SessionSnapshot
 impl HeadlessServer {
     fn shell_focused_runtime(
         &self,
-        client_id: u64,
+        client_id: ClientId,
     ) -> Option<(&crate::terminal::TerminalRuntime, crate::layout::PaneId)> {
         let target = self.shell_target_for_client(client_id)?;
+        let (workspace_index, tab_index) = target.resolve(&self.app.state)?;
         let tab = self
             .app
             .state
             .workspaces
-            .get(target.workspace_index)?
+            .get(workspace_index)?
             .tabs
-            .get(target.tab_index)?;
+            .get(tab_index)?;
         let pane_id = tab.layout.focused();
         self.app
             .state
-            .runtime_for_pane_in_workspace(
-                &self.app.terminal_runtimes,
-                target.workspace_index,
-                pane_id,
-            )
+            .runtime_for_pane_in_workspace(&self.app.terminal_runtimes, workspace_index, pane_id)
             .map(|runtime| (runtime, pane_id))
     }
 
@@ -55,7 +53,7 @@ impl HeadlessServer {
                     ))
                 }
                 ClientConnectionMode::TerminalAttach { terminal_id, .. } => {
-                    let runtime = self.runtime_for_terminal_id_string(terminal_id);
+                    let runtime = self.app.terminal_runtimes.get(terminal_id);
                     let child_requests_mouse = runtime
                         .is_some_and(crate::terminal::TerminalRuntime::mouse_reporting_enabled);
                     let sgr_pixels = child_requests_mouse
@@ -93,7 +91,7 @@ impl HeadlessServer {
             };
             if writer.control.send(serialized).is_err() {
                 debug!(
-                    client_id,
+                    ?client_id,
                     "client writer channel closed during mouse capture update"
                 );
                 broken_clients.push(client_id);
@@ -168,7 +166,9 @@ impl HeadlessServer {
                     return None;
                 };
                 let (flags, modify_other_keys_level) = self
-                    .runtime_for_terminal_id_string(terminal_id)
+                    .app
+                    .terminal_runtimes
+                    .get(terminal_id)
                     .map_or((0, 0), |runtime| {
                         let flags = match runtime.keyboard_protocol() {
                             crate::input::KeyboardProtocol::Legacy => 0,
@@ -207,7 +207,7 @@ impl HeadlessServer {
                 };
             if writer.control.send(serialized).is_err() {
                 debug!(
-                    client_id,
+                    ?client_id,
                     "client writer channel closed during direct terminal keyboard update"
                 );
                 broken_clients.push(client_id);
@@ -242,12 +242,15 @@ impl HeadlessServer {
                 let Some(target) = self.shell_target_for_client(client_id) else {
                     continue;
                 };
+                let Some((workspace_index, tab_index)) = target.resolve(&self.app.state) else {
+                    continue;
+                };
                 let Some(tab) = self
                     .app
                     .state
                     .workspaces
-                    .get(target.workspace_index)
-                    .and_then(|workspace| workspace.tabs.get(target.tab_index))
+                    .get(workspace_index)
+                    .and_then(|workspace| workspace.tabs.get(tab_index))
                 else {
                     continue;
                 };
@@ -340,12 +343,15 @@ impl HeadlessServer {
             let Some(target) = self.shell_target_for_client(client_id) else {
                 return false;
             };
+            let Some((workspace_index, tab_index)) = target.resolve(&self.app.state) else {
+                return false;
+            };
             let Some(tab) = self
                 .app
                 .state
                 .workspaces
-                .get(target.workspace_index)
-                .and_then(|workspace| workspace.tabs.get(target.tab_index))
+                .get(workspace_index)
+                .and_then(|workspace| workspace.tabs.get(tab_index))
             else {
                 return false;
             };
@@ -357,7 +363,10 @@ impl HeadlessServer {
         let render_targets = render_targets(&self.clients, self.clients.foreground_client_id());
 
         if render_targets.is_empty() {
-            let (cols, rows) = self.effective_size;
+            let (cols, rows) = (
+                self.effective_size.cols.get(),
+                self.effective_size.rows.get(),
+            );
             let area = Rect::new(0, 0, cols, rows);
             let resize_panes = self.app.state.view.pane_infos.is_empty();
             crate::ui::compute_view_with_runtime_registry(
@@ -385,7 +394,10 @@ impl HeadlessServer {
         // Retained updates fall back here when a pane changes alternate screens.
         for target in &render_targets {
             let client_id = target.client_id;
-            let (cols, rows) = target.terminal_size;
+            let (cols, rows) = (
+                target.terminal_size.cols.get(),
+                target.terminal_size.rows.get(),
+            );
             let cell_size = target.cell_size;
             let Some(client) = self.clients.get(&client_id) else {
                 continue;
@@ -393,10 +405,14 @@ impl HeadlessServer {
             if !client.is_active_shell_client() {
                 continue;
             }
-            let Some(tab_id) = self.shell_tab_id_for_client(client_id) else {
+            let Some(surface_target) = self.shell_target_for_client(client_id) else {
                 continue;
             };
-            if self.clients.geometry_controller(&tab_id) != Some(client_id) {
+            if self
+                .clients
+                .geometry_controller_by_id(&surface_target.tab_id)
+                != Some(client_id)
+            {
                 continue;
             }
             let changed = client
@@ -426,15 +442,18 @@ impl HeadlessServer {
                 let layout = crate::ui::compute_tab_surface_for(
                     &self.app.state,
                     &self.app.terminal_runtimes,
-                    Some(shell_target),
+                    Some(shell_target.clone()),
                     area,
                 );
+                let Some((workspace_index, _)) = shell_target.resolve(&self.app.state) else {
+                    continue;
+                };
                 if layout.pane_infos.iter().any(|pane| {
                     self.app
                         .state
                         .runtime_for_pane_in_workspace(
                             &self.app.terminal_runtimes,
-                            shell_target.workspace_index,
+                            workspace_index,
                             pane.id,
                         )
                         .is_some_and(crate::terminal::TerminalRuntime::synchronized_output_active)
@@ -454,7 +473,7 @@ impl HeadlessServer {
             }
         }
 
-        let mut broken_clients: Vec<u64> = Vec::new();
+        let mut broken_clients: Vec<ClientId> = Vec::new();
         // The session snapshot every shell projection is diffed against is
         // built at most once per render and shared: copies for all but the
         // last shell client, the original for the last one.
@@ -464,10 +483,13 @@ impl HeadlessServer {
             .count();
         let mut shared_session_snapshot: Option<crate::api::schema::SessionSnapshot> = None;
         // (client, is shell client, claimed bytes, frame limit)
-        let mut oversized_notices: Vec<(u64, bool, usize, usize)> = Vec::new();
+        let mut oversized_notices: Vec<(ClientId, bool, usize, usize)> = Vec::new();
         for target in render_targets {
             let client_id = target.client_id;
-            let (cols, rows) = target.terminal_size;
+            let (cols, rows) = (
+                target.terminal_size.cols.get(),
+                target.terminal_size.rows.get(),
+            );
             let cell_size = target.cell_size;
             let mode = target.mode;
             let is_shell = matches!(&mode, RenderTargetMode::Shell);
@@ -492,7 +514,7 @@ impl HeadlessServer {
                 };
                 let result = render_client_shell_pane_surface(
                     &mut self.app,
-                    shell_target,
+                    shell_target.as_ref(),
                     area,
                     render_cell_size,
                 );
@@ -552,7 +574,7 @@ impl HeadlessServer {
                     let snapshot_framed = match Self::frame_server_message(&snapshot_message) {
                         Ok(framed) => framed,
                         Err(err) => {
-                            warn!(client_id, err = %err, "failed to frame endpoint snapshot");
+                            warn!(?client_id, err = %err, "failed to frame endpoint snapshot");
                             broken_clients.push(client_id);
                             continue;
                         }
@@ -597,7 +619,7 @@ impl HeadlessServer {
                     frame
                 }
                 RenderTargetMode::TerminalAttach { terminal_id } => {
-                    let Some(runtime) = self.runtime_for_terminal_id_string(&terminal_id) else {
+                    let Some(runtime) = self.app.terminal_runtimes.get(&terminal_id) else {
                         self.send_to_client(
                             client_id,
                             &ServerMessage::ServerShutdown {
@@ -669,12 +691,12 @@ impl HeadlessServer {
                     // nobody told why, or a warning per render.
                     if client.oversized_frame_reported {
                         debug!(
-                            client_id,
+                            ?client_id,
                             claimed, max, "skipping oversized frame for client"
                         );
                     } else {
                         warn!(
-                            client_id,
+                            ?client_id,
                             claimed, max, "skipping oversized frame for client"
                         );
                         client.oversized_frame_reported = true;
@@ -683,7 +705,7 @@ impl HeadlessServer {
                     continue;
                 }
                 Err(err) => {
-                    warn!(client_id, err = %err, "failed to serialize frame");
+                    warn!(?client_id, err = %err, "failed to serialize frame");
                     broken_clients.push(client_id);
                     continue;
                 }
@@ -726,7 +748,10 @@ impl HeadlessServer {
             }
         }
 
-        let (cols, rows) = self.effective_size;
+        let (cols, rows) = (
+            self.effective_size.cols.get(),
+            self.effective_size.rows.get(),
+        );
         // Full-frame recovery is tracked per connection. A slow client must not
         // keep responsive peers on the global full-render path while it waits
         // for its render slot to drain.

@@ -497,7 +497,7 @@ impl App {
         match pane_id {
             Some(pane_id) => self.parse_pane_id(pane_id),
             None => {
-                let ws_idx = self.state.active?;
+                let ws_idx = self.state.active_index()?;
                 let pane_id = self.state.workspaces.get(ws_idx)?.focused_pane_id()?;
                 Some((ws_idx, pane_id))
             }
@@ -1563,7 +1563,7 @@ mod tests {
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         app.state
             .public_pane_id_aliases
-            .insert("old-pane".into(), pane_id);
+            .insert("wOLD:p1".into(), pane_id);
         let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
 
         let response = app.handle_pane_close(
@@ -1575,7 +1575,11 @@ mod tests {
 
         let _: SuccessResponse = crate::api::error::test_success(&response);
         assert!(app.state.workspaces.is_empty());
-        assert!(!app.state.public_pane_id_aliases.contains_key("old-pane"));
+        assert!(
+            !app.state
+                .public_pane_id_aliases
+                .contains_key(&"wOLD:p1".into())
+        );
         assert_eq!(
             app.event_hub
                 .events_after(0)
@@ -1623,8 +1627,8 @@ mod tests {
     #[test]
     fn api_pane_current_prefers_caller_pane_id() {
         let mut app = app_with_workspace();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let root = app.state.workspaces[0].tabs[0].root_pane;
         let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
         app.state.ensure_test_terminals();
@@ -1652,8 +1656,8 @@ mod tests {
     #[test]
     fn api_pane_current_falls_back_to_focused_pane() {
         let mut app = app_with_workspace();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let root = app.state.workspaces[0].tabs[0].root_pane;
         app.state.workspaces[0].tabs[0].layout.focus_pane(root);
         let root_public = app.public_pane_id(0, root).expect("test precondition");
@@ -1674,8 +1678,8 @@ mod tests {
     #[test]
     fn api_pane_current_dispatches_through_socket_request() {
         let mut app = app_with_workspace();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let root = app.state.workspaces[0].tabs[0].root_pane;
         let root_public = app.public_pane_id(0, root).expect("test precondition");
 
@@ -1710,7 +1714,7 @@ mod tests {
     #[test]
     fn api_pane_current_reports_no_active_pane() {
         let mut app = app_with_workspace();
-        app.state.active = None;
+        app.state.set_active_index(None);
 
         let response = app.handle_pane_current(
             "req".into(),
@@ -2373,8 +2377,8 @@ mod tests {
             .take_pane_for_move(source)
             .expect("source pane should be movable");
         app.state.workspaces.remove(0);
-        app.state.active = None;
-        app.state.selected = 0;
+        app.state.set_active_index(None);
+        app.state.set_selected_index(Some(0));
 
         app.recover_failed_pane_move(context, taken.moved);
 
@@ -2435,8 +2439,8 @@ mod tests {
     #[test]
     fn api_pane_zoom_current_toggles_zoom() {
         let mut app = app_with_workspace();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let root = app.state.workspaces[0].tabs[0].root_pane;
         let _right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
         app.state.workspaces[0].tabs[0].layout.focus_pane(root);
@@ -2482,8 +2486,8 @@ mod tests {
     #[test]
     fn api_pane_zoom_single_pane_returns_noop() {
         let mut app = app_with_workspace();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let root = app.state.workspaces[0].tabs[0].root_pane;
         let root_public = app.public_pane_id(0, root).expect("test precondition");
 
@@ -2511,8 +2515,8 @@ mod tests {
     #[test]
     fn api_pane_zoom_on_and_off_are_idempotent() {
         let mut app = app_with_workspace();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let root = app.state.workspaces[0].tabs[0].root_pane;
         let _right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
         app.state.workspaces[0].tabs[0].layout.focus_pane(root);
@@ -2588,8 +2592,8 @@ mod tests {
     #[test]
     fn api_pane_zoom_idempotent_mode_reports_focus_change() {
         let mut app = app_with_workspace();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let root = app.state.workspaces[0].tabs[0].root_pane;
         let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
         app.state.workspaces[0].tabs[0].layout.focus_pane(root);
@@ -2648,8 +2652,8 @@ mod tests {
     #[test]
     fn api_pane_layout_of_a_zoomed_tab_reports_only_the_zoomed_pane() {
         let mut app = app_with_workspace();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let root = app.state.workspaces[0].tabs[0].root_pane;
         let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
         app.state.workspaces[0].tabs[0].layout.focus_pane(right);
@@ -2857,7 +2861,7 @@ mod tests {
             .public_pane_id(1, target_pane)
             .expect("test precondition");
         app.state.switch_workspace(0);
-        assert_eq!(app.state.active, Some(0));
+        assert_eq!(app.state.active_index(), Some(0));
 
         let response = app.handle_pane_focus(
             "req".into(),
@@ -2871,7 +2875,7 @@ mod tests {
             panic!("expected pane info response");
         };
         assert_eq!(pane.pane_id, target_public);
-        assert_eq!(app.state.active, Some(1));
+        assert_eq!(app.state.active_index(), Some(1));
         assert_eq!(app.state.workspaces[1].active_tab, target_tab_idx);
         assert_eq!(app.state.workspaces[1].focused_pane_id(), Some(target_pane));
         assert_eq!(app.state.mode, Mode::Terminal);
@@ -2880,8 +2884,8 @@ mod tests {
     #[test]
     fn api_pane_focus_returns_idle_agent_status() {
         let mut app = app_with_workspace();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
 
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]

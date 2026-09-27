@@ -177,7 +177,7 @@ impl ClientShellState {
     pub(crate) fn handle_pixel_mouse_bytes(
         &mut self,
         data: &[u8],
-        geometry: crate::input::mouse::HostGeometry,
+        geometry: crate::input::mouse::HostPixelExtent,
     ) -> ClientShellInput {
         let Some((x, y)) = crate::input::mouse::parse_report(data) else {
             return ClientShellInput::default();
@@ -856,7 +856,9 @@ impl ClientShellState {
         };
         let pane_id = surface.panes[next].pane_id.clone();
         self.push_endpoint_method(
-            crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id }),
+            crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+                pane_id: pane_id.to_string(),
+            }),
             outcome,
         );
     }
@@ -902,7 +904,7 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn focused_pane_id(&self) -> Option<String> {
+    pub(super) fn focused_pane_id(&self) -> Option<crate::workspace::PublicPaneId> {
         self.snapshot
             .as_deref()
             .and_then(|snapshot| snapshot.focused_pane_id.clone())

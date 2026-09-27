@@ -8,13 +8,79 @@ use crate::protocol::{
 };
 use crate::server::client_transport::ClientWriter;
 use crate::server::render_stream::ClientRenderState;
+use crate::terminal::TerminalId;
+use crate::workspace::PublicTabId;
+
+/// Identity of a connection accepted by this server. Only the registry's
+/// allocator mints production values; disconnecting never reuses one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ClientId(u64);
+
+/// Monotonic ordering of accepted client activity within one server run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ActivityStamp(u64);
+
+#[cfg(test)]
+impl From<u64> for ActivityStamp {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+#[cfg(test)]
+impl From<i32> for ActivityStamp {
+    fn from(value: i32) -> Self {
+        Self(u64::try_from(value).expect("test activity stamp must be nonnegative"))
+    }
+}
+
+impl ClientId {
+    #[cfg(test)]
+    pub(crate) fn test_new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl std::fmt::Display for ClientId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[cfg(test)]
+impl From<u64> for ClientId {
+    fn from(value: u64) -> Self {
+        Self::test_new(value)
+    }
+}
+
+#[cfg(test)]
+impl From<i32> for ClientId {
+    fn from(value: i32) -> Self {
+        Self::test_new(u64::try_from(value).expect("test client id must be nonnegative"))
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<u64> for ClientId {
+    fn eq(&self, other: &u64) -> bool {
+        self.0 == *other
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<i32> for ClientId {
+    fn eq(&self, other: &i32) -> bool {
+        u64::try_from(*other).is_ok_and(|other| self.0 == other)
+    }
+}
 
 #[derive(Debug)]
 pub(crate) enum ClientConnectionMode {
     ClientShell(Box<ClientShellState>),
     TerminalPending,
     TerminalAttach {
-        terminal_id: String,
+        terminal_id: TerminalId,
         state: TerminalAttachState,
     },
 }
@@ -120,7 +186,7 @@ impl ClientConnectionMode {
         Self::ClientShell(Box::new(ClientShellState::active()))
     }
 
-    pub(crate) fn terminal_attach(terminal_id: String) -> Self {
+    pub(crate) fn terminal_attach(terminal_id: TerminalId) -> Self {
         Self::TerminalAttach {
             terminal_id,
             state: TerminalAttachState::default(),
@@ -131,13 +197,13 @@ impl ClientConnectionMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RenderTargetMode {
     Shell,
-    TerminalAttach { terminal_id: String },
+    TerminalAttach { terminal_id: TerminalId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RenderTarget {
-    pub(crate) client_id: u64,
-    pub(crate) terminal_size: (u16, u16),
+    pub(crate) client_id: ClientId,
+    pub(crate) terminal_size: crate::geometry::GridSize,
     pub(crate) cell_size: crate::host_term::cell_size::HostCellSize,
     pub(crate) is_foreground: bool,
     pub(crate) mode: RenderTargetMode,
@@ -149,11 +215,11 @@ pub(crate) struct RenderTarget {
 /// inspect a connection, while cross-connection decisions and ownership maps
 /// live here and can be tested without a PTY.
 pub(crate) struct ClientRegistry {
-    connections: HashMap<u64, ClientConnection>,
+    connections: HashMap<ClientId, ClientConnection>,
     next_client_id: u64,
-    foreground_client_id: Option<u64>,
-    geometry_controllers: HashMap<String, u64>,
-    attach_owners: HashMap<String, u64>,
+    foreground_client_id: Option<ClientId>,
+    geometry_controllers: HashMap<PublicTabId, ClientId>,
+    attach_owners: HashMap<TerminalId, ClientId>,
     next_activity_stamp: u64,
 }
 
@@ -161,8 +227,8 @@ pub(crate) struct ClientRegistry {
 pub(crate) enum AttachClaim {
     Available,
     AlreadyOwned,
-    Reject { owner: u64 },
-    Takeover { owner: u64 },
+    Reject { owner: ClientId },
+    Takeover { owner: ClientId },
 }
 
 impl Default for ClientRegistry {
@@ -179,8 +245,8 @@ impl Default for ClientRegistry {
 }
 
 impl<'a> IntoIterator for &'a ClientRegistry {
-    type Item = (&'a u64, &'a ClientConnection);
-    type IntoIter = std::collections::hash_map::Iter<'a, u64, ClientConnection>;
+    type Item = (&'a ClientId, &'a ClientConnection);
+    type IntoIter = std::collections::hash_map::Iter<'a, ClientId, ClientConnection>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.connections.iter()
@@ -188,59 +254,64 @@ impl<'a> IntoIterator for &'a ClientRegistry {
 }
 
 impl<'a> IntoIterator for &'a mut ClientRegistry {
-    type Item = (&'a u64, &'a mut ClientConnection);
-    type IntoIter = std::collections::hash_map::IterMut<'a, u64, ClientConnection>;
+    type Item = (&'a ClientId, &'a mut ClientConnection);
+    type IntoIter = std::collections::hash_map::IterMut<'a, ClientId, ClientConnection>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.connections.iter_mut()
     }
 }
 
-impl Index<&u64> for ClientRegistry {
+impl<K: Copy + Into<ClientId>> Index<&K> for ClientRegistry {
     type Output = ClientConnection;
 
-    fn index(&self, client_id: &u64) -> &Self::Output {
-        &self.connections[client_id]
+    fn index(&self, client_id: &K) -> &Self::Output {
+        &self.connections[&(*client_id).into()]
     }
 }
 
 impl ClientRegistry {
-    pub(crate) fn get(&self, client_id: &u64) -> Option<&ClientConnection> {
-        self.connections.get(client_id)
+    pub(crate) fn get<K: Copy + Into<ClientId>>(&self, client_id: &K) -> Option<&ClientConnection> {
+        self.connections.get(&(*client_id).into())
     }
 
-    pub(crate) fn get_mut(&mut self, client_id: &u64) -> Option<&mut ClientConnection> {
-        self.connections.get_mut(client_id)
+    pub(crate) fn get_mut<K: Copy + Into<ClientId>>(
+        &mut self,
+        client_id: &K,
+    ) -> Option<&mut ClientConnection> {
+        self.connections.get_mut(&(*client_id).into())
     }
 
     pub(crate) fn insert(
         &mut self,
-        client_id: u64,
+        client_id: impl Into<ClientId>,
         client: ClientConnection,
     ) -> Option<ClientConnection> {
-        self.connections.insert(client_id, client)
+        self.connections.insert(client_id.into(), client)
     }
 
     #[cfg(test)]
-    pub(crate) fn contains_key(&self, client_id: &u64) -> bool {
-        self.connections.contains_key(client_id)
+    pub(crate) fn contains_key<K: Copy + Into<ClientId>>(&self, client_id: &K) -> bool {
+        self.connections.contains_key(&(*client_id).into())
     }
 
-    pub(crate) fn keys(&self) -> std::collections::hash_map::Keys<'_, u64, ClientConnection> {
+    pub(crate) fn keys(&self) -> std::collections::hash_map::Keys<'_, ClientId, ClientConnection> {
         self.connections.keys()
     }
 
-    pub(crate) fn values(&self) -> std::collections::hash_map::Values<'_, u64, ClientConnection> {
+    pub(crate) fn values(
+        &self,
+    ) -> std::collections::hash_map::Values<'_, ClientId, ClientConnection> {
         self.connections.values()
     }
 
     pub(crate) fn values_mut(
         &mut self,
-    ) -> std::collections::hash_map::ValuesMut<'_, u64, ClientConnection> {
+    ) -> std::collections::hash_map::ValuesMut<'_, ClientId, ClientConnection> {
         self.connections.values_mut()
     }
 
-    pub(crate) fn iter(&self) -> std::collections::hash_map::Iter<'_, u64, ClientConnection> {
+    pub(crate) fn iter(&self) -> std::collections::hash_map::Iter<'_, ClientId, ClientConnection> {
         self.connections.iter()
     }
 
@@ -248,31 +319,31 @@ impl ClientRegistry {
         self.connections.is_empty()
     }
 
-    pub(crate) fn allocate_client_id(&mut self) -> u64 {
+    pub(crate) fn allocate_client_id(&mut self) -> ClientId {
         let id = self.next_client_id;
         self.next_client_id = self.next_client_id.saturating_add(1);
-        id
+        ClientId(id)
     }
 
-    pub(crate) fn allocate_activity_stamp(&mut self) -> u64 {
+    pub(crate) fn allocate_activity_stamp(&mut self) -> ActivityStamp {
         let stamp = self.next_activity_stamp;
         self.next_activity_stamp = self.next_activity_stamp.saturating_add(1);
-        stamp
+        ActivityStamp(stamp)
     }
 
-    pub(crate) fn foreground_client_id(&self) -> Option<u64> {
+    pub(crate) fn foreground_client_id(&self) -> Option<ClientId> {
         self.foreground_client_id
     }
 
-    pub(crate) fn latest_shell_client(&self) -> Option<u64> {
+    pub(crate) fn latest_shell_client(&self) -> Option<ClientId> {
         latest_shell_client(&self.connections)
     }
 
-    pub(crate) fn set_foreground_client_id(&mut self, client_id: Option<u64>) {
+    pub(crate) fn set_foreground_client_id(&mut self, client_id: Option<ClientId>) {
         self.foreground_client_id = client_id;
     }
 
-    pub(crate) fn promote_to_foreground(&mut self, client_id: u64) -> bool {
+    pub(crate) fn promote_to_foreground(&mut self, client_id: ClientId) -> bool {
         let stamp = self.allocate_activity_stamp();
         let Some(client) = self.connections.get_mut(&client_id) else {
             return false;
@@ -300,7 +371,10 @@ impl ClientRegistry {
             .count()
     }
 
-    pub(crate) fn remove_client(&mut self, client_id: u64) -> (Option<ClientConnection>, bool) {
+    pub(crate) fn remove_client(
+        &mut self,
+        client_id: ClientId,
+    ) -> (Option<ClientConnection>, bool) {
         let was_foreground = self.foreground_client_id == Some(client_id);
         let removed = self.connections.remove(&client_id);
         self.remove_geometry_controllers_for(client_id);
@@ -323,23 +397,33 @@ impl ClientRegistry {
         self.attach_owners.clear();
     }
 
-    pub(crate) fn geometry_controllers(&self) -> &HashMap<String, u64> {
+    pub(crate) fn geometry_controllers(&self) -> &HashMap<PublicTabId, ClientId> {
         &self.geometry_controllers
     }
 
-    pub(crate) fn geometry_controller(&self, tab_id: &str) -> Option<u64> {
+    pub(crate) fn geometry_controller(&self, tab_id: &str) -> Option<ClientId> {
+        self.geometry_controllers
+            .get(&tab_id.parse::<PublicTabId>().ok()?)
+            .copied()
+    }
+
+    pub(crate) fn geometry_controller_by_id(&self, tab_id: &PublicTabId) -> Option<ClientId> {
         self.geometry_controllers.get(tab_id).copied()
     }
 
     pub(crate) fn set_geometry_controller(
         &mut self,
-        tab_id: String,
-        client_id: u64,
-    ) -> Option<u64> {
-        self.geometry_controllers.insert(tab_id, client_id)
+        tab_id: &str,
+        client_id: ClientId,
+    ) -> Option<ClientId> {
+        self.geometry_controllers
+            .insert(tab_id.parse().ok()?, client_id)
     }
 
-    pub(crate) fn claim_geometry(&mut self, tab_id: String, client_id: u64) -> bool {
+    pub(crate) fn claim_geometry(&mut self, tab_id: &str, client_id: ClientId) -> bool {
+        let Ok(tab_id) = tab_id.parse::<PublicTabId>() else {
+            return false;
+        };
         if !self
             .connections
             .get(&client_id)
@@ -350,7 +434,10 @@ impl ClientRegistry {
         self.geometry_controllers.insert(tab_id, client_id) != Some(client_id)
     }
 
-    pub(crate) fn claim_unowned_geometry(&mut self, tab_id: String, client_id: u64) -> bool {
+    pub(crate) fn claim_unowned_geometry(&mut self, tab_id: &str, client_id: ClientId) -> bool {
+        let Ok(tab_id) = tab_id.parse::<PublicTabId>() else {
+            return false;
+        };
         if !self
             .connections
             .get(&client_id)
@@ -365,24 +452,27 @@ impl ClientRegistry {
         true
     }
 
-    pub(crate) fn retain_geometry_controllers(&mut self, mut keep: impl FnMut(&str, u64) -> bool) {
+    pub(crate) fn retain_geometry_controllers(
+        &mut self,
+        mut keep: impl FnMut(&PublicTabId, ClientId) -> bool,
+    ) {
         self.geometry_controllers
             .retain(|tab_id, client_id| keep(tab_id, *client_id));
     }
 
-    pub(crate) fn remove_geometry_controllers_for(&mut self, client_id: u64) {
+    pub(crate) fn remove_geometry_controllers_for(&mut self, client_id: ClientId) {
         self.geometry_controllers
             .retain(|_, controller_id| *controller_id != client_id);
     }
 
-    pub(crate) fn attach_owner(&self, terminal_id: &str) -> Option<u64> {
+    pub(crate) fn attach_owner(&self, terminal_id: &TerminalId) -> Option<ClientId> {
         self.attach_owners.get(terminal_id).copied()
     }
 
     pub(crate) fn attach_claim(
         &self,
-        terminal_id: &str,
-        client_id: u64,
+        terminal_id: &TerminalId,
+        client_id: ClientId,
         takeover: bool,
     ) -> AttachClaim {
         match self.attach_owner(terminal_id) {
@@ -393,16 +483,16 @@ impl ClientRegistry {
         }
     }
 
-    pub(crate) fn set_attach_owner(&mut self, terminal_id: String, client_id: u64) {
+    pub(crate) fn set_attach_owner(&mut self, terminal_id: TerminalId, client_id: ClientId) {
         self.attach_owners.insert(terminal_id, client_id);
     }
 
-    pub(crate) fn has_attach_owner(&self, terminal_id: &str) -> bool {
+    pub(crate) fn has_attach_owner(&self, terminal_id: &TerminalId) -> bool {
         self.attach_owners.contains_key(terminal_id)
     }
 
     #[cfg(test)]
-    pub(crate) fn attach_owners(&self) -> &HashMap<String, u64> {
+    pub(crate) fn attach_owners(&self) -> &HashMap<TerminalId, ClientId> {
         &self.attach_owners
     }
 }
@@ -417,21 +507,21 @@ enum ClientShellPressId {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ClientShellHeldInput {
-    pub(crate) target: String,
+    pub(crate) target: crate::workspace::PublicPaneId,
     pub(crate) release: ClientPaneInputEvent,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ClientShellLocation {
-    pub(crate) focused_workspace_id: Option<String>,
-    pub(crate) active_tab_ids: HashMap<String, String>,
+    pub(crate) focused_workspace_id: Option<crate::workspace::WorkspaceId>,
+    pub(crate) active_tab_ids: HashMap<crate::workspace::WorkspaceId, PublicTabId>,
 }
 
 pub(crate) struct ClientShellTopology {
-    pub(crate) focused_workspace_id: Option<String>,
-    pub(crate) fallback_workspace_id: Option<String>,
-    pub(crate) active_tab_ids: HashMap<String, String>,
-    pub(crate) tab_workspace_ids: HashMap<String, String>,
+    pub(crate) focused_workspace_id: Option<crate::workspace::WorkspaceId>,
+    pub(crate) fallback_workspace_id: Option<crate::workspace::WorkspaceId>,
+    pub(crate) active_tab_ids: HashMap<crate::workspace::WorkspaceId, PublicTabId>,
+    pub(crate) tab_workspace_ids: HashMap<PublicTabId, crate::workspace::WorkspaceId>,
 }
 
 impl ClientShellLocation {
@@ -451,18 +541,21 @@ impl ClientShellLocation {
         }
     }
 
-    pub(crate) fn focused_tab_id(&self) -> Option<&str> {
+    pub(crate) fn focused_tab_id(&self) -> Option<&PublicTabId> {
         self.focused_workspace_id
-            .as_deref()
+            .as_ref()
             .and_then(|workspace_id| self.active_tab_ids.get(workspace_id))
-            .map(String::as_str)
     }
 
-    pub(crate) fn focus_workspace(&mut self, workspace_id: String) {
+    pub(crate) fn focus_workspace(&mut self, workspace_id: crate::workspace::WorkspaceId) {
         self.focused_workspace_id = Some(workspace_id);
     }
 
-    pub(crate) fn focus_tab(&mut self, workspace_id: String, tab_id: String) {
+    pub(crate) fn focus_tab(
+        &mut self,
+        workspace_id: crate::workspace::WorkspaceId,
+        tab_id: PublicTabId,
+    ) {
         self.focused_workspace_id = Some(workspace_id.clone());
         self.active_tab_ids.insert(workspace_id, tab_id);
     }
@@ -495,11 +588,11 @@ pub(crate) struct ClientConnection {
     /// State carried by this connection's current client mode.
     pub(crate) mode: ClientConnectionMode,
     /// The client's terminal size after clamping.
-    pub(crate) terminal_size: (u16, u16),
+    pub(crate) terminal_size: crate::geometry::GridSize,
     /// Pixel size of one client terminal cell.
     pub(crate) cell_size: crate::host_term::cell_size::HostCellSize,
     /// Monotonic activity stamp used to choose the fallback foreground client.
-    pub(crate) last_activity: u64,
+    pub(crate) last_activity: ActivityStamp,
     /// Render baseline for the negotiated client encoding.
     pub(crate) render_state: ClientRenderState,
     /// Whether this frontend preserves exact SGR pixel reports.
@@ -530,13 +623,13 @@ impl ClientConnection {
     pub(crate) fn new(
         terminal_size: (u16, u16),
         cell_size: crate::host_term::cell_size::HostCellSize,
-        last_activity: u64,
+        last_activity: impl Into<ActivityStamp>,
         render_encoding: RenderEncoding,
         writer: Option<ClientWriter>,
     ) -> Self {
         Self::new_with_mode(
             ClientConnectionMode::shell(),
-            terminal_size,
+            crate::geometry::GridSize::clamped(terminal_size.0, terminal_size.1),
             cell_size,
             last_activity,
             render_encoding,
@@ -546,9 +639,9 @@ impl ClientConnection {
 
     pub(crate) fn new_with_mode(
         mode: ClientConnectionMode,
-        terminal_size: (u16, u16),
+        terminal_size: crate::geometry::GridSize,
         cell_size: crate::host_term::cell_size::HostCellSize,
-        last_activity: u64,
+        last_activity: impl Into<ActivityStamp>,
         render_encoding: RenderEncoding,
         writer: Option<ClientWriter>,
     ) -> Self {
@@ -556,7 +649,7 @@ impl ClientConnection {
             mode,
             terminal_size,
             cell_size,
-            last_activity,
+            last_activity: last_activity.into(),
             render_state: ClientRenderState::new(render_encoding),
             pixel_mouse: false,
             render_pending: RenderDemand::None,
@@ -599,7 +692,7 @@ impl ClientConnection {
         }
     }
 
-    pub(crate) fn attach_to_terminal(&mut self, terminal_id: String) -> bool {
+    pub(crate) fn attach_to_terminal(&mut self, terminal_id: TerminalId) -> bool {
         if !matches!(self.mode, ClientConnectionMode::TerminalPending) {
             return false;
         }
@@ -615,7 +708,11 @@ impl ClientConnection {
         self.render_state.request_recompute();
     }
 
-    pub(crate) fn track_shell_input(&mut self, target: &str, events: &[ClientPaneInputEvent]) {
+    pub(crate) fn track_shell_input(
+        &mut self,
+        target: &crate::workspace::PublicPaneId,
+        events: &[ClientPaneInputEvent],
+    ) {
         let Some(shell) = self.shell_state_mut() else {
             return;
         };
@@ -754,7 +851,9 @@ impl ClientConnection {
     }
 }
 
-pub(crate) fn latest_shell_client(clients: &HashMap<u64, ClientConnection>) -> Option<u64> {
+pub(crate) fn latest_shell_client(
+    clients: &HashMap<ClientId, ClientConnection>,
+) -> Option<ClientId> {
     clients
         .iter()
         .filter(|(_, client)| client.is_active_shell_client())
@@ -762,7 +861,10 @@ pub(crate) fn latest_shell_client(clients: &HashMap<u64, ClientConnection>) -> O
         .map(|(&client_id, _)| client_id)
 }
 
-pub(crate) fn terminal_stream_client_ids(clients: &ClientRegistry, terminal_id: &str) -> Vec<u64> {
+pub(crate) fn terminal_stream_client_ids(
+    clients: &ClientRegistry,
+    terminal_id: &TerminalId,
+) -> Vec<ClientId> {
     clients
         .iter()
         .filter_map(|(&client_id, client)| match &client.mode {
@@ -777,7 +879,7 @@ pub(crate) fn terminal_stream_client_ids(clients: &ClientRegistry, terminal_id: 
 
 pub(crate) fn render_targets(
     clients: &ClientRegistry,
-    foreground_client_id: Option<u64>,
+    foreground_client_id: Option<ClientId>,
 ) -> Vec<RenderTarget> {
     let mut targets: Vec<RenderTarget> = clients
         .iter()
@@ -829,7 +931,7 @@ mod tests {
         let connection = |mode| {
             ClientConnection::new_with_mode(
                 mode,
-                (80, 24),
+                crate::geometry::GridSize::clamped(80, 24),
                 crate::host_term::cell_size::HostCellSize::default(),
                 1,
                 crate::protocol::RenderEncoding::TerminalAnsi,
@@ -839,12 +941,14 @@ mod tests {
         assert!(connection(ClientConnectionMode::shell()).is_active_shell_client());
         let pending = connection(ClientConnectionMode::TerminalPending);
         assert!(!pending.is_active_shell_client());
-        let attached = connection(ClientConnectionMode::terminal_attach("t1".into()));
+        let attached = connection(ClientConnectionMode::terminal_attach(TerminalId::test_new(
+            "t1",
+        )));
         assert!(!attached.is_active_shell_client());
 
         let mut clients = HashMap::new();
-        clients.insert(1, pending);
-        clients.insert(2, attached);
+        clients.insert(ClientId::test_new(1), pending);
+        clients.insert(ClientId::test_new(2), attached);
         assert_eq!(latest_shell_client(&clients), None);
     }
 
@@ -853,7 +957,10 @@ mod tests {
         let mut registry = ClientRegistry::default();
         let first_id = registry.allocate_client_id();
         let second_id = registry.allocate_client_id();
-        assert_eq!((first_id, second_id), (1, 2));
+        assert_eq!(
+            (first_id, second_id),
+            (ClientId::test_new(1), ClientId::test_new(2))
+        );
         let first = ClientConnection::new(
             (80, 24),
             crate::host_term::cell_size::HostCellSize::default(),
@@ -863,7 +970,7 @@ mod tests {
         );
         let second = ClientConnection::new_with_mode(
             ClientConnectionMode::TerminalPending,
-            (80, 24),
+            crate::geometry::GridSize::clamped(80, 24),
             crate::host_term::cell_size::HostCellSize::default(),
             registry.allocate_activity_stamp(),
             crate::protocol::RenderEncoding::TerminalAnsi,
@@ -875,41 +982,42 @@ mod tests {
         assert!(registry.promote_to_foreground(first_id));
         assert_eq!(registry.foreground_client_id(), Some(first_id));
         assert!(!registry.promote_to_foreground(second_id));
-        assert!(registry.claim_geometry("tab-a".into(), first_id));
-        assert!(!registry.claim_unowned_geometry("tab-a".into(), first_id));
-        assert_eq!(registry.geometry_controller("tab-a"), Some(first_id));
+        assert!(registry.claim_geometry("w1:t1", first_id));
+        assert!(!registry.claim_unowned_geometry("w1:t1", first_id));
+        assert_eq!(registry.geometry_controller("w1:t1"), Some(first_id));
 
-        registry.set_attach_owner("terminal-a".into(), second_id);
-        assert_eq!(registry.attach_owner("terminal-a"), Some(second_id));
+        let terminal_id = TerminalId::test_new("terminal-a");
+        registry.set_attach_owner(terminal_id.clone(), second_id);
+        assert_eq!(registry.attach_owner(&terminal_id), Some(second_id));
         assert_eq!(
-            registry.attach_claim("terminal-a", first_id, false),
+            registry.attach_claim(&terminal_id, first_id, false),
             AttachClaim::Reject { owner: second_id }
         );
         assert_eq!(
-            registry.attach_claim("terminal-a", first_id, true),
+            registry.attach_claim(&terminal_id, first_id, true),
             AttachClaim::Takeover { owner: second_id }
         );
         assert!(
             registry
                 .get_mut(&second_id)
-                .is_some_and(|client| client.attach_to_terminal("terminal-a".into()))
+                .is_some_and(|client| client.attach_to_terminal(terminal_id.clone()))
         );
         let (_, was_foreground) = registry.remove_client(first_id);
         assert!(was_foreground);
-        assert_eq!(registry.geometry_controller("tab-a"), None);
+        assert_eq!(registry.geometry_controller("w1:t1"), None);
         assert!(!registry.promote_latest_remaining());
         assert_eq!(registry.foreground_client_id(), None);
         let (removed, was_foreground) = registry.remove_client(second_id);
         assert!(removed.is_some());
         assert!(!was_foreground);
-        assert_eq!(registry.attach_owner("terminal-a"), None);
+        assert_eq!(registry.attach_owner(&terminal_id), None);
     }
 
     #[test]
     fn semantic_text_press_does_not_create_a_server_release_lease() {
         let mut client = shell_client();
         client.track_shell_input(
-            "w1:p1",
+            &"w1:p1".into(),
             &[ClientPaneInputEvent::Key {
                 code: crate::protocol::ClientKeyCode::Char('x'),
                 modifiers: crate::protocol::WireModifiers::NONE,
@@ -935,7 +1043,7 @@ mod tests {
             generated_text: None,
         };
         client.track_shell_input(
-            "w1:p1",
+            &"w1:p1".into(),
             &[
                 key(crate::protocol::ClientKeyCode::Enter, ClientKeyKind::Press),
                 key(crate::protocol::ClientKeyCode::Enter, ClientKeyKind::Press),

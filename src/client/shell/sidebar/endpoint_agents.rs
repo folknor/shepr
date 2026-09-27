@@ -122,10 +122,9 @@ impl ClientShellState {
             return;
         }
         let rows = agent_rows(&self.endpoints, &self.active_endpoint_id, &self.config);
-        let Some(target) = rows
-            .iter()
-            .position(|row| &row.endpoint_id == endpoint_id && row.agent.pane_id == pane_id)
-        else {
+        let Some(target) = rows.iter().position(|row| {
+            &row.endpoint_id == endpoint_id && row.agent.pane_id.as_str() == pane_id
+        }) else {
             return;
         };
         let heights = rows
@@ -168,7 +167,12 @@ fn agent_rows(
                     (endpoints.len() > 1).then_some(endpoint.label.as_str()),
                 )
                 .into_iter()
-                .map(|agent| ((endpoint.endpoint_id.clone(), agent.pane_id.clone()), agent))
+                .map(|agent| {
+                    (
+                        (endpoint.endpoint_id.clone(), agent.pane_id.to_string()),
+                        agent,
+                    )
+                })
                 .collect::<Vec<_>>()
             })
         })
@@ -182,7 +186,10 @@ fn agent_rows(
     )
     .into_iter()
     .filter_map(|row| {
-        let key = (row.endpoint.endpoint_id.clone(), row.agent.pane_id.clone());
+        let key = (
+            row.endpoint.endpoint_id.clone(),
+            row.agent.pane_id.to_string(),
+        );
         let mut agent = rendered_rows.remove(&key)?;
         agent.focused &= row.endpoint.endpoint_id == active_endpoint_id;
         Some(EndpointAgentRow {

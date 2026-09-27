@@ -6,11 +6,7 @@ pub(crate) struct TerminalTarget {
     pub ws_idx: usize,
     pub tab_idx: usize,
     pub pane_id: crate::layout::PaneId,
-    /// String form retained for existing command and public API call sites.
-    pub terminal_id: String,
-    /// Key used for terminal-state lookups; stringifying this in a scan used
-    /// to allocate once per terminal comparison.
-    pub(super) terminal_key: TerminalId,
+    pub terminal_id: TerminalId,
 }
 
 #[derive(Clone, Copy)]
@@ -23,13 +19,11 @@ struct TerminalTargetRef<'a> {
 
 impl TerminalTargetRef<'_> {
     fn into_owned(self) -> TerminalTarget {
-        let terminal_key = self.terminal_id.clone();
         TerminalTarget {
             ws_idx: self.ws_idx,
             tab_idx: self.tab_idx,
             pane_id: self.pane_id,
-            terminal_id: terminal_key.to_string(),
-            terminal_key,
+            terminal_id: self.terminal_id.clone(),
         }
     }
 }
@@ -42,10 +36,10 @@ enum TargetKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TerminalTargetCandidate {
-    pub terminal_id: String,
-    pub pane_id: String,
-    pub workspace_id: String,
-    pub tab_id: String,
+    pub terminal_id: TerminalId,
+    pub pane_id: crate::workspace::PublicPaneId,
+    pub workspace_id: crate::workspace::WorkspaceId,
+    pub tab_id: crate::workspace::PublicTabId,
     pub cwd: Option<String>,
     pub agent_status: crate::api::schema::AgentStatus,
 }
@@ -121,7 +115,7 @@ impl App {
     fn target_is_agent(&self, target: &TerminalTarget) -> bool {
         self.state
             .terminals
-            .get(&target.terminal_key)
+            .get(&target.terminal_id)
             .is_some_and(crate::terminal::TerminalState::is_agent_terminal)
     }
 
@@ -180,13 +174,12 @@ impl App {
     ) -> Option<TerminalTarget> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
-        let terminal_key = ws.terminal_id(pane_id)?.clone();
+        let terminal_id = ws.terminal_id(pane_id)?.clone();
         Some(TerminalTarget {
             ws_idx,
             tab_idx,
             pane_id,
-            terminal_id: terminal_key.to_string(),
-            terminal_key,
+            terminal_id,
         })
     }
 
@@ -199,11 +192,13 @@ impl App {
         let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
         let pane = ws.pane_state(pane_id)?;
         let terminal = self.state.terminals.get(&pane.attached_terminal_id)?;
+        let pane_number = ws.public_pane_number(pane_id)?;
+        let tab_number = ws.public_tab_number(tab_idx)?;
         Some(TerminalTargetCandidate {
-            terminal_id: terminal.id.to_string(),
-            pane_id: self.public_pane_id(ws_idx, pane_id)?,
-            workspace_id: self.public_workspace_id(ws_idx),
-            tab_id: self.public_tab_id(ws_idx, tab_idx)?,
+            terminal_id: terminal.id.clone(),
+            pane_id: crate::workspace::PublicPaneId::new(&ws.id, pane_number),
+            workspace_id: crate::workspace::WorkspaceId::new(ws.id.clone()),
+            tab_id: crate::workspace::PublicTabId::new(&ws.id, tab_number),
             cwd: ws.tabs[tab_idx]
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),

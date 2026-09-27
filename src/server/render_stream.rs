@@ -464,7 +464,7 @@ pub(crate) fn render_tab_surface_virtual(
     area: Rect,
 ) -> RenderedTabSurface {
     let surface = crate::ui::TabSurfaceView {
-        target: layout.target,
+        target: layout.target.as_ref(),
         pane_infos: &layout.pane_infos,
         split_borders: &layout.split_borders,
     };

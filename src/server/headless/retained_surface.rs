@@ -1,4 +1,5 @@
 use super::*;
+use crate::server::ClientId;
 use crate::server::clients::RenderTargetMode;
 
 fn rect_fits_frame(rect: protocol::SurfaceRect, frame: &FrameData) -> bool {
@@ -180,12 +181,12 @@ fn retained_cursor(
 }
 
 struct RetainedRecipient<'a> {
-    client_id: u64,
+    client_id: ClientId,
     surface: &'a protocol::PaneSurfaceFrame,
 }
 
 struct CollectedPanePatch {
-    pane_id: String,
+    pane_id: crate::workspace::PublicPaneId,
     patch: crate::pane::TerminalDirtyPatch,
     content_revision: u64,
     scroll_metrics: Option<crate::pane::ScrollMetrics>,
@@ -195,7 +196,7 @@ struct CollectedPanePatch {
 }
 
 struct RetainedRecipientUpdate {
-    client_id: u64,
+    client_id: ClientId,
     patch: protocol::PaneSurfacePatch,
 }
 
@@ -276,8 +277,8 @@ impl HeadlessServer {
                         .map_or(crate::protocol::ProjectionRevision::ZERO, |shell| {
                             shell.projection_revision
                         })
-                || surface.frame.width != target.terminal_size.0
-                || surface.frame.height != target.terminal_size.1
+                || surface.frame.width != target.terminal_size.cols.get()
+                || surface.frame.height != target.terminal_size.rows.get()
             {
                 fallback!("baseline_mismatch");
             }
@@ -463,7 +464,7 @@ impl HeadlessServer {
                 Ok(serialized) => serialized,
                 Err(error) => {
                     warn!(
-                        client_id,
+                        ?client_id,
                         %error,
                         "failed to serialize retained pane surface patch"
                     );

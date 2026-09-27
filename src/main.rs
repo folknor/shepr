@@ -24,6 +24,7 @@ mod config;
 mod copy_mode;
 mod detect;
 mod events;
+mod geometry;
 mod ghostty;
 mod host_term;
 mod input;

@@ -95,7 +95,7 @@ mod tests {
             event_hub.clone(),
         );
         app.state.workspaces = vec![Workspace::test_new("one")];
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
@@ -186,7 +186,7 @@ mod tests {
             event_hub,
         );
         app.state.workspaces = vec![Workspace::test_new("one")];
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         app.state.settings.sidebar_agents.rows = vec![vec![
             crate::config::AgentSidebarToken::TerminalTitleStripped,

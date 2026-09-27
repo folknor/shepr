@@ -11,8 +11,8 @@ fn pane_move_server() -> HeadlessServer {
     first.switch_tab(0);
     server.app.state.workspaces = vec![first, crate::workspace::Workspace::test_new("second")];
     server.app.state.ensure_test_terminals();
-    server.app.state.active = Some(0);
-    server.app.state.selected = 0;
+    server.app.state.set_active_index(Some(0));
+    server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
     server
 }
@@ -74,7 +74,7 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
     )
     .expect("test precondition");
     assert!(moved.changed);
-    assert_eq!(server.app.state.active, Some(1));
+    assert_eq!(server.app.state.active_index(), Some(1));
     assert!(moved.closed_tab_id.is_some());
     let location = server.clients[&9]
         .shell_state()
@@ -85,7 +85,10 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
         Some(destination_id.as_str()),
         "successful public pane move with focus must move the attached client"
     );
-    assert_eq!(location.focused_tab_id(), Some(moved.pane.tab_id.as_str()));
+    assert_eq!(
+        location.focused_tab_id().map(ToString::to_string),
+        Some(moved.pane.tab_id.clone())
+    );
 
     server.render_and_stream();
     let snapshot = client_shell_snapshot(&control_rx);
@@ -106,8 +109,8 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
     assert_eq!(surface.projection_revision, snapshot.revision);
 
     server.handle_server_event(ServerEvent::ClientShellPaneInput {
-        client_id: 9,
-        pane_id: moved.pane.pane_id,
+        client_id: ClientId::test_new(9),
+        pane_id: moved.pane.pane_id.into(),
         events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
             "x".into(),
         )],
@@ -116,8 +119,11 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
         input_rx.try_recv().expect("input reaches moved terminal"),
         Bytes::from_static(b"x")
     );
-    assert_eq!(server.app.state.active, Some(1));
-    assert_eq!(server.shell_tab_id_for_client(9), Some(moved.pane.tab_id));
+    assert_eq!(server.app.state.active_index(), Some(1));
+    assert_eq!(
+        server.shell_tab_id_for_client(ClientId::test_new(9)),
+        Some(moved.pane.tab_id)
+    );
     for workspace in &server.app.state.workspaces {
         workspace.assert_invariants_for_test();
     }
@@ -156,8 +162,8 @@ async fn public_pane_move_focus_handles_source_removal_and_unchanged_server_targ
         let target_before = server.default_shell_target();
         let (_first_control, _first_render) = connect_test_shell(&mut server, 9, 80, 23);
         let (_second_control, _second_render) = connect_test_shell(&mut server, 10, 80, 23);
-        assert!(server.focus_shell_client_on_tab(9, &first_tab));
-        assert!(server.focus_shell_client_on_tab(10, &first_tab));
+        assert!(server.focus_shell_client_on_tab(ClientId::test_new(9), &first_tab));
+        assert!(server.focus_shell_client_on_tab(ClientId::test_new(10), &first_tab));
         let moved = public_move(
             &mut server,
             PaneMoveParams {
@@ -168,15 +174,24 @@ async fn public_pane_move_focus_handles_source_removal_and_unchanged_server_targ
         )
         .expect("test precondition");
         assert!(moved.changed);
-        assert_eq!(server.default_shell_target(), target_before);
+        if new_workspace {
+            assert_eq!(
+                server
+                    .default_shell_target()
+                    .map(|target| target.tab_id.to_string()),
+                Some(moved.pane.tab_id.clone()),
+            );
+        } else {
+            assert_eq!(server.default_shell_target(), target_before);
+        }
         assert_eq!(moved.closed_workspace_id.is_some(), new_workspace);
         for client_id in [9, 10] {
             assert_eq!(
-                server.shell_tab_id_for_client(client_id).as_deref(),
+                server.shell_tab_id_for_client(client_id.into()).as_deref(),
                 Some(moved.pane.tab_id.as_str())
             );
             let target = server
-                .shell_focus_target(client_id)
+                .shell_focus_target(client_id.into())
                 .expect("test precondition");
             assert_eq!(target.pane_id, source);
             if new_workspace {
@@ -205,7 +220,7 @@ async fn public_pane_move_without_effective_focus_preserves_client_views() {
         let (_control, _render) = connect_test_shell(&mut server, 9, 80, 23);
         let (_source_control, _source_render) = connect_test_shell(&mut server, 10, 80, 23);
         // Keep a valid view distinct from the server default in every case.
-        assert!(server.focus_shell_client_on_tab(9, &remaining_tab));
+        assert!(server.focus_shell_client_on_tab(ClientId::test_new(9), &remaining_tab));
         let location_before = server.clients[&9]
             .shell_state()
             .and_then(|shell| shell.location.clone());
@@ -258,12 +273,14 @@ async fn public_pane_move_without_effective_focus_preserves_client_views() {
             revision_before,
             "{case}"
         );
-        assert_eq!(server.app.state.active, Some(0));
+        assert_eq!(server.app.state.active_index(), Some(0));
         if case == "no-focus" {
             // A later change to the server default must not move this client.
             server.app.state.switch_workspace_tab(1, 0);
             assert_eq!(
-                server.shell_tab_id_for_client(10).as_deref(),
+                server
+                    .shell_tab_id_for_client(ClientId::test_new(10))
+                    .as_deref(),
                 Some(remaining_tab.as_str()),
                 "the removed source tab must be reconciled to the remaining source tab"
             );

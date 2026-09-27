@@ -1,4 +1,5 @@
 use crate::api;
+use crate::server::ClientId;
 
 pub(super) enum AltScreenReadConflict {
     None,
@@ -46,37 +47,41 @@ impl ApiDispatcher {
         let target_before = server.default_shell_target();
         let method_claims_geometry =
             super::HeadlessServer::public_request_may_change_geometry(&msg.request.method);
-        let explicit_public_focus_target =
-            match &msg.request.method {
-                api::schema::Method::WorkspaceFocus(params) => server
-                    .app
-                    .parse_workspace_id(&params.workspace_id)
-                    .and_then(|workspace_index| {
-                        let workspace = server.app.state.workspaces.get(workspace_index)?;
-                        Some(crate::ui::TabSurfaceTarget {
-                            workspace_index,
-                            tab_index: workspace.active_tab_index(),
-                        })
-                    }),
-                api::schema::Method::TabFocus(params) => server
-                    .app
-                    .parse_tab_id(&params.tab_id)
-                    .map(|(workspace_index, tab_index)| crate::ui::TabSurfaceTarget {
+        let explicit_public_focus_target = match &msg.request.method {
+            api::schema::Method::WorkspaceFocus(params) => server
+                .app
+                .parse_workspace_id(&params.workspace_id)
+                .and_then(|workspace_index| {
+                    let workspace = server.app.state.workspaces.get(workspace_index)?;
+                    crate::ui::TabSurfaceTarget::from_indices(
+                        &server.app.state,
+                        workspace_index,
+                        workspace.active_tab_index(),
+                    )
+                }),
+            api::schema::Method::TabFocus(params) => server
+                .app
+                .parse_tab_id(&params.tab_id)
+                .and_then(|(workspace_index, tab_index)| {
+                    crate::ui::TabSurfaceTarget::from_indices(
+                        &server.app.state,
                         workspace_index,
                         tab_index,
-                    }),
-                api::schema::Method::PaneFocus(params) => server
-                    .app
-                    .parse_pane_id(&params.pane_id)
-                    .and_then(|(workspace_index, pane_id)| {
-                        let workspace = server.app.state.workspaces.get(workspace_index)?;
-                        Some(crate::ui::TabSurfaceTarget {
-                            workspace_index,
-                            tab_index: workspace.find_tab_index_for_pane(pane_id)?,
-                        })
-                    }),
-                _ => None,
-            };
+                    )
+                }),
+            api::schema::Method::PaneFocus(params) => server
+                .app
+                .parse_pane_id(&params.pane_id)
+                .and_then(|(workspace_index, pane_id)| {
+                    let workspace = server.app.state.workspaces.get(workspace_index)?;
+                    crate::ui::TabSurfaceTarget::from_indices(
+                        &server.app.state,
+                        workspace_index,
+                        workspace.find_tab_index_for_pane(pane_id)?,
+                    )
+                }),
+            _ => None,
+        };
         let agent_focus_target = match &msg.request.method {
             api::schema::Method::AgentFocus(params) => Some(params.target.clone()),
             _ => None,
@@ -115,9 +120,12 @@ impl ApiDispatcher {
                         .app
                         .resolve_agent_target(target)
                         .ok()
-                        .map(|resolved| crate::ui::TabSurfaceTarget {
-                            workspace_index: resolved.ws_idx,
-                            tab_index: resolved.tab_idx,
+                        .and_then(|resolved| {
+                            crate::ui::TabSurfaceTarget::from_indices(
+                                &server.app.state,
+                                resolved.ws_idx,
+                                resolved.tab_idx,
+                            )
                         })
                 })
             })
@@ -143,7 +151,7 @@ impl ApiDispatcher {
     pub(super) fn dispatch_shell_request(
         &mut self,
         server: &mut super::HeadlessServer,
-        client_id: u64,
+        client_id: ClientId,
         msg: api::ApiRequestMessage,
     ) -> bool {
         let focus_before = server.shell_focus_target(client_id);
@@ -178,10 +186,16 @@ impl ApiDispatcher {
         }
         if focus_before != focus_after
             && let Some(target) = focus_after
+            && let Some(workspace_index) = server
+                .app
+                .state
+                .workspaces
+                .iter()
+                .position(|workspace| workspace.id == target.workspace_id)
         {
             server
                 .app
-                .emit_focus_api_events(target.workspace_index, target.pane_id);
+                .emit_focus_api_events(workspace_index, target.pane_id);
         }
         let geometry_changed = method_claims_geometry
             && if reconcile {
@@ -343,7 +357,12 @@ impl ApiDispatcher {
                 .map(|target| target.terminal_id.clone()),
             _ => None,
         };
-        self.read_conflict(terminal_id.as_deref(), request)
+        self.read_conflict(
+            terminal_id
+                .as_ref()
+                .map(crate::terminal::TerminalId::as_str),
+            request,
+        )
     }
 
     pub(super) fn agent_read_not_idle_error(
@@ -366,12 +385,7 @@ impl ApiDispatcher {
             return None;
         }
         let target = server.app.resolve_agent_target(&params.target).ok()?;
-        let terminal = server
-            .app
-            .state
-            .terminals
-            .values()
-            .find(|terminal| terminal.id.as_str() == target.terminal_id)?;
+        let terminal = server.app.state.terminals.get(&target.terminal_id)?;
         if terminal.effective_known_agent().is_none()
             || terminal.state == crate::detect::AgentState::Idle
         {
@@ -423,17 +437,12 @@ impl ApiDispatcher {
         }
         let lines = lines.unwrap_or(80).min(1000) as usize;
         if lines == 0
-            || server.clients.has_attach_owner(target.terminal_id.as_str())
+            || server.clients.has_attach_owner(&target.terminal_id)
             || self.has_pending_read_for(target.terminal_id.as_str())
         {
             return None;
         }
-        let terminal = server
-            .app
-            .state
-            .terminals
-            .values()
-            .find(|terminal| terminal.id.as_str() == target.terminal_id)?;
+        let terminal = server.app.state.terminals.get(&target.terminal_id)?;
         if terminal.effective_known_agent().is_none()
             || terminal.state != crate::detect::AgentState::Idle
         {
@@ -470,7 +479,7 @@ impl ApiDispatcher {
                 .terminals
                 .get(&read.terminal_id)
                 .is_some_and(|terminal| terminal.state == crate::detect::AgentState::Idle);
-            let attached = server.clients.has_attach_owner(read.terminal_id.as_str());
+            let attached = server.clients.has_attach_owner(&read.terminal_id);
             let outcome = if remains_idle && !attached {
                 read.poll(runtime, now)
             } else {
@@ -503,7 +512,7 @@ impl super::HeadlessServer {
 
     pub(super) fn handle_client_shell_api_request(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         msg: api::ApiRequestMessage,
     ) -> bool {
         self.with_api_dispatcher(|dispatcher, server| {

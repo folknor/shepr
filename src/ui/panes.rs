@@ -218,12 +218,12 @@ pub(super) fn resize_pane_infos(
             continue;
         };
         if !app.direct_attach_resize_locks.contains(terminal_id) {
-            rt.resize(
-                info.inner_rect.height,
+            rt.resize(crate::geometry::PaneGeometry::new(
                 info.inner_rect.width,
+                info.inner_rect.height,
                 cell_size.width_px,
                 cell_size.height_px,
-            );
+            ));
         }
     }
 }
@@ -271,7 +271,7 @@ fn compute_pane_infos(
     terminal_runtimes: &TerminalRuntimeRegistry,
     area: Rect,
 ) -> Vec<PaneInfo> {
-    let Some(workspace_index) = app.active else {
+    let Some(workspace_index) = app.active_index() else {
         return Vec::new();
     };
     let Some(tab_index) = app
@@ -288,14 +288,16 @@ pub(super) fn render_panes(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
     frame: &mut Frame,
-    target: Option<super::tab_surface::TabSurfaceTarget>,
+    target: Option<&super::tab_surface::TabSurfaceTarget>,
     pane_infos: &[PaneInfo],
     split_borders: &[crate::layout::SplitBorder],
 ) {
     let Some(target) = target else {
         return;
     };
-    let ws_idx = target.workspace_index;
+    let Some((ws_idx, tab_idx)) = target.resolve(app) else {
+        return;
+    };
     let Some(ws) = app.workspaces.get(ws_idx) else {
         return;
     };
@@ -307,7 +309,7 @@ pub(super) fn render_panes(
             render_pane_scrollbar(app, frame, info, rt);
         } else if let Some(reason) = ws
             .tabs
-            .get(target.tab_index)
+            .get(tab_idx)
             .and_then(|tab| tab.terminal_id(info.id))
             .and_then(|id| app.terminals.get(id))
             .and_then(|terminal| terminal.restore_error.as_deref())
@@ -777,7 +779,7 @@ mod tests {
     fn unavailable_pane_renders_restore_failure_without_a_runtime() {
         let mut app = AppState::test_new();
         app.workspaces = vec![Workspace::test_new("unavailable")];
-        app.active = Some(0);
+        app.set_active_index(Some(0));
         app.ensure_test_terminals();
         let pane_id = app.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.workspaces[0]
@@ -793,10 +795,7 @@ mod tests {
         let layout = crate::ui::compute_tab_surface_for(
             &app,
             &runtimes,
-            Some(crate::ui::TabSurfaceTarget {
-                workspace_index: 0,
-                tab_index: 0,
-            }),
+            crate::ui::TabSurfaceTarget::from_indices(&app, 0, 0),
             area,
         );
         let (buffer, cursor, _, _) =
@@ -1175,7 +1174,7 @@ mod tests {
             TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
         app.workspaces = vec![workspace];
-        app.active = Some(0);
+        app.set_active_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -1209,7 +1208,7 @@ mod tests {
             .get(&terminal_id)
             .expect("test precondition");
         app.workspaces = vec![workspace];
-        app.active = Some(0);
+        app.set_active_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let assert_geometry = |expected_width, has_scrollbar| {
@@ -1241,7 +1240,7 @@ mod tests {
             TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
         app.workspaces = vec![workspace];
-        app.active = Some(0);
+        app.set_active_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -1264,7 +1263,7 @@ mod tests {
             TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
         app.workspaces = vec![workspace];
-        app.active = Some(0);
+        app.set_active_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -1287,7 +1286,7 @@ mod tests {
             TerminalRuntime::test_with_scrollback_bytes(4, 8, 1024, b"ready\n"),
         );
         app.workspaces = vec![workspace];
-        app.active = Some(0);
+        app.set_active_index(Some(0));
 
         let area = Rect::new(10, 3, 4, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -1328,7 +1327,7 @@ mod tests {
                     );
                 }
                 app.workspaces = vec![workspace];
-                app.active = Some(0);
+                app.set_active_index(Some(0));
 
                 let infos = compute_pane_infos(&app, &terminal_runtimes, area);
                 let geometry = app.pane_geometry();
@@ -1363,7 +1362,7 @@ mod tests {
             ),
         );
         app.workspaces = vec![workspace];
-        app.active = Some(0);
+        app.set_active_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);

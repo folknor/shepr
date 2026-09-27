@@ -1,3 +1,4 @@
+use crate::server::ClientId;
 use std::io;
 use std::sync::mpsc;
 
@@ -62,12 +63,12 @@ pub(crate) fn error_response(
 }
 
 pub(crate) fn success_message_with_result(
-    boot_id: String,
-    request_id: String,
+    boot_id: crate::protocol::BootId,
+    request_id: crate::protocol::RequestId,
     result: crate::api::schema::ResponseResult,
 ) -> crate::protocol::ServerMessage {
     let success = crate::api::schema::SuccessResponse {
-        id: request_id.clone(),
+        id: request_id.to_string(),
         result,
     };
     let response = crate::api::serialize_response_or_error(&request_id, &success);
@@ -80,8 +81,8 @@ pub(crate) fn success_message_with_result(
 }
 
 pub(crate) fn error_message(
-    boot_id: String,
-    request_id: String,
+    boot_id: crate::protocol::BootId,
+    request_id: crate::protocol::RequestId,
     code: impl Into<crate::api::error::ApiErrorCode>,
     message: impl Into<String>,
 ) -> crate::protocol::ServerMessage {
@@ -95,9 +96,9 @@ pub(crate) fn error_message(
 }
 
 pub(crate) fn spawn_response_waiter(
-    client_id: u64,
-    boot_id: String,
-    request_id: String,
+    client_id: ClientId,
+    boot_id: crate::protocol::BootId,
+    request_id: crate::protocol::RequestId,
     response_rx: mpsc::Receiver<crate::api::error::ApiResult>,
     server_event_tx: tokio_mpsc::Sender<ServerEvent>,
 ) -> io::Result<()> {
@@ -111,7 +112,7 @@ pub(crate) fn spawn_response_waiter(
                 ))
             });
             let response =
-                crate::api::error::encode_result(request_id.clone(), response).into_bytes();
+                crate::api::error::encode_result(request_id.to_string(), response).into_bytes();
             if response.is_empty() {
                 let _ = server_event_tx.blocking_send(
                     ServerEvent::ClientShellEndpointResponseChunkReady {
@@ -209,7 +210,7 @@ mod tests {
         let (response_tx, response_rx) = mpsc::channel();
         let (event_tx, mut event_rx) = tokio_mpsc::channel(8);
         spawn_response_waiter(
-            7,
+            ClientId::test_new(7),
             "boot-a".into(),
             "request-a".into(),
             response_rx,

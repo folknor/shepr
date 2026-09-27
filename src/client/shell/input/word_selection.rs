@@ -8,7 +8,7 @@ use crate::app::word_bounds::word_bounds_at_column;
 /// pointer position when it returns, so remote latency cannot queue up motion.
 #[derive(Debug)]
 pub(super) struct ClientWordSelection {
-    pub(super) pane_id: String,
+    pub(super) pane_id: crate::workspace::PublicPaneId,
     pub(super) focus_confirmed: bool,
     anchor: (crate::terminal::AbsRow, u16),
     anchor_bounds: Option<(u16, u16)>,
@@ -81,7 +81,7 @@ impl ClientShellState {
         gesture.pending_row = Some(row);
         let pane_id = gesture.pane_id.clone();
         let params = crate::api::schema::PaneSelectionReadParams {
-            pane_id: pane_id.clone(),
+            pane_id: pane_id.to_string(),
             anchor: crate::api::schema::PaneSelectionPoint { row, col: 0 },
             cursor: crate::api::schema::PaneSelectionPoint {
                 row,

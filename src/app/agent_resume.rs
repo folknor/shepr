@@ -309,7 +309,7 @@ impl App {
             self.state.settings.pane_scrollbars,
         );
 
-        if self.state.active == Some(ws_idx)
+        if self.state.active_index() == Some(ws_idx)
             && self
                 .state
                 .workspaces
@@ -570,7 +570,7 @@ mod tests {
             app.state.workspaces = (0..4)
                 .map(|_| crate::workspace::Workspace::test_new("restore"))
                 .collect();
-            app.state.active = Some(0);
+            app.state.set_active_index(Some(0));
             app.state.view.terminal_area = Rect::new(0, 0, 100, 30);
             app.state.ensure_test_terminals();
             let missing = std::env::current_dir()
@@ -649,7 +649,7 @@ mod tests {
             .expect("test precondition");
         app.state.view.terminal_area = Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![workspace];
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         // An empty argv cannot be turned into a shell command, so the launch
         // fails and leaves the plan in place.
@@ -697,7 +697,7 @@ mod tests {
             crate::workspace::Workspace::test_new("idle"),
             pending_workspace,
         ];
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
 
         // Nothing pending anywhere.
@@ -748,7 +748,7 @@ mod tests {
                 .expect("test precondition")
                 .clone();
             app.state.workspaces = vec![workspace];
-            app.state.active = Some(0);
+            app.state.set_active_index(Some(0));
             app.state.ensure_test_terminals();
             if missing_shell {
                 app.state.settings.default_shell = "__shepr_missing_resume_shell__".into();
@@ -816,7 +816,7 @@ mod tests {
             .map(Into::into)
             .collect();
         app.state.workspaces = vec![workspace];
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.view.pane_infos = pane_infos;
@@ -900,7 +900,7 @@ mod tests {
             .collect();
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![workspace];
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         app.state
             .terminals
@@ -938,7 +938,7 @@ mod tests {
             .collect();
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![workspace];
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         let terminal = app
             .state
@@ -1001,7 +1001,7 @@ mod tests {
             .collect();
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![active_workspace, hidden_workspace];
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         app.state.host_terminal_theme = crate::host_term::theme::TerminalTheme {
             foreground: Some(crate::host_term::theme::RgbColor {
@@ -1067,7 +1067,7 @@ mod tests {
             .collect();
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![workspace];
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         assert!(
             app.state
@@ -1136,7 +1136,7 @@ mod tests {
         }];
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![workspace];
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         app.state.host_terminal_theme = crate::host_term::theme::TerminalTheme {
             foreground: Some(crate::host_term::theme::RgbColor {
@@ -1195,7 +1195,7 @@ mod tests {
             .collect();
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 80, 24);
         app.state.workspaces = vec![previous_workspace, current_workspace];
-        app.state.active = Some(1);
+        app.state.set_active_index(Some(1));
         app.state.ensure_test_terminals();
         app.state.host_terminal_theme = crate::host_term::theme::TerminalTheme {
             foreground: Some(crate::host_term::theme::RgbColor {
@@ -1257,7 +1257,7 @@ mod tests {
         }];
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![workspace];
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         app.state.host_terminal_theme = crate::host_term::theme::TerminalTheme {
             foreground: Some(crate::host_term::theme::RgbColor {

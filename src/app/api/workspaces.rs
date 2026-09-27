@@ -201,14 +201,14 @@ impl App {
             let Some(workspace) = self.state.workspaces.get(index) else {
                 return workspace_not_found(id, requested_id);
             };
-            if !seen_ids.insert(workspace.id.clone()) {
+            if !seen_ids.insert(workspace.id.to_string()) {
                 return failure(
                     id,
                     ApiErrorCode::WorkspaceMoveBlockFailed,
                     format!("workspace {requested_id} appears more than once"),
                 );
             }
-            workspace_ids.push(workspace.id.clone());
+            workspace_ids.push(workspace.id.to_string());
         }
 
         let before_workspace_id = match params.before_workspace_id {
@@ -219,14 +219,14 @@ impl App {
                 let Some(workspace) = self.state.workspaces.get(index) else {
                     return workspace_not_found(id, &requested_id);
                 };
-                if seen_ids.contains(&workspace.id) {
+                if seen_ids.contains(workspace.id.as_str()) {
                     return failure(
                         id,
                         ApiErrorCode::WorkspaceMoveBlockFailed,
                         "before_workspace_id must not be part of workspace_ids",
                     );
                 }
-                Some(workspace.id.clone())
+                Some(workspace.id.to_string())
             }
             None => None,
         };
@@ -379,8 +379,8 @@ mod tests {
         app.state.settings.default_shell = exiting_test_command().into();
         app.state.settings.login_shell = false;
         app.state.workspaces = vec![Workspace::test_new("spaces")];
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         app.state.ensure_test_terminals();
 
         // Second tab becomes the focused pane, away from tab 1's root pane.
@@ -456,8 +456,8 @@ mod tests {
         app.state.settings.default_shell = exiting_test_command().into();
         app.state.settings.login_shell = false;
         app.state.workspaces = vec![Workspace::test_new("first"), Workspace::test_new("source")];
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         app.state.ensure_test_terminals();
         shutdown_test_runtimes(&mut app);
 
@@ -676,8 +676,8 @@ mod tests {
             Workspace::test_new("two"),
             Workspace::test_new("three"),
         ];
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let moved_id = app.public_workspace_id(0);
 
         let response = app.handle_workspace_move(
@@ -780,8 +780,8 @@ mod tests {
         closing.test_add_tab(Some("second"));
         app.state.workspaces = vec![closing, Workspace::test_new("survivor")];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let workspace_id = app.public_workspace_id(0);
         let pane_ids = app.state.workspaces[0]
             .tabs

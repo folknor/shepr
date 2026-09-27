@@ -68,11 +68,15 @@ pub(super) fn client_shell_resize_message(
 ) -> ClientMessage {
     let (cell_width_px, cell_height_px, pixel_mouse) =
         super::terminal_geometry::bounded_cell_geometry(cell_width_px, cell_height_px, pixel_mouse);
+    let size = shell.surface_size(cols, rows);
     ClientMessage::ClientShellResize {
-        cell_width_px,
-        cell_height_px,
-        surface_size: shell.surface_size(cols, rows),
-        pixel_mouse,
+        geometry: crate::protocol::TerminalGeometry::new(
+            size.cols,
+            size.rows,
+            cell_width_px,
+            cell_height_px,
+            pixel_mouse,
+        ),
     }
 }
 
@@ -94,9 +98,10 @@ pub(super) fn sync_client_shell_keyboard_report_all(
 
 pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) {
     state.host_mouse_mode.clear_endpoint_request();
-    let _ = state
-        .host_mouse_mode
-        .apply(state.mode.is_shell(), state.pixel_geometry_exact, false);
+    let _ =
+        state
+            .host_mouse_mode
+            .apply(state.mode.is_shell(), state.reported_geometry.exact, false);
 
     state.pane_keyboard_report_all = false;
     let _ = sync_client_shell_keyboard_report_all(state);
@@ -232,7 +237,10 @@ pub(super) fn begin_endpoint_activation(
                 scheduled_activation,
             );
             if repaint
-                && let Some(frame) = shell.compose(state.reported_size.0, state.reported_size.1)
+                && let Some(frame) = shell.compose(
+                    state.reported_geometry.cols(),
+                    state.reported_geometry.rows(),
+                )
             {
                 state.present_frame(frame);
             }
@@ -244,11 +252,11 @@ pub(super) fn begin_endpoint_activation(
     };
     let resize = client_shell_resize_message(
         shell,
-        state.reported_size.0,
-        state.reported_size.1,
-        state.reported_cell_size.0,
-        state.reported_cell_size.1,
-        state.pixel_geometry_exact,
+        state.reported_geometry.cols(),
+        state.reported_geometry.rows(),
+        state.reported_geometry.cell_width(),
+        state.reported_geometry.cell_height(),
+        state.reported_geometry.exact,
     );
     match endpoint::PendingEndpointActivation::prepare(
         shell,
@@ -348,10 +356,12 @@ pub(super) fn complete_endpoint_activation(
         // The coherent target frame can replace the frozen source now, but the registry keeps
         // pane input disabled until a second projection epoch has replayed host modes/effects.
         state.unfreeze_presentation();
-        let frame = state
-            .mode
-            .shell_mut()
-            .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1));
+        let frame = state.mode.shell_mut().and_then(|shell| {
+            shell.compose(
+                state.reported_geometry.cols(),
+                state.reported_geometry.rows(),
+            )
+        });
         if let Some(frame) = frame {
             state.present_frame(frame);
         }
@@ -394,10 +404,12 @@ pub(super) fn complete_endpoint_activation(
             }
         }
     }
-    let frame = state
-        .mode
-        .shell_mut()
-        .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1));
+    let frame = state.mode.shell_mut().and_then(|shell| {
+        shell.compose(
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+        )
+    });
     if let Some(frame) = frame {
         state.present_frame(frame);
     }
@@ -435,16 +447,20 @@ fn committed_resize(
     requested: crate::protocol::ClientSurfaceSize,
 ) -> Option<ClientMessage> {
     let shell = state.mode.shell()?;
-    (shell.surface_size(state.reported_size.0, state.reported_size.1) != requested).then(|| {
-        client_shell_resize_message(
-            shell,
-            state.reported_size.0,
-            state.reported_size.1,
-            state.reported_cell_size.0,
-            state.reported_cell_size.1,
-            state.pixel_geometry_exact,
-        )
-    })
+    (shell.surface_size(
+        state.reported_geometry.cols(),
+        state.reported_geometry.rows(),
+    ) != requested)
+        .then(|| {
+            client_shell_resize_message(
+                shell,
+                state.reported_geometry.cols(),
+                state.reported_geometry.rows(),
+                state.reported_geometry.cell_width(),
+                state.reported_geometry.cell_height(),
+                state.reported_geometry.exact,
+            )
+        })
 }
 
 pub(super) fn present_handoff_unavailable(state: &mut ClientState, message: String) {
@@ -453,7 +469,10 @@ pub(super) fn present_handoff_unavailable(state: &mut ClientState, message: Stri
     state.freeze_presentation();
     let frame = state.mode.shell_mut().and_then(|shell| {
         shell.receive_endpoint_unavailable(message);
-        shell.compose(state.reported_size.0, state.reported_size.1)
+        shell.compose(
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+        )
     });
     if let Some(frame) = frame {
         state.present_frozen_chrome(frame);
@@ -533,11 +552,12 @@ pub(super) fn handle_endpoint_disconnect(
     });
     if let Some(message) = unavailable {
         present_handoff_unavailable(state, message);
-    } else if let Some(frame) = state
-        .mode
-        .shell_mut()
-        .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
-    {
+    } else if let Some(frame) = state.mode.shell_mut().and_then(|shell| {
+        shell.compose(
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+        )
+    }) {
         // A non-active machine going offline only changes its machine-list status.
         state.present_chrome(frame, pending_activation.is_some());
     }
@@ -667,11 +687,12 @@ pub(super) fn follow_endpoint_catalog(
             now,
         );
     }
-    if let Some(frame) = state
-        .mode
-        .shell_mut()
-        .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
-    {
+    if let Some(frame) = state.mode.shell_mut().and_then(|shell| {
+        shell.compose(
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+        )
+    }) {
         state.present_chrome(frame, pending_activation.is_some());
     }
     active_retired
@@ -701,7 +722,10 @@ pub(super) fn install_client_shell_snapshot(
             || (endpoints.active_id() == endpoint_id
                 && !project_snapshot
                 && shell.has_presented_surface());
-        let previous_size = shell.surface_size(state.reported_size.0, state.reported_size.1);
+        let previous_size = shell.surface_size(
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+        );
         if !waits_for_selected_surface {
             shell.set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Online);
         }
@@ -710,17 +734,23 @@ pub(super) fn install_client_shell_snapshot(
         } else {
             shell.cache_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
         }
-        let next_size = shell.surface_size(state.reported_size.0, state.reported_size.1);
+        let next_size = shell.surface_size(
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+        );
         (
-            shell.compose(state.reported_size.0, state.reported_size.1),
+            shell.compose(
+                state.reported_geometry.cols(),
+                state.reported_geometry.rows(),
+            ),
             (previous_size != next_size).then(|| {
                 client_shell_resize_message(
                     shell,
-                    state.reported_size.0,
-                    state.reported_size.1,
-                    state.reported_cell_size.0,
-                    state.reported_cell_size.1,
-                    state.pixel_geometry_exact,
+                    state.reported_geometry.cols(),
+                    state.reported_geometry.rows(),
+                    state.reported_geometry.cell_width(),
+                    state.reported_geometry.cell_height(),
+                    state.reported_geometry.exact,
                 )
             }),
         )
@@ -765,11 +795,11 @@ pub(super) fn finish_client_shell_input(
     {
         let resize = client_shell_resize_message(
             shell,
-            state.reported_size.0,
-            state.reported_size.1,
-            state.reported_cell_size.0,
-            state.reported_cell_size.1,
-            state.pixel_geometry_exact,
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+            state.reported_geometry.cell_width(),
+            state.reported_geometry.cell_height(),
+            state.reported_geometry.exact,
         );
         if let Some(activation) = pending_activation.as_mut() {
             if let Err(error) = activation.update_resize(&resize, endpoints) {
@@ -799,10 +829,12 @@ pub(super) fn finish_client_shell_input(
         scheduled_activation,
     );
     let frame = if dispatch_repaint {
-        state
-            .mode
-            .shell_mut()
-            .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
+        state.mode.shell_mut().and_then(|shell| {
+            shell.compose(
+                state.reported_geometry.cols(),
+                state.reported_geometry.rows(),
+            )
+        })
     } else {
         frame
     };
@@ -875,11 +907,10 @@ mod tests {
     #[test]
     fn committed_handoff_resizes_only_when_its_requested_size_is_stale() {
         let state = ClientState::test_new();
-        let committed = state
-            .mode
-            .shell()
-            .expect("test shell")
-            .surface_size(state.reported_size.0, state.reported_size.1);
+        let committed = state.mode.shell().expect("test shell").surface_size(
+            state.reported_geometry.cols(),
+            state.reported_geometry.rows(),
+        );
         assert!(committed_resize(&state, committed).is_none());
 
         // A surface requested under the source's layout, one row off (the tab bar hides for a
@@ -889,8 +920,8 @@ mod tests {
             rows: committed.rows.saturating_add(1),
         };
         match committed_resize(&state, stale) {
-            Some(ClientMessage::ClientShellResize { surface_size, .. }) => {
-                assert_eq!(surface_size, committed);
+            Some(ClientMessage::ClientShellResize { geometry }) => {
+                assert_eq!(geometry.surface_size(), committed);
             }
             other => panic!("expected a corrective resize, got {other:?}"),
         }
@@ -951,7 +982,10 @@ mod tests {
     fn chrome_frames_pass_an_unavailable_freeze_but_not_a_handoff() {
         let mut state = ClientState::test_new();
         let compose = |state: &mut ClientState| {
-            let (cols, rows) = state.reported_size;
+            let (cols, rows) = (
+                state.reported_geometry.cols(),
+                state.reported_geometry.rows(),
+            );
             state
                 .mode
                 .shell_mut()

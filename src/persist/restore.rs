@@ -332,7 +332,7 @@ fn restore_workspace(
     let active_tab = remap_saved_index(snap.active_tab, &restored_tab_index)?;
 
     let mut workspace = Workspace {
-        id: workspace_id,
+        id: workspace_id.into(),
         custom_name: snap.custom_name.clone(),
         identity_cwd: snap.identity_cwd.clone(),
         cached_identity_cwd: snap.identity_cwd.clone(),
@@ -517,11 +517,12 @@ fn restore_tab(
             .and_then(|old_id| public_pane_ids_by_old_raw.get(&old_id))
             .map(String::as_str);
         let launch_env = public_pane_id
+            .and_then(|pane_id| pane_id.parse::<crate::workspace::PublicPaneId>().ok())
             .map(|pane_id| {
                 PaneLaunchEnv::from_extra(Vec::new()).with_identity(
-                    workspace_id.to_string(),
-                    crate::workspace::public_tab_id_for_number(workspace_id, number),
-                    pane_id.to_string(),
+                    crate::workspace::WorkspaceId::new(workspace_id),
+                    crate::workspace::PublicTabId::new(workspace_id, number),
+                    pane_id,
                 )
             })
             .unwrap_or_default();
@@ -1386,7 +1387,10 @@ mod tests {
         assert!(ids.iter().all(|id| !id.is_empty()));
         // A later new workspace does not reuse any restored ID either.
         let fresh = crate::workspace::generate_workspace_id();
-        assert!(!ids.contains(&fresh), "{fresh} in {ids:?}");
+        assert!(
+            !ids.contains(&fresh.into()),
+            "fresh workspace id reused: {ids:?}"
+        );
     }
 
     #[test]
@@ -1733,7 +1737,7 @@ mod tests {
             let mut state = crate::app::AppState::test_new();
             state.workspaces = workspaces;
             state.terminals = terminals;
-            state.active = Some(0);
+            state.set_active_index(Some(0));
             state.assert_invariants_for_test();
         }
     }

@@ -27,10 +27,21 @@ impl std::error::Error for HandshakeRefusal {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NoticeKind {
-    InputDropped { terminal_id: String },
-    PaneInputDropped { pane_id: String, events: usize },
-    PasteRejected { size: usize, max: usize },
-    OversizedFrame { claimed: usize, max: usize },
+    InputDropped {
+        terminal_id: crate::terminal::TerminalId,
+    },
+    PaneInputDropped {
+        pane_id: crate::workspace::PublicPaneId,
+        events: usize,
+    },
+    PasteRejected {
+        size: usize,
+        max: usize,
+    },
+    OversizedFrame {
+        claimed: usize,
+        max: usize,
+    },
 }
 
 impl std::fmt::Display for NoticeKind {
@@ -140,8 +151,8 @@ pub enum ServerMessage {
 
     /// One ordered chunk of the final response to an endpoint operation.
     ClientShellEndpointResponseChunk {
-        boot_id: String,
-        request_id: String,
+        boot_id: BootId,
+        request_id: RequestId,
         final_chunk: bool,
         #[serde(
             serialize_with = "codec::serialize_bounded_bytes::<MAX_FRAME_SIZE, _>",

@@ -26,7 +26,7 @@ enum Phase {
 
 pub(crate) struct PendingAltScreenRead {
     pub(crate) terminal_id: TerminalId,
-    request_id: String,
+    request_id: crate::protocol::RequestId,
     respond_to: mpsc::Sender<crate::api::error::ApiResult>,
     fallback_response: crate::api::error::ApiResult,
     read: PaneReadResult,
@@ -52,7 +52,7 @@ pub(crate) struct PendingAltScreenRead {
 impl PendingAltScreenRead {
     pub(crate) fn start(
         terminal_id: TerminalId,
-        request_id: String,
+        request_id: crate::protocol::RequestId,
         respond_to: mpsc::Sender<crate::api::error::ApiResult>,
         fallback_response: crate::api::error::ApiResult,
         read: PaneReadResult,

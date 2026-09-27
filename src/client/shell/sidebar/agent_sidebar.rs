@@ -12,7 +12,7 @@ use ratatui::{
 use super::*;
 
 pub(super) struct AgentRow {
-    pub(super) pane_id: String,
+    pub(super) pane_id: crate::workspace::PublicPaneId,
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<ResolvedToken>>,
@@ -26,7 +26,7 @@ pub(super) fn ordered_agent_pane_ids(
     sort_agent_refs(&mut agents, sort);
     agents
         .into_iter()
-        .map(|agent| agent.pane_id.clone())
+        .map(|agent| agent.pane_id.to_string())
         .collect()
 }
 
@@ -396,7 +396,7 @@ impl<'a> AgentRowIndex<'a> {
     ) -> Option<AgentRow> {
         let workspace = self.workspace(&agent.workspace_id)?;
         let tab = self.tab(&agent.tab_id);
-        let pane = self.pane(&agent.pane_id);
+        let pane = self.pane(&agent.pane_id.to_string());
         let tab_count = self.tab_count(&agent.workspace_id);
         let tab_label = tab
             .filter(|tab| tab_count > 1 || tab.custom_label)

@@ -168,17 +168,13 @@ impl AppState {
         } else {
             let workspace_index = match fallback {
                 PaneContextFallback::None => return None,
-                PaneContextFallback::ActiveWorkspace => self.active?,
+                PaneContextFallback::ActiveWorkspace => self.active_index()?,
                 PaneContextFallback::WorkspaceCreation => {
-                    let selected_exists = self.workspaces.get(self.selected).is_some();
-                    if self.mode == Mode::Navigate && selected_exists {
-                        self.selected
-                    } else if let Some(active) = self.active {
-                        active
-                    } else if selected_exists {
-                        self.selected
+                    let selected = self.selected_index();
+                    if self.mode == Mode::Navigate {
+                        selected.or_else(|| self.active_index())?
                     } else {
-                        return None;
+                        self.active_index().or(selected)?
                     }
                 }
             };
@@ -199,11 +195,11 @@ impl AppState {
     }
 
     pub(crate) fn current_pane_focus_target(&self) -> Option<PaneFocusTarget> {
-        let ws_idx = self.active?;
+        let ws_idx = self.active_index()?;
         let ws = self.workspaces.get(ws_idx)?;
         let pane_id = ws.focused_pane_id()?;
         Some(PaneFocusTarget {
-            workspace_id: ws.id.clone(),
+            workspace_id: crate::workspace::WorkspaceId::new(ws.id.to_string()),
             pane_id,
         })
     }
@@ -214,12 +210,12 @@ impl AppState {
         terminal: crate::terminal::TerminalState,
         focus: bool,
     ) -> WorkspaceCreationOutcome {
-        let workspace_id = workspace.id.clone();
+        let workspace_id = workspace.id.to_string();
         let root_pane = workspace.tabs.first().map(|tab| tab.root_pane);
         self.terminals.insert(terminal.id.clone(), terminal);
         self.workspaces.push(workspace);
         let workspace_index = self.workspaces.len() - 1;
-        let focused = focus || self.active.is_none();
+        let focused = focus || self.active_index().is_none();
         if focused {
             self.switch_workspace(workspace_index);
             self.mode = Mode::Terminal;
@@ -324,7 +320,7 @@ impl AppState {
             return;
         };
         let target = PaneFocusTarget {
-            workspace_id: ws.id.clone(),
+            workspace_id: crate::workspace::WorkspaceId::new(ws.id.to_string()),
             pane_id,
         };
         if previous.as_ref() != Some(&target) {
@@ -348,7 +344,7 @@ impl AppState {
         };
         let previous = self.current_pane_focus_target();
         let target = PaneFocusTarget {
-            workspace_id: ws.id.clone(),
+            workspace_id: crate::workspace::WorkspaceId::new(ws.id.to_string()),
             pane_id,
         };
         if previous.as_ref() == Some(&target) {
@@ -401,7 +397,7 @@ impl AppState {
             .workspaces
             .iter()
             .flat_map(|ws| {
-                let workspace_id = ws.id.clone();
+                let workspace_id = ws.id.to_string();
                 ws.tabs.iter().flat_map(move |tab| {
                     let workspace_id = workspace_id.clone();
                     tab.layout
@@ -495,9 +491,9 @@ impl AppState {
     pub fn switch_workspace(&mut self, idx: usize) {
         if idx < self.workspaces.len() {
             let previous_focus = self.current_pane_focus_target();
-            self.active = Some(idx);
-            self.selected = idx;
-            let workspace_id = self.workspaces[idx].id.clone();
+            self.set_active_index(Some(idx));
+            self.set_selected_index(Some(idx));
+            let workspace_id = self.workspaces[idx].id.to_string();
             crate::logging::workspace_focused(&workspace_id);
             self.mark_session_dirty();
             if let Some(ws) = self.workspaces.get_mut(idx) {
@@ -524,10 +520,10 @@ impl AppState {
         }
 
         let previous_focus = self.current_pane_focus_target();
-        let workspace_changed = self.active != Some(ws_idx);
-        self.active = Some(ws_idx);
-        self.selected = ws_idx;
-        let workspace_id = self.workspaces[ws_idx].id.clone();
+        let workspace_changed = self.active_index() != Some(ws_idx);
+        self.set_active_index(Some(ws_idx));
+        self.set_selected_index(Some(ws_idx));
+        let workspace_id = self.workspaces[ws_idx].id.to_string();
         if workspace_changed {
             crate::logging::workspace_focused(&workspace_id);
         }
@@ -538,21 +534,23 @@ impl AppState {
                 public_tab_id_for_index(ws, tab_idx).unwrap_or_else(|| workspace_id.clone());
             crate::logging::tab_focused(&workspace_id, &tab_id);
         }
+        self.refresh_active_tab_id();
         self.record_pane_focus_after_navigation(previous_focus);
         true
     }
 
     #[cfg(test)]
     pub fn switch_tab(&mut self, idx: usize) {
-        if let Some(ws_idx) = self.active {
+        if let Some(ws_idx) = self.active_index() {
             let previous_focus = self.current_pane_focus_target();
             let Some(ws) = self.workspaces.get_mut(ws_idx) else {
                 return;
             };
             ws.switch_tab(idx);
-            let workspace_id = ws.id.clone();
+            let workspace_id = ws.id.to_string();
             let tab_id = public_tab_id_for_index(ws, idx).unwrap_or_else(|| workspace_id.clone());
             crate::logging::tab_focused(&workspace_id, &tab_id);
+            self.refresh_active_tab_id();
             self.mark_session_dirty();
             self.record_pane_focus_after_navigation(previous_focus);
         }
@@ -574,19 +572,8 @@ impl AppState {
 
         self.mark_session_dirty();
 
-        let active_id = self.active.map(|idx| self.workspaces[idx].id.clone());
-        let selected_id = self
-            .workspaces
-            .get(self.selected)
-            .map(|workspace| workspace.id.clone());
-
         let workspace = self.workspaces.remove(source_idx);
         self.workspaces.insert(target_idx, workspace);
-
-        self.active = active_id.and_then(|id| self.workspaces.iter().position(|ws| ws.id == id));
-        self.selected = selected_id
-            .and_then(|id| self.workspaces.iter().position(|ws| ws.id == id))
-            .unwrap_or(0);
         true
     }
 
@@ -616,7 +603,7 @@ impl AppState {
             .workspaces
             .iter()
             .filter(|workspace| !moved_ids.contains(workspace.id.as_str()))
-            .map(|workspace| workspace.id.clone())
+            .map(|workspace| workspace.id.to_string())
             .collect::<Vec<_>>();
         let insert_idx = before_workspace_id
             .and_then(|id| desired_ids.iter().position(|candidate| candidate == id))
@@ -631,11 +618,6 @@ impl AppState {
             return false;
         }
 
-        let active_id = self.active.map(|idx| self.workspaces[idx].id.clone());
-        let selected_id = self
-            .workspaces
-            .get(self.selected)
-            .map(|workspace| workspace.id.clone());
         let desired_positions = desired_ids
             .iter()
             .enumerate()
@@ -645,14 +627,10 @@ impl AppState {
         self.mark_session_dirty();
         self.workspaces.sort_by_key(|workspace| {
             desired_positions
-                .get(&workspace.id)
+                .get(workspace.id.as_str())
                 .copied()
                 .unwrap_or(usize::MAX)
         });
-        self.active = active_id.and_then(|id| self.workspaces.iter().position(|ws| ws.id == id));
-        self.selected = selected_id
-            .and_then(|id| self.workspaces.iter().position(|ws| ws.id == id))
-            .unwrap_or(0);
         true
     }
 
@@ -770,6 +748,9 @@ impl AppState {
         self.remove_pane_aliases(&removal.pane_ids);
         self.clear_stale_previous_pane_focus(removal.pane_ids.iter().copied());
         self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
+        if self.active_index() == Some(plan.workspace_index) {
+            self.refresh_active_tab_id();
+        }
         self.mark_session_dirty();
         PaneRemovalCommit::Removed(PaneRemovalOutcome {
             workspace_index: plan.workspace_index,
@@ -803,7 +784,7 @@ impl AppState {
             } else {
                 TabRemovalScope::Tab
             },
-            workspace_id: workspace.id.clone(),
+            workspace_id: workspace.id.to_string(),
             tab_number,
         })
     }
@@ -846,6 +827,9 @@ impl AppState {
         else {
             return TabRemovalCommit::Stale;
         };
+        if self.active_index() == Some(plan.workspace_index) {
+            self.refresh_active_tab_id();
+        }
         self.remove_pane_aliases(&removal.pane_ids);
         self.clear_stale_previous_pane_focus(removal.pane_ids.iter().copied());
         self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
@@ -864,7 +848,7 @@ impl AppState {
 
     #[cfg(test)]
     pub(crate) fn remove_active_tab(&mut self) -> TabRemovalCommit {
-        let Some(workspace_index) = self.active else {
+        let Some(workspace_index) = self.active_index() else {
             return TabRemovalCommit::Stale;
         };
         let Some(tab_index) = self.workspaces.get(workspace_index).map(|ws| ws.active_tab) else {
@@ -898,7 +882,7 @@ impl AppState {
 
     #[cfg(test)]
     pub fn close_selected_workspace(&mut self) {
-        self.close_workspace_at(self.selected);
+        self.close_workspace_at(self.selected_index().unwrap_or(0));
     }
 
     /// Closes the workspace at `ws_idx` and everything it owns.
@@ -908,17 +892,14 @@ impl AppState {
     /// back to the closed slot (clamped). Closing the last workspace leaves
     /// terminal mode, since there is no pane left to type into.
     pub(crate) fn close_workspace_at(&mut self, ws_idx: usize) -> Option<WorkspaceRemovalOutcome> {
-        let workspace_id = self.workspaces.get(ws_idx).map(|ws| ws.id.clone())?;
+        let workspace_id = self.workspaces.get(ws_idx).map(|ws| ws.id.to_string())?;
         self.mark_session_dirty();
         crate::logging::workspace_closed(&workspace_id);
 
         let terminal_ids = self.terminal_ids_for_workspace(ws_idx);
         let pane_ids = self.pane_ids_for_workspace(ws_idx);
-        let active_workspace_id = self
-            .active
-            .and_then(|idx| self.workspaces.get(idx))
-            .map(|ws| ws.id.clone());
-        let selected_workspace_id = self.workspaces.get(self.selected).map(|ws| ws.id.clone());
+        let active_workspace_id = self.active.clone();
+        let selected_workspace_id = self.selected.clone();
 
         self.remove_pane_aliases(&pane_ids);
         self.clear_stale_previous_pane_focus(pane_ids.iter().copied());
@@ -926,8 +907,8 @@ impl AppState {
         self.remove_unattached_terminal_ids(terminal_ids.iter().cloned());
 
         if self.workspaces.is_empty() {
-            self.active = None;
-            self.selected = 0;
+            self.set_active_index(None);
+            self.set_selected_index(None);
             if self.mode == Mode::Terminal {
                 self.mode = Mode::Navigate;
             }
@@ -938,12 +919,15 @@ impl AppState {
             });
         }
         let last = self.workspaces.len() - 1;
-        let position_of = |id: Option<String>, workspaces: &[crate::workspace::Workspace]| {
+        let position_of = |id: Option<crate::workspace::WorkspaceId>,
+                           workspaces: &[crate::workspace::Workspace]| {
             id.and_then(|id| workspaces.iter().position(|ws| ws.id == id))
         };
         let active = position_of(active_workspace_id, &self.workspaces).unwrap_or(ws_idx.min(last));
-        self.active = Some(active);
-        self.selected = position_of(selected_workspace_id, &self.workspaces).unwrap_or(active);
+        self.set_active_index(Some(active));
+        self.set_selected_index(Some(
+            position_of(selected_workspace_id, &self.workspaces).unwrap_or(active),
+        ));
         Some(WorkspaceRemovalOutcome {
             workspace_id,
             pane_ids,
@@ -981,7 +965,7 @@ pub(crate) struct PaneZoomOutcome {
 impl AppState {
     #[cfg(test)]
     pub fn navigate_pane(&mut self, direction: NavDirection) {
-        let Some(ws_idx) = self.active else {
+        let Some(ws_idx) = self.active_index() else {
             return;
         };
         let Some(tab) = self.workspaces.get(ws_idx).and_then(|ws| ws.active_tab()) else {
@@ -1007,7 +991,7 @@ impl AppState {
 
     #[cfg(test)]
     pub fn swap_pane(&mut self, direction: NavDirection) -> bool {
-        let Some(ws_idx) = self.active else {
+        let Some(ws_idx) = self.active_index() else {
             return false;
         };
         let Some(tab) = self.workspaces.get(ws_idx).and_then(|ws| ws.active_tab()) else {
@@ -1055,7 +1039,7 @@ impl AppState {
                 .iter()
                 .fold(first.rect, |acc, p| acc.union(p.rect));
             if let Some(tab) = self
-                .active
+                .active_index()
                 .and_then(|i| self.workspaces.get_mut(i))
                 .and_then(|ws| ws.active_tab_mut())
             {
@@ -1374,7 +1358,7 @@ impl AppState {
             .workspaces
             .iter()
             .position(|ws| ws.pane_state(pane_id).is_some())?;
-        let workspace_id = self.workspaces[ws_idx].id.clone();
+        let workspace_id = self.workspaces[ws_idx].id.to_string();
         let terminal_id = self.workspaces[ws_idx]
             .pane_state(pane_id)?
             .attached_terminal_id
@@ -1517,14 +1501,14 @@ mod tests {
         }
         state.ensure_test_terminals();
         if !state.workspaces.is_empty() {
-            state.active = Some(0);
+            state.set_active_index(Some(0));
             state.mode = Mode::Terminal;
         }
         state
     }
 
     fn toggle_focused_zoom(state: &mut AppState) {
-        let ws_idx = state.active.expect("test precondition");
+        let ws_idx = state.active_index().expect("test precondition");
         let pane_id = state.workspaces[ws_idx]
             .focused_pane_id()
             .expect("test precondition");
@@ -1539,8 +1523,8 @@ mod tests {
         let selected_pane = state.workspaces[1]
             .focused_pane_id()
             .expect("test precondition");
-        state.active = Some(0);
-        state.selected = 1;
+        state.set_active_index(Some(0));
+        state.set_selected_index(Some(1));
         state.mode = Mode::Navigate;
 
         let explicit = state
@@ -1653,7 +1637,7 @@ mod tests {
 
         assert_eq!(outcome.workspace_index, 0);
         assert_eq!(outcome.root_pane, Some(root_pane));
-        assert_eq!(state.active, Some(0));
+        assert_eq!(state.active_index(), Some(0));
         assert!(state.terminals.contains_key(&terminal_id));
         state.assert_invariants_for_test();
     }
@@ -1694,11 +1678,11 @@ mod tests {
     #[test]
     fn apply_workspace_git_statuses_updates_matching_workspace() {
         let mut state = app_with_workspaces(&["one", "two"]);
-        let first_id = state.workspaces[0].id.clone();
+        let first_id = state.workspaces[0].id.to_string();
         let first_cwd = state.workspaces[0]
             .resolved_identity_cwd()
             .expect("test precondition");
-        let second_id = state.workspaces[1].id.clone();
+        let second_id = state.workspaces[1].id.to_string();
 
         let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         let changed = state.apply_workspace_git_statuses(
@@ -1734,7 +1718,7 @@ mod tests {
     #[test]
     fn apply_workspace_git_statuses_ignores_stale_cwd() {
         let mut state = app_with_workspaces(&["one"]);
-        let workspace_id = state.workspaces[0].id.clone();
+        let workspace_id = state.workspaces[0].id.to_string();
         state.workspaces[0].cached_git_branch = Some("old".into());
         state.workspaces[0].cached_git_ahead_behind = Some(crate::workspace::AheadBehind {
             ahead: 1,
@@ -1773,7 +1757,7 @@ mod tests {
     #[test]
     fn apply_workspace_git_statuses_ignores_unrequested_branch_changes() {
         let mut state = app_with_workspaces(&["one"]);
-        let workspace_id = state.workspaces[0].id.clone();
+        let workspace_id = state.workspaces[0].id.to_string();
         let cwd = state.workspaces[0]
             .resolved_identity_cwd()
             .expect("test precondition");
@@ -1805,7 +1789,7 @@ mod tests {
     #[test]
     fn apply_workspace_git_statuses_clears_missing_git_status() {
         let mut state = app_with_workspaces(&["one"]);
-        let workspace_id = state.workspaces[0].id.clone();
+        let workspace_id = state.workspaces[0].id.to_string();
         let cwd = state.workspaces[0]
             .resolved_identity_cwd()
             .expect("test precondition");
@@ -1839,24 +1823,24 @@ mod tests {
     fn switch_workspace_updates_active_and_selected() {
         let mut state = app_with_workspaces(&["a", "b", "c"]);
         state.switch_workspace(2);
-        assert_eq!(state.active, Some(2));
-        assert_eq!(state.selected, 2);
+        assert_eq!(state.active_index(), Some(2));
+        assert_eq!(state.selected_index().unwrap_or(0), 2);
     }
 
     #[test]
     fn switch_workspace_out_of_bounds_is_noop() {
         let mut state = app_with_workspaces(&["a"]);
         state.switch_workspace(5);
-        assert_eq!(state.active, Some(0));
+        assert_eq!(state.active_index(), Some(0));
     }
 
     #[test]
     fn move_workspace_reorders_without_changing_logical_selection() {
         let mut state = app_with_workspaces(&["a", "b", "c"]);
-        let active_id = state.workspaces[1].id.clone();
-        let selected_id = state.workspaces[2].id.clone();
-        state.active = Some(1);
-        state.selected = 2;
+        let active_id = state.workspaces[1].id.to_string();
+        let selected_id = state.workspaces[2].id.to_string();
+        state.set_active_index(Some(1));
+        state.set_selected_index(Some(2));
 
         state.move_workspace(1, 0);
 
@@ -1866,13 +1850,41 @@ mod tests {
             .map(crate::workspace::Workspace::display_name)
             .collect();
         assert_eq!(names, vec!["b", "a", "c"]);
-        assert_eq!(state.active, Some(0));
-        assert_eq!(state.selected, 2);
+        assert_eq!(state.active_index(), Some(0));
+        assert_eq!(state.selected_index().unwrap_or(0), 2);
         assert_eq!(
-            state.workspaces[state.active.expect("test precondition")].id,
+            state.workspaces[state.active_index().expect("test precondition")].id,
             active_id
         );
-        assert_eq!(state.workspaces[state.selected].id, selected_id);
+        assert_eq!(
+            state.workspaces[state.selected_index().unwrap_or(0)].id,
+            selected_id
+        );
+    }
+
+    #[test]
+    fn active_and_selected_ids_survive_reorder_and_removal() {
+        let mut state = app_with_workspaces(&["a", "b", "c"]);
+        let second_tab = state.workspaces[1].test_add_tab(Some("second"));
+        state.ensure_test_terminals();
+        assert!(state.switch_workspace_tab(1, second_tab));
+        state.set_selected_index(Some(2));
+        let active_id = state.active.clone();
+        let selected_id = state.selected.clone();
+        let active_tab_id = state.active_tab_id.clone();
+
+        assert!(state.move_workspace(1, 0));
+        assert_eq!(state.active, active_id);
+        assert_eq!(state.selected, selected_id);
+        assert_eq!(state.active_tab_id, active_tab_id);
+        assert_eq!(state.active_index(), Some(0));
+        assert_eq!(state.selected_index(), Some(2));
+
+        state.close_workspace_at(1).expect("background workspace");
+        assert_eq!(state.active, active_id);
+        assert_eq!(state.selected, selected_id);
+        assert_eq!(state.active_tab_id, active_tab_id);
+        state.assert_invariants_for_test();
     }
 
     #[test]
@@ -1893,12 +1905,12 @@ mod tests {
     fn move_workspace_block_collects_non_contiguous_members() {
         let mut state =
             app_with_workspaces(&["child-one", "normal", "parent", "child-two", "tail"]);
-        let parent_id = state.workspaces[2].id.clone();
-        let child_one_id = state.workspaces[0].id.clone();
-        let child_two_id = state.workspaces[3].id.clone();
-        let tail_id = state.workspaces[4].id.clone();
-        state.active = Some(0);
-        state.selected = 4;
+        let parent_id = state.workspaces[2].id.to_string();
+        let child_one_id = state.workspaces[0].id.to_string();
+        let child_two_id = state.workspaces[3].id.to_string();
+        let tail_id = state.workspaces[4].id.to_string();
+        state.set_active_index(Some(0));
+        state.set_selected_index(Some(4));
 
         assert!(state.move_workspace_block(
             &[parent_id, child_one_id.clone(), child_two_id],
@@ -1915,10 +1927,13 @@ mod tests {
             ["normal", "parent", "child-one", "child-two", "tail"]
         );
         assert_eq!(
-            state.workspaces[state.active.expect("test precondition")].id,
+            state.workspaces[state.active_index().expect("test precondition")].id,
             child_one_id
         );
-        assert_eq!(state.workspaces[state.selected].id, tail_id);
+        assert_eq!(
+            state.workspaces[state.selected_index().unwrap_or(0)].id,
+            tail_id
+        );
     }
 
     #[test]
@@ -1927,7 +1942,7 @@ mod tests {
         let ids = state
             .workspaces
             .iter()
-            .map(|workspace| workspace.id.clone())
+            .map(|workspace| workspace.id.to_string())
             .collect::<Vec<_>>();
 
         assert!(!state.move_workspace_block(&[], None));
@@ -1948,54 +1963,54 @@ mod tests {
     #[test]
     fn close_workspace_adjusts_indices() {
         let mut state = app_with_workspaces(&["a", "b", "c"]);
-        state.selected = 1;
-        state.active = Some(1);
+        state.set_selected_index(Some(1));
+        state.set_active_index(Some(1));
 
         state.close_selected_workspace();
 
         assert_eq!(state.workspaces.len(), 2);
-        assert_eq!(state.selected, 1);
-        assert_eq!(state.active, Some(1));
+        assert_eq!(state.selected_index().unwrap_or(0), 1);
+        assert_eq!(state.active_index(), Some(1));
         assert_eq!(state.workspaces[1].custom_name.as_deref(), Some("c"));
     }
 
     #[test]
     fn close_last_workspace_clears_active() {
         let mut state = app_with_workspaces(&["only"]);
-        state.selected = 0;
+        state.set_selected_index(Some(0));
         state.close_selected_workspace();
 
         assert!(state.workspaces.is_empty());
-        assert_eq!(state.active, None);
-        assert_eq!(state.selected, 0);
+        assert_eq!(state.active_index(), None);
+        assert_eq!(state.selected_index().unwrap_or(0), 0);
     }
 
     #[test]
     fn close_workspace_at_end_adjusts_selected() {
         let mut state = app_with_workspaces(&["a", "b"]);
-        state.selected = 1;
-        state.active = Some(1);
+        state.set_selected_index(Some(1));
+        state.set_active_index(Some(1));
 
         state.close_selected_workspace();
 
         assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.selected, 0);
-        assert_eq!(state.active, Some(0));
+        assert_eq!(state.selected_index().unwrap_or(0), 0);
+        assert_eq!(state.active_index(), Some(0));
     }
 
     #[test]
     fn close_non_focused_workspace_keeps_focus() {
         let mut state = app_with_workspaces(&["a", "b", "c"]);
-        state.selected = 1;
-        state.active = Some(0);
+        state.set_selected_index(Some(1));
+        state.set_active_index(Some(0));
 
         state.close_selected_workspace();
 
         assert_eq!(state.workspaces.len(), 2);
         assert_eq!(state.workspaces[0].display_name(), "a");
         assert_eq!(state.workspaces[1].display_name(), "c");
-        assert_eq!(state.selected, 0);
-        assert_eq!(state.active, Some(0));
+        assert_eq!(state.selected_index().unwrap_or(0), 0);
+        assert_eq!(state.active_index(), Some(0));
         state.assert_invariants_for_test();
     }
 
@@ -2018,8 +2033,8 @@ mod tests {
     #[test]
     fn pane_died_closing_a_workspace_tears_it_down_like_an_explicit_close() {
         let mut state = app_with_workspaces(&["a", "dying", "c"]);
-        state.active = Some(2);
-        state.selected = 0;
+        state.set_active_index(Some(2));
+        state.set_selected_index(Some(0));
         let pane_id = state.workspaces[1].tabs[0].root_pane;
         let terminal_id = state
             .terminal_id_for_pane(1, pane_id)
@@ -2034,10 +2049,13 @@ mod tests {
 
         assert_eq!(state.workspaces.len(), 2);
         assert_eq!(
-            state.workspaces[state.active.expect("active")].display_name(),
+            state.workspaces[state.active_index().expect("active")].display_name(),
             "c"
         );
-        assert_eq!(state.workspaces[state.selected].display_name(), "a");
+        assert_eq!(
+            state.workspaces[state.selected_index().unwrap_or(0)].display_name(),
+            "a"
+        );
         assert!(!state.terminals.contains_key(&terminal_id));
         assert!(state.terminal_runtime_shutdowns.contains(&terminal_id));
         assert!(!state.direct_attach_resize_locks.contains(&terminal_id));
@@ -2216,7 +2234,7 @@ mod tests {
     #[test]
     fn visible_blocker_overrides_hook_working() {
         let mut state = app_with_workspaces(&["active", "background"]);
-        state.active = Some(0);
+        state.set_active_index(Some(0));
         let bg_pane_id = *state.workspaces[1]
             .panes
             .keys()
@@ -2266,7 +2284,7 @@ mod tests {
     #[test]
     fn reserved_native_state_report_does_not_override_screen_state() {
         let mut state = app_with_workspaces(&["active"]);
-        state.active = Some(0);
+        state.set_active_index(Some(0));
         let pane_id = *state.workspaces[0]
             .panes
             .keys()
@@ -2570,7 +2588,7 @@ mod tests {
     #[test]
     fn metadata_expiry_state_change_bumps_state_sequence() {
         let mut state = app_with_workspaces(&["active", "background"]);
-        state.active = Some(0);
+        state.set_active_index(Some(0));
         let pane_id = state.workspaces[1].tabs[0].root_pane;
         let terminal_id = state
             .terminal_id_for_pane(1, pane_id)
@@ -2788,7 +2806,7 @@ mod tests {
     #[test]
     fn pane_process_exit_publish_marks_agent_idle_before_pane_removal() {
         let mut state = app_with_workspaces(&["active", "background"]);
-        state.active = Some(1);
+        state.set_active_index(Some(1));
         state.ensure_test_terminals();
         let pane_id = state.workspaces[0].tabs[0].root_pane;
         let terminal_id = state
@@ -2883,9 +2901,9 @@ mod tests {
 
         state.close_workspace_at(0);
 
-        assert!(!state.public_pane_id_aliases.contains_key("wOLD:p1"));
+        assert!(!state.public_pane_id_aliases.contains_key(&"wOLD:p1".into()));
         assert_eq!(
-            state.public_pane_id_aliases.get("wOLD:p2"),
+            state.public_pane_id_aliases.get(&"wOLD:p2".into()),
             Some(&kept_pane)
         );
         assert!(!state.direct_attach_resize_locks.contains(&closing_terminal));
@@ -2908,18 +2926,21 @@ mod tests {
     #[test]
     fn close_workspace_at_keeps_the_sidebar_selection_and_focus() {
         let mut state = app_with_workspaces(&["a", "b", "c", "d"]);
-        let active_id = state.workspaces[3].id.clone();
-        let selected_id = state.workspaces[2].id.clone();
-        state.active = Some(3);
-        state.selected = 2;
+        let active_id = state.workspaces[3].id.to_string();
+        let selected_id = state.workspaces[2].id.to_string();
+        state.set_active_index(Some(3));
+        state.set_selected_index(Some(2));
 
         state.close_workspace_at(0);
 
         assert_eq!(
-            state.workspaces[state.active.expect("active")].id,
+            state.workspaces[state.active_index().expect("active")].id,
             active_id
         );
-        assert_eq!(state.workspaces[state.selected].id, selected_id);
+        assert_eq!(
+            state.workspaces[state.selected_index().unwrap_or(0)].id,
+            selected_id
+        );
         state.assert_invariants_for_test();
     }
 
@@ -2954,8 +2975,8 @@ mod tests {
         let active_terminal_id = state
             .terminal_id_for_pane(1, state.workspaces[1].tabs[0].root_pane)
             .expect("test precondition");
-        state.active = Some(1);
-        state.selected = 0;
+        state.set_active_index(Some(1));
+        state.set_selected_index(Some(0));
 
         assert!(matches!(
             state.remove_active_tab(),
@@ -2974,8 +2995,8 @@ mod tests {
         let active_terminal_id = state
             .terminal_id_for_pane(1, state.workspaces[1].tabs[0].root_pane)
             .expect("test precondition");
-        state.active = Some(1);
-        state.selected = 0;
+        state.set_active_index(Some(1));
+        state.set_selected_index(Some(0));
 
         let pane_id = state.workspaces[1].tabs[0].root_pane;
         assert!(matches!(

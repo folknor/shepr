@@ -14,12 +14,24 @@ fn atomic_cell_size_keeps_width_and_height_in_one_snapshot() {
 
 #[test]
 fn resize_signal_reports_even_when_polled_size_is_unchanged() {
-    let size = (120, 40, 8, 16, true);
+    let size = crate::geometry::HostGeometry::new(120, 40, 8, 16, true);
     assert!(resize_report_required(true, size, size));
     assert!(!resize_report_required(false, size, size));
-    assert!(resize_report_required(false, (120, 41, 8, 16, true), size));
-    assert!(resize_report_required(false, (120, 40, 9, 18, true), size));
-    assert!(resize_report_required(false, (120, 40, 8, 16, false), size));
+    assert!(resize_report_required(
+        false,
+        crate::geometry::HostGeometry::new(120, 41, 8, 16, true),
+        size
+    ));
+    assert!(resize_report_required(
+        false,
+        crate::geometry::HostGeometry::new(120, 40, 9, 18, true),
+        size
+    ));
+    assert!(resize_report_required(
+        false,
+        crate::geometry::HostGeometry::new(120, 40, 8, 16, false),
+        size
+    ));
 }
 
 #[test]
@@ -49,7 +61,10 @@ fn missing_pixel_geometry_keeps_a_valid_terminal_grid() {
     )
     .expect("grid geometry remains valid without pixel dimensions");
 
-    assert_eq!(geometry, (80, 24, 9, 18, false));
+    assert_eq!(
+        geometry,
+        crate::geometry::HostGeometry::new(80, 24, 9, 18, false)
+    );
 }
 
 #[test]

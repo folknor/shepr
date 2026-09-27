@@ -60,7 +60,7 @@ impl App {
                 return workspace_not_found(id, &workspace_id);
             };
             ws_idx
-        } else if let Some(active) = self.state.active {
+        } else if let Some(active) = self.state.active_index() {
             active
         } else {
             return failure(id, ApiErrorCode::WorkspaceNotFound, "no active workspace");
@@ -206,6 +206,7 @@ impl App {
             .is_some_and(|ws| ws.move_tab(tab_idx, insert_index));
         let tabs = self.tab_list_info(ws_idx);
         if moved {
+            self.state.refresh_active_tab_id();
             self.schedule_session_save();
             self.emit_event(EventEnvelope {
                 data: EventData::TabMoved {
@@ -297,8 +298,8 @@ mod tests {
             event_hub.clone(),
         );
         app.state.workspaces = vec![Workspace::test_new("tabs")];
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let tab_id = app.public_tab_id(0, 0).expect("test precondition");
         let workspace_id = app.public_workspace_id(0);
         let root_pane = app.state.workspaces[0].tabs[0].root_pane;
@@ -314,7 +315,7 @@ mod tests {
         let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert!(app.state.workspaces.is_empty());
-        assert!(app.state.active.is_none());
+        assert!(app.state.active_index().is_none());
         let events = event_hub.events_after(0);
         assert_eq!(
             events
@@ -366,15 +367,15 @@ mod tests {
         workspace.test_add_tab(Some("survivor"));
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let root = app.state.workspaces[0].tabs[0].root_pane;
         app.state
             .public_pane_id_aliases
-            .insert("old-root".into(), root);
+            .insert("wOLD:p1".into(), root);
         app.state
             .public_pane_id_aliases
-            .insert("old-split".into(), split);
+            .insert("wOLD:p2".into(), split);
         let closed_panes = [
             app.public_pane_id(0, root).expect("test precondition"),
             app.public_pane_id(0, split).expect("test precondition"),
@@ -391,8 +392,16 @@ mod tests {
         let success: SuccessResponse = crate::api::error::test_success(&response);
         assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(app.state.workspaces[0].tabs.len(), 1);
-        assert!(!app.state.public_pane_id_aliases.contains_key("old-root"));
-        assert!(!app.state.public_pane_id_aliases.contains_key("old-split"));
+        assert!(
+            !app.state
+                .public_pane_id_aliases
+                .contains_key(&"wOLD:p1".into())
+        );
+        assert!(
+            !app.state
+                .public_pane_id_aliases
+                .contains_key(&"wOLD:p2".into())
+        );
         let events = event_hub.events_after(0);
         let mut pane_closed = events
             .iter()
@@ -425,8 +434,8 @@ mod tests {
         workspace.test_add_tab(Some("two"));
         workspace.test_add_tab(Some("three"));
         app.state.workspaces = vec![workspace];
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         let moved_root = app.state.workspaces[0].tabs[0].root_pane;
         let moved_id = app.public_tab_id(0, 0).expect("test precondition");
 
@@ -478,8 +487,8 @@ mod tests {
         let workspace = Workspace::test_new("tabs");
         let focused_pane = workspace.tabs[0].root_pane;
         app.state.workspaces = vec![workspace];
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         app.state.ensure_test_terminals();
         let scratch = crate::test_support::ScratchDir::new("cached-cwd");
         let cached_cwd = scratch.to_path_buf();

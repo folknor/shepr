@@ -704,8 +704,7 @@ pub struct Terminal {
     max_scrollback: usize,
     history_lines: usize,
     default_palette: [RgbColor; 256],
-    cell_width_px: u32,
-    cell_height_px: u32,
+    cell: Option<crate::geometry::CellPx>,
     modes: ExtraModes,
     color_scheme: Option<ColorScheme>,
     /// The host's default foreground/background. They sit under the child's
@@ -760,8 +759,7 @@ impl Terminal {
             max_scrollback,
             history_lines,
             default_palette: default_palette(),
-            cell_width_px: 0,
-            cell_height_px: 0,
+            cell: None,
             modes: ExtraModes::default(),
             color_scheme: None,
             host_foreground: None,
@@ -832,8 +830,7 @@ impl Terminal {
             parser,
             keyboard_depth,
             modes,
-            cell_width_px,
-            cell_height_px,
+            cell,
             events,
             default_color_set,
             rows,
@@ -847,8 +844,7 @@ impl Terminal {
                 term,
                 keyboard_depth,
                 modes,
-                cell_width_px: *cell_width_px,
-                cell_height_px: *cell_height_px,
+                cell: *cell,
                 events,
                 default_color_set,
                 rows,
@@ -909,10 +905,6 @@ impl Terminal {
         self.responses.push(PtyResponse::Bytes(bytes));
     }
 
-    fn has_pixel_geometry(&self) -> bool {
-        self.cell_width_px > 0 && self.cell_height_px > 0
-    }
-
     fn apply_scan_event(&mut self, event: ScanEvent) {
         match event {
             ScanEvent::ColorSchemeQuery => {
@@ -921,8 +913,8 @@ impl Terminal {
                 }
             }
             ScanEvent::CellSizeQuery => {
-                if self.has_pixel_geometry() {
-                    let reply = format!("\x1b[6;{};{}t", self.cell_height_px, self.cell_width_px);
+                if let Some(cell) = self.cell {
+                    let reply = format!("\x1b[6;{};{}t", cell.height, cell.width);
                     self.push_bytes(reply.into_bytes());
                 }
             }
@@ -942,12 +934,9 @@ impl Terminal {
     }
 
     fn push_in_band_size_report(&mut self) {
-        if let Some(report) = handler::in_band_size_report(
-            self.term.screen_lines(),
-            self.term.columns(),
-            self.cell_width_px,
-            self.cell_height_px,
-        ) {
+        if let Some(report) =
+            handler::in_band_size_report(self.term.screen_lines(), self.term.columns(), self.cell)
+        {
             self.push_bytes(report.into_bytes());
         }
     }
@@ -1176,15 +1165,15 @@ impl Terminal {
         self.modes.cursor_shape_set
     }
 
-    pub fn resize(&mut self, cols: u16, rows: u16, cell_width_px: u32, cell_height_px: u32) {
+    pub fn resize(&mut self, geometry: crate::geometry::PaneGeometry) {
+        let cols = geometry.cols();
+        let rows = geometry.rows();
+        let cell = geometry.cell;
         let columns = usize::from(cols).max(MIN_COLUMNS);
         let screen_lines = usize::from(rows).max(1);
         let columns_changed = columns != self.term.columns();
         let lines_changed = screen_lines != self.term.screen_lines();
-        let geometry_changed = columns_changed
-            || lines_changed
-            || cell_width_px != self.cell_width_px
-            || cell_height_px != self.cell_height_px;
+        let geometry_changed = columns_changed || lines_changed || cell != self.cell;
 
         // A column change re-wraps every line, so no earlier row id may keep
         // naming one. So does any reflow of the primary screen while the
@@ -1224,8 +1213,7 @@ impl Terminal {
         } else {
             self.rows.finish(&self.term, self.history_lines);
         }
-        self.cell_width_px = cell_width_px;
-        self.cell_height_px = cell_height_px;
+        self.cell = cell;
         self.drain_events();
         self.collect_damage();
         if geometry_changed && self.modes.in_band_resize {
@@ -1719,13 +1707,13 @@ impl Terminal {
     pub(crate) fn width_px(&self) -> u32 {
         u32::try_from(self.term.columns())
             .unwrap_or(u32::MAX)
-            .saturating_mul(self.cell_width_px)
+            .saturating_mul(self.cell.map_or(0, |cell| cell.width.get()))
     }
 
     pub(crate) fn height_px(&self) -> u32 {
         u32::try_from(self.term.screen_lines())
             .unwrap_or(u32::MAX)
-            .saturating_mul(self.cell_height_px)
+            .saturating_mul(self.cell.map_or(0, |cell| cell.height.get()))
     }
 }
 

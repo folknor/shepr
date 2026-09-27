@@ -158,10 +158,7 @@ fn surface_set_active(message: &crate::protocol::ClientMessage) -> Option<bool> 
 
 fn resize() -> crate::protocol::ClientMessage {
     crate::protocol::ClientMessage::ClientShellResize {
-        cell_width_px: 8,
-        cell_height_px: 16,
-        surface_size: crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 },
-        pixel_mouse: false,
+        geometry: crate::protocol::TerminalGeometry::new(80, 24, 8, 16, false),
     }
 }
 
@@ -738,13 +735,7 @@ fn resize_invalidates_already_recorded_surface_evidence() {
         SurfaceActivationProgress::Ready
     );
     let resize = crate::protocol::ClientMessage::ClientShellResize {
-        cell_width_px: 9,
-        cell_height_px: 17,
-        surface_size: crate::protocol::ClientSurfaceSize {
-            cols: 100,
-            rows: 30,
-        },
-        pixel_mouse: true,
+        geometry: crate::protocol::TerminalGeometry::new(100, 30, 9, 17, true),
     };
     activation
         .update_resize(&resize, &mut endpoints)
@@ -773,13 +764,7 @@ fn resize_during_activation_reaches_the_pending_target() {
         &mut endpoints,
     );
     let resized = crate::protocol::ClientMessage::ClientShellResize {
-        cell_width_px: 9,
-        cell_height_px: 17,
-        surface_size: crate::protocol::ClientSurfaceSize {
-            cols: 100,
-            rows: 30,
-        },
-        pixel_mouse: true,
+        geometry: crate::protocol::TerminalGeometry::new(100, 30, 9, 17, true),
     };
     activation
         .update_resize(&resized, &mut endpoints)

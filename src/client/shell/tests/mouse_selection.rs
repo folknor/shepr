@@ -938,7 +938,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         [(5, 6, 4, false), (6, 8, 3, false)]
     {
         state.selection = Some(crate::selection::Selection::anchor(
-            "pane_1".to_owned(),
+            "pane_1".into(),
             crate::terminal::Point::new(crate::terminal::AbsRow(12), 0),
         ));
         let mut changed_surface =
@@ -1027,7 +1027,7 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     state.compose(106, 20).expect("composed frame");
     let pane = state.hits.panes[0].clone();
     let geometry =
-        crate::input::mouse::HostGeometry::new(106, 20, 1060, 400).expect("host geometry");
+        crate::input::mouse::HostPixelExtent::new(106, 20, 1060, 400).expect("host geometry");
     let x = u32::from(pane.inner_rect.x) * 10 + 21;
     let y = u32::from(pane.inner_rect.y) * 20 + 21;
     let report = format!("\x1b[<0;{x};{y}M");
@@ -1129,7 +1129,7 @@ fn tab_click_waits_for_release_and_drag_reorders_by_stable_id() {
     let mut projected = snapshot();
     for index in 2..=3 {
         let mut tab = projected.tabs[0].clone();
-        tab.tab_id = format!("tab_{index}");
+        tab.tab_id = format!("tab_{index}").into();
         tab.number = index;
         tab.label = index.to_string();
         tab.focused = false;
@@ -1215,7 +1215,7 @@ fn tab_drag_clears_its_drop_target_after_leaving_the_tab_row() {
     let mut projected = snapshot();
     for index in 2..=3 {
         let mut tab = projected.tabs[0].clone();
-        tab.tab_id = format!("tab_{index}");
+        tab.tab_id = format!("tab_{index}").into();
         tab.number = index;
         tab.label = index.to_string();
         tab.focused = false;

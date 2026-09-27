@@ -17,7 +17,7 @@ impl App {
     /// empty id rather than a panic that would take the server down.
     pub(crate) fn public_workspace_id(&self, ws_idx: usize) -> String {
         match self.state.workspaces.get(ws_idx) {
-            Some(ws) => ws.id.clone(),
+            Some(ws) => ws.id.to_string(),
             None => {
                 tracing::warn!(
                     ws_idx,
@@ -71,9 +71,12 @@ impl App {
         extra_env: Vec<(String, String)>,
     ) -> Option<crate::pane::PaneLaunchEnv> {
         let tab_idx = self.tab_index_for_pane(ws_idx, pane_id)?;
-        let workspace_id = self.public_workspace_id(ws_idx);
-        let tab_id = self.public_tab_id(ws_idx, tab_idx)?;
-        let pane_id = self.public_pane_id(ws_idx, pane_id)?;
+        let workspace = self.state.workspaces.get(ws_idx)?;
+        let tab_number = workspace.public_tab_number(tab_idx)?;
+        let pane_number = workspace.public_pane_number(pane_id)?;
+        let workspace_id = crate::workspace::WorkspaceId::new(workspace.id.clone());
+        let tab_id = crate::workspace::PublicTabId::new(workspace.id.as_str(), tab_number);
+        let pane_id = crate::workspace::PublicPaneId::new(workspace.id.as_str(), pane_number);
         Some(
             crate::pane::PaneLaunchEnv::from_extra(extra_env)
                 .with_api_socket_path(crate::api::socket_path(&self.paths))
@@ -99,6 +102,13 @@ impl App {
     /// independent of tab order, positions are not.
     pub(crate) fn parse_tab_id(&self, id: &str) -> Option<(usize, usize)> {
         let public_id = id.parse::<crate::workspace::PublicTabId>().ok()?;
+        self.resolve_tab_id(&public_id)
+    }
+
+    pub(crate) fn resolve_tab_id(
+        &self,
+        public_id: &crate::workspace::PublicTabId,
+    ) -> Option<(usize, usize)> {
         let ws_idx = self.parse_workspace_id(public_id.workspace_id())?;
         let tab_idx = self
             .state
@@ -117,18 +127,16 @@ impl App {
     /// process, so after a server restart they name a different pane. The
     /// `<workspace>-N` form is gone too; nothing emits it.
     pub(crate) fn parse_pane_id(&self, id: &str) -> Option<(usize, crate::layout::PaneId)> {
-        let current_id = id
-            .parse::<crate::workspace::PublicPaneId>()
-            .ok()
-            .and_then(|public_id| {
-                let ws_idx = self.parse_workspace_id(public_id.workspace_id())?;
-                let pane_number = public_id.number();
-                let ws = self.state.workspaces.get(ws_idx)?;
-                let pane_id = ws.pane_id_for_public_number(pane_number)?;
-                Some((ws_idx, pane_id))
-            });
+        let public_id = id.parse::<crate::workspace::PublicPaneId>().ok()?;
+        let current_id = (|| {
+            let ws_idx = self.parse_workspace_id(public_id.workspace_id())?;
+            let pane_number = public_id.number();
+            let ws = self.state.workspaces.get(ws_idx)?;
+            let pane_id = ws.pane_id_for_public_number(pane_number)?;
+            Some((ws_idx, pane_id))
+        })();
         current_id.or_else(|| {
-            let alias = self.state.public_pane_id_aliases.get(id).copied()?;
+            let alias = self.state.public_pane_id_aliases.get(&public_id).copied()?;
             self.find_pane(alias).map(|(ws_idx, _)| (ws_idx, alias))
         })
     }
@@ -155,7 +163,7 @@ mod tests {
         );
         app.state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app
     }
 
@@ -183,7 +191,7 @@ mod tests {
             .expect("test precondition");
         app.state
             .public_pane_id_aliases
-            .insert(current_id.clone(), moved_pane);
+            .insert(current_id.clone().into(), moved_pane);
 
         assert_eq!(app.parse_pane_id(&current_id), Some((0, current_pane)));
         assert_eq!(app.parse_pane_id("old-workspace:p9"), None);

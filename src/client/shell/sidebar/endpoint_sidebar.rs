@@ -189,7 +189,7 @@ pub(super) fn render_collapsed(
             hits.workspaces.push(WorkspaceHit {
                 rect,
                 endpoint_id: endpoint.endpoint_id.clone(),
-                workspace_id: workspace.workspace_id.clone(),
+                workspace_id: workspace.workspace_id.to_string(),
             });
             y = y.saturating_add(1);
         }
@@ -454,7 +454,9 @@ pub(super) fn render_expanded(
                 });
                 // Drag-reordering moves workspaces of the active machine only.
                 let dragged = endpoint_active
-                    && state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
+                    && state
+                        .dragged_workspace_id
+                        .is_some_and(|id| id.as_str() == workspace.workspace_id.as_str());
                 super::sidebar::render_workspace_rows(
                     buffer,
                     nested,
@@ -479,7 +481,7 @@ pub(super) fn render_expanded(
                 hits.workspaces.push(WorkspaceHit {
                     rect,
                     endpoint_id: endpoint.endpoint_id.clone(),
-                    workspace_id: workspace.workspace_id.clone(),
+                    workspace_id: workspace.workspace_id.to_string(),
                 });
                 y = y
                     .saturating_add(height)

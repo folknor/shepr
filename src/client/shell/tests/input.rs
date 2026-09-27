@@ -281,7 +281,7 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
     state.compose(106, 20).expect("composed frame");
     let pane = state.hits.panes[0].clone();
     let geometry =
-        crate::input::mouse::HostGeometry::new(106, 20, 1060, 400).expect("host geometry");
+        crate::input::mouse::HostPixelExtent::new(106, 20, 1060, 400).expect("host geometry");
     let x = u32::from(pane.inner_rect.x) * 10 + 21;
     let y = u32::from(pane.inner_rect.y) * 20 + 21;
 
@@ -496,7 +496,7 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
     let template = many.workspaces[0].clone();
     many.workspaces = (1..=30)
         .map(|number| ClientShellWorkspace {
-            workspace_id: format!("ws_{number}"),
+            workspace_id: format!("ws_{number}").into(),
             number,
             focused: number == 30,
             ..template.clone()
@@ -627,7 +627,7 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
     );
     state.set_pane_surface(pane_surface);
     let mut selection = crate::selection::Selection::range(
-        "pane_1".to_owned(),
+        "pane_1".into(),
         crate::terminal::Point::new(crate::terminal::AbsRow(0), 0),
         crate::terminal::Point::new(crate::terminal::AbsRow(0), 1),
     );

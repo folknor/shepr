@@ -24,6 +24,17 @@ impl TerminalId {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+}
+
+impl From<String> for TerminalId {
+    fn from(id: String) -> Self {
+        Self(id)
+    }
 }
 
 impl fmt::Display for TerminalId {

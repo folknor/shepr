@@ -15,15 +15,9 @@ impl App {
     }
 
     pub(crate) fn session_snapshot(&self) -> SessionSnapshot {
-        let focused_workspace_id = self
-            .state
-            .active
-            .map(|ws_idx| self.public_workspace_id(ws_idx));
-        let focused_tab_id = self.state.active.and_then(|ws_idx| {
-            let ws = self.state.workspaces.get(ws_idx)?;
-            self.public_tab_id(ws_idx, ws.active_tab)
-        });
-        let focused_pane_id = self.state.active.and_then(|ws_idx| {
+        let focused_workspace_id = self.state.active.as_ref().map(ToString::to_string);
+        let focused_tab_id = self.state.active_tab_id.as_ref().map(ToString::to_string);
+        let focused_pane_id = self.state.active_index().and_then(|ws_idx| {
             let ws = self.state.workspaces.get(ws_idx)?;
             self.public_pane_id(ws_idx, ws.focused_pane_id()?)
         });
@@ -75,7 +69,7 @@ mod tests {
         workspace.test_add_tab(None);
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app
     }
 

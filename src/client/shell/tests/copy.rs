@@ -1162,12 +1162,12 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
     snapshot.panes.push(shell);
     for label in ["notes", "logs"] {
         let mut tab = snapshot.tabs[0].clone();
-        tab.tab_id = format!("tab_{label}");
+        tab.tab_id = format!("tab_{label}").into();
         tab.label = label.into();
         tab.focused = false;
         tab.number = snapshot.tabs.len() + 1;
         let mut pane = snapshot.panes[0].clone();
-        pane.pane_id = format!("pane_{label}");
+        pane.pane_id = format!("pane_{label}").into();
         pane.tab_id = tab.tab_id.clone();
         pane.label = Some(label.into());
         pane.focused = false;
@@ -1302,15 +1302,17 @@ fn navigator_search_matches_non_adjacent_words_without_losing_the_pane_target() 
 #[test]
 fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actionable() {
     let mut projected = snapshot();
+    projected.panes[0].pane_id = "ws_1:p1".into();
+    projected.focused_pane_id = Some("ws_1:p1".into());
     projected.tabs[0].label = "review".into();
     projected.tabs[0].custom_label = true;
     let mut second = projected.panes[0].clone();
-    second.pane_id = "pane_2".into();
+    second.pane_id = "ws_1:p2".into();
     second.focused = false;
     second.foreground_cwd = Some("/repo/subproject".into());
     projected.panes.push(second);
     let first_agent = ClientShellAgent {
-        pane_id: "pane_1".into(),
+        pane_id: "ws_1:p1".parse().expect("test precondition"),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
         name: Some("writer".into()),
@@ -1326,7 +1328,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         focused: true,
     };
     let mut second_agent = first_agent.clone();
-    second_agent.pane_id = "pane_2".into();
+    second_agent.pane_id = "ws_1:p2".parse().expect("test precondition");
     second_agent.name = Some("reviewer".into());
     second_agent.agent = Some("claude".into());
     second_agent.title = Some("checking navigation".into());
@@ -1338,19 +1340,19 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     state.set_pane_surface(surface());
     state.open_navigator_overlay();
     for (query, filter, expected) in [
-        ("", None, vec!["pane_1", "pane_2"]),
-        ("review", None, vec!["pane_1", "pane_2"]),
-        ("client-shell", None, vec!["pane_1", "pane_2"]),
-        ("main", None, vec!["pane_1", "pane_2"]),
-        ("claude", None, vec!["pane_2"]),
-        ("checking navigation", None, vec!["pane_2"]),
-        ("/repo/subproject", None, vec!["pane_2"]),
+        ("", None, vec!["ws_1:p1", "ws_1:p2"]),
+        ("review", None, vec!["ws_1:p1", "ws_1:p2"]),
+        ("client-shell", None, vec!["ws_1:p1", "ws_1:p2"]),
+        ("main", None, vec!["ws_1:p1", "ws_1:p2"]),
+        ("claude", None, vec!["ws_1:p2"]),
+        ("checking navigation", None, vec!["ws_1:p2"]),
+        ("/repo/subproject", None, vec!["ws_1:p2"]),
         (
             "review",
             Some(ClientNavigatorFilter::Blocked),
-            vec!["pane_2"],
+            vec!["ws_1:p2"],
         ),
-        ("", Some(ClientNavigatorFilter::Working), vec!["pane_1"]),
+        ("", Some(ClientNavigatorFilter::Working), vec!["ws_1:p1"]),
         ("no such agent", None, vec![]),
     ] {
         let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
@@ -1417,7 +1419,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     })]);
     assert!(
         matches!(outcome.actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
-        if matches!(&request.method, crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_2"))
+        if matches!(&request.method, crate::api::schema::Method::PaneFocus(target) if target.pane_id == "ws_1:p2"))
     );
 }
 
@@ -1426,13 +1428,13 @@ fn navigator_distinguishes_unnamed_terminals_on_numbered_tabs() {
     let mut projected = snapshot();
     for (number, label) in [(2, "2"), (3, "logs")] {
         let mut tab = projected.tabs[0].clone();
-        tab.tab_id = format!("tab_{number}");
+        tab.tab_id = format!("tab_{number}").into();
         tab.number = number;
         tab.label = label.into();
         tab.custom_label = number == 3;
         tab.focused = false;
         let mut pane = projected.panes[0].clone();
-        pane.pane_id = format!("pane_{number}");
+        pane.pane_id = format!("pane_{number}").into();
         pane.tab_id = tab.tab_id.clone();
         pane.focused = false;
         projected.tabs.push(tab);
@@ -1600,7 +1602,7 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
     let mut projected = snapshot();
     for index in 2..=60 {
         let mut pane = projected.panes[0].clone();
-        pane.pane_id = format!("pane_{index}");
+        pane.pane_id = format!("pane_{index}").into();
         pane.label = Some(format!("agent {index}"));
         pane.focused = false;
         projected.panes.push(pane);
@@ -1765,15 +1767,15 @@ fn navigator_scale_snapshot(workspaces: usize, tabs: usize, panes: usize) -> Cli
     result.panes.clear();
     for w in 0..workspaces {
         let mut workspace = workspace_template.clone();
-        workspace.workspace_id = format!("workspace_{w}");
-        workspace.active_tab_id = format!("tab_{w}_0");
+        workspace.workspace_id = format!("workspace_{w}").into();
+        workspace.active_tab_id = format!("tab_{w}_0").into();
         workspace.number = w + 1;
         workspace.label = format!("workspace {w}");
         workspace.focused = w == 0;
         for t in 0..tabs {
             let mut tab = tab_template.clone();
             tab.workspace_id = workspace.workspace_id.clone();
-            tab.tab_id = format!("tab_{w}_{t}");
+            tab.tab_id = format!("tab_{w}_{t}").into();
             tab.number = t + 1;
             tab.label = format!("tab {t}");
             tab.focused = w == 0 && t == 0;
@@ -1781,7 +1783,7 @@ fn navigator_scale_snapshot(workspaces: usize, tabs: usize, panes: usize) -> Cli
                 let mut pane = pane_template.clone();
                 pane.workspace_id = workspace.workspace_id.clone();
                 pane.tab_id = tab.tab_id.clone();
-                pane.pane_id = format!("pane_{w}_{t}_{p}");
+                pane.pane_id = format!("pane_{w}_{t}_{p}").into();
                 pane.label = Some(format!("terminal {p}"));
                 pane.focused = w == 0 && t == 0 && p == 0;
                 result.panes.push(pane);
@@ -2025,7 +2027,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     assert_eq!(state.mode, ClientShellMode::Terminal);
 
     let mut other_selection = crate::selection::Selection::range(
-        "pane_2".to_owned(),
+        "pane_2".into(),
         crate::terminal::Point::new(crate::terminal::AbsRow(0), 0),
         crate::terminal::Point::new(crate::terminal::AbsRow(0), 1),
     );
@@ -2108,7 +2110,7 @@ fn retained_selection_copy_suppresses_key_repeats() {
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
     let mut selection = crate::selection::Selection::range(
-        "pane_1".to_owned(),
+        "pane_1".into(),
         crate::terminal::Point::new(crate::terminal::AbsRow(0), 0),
         crate::terminal::Point::new(crate::terminal::AbsRow(0), 1),
     );

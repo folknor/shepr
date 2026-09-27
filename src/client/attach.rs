@@ -911,7 +911,7 @@ mod tests {
     #[test]
     fn direct_attach_pixel_mouse_keeps_pixels_and_semantic_kind() {
         let geometry =
-            crate::input::mouse::HostGeometry::new(80, 24, 800, 480).expect("test precondition");
+            crate::input::mouse::HostPixelExtent::new(80, 24, 800, 480).expect("test precondition");
         let mut events = crate::raw_input::parse_raw_input_bytes_sync(b"\x1b[<0;21;22M");
         let Some(crate::raw_input::RawInputEvent::Mouse(mouse)) = events.pop() else {
             panic!("expected parsed pixel mouse");

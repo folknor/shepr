@@ -23,7 +23,7 @@ pub fn run_terminal_attach(
         config,
         paths,
         ClientLaunchMode::Attach {
-            terminal_id,
+            terminal_id: terminal_id.into(),
             takeover,
             escape: AttachEscapeState::from_config(config),
         },

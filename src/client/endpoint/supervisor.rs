@@ -53,11 +53,7 @@ const ATTEMPT_BUDGET: Duration = Duration::from_secs(25);
 
 #[derive(Clone, Copy)]
 pub(crate) struct EndpointConnectOptions {
-    pub(crate) cols: u16,
-    pub(crate) rows: u16,
-    pub(crate) cell_width_px: u32,
-    pub(crate) cell_height_px: u32,
-    pub(crate) pixel_geometry_exact: bool,
+    pub(crate) geometry: crate::geometry::HostGeometry,
     pub(crate) surface_size: ClientSurfaceSize,
     pub(crate) mouse_capture: bool,
 }
@@ -388,11 +384,7 @@ fn establish(
     super::super::do_handshake(
         &mut stream,
         crate::client::handshake::ClientProcessRole::Local,
-        options.cols,
-        options.rows,
-        options.cell_width_px,
-        options.cell_height_px,
-        options.pixel_geometry_exact,
+        options.geometry,
         Some(options.surface_size),
         options.mouse_capture,
         false,

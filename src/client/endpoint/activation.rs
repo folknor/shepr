@@ -16,7 +16,7 @@ const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
 fn release_surface_best_effort(
     lease: &EndpointLease,
     endpoints: &mut EndpointRegistry,
-    request_id: String,
+    request_id: &crate::protocol::RequestId,
 ) {
     if !endpoints.accepts(&lease.endpoint_id, lease.generation) {
         return;
@@ -70,21 +70,21 @@ impl PendingEndpointActivation {
         if source_available && !source_is_target {
             surface_interest_request(
                 &source.boot_id,
-                format!("client-shell-surface:{serial}:off"),
+                &format!("client-shell-surface:{serial}:off").into(),
                 false,
             )
             .map_err(|error| ActivationBeginError::Preflight(error.to_string()))?;
         }
         surface_interest_request(
             &target_lease.boot_id,
-            format!("client-shell-surface:{serial}:on"),
+            &format!("client-shell-surface:{serial}:on").into(),
             true,
         )
         .map_err(|error| ActivationBeginError::Preflight(error.to_string()))?;
         if let Some(target) = focus.as_ref() {
             focus_request(
                 &target_lease.boot_id,
-                format!("client-shell-focus:{serial}:1"),
+                &format!("client-shell-focus:{serial}:1").into(),
                 target,
             )
             .map_err(|error| ActivationBeginError::Preflight(error.to_string()))?;
@@ -99,7 +99,7 @@ impl PendingEndpointActivation {
             resize,
             geometry,
             phase: ActivationPhase::ReleasingSource {
-                request_id: format!("client-shell-surface:{serial}:off"),
+                request_id: format!("client-shell-surface:{serial}:off").into(),
             },
             deadline: now + ACTIVATION_TIMEOUT,
             epoch: serial,
@@ -131,7 +131,7 @@ impl PendingEndpointActivation {
                 release_surface_best_effort(
                     &self.source,
                     endpoints,
-                    format!("client-shell-surface:{}:off", self.epoch),
+                    &format!("client-shell-surface:{}:off", self.epoch).into(),
                 );
             }
             let resize = self.resize.clone();
@@ -147,7 +147,7 @@ impl PendingEndpointActivation {
         }
         let request = surface_interest_request(
             &self.source.boot_id,
-            format!("client-shell-surface:{}:off", self.epoch),
+            &format!("client-shell-surface:{}:off", self.epoch).into(),
             false,
         )
         .map_err(|error| error.to_string())?;
@@ -177,7 +177,7 @@ impl PendingEndpointActivation {
             release_surface_best_effort(
                 lease,
                 endpoints,
-                format!("client-shell-surface:{}:abandon", self.epoch),
+                &format!("client-shell-surface:{}:abandon", self.epoch).into(),
             );
             if self.source.endpoint_id == self.target.endpoint_id {
                 break;
@@ -998,7 +998,8 @@ impl PendingEndpointActivation {
         endpoints: &mut EndpointRegistry,
         resize: &crate::protocol::ClientMessage,
     ) -> Result<(), String> {
-        let request_id = format!("client-shell-surface:{}:on", self.epoch);
+        let request_id =
+            crate::protocol::RequestId::from(format!("client-shell-surface:{}:on", self.epoch));
         self.deadline = Instant::now() + ACTIVATION_TIMEOUT;
         // A transport may fail after writing any baseline or surface message. Enter the target
         // phase first so every uncertain target write is reversed through target-off before
@@ -1014,7 +1015,7 @@ impl PendingEndpointActivation {
         send_surface_activation(
             endpoints,
             &self.target,
-            request_id,
+            &request_id,
             resize,
             self.host_focused,
         )?;
@@ -1030,8 +1031,11 @@ impl PendingEndpointActivation {
         lease: &EndpointLease,
         completion: ActivationCompletion,
     ) -> Result<(), String> {
-        let request_id = format!("client-shell-surface:{}:presentation-sync", self.epoch);
-        let request = surface_interest_request(&lease.boot_id, request_id.clone(), true)
+        let request_id = crate::protocol::RequestId::from(format!(
+            "client-shell-surface:{}:presentation-sync",
+            self.epoch
+        ));
+        let request = surface_interest_request(&lease.boot_id, &request_id, true)
             .map_err(|error| error.to_string())?;
         self.phase = ActivationPhase::SynchronizingPresentation {
             lease: lease.clone(),
@@ -1069,8 +1073,11 @@ impl PendingEndpointActivation {
     }
 
     fn start_target_release(&mut self, endpoints: &mut EndpointRegistry) -> Result<(), String> {
-        let request_id = format!("client-shell-surface:{}:rollback-target-off", self.epoch);
-        let request = surface_interest_request(&self.target.boot_id, request_id.clone(), false)
+        let request_id = crate::protocol::RequestId::from(format!(
+            "client-shell-surface:{}:rollback-target-off",
+            self.epoch
+        ));
+        let request = surface_interest_request(&self.target.boot_id, &request_id, false)
             .map_err(|error| error.to_string())?;
         // Set the rollback phase before the potentially observed target-off write.
         self.phase = ActivationPhase::ReleasingTargetForRollback { request_id };
@@ -1086,7 +1093,10 @@ impl PendingEndpointActivation {
         endpoints: &mut EndpointRegistry,
         resize: &crate::protocol::ClientMessage,
     ) -> Result<(), String> {
-        let request_id = format!("client-shell-surface:{}:rollback-source-on", self.epoch);
+        let request_id = crate::protocol::RequestId::from(format!(
+            "client-shell-surface:{}:rollback-source-on",
+            self.epoch
+        ));
         // Source baseline writes can also be observed before their send reports an error.
         self.phase = ActivationPhase::RestoringSource {
             request_id: request_id.clone(),
@@ -1097,7 +1107,7 @@ impl PendingEndpointActivation {
         send_surface_activation(
             endpoints,
             &self.source,
-            request_id,
+            &request_id,
             resize,
             self.host_focused,
         )
@@ -1141,7 +1151,7 @@ impl PendingEndpointActivation {
             *focus_request_id = Some(request_id.clone());
             *focus_request_target = Some(desired.clone());
         }
-        let request = focus_request(&self.target.boot_id, request_id, &desired)
+        let request = focus_request(&self.target.boot_id, &request_id, &desired)
             .map_err(|error| error.to_string())?;
         if endpoints.send_to(&self.target.endpoint_id, &request) != EndpointSendOutcome::Sent {
             return Err("endpoint focus could not be sent".into());
@@ -1149,13 +1159,16 @@ impl PendingEndpointActivation {
         Ok(())
     }
 
-    fn next_focus_request_id(&mut self) -> Option<String> {
+    fn next_focus_request_id(&mut self) -> Option<crate::protocol::RequestId> {
         self.focus.as_ref()?;
         self.next_focus_serial = self.next_focus_serial.saturating_add(1);
-        Some(format!(
-            "client-shell-focus:{}:{}",
-            self.epoch, self.next_focus_serial
-        ))
+        Some(
+            format!(
+                "client-shell-focus:{}:{}",
+                self.epoch, self.next_focus_serial
+            )
+            .into(),
+        )
     }
 
     fn progress(&self) -> SurfaceActivationProgress {

@@ -124,14 +124,16 @@ fn consume_input_bytes(
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     pending_palette: &mut Vec<ParsedHostInput>,
     pending_mode: &mut Option<bool>,
-    last_geometry: &mut Option<crate::input::mouse::HostGeometry>,
+    last_geometry: &mut Option<crate::input::mouse::HostPixelExtent>,
     host_sgr_pixels_active: &AtomicBool,
 ) -> bool {
     let sgr_pixels =
         *pending_mode.get_or_insert_with(|| host_sgr_pixels_active.load(Ordering::Acquire));
     if sgr_pixels {
-        *last_geometry =
-            retain_geometry(*last_geometry, crate::input::mouse::HostGeometry::current());
+        *last_geometry = retain_geometry(
+            *last_geometry,
+            crate::input::mouse::HostPixelExtent::current(),
+        );
     }
     let chunks = framer.push_framed(data);
     if !framer.has_pending_input() {
@@ -155,7 +157,7 @@ fn flush_idle_input<R: AsRawFd>(
     pending_mode: &mut Option<bool>,
     host_mouse_capture_active: &AtomicBool,
     host_sgr_pixels_active: &AtomicBool,
-    geometry: Option<crate::input::mouse::HostGeometry>,
+    geometry: Option<crate::input::mouse::HostPixelExtent>,
 ) -> bool {
     if !framer.has_pending_input() && pending_palette.is_empty() {
         return true;
@@ -195,7 +197,7 @@ fn send_unix_input_chunks(
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     pending_palette: &mut Vec<ParsedHostInput>,
     sgr_pixels: bool,
-    geometry: Option<crate::input::mouse::HostGeometry>,
+    geometry: Option<crate::input::mouse::HostPixelExtent>,
 ) -> bool {
     for chunk in chunks {
         let palette_response = matches!(
@@ -233,16 +235,16 @@ fn send_unix_input_chunks(
 }
 
 fn retain_geometry(
-    last: Option<crate::input::mouse::HostGeometry>,
-    observed: Option<crate::input::mouse::HostGeometry>,
-) -> Option<crate::input::mouse::HostGeometry> {
+    last: Option<crate::input::mouse::HostPixelExtent>,
+    observed: Option<crate::input::mouse::HostPixelExtent>,
+) -> Option<crate::input::mouse::HostPixelExtent> {
     observed.or(last)
 }
 
 fn classify_unix_input(
     input: crate::raw_input::FramedRawInputEvent,
     sgr_pixels: bool,
-    geometry: Option<crate::input::mouse::HostGeometry>,
+    geometry: Option<crate::input::mouse::HostPixelExtent>,
 ) -> Option<ParsedHostInput> {
     let pixel_mouse = if sgr_pixels && input.raw.starts_with(b"\x1b[<") {
         let geometry = geometry?;
@@ -334,7 +336,7 @@ mod tests {
     #[test]
     fn pixel_mouse_classification_is_narrow_and_uses_read_geometry() {
         let geometry =
-            crate::input::mouse::HostGeometry::new(80, 24, 800, 480).expect("test precondition");
+            crate::input::mouse::HostPixelExtent::new(80, 24, 800, 480).expect("test precondition");
         let report = b"\x1b[<35;321;241M".to_vec();
         let mut report_events = framed(&report);
         assert_eq!(report_events.len(), 1);
@@ -378,7 +380,7 @@ mod tests {
     #[test]
     fn transient_geometry_failure_keeps_last_real_value() {
         let geometry =
-            crate::input::mouse::HostGeometry::new(80, 24, 800, 480).expect("test precondition");
+            crate::input::mouse::HostPixelExtent::new(80, 24, 800, 480).expect("test precondition");
         assert_eq!(retain_geometry(Some(geometry), None), Some(geometry));
     }
 

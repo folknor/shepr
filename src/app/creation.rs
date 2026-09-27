@@ -193,7 +193,7 @@ impl App {
             workspace_id: self.public_workspace_id(ws_idx),
             number: tab.number,
             label: ws.tab_display_name(tab_idx)?,
-            focused: self.state.active == Some(ws_idx) && ws.active_tab == tab_idx,
+            focused: self.state.active_index() == Some(ws_idx) && ws.active_tab == tab_idx,
             pane_count: tab.panes.len(),
             agent_status: pane_agent_status(agg_state),
         })
@@ -292,7 +292,7 @@ impl App {
                 max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
                 viewport_rows: metrics.viewport_rows as u64,
             });
-        let focused = self.state.active == Some(ws_idx)
+        let focused = self.state.active_index() == Some(ws_idx)
             && ws.active_tab == tab_idx
             && ws
                 .focused_pane_id()
@@ -361,7 +361,7 @@ impl App {
             workspace_id: self.public_workspace_id(index),
             number: index + 1,
             label: ws.display_name(),
-            focused: self.state.active == Some(index),
+            focused: self.state.active_index() == Some(index),
             pane_count: ws.pane_count(),
             tab_count: ws.tabs.len(),
             active_tab_id: self.public_tab_id(index, ws.active_tab).unwrap_or_else(|| {

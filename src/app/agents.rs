@@ -127,7 +127,7 @@ impl App {
         };
 
         if let Some(name) = normalized_name.as_deref() {
-            let conflicts = self.agent_name_conflicts(name, &resolved.terminal_id);
+            let conflicts = self.agent_name_conflicts(name, resolved.terminal_id.as_str());
             if !conflicts.is_empty() {
                 return Err(AgentRenameError::DuplicateName {
                     name: name.to_string(),
@@ -136,7 +136,7 @@ impl App {
             }
         }
 
-        let Some(terminal) = self.state.terminals.get_mut(&resolved.terminal_key) else {
+        let Some(terminal) = self.state.terminals.get_mut(&resolved.terminal_id) else {
             return Err(AgentRenameError::Target(TerminalTargetError::NotFound {
                 target: target.to_string(),
             }));

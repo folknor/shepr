@@ -32,7 +32,7 @@ pub(super) fn endpoint_lease(
     Ok(EndpointLease {
         endpoint_id: endpoint_id.clone(),
         generation: connection.generation.get(),
-        boot_id: boot_id.to_owned(),
+        boot_id: boot_id.into(),
         minimum_revision,
     })
 }
@@ -47,7 +47,7 @@ pub(super) fn disconnected_endpoint_lease(
         boot_id: shell
             .endpoint_boot_id(endpoint_id)
             .unwrap_or_default()
-            .to_owned(),
+            .into(),
         minimum_revision: 0,
     }
 }
@@ -95,8 +95,8 @@ pub(super) fn resize_geometry(
     message: &crate::protocol::ClientMessage,
 ) -> Option<crate::protocol::ClientSurfaceSize> {
     match message {
-        crate::protocol::ClientMessage::ClientShellResize { surface_size, .. } => {
-            Some(*surface_size)
+        crate::protocol::ClientMessage::ClientShellResize { geometry } => {
+            Some(geometry.surface_size())
         }
         _ => None,
     }
@@ -112,7 +112,7 @@ pub(super) fn surface_matches_geometry(
 pub(super) fn send_surface_activation(
     endpoints: &mut EndpointRegistry,
     target: &EndpointLease,
-    request_id: String,
+    request_id: &crate::protocol::RequestId,
     resize: &crate::protocol::ClientMessage,
     focused: bool,
 ) -> Result<(), String> {
@@ -158,7 +158,7 @@ pub(super) fn surface_set_revision(
 
 pub(super) fn focus_request(
     boot_id: &str,
-    request_id: String,
+    request_id: &crate::protocol::RequestId,
     focus: &crate::client::shell::ClientEndpointFocusTarget,
 ) -> std::io::Result<crate::protocol::ClientMessage> {
     let method = match focus {
@@ -169,14 +169,14 @@ pub(super) fn focus_request(
         }
         crate::client::shell::ClientEndpointFocusTarget::Pane(pane_id) => {
             crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
-                pane_id: pane_id.clone(),
+                pane_id: pane_id.to_string(),
             })
         }
     };
     endpoint_request(
         boot_id,
         &crate::api::schema::Request {
-            id: request_id,
+            id: request_id.to_string(),
             method,
         },
     )
@@ -184,13 +184,13 @@ pub(super) fn focus_request(
 
 pub(super) fn surface_interest_request(
     boot_id: &str,
-    request_id: String,
+    request_id: &crate::protocol::RequestId,
     active: bool,
 ) -> std::io::Result<crate::protocol::ClientMessage> {
     endpoint_request(
         boot_id,
         &crate::api::schema::Request {
-            id: request_id,
+            id: request_id.to_string(),
             method: crate::api::schema::Method::ClientShellSurfaceSet(
                 crate::api::schema::ClientShellSurfaceSetParams { active },
             ),
@@ -203,7 +203,7 @@ fn endpoint_request(
     request: &crate::api::schema::Request,
 ) -> std::io::Result<crate::protocol::ClientMessage> {
     Ok(crate::protocol::ClientMessage::ClientShellEndpointRequest {
-        boot_id: boot_id.to_owned(),
+        boot_id: boot_id.into(),
         request: serde_json::to_string(request)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
     })

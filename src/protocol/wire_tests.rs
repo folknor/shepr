@@ -40,11 +40,7 @@ mod tests {
     #[test]
     fn client_hello_roundtrip() -> TestResult {
         let msg = ClientMessage::TerminalHello {
-            cols: 80,
-            rows: 24,
-            cell_width_px: 8,
-            cell_height_px: 16,
-            pixel_mouse: true,
+            geometry: super::TerminalGeometry::new(80, 24, 8, 16, true),
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
@@ -53,10 +49,7 @@ mod tests {
     #[test]
     fn endpoint_hello_roundtrip() -> TestResult {
         let msg = ClientMessage::EndpointHello(crate::protocol::endpoint::EndpointClientHello {
-            cell_width_px: 8,
-            cell_height_px: 16,
-            surface_size: ClientSurfaceSize { cols: 80, rows: 24 },
-            pixel_mouse: true,
+            geometry: super::TerminalGeometry::new(80, 24, 8, 16, true),
             mouse_capture: false,
             surface_active: true,
         });
@@ -67,10 +60,7 @@ mod tests {
     #[test]
     fn client_shell_resize_roundtrip() -> TestResult {
         let msg = ClientMessage::ClientShellResize {
-            cell_width_px: 8,
-            cell_height_px: 16,
-            surface_size: ClientSurfaceSize { cols: 74, rows: 29 },
-            pixel_mouse: true,
+            geometry: super::TerminalGeometry::new(74, 29, 8, 16, true),
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
@@ -234,11 +224,7 @@ mod tests {
     #[test]
     fn client_resize_roundtrip() -> TestResult {
         let msg = ClientMessage::Resize {
-            cols: 80,
-            rows: 24,
-            cell_width_px: 8,
-            cell_height_px: 16,
-            pixel_mouse: true,
+            geometry: super::TerminalGeometry::new(80, 24, 8, 16, true),
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
@@ -254,7 +240,7 @@ mod tests {
     #[test]
     fn client_attach_terminal_roundtrip() -> TestResult {
         let msg = ClientMessage::AttachTerminal {
-            terminal_id: "term_123".to_owned(),
+            terminal_id: "term_123".to_owned().into(),
             takeover: true,
         };
         assert_eq!(roundtrip(&msg)?, msg);
@@ -491,7 +477,24 @@ mod tests {
                 focused: true,
                 right_click_passthrough: false,
             }],
-            agents: Vec::new(),
+            agents: vec![ClientShellAgent {
+                pane_id: "w1:p1"
+                    .parse()
+                    .map_err(|_| std::io::Error::other("invalid test pane id"))?,
+                workspace_id: "w1".into(),
+                tab_id: "w1:t1".into(),
+                name: Some("codex".into()),
+                display_agent: None,
+                agent: Some("codex".into()),
+                title: None,
+                terminal_title: None,
+                terminal_title_stripped: None,
+                agent_status: crate::api::schema::AgentStatus::Working,
+                state_change_seq: 1,
+                state_labels: Vec::new(),
+                tokens: Vec::new(),
+                focused: true,
+            }],
         };
         let expected_keybindings = msg.resolved_config.live_keybinds();
         let decoded: ClientShellSnapshot = roundtrip(&msg)?;
@@ -623,11 +626,7 @@ mod tests {
     #[test]
     fn framing_small_message_roundtrip() {
         let msg = ClientMessage::TerminalHello {
-            cols: 80,
-            rows: 24,
-            cell_width_px: 8,
-            cell_height_px: 16,
-            pixel_mouse: false,
+            geometry: super::TerminalGeometry::new(80, 24, 8, 16, false),
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &msg).expect("test precondition");
@@ -710,11 +709,13 @@ mod tests {
         for i in 0..150u32 {
             let msg = match i % 5 {
                 0 => ClientMessage::TerminalHello {
-                    cols: (80 + u16::try_from(i % 40).unwrap_or(u16::MAX)),
-                    rows: (24 + u16::try_from(i % 20).unwrap_or(u16::MAX)),
-                    cell_width_px: 8,
-                    cell_height_px: 16,
-                    pixel_mouse: i % 2 == 0,
+                    geometry: super::TerminalGeometry::new(
+                        80 + u16::try_from(i % 40).unwrap_or(u16::MAX),
+                        24 + u16::try_from(i % 20).unwrap_or(u16::MAX),
+                        8,
+                        16,
+                        i % 2 == 0,
+                    ),
                 },
                 1 => ClientMessage::Input {
                     data: vec![u8::try_from(i % 256).unwrap_or(u8::MAX); (i as usize % 50) + 1],
@@ -723,11 +724,13 @@ mod tests {
                     focused: i % 2 == 0,
                 },
                 3 => ClientMessage::Resize {
-                    cols: (100 + u16::try_from(i % 30).unwrap_or(u16::MAX)),
-                    rows: (30 + u16::try_from(i % 10).unwrap_or(u16::MAX)),
-                    cell_width_px: 8,
-                    cell_height_px: 16,
-                    pixel_mouse: i % 2 == 0,
+                    geometry: super::TerminalGeometry::new(
+                        100 + u16::try_from(i % 30).unwrap_or(u16::MAX),
+                        30 + u16::try_from(i % 10).unwrap_or(u16::MAX),
+                        8,
+                        16,
+                        i % 2 == 0,
+                    ),
                 },
                 4 => ClientMessage::Detach,
                 _ => unreachable!(),
@@ -1165,11 +1168,7 @@ mod tests {
     fn read_message_accepts_exact_payload() {
         // A normally-framed message should decode without error.
         let msg = ClientMessage::TerminalHello {
-            cols: 80,
-            rows: 24,
-            cell_width_px: 8,
-            cell_height_px: 16,
-            pixel_mouse: false,
+            geometry: super::TerminalGeometry::new(80, 24, 8, 16, false),
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &msg).expect("test precondition");
@@ -1243,21 +1242,13 @@ mod tests {
 
         let messages = vec![
             ClientMessage::TerminalHello {
-                cols: 200,
-                rows: 60,
-                cell_width_px: 8,
-                cell_height_px: 16,
-                pixel_mouse: true,
+                geometry: super::TerminalGeometry::new(200, 60, 8, 16, true),
             },
             ClientMessage::Input {
                 data: b"hello world".to_vec(),
             },
             ClientMessage::Resize {
-                cols: 100,
-                rows: 30,
-                cell_width_px: 8,
-                cell_height_px: 16,
-                pixel_mouse: true,
+                geometry: super::TerminalGeometry::new(100, 30, 8, 16, true),
             },
             ClientMessage::Detach,
         ];

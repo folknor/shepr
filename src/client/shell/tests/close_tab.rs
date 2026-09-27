@@ -6,7 +6,7 @@ fn close_state(confirm: bool, tab_count: usize) -> ClientShellState {
     let mut projected = snapshot();
     for number in 2..=tab_count {
         let mut tab = projected.tabs[0].clone();
-        tab.tab_id = format!("tab_{number}");
+        tab.tab_id = format!("tab_{number}").into();
         tab.number = number;
         tab.focused = false;
         projected.tabs.push(tab);

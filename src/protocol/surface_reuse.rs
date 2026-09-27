@@ -89,7 +89,7 @@ pub(crate) fn message(
 
 #[derive(Default)]
 struct CellBaseline {
-    boot_id: String,
+    boot_id: super::BootId,
     projection_revision: ProjectionRevision,
     surface_revision: SurfaceRevision,
     width: u16,

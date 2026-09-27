@@ -232,7 +232,7 @@ fn pixel_size_reports_need_pixel_geometry_but_character_size_does_not() {
     terminal.write(b"\x1b[14t\x1b[16t\x1b[18t");
     assert_eq!(core_replies(&mut terminal), vec![b"\x1b[8;24;80t".to_vec()]);
 
-    terminal.resize(80, 24, 9, 18);
+    terminal.resize(crate::geometry::PaneGeometry::new(80, 24, 9, 18));
     terminal.write(b"\x1b[14t\x1b[16t\x1b[18t");
     assert_eq!(
         core_replies(&mut terminal),
@@ -249,7 +249,7 @@ fn pixel_size_reports_need_pixel_geometry_but_character_size_does_not() {
 #[test]
 fn text_area_pixel_report_does_not_overflow_for_large_cells() {
     let mut terminal = Terminal::new(80, 24, 0);
-    terminal.resize(80, 24, 100_000, 100_000);
+    terminal.resize(crate::geometry::PaneGeometry::new(80, 24, 100_000, 100_000));
     terminal.write(b"\x1b[14t");
     assert_eq!(
         core_replies(&mut terminal),
@@ -284,7 +284,7 @@ fn adapter_modes_and_replies_keep_byte_order_inside_synchronized_updates() {
     // The in-band resize report follows a DSR requested earlier in the frame,
     // and nothing is answered before ESU.
     let mut terminal = Terminal::new(80, 24, 0);
-    terminal.resize(80, 24, 9, 18);
+    terminal.resize(crate::geometry::PaneGeometry::new(80, 24, 9, 18));
     terminal.write(b"\x1b[?2026h\x1b[5n\x1b[?2048h");
     assert!(core_replies(&mut terminal).is_empty());
     terminal.write(b"\x1b[?2026l");
@@ -307,13 +307,13 @@ fn modify_other_keys_level_is_reported() {
 #[test]
 fn in_band_resize_reports_on_enable_and_resize() {
     let mut terminal = Terminal::new(80, 24, 0);
-    terminal.resize(80, 24, 9, 18);
+    terminal.resize(crate::geometry::PaneGeometry::new(80, 24, 9, 18));
     terminal.write(b"\x1b[?2048h");
     assert_eq!(
         core_replies(&mut terminal),
         vec![b"\x1b[48;24;80;432;720t".to_vec()]
     );
-    terminal.resize(100, 40, 9, 18);
+    terminal.resize(crate::geometry::PaneGeometry::new(100, 40, 9, 18));
     assert_eq!(
         core_replies(&mut terminal),
         vec![b"\x1b[48;40;100;720;900t".to_vec()]
@@ -502,7 +502,7 @@ fn deep_scrollback_resize_preserves_unicode_and_hyperlinks() {
         Some("https://example.com")
     );
 
-    terminal.resize(10, 5, 8, 16);
+    terminal.resize(crate::geometry::PaneGeometry::new(10, 5, 8, 16));
     terminal.scroll_viewport_delta(-100_000);
     let metrics = terminal.scrollbar();
     assert_eq!(metrics.offset, 0);
@@ -527,7 +527,7 @@ fn raw_resize_preserves_content_without_replaying_terminal_effects() {
     let mut terminal = Terminal::new(20, 6, 100_000);
     terminal.write(b"header\r\n\x1b[6;1Htail\x1b[6;18H");
     for (cols, rows) in [(10, 3), (30, 8), (8, 4), (20, 6)] {
-        terminal.resize(cols, rows, 8, 16);
+        terminal.resize(crate::geometry::PaneGeometry::new(cols, rows, 8, 16));
         terminal.write(b"X");
         let text = terminal
             .read_text_screen(
@@ -544,7 +544,7 @@ fn raw_resize_preserves_content_without_replaying_terminal_effects() {
         assert!(terminal.cursor_y() < rows);
     }
     terminal.write(b"\x1b[2J\x1b[H");
-    terminal.resize(12, 3, 8, 16);
+    terminal.resize(crate::geometry::PaneGeometry::new(12, 3, 8, 16));
     assert!(
         terminal
             .read_text_viewport(vp(0, 0), vp(11, 2), false)
@@ -975,8 +975,8 @@ fn widening_resize_keeps_history_that_already_fit() {
     let before = terminal.scrollback_rows();
     assert!(before > 1_400);
 
-    terminal.resize(80, 3, 8, 16);
-    terminal.resize(40, 3, 8, 16);
+    terminal.resize(crate::geometry::PaneGeometry::new(80, 3, 8, 16));
+    terminal.resize(crate::geometry::PaneGeometry::new(40, 3, 8, 16));
 
     assert_eq!(terminal.scrollback_rows(), before);
     assert_eq!(
@@ -1080,8 +1080,8 @@ fn titles_follow_the_parser_title_stack_and_ris() {
     );
 
     // Resizing re-announces the title inside alacritty; that is no change.
-    terminal.resize(30, 5, 0, 0);
-    terminal.resize(10, 2, 0, 0);
+    terminal.resize(crate::geometry::PaneGeometry::new(30, 5, 0, 0));
+    terminal.resize(crate::geometry::PaneGeometry::new(10, 2, 0, 0));
     assert_eq!(terminal.take_title_update(), None);
 
     terminal.write(b"\x1bc");
@@ -1358,14 +1358,14 @@ fn height_resizes_keep_row_ids_and_column_resizes_retire_them() {
 
     // Height changes move lines between screen and history, evicting at the
     // history limit.
-    terminal.resize(10, 3, 0, 0);
+    terminal.resize(crate::geometry::PaneGeometry::new(10, 3, 0, 0));
     assert_rows_name_their_lines(&terminal, [terminal.history_origin(), AbsRow(1_499)]);
-    terminal.resize(10, 8, 0, 0);
+    terminal.resize(crate::geometry::PaneGeometry::new(10, 8, 0, 0));
     assert_rows_name_their_lines(&terminal, [terminal.history_origin(), AbsRow(1_499)]);
 
     // A column change re-wraps every line.
     let retained_end = terminal.absolute_row_for_screen(ScreenRow(terminal.total_rows()));
-    terminal.resize(12, 8, 0, 0);
+    terminal.resize(crate::geometry::PaneGeometry::new(12, 8, 0, 0));
     assert!(terminal.history_origin() >= retained_end);
     assert_eq!(absolute_row_text(&terminal, AbsRow(1_499)), None);
 }

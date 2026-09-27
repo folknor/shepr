@@ -5,14 +5,14 @@ use super::*;
 pub(super) struct WorkspaceNavigationTarget {
     pub(super) endpoint_id: ClientEndpointId,
     pub(super) workspace_id: String,
-    boot_id: String,
+    boot_id: crate::protocol::BootId,
     generation: Option<u64>,
 }
 
 /// Display-only continuity while a direct focus request awaits its authoritative snapshot.
 pub(super) struct PendingWorkspaceHighlight {
     pub(super) target: WorkspaceNavigationTarget,
-    pub(super) request_id: String,
+    pub(super) request_id: crate::protocol::RequestId,
     expires_at: std::time::Instant,
 }
 
@@ -108,7 +108,7 @@ impl ClientShellState {
             for entry in render::workspace_entries(snapshot) {
                 targets.push(WorkspaceNavigationTarget {
                     endpoint_id: endpoint.endpoint_id.clone(),
-                    workspace_id: snapshot.workspaces[entry].workspace_id.clone(),
+                    workspace_id: snapshot.workspaces[entry].workspace_id.to_string(),
                     boot_id: snapshot.boot_id.clone(),
                     generation: endpoint.snapshot_generation,
                 });
@@ -169,7 +169,7 @@ impl ClientShellState {
             {
                 self.pending_workspace_highlight = Some(PendingWorkspaceHighlight {
                     target,
-                    request_id: request.id.clone(),
+                    request_id: request.id.clone().into(),
                     // A later focus can be coalesced with this one before a snapshot is sent.
                     expires_at: std::time::Instant::now() + std::time::Duration::from_secs(1),
                 });

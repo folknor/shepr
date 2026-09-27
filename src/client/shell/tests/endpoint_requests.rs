@@ -124,7 +124,7 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
     state.cancel_endpoint_request(&stale_id);
     assert!(!commands.accepts_response(&ClientEndpointId::Local, 1, "boot-1", &stale_id));
     assert!(commands.accepts_response(&ClientEndpointId::Local, 2, "boot-1", &current_id));
-    assert!(state.pending_requests.contains_key(&current_id));
+    assert!(state.pending_requests.contains_key(current_id.as_str()));
 }
 
 #[test]

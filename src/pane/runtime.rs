@@ -52,8 +52,8 @@ const MIN_PANE_COLS: u16 = 4;
 /// The smallest geometry a pane's PTY and emulator ever get. Spawn and resize
 /// both go through this so the child never sees a 0-row or 0-column PTY and
 /// the PTY and the emulator always agree on the size.
-fn clamp_pane_size(rows: u16, cols: u16) -> (u16, u16) {
-    (rows.max(MIN_PANE_ROWS), cols.max(MIN_PANE_COLS))
+fn clamp_pane_size(rows: u16, cols: u16) -> crate::geometry::GridSize {
+    crate::geometry::GridSize::clamped(cols.max(MIN_PANE_COLS), rows.max(MIN_PANE_ROWS))
 }
 
 /// The render a pane needs once a synchronized update (mode 2026) that never
@@ -109,7 +109,7 @@ pub struct PaneRuntime {
     pane_id: PaneId,
     terminal: Arc<PaneTerminal>,
     io: PaneRuntimeIo,
-    current_size: Cell<(u16, u16, u32, u32)>,
+    current_size: Cell<crate::geometry::PaneGeometry>,
     child_liveness: Arc<ChildLiveness>,
     reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
     persistence_cwd: Mutex<Option<std::path::PathBuf>>,
@@ -142,27 +142,19 @@ impl PaneRuntimeIo {
         }
     }
 
-    fn resize(
-        &self,
-        rows: u16,
-        cols: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-        terminal_responses: Vec<Bytes>,
-    ) {
+    fn resize(&self, geometry: crate::geometry::PaneGeometry, terminal_responses: Vec<Bytes>) {
         match self {
             PaneRuntimeIo::Actor(actor) => {
-                actor.resize(
-                    rows,
-                    cols,
-                    cell_width_px,
-                    cell_height_px,
-                    terminal_responses,
-                );
+                actor.resize(geometry, terminal_responses);
             }
             #[cfg(test)]
             PaneRuntimeIo::TestChannel { resize_tx, .. } => {
-                let _ = resize_tx.send((rows, cols, cell_width_px, cell_height_px));
+                let _ = resize_tx.send((
+                    geometry.rows(),
+                    geometry.cols(),
+                    geometry.cell_width(),
+                    geometry.cell_height(),
+                ));
             }
         }
     }
@@ -413,7 +405,9 @@ impl PaneRuntime {
         initial_history_ansi: Option<&str>,
         launch_purpose: LaunchPurpose,
     ) -> std::io::Result<Self> {
-        let (rows, cols) = clamp_pane_size(rows, cols);
+        let size = clamp_pane_size(rows, cols);
+        let rows = size.rows.get();
+        let cols = size.cols.get();
         crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
 
         let terminal = crate::ghostty::Terminal::new(cols, rows, scrollback_limit_bytes);
@@ -639,7 +633,7 @@ impl PaneRuntime {
                 })
             };
             let actor = PtyIoActor::spawn(PtyIoActorConfig {
-                pane_id: pane_id.raw(),
+                pane_id,
                 master_fd: spawned.master_fd,
                 on_read,
                 on_reader_exit: Some(on_reader_exit),
@@ -931,7 +925,7 @@ impl PaneRuntime {
             pane_id,
             terminal,
             io,
-            current_size: Cell::new((rows, cols, 0, 0)),
+            current_size: Cell::new(crate::geometry::PaneGeometry::new(cols, rows, 0, 0)),
             child_liveness,
             reported_cwd,
             persistence_cwd: Mutex::new(None),
@@ -972,9 +966,14 @@ impl PaneRuntime {
         }
     }
 
+    pub(crate) fn grid_size(&self) -> crate::geometry::GridSize {
+        self.current_size.get().grid
+    }
+
+    #[cfg(test)]
     pub(crate) fn current_size(&self) -> (u16, u16) {
-        let (rows, cols, _, _) = self.current_size.get();
-        (rows, cols)
+        let grid = self.grid_size();
+        (grid.rows.get(), grid.cols.get())
     }
 
     pub(crate) fn content_seq(&self) -> u64 {
@@ -982,28 +981,22 @@ impl PaneRuntime {
     }
 
     /// Resize if the dimensions actually changed.
-    pub fn resize(&self, rows: u16, cols: u16, cell_width_px: u32, cell_height_px: u32) {
-        let (rows, cols) = clamp_pane_size(rows, cols);
-        let size = (rows, cols, cell_width_px, cell_height_px);
+    pub fn resize(&self, geometry: crate::geometry::PaneGeometry) {
+        let size = crate::geometry::PaneGeometry {
+            grid: clamp_pane_size(geometry.rows(), geometry.cols()),
+            cell: geometry.cell,
+        };
         if self.current_size.get() == size {
             return;
         }
         self.current_size.set(size);
         let _content_write_guard = crate::ghostty::lock_auxiliary(&self.content_write_lock);
         self.content_seq.fetch_add(1, Ordering::AcqRel);
-        let terminal_responses = self
-            .terminal
-            .resize(rows, cols, cell_width_px, cell_height_px);
+        let terminal_responses = self.terminal.resize(size);
         self.content_seq.fetch_add(1, Ordering::Release);
         drop(_content_write_guard);
         mark_detection_content_changed(&self.detection_content_seq);
-        self.io.resize(
-            rows,
-            cols,
-            cell_width_px,
-            cell_height_px,
-            terminal_responses,
-        );
+        self.io.resize(size, terminal_responses);
     }
 
     /// Scroll up by N lines (into scrollback history).
@@ -1337,10 +1330,11 @@ impl PaneRuntime {
     }
 
     pub(crate) fn pixel_size(&self) -> Option<(u32, u32)> {
-        let (rows, cols, cell_width_px, cell_height_px) = self.current_size.get();
-        let width = u32::from(cols).checked_mul(cell_width_px)?;
-        let height = u32::from(rows).checked_mul(cell_height_px)?;
-        (width > 0 && height > 0).then_some((width, height))
+        let size = self.current_size.get();
+        let cell = size.cell?;
+        let width = u32::from(size.cols()).checked_mul(cell.width.get())?;
+        let height = u32::from(size.rows()).checked_mul(cell.height.get())?;
+        Some((width, height))
     }
 
     pub fn encode_alternate_scroll(
@@ -1536,7 +1530,7 @@ impl PaneRuntime {
                     sender: tx,
                     resize_tx,
                 },
-                current_size: Cell::new((rows, cols, 0, 0)),
+                current_size: Cell::new(crate::geometry::PaneGeometry::new(cols, rows, 0, 0)),
                 child_liveness: Arc::new(ChildLiveness::new(0, None)),
                 reported_cwd: Arc::new(Mutex::new(None)),
                 persistence_cwd: Mutex::new(None),
@@ -1671,7 +1665,7 @@ mod tests {
             1
         );
         runtime.scroll_reset();
-        runtime.resize(5, 24, 0, 0);
+        runtime.resize(crate::geometry::PaneGeometry::new(24, 5, 0, 0));
         let resized = runtime
             .collect_dirty_patch_snapshot(24, 5)
             .expect("resized snapshot");
@@ -1889,10 +1883,22 @@ mod tests {
 
     #[test]
     fn pane_size_clamp_never_yields_an_empty_pty() {
-        assert_eq!(clamp_pane_size(0, 0), (MIN_PANE_ROWS, MIN_PANE_COLS));
-        assert_eq!(clamp_pane_size(1, 80), (MIN_PANE_ROWS, 80));
-        assert_eq!(clamp_pane_size(24, 3), (24, MIN_PANE_COLS));
-        assert_eq!(clamp_pane_size(24, 80), (24, 80));
+        assert_eq!(
+            clamp_pane_size(0, 0),
+            crate::geometry::GridSize::clamped(MIN_PANE_COLS, MIN_PANE_ROWS)
+        );
+        assert_eq!(
+            clamp_pane_size(1, 80),
+            crate::geometry::GridSize::clamped(80, MIN_PANE_ROWS)
+        );
+        assert_eq!(
+            clamp_pane_size(24, 3),
+            crate::geometry::GridSize::clamped(MIN_PANE_COLS, 24)
+        );
+        assert_eq!(
+            clamp_pane_size(24, 80),
+            crate::geometry::GridSize::clamped(80, 24)
+        );
     }
 
     #[test]
@@ -2076,12 +2082,12 @@ mod tests {
         let runtime =
             PaneRuntime::test_with_scrollback_bytes(80, 45, 20_000_000, history.as_bytes());
 
-        runtime.resize(21, 80, 0, 0);
+        runtime.resize(crate::geometry::PaneGeometry::new(80, 21, 0, 0));
         let snapshot = runtime.recent_unwrapped_text_snapshot(usize::MAX);
         assert!(snapshot.text.contains("00001 "));
         assert!(snapshot.text.contains("02000 "));
 
-        runtime.resize(45, 80, 0, 0);
+        runtime.resize(crate::geometry::PaneGeometry::new(80, 45, 0, 0));
 
         assert_eq!(runtime.current_size(), (45, 80));
         assert_eq!(runtime.terminal_dimensions(), Some((80, 45)));
@@ -2115,7 +2121,7 @@ mod tests {
                 sender: tx,
                 resize_tx,
             },
-            current_size: Cell::new((80, 24, 0, 0)),
+            current_size: Cell::new(crate::geometry::PaneGeometry::new(24, 80, 0, 0)),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             reported_cwd: Arc::new(Mutex::new(None)),
             content_seq: Arc::new(AtomicU64::new(0)),
@@ -2150,7 +2156,7 @@ mod tests {
                 sender: tx,
                 resize_tx,
             },
-            current_size: Cell::new((80, 24, 0, 0)),
+            current_size: Cell::new(crate::geometry::PaneGeometry::new(24, 80, 0, 0)),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             reported_cwd: Arc::new(Mutex::new(None)),
             content_seq: Arc::new(AtomicU64::new(0)),

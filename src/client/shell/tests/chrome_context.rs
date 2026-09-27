@@ -4,7 +4,7 @@ use super::*;
 fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
     let mut snapshot = snapshot();
     snapshot.tabs.extend((2..=8).map(|number| ClientShellTab {
-        tab_id: format!("tab_{number}"),
+        tab_id: format!("tab_{number}").into(),
         workspace_id: "ws_1".into(),
         number,
         label: number.to_string(),
@@ -63,7 +63,7 @@ fn focused_last_overflow_tab_shows_its_full_label() {
         .iter()
         .enumerate()
         .map(|(index, label)| ClientShellTab {
-            tab_id: format!("tab_{}", index + 1),
+            tab_id: format!("tab_{}", index + 1).into(),
             workspace_id: "ws_1".into(),
             number: index + 1,
             label: (*label).into(),
@@ -76,9 +76,9 @@ fn focused_last_overflow_tab_shows_its_full_label() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     for number in [8, 7, 8] {
         let tab_id = format!("tab_{number}");
-        projected.focused_tab_id = Some(tab_id.clone());
-        projected.workspaces[0].active_tab_id = tab_id.clone();
-        projected.panes[0].tab_id = tab_id.clone();
+        projected.focused_tab_id = Some(tab_id.clone().into());
+        projected.workspaces[0].active_tab_id = tab_id.clone().into();
+        projected.panes[0].tab_id = tab_id.clone().into();
         for tab in &mut projected.tabs {
             tab.focused = tab.tab_id == tab_id;
         }
@@ -150,7 +150,7 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
     let template = initial.workspaces[0].clone();
     initial.workspaces = (1..=12)
         .map(|number| ClientShellWorkspace {
-            workspace_id: format!("ws_{number}"),
+            workspace_id: format!("ws_{number}").into(),
             number,
             label: format!("space-{number}"),
             branch: None,
@@ -563,7 +563,7 @@ fn selection_without_a_previous_surface_is_dropped_by_the_next_surface() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.selection = Some(crate::selection::Selection::range(
-        "pane_1".to_owned(),
+        "pane_1".into(),
         crate::terminal::Point::new(crate::terminal::AbsRow(0), 0),
         crate::terminal::Point::new(crate::terminal::AbsRow(0), 2),
     ));

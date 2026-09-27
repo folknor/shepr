@@ -23,10 +23,7 @@ impl EndpointTransport for CapturingEndpointTransport {
 
 fn lifecycle_resize() -> crate::protocol::ClientMessage {
     crate::protocol::ClientMessage::ClientShellResize {
-        cell_width_px: 8,
-        cell_height_px: 16,
-        surface_size: crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 },
-        pixel_mouse: false,
+        geometry: crate::protocol::TerminalGeometry::new(80, 24, 8, 16, false),
     }
 }
 
@@ -34,7 +31,7 @@ fn request_active_surface(server: &mut HeadlessServer, client_id: u64, request_i
     let boot_id = server.client_shell_boot_id.clone();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
-            client_id,
+            client_id: client_id.into(),
             boot_id,
             request: Box::new(api::schema::Request {
                 id: request_id.into(),
@@ -62,7 +59,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         .expect("test precondition");
     let original_size = server.effective_size;
     let (writer, control_rx, render_rx) = test_client_writer();
-    let client_id = 52;
+    let client_id = ClientId::test_new(52);
 
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
@@ -93,7 +90,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert!(
         !server.handle_server_event(ServerEvent::ClientShellPaneInput {
             client_id,
-            pane_id,
+            pane_id: pane_id.clone().into(),
             events: vec![crate::protocol::ClientPaneInputEvent::Paste(
                 "blocked".into()
             )],
@@ -127,7 +124,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         client_id,
         &ServerMessage::ClientShellError {
             kind: protocol::NoticeKind::PaneInputDropped {
-                pane_id: "metadata event".into(),
+                pane_id: pane_id.clone().into(),
                 events: 1
             },
         }
@@ -164,7 +161,10 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         panic!("expected typed surface activation result");
     };
     assert_eq!(server.clients.foreground_client_id(), Some(client_id));
-    assert_eq!(server.effective_size, (101, 37));
+    assert_eq!(
+        server.effective_size,
+        crate::geometry::GridSize::clamped(101, 37)
+    );
 
     server.render_and_stream();
     let ServerMessage::PaneSurface(surface) =
@@ -267,18 +267,23 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
     let (focused_control, _) = connect_test_shell(&mut server, 7, 68, 17);
     let _ = focused_control.recv().expect("focused client snapshot");
     assert!(server.handle_server_event(ServerEvent::ClientShellFocus {
-        client_id: 7,
+        client_id: ClientId::test_new(7),
         focused: true,
     }));
     let focused_size = server.app.test_runtime(pane_id).current_size();
     assert_eq!(focused_size, (17, 67));
-    let shared_tab_id = server.shell_tab_id_for_client(7).expect("focused tab");
-    assert_eq!(server.clients.geometry_controller(&shared_tab_id), Some(7));
+    let shared_tab_id = server
+        .shell_tab_id_for_client(ClientId::test_new(7))
+        .expect("focused tab");
+    assert_eq!(
+        server.clients.geometry_controller(&shared_tab_id),
+        Some(ClientId::test_new(7))
+    );
 
     let (writer, background_control, _) = test_client_writer();
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
-            client_id: 8,
+            client_id: ClientId::test_new(8),
             surface_cols: 100,
             surface_rows: 35,
             cell_width_px: 0,
@@ -298,7 +303,9 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         .recv()
         .expect("background surface activation response");
     assert_eq!(
-        server.shell_tab_id_for_client(8).as_deref(),
+        server
+            .shell_tab_id_for_client(ClientId::test_new(8))
+            .as_deref(),
         Some(shared_tab_id.as_str())
     );
     assert_eq!(
@@ -318,10 +325,13 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         focused_size,
         "surface activation must not transiently resize a focused viewer's tab"
     );
-    assert_eq!(server.clients.geometry_controller(&shared_tab_id), Some(7));
+    assert_eq!(
+        server.clients.geometry_controller(&shared_tab_id),
+        Some(ClientId::test_new(7))
+    );
 
     assert!(server.handle_server_event(ServerEvent::ClientShellFocus {
-        client_id: 8,
+        client_id: ClientId::test_new(8),
         focused: false,
     }));
     assert_eq!(
@@ -340,7 +350,10 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         server.app.test_runtime(pane_id).current_size(),
         focused_size
     );
-    assert_eq!(server.clients.geometry_controller(&shared_tab_id), Some(7));
+    assert_eq!(
+        server.clients.geometry_controller(&shared_tab_id),
+        Some(ClientId::test_new(7))
+    );
 
     request_active_surface(&mut server, 8, "synchronize-background-surface");
     let _ = background_control
@@ -350,7 +363,10 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         server.app.test_runtime(pane_id).current_size(),
         focused_size
     );
-    assert_eq!(server.clients.geometry_controller(&shared_tab_id), Some(7));
+    assert_eq!(
+        server.clients.geometry_controller(&shared_tab_id),
+        Some(ClientId::test_new(7))
+    );
     shutdown_test_runtimes(&mut server);
 }
 
@@ -361,14 +377,16 @@ async fn focused_surface_reassertion_reclaims_tab_geometry() {
     let (focused_control, _) = connect_test_shell(&mut server, 8, 100, 35);
     let _ = focused_control.recv().expect("focused client snapshot");
     assert!(server.handle_server_event(ServerEvent::ClientShellFocus {
-        client_id: 8,
+        client_id: ClientId::test_new(8),
         focused: true,
     }));
-    let shared_tab_id = server.shell_tab_id_for_client(8).expect("focused tab");
+    let shared_tab_id = server
+        .shell_tab_id_for_client(ClientId::test_new(8))
+        .expect("focused tab");
 
     let (other_control, _) = connect_test_shell(&mut server, 7, 68, 17);
     let _ = other_control.recv().expect("other client snapshot");
-    assert!(server.claim_shell_tab_geometry(7, false));
+    assert!(server.claim_shell_tab_geometry(ClientId::test_new(7), false));
     assert_eq!(server.app.test_runtime(pane_id).current_size(), (17, 67));
 
     request_active_surface(&mut server, 8, "reassert-focused-surface");
@@ -383,7 +401,10 @@ async fn focused_surface_reassertion_reclaims_tab_geometry() {
         Some(true)
     );
     assert_eq!(server.app.test_runtime(pane_id).current_size(), (35, 99));
-    assert_eq!(server.clients.geometry_controller(&shared_tab_id), Some(8));
+    assert_eq!(
+        server.clients.geometry_controller(&shared_tab_id),
+        Some(ClientId::test_new(8))
+    );
     shutdown_test_runtimes(&mut server);
 }
 
@@ -391,7 +412,7 @@ async fn focused_surface_reassertion_reclaims_tab_geometry() {
 async fn presentation_sync_epoch_replays_modes_and_title() {
     let mut server = test_headless_server();
     let (writer, control_rx, _render_rx) = test_client_writer();
-    let client_id = 63;
+    let client_id = ClientId::test_new(63);
     assert!(
         server.handle_server_event(ServerEvent::ClientShellConnected {
             client_id,
@@ -471,24 +492,21 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
 
 fn dispatch_lifecycle_messages(
     server: &mut HeadlessServer,
-    client_id: u64,
+    client_id: ClientId,
     messages: Vec<crate::protocol::ClientMessage>,
 ) {
     for message in messages {
         let event = match message {
-            crate::protocol::ClientMessage::ClientShellResize {
-                cell_width_px,
-                cell_height_px,
-                surface_size,
-                pixel_mouse,
-            } => ServerEvent::ClientShellResize {
-                client_id,
-                cell_width_px,
-                cell_height_px,
-                surface_cols: surface_size.cols,
-                surface_rows: surface_size.rows,
-                pixel_mouse,
-            },
+            crate::protocol::ClientMessage::ClientShellResize { geometry } => {
+                ServerEvent::ClientShellResize {
+                    client_id,
+                    cell_width_px: geometry.width(),
+                    cell_height_px: geometry.height(),
+                    surface_cols: geometry.cols(),
+                    surface_rows: geometry.rows(),
+                    pixel_mouse: geometry.pixel_mouse,
+                }
+            }
             crate::protocol::ClientMessage::ClientShellFocus { focused } => {
                 ServerEvent::ClientShellFocus { client_id, focused }
             }
@@ -513,7 +531,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let mut source_server = test_headless_server();
     let _source_input = install_focused_test_runtime(&mut source_server, b"local source");
     let (source_writer, source_control, _source_render) = test_client_writer();
-    let source_client_id = 78;
+    let source_client_id = ClientId::test_new(78);
     assert!(
         source_server.handle_server_event(ServerEvent::ClientShellConnected {
             client_id: source_client_id,
@@ -532,7 +550,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     let mut target_server = test_headless_server();
     let _target_input = install_focused_test_runtime(&mut target_server, b"remote target");
     let (target_writer, target_control, target_render) = test_client_writer();
-    let target_client_id = 79;
+    let target_client_id = ClientId::test_new(79);
     assert!(
         target_server.handle_server_event(ServerEvent::ClientShellConnected {
             client_id: target_client_id,

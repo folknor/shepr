@@ -435,8 +435,8 @@ mod tests {
         );
         app.state.workspaces = vec![Workspace::test_new("agent")];
         app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
+        app.state.set_active_index(Some(0));
+        app.state.set_selected_index(Some(0));
         app.state.mode = Mode::Terminal;
         app
     }

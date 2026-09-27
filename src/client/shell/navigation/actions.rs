@@ -97,7 +97,7 @@ impl ClientShellState {
                         .as_deref()
                         .and_then(|snapshot| snapshot.focused_tab_id.clone())
                     {
-                        self.request_tab_close(tab_id, outcome);
+                        self.request_tab_close(&tab_id, outcome);
                     }
                     return;
                 }
@@ -163,7 +163,7 @@ impl ClientShellState {
         self.push_endpoint_method_with_kind(
             crate::api::schema::Method::PaneSelectionRead(
                 crate::api::schema::PaneSelectionReadParams {
-                    pane_id,
+                    pane_id: pane_id.to_string(),
                     anchor: crate::api::schema::PaneSelectionPoint {
                         row: anchor.0,
                         col: anchor.1,
@@ -200,7 +200,7 @@ impl ClientShellState {
                 .snapshot
                 .as_deref()
                 .map(|snapshot| snapshot.boot_id.clone())
-                .unwrap_or_else(|| "disconnected".to_owned()),
+                .unwrap_or_else(|| "disconnected".into()),
             kind,
             code: code.into(),
         };
@@ -254,7 +254,7 @@ impl ClientShellState {
         };
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.saturating_add(1);
-        let request_id = format!("client-shell:{request_id}");
+        let request_id = crate::protocol::RequestId::from(format!("client-shell:{request_id}"));
         self.pending_requests.insert(
             request_id.clone(),
             PendingEndpointRequest {
@@ -267,7 +267,7 @@ impl ClientShellState {
             endpoint_id: self.active_endpoint_id.clone(),
             boot_id: snapshot.boot_id.clone(),
             request: Box::new(crate::api::schema::Request {
-                id: request_id,
+                id: request_id.to_string(),
                 method,
             }),
         });
@@ -303,7 +303,9 @@ impl ClientShellState {
                 })
             }
             ClientEndpointFocusTarget::Pane(pane_id) => {
-                crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id })
+                crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+                    pane_id: pane_id.to_string(),
+                })
             }
         };
         let mut outcome = ClientShellInput::default();
@@ -376,7 +378,7 @@ impl ClientShellState {
         }
         if result.is_ok() {
             let timeout_key = ClientEndpointNoticeKey {
-                boot_id: boot_id.to_owned(),
+                boot_id: boot_id.into(),
                 kind: ClientEndpointNoticeKind::Timeout,
                 code: pending.method_name.clone(),
             };
@@ -570,7 +572,10 @@ impl ClientShellState {
         use crate::input::KeybindAction;
 
         let snapshot = self.snapshot.as_deref()?;
-        let focused_workspace = snapshot.focused_workspace_id.clone()?;
+        let focused_workspace = snapshot
+            .focused_workspace_id
+            .as_ref()
+            .map(ToString::to_string)?;
         let focused_tab = snapshot.focused_tab_id.clone();
         let focused_pane = snapshot.focused_pane_id.clone();
         let direction = |action| match action {
@@ -624,7 +629,7 @@ impl ClientShellState {
                     .hits
                     .agents
                     .iter()
-                    .any(|(_, visible_pane_id)| visible_pane_id == &pane_id)
+                    .any(|(_, visible_pane_id)| visible_pane_id.as_str() == pane_id)
                 {
                     self.agent_scroll = next.min(self.hits.agent_max_scroll);
                 }
@@ -636,7 +641,7 @@ impl ClientShellState {
                     .workspaces
                     .get(*entries.get(index)?)?
                     .workspace_id
-                    .clone();
+                    .to_string();
                 self.reveal_workspace(&workspace_id);
                 Some(Method::WorkspaceFocus(WorkspaceTarget { workspace_id }))
             }
@@ -657,7 +662,7 @@ impl ClientShellState {
                 let current_isize = isize::try_from(current).unwrap_or(isize::MAX);
                 let len_isize = isize::try_from(entries.len()).unwrap_or(isize::MAX);
                 let next = (current_isize + delta).rem_euclid(len_isize) as usize;
-                let workspace_id = snapshot.workspaces[entries[next]].workspace_id.clone();
+                let workspace_id = snapshot.workspaces[entries[next]].workspace_id.to_string();
                 self.reveal_workspace(&workspace_id);
                 Some(Method::WorkspaceFocus(WorkspaceTarget { workspace_id }))
             }
@@ -668,7 +673,7 @@ impl ClientShellState {
                     .filter(|tab| tab.workspace_id == focused_workspace)
                     .collect::<Vec<_>>();
                 Some(Method::TabFocus(TabTarget {
-                    tab_id: tabs.get(index)?.tab_id.clone(),
+                    tab_id: tabs.get(index)?.tab_id.to_string(),
                 }))
             }
             KeybindAction::PreviousTab | KeybindAction::NextTab => {
@@ -688,7 +693,7 @@ impl ClientShellState {
                 let len_isize = isize::try_from(tabs.len()).unwrap_or(isize::MAX);
                 let next = (current_isize + delta).rem_euclid(len_isize) as usize;
                 Some(Method::TabFocus(TabTarget {
-                    tab_id: tabs[next].tab_id.clone(),
+                    tab_id: tabs[next].tab_id.to_string(),
                 }))
             }
             KeybindAction::MoveTabPrevious | KeybindAction::MoveTabNext => {
@@ -714,7 +719,7 @@ impl ClientShellState {
                     source - 1
                 };
                 Some(Method::TabMove(TabMoveParams {
-                    tab_id: focused_tab,
+                    tab_id: focused_tab.to_string(),
                     insert_index,
                 }))
             }
@@ -732,7 +737,7 @@ impl ClientShellState {
             | KeybindAction::FocusPaneUp
             | KeybindAction::FocusPaneRight => {
                 Some(Method::PaneFocusDirection(PaneFocusDirectionParams {
-                    pane_id: focused_pane,
+                    pane_id: focused_pane.clone().map(|id| id.to_string()),
                     direction: direction(action)?,
                 }))
             }
@@ -740,7 +745,7 @@ impl ClientShellState {
             | KeybindAction::SwapPaneDown
             | KeybindAction::SwapPaneUp
             | KeybindAction::SwapPaneRight => Some(Method::PaneSwap(PaneSwapParams {
-                pane_id: focused_pane,
+                pane_id: focused_pane.clone().map(|id| id.to_string()),
                 direction: Some(direction(action)?),
                 source_pane_id: None,
                 target_pane_id: None,
@@ -748,7 +753,7 @@ impl ClientShellState {
             KeybindAction::SplitVertical | KeybindAction::SplitHorizontal => {
                 Some(Method::PaneSplit(PaneSplitParams {
                     workspace_id: Some(focused_workspace),
-                    target_pane_id: focused_pane,
+                    target_pane_id: focused_pane.clone().map(|id| id.to_string()),
                     direction: if action == KeybindAction::SplitVertical {
                         SplitDirection::Right
                     } else {
@@ -762,7 +767,7 @@ impl ClientShellState {
                 }))
             }
             KeybindAction::ClosePane => Some(Method::PaneClose(PaneTarget {
-                pane_id: focused_pane.clone()?,
+                pane_id: focused_pane.clone()?.to_string(),
             })),
             KeybindAction::CyclePaneNext | KeybindAction::CyclePanePrevious => {
                 let focused_tab = focused_tab?;
@@ -785,7 +790,7 @@ impl ClientShellState {
                     (current + 1) % panes.len()
                 };
                 Some(Method::PaneFocus(PaneTarget {
-                    pane_id: panes[next].pane_id.clone(),
+                    pane_id: panes[next].pane_id.to_string(),
                 }))
             }
             KeybindAction::LastPane => {
@@ -796,21 +801,21 @@ impl ClientShellState {
                     return None;
                 }
                 Some(Method::PaneFocus(PaneTarget {
-                    pane_id: pane_id.clone(),
+                    pane_id: pane_id.to_string(),
                 }))
             }
             KeybindAction::Zoom => Some(Method::PaneZoom(PaneZoomParams {
-                pane_id: focused_pane,
+                pane_id: focused_pane.clone().map(|id| id.to_string()),
                 mode: PaneZoomMode::Toggle,
             })),
             KeybindAction::ClearPane => Some(Method::PaneClear(PaneTarget {
-                pane_id: focused_pane?,
+                pane_id: focused_pane?.to_string(),
             })),
             KeybindAction::ResizePaneLeft
             | KeybindAction::ResizePaneDown
             | KeybindAction::ResizePaneUp
             | KeybindAction::ResizePaneRight => Some(Method::PaneResize(PaneResizeParams {
-                pane_id: focused_pane,
+                pane_id: focused_pane.map(|id| id.to_string()),
                 direction: direction(action)?,
                 amount: None,
             })),

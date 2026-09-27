@@ -6,7 +6,7 @@ use super::super::ClientEndpointId;
 pub(super) struct EndpointLease {
     pub(super) endpoint_id: ClientEndpointId,
     pub(super) generation: u64,
-    pub(super) boot_id: String,
+    pub(super) boot_id: crate::protocol::BootId,
     /// The endpoint cache may already be newer than the first activation event. Never let an
     /// activation prove coherence with a revision that the monotonic cache has discarded.
     pub(super) minimum_revision: u64,
@@ -15,8 +15,8 @@ pub(super) struct EndpointLease {
 #[derive(Clone, Debug, Default)]
 pub(super) struct ActivationEvidence {
     pub(super) snapshot_revision: Option<u64>,
-    pub(super) focused_workspace_id: Option<String>,
-    pub(super) focused_pane_id: Option<String>,
+    pub(super) focused_workspace_id: Option<crate::workspace::WorkspaceId>,
+    pub(super) focused_pane_id: Option<crate::workspace::PublicPaneId>,
     pub(super) surface: Option<crate::protocol::PaneSurfaceFrame>,
 }
 
@@ -63,29 +63,29 @@ impl ActivationEvidence {
 #[derive(Clone, Debug)]
 pub(super) enum ActivationPhase {
     ReleasingSource {
-        request_id: String,
+        request_id: crate::protocol::RequestId,
     },
     ActivatingTarget {
-        request_id: String,
+        request_id: crate::protocol::RequestId,
         acknowledged_revision: Option<u64>,
         /// At most one focus request may be in flight. Retargets only replace `focus` until
         /// this response arrives, at which point the latest target is sent.
-        focus_request_id: Option<String>,
+        focus_request_id: Option<crate::protocol::RequestId>,
         focus_request_target: Option<crate::client::shell::ClientEndpointFocusTarget>,
         focus_acknowledged: bool,
         evidence: ActivationEvidence,
     },
     ReleasingTargetForRollback {
-        request_id: String,
+        request_id: crate::protocol::RequestId,
     },
     RestoringSource {
-        request_id: String,
+        request_id: crate::protocol::RequestId,
         acknowledged_revision: Option<u64>,
         evidence: ActivationEvidence,
     },
     SynchronizingPresentation {
         lease: EndpointLease,
-        request_id: String,
+        request_id: crate::protocol::RequestId,
         acknowledged_revision: Option<u64>,
         evidence: ActivationEvidence,
         completion: Box<ActivationCompletion>,

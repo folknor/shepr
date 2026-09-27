@@ -970,10 +970,11 @@ fn parse_host_cell_size_report(buffer: &[u8]) -> Option<(u32, u32)> {
     }
     let height_px = params.next()?.parse::<u32>().ok()?;
     let width_px = params.next()?.parse::<u32>().ok()?;
-    if params.next().is_some() || width_px == 0 || height_px == 0 {
+    if params.next().is_some() {
         return None;
     }
-    Some((width_px, height_px))
+    crate::geometry::CellPx::new(width_px, height_px)
+        .map(|cell| (cell.width.get(), cell.height.get()))
 }
 
 fn parse_host_keyboard_probe_response(buffer: &[u8]) -> Option<HostKeyboardProbeResponse> {

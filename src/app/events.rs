@@ -367,7 +367,7 @@ impl App {
     }
 
     pub(crate) fn accept_current_focus_without_events(&mut self) {
-        self.last_focus = self.state.active.and_then(|idx| {
+        self.last_focus = self.state.active_index().and_then(|idx| {
             self.state
                 .workspaces
                 .get(idx)
@@ -376,7 +376,7 @@ impl App {
     }
 
     pub(crate) fn accept_current_focus_with_api_events(&mut self) {
-        let current_focus = self.state.active.and_then(|idx| {
+        let current_focus = self.state.active_index().and_then(|idx| {
             self.state
                 .workspaces
                 .get(idx)
@@ -424,7 +424,7 @@ impl App {
         &mut self,
         outer_event: Option<crate::ghostty::FocusEvent>,
     ) {
-        let current_focus = self.state.active.and_then(|idx| {
+        let current_focus = self.state.active_index().and_then(|idx| {
             self.state
                 .workspaces
                 .get(idx)

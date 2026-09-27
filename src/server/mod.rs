@@ -5,6 +5,7 @@ pub(crate) mod client_commands;
 pub(crate) mod client_shell;
 pub(crate) mod client_transport;
 pub(crate) mod clients;
+pub(crate) use clients::ClientId;
 pub mod headless;
 pub(crate) mod pane_input;
 pub(crate) mod render_stream;

@@ -103,7 +103,7 @@ fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
 enum ClientLaunchMode {
     Shell,
     Attach {
-        terminal_id: String,
+        terminal_id: crate::terminal::TerminalId,
         takeover: bool,
         escape: AttachEscapeState,
     },
@@ -182,8 +182,8 @@ fn run_client_with_mode(
     };
 
     // Get the terminal geometry before handshake (before raw mode).
-    let (cols, rows, cell_width_px, cell_height_px, exact_cell_size) =
-        initial_terminal_geometry(pixel_geometry_enabled, pixel_geometry_fallback)?;
+    let geometry = initial_terminal_geometry(pixel_geometry_enabled, pixel_geometry_fallback)?;
+    let (cols, rows) = (geometry.cols(), geometry.rows());
 
     let shell_surface_size = loop_config.shell_config.as_ref().map(|shell| {
         let host_size = terminal_geometry::ClientHostSize::new(cols, rows, true);
@@ -195,11 +195,7 @@ fn run_client_with_mode(
             do_handshake(
                 &mut stream,
                 role,
-                cols,
-                rows,
-                cell_width_px,
-                cell_height_px,
-                exact_cell_size,
+                geometry,
                 shell_surface_size,
                 loop_config.settings.mouse_capture_active,
                 true,
@@ -273,11 +269,7 @@ fn run_client_with_mode(
             initial,
             endpoint_catalog,
             local_failure_policy,
-            cols,
-            rows,
-            cell_width_px,
-            cell_height_px,
-            exact_cell_size,
+            geometry,
             should_quit,
             loop_config,
             attach_escape,
@@ -335,17 +327,19 @@ async fn run_client_loop(
     initial: Option<LocalStream>,
     endpoint_catalog: endpoint::EndpointCatalog,
     local_failure_policy: endpoint::LocalFailurePolicy,
-    cols: u16,
-    rows: u16,
-    initial_cell_width_px: u32,
-    initial_cell_height_px: u32,
-    initial_pixel_geometry_exact: bool,
+    initial_geometry: crate::geometry::HostGeometry,
     should_quit: Arc<AtomicBool>,
     mut config: ClientLoopConfig,
     attach_escape: Option<AttachEscapeState>,
     direct_notices: &mut VecDeque<String>,
     _terminal_guard: &TerminalGuard,
 ) -> Result<(), ClientError> {
+    let (cols, rows) = (initial_geometry.cols(), initial_geometry.rows());
+    let (initial_cell_width_px, initial_cell_height_px, initial_pixel_geometry_exact) = (
+        initial_geometry.cell_width(),
+        initial_geometry.cell_height(),
+        initial_geometry.exact,
+    );
     let draw_host_cursor =
         attach_escape.is_none() && should_draw_host_cursor(config.settings.host_cursor);
     let local_unavailable = initial.is_none();
@@ -367,10 +361,14 @@ async fn run_client_loop(
         direct_keyboard_protocol: crate::host_term::modes::DirectHostKeyboardState::default(),
         pane_keyboard_report_all: false,
         keyboard_report_all_active: false,
-        reported_size: (cols, rows),
-        reported_cell_size: (initial_cell_width_px, initial_cell_height_px),
+        reported_geometry: crate::geometry::HostGeometry::new(
+            cols,
+            rows,
+            initial_cell_width_px,
+            initial_cell_height_px,
+            initial_pixel_geometry_exact,
+        ),
         settings: config.settings,
-        pixel_geometry_exact: initial_pixel_geometry_exact,
         mode: match config.shell_config.take().map(shell::ClientShellState::new) {
             Some(shell) => SessionMode::Shell(Box::new(shell)),
             None => SessionMode::DirectAttach(AttachSession {
@@ -454,11 +452,13 @@ async fn run_client_loop(
     std::thread::spawn(move || {
         resize_poll_loop(
             &resize_tx,
-            cols,
-            rows,
-            initial_cell_width_px,
-            initial_cell_height_px,
-            initial_pixel_geometry_exact,
+            crate::geometry::HostGeometry::new(
+                cols,
+                rows,
+                initial_cell_width_px,
+                initial_cell_height_px,
+                initial_pixel_geometry_exact,
+            ),
             pixel_geometry_enabled,
             pixel_geometry_fallback,
             &resize_cell_size,
@@ -504,10 +504,12 @@ async fn run_client_loop(
         );
     }
     if local_unavailable
-        && let Some(frame) = state
-            .mode
-            .shell_mut()
-            .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
+        && let Some(frame) = state.mode.shell_mut().and_then(|shell| {
+            shell.compose(
+                state.reported_geometry.cols(),
+                state.reported_geometry.rows(),
+            )
+        })
     {
         state.present_frame(frame);
     }
@@ -601,26 +603,25 @@ impl ClientLoop<'_> {
                 );
             }
             if let Some(shell) = self.state.mode.shell() {
+                let cell = protocol::ProtocolCellSize::from_host(
+                    self.state.reported_geometry.cell_width(),
+                    self.state.reported_geometry.cell_height(),
+                    self.state.reported_geometry.exact,
+                );
                 self.supervisors.spawn_due(
                     std::time::Instant::now(),
                     endpoint::EndpointConnectOptions {
-                        cols: self.state.reported_size.0,
-                        rows: self.state.reported_size.1,
-                        cell_width_px: self
-                            .state
-                            .reported_cell_size
-                            .0
-                            .min(protocol::MAX_CELL_SIZE_PX),
-                        cell_height_px: self
-                            .state
-                            .reported_cell_size
-                            .1
-                            .min(protocol::MAX_CELL_SIZE_PX),
-                        pixel_geometry_exact: self.state.pixel_geometry_exact
-                            && self.state.reported_cell_size.0 <= protocol::MAX_CELL_SIZE_PX
-                            && self.state.reported_cell_size.1 <= protocol::MAX_CELL_SIZE_PX,
-                        surface_size: shell
-                            .surface_size(self.state.reported_size.0, self.state.reported_size.1),
+                        geometry: crate::geometry::HostGeometry::new(
+                            self.state.reported_geometry.cols(),
+                            self.state.reported_geometry.rows(),
+                            cell.width(),
+                            cell.height(),
+                            cell.exact,
+                        ),
+                        surface_size: shell.surface_size(
+                            self.state.reported_geometry.cols(),
+                            self.state.reported_geometry.rows(),
+                        ),
                         mouse_capture: self.state.host_mouse_mode.shell_preference(),
                     },
                     &self.supervisor_tx,
@@ -666,9 +667,13 @@ impl ClientLoop<'_> {
         match event {
             ClientLoopEvent::StdinInput(inputs) => self.handle_stdin_input(inputs),
             ClientLoopEvent::TerminalUnavailable(err) => self.handle_terminal_unavailable(&err),
-            ClientLoopEvent::Resize(cols, rows, cell_width, cell_height, exact) => {
-                self.handle_resize(cols, rows, cell_width, cell_height, exact)
-            }
+            ClientLoopEvent::Resize(geometry) => self.handle_resize(
+                geometry.cols(),
+                geometry.rows(),
+                geometry.cell_width(),
+                geometry.cell_height(),
+                geometry.exact,
+            ),
             ClientLoopEvent::EndpointSupervisor(event) => {
                 self.handle_endpoint_supervisor(event, now)
             }
@@ -719,7 +724,7 @@ impl ClientLoop<'_> {
             ) && let Err(err) =
                 state
                     .host_mouse_mode
-                    .apply(shell_mode, state.pixel_geometry_exact, true)
+                    .apply(shell_mode, state.reported_geometry.exact, true)
             {
                 warn!(err = %err, "failed to re-assert host mouse capture");
             }
@@ -729,7 +734,12 @@ impl ClientLoop<'_> {
             let outcome = shell.handle_host_input(inputs);
             let frame = outcome
                 .repaint
-                .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
+                .then(|| {
+                    shell.compose(
+                        state.reported_geometry.cols(),
+                        state.reported_geometry.rows(),
+                    )
+                })
                 .flatten();
             if finish_client_shell_input(
                 state,
@@ -772,8 +782,8 @@ impl ClientLoop<'_> {
                         kind,
                         position,
                         geometry: Some(crate::protocol::ClientMouseGeometry {
-                            cols: geometry.cols,
-                            rows: geometry.rows,
+                            cols: geometry.cols(),
+                            rows: geometry.rows(),
                             width_px: geometry.width_px,
                             height_px: geometry.height_px,
                         }),
@@ -787,7 +797,7 @@ impl ClientLoop<'_> {
             let action = attach_escape.filter_parsed_input(
                 input.raw,
                 &input.event,
-                state.reported_size.1,
+                state.reported_geometry.rows(),
                 state.settings.mouse_scroll_lines,
             );
             match action {
@@ -898,13 +908,18 @@ impl ClientLoop<'_> {
                 cell_height_px,
                 pixel_geometry_exact,
             );
-        state.pixel_geometry_exact = pixel_geometry_exact;
+        state.reported_geometry = crate::geometry::HostGeometry::new(
+            new_cols,
+            new_rows,
+            cell_width_px,
+            cell_height_px,
+            pixel_geometry_exact,
+        );
         state
             .host_mouse_mode
             .apply(state.mode.is_shell(), pixel_geometry_exact, false)
             .map_err(ClientError::HostTerminal)?;
         state.set_host_size(new_cols, new_rows);
-        state.reported_cell_size = (cell_width_px, cell_height_px);
         // Resizing invalidates the host-side blit baseline. The retained pane surface
         // stays: until the resized one arrives, `compose` draws it clipped to the new
         // pane area (with pane hits clipped to match) instead of dropping to the
@@ -913,19 +928,21 @@ impl ClientLoop<'_> {
         let msg = if let Some(shell) = state.mode.shell() {
             client_shell_resize_message(
                 shell,
-                state.reported_size.0,
-                state.reported_size.1,
+                state.reported_geometry.cols(),
+                state.reported_geometry.rows(),
                 cell_width_px,
                 cell_height_px,
                 pixel_geometry_exact,
             )
         } else {
             ClientMessage::Resize {
-                cols: new_cols,
-                rows: new_rows,
-                cell_width_px,
-                cell_height_px,
-                pixel_mouse: pixel_geometry_exact,
+                geometry: protocol::TerminalGeometry::new(
+                    new_cols,
+                    new_rows,
+                    cell_width_px,
+                    cell_height_px,
+                    pixel_geometry_exact,
+                ),
             }
         };
         if let Some(activation) = pending_activation.as_mut() {
@@ -947,11 +964,12 @@ impl ClientLoop<'_> {
         // the retained surface (clipped), so this is chrome and passes a freeze left by
         // an unavailable handoff; otherwise the wrongly sized frame would stay up until
         // that freeze ended.
-        if let Some(frame) = state
-            .mode
-            .shell_mut()
-            .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
-        {
+        if let Some(frame) = state.mode.shell_mut().and_then(|shell| {
+            shell.compose(
+                state.reported_geometry.cols(),
+                state.reported_geometry.rows(),
+            )
+        }) {
             state.present_chrome(frame, pending_activation.is_some());
         }
         Ok(ClientLoopAction::NextEvent)
@@ -992,11 +1010,12 @@ impl ClientLoop<'_> {
                 });
                 if let Some(message) = unavailable {
                     present_handoff_unavailable(state, message);
-                } else if let Some(frame) = state
-                    .mode
-                    .shell_mut()
-                    .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1))
-                {
+                } else if let Some(frame) = state.mode.shell_mut().and_then(|shell| {
+                    shell.compose(
+                        state.reported_geometry.cols(),
+                        state.reported_geometry.rows(),
+                    )
+                }) {
                     // A status change is machine-list chrome; it must show even while
                     // no endpoint owns presentation.
                     state.present_chrome(frame, pending_activation.is_some());
@@ -1016,10 +1035,12 @@ impl ClientLoop<'_> {
                 ) {
                     return Ok(ClientLoopAction::NextEvent);
                 }
-                let frame = state
-                    .mode
-                    .shell_mut()
-                    .and_then(|shell| shell.compose(state.reported_size.0, state.reported_size.1));
+                let frame = state.mode.shell_mut().and_then(|shell| {
+                    shell.compose(
+                        state.reported_geometry.cols(),
+                        state.reported_geometry.rows(),
+                    )
+                });
                 let reader_quit = writer.stop_handle();
                 write_stream.insert(endpoint_id.clone(), writer, generation, false);
                 if let Some(frame) = frame {
@@ -1149,7 +1170,10 @@ impl ClientLoop<'_> {
                 }
                 let composed = if let Some(shell) = state.mode.shell_mut() {
                     shell.set_pane_surface(surface);
-                    shell.compose(state.reported_size.0, state.reported_size.1)
+                    shell.compose(
+                        state.reported_geometry.cols(),
+                        state.reported_geometry.rows(),
+                    )
                 } else {
                     None
                 };
@@ -1178,7 +1202,10 @@ impl ClientLoop<'_> {
                 };
                 if compose_fallback {
                     let composed = state.mode.shell_mut().and_then(|shell| {
-                        shell.compose(state.reported_size.0, state.reported_size.1)
+                        shell.compose(
+                            state.reported_geometry.cols(),
+                            state.reported_geometry.rows(),
+                        )
                     });
                     if let Some(frame) = composed {
                         state.present_frame(frame);
@@ -1205,7 +1232,10 @@ impl ClientLoop<'_> {
             ServerMessage::ClientShellError { kind } => {
                 if let Some(shell) = state.mode.shell_mut()
                     && shell.receive_endpoint_error(kind.to_string())
-                    && let Some(frame) = shell.compose(state.reported_size.0, state.reported_size.1)
+                    && let Some(frame) = shell.compose(
+                        state.reported_geometry.cols(),
+                        state.reported_geometry.rows(),
+                    )
                 {
                     // The error banner is chrome; it must show through an
                     // unavailable-handoff freeze like machine statuses do.
@@ -1306,7 +1336,12 @@ impl ClientLoop<'_> {
                         };
                         let frame = outcome
                             .repaint
-                            .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
+                            .then(|| {
+                                shell.compose(
+                                    state.reported_geometry.cols(),
+                                    state.reported_geometry.rows(),
+                                )
+                            })
                             .flatten();
                         (outcome, frame)
                     }
@@ -1353,7 +1388,7 @@ impl ClientLoop<'_> {
                     .set_endpoint_request(enabled, sgr_pixels);
                 state
                     .host_mouse_mode
-                    .apply(state.mode.is_shell(), state.pixel_geometry_exact, false)
+                    .apply(state.mode.is_shell(), state.reported_geometry.exact, false)
                     .map_err(ClientError::HostTerminal)?;
             }
             ServerMessage::DirectTerminalKeyboardProtocol {
@@ -1610,7 +1645,12 @@ impl ClientLoop<'_> {
                     | shell.tick_transient_banners(now);
                 let frame = outcome
                     .repaint
-                    .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
+                    .then(|| {
+                        shell.compose(
+                            state.reported_geometry.cols(),
+                            state.reported_geometry.rows(),
+                        )
+                    })
                     .flatten();
                 (outcome, frame)
             };

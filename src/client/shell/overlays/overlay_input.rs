@@ -142,9 +142,12 @@ impl ClientShellState {
             })
             .map(|target| target.workspace_id.clone())
             .or_else(|| {
-                self.snapshot
-                    .as_deref()
-                    .and_then(|snapshot| snapshot.focused_workspace_id.clone())
+                self.snapshot.as_deref().and_then(|snapshot| {
+                    snapshot
+                        .focused_workspace_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                })
             })
     }
 
@@ -199,7 +202,11 @@ impl ClientShellState {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
         };
-        let Some(workspace_id) = snapshot.focused_workspace_id.clone() else {
+        let Some(workspace_id) = snapshot
+            .focused_workspace_id
+            .as_ref()
+            .map(ToString::to_string)
+        else {
             return;
         };
         let default_name = (snapshot
@@ -695,13 +702,13 @@ impl ClientShellState {
                 original_name,
             } => (!(trimmed.is_empty() || auto_name && trimmed == original_name)).then(|| {
                 crate::api::schema::Method::TabRename(crate::api::schema::TabRenameParams {
-                    tab_id,
+                    tab_id: tab_id.to_string(),
                     label: trimmed.to_owned(),
                 })
             }),
             ClientRenameTarget::Pane { pane_id } => Some(crate::api::schema::Method::PaneRename(
                 crate::api::schema::PaneRenameParams {
-                    pane_id,
+                    pane_id: pane_id.to_string(),
                     label: Some(trimmed.to_owned()),
                 },
             )),
@@ -712,15 +719,19 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    pub(super) fn request_tab_close(&mut self, tab_id: String, outcome: &mut ClientShellInput) {
+    pub(super) fn request_tab_close(
+        &mut self,
+        tab_id: &crate::workspace::PublicTabId,
+        outcome: &mut ClientShellInput,
+    ) {
         let workspace_id = self.snapshot.as_deref().and_then(|snapshot| {
-            let target = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id)?;
+            let target = snapshot.tabs.iter().find(|tab| &tab.tab_id == tab_id)?;
             (self.config.confirm_close
                 && !snapshot
                     .tabs
                     .iter()
-                    .any(|tab| tab.workspace_id == target.workspace_id && tab.tab_id != tab_id))
-            .then(|| target.workspace_id.clone())
+                    .any(|tab| tab.workspace_id == target.workspace_id && &tab.tab_id != tab_id))
+            .then(|| target.workspace_id.to_string())
         });
         if let Some(workspace_id) = workspace_id
             && self.open_close_confirmation(workspace_id, Some(tab_id.clone()))
@@ -729,7 +740,9 @@ impl ClientShellState {
             return;
         }
         self.push_endpoint_method(
-            crate::api::schema::Method::TabClose(crate::api::schema::TabTarget { tab_id }),
+            crate::api::schema::Method::TabClose(crate::api::schema::TabTarget {
+                tab_id: tab_id.to_string(),
+            }),
             outcome,
         );
     }
@@ -755,7 +768,7 @@ impl ClientShellState {
                 return;
             }
             crate::api::schema::Method::TabClose(crate::api::schema::TabTarget {
-                tab_id: target.tab_id,
+                tab_id: target.tab_id.to_string(),
             })
         } else {
             crate::api::schema::Method::WorkspaceClose(crate::api::schema::WorkspaceCloseParams {
@@ -769,7 +782,11 @@ impl ClientShellState {
         self.open_close_confirmation(workspace_id, None);
     }
 
-    fn open_close_confirmation(&mut self, workspace_id: String, tab_id: Option<String>) -> bool {
+    fn open_close_confirmation(
+        &mut self,
+        workspace_id: String,
+        tab_id: Option<crate::workspace::PublicTabId>,
+    ) -> bool {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return false;
         };

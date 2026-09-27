@@ -46,7 +46,7 @@ impl App {
     /// Renders the configured outer window title, or `None` when window titles
     /// are disabled or every token resolved empty.
     pub(crate) fn window_title(&self) -> Option<String> {
-        let target = self.state.active.and_then(|workspace_index| {
+        let target = self.state.active_index().and_then(|workspace_index| {
             self.state
                 .workspaces
                 .get(workspace_index)
@@ -135,7 +135,7 @@ mod tests {
             event_hub,
         );
         app.state.workspaces = vec![Workspace::test_new("herd")];
-        app.state.active = Some(0);
+        app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
         app
     }

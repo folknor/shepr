@@ -1,10 +1,11 @@
 use super::*;
+use crate::server::ClientId;
 use crate::server::clients::ClientShellTopology;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ShellFocusTarget {
-    pub(super) tab_id: String,
-    pub(super) workspace_index: usize,
+    pub(super) tab_id: crate::workspace::PublicTabId,
+    pub(super) workspace_id: crate::workspace::WorkspaceId,
     pub(super) pane_id: crate::layout::PaneId,
 }
 
@@ -19,17 +20,19 @@ fn classify_shell_focus_transition<'a>(
     }
     if before.map(|target| target.tab_id.as_str()) == after.map(|target| target.tab_id.as_str()) {
         return match (before, after) {
-            (Some(before), Some(after)) if focused_tabs_after.contains(&after.tab_id) => {
+            (Some(before), Some(after)) if focused_tabs_after.contains(after.tab_id.as_str()) => {
                 (Some(before), Some(after))
             }
             _ => (None, None),
         };
     }
     let lost = before.filter(|target| {
-        focused_tabs_before.contains(&target.tab_id) && !focused_tabs_after.contains(&target.tab_id)
+        focused_tabs_before.contains(target.tab_id.as_str())
+            && !focused_tabs_after.contains(target.tab_id.as_str())
     });
     let gained = after.filter(|target| {
-        !focused_tabs_before.contains(&target.tab_id) && focused_tabs_after.contains(&target.tab_id)
+        !focused_tabs_before.contains(target.tab_id.as_str())
+            && focused_tabs_after.contains(target.tab_id.as_str())
     });
     (lost, gained)
 }
@@ -51,17 +54,18 @@ pub(super) fn forward_proxied_api_response(
 
 impl HeadlessServer {
     pub(super) fn default_shell_target(&self) -> Option<crate::ui::TabSurfaceTarget> {
-        let workspace_index = self.app.state.active?;
+        let workspace_index = self.app.state.active_index()?;
         let workspace = self.app.state.workspaces.get(workspace_index)?;
-        Some(crate::ui::TabSurfaceTarget {
+        crate::ui::TabSurfaceTarget::from_indices(
+            &self.app.state,
             workspace_index,
-            tab_index: workspace.active_tab_index(),
-        })
+            workspace.active_tab_index(),
+        )
     }
 
     pub(super) fn shell_target_for_client(
         &self,
-        client_id: u64,
+        client_id: ClientId,
     ) -> Option<crate::ui::TabSurfaceTarget> {
         let tab_id = self
             .clients
@@ -71,50 +75,47 @@ impl HeadlessServer {
             .as_ref()
             .and_then(crate::server::clients::ClientShellLocation::focused_tab_id);
         tab_id
-            .and_then(|tab_id| self.app.parse_tab_id(tab_id))
-            .map(|(workspace_index, tab_index)| crate::ui::TabSurfaceTarget {
-                workspace_index,
-                tab_index,
+            .and_then(|tab_id| self.app.resolve_tab_id(tab_id))
+            .and_then(|(workspace_index, tab_index)| {
+                crate::ui::TabSurfaceTarget::from_indices(
+                    &self.app.state,
+                    workspace_index,
+                    tab_index,
+                )
             })
             .or_else(|| self.default_shell_target())
     }
 
-    fn tab_id_for_target(&self, target: crate::ui::TabSurfaceTarget) -> Option<String> {
-        self.app
-            .public_tab_id(target.workspace_index, target.tab_index)
+    fn tab_id_for_target(&self, target: &crate::ui::TabSurfaceTarget) -> Option<String> {
+        target
+            .resolve(&self.app.state)
+            .map(|_| target.tab_id.to_string())
     }
 
-    pub(super) fn shell_tab_id_for_client(&self, client_id: u64) -> Option<String> {
+    pub(super) fn shell_tab_id_for_client(&self, client_id: ClientId) -> Option<String> {
         self.shell_target_for_client(client_id)
-            .and_then(|target| self.tab_id_for_target(target))
+            .and_then(|target| self.tab_id_for_target(&target))
     }
 
     fn client_shell_topology(&self) -> ClientShellTopology {
-        let focused_workspace_id = self
-            .app
-            .state
-            .active
-            .map(|workspace_index| self.app.public_workspace_id(workspace_index));
+        let focused_workspace_id = self.app.state.active.clone();
         let fallback_workspace_id = self
             .app
             .state
             .workspaces
             .first()
-            .map(|_| self.app.public_workspace_id(0));
+            .map(|workspace| workspace.id.clone());
         let mut active_tab_ids = HashMap::new();
         let mut tab_workspace_ids = HashMap::new();
-        for (workspace_index, workspace) in self.app.state.workspaces.iter().enumerate() {
-            let workspace_id = self.app.public_workspace_id(workspace_index);
-            if let Some(tab_id) = self
-                .app
-                .public_tab_id(workspace_index, workspace.active_tab_index())
-            {
+        for workspace in &self.app.state.workspaces {
+            let workspace_id = workspace.id.clone();
+            if let Some(tab) = workspace.tabs.get(workspace.active_tab_index()) {
+                let tab_id = crate::workspace::PublicTabId::new(workspace_id.as_str(), tab.number);
                 active_tab_ids.insert(workspace_id.clone(), tab_id);
             }
-            for tab_index in 0..workspace.tabs.len() {
-                if let Some(tab_id) = self.app.public_tab_id(workspace_index, tab_index) {
-                    tab_workspace_ids.insert(tab_id, workspace_id.clone());
-                }
+            for tab in &workspace.tabs {
+                let tab_id = crate::workspace::PublicTabId::new(workspace_id.as_str(), tab.number);
+                tab_workspace_ids.insert(tab_id, workspace_id.clone());
             }
         }
         ClientShellTopology {
@@ -151,10 +152,8 @@ impl HeadlessServer {
         let Some(target) = self.default_shell_target() else {
             return;
         };
-        let workspace_id = self.app.public_workspace_id(target.workspace_index);
-        let Some(tab_id) = self.tab_id_for_target(target) else {
-            return;
-        };
+        let workspace_id = target.workspace_id.clone();
+        let tab_id = target.tab_id.clone();
         let focus_before = self.shell_focus_targets();
         let focused_tabs_before = self.focused_shell_tabs();
         for client in self
@@ -172,11 +171,19 @@ impl HeadlessServer {
         self.send_shell_focus_transitions(&lost, &gained);
     }
 
-    pub(super) fn focus_shell_client_on_tab(&mut self, client_id: u64, tab_id: &str) -> bool {
+    pub(super) fn focus_shell_client_on_tab(&mut self, client_id: ClientId, tab_id: &str) -> bool {
         let Some((workspace_index, _)) = self.app.parse_tab_id(tab_id) else {
             return false;
         };
-        let workspace_id = self.app.public_workspace_id(workspace_index);
+        let Some(workspace_id) = self
+            .app
+            .state
+            .workspaces
+            .get(workspace_index)
+            .map(|workspace| workspace.id.clone())
+        else {
+            return false;
+        };
         let Some(client) = self.clients.get_mut(&client_id) else {
             return false;
         };
@@ -186,26 +193,32 @@ impl HeadlessServer {
         else {
             return false;
         };
-        location.focus_tab(workspace_id, tab_id.to_owned());
+        let Ok(tab_id) = tab_id.parse() else {
+            return false;
+        };
+        location.focus_tab(workspace_id, tab_id);
         true
     }
 
-    pub(super) fn set_default_shell_target_from_client(&mut self, client_id: u64) -> bool {
+    pub(super) fn set_default_shell_target_from_client(&mut self, client_id: ClientId) -> bool {
         let Some(target) = self.shell_target_for_client(client_id) else {
             return false;
         };
-        if self.default_shell_target() == Some(target) {
+        if self.default_shell_target().as_ref() == Some(&target) {
             return false;
         }
+        let Some((workspace_index, tab_index)) = target.resolve(&self.app.state) else {
+            return false;
+        };
         self.app
             .state
-            .switch_workspace_tab(target.workspace_index, target.tab_index)
+            .switch_workspace_tab(workspace_index, tab_index)
     }
 
-    pub(super) fn focus_shell_client_on_default_target(&mut self, client_id: u64) -> bool {
+    pub(super) fn focus_shell_client_on_default_target(&mut self, client_id: ClientId) -> bool {
         let Some(tab_id) = self
             .default_shell_target()
-            .and_then(|target| self.tab_id_for_target(target))
+            .and_then(|target| self.tab_id_for_target(&target))
         else {
             return false;
         };
@@ -286,7 +299,7 @@ impl HeadlessServer {
 
     pub(super) fn apply_shell_navigation_request(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         method: &api::schema::Method,
     ) -> bool {
         match method {
@@ -295,7 +308,15 @@ impl HeadlessServer {
                 else {
                     return false;
                 };
-                let workspace_id = self.app.public_workspace_id(workspace_index);
+                let Some(workspace_id) = self
+                    .app
+                    .state
+                    .workspaces
+                    .get(workspace_index)
+                    .map(|workspace| workspace.id.clone())
+                else {
+                    return false;
+                };
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return false;
                 };
@@ -328,23 +349,24 @@ impl HeadlessServer {
         &self,
         target: crate::ui::TabSurfaceTarget,
     ) -> Option<ShellFocusTarget> {
+        let (workspace_index, tab_index) = target.resolve(&self.app.state)?;
         let pane_id = self
             .app
             .state
             .workspaces
-            .get(target.workspace_index)?
+            .get(workspace_index)?
             .tabs
-            .get(target.tab_index)?
+            .get(tab_index)?
             .layout
             .focused();
         Some(ShellFocusTarget {
-            tab_id: self.tab_id_for_target(target)?,
-            workspace_index: target.workspace_index,
+            tab_id: target.tab_id,
+            workspace_id: target.workspace_id,
             pane_id,
         })
     }
 
-    pub(super) fn shell_focus_target(&self, client_id: u64) -> Option<ShellFocusTarget> {
+    pub(super) fn shell_focus_target(&self, client_id: ClientId) -> Option<ShellFocusTarget> {
         self.focus_target_for_surface(self.shell_target_for_client(client_id)?)
     }
 
@@ -361,7 +383,7 @@ impl HeadlessServer {
             .collect()
     }
 
-    pub(super) fn shell_focus_targets(&self) -> Vec<(u64, Option<ShellFocusTarget>)> {
+    pub(super) fn shell_focus_targets(&self) -> Vec<(ClientId, Option<ShellFocusTarget>)> {
         self.clients
             .iter()
             .filter(|(_, client)| client.is_active_shell_client())
@@ -374,13 +396,21 @@ impl HeadlessServer {
         target: &ShellFocusTarget,
         event: crate::ghostty::FocusEvent,
     ) {
-        self.app
-            .send_pane_focus_event(target.workspace_index, target.pane_id, event);
+        if let Some(workspace_index) = self
+            .app
+            .state
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == target.workspace_id)
+        {
+            self.app
+                .send_pane_focus_event(workspace_index, target.pane_id, event);
+        }
     }
 
     fn shell_location_focus_transitions(
         &self,
-        focus_before: Vec<(u64, Option<ShellFocusTarget>)>,
+        focus_before: Vec<(ClientId, Option<ShellFocusTarget>)>,
         focused_tabs_before: &HashSet<String>,
     ) -> (
         HashMap<String, ShellFocusTarget>,
@@ -398,12 +428,12 @@ impl HeadlessServer {
                 &focused_tabs_after,
             );
             if let Some(target) = lost_target {
-                lost.entry(target.tab_id.clone())
+                lost.entry(target.tab_id.to_string())
                     .or_insert_with(|| target.clone());
             }
             if let Some(target) = gained_target {
                 gained
-                    .entry(target.tab_id.clone())
+                    .entry(target.tab_id.to_string())
                     .or_insert_with(|| target.clone());
             }
         }
@@ -425,7 +455,7 @@ impl HeadlessServer {
 
     pub(super) fn finish_shell_location_reconciliation(
         &mut self,
-        focus_before: Vec<(u64, Option<ShellFocusTarget>)>,
+        focus_before: Vec<(ClientId, Option<ShellFocusTarget>)>,
         focused_tabs_before: &HashSet<String>,
     ) {
         let (lost, gained) =
@@ -453,14 +483,17 @@ impl HeadlessServer {
 
     pub(super) fn shell_client_views_pane(
         &self,
-        client_id: u64,
+        client_id: ClientId,
         workspace_index: usize,
         pane_id: crate::layout::PaneId,
     ) -> bool {
         let Some(target) = self.shell_target_for_client(client_id) else {
             return false;
         };
-        if target.workspace_index != workspace_index {
+        let Some((target_workspace_index, tab_index)) = target.resolve(&self.app.state) else {
+            return false;
+        };
+        if target_workspace_index != workspace_index {
             return false;
         }
         let Some(tab) = self
@@ -468,7 +501,7 @@ impl HeadlessServer {
             .state
             .workspaces
             .get(workspace_index)
-            .and_then(|workspace| workspace.tabs.get(target.tab_index))
+            .and_then(|workspace| workspace.tabs.get(tab_index))
         else {
             return false;
         };
@@ -501,7 +534,7 @@ impl HeadlessServer {
 
     pub(super) fn apply_shell_tab_geometry(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         start_pending_agent_resumes: bool,
     ) -> bool {
         let Some(target) = self.shell_target_for_client(client_id) else {
@@ -512,7 +545,7 @@ impl HeadlessServer {
 
     fn apply_shell_tab_geometry_to_target(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         target: crate::ui::TabSurfaceTarget,
         start_pending_agent_resumes: bool,
     ) -> bool {
@@ -525,13 +558,16 @@ impl HeadlessServer {
 
     fn resize_shell_tab_geometry_to_target(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         target: crate::ui::TabSurfaceTarget,
     ) -> bool {
         let Some(client) = self.clients.get(&client_id) else {
             return false;
         };
-        let (cols, rows) = client.terminal_size;
+        let (cols, rows) = (
+            client.terminal_size.cols.get(),
+            client.terminal_size.rows.get(),
+        );
         let cell_size = if client.cell_size.is_known() {
             client.cell_size
         } else {
@@ -592,7 +628,7 @@ impl HeadlessServer {
         &mut self,
         start_pending_agent_resumes: bool,
     ) -> bool {
-        let mut viewed_tabs = HashMap::<String, Vec<u64>>::new();
+        let mut viewed_tabs = HashMap::<String, Vec<ClientId>>::new();
         for (&client_id, client) in &self.clients {
             if !client.is_active_shell_client() || client.writer.is_none() {
                 continue;
@@ -612,7 +648,7 @@ impl HeadlessServer {
                 .as_ref()
                 .is_some_and(|controller| viewers.contains(controller));
             if !controller_is_viewing {
-                self.clients.set_geometry_controller(tab_id, viewers[0]);
+                self.clients.set_geometry_controller(&tab_id, viewers[0]);
             }
         }
 
@@ -626,16 +662,17 @@ impl HeadlessServer {
             .iter()
             .filter_map(|(tab_id, &client_id)| {
                 self.app
-                    .parse_tab_id(tab_id)
-                    .map(|(workspace_index, tab_index)| {
-                        (
+                    .resolve_tab_id(tab_id)
+                    .and_then(|(workspace_index, tab_index)| {
+                        Some((
                             tab_id.clone(),
                             client_id,
-                            crate::ui::TabSurfaceTarget {
+                            crate::ui::TabSurfaceTarget::from_indices(
+                                &self.app.state,
                                 workspace_index,
                                 tab_index,
-                            },
-                        )
+                            )?,
+                        ))
                     })
             })
             .collect::<Vec<_>>();
@@ -652,7 +689,7 @@ impl HeadlessServer {
 
     pub(super) fn claim_shell_tab_geometry(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         start_pending_agent_resumes: bool,
     ) -> bool {
         if !self
@@ -665,7 +702,7 @@ impl HeadlessServer {
         let Some(tab_id) = self.shell_tab_id_for_client(client_id) else {
             return false;
         };
-        if !self.clients.claim_geometry(tab_id, client_id) {
+        if !self.clients.claim_geometry(&tab_id, client_id) {
             return false;
         }
         self.apply_shell_tab_geometry(client_id, start_pending_agent_resumes)
@@ -673,7 +710,7 @@ impl HeadlessServer {
 
     pub(super) fn claim_unowned_shell_tab_geometry(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         start_pending_agent_resumes: bool,
     ) -> bool {
         if !self
@@ -686,7 +723,7 @@ impl HeadlessServer {
         let Some(tab_id) = self.shell_tab_id_for_client(client_id) else {
             return false;
         };
-        if !self.clients.claim_unowned_geometry(tab_id, client_id) {
+        if !self.clients.claim_unowned_geometry(&tab_id, client_id) {
             return false;
         }
         self.apply_shell_tab_geometry(client_id, start_pending_agent_resumes)
@@ -694,7 +731,7 @@ impl HeadlessServer {
 
     pub(super) fn resize_shell_tab_if_controller(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         start_pending_agent_resumes: bool,
     ) -> bool {
         if !self
@@ -716,7 +753,7 @@ impl HeadlessServer {
     pub(super) fn shell_geometry_controller_for_terminal(
         &self,
         terminal_id: &str,
-    ) -> Option<(u64, crate::ui::TabSurfaceTarget)> {
+    ) -> Option<(ClientId, crate::ui::TabSurfaceTarget)> {
         let target = self.app.state.workspaces.iter().enumerate().find_map(
             |(workspace_index, workspace)| {
                 workspace
@@ -727,22 +764,25 @@ impl HeadlessServer {
                         tab.panes
                             .values()
                             .any(|pane| pane.attached_terminal_id.as_str() == terminal_id)
-                            .then_some(crate::ui::TabSurfaceTarget {
-                                workspace_index,
-                                tab_index,
+                            .then(|| {
+                                crate::ui::TabSurfaceTarget::from_indices(
+                                    &self.app.state,
+                                    workspace_index,
+                                    tab_index,
+                                )
                             })
+                            .flatten()
                     })
             },
         )?;
-        let tab_id = self.tab_id_for_target(target)?;
         self.clients
-            .geometry_controller(&tab_id)
+            .geometry_controller_by_id(&target.tab_id)
             .map(|client_id| (client_id, target))
     }
 
     pub(super) fn restore_shell_tab_geometry(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         target: crate::ui::TabSurfaceTarget,
     ) -> bool {
         self.apply_shell_tab_geometry_to_target(client_id, target, true)

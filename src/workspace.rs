@@ -180,22 +180,109 @@ pub(crate) fn public_workspace_number(id: &str) -> Option<usize> {
     id.strip_prefix('w').and_then(decode_public_number)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Stable public workspace identity. Its spelling is only needed at process
+/// and API boundaries; a launch must not mix it with tab or pane identities.
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct WorkspaceId(String);
+
+impl WorkspaceId {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for WorkspaceId {
+    fn from(id: String) -> Self {
+        Self(id)
+    }
+}
+
+impl From<&str> for WorkspaceId {
+    fn from(id: &str) -> Self {
+        Self(id.to_owned())
+    }
+}
+
+impl fmt::Display for WorkspaceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<WorkspaceId> for String {
+    fn from(id: WorkspaceId) -> Self {
+        id.0
+    }
+}
+
+impl From<&WorkspaceId> for String {
+    fn from(id: &WorkspaceId) -> Self {
+        id.0.clone()
+    }
+}
+
+impl std::ops::Deref for WorkspaceId {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+impl PartialEq<String> for WorkspaceId {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<WorkspaceId> for String {
+    fn eq(&self, other: &WorkspaceId) -> bool {
+        self == other.as_str()
+    }
+}
+
+impl PartialEq<str> for WorkspaceId {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for WorkspaceId {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct PublicTabId {
-    workspace_id: String,
+    workspace_id: WorkspaceId,
     number: usize,
+    encoded: String,
 }
 
 impl PublicTabId {
     pub(crate) fn new(workspace_id: impl Into<String>, number: usize) -> Self {
+        let workspace_id = WorkspaceId::new(workspace_id);
         Self {
-            workspace_id: workspace_id.into(),
+            encoded: format!("{}:t{}", workspace_id, encode_public_number(number)),
+            workspace_id,
             number,
         }
     }
 
+    pub(crate) fn as_str(&self) -> &str {
+        &self.encoded
+    }
+
     pub(crate) fn workspace_id(&self) -> &str {
-        &self.workspace_id
+        self.workspace_id.as_str()
     }
 
     pub(crate) fn number(&self) -> usize {
@@ -205,12 +292,7 @@ impl PublicTabId {
 
 impl fmt::Display for PublicTabId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}:t{}",
-            self.workspace_id,
-            encode_public_number(self.number)
-        )
+        f.write_str(self.as_str())
     }
 }
 
@@ -223,22 +305,93 @@ impl FromStr for PublicTabId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl serde::Serialize for PublicTabId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PublicTabId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let id = <String as serde::Deserialize>::deserialize(deserializer)?;
+        id.parse()
+            .map_err(|_| serde::de::Error::custom("invalid public tab id"))
+    }
+}
+
+impl std::ops::Deref for PublicTabId {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+#[cfg(test)]
+impl From<&str> for PublicTabId {
+    fn from(value: &str) -> Self {
+        value.parse().unwrap_or_else(|_| Self {
+            workspace_id: WorkspaceId::new(""),
+            number: 0,
+            encoded: value.to_owned(),
+        })
+    }
+}
+
+#[cfg(test)]
+impl From<String> for PublicTabId {
+    fn from(value: String) -> Self {
+        value.as_str().into()
+    }
+}
+
+impl PartialEq<str> for PublicTabId {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for PublicTabId {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for PublicTabId {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<PublicTabId> for String {
+    fn eq(&self, other: &PublicTabId) -> bool {
+        self == other.as_str()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct PublicPaneId {
-    workspace_id: String,
+    workspace_id: WorkspaceId,
     number: usize,
+    encoded: String,
 }
 
 impl PublicPaneId {
     pub(crate) fn new(workspace_id: impl Into<String>, number: usize) -> Self {
+        let workspace_id = WorkspaceId::new(workspace_id);
         Self {
-            workspace_id: workspace_id.into(),
+            encoded: format!("{}:p{}", workspace_id, encode_public_number(number)),
+            workspace_id,
             number,
         }
     }
 
+    pub(crate) fn as_str(&self) -> &str {
+        &self.encoded
+    }
+
     pub(crate) fn workspace_id(&self) -> &str {
-        &self.workspace_id
+        self.workspace_id.as_str()
     }
 
     pub(crate) fn number(&self) -> usize {
@@ -248,12 +401,7 @@ impl PublicPaneId {
 
 impl fmt::Display for PublicPaneId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}:p{}",
-            self.workspace_id,
-            encode_public_number(self.number)
-        )
+        f.write_str(self.as_str())
     }
 }
 
@@ -263,6 +411,70 @@ impl FromStr for PublicPaneId {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let (workspace_id, number) = parse_public_child_id(value, 'p')?;
         Ok(Self::new(workspace_id, number))
+    }
+}
+
+impl serde::Serialize for PublicPaneId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PublicPaneId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let id = <String as serde::Deserialize>::deserialize(deserializer)?;
+        id.parse()
+            .map_err(|_| serde::de::Error::custom("invalid public pane id"))
+    }
+}
+
+impl std::ops::Deref for PublicPaneId {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_str()
+    }
+}
+
+#[cfg(test)]
+impl From<&str> for PublicPaneId {
+    fn from(value: &str) -> Self {
+        value.parse().unwrap_or_else(|_| Self {
+            workspace_id: WorkspaceId::new(""),
+            number: 0,
+            encoded: value.to_owned(),
+        })
+    }
+}
+
+#[cfg(test)]
+impl From<String> for PublicPaneId {
+    fn from(value: String) -> Self {
+        value.as_str().into()
+    }
+}
+
+impl PartialEq<str> for PublicPaneId {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for PublicPaneId {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<String> for PublicPaneId {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<PublicPaneId> for String {
+    fn eq(&self, other: &PublicPaneId) -> bool {
+        self == other.as_str()
     }
 }
 
@@ -324,7 +536,7 @@ pub(crate) fn reserve_workspace_ids(workspaces: &[Workspace]) {
 /// A named workspace containing tabs.
 pub struct Workspace {
     /// Stable public workspace identity, independent of display order.
-    pub id: String,
+    pub id: WorkspaceId,
     /// User-provided override. If set, auto-derived identity stops updating.
     pub custom_name: Option<String>,
     /// Fallback workspace identity source for tests, old snapshots, or missing runtimes.
@@ -411,7 +623,7 @@ impl Workspace {
             pane.public_number = 1;
         }
         let mut workspace = Self {
-            id,
+            id: WorkspaceId::new(id),
             custom_name,
             identity_cwd: identity_cwd.to_path_buf(),
             cached_identity_cwd: PathBuf::new(),
@@ -486,9 +698,9 @@ impl Workspace {
     ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
         let id = generate_workspace_id();
         let launch_env = PaneLaunchEnv::from_extra(extra_env).with_identity(
-            id.clone(),
-            public_tab_id_for_number(&id, 1),
-            public_pane_id_for_number(&id, 1),
+            WorkspaceId::new(id.clone()),
+            PublicTabId::new(&id, 1),
+            PublicPaneId::new(&id, 1),
         );
         let (tab, terminal, runtime) = if let Some(argv) = argv {
             Tab::new_argv_command(
@@ -689,7 +901,7 @@ impl Workspace {
         }
         let tab = self.tabs.get(idx)?;
         let removal = TabRemoval {
-            workspace_id: self.id.clone(),
+            workspace_id: self.id.to_string(),
             tab_index: idx,
             tab_number: tab.number,
             pane_ids: tab.layout.pane_ids(),
@@ -967,9 +1179,9 @@ impl Workspace {
         extra_env: Vec<(String, String)>,
     ) -> PaneLaunchEnv {
         PaneLaunchEnv::from_extra(extra_env).with_identity(
-            self.id.clone(),
-            public_tab_id_for_number(&self.id, tab_number),
-            public_pane_id_for_number(&self.id, pane_number),
+            WorkspaceId::new(self.id.clone()),
+            PublicTabId::new(&self.id, tab_number),
+            PublicPaneId::new(&self.id, pane_number),
         )
     }
 
@@ -1068,7 +1280,7 @@ impl Workspace {
             PaneRemovalScope::Workspace
         };
         Some(PaneRemovalPlan {
-            workspace_id: self.id.clone(),
+            workspace_id: self.id.to_string(),
             pane_id,
             tab_index,
             scope,
@@ -1132,7 +1344,7 @@ impl Workspace {
         }
 
         Some(PaneRemoval {
-            workspace_id: self.id.clone(),
+            workspace_id: self.id.to_string(),
             pane_id: plan.pane_id,
             tab_index: plan.tab_index,
             scope: plan.scope,
@@ -1218,7 +1430,7 @@ impl Workspace {
             .expect("test pane exists")
             .public_number = 1;
         let mut workspace = Self {
-            id: generate_workspace_id(),
+            id: WorkspaceId::new(generate_workspace_id()),
             custom_name: Some(name.to_string()),
             identity_cwd: identity_cwd.clone(),
             cached_identity_cwd: identity_cwd.clone(),
@@ -1492,7 +1704,7 @@ mod tests {
     #[test]
     fn reserving_restored_workspace_ids_prevents_reuse() {
         let mut restored = Workspace::test_new("restored");
-        restored.id = "wZ".to_string();
+        restored.id = WorkspaceId::new("wZ");
 
         reserve_workspace_ids(&[restored]);
 

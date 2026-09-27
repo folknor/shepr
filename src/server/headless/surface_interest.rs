@@ -1,4 +1,5 @@
 use super::*;
+use crate::server::ClientId;
 
 impl HeadlessServer {
     /// Apply a client-shell surface lease and return the resulting projection floor.
@@ -8,7 +9,7 @@ impl HeadlessServer {
     /// delayed same-boot PaneSurface that was prepared for an earlier epoch.
     pub(super) fn set_client_shell_surface_active(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         active: bool,
     ) -> Option<(bool, u64)> {
         let focus_before = self.shell_focus_targets();

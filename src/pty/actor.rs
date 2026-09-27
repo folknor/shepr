@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::layout::PaneId;
 use bytes::Bytes;
 use tokio::sync::mpsc::{self, error::TryRecvError as DataTryRecvError};
 use tracing::{debug, error, warn};
@@ -64,10 +65,7 @@ pub(crate) enum ReaderExit {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PtyResize {
-    rows: u16,
-    cols: u16,
-    cell_width_px: u32,
-    cell_height_px: u32,
+    geometry: crate::geometry::PaneGeometry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,7 +81,7 @@ struct SharedPtyControls {
 }
 
 pub(crate) struct PtyIoActorConfig {
-    pub pane_id: u32,
+    pub pane_id: PaneId,
     pub master_fd: OwnedFd,
     pub on_read: ReadCallback,
     pub on_reader_exit: Option<ReaderExitCallback>,
@@ -226,21 +224,13 @@ impl PtyIoActorHandle {
 
     pub(crate) fn resize(
         &self,
-        rows: u16,
-        cols: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
+        geometry: crate::geometry::PaneGeometry,
         terminal_responses: Vec<Bytes>,
     ) {
         {
             let mut controls = crate::ghostty::lock_auxiliary(&self.controls);
             controls.resize = Some(PtyResizeRequest {
-                resize: PtyResize {
-                    rows,
-                    cols,
-                    cell_width_px,
-                    cell_height_px,
-                },
+                resize: PtyResize { geometry },
                 terminal_responses,
             });
         }
@@ -311,7 +301,7 @@ impl PtyIoActor {
             poll_observer,
         };
         std::thread::Builder::new()
-            .name(format!("shepr-pty-{}", config.pane_id))
+            .name(format!("shepr-pty-{}", config.pane_id.raw()))
             .spawn(move || runner.run())
             .map_err(|err| std::io::Error::other(err.to_string()))?;
 
@@ -328,7 +318,7 @@ impl PtyIoActor {
 }
 
 struct PtyIoActorRunner {
-    pane_id: u32,
+    pane_id: PaneId,
     file: std::fs::File,
     data_rx: mpsc::Receiver<PtyIoDataCommand>,
     control_rx: std_mpsc::Receiver<PtyIoControlCommand>,
@@ -389,7 +379,7 @@ impl PtyIoActorRunner {
             }
             if self.core_broken.as_ref().is_some_and(|broken| broken()) {
                 error!(
-                    pane = self.pane_id,
+                    pane = self.pane_id.raw(),
                     "terminal core is broken by a panic elsewhere; closing the pane"
                 );
                 self.read_callback_panicked = true;
@@ -424,7 +414,7 @@ impl PtyIoActorRunner {
                 Ok(readiness) => {
                     if readiness.wake_ready {
                         if let Err(err) = fd::drain_wake_fd(self.wake_read_fd.as_raw_fd()) {
-                            debug!(pane = self.pane_id, err = %err, "PTY actor wake drain failed");
+                            debug!(pane = self.pane_id.raw(), err = %err, "PTY actor wake drain failed");
                             break;
                         }
                         continue;
@@ -444,7 +434,7 @@ impl PtyIoActorRunner {
                     }
                 }
                 Err(err) => {
-                    debug!(pane = self.pane_id, err = %err, "PTY actor poll failed");
+                    debug!(pane = self.pane_id.raw(), err = %err, "PTY actor poll failed");
                     break;
                 }
             }
@@ -458,7 +448,7 @@ impl PtyIoActorRunner {
                 ReaderExit::Closed
             });
         }
-        debug!(pane = self.pane_id, "PTY actor exiting");
+        debug!(pane = self.pane_id.raw(), "PTY actor exiting");
     }
 
     fn drain_commands(&mut self) -> bool {
@@ -590,7 +580,7 @@ impl PtyIoActorRunner {
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => ReadOutcome::WouldBlock,
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => ReadOutcome::Interrupted,
             Err(err) => {
-                debug!(pane = self.pane_id, err = %err, "PTY actor read failed");
+                debug!(pane = self.pane_id.raw(), err = %err, "PTY actor read failed");
                 ReadOutcome::Closed
             }
             Ok(n) => {
@@ -608,7 +598,7 @@ impl PtyIoActorRunner {
                         Ok(result) => result,
                         Err(payload) => {
                             error!(
-                                pane = self.pane_id,
+                                pane = self.pane_id.raw(),
                                 panic = panic_payload_message(&*payload),
                                 "PTY read callback panicked; closing the pane"
                             );
@@ -618,7 +608,7 @@ impl PtyIoActorRunner {
                     };
                 if result.core_broken {
                     error!(
-                        pane = self.pane_id,
+                        pane = self.pane_id.raw(),
                         "terminal core is broken by an earlier panic; closing the pane"
                     );
                     self.read_callback_panicked = true;
@@ -818,7 +808,7 @@ impl PtyIoActorRunner {
                 Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
                 Err(err) if err.kind() == std::io::ErrorKind::Interrupted => return Ok(None),
                 Err(err) => {
-                    warn!(pane = self.pane_id, err = %err, "PTY actor write failed");
+                    warn!(pane = self.pane_id.raw(), err = %err, "PTY actor write failed");
                     self.pending_writes.clear();
                     self.current_write_offset = 0;
                     return Err(err);
@@ -832,12 +822,12 @@ impl PtyIoActorRunner {
     fn resize(&self, resize: PtyResize) {
         if let Err(err) = fd::resize_pty_fd(
             self.file.as_raw_fd(),
-            resize.rows,
-            resize.cols,
-            resize.cell_width_px,
-            resize.cell_height_px,
+            resize.geometry.rows(),
+            resize.geometry.cols(),
+            resize.geometry.cell_width(),
+            resize.geometry.cell_height(),
         ) {
-            debug!(pane = self.pane_id, err = %err, "PTY resize failed");
+            debug!(pane = self.pane_id.raw(), err = %err, "PTY resize failed");
         }
     }
 }
@@ -891,7 +881,7 @@ mod tests {
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         let (read_tx, read_rx) = std_mpsc::channel();
         let config = PtyIoActorConfig {
-            pane_id: 1,
+            pane_id: PaneId::from_raw(1),
             master_fd: owned,
             on_read: Box::new(move |bytes| {
                 read_tx
@@ -922,7 +912,7 @@ mod tests {
         let (_control_tx, control_rx) = std_mpsc::channel();
         let wake_pipe = fd::create_wake_pipe().expect("wake pipe");
         let runner = PtyIoActorRunner {
-            pane_id: 1,
+            pane_id: PaneId::from_raw(1),
             file: std::fs::File::from(owned),
             data_rx,
             control_rx,
@@ -956,7 +946,7 @@ mod tests {
         let wake_pipe = fd::create_wake_pipe().expect("wake pipe");
         let (read_tx, read_rx) = std_mpsc::channel();
         let mut runner = PtyIoActorRunner {
-            pane_id: 1,
+            pane_id: PaneId::from_raw(1),
             file: std::fs::File::from(owned),
             data_rx,
             control_rx,
@@ -1150,7 +1140,7 @@ mod tests {
         // SAFETY: into_raw_fd transfers this socket's sole fd ownership to OwnedFd.
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         let handle = PtyIoActor::spawn(PtyIoActorConfig {
-            pane_id: 1,
+            pane_id: PaneId::from_raw(1),
             master_fd: owned,
             on_read: Box::new(|_| PtyReadResult::empty()),
             on_reader_exit: None,
@@ -1359,7 +1349,7 @@ mod tests {
         let handle_slot = Arc::new(Mutex::new(None::<PtyIoActorHandle>));
         let (attempt_tx, attempt_rx) = std_mpsc::channel();
         let config = PtyIoActorConfig {
-            pane_id: 1,
+            pane_id: PaneId::from_raw(1),
             master_fd: owned,
             on_read: Box::new(|_| PtyReadResult::empty()),
             on_reader_exit: Some(Box::new({
@@ -1416,7 +1406,7 @@ mod tests {
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         let (exit_tx, exit_rx) = std_mpsc::channel();
         let handle = PtyIoActor::spawn(PtyIoActorConfig {
-            pane_id: 1,
+            pane_id: PaneId::from_raw(1),
             master_fd: owned,
             on_read,
             on_reader_exit: Some(Box::new(move |exit| {
@@ -1552,7 +1542,7 @@ mod tests {
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         let (read_tx, read_rx) = std_mpsc::channel();
         let handle = PtyIoActor::spawn(PtyIoActorConfig {
-            pane_id: 1,
+            pane_id: PaneId::from_raw(1),
             master_fd: owned,
             on_read: Box::new(move |bytes| {
                 read_tx
@@ -1644,8 +1634,14 @@ mod tests {
             response_order: Arc::new(Mutex::new(())),
         };
 
-        handle.resize(20, 80, 8, 16, vec![Bytes::from_static(b"old")]);
-        handle.resize(40, 120, 9, 18, vec![Bytes::from_static(b"new")]);
+        handle.resize(
+            crate::geometry::PaneGeometry::new(80, 20, 8, 16),
+            vec![Bytes::from_static(b"old")],
+        );
+        handle.resize(
+            crate::geometry::PaneGeometry::new(120, 40, 9, 18),
+            vec![Bytes::from_static(b"new")],
+        );
         handle.write_terminal_response(|| Some(Bytes::from_static(b"response")));
 
         let controls = crate::ghostty::lock_auxiliary(&controls);
@@ -1653,10 +1649,7 @@ mod tests {
             controls.resize,
             Some(PtyResizeRequest {
                 resize: PtyResize {
-                    rows: 40,
-                    cols: 120,
-                    cell_width_px: 9,
-                    cell_height_px: 18,
+                    geometry: crate::geometry::PaneGeometry::new(120, 40, 9, 18),
                 },
                 terminal_responses: vec![Bytes::from_static(b"new")],
             })
@@ -1683,7 +1676,7 @@ mod tests {
         let light = Arc::new(AtomicBool::new(false));
         let query_light = Arc::clone(&light);
         let runner = PtyIoActorRunner {
-            pane_id: 1,
+            pane_id: PaneId::from_raw(1),
             file: std::fs::File::from(owned),
             data_rx,
             control_rx,
@@ -1750,7 +1743,10 @@ mod tests {
         let (handle, mut peer, _read_rx) = actor_with_socket_pair();
         let response = Bytes::from_static(b"\x1B[48;40;100;720;900t");
 
-        handle.resize(40, 100, 9, 18, vec![response.clone()]);
+        handle.resize(
+            crate::geometry::PaneGeometry::new(100, 40, 9, 18),
+            vec![response.clone()],
+        );
 
         let mut buf = vec![0; response.len()];
         peer.read_exact(&mut buf)

@@ -102,21 +102,18 @@ fn preamble_error(error: protocol::preamble::PreambleError) -> ClientError {
 pub(super) fn do_handshake(
     stream: &mut LocalStream,
     role: ClientProcessRole,
-    cols: u16,
-    rows: u16,
-    cell_width_px: u32,
-    cell_height_px: u32,
-    exact_cell_size: bool,
+    geometry: crate::geometry::HostGeometry,
     shell_surface_size: Option<crate::protocol::ClientSurfaceSize>,
     mouse_capture: bool,
     surface_active: bool,
     deadline: Option<std::time::Instant>,
 ) -> Result<(), ClientError> {
+    let (cols, rows) = (geometry.cols(), geometry.rows());
     let (cell_width_px, cell_height_px, exact_cell_size) =
         super::terminal_geometry::bounded_cell_geometry(
-            cell_width_px,
-            cell_height_px,
-            exact_cell_size,
+            geometry.cell_width(),
+            geometry.cell_height(),
+            geometry.exact,
         );
     stream
         .set_nonblocking(false)
@@ -125,21 +122,26 @@ pub(super) fn do_handshake(
     let endpoint_shell = shell_surface_size.is_some();
     let hello = if let Some(surface_size) = shell_surface_size {
         let hello = EndpointClientHello {
-            cell_width_px,
-            cell_height_px,
-            surface_size,
-            pixel_mouse: exact_cell_size,
+            geometry: protocol::TerminalGeometry::new(
+                surface_size.cols,
+                surface_size.rows,
+                cell_width_px,
+                cell_height_px,
+                exact_cell_size,
+            ),
             mouse_capture,
             surface_active,
         };
         ClientMessage::EndpointHello(hello)
     } else {
         ClientMessage::TerminalHello {
-            cols,
-            rows,
-            cell_width_px,
-            cell_height_px,
-            pixel_mouse: exact_cell_size,
+            geometry: protocol::TerminalGeometry::new(
+                cols,
+                rows,
+                cell_width_px,
+                cell_height_px,
+                exact_cell_size,
+            ),
         }
     };
     // Preamble and hello go out together; the server's preamble is read back
@@ -260,11 +262,7 @@ mod tests {
         let error = do_handshake(
             &mut client,
             ClientProcessRole::Local,
-            80,
-            24,
-            8,
-            16,
-            false,
+            crate::geometry::HostGeometry::new(80, 24, 8, 16, false),
             surface,
             false,
             true,
@@ -308,11 +306,7 @@ mod tests {
         let error = do_handshake(
             &mut client,
             ClientProcessRole::Local,
-            80,
-            24,
-            8,
-            16,
-            false,
+            crate::geometry::HostGeometry::new(80, 24, 8, 16, false),
             Some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
             false,
             true,
@@ -333,11 +327,7 @@ mod tests {
         let error = do_handshake(
             &mut client,
             ClientProcessRole::Local,
-            80,
-            24,
-            8,
-            16,
-            false,
+            crate::geometry::HostGeometry::new(80, 24, 8, 16, false),
             Some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
             false,
             false,

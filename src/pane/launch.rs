@@ -1,4 +1,5 @@
 use crate::pty::PtyCommand;
+use crate::workspace::{PublicPaneId, PublicTabId, WorkspaceId};
 
 /// Time allowed for a restored agent to appear after its resume launch.
 pub(crate) const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration =
@@ -55,9 +56,9 @@ enum PaneLaunchIdentity {
     #[default]
     Inherit,
     Managed {
-        workspace_id: String,
-        tab_id: String,
-        pane_id: String,
+        workspace_id: WorkspaceId,
+        tab_id: PublicTabId,
+        pane_id: PublicPaneId,
     },
 }
 
@@ -83,9 +84,9 @@ impl PaneLaunchEnv {
 
     pub(crate) fn with_identity(
         mut self,
-        workspace_id: String,
-        tab_id: String,
-        pane_id: String,
+        workspace_id: WorkspaceId,
+        tab_id: PublicTabId,
+        pane_id: PublicPaneId,
     ) -> Self {
         self.identity = PaneLaunchIdentity::Managed {
             workspace_id,
@@ -119,9 +120,15 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
             tab_id,
             pane_id,
         } => {
-            cmd.env(crate::integration::SHEPR_WORKSPACE_ID_ENV_VAR, workspace_id);
-            cmd.env(crate::integration::SHEPR_TAB_ID_ENV_VAR, tab_id);
-            cmd.env(crate::integration::SHEPR_PANE_ID_ENV_VAR, pane_id);
+            cmd.env(
+                crate::integration::SHEPR_WORKSPACE_ID_ENV_VAR,
+                workspace_id.as_str(),
+            );
+            cmd.env(crate::integration::SHEPR_TAB_ID_ENV_VAR, tab_id.to_string());
+            cmd.env(
+                crate::integration::SHEPR_PANE_ID_ENV_VAR,
+                pane_id.to_string(),
+            );
         }
     }
 }

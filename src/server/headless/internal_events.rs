@@ -49,7 +49,7 @@ impl HeadlessServer {
                     ws.tabs.iter().find_map(|tab| {
                         tab.panes
                             .get(pane_id)
-                            .map(|pane| pane.attached_terminal_id.to_string())
+                            .map(|pane| pane.attached_terminal_id.clone())
                     })
                 });
                 if let Some(update) = self

@@ -239,13 +239,7 @@ pub enum ClientPaneInputEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientMessage {
     /// Direct terminal handshake: selects terminal ANSI frames and announces terminal dimensions.
-    TerminalHello {
-        cols: u16,
-        rows: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-        pixel_mouse: bool,
-    },
+    TerminalHello { geometry: super::TerminalGeometry },
 
     /// Raw input bytes read from the client's stdin.
     Input {
@@ -260,18 +254,7 @@ pub enum ClientMessage {
     },
 
     /// Terminal resize notification from the client.
-    Resize {
-        /// New terminal width in columns.
-        cols: u16,
-        /// New terminal height in rows.
-        rows: u16,
-        /// Width of a terminal cell in physical pixels, or 0 when unavailable.
-        cell_width_px: u32,
-        /// Height of a terminal cell in physical pixels, or 0 when unavailable.
-        cell_height_px: u32,
-        /// Whether this resize carries coherent exact geometry for SGR pixel mouse input.
-        pixel_mouse: bool,
-    },
+    Resize { geometry: super::TerminalGeometry },
 
     /// Graceful disconnect request.
     Detach,
@@ -279,7 +262,7 @@ pub enum ClientMessage {
     /// Switch this connection into direct terminal attach mode.
     AttachTerminal {
         /// Terminal id to attach to.
-        terminal_id: String,
+        terminal_id: crate::terminal::TerminalId,
         /// Replace an existing writable attach owner for this terminal.
         takeover: bool,
     },
@@ -301,17 +284,11 @@ pub enum ClientMessage {
     },
 
     /// Resize the pane viewport of a client-owned shell.
-    ClientShellResize {
-        cell_width_px: u32,
-        cell_height_px: u32,
-        surface_size: ClientSurfaceSize,
-        /// Whether this resize carries coherent exact geometry for SGR pixel mouse input.
-        pixel_mouse: bool,
-    },
+    ClientShellResize { geometry: super::TerminalGeometry },
 
     /// Deliver client-classified semantic input directly to a stable pane target.
     ClientShellPaneInput {
-        pane_id: String,
+        pane_id: crate::workspace::PublicPaneId,
         #[serde(
             serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
             deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
@@ -320,7 +297,7 @@ pub enum ClientMessage {
     },
 
     /// Invoke one endpoint operation through this client shell's selected connection.
-    ClientShellEndpointRequest { boot_id: String, request: String },
+    ClientShellEndpointRequest { boot_id: BootId, request: String },
 
     /// Deliver one structured mouse event to a directly attached terminal.
     AttachMouse {

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ClientShellSnapshot, ClientSurfaceSize, HandshakeRefusal, ServerMessage};
+use super::{ClientShellSnapshot, HandshakeRefusal, ServerMessage};
 
 /// Client-owned shell hello.
 ///
@@ -11,10 +11,7 @@ use super::{ClientShellSnapshot, ClientSurfaceSize, HandshakeRefusal, ServerMess
 /// guarantees the peer supports every encoding this build sends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointClientHello {
-    pub cell_width_px: u32,
-    pub cell_height_px: u32,
-    pub surface_size: ClientSurfaceSize,
-    pub pixel_mouse: bool,
+    pub geometry: super::TerminalGeometry,
     pub mouse_capture: bool,
     pub surface_active: bool,
 }

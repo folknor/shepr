@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::api::client::ApiClientError;
 use crate::api::schema::{Request, ResponseResult};
-use crate::protocol::ClientMessage;
+use crate::protocol::{BootId, ClientMessage, ConnectionGeneration, RequestId};
 
 use super::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
 use crate::client::shell::ClientShellEndpointError;
@@ -64,24 +64,29 @@ pub(in crate::client) enum CommandResponseKind {
 }
 
 struct QueuedCommand {
-    generation: crate::protocol::ConnectionGeneration,
-    boot_id: String,
+    generation: ConnectionGeneration,
+    boot_id: BootId,
     request: Box<Request>,
 }
 
 struct InFlightCommand {
-    generation: crate::protocol::ConnectionGeneration,
-    boot_id: String,
-    request_id: String,
+    key: RequestKey,
     response: Vec<u8>,
     sent_at: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RequestKey {
+    generation: ConnectionGeneration,
+    boot_id: BootId,
+    request_id: RequestId,
 }
 
 pub(in crate::client) struct EndpointCommandResult {
     pub(in crate::client) endpoint_id: ClientEndpointId,
     pub(in crate::client) generation: u64,
-    pub(in crate::client) boot_id: String,
-    pub(in crate::client) request_id: String,
+    pub(in crate::client) boot_id: BootId,
+    pub(in crate::client) request_id: RequestId,
     pub(in crate::client) result: Result<ResponseResult, ClientShellEndpointError>,
 }
 
@@ -89,11 +94,11 @@ pub(in crate::client) struct EndpointCommandResult {
 struct EndpointCommandLane {
     queued: VecDeque<QueuedCommand>,
     in_flight: Option<InFlightCommand>,
-    retired: VecDeque<(crate::protocol::ConnectionGeneration, String, String)>,
+    retired: VecDeque<RequestKey>,
 }
 
 impl EndpointCommandLane {
-    fn retire(&mut self, request: (crate::protocol::ConnectionGeneration, String, String)) {
+    fn retire(&mut self, request: RequestKey) {
         if self.retired.contains(&request) {
             return;
         }
@@ -103,11 +108,7 @@ impl EndpointCommandLane {
         self.retired.push_back(request);
     }
 
-    fn consume_retired(
-        &mut self,
-        request: &(crate::protocol::ConnectionGeneration, String, String),
-        final_chunk: bool,
-    ) -> bool {
+    fn consume_retired(&mut self, request: &RequestKey, final_chunk: bool) -> bool {
         let Some(index) = self.retired.iter().position(|retired| retired == request) else {
             return false;
         };
@@ -135,14 +136,16 @@ impl EndpointCommands {
             return CommandResponseKind::Untracked;
         };
         if lane.in_flight.as_ref().is_some_and(|command| {
-            command.generation == generation
-                && command.boot_id == boot_id
-                && command.request_id == request_id
+            command.key.generation == generation
+                && command.key.boot_id == boot_id
+                && command.key.request_id == request_id
         }) {
             return CommandResponseKind::Active;
         }
         if lane.retired.iter().any(|retired| {
-            retired.0 == generation && retired.1 == boot_id && retired.2 == request_id
+            retired.generation == generation
+                && retired.boot_id == boot_id
+                && retired.request_id == request_id
         }) {
             return CommandResponseKind::Retired;
         }
@@ -153,7 +156,7 @@ impl EndpointCommands {
         &mut self,
         endpoint_id: ClientEndpointId,
         generation: u64,
-        boot_id: String,
+        boot_id: BootId,
         request: Box<Request>,
     ) {
         self.lanes
@@ -200,9 +203,11 @@ impl EndpointCommands {
                 continue;
             }
             lane.in_flight = Some(InFlightCommand {
-                generation: queued.generation,
-                boot_id: queued.boot_id,
-                request_id,
+                key: RequestKey {
+                    generation: queued.generation,
+                    boot_id: queued.boot_id,
+                    request_id: request_id.into(),
+                },
                 response: Vec::new(),
                 sent_at: Instant::now(),
             });
@@ -222,9 +227,9 @@ impl EndpointCommands {
             .get(endpoint_id)
             .and_then(|lane| lane.in_flight.as_ref())
             .is_some_and(|command| {
-                command.generation == response_generation
-                    && command.boot_id == response_boot_id
-                    && command.request_id == response_request_id
+                command.key.generation == response_generation
+                    && command.key.boot_id == response_boot_id
+                    && command.key.request_id == response_request_id
             })
     }
 
@@ -237,12 +242,8 @@ impl EndpointCommands {
         };
         let mut request_ids = Vec::new();
         if let Some(command) = lane.in_flight.take() {
-            lane.retire((
-                command.generation,
-                command.boot_id,
-                command.request_id.clone(),
-            ));
-            request_ids.push(command.request_id);
+            request_ids.push(command.key.request_id.to_string());
+            lane.retire(command.key);
         }
         request_ids.extend(lane.queued.drain(..).map(|command| command.request.id));
         request_ids
@@ -257,16 +258,12 @@ impl EndpointCommands {
                     return None;
                 }
                 let command = lane.in_flight.take()?;
-                lane.retire((
-                    command.generation,
-                    command.boot_id.clone(),
-                    command.request_id.clone(),
-                ));
+                lane.retire(command.key.clone());
                 Some(EndpointCommandResult {
                     endpoint_id: endpoint_id.clone(),
-                    generation: command.generation.get(),
-                    boot_id: command.boot_id,
-                    request_id: command.request_id,
+                    generation: command.key.generation.get(),
+                    boot_id: command.key.boot_id,
+                    request_id: command.key.request_id,
                     result: Err(ClientShellEndpointError {
                         code: Some(EndpointFailureCode::Timeout),
                         message: "this server did not respond to the action".into(),
@@ -286,18 +283,18 @@ impl EndpointCommands {
         data: Vec<u8>,
     ) -> Option<EndpointCommandResult> {
         let lane = self.lanes.get_mut(endpoint_id)?;
-        let retired = (
-            response_generation.into(),
-            response_boot_id.to_owned(),
-            response_request_id.to_owned(),
-        );
+        let retired = RequestKey {
+            generation: response_generation.into(),
+            boot_id: response_boot_id.into(),
+            request_id: response_request_id.into(),
+        };
         if lane.consume_retired(&retired, final_chunk) {
             return None;
         }
         let in_flight = lane.in_flight.as_mut()?;
-        if response_generation != in_flight.generation
-            || response_boot_id != in_flight.boot_id
-            || response_request_id != in_flight.request_id
+        if response_generation != in_flight.key.generation
+            || response_boot_id != in_flight.key.boot_id.as_str()
+            || response_request_id != in_flight.key.request_id.as_str()
         {
             return None;
         }
@@ -306,17 +303,13 @@ impl EndpointCommands {
             let in_flight = lane.in_flight.take()?;
             if !final_chunk {
                 // Swallow the rest of this response instead of misreading it as unsolicited.
-                lane.retire((
-                    in_flight.generation,
-                    in_flight.boot_id.clone(),
-                    in_flight.request_id.clone(),
-                ));
+                lane.retire(in_flight.key.clone());
             }
             return Some(EndpointCommandResult {
                 endpoint_id: endpoint_id.clone(),
-                generation: in_flight.generation.get(),
-                boot_id: in_flight.boot_id,
-                request_id: in_flight.request_id,
+                generation: in_flight.key.generation.get(),
+                boot_id: in_flight.key.boot_id,
+                request_id: in_flight.key.request_id,
                 result: Err(ClientShellEndpointError {
                     code: Some(EndpointFailureCode::ResponseTooLarge),
                     message: format!(
@@ -332,12 +325,12 @@ impl EndpointCommands {
         }
 
         let in_flight = lane.in_flight.take()?;
-        let result = parse_response(&in_flight.request_id, &in_flight.response);
+        let result = parse_response(&in_flight.key.request_id, &in_flight.response);
         Some(EndpointCommandResult {
             endpoint_id: endpoint_id.clone(),
-            generation: in_flight.generation.get(),
-            boot_id: in_flight.boot_id,
-            request_id: in_flight.request_id,
+            generation: in_flight.key.generation.get(),
+            boot_id: in_flight.key.boot_id,
+            request_id: in_flight.key.request_id,
             result,
         })
     }
@@ -354,7 +347,7 @@ impl EndpointCommands {
             .map(|command| command.request.id)
             .collect::<Vec<_>>();
         if let Some(command) = lane.in_flight {
-            request_ids.push(command.request_id);
+            request_ids.push(command.key.request_id.to_string());
         }
         request_ids
     }
@@ -412,9 +405,11 @@ mod tests {
                 endpoint(),
                 EndpointCommandLane {
                     in_flight: Some(InFlightCommand {
-                        generation: crate::protocol::ConnectionGeneration::new(1),
-                        boot_id: "boot-a".into(),
-                        request_id: "request-a".into(),
+                        key: RequestKey {
+                            generation: ConnectionGeneration::new(1),
+                            boot_id: "boot-a".into(),
+                            request_id: "request-a".into(),
+                        },
                         response: Vec::new(),
                         sent_at: Instant::now(),
                     }),
@@ -569,9 +564,11 @@ mod tests {
             remote.clone(),
             EndpointCommandLane {
                 in_flight: Some(InFlightCommand {
-                    generation: crate::protocol::ConnectionGeneration::new(2),
-                    boot_id: "boot-b".into(),
-                    request_id: "request-b".into(),
+                    key: RequestKey {
+                        generation: ConnectionGeneration::new(2),
+                        boot_id: "boot-b".into(),
+                        request_id: "request-b".into(),
+                    },
                     response: Vec::new(),
                     sent_at: Instant::now(),
                 }),
@@ -696,23 +693,23 @@ mod tests {
     fn retired_request_tombstones_are_bounded() {
         let mut lane = EndpointCommandLane::default();
         for serial in 0..MAX_RETIRED_REQUESTS_PER_ENDPOINT + 10 {
-            lane.retire((
-                crate::protocol::ConnectionGeneration::new(1),
-                "boot".into(),
-                format!("request-{serial}"),
-            ));
+            lane.retire(RequestKey {
+                generation: ConnectionGeneration::new(1),
+                boot_id: "boot".into(),
+                request_id: format!("request-{serial}").into(),
+            });
         }
         assert_eq!(lane.retired.len(), MAX_RETIRED_REQUESTS_PER_ENDPOINT);
-        assert!(!lane.retired.contains(&(
-            crate::protocol::ConnectionGeneration::new(1),
-            "boot".into(),
-            "request-0".into(),
-        )));
-        assert!(lane.retired.contains(&(
-            crate::protocol::ConnectionGeneration::new(1),
-            "boot".into(),
-            format!("request-{}", MAX_RETIRED_REQUESTS_PER_ENDPOINT + 9)
-        )));
+        assert!(!lane.retired.contains(&RequestKey {
+            generation: ConnectionGeneration::new(1),
+            boot_id: "boot".into(),
+            request_id: "request-0".into(),
+        }));
+        assert!(lane.retired.contains(&RequestKey {
+            generation: ConnectionGeneration::new(1),
+            boot_id: "boot".into(),
+            request_id: format!("request-{}", MAX_RETIRED_REQUESTS_PER_ENDPOINT + 9).into(),
+        }));
     }
 
     #[test]

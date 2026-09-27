@@ -106,10 +106,10 @@ fn send_error(
 pub(super) fn downgrade_ineligible_pixel_mouse(
     events: &mut [ClientPaneInputEvent],
     pixel_mouse: bool,
-    runtime_size: (u16, u16),
+    runtime_size: crate::geometry::GridSize,
     runtime_pixels: Option<(u32, u32)>,
 ) {
-    let (runtime_rows, runtime_cols) = runtime_size;
+    let (runtime_rows, runtime_cols) = (runtime_size.rows.get(), runtime_size.cols.get());
     for event in events {
         let ClientPaneInputEvent::Mouse {
             position, geometry, ..
@@ -140,16 +140,16 @@ pub(super) fn downgrade_ineligible_pixel_mouse(
 
 pub(super) fn terminal_attach_mouse_position(
     runtime: &crate::terminal::TerminalRuntime,
-    terminal_size: (u16, u16),
+    terminal_size: crate::geometry::GridSize,
     cell_size: crate::host_term::cell_size::HostCellSize,
     pixel_mouse: bool,
     host_sgr_pixels_active: bool,
     position: crate::protocol::ClientMousePosition,
     geometry: Option<crate::protocol::ClientMouseGeometry>,
 ) -> Option<crate::protocol::ClientMousePosition> {
-    let runtime_size = runtime.current_size();
+    let runtime_size = runtime.grid_size();
     let cell_fallback = |column, row| {
-        (column < runtime_size.1 && row < runtime_size.0)
+        (column < runtime_size.cols.get() && row < runtime_size.rows.get())
             .then_some(crate::protocol::ClientMousePosition::Cell { column, row })
     };
     let (x, y, column, row) = match position {
@@ -161,7 +161,7 @@ pub(super) fn terminal_attach_mouse_position(
     let Some(geometry) = geometry else {
         return cell_fallback(column, row);
     };
-    let host_geometry = crate::input::mouse::HostGeometry::new(
+    let host_geometry = crate::input::mouse::HostPixelExtent::new(
         geometry.cols,
         geometry.rows,
         geometry.width_px,
@@ -177,8 +177,8 @@ pub(super) fn terminal_attach_mouse_position(
         if !pixel_mouse
             || !host_sgr_pixels_active
             || !runtime.sgr_pixel_mouse_enabled()
-            || terminal_size != (geometry.cols, geometry.rows)
-            || runtime_size != (geometry.rows, geometry.cols)
+            || terminal_size != crate::geometry::GridSize::clamped(geometry.cols, geometry.rows)
+            || runtime_size != crate::geometry::GridSize::clamped(geometry.cols, geometry.rows)
             || !cell_size.is_known()
             || average_width != cell_size.width_px
             || average_height != cell_size.height_px
@@ -401,7 +401,7 @@ fn apply_client_pane_input_event(
                 match key_event.kind {
                     KeyEventKind::Release => {}
                     KeyEventKind::Press | KeyEventKind::Repeat => {
-                        let lines = runtime.current_size().0.max(1) as usize;
+                        let lines = usize::from(runtime.grid_size().rows.get());
                         if key_event.code == KeyCode::PageUp {
                             runtime.scroll_up(lines);
                         } else {
@@ -521,7 +521,7 @@ mod tests {
         assert_eq!(
             terminal_attach_mouse_position(
                 &runtime,
-                (20, 5),
+                crate::geometry::GridSize::clamped(20, 5),
                 crate::host_term::cell_size::HostCellSize {
                     width_px: 10,
                     height_px: 20,
@@ -541,7 +541,7 @@ mod tests {
         assert_eq!(
             terminal_attach_mouse_position(
                 &runtime,
-                (20, 5),
+                crate::geometry::GridSize::clamped(20, 5),
                 crate::host_term::cell_size::HostCellSize {
                     width_px: 10,
                     height_px: 20,
@@ -566,7 +566,7 @@ mod tests {
         assert_eq!(
             terminal_attach_mouse_position(
                 &runtime,
-                (80, 24),
+                crate::geometry::GridSize::clamped(80, 24),
                 crate::host_term::cell_size::HostCellSize::default(),
                 false,
                 false,
@@ -597,7 +597,12 @@ mod tests {
             lines: 1,
         }];
 
-        downgrade_ineligible_pixel_mouse(&mut events, false, (5, 20), Some((200, 100)));
+        downgrade_ineligible_pixel_mouse(
+            &mut events,
+            false,
+            crate::geometry::GridSize::clamped(20, 5),
+            Some((200, 100)),
+        );
 
         assert!(matches!(
             events.as_slice(),
@@ -629,7 +634,12 @@ mod tests {
             lines: 1,
         }];
 
-        downgrade_ineligible_pixel_mouse(&mut events, true, (5, 20), Some((200, 100)));
+        downgrade_ineligible_pixel_mouse(
+            &mut events,
+            true,
+            crate::geometry::GridSize::clamped(20, 5),
+            Some((200, 100)),
+        );
 
         assert!(matches!(
             events.as_slice(),
@@ -660,7 +670,12 @@ mod tests {
             lines: 1,
         }];
 
-        downgrade_ineligible_pixel_mouse(&mut events, true, (6, 20), Some((200, 120)));
+        downgrade_ineligible_pixel_mouse(
+            &mut events,
+            true,
+            crate::geometry::GridSize::clamped(20, 6),
+            Some((200, 120)),
+        );
 
         assert!(matches!(
             events.as_slice(),

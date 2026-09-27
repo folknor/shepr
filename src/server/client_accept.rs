@@ -52,7 +52,7 @@ pub(crate) fn accept_pending_client_connections(
                         &server_event_tx,
                         &should_quit,
                     ) {
-                        debug!(client_id, err = %err, "client handshake failed");
+                        debug!(?client_id, err = %err, "client handshake failed");
                     }
                 });
             }

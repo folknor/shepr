@@ -786,7 +786,7 @@ impl ClientShellState {
                 ClientCopyOperation::Motion(motion) => (
                     crate::api::schema::Method::PaneCopyMotion(
                         crate::api::schema::PaneCopyMotionParams {
-                            pane_id: pane_id.clone(),
+                            pane_id: pane_id.to_string(),
                             cursor: origin,
                             motion,
                             content_revision: Some(copy_mode.content_revision),
@@ -819,7 +819,7 @@ impl ClientShellState {
                     (
                         crate::api::schema::Method::PaneCopySearch(
                             crate::api::schema::PaneCopySearchParams {
-                                pane_id: pane_id.clone(),
+                                pane_id: pane_id.to_string(),
                                 query: query.clone(),
                                 direction,
                                 cursor: origin,

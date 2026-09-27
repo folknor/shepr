@@ -21,7 +21,7 @@ pub(super) struct MachineHit {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ClientEndpointFocusTarget {
     Workspace(String),
-    Pane(String),
+    Pane(crate::workspace::PublicPaneId),
 }
 
 impl ClientShellState {
@@ -330,15 +330,15 @@ impl ClientShellState {
                 .is_none_or(|previous| previous.state_change_seq != agent.state_change_seq);
             if changed {
                 next_recency = next_recency.saturating_add(1);
-                recency.insert(agent.pane_id.clone(), next_recency);
+                recency.insert(agent.pane_id.to_string(), next_recency);
             }
         }
-        recency.retain(|pane_id, _| {
-            snapshot
-                .agents
-                .iter()
-                .any(|agent| &agent.pane_id == pane_id)
-        });
+        let live_agent_ids = snapshot
+            .agents
+            .iter()
+            .map(|agent| agent.pane_id.to_string())
+            .collect::<std::collections::HashSet<_>>();
+        recency.retain(|pane_id, _| live_agent_ids.contains(pane_id));
         let endpoint = &mut self.endpoints[index];
         endpoint.agent_recency = recency;
         endpoint.snapshot_generation = generation;

@@ -98,9 +98,10 @@ impl Config {
             .collect()
     }
 
-    pub(crate) fn headless_size(&self) -> (u16, u16) {
+    pub(crate) fn headless_size(&self) -> crate::geometry::GridSize {
         // `load_validated` rejects zero dimensions before any app is built.
-        (self.server.headless_cols, self.server.headless_rows)
+        crate::geometry::GridSize::new(self.server.headless_cols, self.server.headless_rows)
+            .expect("headless size is validated before launch")
     }
 
     pub(crate) fn invalid_headless_size_diagnostic(&self) -> Option<String> {

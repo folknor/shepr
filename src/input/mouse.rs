@@ -4,10 +4,11 @@ pub(crate) enum Position {
     Pixels { x: u32, y: u32 },
 }
 
+/// Whole-window pixel extent for mouse mapping. The terminal can include
+/// padding, so this cannot be reconstructed from the reported cell pitch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct HostGeometry {
-    pub(crate) cols: u16,
-    pub(crate) rows: u16,
+pub(crate) struct HostPixelExtent {
+    grid: crate::geometry::GridSize,
     pub(crate) width_px: u32,
     pub(crate) height_px: u32,
 }
@@ -16,14 +17,21 @@ pub(crate) struct HostGeometry {
 pub(crate) struct HostPixels {
     pub(crate) x: u32,
     pub(crate) y: u32,
-    pub(crate) geometry: HostGeometry,
+    pub(crate) geometry: HostPixelExtent,
 }
 
-impl HostGeometry {
+impl HostPixelExtent {
+    pub(crate) fn cols(self) -> u16 {
+        self.grid.cols.get()
+    }
+
+    pub(crate) fn rows(self) -> u16 {
+        self.grid.rows.get()
+    }
+
     pub(crate) fn new(cols: u16, rows: u16, width_px: u32, height_px: u32) -> Option<Self> {
-        (cols > 0 && rows > 0 && width_px > 0 && height_px > 0).then_some(Self {
-            cols,
-            rows,
+        (width_px > 0 && height_px > 0).then_some(Self {
+            grid: crate::geometry::GridSize::new(cols, rows)?,
             width_px,
             height_px,
         })
@@ -40,16 +48,18 @@ impl HostGeometry {
     }
 
     pub(crate) fn cell(self, x: u32, y: u32) -> Option<(u16, u16)> {
+        let cols = self.grid.cols.get();
+        let rows = self.grid.rows.get();
         let x = x.checked_sub(1)?;
         let y = y.checked_sub(1)?;
         if x >= self.width_px || y >= self.height_px {
             return None;
         }
-        let width_px = grid_extent(self.cols, self.width_px)?;
-        let height_px = grid_extent(self.rows, self.height_px)?;
+        let width_px = grid_extent(cols, self.width_px)?;
+        let height_px = grid_extent(rows, self.height_px)?;
         Some((
-            grid_cell(x.min(width_px - 1), self.cols, width_px)?,
-            grid_cell(y.min(height_px - 1), self.rows, height_px)?,
+            grid_cell(x.min(width_px - 1), cols, width_px)?,
+            grid_cell(y.min(height_px - 1), rows, height_px)?,
         ))
     }
 }
@@ -77,7 +87,7 @@ impl HostPixels {
                 host_column,
                 inner.x,
                 inner.width,
-                self.geometry.cols,
+                self.geometry.grid.cols.get(),
                 self.geometry.width_px,
                 child_width_px,
             )?,
@@ -86,7 +96,7 @@ impl HostPixels {
                 host_row,
                 inner.y,
                 inner.height,
-                self.geometry.rows,
+                self.geometry.grid.rows.get(),
                 self.geometry.height_px,
                 child_height_px,
             )?,
@@ -190,7 +200,7 @@ mod tests {
 
     #[test]
     fn integer_cell_pitch_ignores_trailing_pixel_remainder() {
-        let geometry = HostGeometry::new(127, 31, 1_276, 626).expect("test precondition");
+        let geometry = HostPixelExtent::new(127, 31, 1_276, 626).expect("test precondition");
         assert_eq!(geometry.cell(220, 1), Some((21, 0)));
         assert_eq!(geometry.cell(221, 61), Some((22, 3)));
         let right_pane = ratatui::layout::Rect::new(22, 3, 105, 20);
@@ -235,7 +245,7 @@ mod tests {
 
     #[test]
     fn geometry_rejects_outside_pixels_and_maps_cells() {
-        let geometry = HostGeometry::new(80, 24, 800, 480).expect("test precondition");
+        let geometry = HostPixelExtent::new(80, 24, 800, 480).expect("test precondition");
         assert_eq!(geometry.cell(1, 1), Some((0, 0)));
         assert_eq!(geometry.cell(800, 480), Some((79, 23)));
         assert_eq!(geometry.cell(801, 1), None);

@@ -7,10 +7,41 @@ use crate::protocol::CursorState;
 use crate::terminal::TerminalRuntimeRegistry;
 use crate::ui::PaneChromeInfo as PaneInfo;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TabSurfaceTarget {
-    pub(crate) workspace_index: usize,
-    pub(crate) tab_index: usize,
+    pub(crate) workspace_id: crate::workspace::WorkspaceId,
+    pub(crate) tab_id: crate::workspace::PublicTabId,
+}
+
+impl TabSurfaceTarget {
+    pub(crate) fn from_indices(
+        app: &AppState,
+        workspace_index: usize,
+        tab_index: usize,
+    ) -> Option<Self> {
+        let workspace = app.workspaces.get(workspace_index)?;
+        let tab = workspace.tabs.get(tab_index)?;
+        Some(Self {
+            workspace_id: workspace.id.clone(),
+            tab_id: crate::workspace::PublicTabId::new(workspace.id.as_str(), tab.number),
+        })
+    }
+
+    pub(crate) fn resolve(&self, app: &AppState) -> Option<(usize, usize)> {
+        if self.tab_id.workspace_id() != self.workspace_id.as_str() {
+            return None;
+        }
+        let workspace_index = app
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == self.workspace_id)?;
+        let workspace = &app.workspaces[workspace_index];
+        let tab_index = workspace
+            .tabs
+            .iter()
+            .position(|tab| tab.number == self.tab_id.number())?;
+        Some((workspace_index, tab_index))
+    }
 }
 
 pub(crate) struct TabSurfaceLayout {
@@ -21,7 +52,7 @@ pub(crate) struct TabSurfaceLayout {
 
 #[derive(Clone, Copy)]
 pub(crate) struct TabSurfaceView<'a> {
-    pub(crate) target: Option<TabSurfaceTarget>,
+    pub(crate) target: Option<&'a TabSurfaceTarget>,
     pub(crate) pane_infos: &'a [PaneInfo],
     pub(crate) split_borders: &'a [SplitBorder],
 }
@@ -31,12 +62,9 @@ pub(crate) fn compute_tab_surface(
     terminal_runtimes: &TerminalRuntimeRegistry,
     area: Rect,
 ) -> TabSurfaceLayout {
-    let target = app.active.and_then(|workspace_index| {
+    let target = app.active_index().and_then(|workspace_index| {
         let workspace = app.workspaces.get(workspace_index)?;
-        Some(TabSurfaceTarget {
-            workspace_index,
-            tab_index: workspace.active_tab_index(),
-        })
+        TabSurfaceTarget::from_indices(app, workspace_index, workspace.active_tab_index())
     });
     compute_tab_surface_for(app, terminal_runtimes, target, area)
 }
@@ -47,11 +75,9 @@ pub(crate) fn compute_tab_surface_for(
     target: Option<TabSurfaceTarget>,
     area: Rect,
 ) -> TabSurfaceLayout {
-    let tab = target.and_then(|target| {
-        app.workspaces
-            .get(target.workspace_index)?
-            .tabs
-            .get(target.tab_index)
+    let resolved = target.as_ref().and_then(|target| target.resolve(app));
+    let tab = resolved.and_then(|(workspace_index, tab_index)| {
+        app.workspaces.get(workspace_index)?.tabs.get(tab_index)
     });
     let split_borders = tab
         .map(|tab| {
@@ -62,14 +88,8 @@ pub(crate) fn compute_tab_surface_for(
             }
         })
         .unwrap_or_default();
-    let pane_infos = target.map_or_else(Vec::new, |target| {
-        compute_pane_infos_for_tab(
-            app,
-            terminal_runtimes,
-            target.workspace_index,
-            target.tab_index,
-            area,
-        )
+    let pane_infos = resolved.map_or_else(Vec::new, |(workspace_index, tab_index)| {
+        compute_pane_infos_for_tab(app, terminal_runtimes, workspace_index, tab_index, area)
     });
 
     TabSurfaceLayout {
@@ -105,14 +125,18 @@ pub(crate) fn resize_tab_surface_layout(
     layout: &TabSurfaceLayout,
     cell_size: crate::host_term::cell_size::HostCellSize,
 ) {
-    let Some(target) = layout.target else {
+    let Some((workspace_index, tab_index)) = layout
+        .target
+        .as_ref()
+        .and_then(|target| target.resolve(app))
+    else {
         return;
     };
     resize_pane_infos(
         app,
         terminal_runtimes,
-        target.workspace_index,
-        target.tab_index,
+        workspace_index,
+        tab_index,
         &layout.pane_infos,
         cell_size,
     );
@@ -139,7 +163,7 @@ pub(crate) fn tab_surface_hyperlinks(
     terminal_runtimes: &TerminalRuntimeRegistry,
     surface: TabSurfaceView<'_>,
 ) -> Vec<((u16, u16), String, String)> {
-    let Some(ws_idx) = surface.target.map(|target| target.workspace_index) else {
+    let Some((ws_idx, _)) = surface.target.and_then(|target| target.resolve(app)) else {
         return Vec::new();
     };
     if app.workspaces.get(ws_idx).is_none() {
@@ -161,7 +185,7 @@ pub(crate) fn tab_surface_cursor(
     terminal_runtimes: &TerminalRuntimeRegistry,
     surface: TabSurfaceView<'_>,
 ) -> Option<CursorState> {
-    let ws_idx = surface.target?.workspace_index;
+    let (ws_idx, _) = surface.target?.resolve(app)?;
     let info = surface.pane_infos.iter().find(|info| info.is_focused)?;
     let runtime = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)?;
     if runtime.synchronized_output_active() {
@@ -217,6 +241,23 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::layout::Direction;
 
+    #[test]
+    fn target_tracks_tab_across_position_changes() {
+        let mut app = AppState::test_new();
+        let first = Workspace::test_new("first");
+        let mut second = Workspace::test_new("second");
+        second.test_add_tab(Some("other"));
+        app.workspaces = vec![first, second];
+
+        let target = TabSurfaceTarget::from_indices(&app, 1, 1).expect("test precondition");
+        app.workspaces.swap(0, 1);
+        app.workspaces[0].tabs.swap(0, 1);
+        assert_eq!(target.resolve(&app), Some((0, 0)));
+
+        app.workspaces[0].tabs.remove(0);
+        assert_eq!(target.resolve(&app), None);
+    }
+
     #[tokio::test]
     async fn explicit_surface_layout_drives_render_cursor_and_hyperlinks() {
         let uri = "https://example.com/surface";
@@ -244,8 +285,8 @@ mod tests {
 
         let mut app = AppState::test_new();
         app.workspaces = vec![workspace];
-        app.active = Some(0);
-        app.selected = 0;
+        app.set_active_index(Some(0));
+        app.set_selected_index(Some(0));
 
         let full_area = Rect::new(0, 0, 106, 20);
         let area = full_area;
@@ -257,7 +298,7 @@ mod tests {
         app.view.pane_infos.clear();
 
         let surface_view = TabSurfaceView {
-            target: surface.target,
+            target: surface.target.as_ref(),
             pane_infos: &surface.pane_infos,
             split_borders: &surface.split_borders,
         };

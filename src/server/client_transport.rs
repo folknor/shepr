@@ -4,6 +4,7 @@
 //! It converts socket I/O into [`ServerEvent`] values consumed by
 //! `HeadlessServer`.
 
+use crate::server::ClientId;
 use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -76,14 +77,7 @@ fn client_shell_geometry_error(
 }
 
 /// Direct-attach geometry as the server will use it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TerminalGeometry {
-    cols: u16,
-    rows: u16,
-    cell_width_px: u32,
-    cell_height_px: u32,
-    pixel_mouse: bool,
-}
+type TerminalGeometry = crate::geometry::HostGeometry;
 
 /// Bounds a direct-attach client's reported geometry.
 ///
@@ -100,32 +94,20 @@ fn bound_terminal_geometry(
     pixel_mouse: bool,
 ) -> TerminalGeometry {
     let (cols, rows) = clamp_terminal_size(cols, rows);
-    let pixels_valid =
-        cell_width_px <= MAX_CLIENT_CELL_SIZE_PX && cell_height_px <= MAX_CLIENT_CELL_SIZE_PX;
-    let (cell_width_px, cell_height_px) = if pixels_valid {
-        (cell_width_px, cell_height_px)
-    } else {
-        (0, 0)
-    };
-    TerminalGeometry {
-        cols,
-        rows,
-        cell_width_px,
-        cell_height_px,
-        pixel_mouse: pixel_mouse && pixels_valid,
-    }
+    let cell = protocol::ProtocolCellSize::from_wire(cell_width_px, cell_height_px, pixel_mouse);
+    TerminalGeometry::new(cols, rows, cell.width(), cell.height(), cell.exact)
 }
 
 #[derive(serde::Deserialize)]
 struct EndpointRequestHead {
-    id: String,
+    id: crate::protocol::RequestId,
     method: String,
 }
 
 enum DecodedEndpointRequest {
     Dispatch(Box<crate::api::schema::Request>),
     Error {
-        request_id: String,
+        request_id: crate::protocol::RequestId,
         code: &'static str,
         message: String,
     },
@@ -389,7 +371,7 @@ impl ClientWriterQueue {
 pub(crate) enum ServerEvent {
     /// A new client completed the handshake.
     ClientConnected {
-        client_id: u64,
+        client_id: ClientId,
         cols: u16,
         rows: u16,
         cell_width_px: u32,
@@ -399,7 +381,7 @@ pub(crate) enum ServerEvent {
     },
     /// A client-owned shell completed its dedicated handshake.
     ClientShellConnected {
-        client_id: u64,
+        client_id: ClientId,
         surface_cols: u16,
         surface_rows: u16,
         cell_width_px: u32,
@@ -410,22 +392,22 @@ pub(crate) enum ServerEvent {
         writer: ClientWriter,
     },
     /// A client sent an input message.
-    ClientInput { client_id: u64, data: Vec<u8> },
+    ClientInput { client_id: ClientId, data: Vec<u8> },
     /// A fully decoded interactive paste exceeded the text-input limit.
     ClientPasteRejected {
-        client_id: u64,
+        client_id: ClientId,
         size: usize,
         max: usize,
     },
     /// A client requested direct attach to one terminal.
     ClientAttachTerminal {
-        client_id: u64,
-        terminal_id: String,
+        client_id: ClientId,
+        terminal_id: crate::terminal::TerminalId,
         takeover: bool,
     },
     /// A direct terminal attach client requested scrollback movement.
     ClientAttachScroll {
-        client_id: u64,
+        client_id: ClientId,
         source: AttachScrollSource,
         direction: AttachScrollDirection,
         lines: u16,
@@ -435,7 +417,7 @@ pub(crate) enum ServerEvent {
     },
     /// A direct terminal attach client delivered one structured mouse event.
     ClientAttachMouse {
-        client_id: u64,
+        client_id: ClientId,
         kind: crate::protocol::ClientMouseKind,
         position: crate::protocol::ClientMousePosition,
         geometry: Option<crate::protocol::ClientMouseGeometry>,
@@ -444,7 +426,7 @@ pub(crate) enum ServerEvent {
     },
     /// A client sent a resize message.
     ClientResize {
-        client_id: u64,
+        client_id: ClientId,
         cols: u16,
         rows: u16,
         cell_width_px: u32,
@@ -453,7 +435,7 @@ pub(crate) enum ServerEvent {
     },
     /// A client-owned shell recomputed its pane viewport.
     ClientShellResize {
-        client_id: u64,
+        client_id: ClientId,
         surface_cols: u16,
         surface_rows: u16,
         cell_width_px: u32,
@@ -462,47 +444,47 @@ pub(crate) enum ServerEvent {
     },
     /// A client-owned shell delivered semantic input to one stable pane target.
     ClientShellPaneInput {
-        client_id: u64,
-        pane_id: String,
+        client_id: ClientId,
+        pane_id: crate::workspace::PublicPaneId,
         events: Vec<ClientPaneInputEvent>,
     },
     /// A client-owned shell published one host terminal theme observation.
     ClientShellHostTheme {
-        client_id: u64,
+        client_id: ClientId,
         update: crate::protocol::ClientHostThemeUpdate,
     },
     /// A client-owned shell reported whether its outer terminal has focus.
-    ClientShellFocus { client_id: u64, focused: bool },
+    ClientShellFocus { client_id: ClientId, focused: bool },
     /// The committed shell asks the server to replay presentation effects before input resumes.
-    ClientShellPresentationSync { client_id: u64, token: String },
+    ClientShellPresentationSync { client_id: ClientId, token: String },
     /// A client-owned shell invoked one endpoint operation through this connection.
     ClientShellEndpointRequest {
-        client_id: u64,
-        boot_id: String,
+        client_id: ClientId,
+        boot_id: crate::protocol::BootId,
         request: Box<crate::api::schema::Request>,
     },
     /// A well-framed endpoint request could not be dispatched by this server.
     ClientShellEndpointRequestError {
-        client_id: u64,
-        boot_id: String,
-        request_id: String,
+        client_id: ClientId,
+        boot_id: crate::protocol::BootId,
+        request_id: crate::protocol::RequestId,
         code: &'static str,
         message: String,
     },
     /// One chunk of a deferred endpoint operation's final response is ready.
     ClientShellEndpointResponseChunkReady {
-        client_id: u64,
-        boot_id: String,
-        request_id: String,
+        client_id: ClientId,
+        boot_id: crate::protocol::BootId,
+        request_id: crate::protocol::RequestId,
         final_chunk: bool,
         data: Vec<u8>,
     },
     /// A client detached gracefully.
-    ClientDetach { client_id: u64 },
+    ClientDetach { client_id: ClientId },
     /// A client connection was lost.
-    ClientDisconnected { client_id: u64 },
+    ClientDisconnected { client_id: ClientId },
     /// A client writer drained its render slot and can accept another render.
-    ClientWriterDrained { client_id: u64 },
+    ClientWriterDrained { client_id: ClientId },
     /// Ctrl+C or external shutdown signal received.
     QuitSignal,
 }
@@ -582,7 +564,7 @@ fn set_client_recv_timeout(
     stream: &LocalStream,
     timeout: Option<Duration>,
     _context: &'static str,
-    _client_id: u64,
+    _client_id: ClientId,
 ) -> io::Result<()> {
     stream.set_recv_timeout(timeout)
 }
@@ -593,7 +575,7 @@ fn set_client_recv_timeout(
 /// sends the welcome, and then forwards client messages to the server event channel.
 pub(crate) fn handle_client_handshake(
     mut stream: LocalStream,
-    client_id: u64,
+    client_id: ClientId,
     server_event_tx: &mpsc::Sender<ServerEvent>,
     should_quit: &Arc<AtomicBool>,
 ) -> io::Result<()> {
@@ -610,7 +592,7 @@ pub(crate) fn handle_client_handshake(
     // this side hangs up on it below. Probes that connect and close at once
     // (socket liveness checks) make this write fail; that is not an error.
     if let Err(error) = protocol::preamble::write_preamble(&mut stream) {
-        debug!(client_id, %error, "client left before the build-identity preamble");
+        debug!(?client_id, %error, "client left before the build-identity preamble");
         return Ok(());
     }
 
@@ -620,17 +602,17 @@ pub(crate) fn handle_client_handshake(
     match protocol::preamble::read_preamble(&mut reader) {
         Ok(()) => {}
         Err(protocol::preamble::PreambleError::UnexpectedEof) => {
-            debug!(client_id, "client disconnected before handshake");
+            debug!(?client_id, "client disconnected before handshake");
             return Ok(());
         }
         Err(protocol::preamble::PreambleError::Io(error)) => {
-            debug!(client_id, %error, "failed to read client preamble");
+            debug!(?client_id, %error, "failed to read client preamble");
             return Ok(());
         }
         Err(error) => {
             // The client reports the mismatch from this server's preamble;
             // nothing it sends after a foreign preamble can be decoded.
-            warn!(client_id, %error, "rejecting client connection");
+            warn!(?client_id, %error, "rejecting client connection");
             return Ok(());
         }
     }
@@ -638,15 +620,15 @@ pub(crate) fn handle_client_handshake(
     let hello: ClientMessage = match hello {
         Ok(msg) => msg,
         Err(protocol::FramingError::UnexpectedEof) => {
-            debug!(client_id, "client disconnected before handshake");
+            debug!(?client_id, "client disconnected before handshake");
             return Ok(());
         }
         Err(protocol::FramingError::Oversized { claimed, max }) => {
-            warn!(client_id, claimed, max, "oversized handshake from client");
+            warn!(?client_id, claimed, max, "oversized handshake from client");
             return Ok(());
         }
         Err(err) => {
-            debug!(client_id, err = %err, "failed to read client hello");
+            debug!(?client_id, err = %err, "failed to read client hello");
             return Ok(());
         }
     };
@@ -659,29 +641,33 @@ pub(crate) fn handle_client_handshake(
         terminal_pixel_mouse,
         shell_options,
     ) = match hello {
-        ClientMessage::TerminalHello {
-            cols,
-            rows,
-            cell_width_px,
-            cell_height_px,
-            pixel_mouse,
-        } => {
-            let geometry =
-                bound_terminal_geometry(cols, rows, cell_width_px, cell_height_px, pixel_mouse);
-            (
-                geometry.cols,
-                geometry.rows,
-                geometry.cell_width_px,
-                geometry.cell_height_px,
+        ClientMessage::TerminalHello { geometry } => {
+            let geometry = bound_terminal_geometry(
+                geometry.cols(),
+                geometry.rows(),
+                geometry.width(),
+                geometry.height(),
                 geometry.pixel_mouse,
+            );
+            (
+                geometry.cols(),
+                geometry.rows(),
+                geometry.cell_width(),
+                geometry.cell_height(),
+                geometry.exact,
                 None,
             )
         }
         ClientMessage::EndpointHello(hello) => {
+            let cell = protocol::ProtocolCellSize::from_wire(
+                hello.geometry.width(),
+                hello.geometry.height(),
+                hello.geometry.pixel_mouse,
+            );
             let incompatibility = client_shell_geometry_error(
-                hello.surface_size,
-                hello.cell_width_px,
-                hello.cell_height_px,
+                hello.geometry.surface_size(),
+                hello.geometry.width(),
+                hello.geometry.height(),
             )
             .map(|reason| protocol::HandshakeRefusal::InvalidSurface(reason.to_owned()));
             if let Some(reason) = incompatibility {
@@ -689,16 +675,16 @@ pub(crate) fn handle_client_handshake(
                 return Ok(());
             }
             (
-                hello.surface_size.cols,
-                hello.surface_size.rows,
-                hello.cell_width_px,
-                hello.cell_height_px,
+                hello.geometry.cols(),
+                hello.geometry.rows(),
+                cell.width(),
+                cell.height(),
                 false,
-                Some((hello.pixel_mouse, hello.mouse_capture, hello.surface_active)),
+                Some((cell.exact, hello.mouse_capture, hello.surface_active)),
             )
         }
         _ => {
-            debug!(client_id, "first message was not a handshake, closing");
+            debug!(?client_id, "first message was not a handshake, closing");
             let welcome = ServerMessage::Welcome {
                 error: Some(protocol::HandshakeRefusal::ExpectedHello),
             };
@@ -803,7 +789,7 @@ fn send_shutdown_to_unregistered_client(writer: &ClientWriter) {
 /// The client writer loop - prioritizes control messages over render frames.
 fn client_writer_loop(
     mut stream: LocalStream,
-    client_id: u64,
+    client_id: ClientId,
     writer_queue: &Arc<ClientWriterQueue>,
     server_event_tx: &mpsc::Sender<ServerEvent>,
 ) {
@@ -842,7 +828,7 @@ fn write_framed_bytes(stream: &mut LocalStream, data: &[u8]) -> bool {
 #[cfg(test)]
 fn client_read_loop(
     stream: LocalStream,
-    client_id: u64,
+    client_id: ClientId,
     server_event_tx: &mpsc::Sender<ServerEvent>,
     should_quit: &Arc<AtomicBool>,
 ) -> io::Result<()> {
@@ -851,7 +837,7 @@ fn client_read_loop(
 
 fn client_read_loop_with_endpoint_controls(
     mut stream: LocalStream,
-    client_id: u64,
+    client_id: ClientId,
     server_event_tx: &mpsc::Sender<ServerEvent>,
     should_quit: &Arc<AtomicBool>,
     endpoint_control_writer: Option<&ClientControlWriter>,
@@ -871,7 +857,7 @@ fn client_read_loop_with_endpoint_controls(
             }
             Err(protocol::FramingError::Oversized { claimed, max }) => {
                 warn!(
-                    client_id,
+                    ?client_id,
                     claimed, max, "oversized message from client, closing"
                 );
                 let _ =
@@ -879,7 +865,7 @@ fn client_read_loop_with_endpoint_controls(
                 break;
             }
             Err(err) => {
-                debug!(client_id, err = %err, "client read error, closing");
+                debug!(?client_id, err = %err, "client read error, closing");
                 let _ =
                     server_event_tx.blocking_send(ServerEvent::ClientDisconnected { client_id });
                 break;
@@ -892,7 +878,7 @@ fn client_read_loop_with_endpoint_controls(
                 if data.len() > MAX_INPUT_PAYLOAD {
                     if crate::raw_input::is_complete_text_bracketed_paste(&data) {
                         warn!(
-                            client_id,
+                            ?client_id,
                             size = data.len(),
                             max = MAX_INPUT_PAYLOAD,
                             "oversized bracketed paste from client, rejecting"
@@ -904,7 +890,7 @@ fn client_read_loop_with_endpoint_controls(
                         }
                     } else {
                         warn!(
-                            client_id,
+                            ?client_id,
                             size = data.len(),
                             "oversized input from client, closing"
                         );
@@ -916,34 +902,36 @@ fn client_read_loop_with_endpoint_controls(
                     ServerEvent::ClientInput { client_id, data }
                 }
             }
-            ClientMessage::Resize {
-                cols,
-                rows,
-                cell_width_px,
-                cell_height_px,
-                pixel_mouse,
-            } => {
-                let geometry =
-                    bound_terminal_geometry(cols, rows, cell_width_px, cell_height_px, pixel_mouse);
+            ClientMessage::Resize { geometry } => {
+                let geometry = bound_terminal_geometry(
+                    geometry.cols(),
+                    geometry.rows(),
+                    geometry.width(),
+                    geometry.height(),
+                    geometry.pixel_mouse,
+                );
                 ServerEvent::ClientResize {
                     client_id,
-                    cols: geometry.cols,
-                    rows: geometry.rows,
-                    cell_width_px: geometry.cell_width_px,
-                    cell_height_px: geometry.cell_height_px,
-                    pixel_mouse: geometry.pixel_mouse,
+                    cols: geometry.cols(),
+                    rows: geometry.rows(),
+                    cell_width_px: geometry.cell_width(),
+                    cell_height_px: geometry.cell_height(),
+                    pixel_mouse: geometry.exact,
                 }
             }
-            ClientMessage::ClientShellResize {
-                cell_width_px,
-                cell_height_px,
-                surface_size,
-                pixel_mouse,
-            } => {
+            ClientMessage::ClientShellResize { geometry } => {
+                let surface_size = geometry.surface_size();
+                let cell = protocol::ProtocolCellSize::from_wire(
+                    geometry.width(),
+                    geometry.height(),
+                    geometry.pixel_mouse,
+                );
+                let (cell_width_px, cell_height_px, pixel_mouse) =
+                    (cell.width(), cell.height(), cell.exact);
                 if let Some(reason) =
-                    client_shell_geometry_error(surface_size, cell_width_px, cell_height_px)
+                    client_shell_geometry_error(surface_size, geometry.width(), geometry.height())
                 {
-                    warn!(client_id, %reason, "invalid client shell resize, closing");
+                    warn!(?client_id, %reason, "invalid client shell resize, closing");
                     let _ = server_event_tx
                         .blocking_send(ServerEvent::ClientDisconnected { client_id });
                     break;
@@ -963,7 +951,10 @@ fn client_read_loop_with_endpoint_controls(
                     crate::protocol::ClientHostThemeUpdate::PaletteColors(colors)
                         if colors.len() > 256
                 ) {
-                    warn!(client_id, "invalid client shell host theme update, closing");
+                    warn!(
+                        ?client_id,
+                        "invalid client shell host theme update, closing"
+                    );
                     let _ = server_event_tx
                         .blocking_send(ServerEvent::ClientDisconnected { client_id });
                     break;
@@ -982,7 +973,7 @@ fn client_read_loop_with_endpoint_controls(
                     },
                     InputEventLimit::TooManyEvents => {
                         warn!(
-                            client_id,
+                            ?client_id,
                             count = events.len(),
                             "oversized targeted pane input batch, closing"
                         );
@@ -992,7 +983,7 @@ fn client_read_loop_with_endpoint_controls(
                     }
                     InputEventLimit::PasteTooLarge { size } => {
                         warn!(
-                            client_id,
+                            ?client_id,
                             size,
                             max = MAX_INPUT_PAYLOAD,
                             "oversized targeted pane paste, rejecting"
@@ -1005,7 +996,7 @@ fn client_read_loop_with_endpoint_controls(
                     }
                     InputEventLimit::InputPayloadTooLarge { size } => {
                         warn!(
-                            client_id,
+                            ?client_id,
                             size,
                             max = MAX_INPUT_PAYLOAD,
                             "oversized targeted pane input, closing"
@@ -1021,7 +1012,7 @@ fn client_read_loop_with_endpoint_controls(
                     || request.len() > crate::server::client_commands::MAX_ENDPOINT_COMMAND_BYTES
                 {
                     warn!(
-                        client_id,
+                        ?client_id,
                         boot_id_size = boot_id.len(),
                         request_size = request.len(),
                         "oversized client shell endpoint command, closing"
@@ -1033,7 +1024,7 @@ fn client_read_loop_with_endpoint_controls(
                 let decoded = match decode_endpoint_request(&request) {
                     Ok(decoded) => decoded,
                     Err(error) => {
-                        warn!(client_id, %error, "invalid endpoint request envelope, closing");
+                        warn!(?client_id, %error, "invalid endpoint request envelope, closing");
                         let _ = server_event_tx
                             .blocking_send(ServerEvent::ClientDisconnected { client_id });
                         break;
@@ -1046,7 +1037,7 @@ fn client_read_loop_with_endpoint_controls(
                 if request_id.len() > crate::server::client_commands::MAX_ENDPOINT_REQUEST_ID_BYTES
                 {
                     warn!(
-                        client_id,
+                        ?client_id,
                         "oversized client shell endpoint request id, closing"
                     );
                     let _ = server_event_tx
@@ -1144,7 +1135,7 @@ fn client_read_loop_with_endpoint_controls(
         }
     }
 
-    debug!(client_id, "client read thread exiting");
+    debug!(?client_id, "client read thread exiting");
     Ok(())
 }
 
@@ -1182,13 +1173,13 @@ mod tests {
 
     fn endpoint_hello(surface_cols: u16, surface_rows: u16) -> ClientMessage {
         let hello = crate::protocol::endpoint::EndpointClientHello {
-            cell_width_px: 8,
-            cell_height_px: 16,
-            surface_size: crate::protocol::ClientSurfaceSize {
-                cols: surface_cols,
-                rows: surface_rows,
-            },
-            pixel_mouse: true,
+            geometry: crate::protocol::TerminalGeometry::new(
+                surface_cols,
+                surface_rows,
+                8,
+                16,
+                true,
+            ),
             mouse_capture: true,
             surface_active: true,
         };
@@ -1284,7 +1275,12 @@ mod tests {
 
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let handle = std::thread::spawn(move || {
-            client_writer_loop(server_stream, 9, &queue, &server_event_tx);
+            client_writer_loop(
+                server_stream,
+                ClientId::test_new(9),
+                &queue,
+                &server_event_tx,
+            );
         });
 
         match protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read control") {
@@ -1314,7 +1310,12 @@ mod tests {
         let (server_event_tx, _server_event_rx) = mpsc::channel(4);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            client_writer_loop(server_stream, 11, &queue, &server_event_tx);
+            client_writer_loop(
+                server_stream,
+                ClientId::test_new(11),
+                &queue,
+                &server_event_tx,
+            );
             let _ = done_tx.send(());
         });
 
@@ -1333,7 +1334,12 @@ mod tests {
         let (server_event_tx, _server_event_rx) = mpsc::channel(4);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            client_writer_loop(server_stream, 12, &queue, &server_event_tx);
+            client_writer_loop(
+                server_stream,
+                ClientId::test_new(12),
+                &queue,
+                &server_event_tx,
+            );
             let _ = done_tx.send(());
         });
 
@@ -1372,7 +1378,12 @@ mod tests {
         let (server_event_tx, _server_event_rx) = mpsc::channel(4);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            client_writer_loop(server_stream, 13, &queue, &server_event_tx);
+            client_writer_loop(
+                server_stream,
+                ClientId::test_new(13),
+                &queue,
+                &server_event_tx,
+            );
             let _ = done_tx.send(());
         });
 
@@ -1472,19 +1483,10 @@ mod tests {
     #[test]
     fn terminal_geometry_drops_implausible_pixel_sizes() {
         let geometry = bound_terminal_geometry(80, 24, 8, 16, true);
-        assert_eq!(
-            geometry,
-            TerminalGeometry {
-                cols: 80,
-                rows: 24,
-                cell_width_px: 8,
-                cell_height_px: 16,
-                pixel_mouse: true,
-            }
-        );
+        assert_eq!(geometry, TerminalGeometry::new(80, 24, 8, 16, true));
         let geometry = bound_terminal_geometry(80, 24, u32::MAX, 16, true);
-        assert_eq!((geometry.cell_width_px, geometry.cell_height_px), (0, 0));
-        assert!(!geometry.pixel_mouse);
+        assert_eq!((geometry.cell_width(), geometry.cell_height()), (0, 0));
+        assert!(!geometry.exact);
     }
 
     #[test]
@@ -1495,17 +1497,24 @@ mod tests {
         let should_quit = Arc::new(AtomicBool::new(false));
         let handshake_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
-            handle_client_handshake(server_stream, 44, &server_event_tx, &handshake_quit)
+            handle_client_handshake(
+                server_stream,
+                ClientId::test_new(44),
+                &server_event_tx,
+                &handshake_quit,
+            )
         });
 
         open_as_client(
             &mut client_stream,
             &ClientMessage::TerminalHello {
-                cols: u16::MAX,
-                rows: u16::MAX,
-                cell_width_px: u32::MAX,
-                cell_height_px: u32::MAX,
-                pixel_mouse: true,
+                geometry: crate::protocol::TerminalGeometry::new(
+                    u16::MAX,
+                    u16::MAX,
+                    u32::MAX,
+                    u32::MAX,
+                    true,
+                ),
             },
         );
         let _welcome: ServerMessage =
@@ -1544,17 +1553,18 @@ mod tests {
         let should_quit = Arc::new(AtomicBool::new(false));
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
-            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            client_read_loop(
+                server_stream,
+                ClientId::test_new(7),
+                &server_event_tx,
+                &read_quit,
+            )
         });
 
         protocol::write_message(
             &mut client_stream,
             &ClientMessage::Resize {
-                cols: u16::MAX,
-                rows: u16::MAX,
-                cell_width_px: 8,
-                cell_height_px: 16,
-                pixel_mouse: true,
+                geometry: crate::protocol::TerminalGeometry::new(u16::MAX, u16::MAX, 8, 16, true),
             },
         )
         .expect("test precondition");
@@ -1574,7 +1584,7 @@ mod tests {
         protocol::write_message(&mut client_stream, &ClientMessage::Detach).expect("write detach");
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "detach event"),
-            ServerEvent::ClientDetach { client_id: 7 }
+            ServerEvent::ClientDetach { client_id } if client_id == ClientId::test_new(7)
         ));
         handle
             .join()
@@ -1592,7 +1602,12 @@ mod tests {
         let should_quit = Arc::new(AtomicBool::new(false));
         let handshake_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
-            handle_client_handshake(server_stream, 45, &server_event_tx, &handshake_quit)
+            handle_client_handshake(
+                server_stream,
+                ClientId::test_new(45),
+                &server_event_tx,
+                &handshake_quit,
+            )
         });
 
         // A client of another build: right magic, different identity.
@@ -1689,17 +1704,18 @@ mod tests {
         let should_quit = Arc::new(AtomicBool::new(false));
         let handshake_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
-            handle_client_handshake(server_stream, 42, &server_event_tx, &handshake_quit)
+            handle_client_handshake(
+                server_stream,
+                ClientId::test_new(42),
+                &server_event_tx,
+                &handshake_quit,
+            )
         });
 
         open_as_client(
             &mut client_stream,
             &ClientMessage::TerminalHello {
-                cols: 100,
-                rows: 30,
-                cell_width_px: 8,
-                cell_height_px: 16,
-                pixel_mouse: true,
+                geometry: crate::protocol::TerminalGeometry::new(100, 30, 8, 16, true),
             },
         );
 
@@ -1749,7 +1765,12 @@ mod tests {
         let should_quit = Arc::new(AtomicBool::new(false));
         let handshake_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
-            handle_client_handshake(server_stream, 43, &server_event_tx, &handshake_quit)
+            handle_client_handshake(
+                server_stream,
+                ClientId::test_new(43),
+                &server_event_tx,
+                &handshake_quit,
+            )
         });
 
         open_as_client(&mut client_stream, &endpoint_hello(80, 29));
@@ -1793,31 +1814,16 @@ mod tests {
     }
 
     #[test]
-    fn dedicated_client_shell_handshake_rejects_empty_surface() {
-        let (mut client_stream, server_stream, _path) =
-            local_stream_pair("client-shell-empty-surface");
-        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
-        let should_quit = Arc::new(AtomicBool::new(false));
-        let handshake_quit = Arc::clone(&should_quit);
-        let handle = std::thread::spawn(move || {
-            handle_client_handshake(server_stream, 43, &server_event_tx, &handshake_quit)
-        });
-
-        open_as_client(&mut client_stream, &endpoint_hello(0, 29));
-
-        let welcome: ServerMessage =
-            protocol::read_message(&mut client_stream, MAX_FRAME_SIZE).expect("read welcome");
-        let welcome = endpoint_welcome(welcome);
-        assert!(
-            welcome
-                .error
-                .is_some_and(|error| matches!(error, protocol::HandshakeRefusal::InvalidSurface(message) if message.contains("non-empty pane surface")))
+    fn client_shell_validation_rejects_empty_surface() {
+        assert!(crate::geometry::GridSize::new(0, 29).is_none());
+        assert_eq!(
+            client_shell_geometry_error(
+                crate::protocol::ClientSurfaceSize { cols: 0, rows: 29 },
+                8,
+                16
+            ),
+            Some("client shell requires a non-empty pane surface"),
         );
-        handle
-            .join()
-            .expect("handshake thread join")
-            .expect("handshake thread result");
-        assert!(server_event_rx.try_recv().is_err());
     }
 
     #[test]
@@ -1827,7 +1833,12 @@ mod tests {
         let should_quit = Arc::new(AtomicBool::new(false));
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
-            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            client_read_loop(
+                server_stream,
+                ClientId::test_new(7),
+                &server_event_tx,
+                &read_quit,
+            )
         });
 
         let mut messages = Vec::new();
@@ -1843,7 +1854,7 @@ mod tests {
 
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "detach event"),
-            ServerEvent::ClientDetach { client_id: 7 }
+            ServerEvent::ClientDetach { client_id } if client_id == ClientId::test_new(7)
         ));
         handle
             .join()
@@ -1860,7 +1871,12 @@ mod tests {
         let should_quit = Arc::new(AtomicBool::new(false));
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
-            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            client_read_loop(
+                server_stream,
+                ClientId::test_new(7),
+                &server_event_tx,
+                &read_quit,
+            )
         });
 
         protocol::write_message(
@@ -1873,7 +1889,7 @@ mod tests {
 
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "detach after health ping"),
-            ServerEvent::ClientDetach { client_id: 7 }
+            ServerEvent::ClientDetach { client_id } if client_id == ClientId::test_new(7)
         ));
         handle
             .join()
@@ -1889,26 +1905,31 @@ mod tests {
         let should_quit = Arc::new(AtomicBool::new(false));
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
-            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            client_read_loop(
+                server_stream,
+                ClientId::test_new(7),
+                &server_event_tx,
+                &read_quit,
+            )
         });
 
         protocol::write_message(
             &mut client_stream,
             &ClientMessage::ClientShellResize {
-                cell_width_px: 8,
-                cell_height_px: 16,
-                surface_size: crate::protocol::ClientSurfaceSize {
-                    cols: MAX_CLIENT_SHELL_DIMENSION,
-                    rows: MAX_CLIENT_SHELL_DIMENSION,
-                },
-                pixel_mouse: false,
+                geometry: crate::protocol::TerminalGeometry::new(
+                    MAX_CLIENT_SHELL_DIMENSION,
+                    MAX_CLIENT_SHELL_DIMENSION,
+                    8,
+                    16,
+                    false,
+                ),
             },
         )
         .expect("test precondition");
 
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "unsafe resize disconnect"),
-            ServerEvent::ClientDisconnected { client_id: 7 }
+            ServerEvent::ClientDisconnected { client_id } if client_id == ClientId::test_new(7)
         ));
         handle
             .join()
@@ -1923,7 +1944,12 @@ mod tests {
         let should_quit = Arc::new(AtomicBool::new(false));
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
-            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            client_read_loop(
+                server_stream,
+                ClientId::test_new(7),
+                &server_event_tx,
+                &read_quit,
+            )
         });
 
         protocol::write_message(
@@ -1998,7 +2024,12 @@ mod tests {
         let should_quit = Arc::new(AtomicBool::new(false));
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
-            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            client_read_loop(
+                server_stream,
+                ClientId::test_new(7),
+                &server_event_tx,
+                &read_quit,
+            )
         });
 
         protocol::write_message(
@@ -2011,7 +2042,7 @@ mod tests {
 
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "oversized non-paste disconnect"),
-            ServerEvent::ClientDisconnected { client_id: 7 }
+            ServerEvent::ClientDisconnected { client_id } if client_id == ClientId::test_new(7)
         ));
 
         drop(client_stream);
@@ -2030,7 +2061,12 @@ mod tests {
         let should_quit = Arc::new(AtomicBool::new(false));
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
-            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            client_read_loop(
+                server_stream,
+                ClientId::test_new(7),
+                &server_event_tx,
+                &read_quit,
+            )
         });
         let mut data = bracketed_paste_with_total_len(MAX_INPUT_PAYLOAD + 1);
         let marker_len = b"\x1b[200~".len();
@@ -2072,35 +2108,37 @@ mod tests {
         let should_quit = Arc::new(AtomicBool::new(false));
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
-            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            client_read_loop(
+                server_stream,
+                ClientId::test_new(7),
+                &server_event_tx,
+                &read_quit,
+            )
         });
 
         protocol::write_message(
             &mut client_stream,
             &ClientMessage::ClientShellResize {
-                cell_width_px: 8,
-                cell_height_px: 16,
-                surface_size: crate::protocol::ClientSurfaceSize { cols: 60, rows: 15 },
-                pixel_mouse: true,
+                geometry: crate::protocol::TerminalGeometry::new(60, 15, 8, 16, true),
             },
         )
         .expect("write shell resize");
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "shell resize"),
             ServerEvent::ClientShellResize {
-                client_id: 7,
+                client_id,
                 surface_cols: 60,
                 surface_rows: 15,
                 cell_width_px: 8,
                 cell_height_px: 16,
                 pixel_mouse: true,
-            }
+            } if client_id == ClientId::test_new(7)
         ));
 
         protocol::write_message(&mut client_stream, &ClientMessage::Detach).expect("write detach");
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "detach event"),
-            ServerEvent::ClientDetach { client_id: 7 }
+            ServerEvent::ClientDetach { client_id } if client_id == ClientId::test_new(7)
         ));
         handle
             .join()
@@ -2115,7 +2153,12 @@ mod tests {
         let should_quit = Arc::new(AtomicBool::new(false));
         let read_quit = Arc::clone(&should_quit);
         let handle = std::thread::spawn(move || {
-            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            client_read_loop(
+                server_stream,
+                ClientId::test_new(7),
+                &server_event_tx,
+                &read_quit,
+            )
         });
 
         let colors = (0..=u8::MAX)
@@ -2150,18 +2193,18 @@ mod tests {
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "bounded palette update"),
             ServerEvent::ClientShellHostTheme {
-                client_id: 7,
+                client_id,
                 update: crate::protocol::ClientHostThemeUpdate::PaletteColors(colors),
-            } if colors.len() == 256
+            } if client_id == ClientId::test_new(7) && colors.len() == 256
         ));
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "ordered appearance update"),
             ServerEvent::ClientShellHostTheme {
-                client_id: 7,
+                client_id,
                 update: crate::protocol::ClientHostThemeUpdate::Appearance(
                     crate::protocol::ClientHostAppearance::Dark
                 ),
-            }
+            } if client_id == ClientId::test_new(7)
         ));
 
         let colors = (0..=u8::MAX)
@@ -2196,7 +2239,7 @@ mod tests {
             .expect("write oversized palette frame");
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "oversized palette disconnect"),
-            ServerEvent::ClientDisconnected { client_id: 7 }
+            ServerEvent::ClientDisconnected { client_id } if client_id == ClientId::test_new(7)
         ));
 
         drop(client_stream);

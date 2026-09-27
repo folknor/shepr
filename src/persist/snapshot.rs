@@ -203,7 +203,7 @@ fn capture_workspace(
         .map(|pane| pane.cwd.clone())
         .unwrap_or_else(|| ws.identity_cwd.clone());
     WorkspaceSnapshot {
-        id: Some(ws.id.clone()),
+        id: Some(ws.id.to_string()),
         custom_name: ws.custom_name.clone(),
         identity_cwd,
         public_pane_numbers: ws
@@ -631,8 +631,8 @@ mod tests {
         state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
         state.ensure_test_terminals();
         if !state.workspaces.is_empty() {
-            state.active = Some(0);
-            state.selected = 0;
+            state.set_active_index(Some(0));
+            state.set_selected_index(Some(0));
             state.mode = Mode::Terminal;
         }
         state
@@ -652,8 +652,8 @@ mod tests {
             &state.terminals,
             terminal_runtimes,
             std::path::Path::new("/"),
-            state.active,
-            state.selected,
+            state.active_index(),
+            state.selected_index().unwrap_or(0),
             state.host_terminal_theme,
         )
     }
@@ -869,8 +869,8 @@ mod tests {
     #[test]
     fn capture_contract_tracks_workspace_order_active_and_selected() {
         let mut state = state_with_workspaces(&["a", "b", "c"]);
-        state.active = Some(1);
-        state.selected = 2;
+        state.set_active_index(Some(1));
+        state.set_selected_index(Some(2));
 
         state.move_workspace(1, 0);
 
@@ -882,8 +882,8 @@ mod tests {
             .map(|ws| ws.id.clone().expect("test precondition"))
             .collect();
         assert_eq!(captured_ids, ids);
-        assert_eq!(snapshot.active, state.active);
-        assert_eq!(snapshot.selected, state.selected);
+        assert_eq!(snapshot.active, state.active_index());
+        assert_eq!(snapshot.selected, state.selected_index().unwrap_or(0));
     }
 
     #[test]
@@ -905,8 +905,8 @@ mod tests {
     #[test]
     fn capture_contract_tracks_workspace_closure() {
         let mut state = state_with_workspaces(&["one", "two"]);
-        state.selected = 1;
-        state.active = Some(1);
+        state.set_selected_index(Some(1));
+        state.set_active_index(Some(1));
 
         state.close_selected_workspace();
 
@@ -1041,7 +1041,7 @@ mod tests {
         let mut state = AppState::test_new();
         state.workspaces = vec![Workspace::test_new("cwd-source")];
         state.workspaces[0].identity_cwd = old.clone();
-        state.active = Some(0);
+        state.set_active_index(Some(0));
         state.ensure_test_terminals();
         let pane_id = state.workspaces[0].tabs[0].root_pane;
         let terminal_id = state.workspaces[0]

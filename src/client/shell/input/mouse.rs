@@ -19,12 +19,12 @@ impl ClientShellState {
     /// clipped to the new pane area; the endpoint resize waits for the release (see
     /// `ClientChromeDrag::SidebarWidth`).
     fn set_sidebar_width_from_column(&mut self, column: u16, outcome: &mut ClientShellInput) {
-        let (min, max) = crate::config::validated_sidebar_bounds(
+        let bounds = crate::config::validated_sidebar_bounds(
             self.config.sidebar_min_width,
             self.config.sidebar_max_width,
         )
-        .unwrap_or((18, 36));
-        let width = column.saturating_add(1).clamp(min, max);
+        .expect("sidebar bounds are validated at launch");
+        let width = column.saturating_add(1).clamp(bounds.min, bounds.max);
         if self.sidebar_width != width {
             self.sidebar_width = width;
             self.sidebar_width_manual = true;
@@ -70,7 +70,7 @@ impl ClientShellState {
 
     pub(super) fn push_pane_scroll_offset(
         &mut self,
-        pane_id: String,
+        pane_id: crate::workspace::PublicPaneId,
         offset_from_bottom: usize,
         outcome: &mut ClientShellInput,
     ) {
@@ -85,7 +85,7 @@ impl ClientShellState {
 
     fn dispatch_pane_scroll_offset(
         &mut self,
-        pane_id: &str,
+        pane_id: &crate::workspace::PublicPaneId,
         offset_from_bottom: usize,
         outcome: &mut ClientShellInput,
     ) {
@@ -100,7 +100,7 @@ impl ClientShellState {
             .insert(pane_id.to_owned(), serial);
         if !self.push_endpoint_method_with_kind(
             crate::api::schema::Method::PaneScroll(crate::api::schema::PaneScrollParams {
-                pane_id: pane_id.to_owned(),
+                pane_id: pane_id.to_string(),
                 offset_from_bottom: offset_from_bottom as u64,
             }),
             PendingEndpointKind::PaneScroll {
@@ -116,7 +116,7 @@ impl ClientShellState {
 
     pub(super) fn complete_pane_scroll(
         &mut self,
-        pane_id: &str,
+        pane_id: &crate::workspace::PublicPaneId,
         serial: u64,
         result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
         outcome: &mut ClientShellInput,
@@ -127,7 +127,7 @@ impl ClientShellState {
         self.pane_scroll_in_flight.remove(pane_id);
         let repaint = match result {
             Ok(crate::api::schema::ResponseResult::PaneInfo { pane })
-                if pane.pane_id == pane_id =>
+                if pane.pane_id == pane_id.as_str() =>
             {
                 if let Some(scroll) = pane.scroll
                     && self.pane_scroll_targets.contains_key(pane_id)
@@ -584,7 +584,7 @@ impl ClientShellState {
             snapshot
                 .workspaces
                 .get(*entry)
-                .map(|workspace| workspace.workspace_id.clone())
+                .map(|workspace| workspace.workspace_id.to_string())
         });
         let row = last_hit.rect.bottom();
         if row < self.hits.new_workspace.y {
@@ -640,7 +640,7 @@ impl ClientShellState {
                 .unwrap_or(snapshot.workspaces.len());
             Some(crate::api::schema::Method::WorkspaceMove(
                 crate::api::schema::WorkspaceMoveParams {
-                    workspace_id: source.workspace_id.clone(),
+                    workspace_id: source.workspace_id.to_string(),
                     insert_index,
                 },
             ))
@@ -853,7 +853,7 @@ impl ClientShellState {
                         self.push_endpoint_method(
                             crate::api::schema::Method::LayoutSetSplitRatio(
                                 crate::api::schema::LayoutSetSplitRatioParams {
-                                    tab_id: Some(tab_id),
+                                    tab_id: Some(tab_id.to_string()),
                                     pane_id: None,
                                     path: hit
                                         .path
@@ -960,7 +960,7 @@ impl ClientShellState {
                             self.push_endpoint_method(
                                 crate::api::schema::Method::TabMove(
                                     crate::api::schema::TabMoveParams {
-                                        tab_id,
+                                        tab_id: tab_id.to_string(),
                                         insert_index: insert_index.unwrap_or_default(),
                                     },
                                 ),
@@ -975,7 +975,7 @@ impl ClientShellState {
                     } => {
                         if let Some((before_workspace_id, _)) = target
                             && let Some(method) = self.workspace_move_method(
-                                &source_workspace_id,
+                                source_workspace_id.as_str(),
                                 before_workspace_id.as_deref(),
                             )
                         {
@@ -1022,7 +1022,7 @@ impl ClientShellState {
                             self.push_endpoint_method(
                                 crate::api::schema::Method::LayoutSetSplitRatio(
                                     crate::api::schema::LayoutSetSplitRatioParams {
-                                        tab_id: Some(tab_id),
+                                        tab_id: Some(tab_id.to_string()),
                                         pane_id: None,
                                         path: hit
                                             .path
@@ -1059,7 +1059,7 @@ impl ClientShellState {
             if let Some(press) = self.tab_press.take() {
                 self.push_endpoint_method(
                     crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget {
-                        tab_id: press.tab_id,
+                        tab_id: press.tab_id.to_string(),
                     }),
                     outcome,
                 );
@@ -1373,7 +1373,7 @@ impl ClientShellState {
                         );
                         self.push_endpoint_method(
                             crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
-                                pane_id: hit.pane_id.clone(),
+                                pane_id: hit.pane_id.to_string(),
                             }),
                             outcome,
                         );
@@ -1659,7 +1659,7 @@ impl ClientShellState {
                     .find(|hit| super::contains(hit.rect, point))
                     .map(|hit| ClientWorkspacePress {
                         endpoint_id: hit.endpoint_id.clone(),
-                        workspace_id: hit.workspace_id.clone(),
+                        workspace_id: hit.workspace_id.clone().into(),
                         start_column: mouse.column,
                         start_row: mouse.row,
                     });
@@ -1684,7 +1684,7 @@ impl ClientShellState {
                                     .find(|tab| tab.tab_id == *tab_id)?;
                                 Some(ClientTabPress {
                                     tab_id: tab.tab_id.clone(),
-                                    workspace_id: tab.workspace_id.clone(),
+                                    workspace_id: tab.workspace_id.to_string(),
                                     start_column: mouse.column,
                                     start_row: mouse.row,
                                 })
@@ -1707,7 +1707,7 @@ impl ClientShellState {
                 if let Some(pane_id) = agent_pane_id {
                     self.push_endpoint_method(
                         crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
-                            pane_id,
+                            pane_id: pane_id.to_string(),
                         }),
                         outcome,
                     );
@@ -1729,7 +1729,7 @@ impl ClientShellState {
                     self.mode = ClientShellMode::Terminal;
                     self.push_endpoint_method(
                         crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
-                            pane_id: hit.pane_id.clone(),
+                            pane_id: hit.pane_id.to_string(),
                         }),
                         outcome,
                     );
@@ -1833,7 +1833,7 @@ impl ClientShellState {
                     }
                     self.push_endpoint_method(
                         crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
-                            pane_id: hit.pane_id,
+                            pane_id: hit.pane_id.to_string(),
                         }),
                         outcome,
                     );
@@ -1884,7 +1884,7 @@ impl ClientShellState {
                     if self.focused_pane_id().as_deref() != Some(hit.pane_id.as_str()) {
                         self.push_endpoint_method(
                             crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
-                                pane_id: hit.pane_id.clone(),
+                                pane_id: hit.pane_id.to_string(),
                             }),
                             outcome,
                         );

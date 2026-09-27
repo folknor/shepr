@@ -511,7 +511,7 @@ mod tests {
         let first = crate::workspace::Workspace::test_new("closing");
         let target = crate::workspace::Workspace::test_new("target");
         let pane_id = target.tabs[0].root_pane;
-        let workspace_id = target.id.clone();
+        let workspace_id = target.id.to_string();
         app.state.workspaces = vec![first, target];
         app.state.ensure_test_terminals();
         let presentation = crate::terminal::EffectivePresentation {

@@ -204,11 +204,17 @@ impl Default for SessionConfig {
 
 /// Validate `[ui]` sidebar bound configuration.
 ///
-/// Returns `Some((min, max))` when `min <= max`, `None` otherwise. The two
+/// Returns bounds when `min <= max`, `None` otherwise. The two
 /// values are funneled through this helper before they reach any
 /// `u16::clamp(min, max)` call site (`u16::clamp` panics when `min > max`).
-pub fn validated_sidebar_bounds(min: u16, max: u16) -> Option<(u16, u16)> {
-    if min <= max { Some((min, max)) } else { None }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SidebarBounds {
+    pub min: u16,
+    pub max: u16,
+}
+
+pub fn validated_sidebar_bounds(min: u16, max: u16) -> Option<SidebarBounds> {
+    (min <= max).then_some(SidebarBounds { min, max })
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -1027,9 +1033,21 @@ sidebar_collapsed_mode = "hidden"
 
     #[test]
     fn validated_sidebar_bounds_rejects_inverted() {
-        assert_eq!(validated_sidebar_bounds(18, 36), Some((18, 36)));
-        assert_eq!(validated_sidebar_bounds(20, 20), Some((20, 20)));
-        assert_eq!(validated_sidebar_bounds(0, u16::MAX), Some((0, u16::MAX)));
+        assert_eq!(
+            validated_sidebar_bounds(18, 36),
+            Some(SidebarBounds { min: 18, max: 36 })
+        );
+        assert_eq!(
+            validated_sidebar_bounds(20, 20),
+            Some(SidebarBounds { min: 20, max: 20 })
+        );
+        assert_eq!(
+            validated_sidebar_bounds(0, u16::MAX),
+            Some(SidebarBounds {
+                min: 0,
+                max: u16::MAX
+            })
+        );
         assert_eq!(validated_sidebar_bounds(50, 30), None);
         assert_eq!(validated_sidebar_bounds(u16::MAX, 0), None);
     }
@@ -1207,7 +1225,7 @@ headless_rows = 50
         )
         .expect("test precondition");
         assert!(invalid.invalid_headless_size_diagnostic().is_some());
-        assert_eq!(invalid.headless_size(), (0, 50));
+        assert_eq!(invalid.server.headless_cols, 0);
     }
 
     #[test]

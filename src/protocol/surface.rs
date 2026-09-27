@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 /// Origin-relative geometry for one pane in a rendered pane surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSurfacePane {
-    pub pane_id: String,
+    pub pane_id: crate::workspace::PublicPaneId,
     pub content_revision: u64,
     pub rect: SurfaceRect,
     pub inner_rect: SurfaceRect,
@@ -72,7 +72,7 @@ pub struct SurfaceRect {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSurfaceFrame {
     /// Endpoint process identity that produced this surface.
-    pub boot_id: String,
+    pub boot_id: BootId,
     /// Projection revision whose focused IDs and topology produced this surface.
     pub projection_revision: ProjectionRevision,
     /// Monotonic revision for full surfaces and incremental patches on one connection.
@@ -137,7 +137,7 @@ impl From<&PaneSurfaceFrame> for SurfaceMeta {
 impl SurfaceMeta {
     pub(crate) fn into_surface(
         self,
-        boot_id: String,
+        boot_id: BootId,
         projection_revision: ProjectionRevision,
         surface_revision: SurfaceRevision,
         cells: Vec<CellData>,
@@ -231,7 +231,7 @@ pub(crate) fn sort_patch_rows(rows: &mut [PaneSurfacePatchRow]) {
 /// Incremental terminal-cell update against one committed complete pane surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSurfacePatch {
-    pub boot_id: String,
+    pub boot_id: BootId,
     pub projection_revision: ProjectionRevision,
     pub base_surface_revision: SurfaceRevision,
     pub surface_revision: SurfaceRevision,
@@ -254,7 +254,7 @@ pub struct PaneSurfacePatch {
 /// previous projection; an empty span list retains every terminal cell.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SurfaceUpdate {
-    pub boot_id: String,
+    pub boot_id: BootId,
     pub base_surface_revision: SurfaceRevision,
     pub surface_revision: SurfaceRevision,
     pub base_projection_revision: ProjectionRevision,

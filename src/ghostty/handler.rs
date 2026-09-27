@@ -87,14 +87,11 @@ pub(super) fn private_mode(mode: u16) -> PrivateMode {
 pub(super) fn in_band_size_report(
     rows: usize,
     cols: usize,
-    cell_width_px: u32,
-    cell_height_px: u32,
+    cell: Option<crate::geometry::CellPx>,
 ) -> Option<String> {
-    if cell_width_px == 0 || cell_height_px == 0 {
-        return None;
-    }
-    let height = rows as u64 * u64::from(cell_height_px);
-    let width = cols as u64 * u64::from(cell_width_px);
+    let cell = cell?;
+    let height = rows as u64 * u64::from(cell.height.get());
+    let width = cols as u64 * u64::from(cell.width.get());
     Some(format!("\x1b[48;{rows};{cols};{height};{width}t"))
 }
 
@@ -104,14 +101,11 @@ pub(super) fn in_band_size_report(
 pub(super) fn text_area_pixels_report(
     rows: usize,
     cols: usize,
-    cell_width_px: u32,
-    cell_height_px: u32,
+    cell: Option<crate::geometry::CellPx>,
 ) -> Option<String> {
-    if cell_width_px == 0 || cell_height_px == 0 {
-        return None;
-    }
-    let height = rows as u64 * u64::from(cell_height_px);
-    let width = cols as u64 * u64::from(cell_width_px);
+    let cell = cell?;
+    let height = rows as u64 * u64::from(cell.height.get());
+    let width = cols as u64 * u64::from(cell.width.get());
     Some(format!("\x1b[4;{height};{width}t"))
 }
 
@@ -148,8 +142,7 @@ pub(super) struct CoreHandler<'a, T: EventListener> {
     pub(super) term: &'a mut Term<T>,
     pub(super) keyboard_depth: &'a mut KeyboardStackDepth,
     pub(super) modes: &'a mut ExtraModes,
-    pub(super) cell_width_px: u32,
-    pub(super) cell_height_px: u32,
+    pub(super) cell: Option<crate::geometry::CellPx>,
     /// The queue alacritty's listener fills; adapter replies go in as
     /// `PtyWrite`s so they keep byte order with alacritty's.
     pub(super) events: &'a Mutex<Vec<Event>>,
@@ -466,8 +459,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
                     if let Some(report) = in_band_size_report(
                         self.term.screen_lines(),
                         self.term.columns(),
-                        self.cell_width_px,
-                        self.cell_height_px,
+                        self.cell,
                     ) {
                         self.reply(report);
                     }
@@ -599,12 +591,9 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
 
     /// Not forwarded: alacritty's reply closure multiplies u16 cell sizes.
     fn text_area_size_pixels(&mut self) {
-        if let Some(report) = text_area_pixels_report(
-            self.term.screen_lines(),
-            self.term.columns(),
-            self.cell_width_px,
-            self.cell_height_px,
-        ) {
+        if let Some(report) =
+            text_area_pixels_report(self.term.screen_lines(), self.term.columns(), self.cell)
+        {
             self.reply(report);
         }
     }

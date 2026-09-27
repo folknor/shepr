@@ -31,7 +31,7 @@ impl App {
         }
 
         let mut cwd = None;
-        if let Some(ws_idx) = self.state.active {
+        if let Some(ws_idx) = self.state.active_index() {
             env.push((
                 "SHEPR_ACTIVE_WORKSPACE_ID".to_string(),
                 self.public_workspace_id(ws_idx),

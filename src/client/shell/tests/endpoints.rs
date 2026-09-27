@@ -22,7 +22,7 @@ fn agent(
     state_change_seq: u64,
 ) -> ClientShellAgent {
     ClientShellAgent {
-        pane_id: "pane_1".into(),
+        pane_id: "ws_1:p1".parse().expect("test precondition"),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
         name: Some(name.into()),
@@ -138,7 +138,7 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
             .expect("test precondition");
         projection.agents = (0..8)
             .map(|index| ClientShellAgent {
-                pane_id: format!("pane_{}", index + 1),
+                pane_id: crate::workspace::PublicPaneId::new("ws_1", index + 1),
                 focused: index == 0,
                 ..agent(&format!("agent {index}"), AgentStatus::Idle, 1)
             })
@@ -147,7 +147,7 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
             .agents
             .iter()
             .map(|agent| ClientShellPane {
-                pane_id: agent.pane_id.clone(),
+                pane_id: agent.pane_id.to_string().into(),
                 focused: agent.focused,
                 ..projection.panes[0].clone()
             })
@@ -172,9 +172,9 @@ fn agent_navigation_reveals_offscreen_targets() {
     ] {
         let (mut state, remote) = state_with_scrollable_agents();
         let (endpoint_id, pane_id) = match action {
-            KeybindAction::NextAgent => (ClientEndpointId::Local, "pane_2"),
-            KeybindAction::PreviousAgent => (remote, "pane_8"),
-            _ => (ClientEndpointId::Local, "pane_1"),
+            KeybindAction::NextAgent => (ClientEndpointId::Local, "ws_1:p2"),
+            KeybindAction::PreviousAgent => (remote, "ws_1:p8"),
+            _ => (ClientEndpointId::Local, "ws_1:p1"),
         };
         state.agent_scroll = if action == KeybindAction::PreviousAgent {
             0
@@ -187,7 +187,9 @@ fn agent_navigation_reveals_offscreen_targets() {
                 .hits
                 .endpoint_agents
                 .iter()
-                .any(|(_, endpoint, pane)| { endpoint == &endpoint_id && pane == pane_id })
+                .any(|(_, endpoint, pane)| {
+                    endpoint == &endpoint_id && pane.as_str() == pane_id
+                })
         );
 
         let mut outcome = ClientShellInput::default();
@@ -202,7 +204,9 @@ fn agent_navigation_reveals_offscreen_targets() {
                 .hits
                 .endpoint_agents
                 .iter()
-                .any(|(_, endpoint, pane)| { endpoint == &endpoint_id && pane == pane_id }),
+                .any(|(_, endpoint, pane)| {
+                    endpoint == &endpoint_id && pane.as_str() == pane_id
+                }),
             "{action:?} must reveal the selected agent"
         );
     }
@@ -224,7 +228,7 @@ fn agent_navigation_reveal_is_cancelled_by_another_selection() {
         if select_pane {
             assert!(state.focus_or_activate(
                 remote.clone(),
-                ClientEndpointFocusTarget::Pane("pane_1".into()),
+                ClientEndpointFocusTarget::Pane("ws_1:p1".into()),
                 &mut outcome,
             ));
         } else {
@@ -247,7 +251,9 @@ fn agent_navigation_keeps_scroll_when_target_is_visible() {
     );
     let index = targets
         .iter()
-        .position(|target| target.endpoint_id == endpoint_id && target.pane_id == pane_id)
+        .position(|target| {
+            target.endpoint_id == endpoint_id && target.pane_id.as_str() == pane_id.as_str()
+        })
         .expect("test precondition");
     let scroll = state.agent_scroll;
     assert!(state.handle_endpoint_navigation(
@@ -278,7 +284,7 @@ fn switching_machines_preserves_aggregate_agent_scroll_and_visible_rows() {
             [ClientShellAction::ActivateEndpoint {
                 endpoint_id: target,
                 target: Some(ClientEndpointFocusTarget::Pane(target_pane)),
-            }] if target == &endpoint_id && target_pane == pane_id
+            }] if target == &endpoint_id && target_pane == &pane_id.to_string()
         ));
 
         state.workspace_scroll = 3;
@@ -327,7 +333,7 @@ fn local_agent_click_can_cancel_a_pending_remote_switch() {
             matches!(outcome.actions.as_slice(), [ClientShellAction::ActivateEndpoint {
             endpoint_id: ClientEndpointId::Local,
             target: Some(ClientEndpointFocusTarget::Pane(target)),
-        }] if target == &pane_id)
+        }] if target == &pane_id.to_string())
         );
     }
 }
@@ -609,7 +615,7 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
     let template = initial.workspaces[0].clone();
     initial.workspaces = (1..=12)
         .map(|number| ClientShellWorkspace {
-            workspace_id: format!("ws_{number}"),
+            workspace_id: format!("ws_{number}").into(),
             number,
             label: format!("space-{number}"),
             focused: number == 1,
@@ -958,7 +964,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
         [ClientShellAction::ActivateEndpoint {
             endpoint_id: activated,
             target: Some(ClientEndpointFocusTarget::Pane(pane_id)),
-        }] if activated == &endpoint_id && pane_id == "pane_1"
+        }] if activated == &endpoint_id && pane_id == "ws_1:p1"
     ));
 }
 

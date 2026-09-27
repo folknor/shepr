@@ -67,7 +67,12 @@ impl ClientShellState {
         }));
     }
 
-    pub(super) fn open_tab_context_menu(&mut self, tab_id: String, x: u16, y: u16) {
+    pub(super) fn open_tab_context_menu(
+        &mut self,
+        tab_id: crate::workspace::PublicTabId,
+        x: u16,
+        y: u16,
+    ) {
         let Some(tab) = self
             .snapshot
             .as_deref()
@@ -78,7 +83,7 @@ impl ClientShellState {
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Tab {
                 tab_id,
-                workspace_id: tab.workspace_id.clone(),
+                workspace_id: tab.workspace_id.to_string(),
             },
             x,
             y,
@@ -86,7 +91,12 @@ impl ClientShellState {
         }));
     }
 
-    pub(super) fn open_pane_context_menu(&mut self, pane_id: String, x: u16, y: u16) {
+    pub(super) fn open_pane_context_menu(
+        &mut self,
+        pane_id: crate::workspace::PublicPaneId,
+        x: u16,
+        y: u16,
+    ) {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
         };
@@ -100,7 +110,7 @@ impl ClientShellState {
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Pane {
                 pane_id,
-                workspace_id: pane.workspace_id.clone(),
+                workspace_id: pane.workspace_id.to_string(),
                 source_pane_id,
                 has_manual_label: pane.label.is_some(),
                 right_click_passthrough: pane.right_click_passthrough,
@@ -209,7 +219,7 @@ impl ClientShellState {
 
     fn activate_tab_context_action(
         &mut self,
-        tab_id: String,
+        tab_id: crate::workspace::PublicTabId,
         workspace_id: String,
         action: ClientContextMenuAction,
         outcome: &mut ClientShellInput,
@@ -218,7 +228,7 @@ impl ClientShellState {
 
         self.push_endpoint_method(
             Method::TabFocus(TabTarget {
-                tab_id: tab_id.clone(),
+                tab_id: tab_id.to_string(),
             }),
             outcome,
         );
@@ -277,7 +287,7 @@ impl ClientShellState {
                 }
             }
             ClientContextMenuAction::Close => {
-                self.request_tab_close(tab_id, outcome);
+                self.request_tab_close(&tab_id, outcome);
             }
             _ => {}
         }
@@ -285,9 +295,9 @@ impl ClientShellState {
 
     fn activate_pane_context_action(
         &mut self,
-        pane_id: String,
+        pane_id: crate::workspace::PublicPaneId,
         workspace_id: String,
-        source_pane_id: Option<String>,
+        source_pane_id: Option<crate::workspace::PublicPaneId>,
         right_click_passthrough: bool,
         action: ClientContextMenuAction,
         outcome: &mut ClientShellInput,
@@ -314,7 +324,7 @@ impl ClientShellState {
             }
             ClientContextMenuAction::ClearPaneName => self.push_endpoint_method(
                 Method::PaneRename(PaneRenameParams {
-                    pane_id,
+                    pane_id: pane_id.to_string(),
                     label: None,
                 }),
                 outcome,
@@ -325,14 +335,14 @@ impl ClientShellState {
                         Method::PaneSwap(PaneSwapParams {
                             pane_id: None,
                             direction: None,
-                            source_pane_id: Some(source_pane_id.clone()),
-                            target_pane_id: Some(pane_id),
+                            source_pane_id: Some(source_pane_id.to_string()),
+                            target_pane_id: Some(pane_id.to_string()),
                         }),
                         outcome,
                     );
                     self.push_endpoint_method(
                         Method::PaneFocus(PaneTarget {
-                            pane_id: source_pane_id,
+                            pane_id: source_pane_id.to_string(),
                         }),
                         outcome,
                     );
@@ -342,7 +352,7 @@ impl ClientShellState {
                 self.push_endpoint_method(
                     Method::PaneSplit(PaneSplitParams {
                         workspace_id: Some(workspace_id),
-                        target_pane_id: Some(pane_id),
+                        target_pane_id: Some(pane_id.to_string()),
                         direction: if action == ClientContextMenuAction::SplitRight {
                             SplitDirection::Right
                         } else {
@@ -359,14 +369,14 @@ impl ClientShellState {
             }
             ClientContextMenuAction::Zoom => self.push_endpoint_method(
                 Method::PaneZoom(PaneZoomParams {
-                    pane_id: Some(pane_id),
+                    pane_id: Some(pane_id.to_string()),
                     mode: PaneZoomMode::Toggle,
                 }),
                 outcome,
             ),
             ClientContextMenuAction::ToggleRightClickPassthrough => self.push_endpoint_method(
                 Method::PaneInputSet(PaneInputSetParams {
-                    pane_id,
+                    pane_id: pane_id.to_string(),
                     right_click: if right_click_passthrough {
                         PaneRightClickTarget::Shepr
                     } else {
@@ -376,7 +386,12 @@ impl ClientShellState {
                 outcome,
             ),
             ClientContextMenuAction::ClosePane => {
-                self.push_endpoint_method(Method::PaneClose(PaneTarget { pane_id }), outcome);
+                self.push_endpoint_method(
+                    Method::PaneClose(PaneTarget {
+                        pane_id: pane_id.to_string(),
+                    }),
+                    outcome,
+                );
             }
             _ => {}
         }

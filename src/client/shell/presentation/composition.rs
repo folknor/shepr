@@ -198,7 +198,7 @@ impl ClientShellState {
                 source_workspace_id,
                 target,
             }) => (
-                Some(source_workspace_id.as_str()),
+                Some(source_workspace_id),
                 target.as_ref().map(|(_, row)| *row),
             ),
             _ => (None, None),
@@ -763,14 +763,14 @@ mod tests {
                 viewport_rows: 4,
                 history_origin: crate::terminal::AbsRow(0),
             }),
-            pane_id: "pane".to_string(),
+            pane_id: "pane".into(),
             mouse_reporting: false,
             sgr_pixel_mouse: false,
             pixel_width: 0,
             pixel_height: 0,
         };
         let copy_mode = ClientCopyModeState {
-            pane_id: "pane".to_string(),
+            pane_id: "pane".into(),
             content_revision: 0,
             geometry: (6, 4),
             alternate_screen_active: false,

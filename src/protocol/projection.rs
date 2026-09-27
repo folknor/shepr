@@ -5,14 +5,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellSnapshot {
     /// Changes whenever the endpoint process restarts.
-    pub boot_id: String,
+    pub boot_id: BootId,
     /// Monotonic replacement revision within one endpoint boot.
     pub revision: ProjectionRevision,
     /// Endpoint's complete resolved configuration and provenance.
     pub resolved_config: crate::config::ValidatedConfig,
-    pub focused_workspace_id: Option<String>,
-    pub focused_tab_id: Option<String>,
-    pub focused_pane_id: Option<String>,
+    pub focused_workspace_id: Option<crate::workspace::WorkspaceId>,
+    pub focused_tab_id: Option<crate::workspace::PublicTabId>,
+    pub focused_pane_id: Option<crate::workspace::PublicPaneId>,
     #[serde(
         serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
         deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
@@ -49,8 +49,8 @@ pub struct ClientShellTabStatusSegment {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellWorkspace {
-    pub workspace_id: String,
-    pub active_tab_id: String,
+    pub workspace_id: crate::workspace::WorkspaceId,
+    pub active_tab_id: crate::workspace::PublicTabId,
     pub new_workspace_cwd: String,
     pub number: usize,
     pub label: String,
@@ -68,8 +68,8 @@ pub struct ClientShellWorkspace {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellTab {
-    pub tab_id: String,
-    pub workspace_id: String,
+    pub tab_id: crate::workspace::PublicTabId,
+    pub workspace_id: crate::workspace::WorkspaceId,
     pub number: usize,
     pub label: String,
     pub custom_label: bool,
@@ -80,9 +80,9 @@ pub struct ClientShellTab {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellPane {
-    pub pane_id: String,
-    pub workspace_id: String,
-    pub tab_id: String,
+    pub pane_id: crate::workspace::PublicPaneId,
+    pub workspace_id: crate::workspace::WorkspaceId,
+    pub tab_id: crate::workspace::PublicTabId,
     pub label: Option<String>,
     pub cwd: Option<String>,
     pub foreground_cwd: Option<String>,
@@ -92,9 +92,9 @@ pub struct ClientShellPane {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellAgent {
-    pub pane_id: String,
-    pub workspace_id: String,
-    pub tab_id: String,
+    pub pane_id: crate::workspace::PublicPaneId,
+    pub workspace_id: crate::workspace::WorkspaceId,
+    pub tab_id: crate::workspace::PublicTabId,
     pub name: Option<String>,
     pub display_agent: Option<String>,
     pub agent: Option<String>,

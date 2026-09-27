@@ -14,6 +14,7 @@
 //! - Handles stale socket cleanup, explicit server stop, minimum terminal size,
 //!   and pane spawn failure during restore
 
+use crate::server::ClientId;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, RawFd};
@@ -148,12 +149,12 @@ pub struct HeadlessServer {
     client_socket_identity: SocketFileIdentity,
     clients: ClientRegistry,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
-    client_shell_boot_id: String,
+    client_shell_boot_id: crate::protocol::BootId,
     /// Outer window title last pushed, paired with the client that received it.
     /// Keying on the client means a newly attached terminal is written to even
     /// when the title itself has not changed, without every code path that
     /// changes the foreground client having to remember to invalidate this.
-    sent_window_title: Option<(u64, Option<String>)>,
+    sent_window_title: Option<(ClientId, Option<String>)>,
     /// Window title set through `client.window_title.set`. While present it wins
     /// over the configured `ui.window_title` until the API clears it again.
     api_window_title: Option<String>,
@@ -177,10 +178,10 @@ pub struct HeadlessServer {
     /// the loop sleeps again.
     host_input_modes_dirty: bool,
     /// Configured virtual terminal size used when no clients are connected.
-    headless_size: (u16, u16),
+    headless_size: crate::geometry::GridSize,
     /// Shared pane runtime size derived from the foreground client, or the
     /// configured headless size when no clients are connected.
-    effective_size: (u16, u16),
+    effective_size: crate::geometry::GridSize,
     /// Owns running, host-shutdown warning/freeze, cancellation and stopping.
     lifecycle: ShutdownLifecycle,
     /// Watches logind for shutdown warnings; `None` before `run` and while the
@@ -233,7 +234,8 @@ impl HeadlessServer {
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_nanos()
-            ),
+            )
+            .into(),
             sent_window_title: None,
             api_window_title: None,
             api_dispatcher: ApiDispatcher::default(),
@@ -545,7 +547,12 @@ impl HeadlessServer {
         crate::ui::compute_view_without_resizing_panes(
             &mut self.app.state,
             &self.app.terminal_runtimes,
-            Rect::new(0, 0, self.effective_size.0, self.effective_size.1),
+            Rect::new(
+                0,
+                0,
+                self.effective_size.cols.get(),
+                self.effective_size.rows.get(),
+            ),
         );
     }
 
@@ -621,7 +628,7 @@ impl HeadlessServer {
             .and_then(|shell| shell.outer_terminal_focus);
     }
 
-    fn promote_client_to_foreground(&mut self, client_id: u64) -> bool {
+    fn promote_client_to_foreground(&mut self, client_id: ClientId) -> bool {
         // Only an active shell connection may drive session-wide presentation;
         // a direct terminal stream never becomes the foreground client.
         let changed = self.clients.promote_to_foreground(client_id);
@@ -650,7 +657,7 @@ impl HeadlessServer {
         self.app_client_count() > 0
     }
 
-    fn remove_client(&mut self, client_id: u64) -> bool {
+    fn remove_client(&mut self, client_id: ClientId) -> bool {
         self.immediate_pty_sources_dirty = true;
         let disconnected_focus = self
             .clients
@@ -677,9 +684,7 @@ impl HeadlessServer {
         if let Some(mut removed) = removed {
             let held_inputs = removed.drain_shell_held_inputs();
             self.release_client_shell_inputs(client_id, held_inputs);
-            if let ClientConnectionMode::TerminalAttach { terminal_id, .. } = removed.mode
-                && let Some(terminal_id) = self.terminal_id_by_string(&terminal_id).cloned()
-            {
+            if let ClientConnectionMode::TerminalAttach { terminal_id, .. } = removed.mode {
                 self.app
                     .state
                     .direct_attach_resize_locks
@@ -698,7 +703,7 @@ impl HeadlessServer {
 
     fn release_client_shell_inputs(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         held_inputs: Vec<crate::server::clients::ClientShellHeldInput>,
     ) {
         for held in held_inputs {
@@ -716,7 +721,7 @@ impl HeadlessServer {
             // The client is gone, so there is nobody to show a failure to.
             let result = apply_client_pane_input_events(runtime, &[held.release]);
             if let Err(err) = result {
-                warn!(client_id, err = %err, "client shell teardown release failed");
+                warn!(?client_id, err = %err, "client shell teardown release failed");
             }
         }
     }
@@ -727,11 +732,11 @@ impl HeadlessServer {
     /// would otherwise keep typing into a pane that is not reading.
     fn report_client_shell_input_failures(
         &mut self,
-        client_id: u64,
-        pane_id: &str,
+        client_id: ClientId,
+        pane_id: &crate::workspace::PublicPaneId,
         failures: &crate::server::pane_input::PaneInputFailures,
     ) {
-        warn!(client_id, pane_id, err = %failures, "targeted client shell input failed");
+        warn!(?client_id, pane_id = %pane_id, err = %failures, "targeted client shell input failed");
         let dropped = failures.dropped_for_backpressure();
         if dropped == 0 {
             return;
@@ -740,19 +745,19 @@ impl HeadlessServer {
             client_id,
             &ServerMessage::ClientShellError {
                 kind: crate::protocol::NoticeKind::PaneInputDropped {
-                    pane_id: pane_id.to_owned(),
+                    pane_id: pane_id.clone(),
                     events: dropped,
                 },
             },
         );
     }
 
-    fn remove_client_and_resize_if_needed(&mut self, client_id: u64) {
+    fn remove_client_and_resize_if_needed(&mut self, client_id: ClientId) {
         let restore_shell_controller = self.clients.get(&client_id).and_then(|client| {
             let ClientConnectionMode::TerminalAttach { terminal_id, .. } = &client.mode else {
                 return None;
             };
-            self.shell_geometry_controller_for_terminal(terminal_id)
+            self.shell_geometry_controller_for_terminal(terminal_id.as_str())
         });
         self.remove_client(client_id);
         if let Some((controller_id, target)) = restore_shell_controller {
@@ -808,6 +813,7 @@ impl HeadlessServer {
     /// available from here. The scan compares borrowed strings; it used to
     /// allocate a `to_string()` per terminal on every attach keystroke, mouse
     /// event and render.
+    #[cfg(test)]
     fn terminal_id_by_string(&self, terminal_id: &str) -> Option<&crate::terminal::TerminalId> {
         self.app
             .state
@@ -816,6 +822,7 @@ impl HeadlessServer {
             .find(|id| id.as_str() == terminal_id)
     }
 
+    #[cfg(test)]
     fn runtime_for_terminal_id_string(
         &self,
         terminal_id: &str,
@@ -826,7 +833,7 @@ impl HeadlessServer {
 
     fn handle_terminal_attach_scroll(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         source: AttachScrollSource,
         direction: AttachScrollDirection,
         lines: u16,
@@ -841,7 +848,7 @@ impl HeadlessServer {
         else {
             return false;
         };
-        let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) else {
+        let Some(runtime) = self.app.terminal_runtimes.get(terminal_id) else {
             return false;
         };
 
@@ -855,7 +862,7 @@ impl HeadlessServer {
             modifiers.bits(),
         );
         if let Err(err) = &result {
-            warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach scroll failed");
+            warn!(?client_id, terminal_id = %terminal_id, err = %err, "terminal attach scroll failed");
         }
         self.report_terminal_attach_input(client_id, AttachInputDelivery::of(&result));
         true
@@ -863,7 +870,7 @@ impl HeadlessServer {
 
     fn handle_terminal_attach_mouse(
         &mut self,
-        client_id: u64,
+        client_id: ClientId,
         kind: protocol::ClientMouseKind,
         position: protocol::ClientMousePosition,
         geometry: Option<protocol::ClientMouseGeometry>,
@@ -881,7 +888,7 @@ impl HeadlessServer {
         let cell_size = client.cell_size;
         let pixel_mouse = client.pixel_mouse;
         let host_sgr_pixels_active = client.host_sgr_pixels_active == Some(true);
-        let Some(runtime) = self.runtime_for_terminal_id_string(&terminal_id) else {
+        let Some(runtime) = self.app.terminal_runtimes.get(&terminal_id) else {
             return false;
         };
         let Some(position) = terminal_attach_mouse_position(
@@ -904,7 +911,7 @@ impl HeadlessServer {
         };
         let result = apply_client_pane_input_events(runtime, &[event]);
         if let Err(err) = &result {
-            warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach mouse input failed");
+            warn!(?client_id, terminal_id = %terminal_id, err = %err, "terminal attach mouse input failed");
         }
         self.report_terminal_attach_input(client_id, AttachInputDelivery::of_batch(&result));
         true
@@ -916,7 +923,7 @@ impl HeadlessServer {
     /// but one is enough: the notice is sent on the first drop and re-armed
     /// by the next input that gets through. Runs per attach input event, so
     /// the delivered case is one map lookup and a flag store.
-    fn report_terminal_attach_input(&mut self, client_id: u64, delivery: AttachInputDelivery) {
+    fn report_terminal_attach_input(&mut self, client_id: ClientId, delivery: AttachInputDelivery) {
         let Some(client) = self.clients.get_mut(&client_id) else {
             return;
         };
@@ -966,12 +973,13 @@ impl HeadlessServer {
             .foreground_window_title_target()
             .or_else(|| self.default_shell_target())
             .and_then(|target| {
+                let (workspace_index, tab_index) = target.resolve(&self.app.state)?;
                 self.app
                     .state
                     .workspaces
-                    .get(target.workspace_index)?
+                    .get(workspace_index)?
                     .tabs
-                    .get(target.tab_index)
+                    .get(tab_index)
             })
             .map(|tab| tab.layout.focused())
             .is_some_and(|pane_id| sources.contains(&pane_id));
@@ -1005,8 +1013,11 @@ impl HeadlessServer {
             .map_or_else(
                 || self.app.window_title(),
                 |target| {
-                    self.app
-                        .window_title_for(target.workspace_index, target.tab_index)
+                    target
+                        .resolve(&self.app.state)
+                        .and_then(|(workspace_index, tab_index)| {
+                            self.app.window_title_for(workspace_index, tab_index)
+                        })
                 },
             )
             .and_then(|title| crate::config::sanitize_window_title_text(&title))
@@ -1110,12 +1121,12 @@ impl HeadlessServer {
             }
         };
 
-        let mut broken_clients: Vec<u64> = Vec::new();
+        let mut broken_clients: Vec<ClientId> = Vec::new();
         for (&client_id, client) in &mut self.clients {
             if let Some(writer) = &client.writer
                 && writer.control.send(serialized.clone()).is_err()
             {
-                debug!(client_id, "client writer channel closed during broadcast");
+                debug!(?client_id, "client writer channel closed during broadcast");
                 broken_clients.push(client_id);
             }
         }
@@ -1136,11 +1147,11 @@ impl HeadlessServer {
 
     /// Sends a message to a specific client. Returns false if the client
     /// was not found or the send failed (client removed).
-    fn send_to_client(&mut self, client_id: u64, msg: &ServerMessage) -> bool {
+    fn send_to_client(&mut self, client_id: ClientId, msg: &ServerMessage) -> bool {
         let serialized = match Self::frame_server_message(msg) {
             Ok(framed) => framed,
             Err(err) => {
-                warn!(client_id, err = %err, "failed to serialize message for client");
+                warn!(?client_id, err = %err, "failed to serialize message for client");
                 return false;
             }
         };
@@ -1155,7 +1166,7 @@ impl HeadlessServer {
         };
         if writer.control.send(serialized).is_err() {
             debug!(
-                client_id,
+                ?client_id,
                 "client writer channel closed during targeted send"
             );
             self.remove_client_and_resize_if_needed(client_id);
@@ -1164,7 +1175,11 @@ impl HeadlessServer {
         true
     }
 
-    fn shutdown_terminal_stream_clients(&mut self, terminal_id: &str, reason: &str) {
+    fn shutdown_terminal_stream_clients(
+        &mut self,
+        terminal_id: &crate::terminal::TerminalId,
+        reason: &str,
+    ) {
         let client_ids = terminal_stream_client_ids(&self.clients, terminal_id);
 
         for client_id in client_ids {
@@ -1178,7 +1193,7 @@ impl HeadlessServer {
         }
     }
 
-    fn send_terminal_stream_detach_shutdown(&mut self, client_id: u64) {
+    fn send_terminal_stream_detach_shutdown(&mut self, client_id: ClientId) {
         if matches!(
             self.clients.get(&client_id).map(|client| &client.mode),
             Some(ClientConnectionMode::TerminalAttach { .. })
@@ -1194,8 +1209,8 @@ impl HeadlessServer {
 
     fn attach_terminal_client(
         &mut self,
-        client_id: u64,
-        terminal_id: &str,
+        client_id: ClientId,
+        terminal_id: &crate::terminal::TerminalId,
         takeover: bool,
     ) -> bool {
         if !self.client_is_pending_terminal_mode(client_id) {
@@ -1212,7 +1227,7 @@ impl HeadlessServer {
             return false;
         }
 
-        let Some(real_terminal_id) = self.terminal_id_by_string(terminal_id).cloned() else {
+        if !self.app.state.terminals.contains_key(terminal_id) {
             self.send_to_client(
                 client_id,
                 &ServerMessage::ServerShutdown {
@@ -1223,7 +1238,9 @@ impl HeadlessServer {
             );
             self.remove_client_and_resize_if_needed(client_id);
             return false;
-        };
+        }
+
+        let real_terminal_id = terminal_id.clone();
 
         if self
             .api_dispatcher
@@ -1241,7 +1258,10 @@ impl HeadlessServer {
             return false;
         }
 
-        match self.clients.attach_claim(terminal_id, client_id, takeover) {
+        match self
+            .clients
+            .attach_claim(&real_terminal_id, client_id, takeover)
+        {
             AttachClaim::Reject { .. } => {
                 self.send_to_client(
                     client_id,
@@ -1273,9 +1293,12 @@ impl HeadlessServer {
         let Some(client) = self.clients.get_mut(&client_id) else {
             return false;
         };
-        let (cols, rows) = client.terminal_size;
+        let (cols, rows) = (
+            client.terminal_size.cols.get(),
+            client.terminal_size.rows.get(),
+        );
         let cell_size = client.cell_size;
-        let transitioned = client.attach_to_terminal(terminal_id.to_owned());
+        let transitioned = client.attach_to_terminal(real_terminal_id.clone());
         if !transitioned {
             return false;
         }
@@ -1285,9 +1308,9 @@ impl HeadlessServer {
             self.promote_latest_remaining_client();
         }
 
-        info!(client_id, cols, rows, terminal_id = %terminal_id, "terminal attach client connected");
+        info!(?client_id, cols, rows, terminal_id = %terminal_id, "terminal attach client connected");
         self.clients
-            .set_attach_owner(terminal_id.to_owned(), client_id);
+            .set_attach_owner(real_terminal_id.clone(), client_id);
         self.app
             .state
             .direct_attach_resize_locks
@@ -1295,12 +1318,17 @@ impl HeadlessServer {
         self.app
             .start_pending_agent_resume_for_terminal(&real_terminal_id, rows, cols, true);
         if let Some(runtime) = self.app.terminal_runtimes.get(&real_terminal_id) {
-            runtime.resize(rows, cols, cell_size.width_px, cell_size.height_px);
+            runtime.resize(crate::geometry::PaneGeometry::new(
+                cols,
+                rows,
+                cell_size.width_px,
+                cell_size.height_px,
+            ));
         }
         true
     }
 
-    fn client_is_pending_terminal_mode(&self, client_id: u64) -> bool {
+    fn client_is_pending_terminal_mode(&self, client_id: ClientId) -> bool {
         self.clients
             .get(&client_id)
             .is_some_and(|client| matches!(client.mode, ClientConnectionMode::TerminalPending))
@@ -1320,7 +1348,7 @@ impl HeadlessServer {
                 writer,
             } => {
                 info!(
-                    client_id,
+                    ?client_id,
                     cols, rows, cell_width_px, cell_height_px, "direct terminal client connected"
                 );
                 let last_activity = self.clients.allocate_activity_stamp();
@@ -1331,7 +1359,7 @@ impl HeadlessServer {
                 let pixel_mouse = pixel_mouse && observed.is_known();
                 let mut connection = ClientConnection::new_with_mode(
                     ClientConnectionMode::TerminalPending,
-                    (cols, rows),
+                    crate::geometry::GridSize::clamped(cols, rows),
                     observed,
                     last_activity,
                     protocol::RenderEncoding::TerminalAnsi,
@@ -1353,7 +1381,7 @@ impl HeadlessServer {
                 writer,
             } => {
                 info!(
-                    client_id,
+                    ?client_id,
                     cols = surface_cols,
                     rows = surface_rows,
                     cell_width_px,
@@ -1371,7 +1399,7 @@ impl HeadlessServer {
                 };
                 let mut connection = ClientConnection::new_with_mode(
                     ClientConnectionMode::shell(),
-                    (surface_cols, surface_rows),
+                    crate::geometry::GridSize::clamped(surface_cols, surface_rows),
                     observed,
                     last_activity,
                     protocol::RenderEncoding::SemanticFrame,
@@ -1379,7 +1407,7 @@ impl HeadlessServer {
                 );
                 connection.pixel_mouse = pixel_mouse && observed.is_known();
                 let Some(shell) = connection.shell_state_mut() else {
-                    warn!(client_id, "created shell connection without shell state");
+                    warn!(?client_id, "created shell connection without shell state");
                     return false;
                 };
                 shell.mouse_capture = mouse_capture;
@@ -1442,12 +1470,12 @@ impl HeadlessServer {
                 else {
                     return false;
                 };
-                let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) else {
+                let Some(runtime) = self.app.terminal_runtimes.get(terminal_id) else {
                     return true;
                 };
                 let result = apply_terminal_attach_input(runtime, data);
                 if let Err(err) = &result {
-                    warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach input failed");
+                    warn!(?client_id, terminal_id = %terminal_id, err = %err, "terminal attach input failed");
                 }
                 self.report_terminal_attach_input(client_id, AttachInputDelivery::of(&result));
                 true
@@ -1472,7 +1500,7 @@ impl HeadlessServer {
                     // Direct attach has no shell chrome, so it gets its own
                     // notice; every rejection is a separate user action, so
                     // each one is reported.
-                    warn!(client = client_id, %detail, "paste rejected for direct terminal client");
+                    warn!(client = ?client_id, %detail, "paste rejected for direct terminal client");
                     self.send_to_client(
                         client_id,
                         &ServerMessage::DirectTerminalNotice {
@@ -1491,7 +1519,7 @@ impl HeadlessServer {
                 pixel_mouse,
             } => {
                 info!(
-                    client_id,
+                    ?client_id,
                     cols, rows, cell_width_px, cell_height_px, pixel_mouse, "client resize"
                 );
                 let observed = crate::host_term::cell_size::HostCellSize {
@@ -1508,7 +1536,7 @@ impl HeadlessServer {
                     ..
                 }) = self.clients.get_mut(&client_id)
                 {
-                    *terminal_size = (cols, rows);
+                    *terminal_size = crate::geometry::GridSize::clamped(cols, rows);
                     *cell_size = observed;
                     *client_pixel_mouse = pixel_mouse;
                     render_state.request_repaint();
@@ -1517,8 +1545,13 @@ impl HeadlessServer {
                     None
                 };
                 if let Some((terminal_id, cell_size)) = direct_terminal_id {
-                    if let Some(runtime) = self.runtime_for_terminal_id_string(&terminal_id) {
-                        runtime.resize(rows, cols, cell_size.width_px, cell_size.height_px);
+                    if let Some(runtime) = self.app.terminal_runtimes.get(&terminal_id) {
+                        runtime.resize(crate::geometry::PaneGeometry::new(
+                            cols,
+                            rows,
+                            cell_size.width_px,
+                            cell_size.height_px,
+                        ));
                     }
                     return true;
                 }
@@ -1531,7 +1564,7 @@ impl HeadlessServer {
                     ..
                 }) = self.clients.get_mut(&client_id)
                 {
-                    *terminal_size = (cols, rows);
+                    *terminal_size = crate::geometry::GridSize::clamped(cols, rows);
                     *cell_size = observed;
                     *client_pixel_mouse = pixel_mouse;
                     render_state.request_repaint();
@@ -1553,7 +1586,8 @@ impl HeadlessServer {
                 if !matches!(client.mode, ClientConnectionMode::ClientShell(_)) {
                     return false;
                 }
-                client.terminal_size = (surface_cols, surface_rows);
+                client.terminal_size =
+                    crate::geometry::GridSize::clamped(surface_cols, surface_rows);
                 let observed = crate::host_term::cell_size::HostCellSize {
                     width_px: cell_width_px,
                     height_px: cell_height_px,
@@ -1693,7 +1727,7 @@ impl HeadlessServer {
                 super::pane_input::downgrade_ineligible_pixel_mouse(
                     &mut events,
                     pixel_mouse,
-                    runtime.current_size(),
+                    runtime.grid_size(),
                     runtime.pixel_size(),
                 );
                 if !self.shell_client_views_pane(client_id, workspace_index, runtime_pane_id) {
@@ -1803,13 +1837,13 @@ impl HeadlessServer {
                 false
             }
             ServerEvent::ClientDetach { client_id } => {
-                info!(client_id, "client detached");
+                info!(?client_id, "client detached");
                 self.send_terminal_stream_detach_shutdown(client_id);
                 self.remove_client_and_resize_if_needed(client_id);
                 true
             }
             ServerEvent::ClientDisconnected { client_id } => {
-                info!(client_id, "client disconnected");
+                info!(?client_id, "client disconnected");
                 self.remove_client_and_resize_if_needed(client_id);
                 true
             }
@@ -1918,8 +1952,12 @@ impl HeadlessServer {
                 })
             })
         {
-            self.app.state.view.terminal_area =
-                Rect::new(0, 0, self.effective_size.0, self.effective_size.1);
+            self.app.state.view.terminal_area = Rect::new(
+                0,
+                0,
+                self.effective_size.cols.get(),
+                self.effective_size.rows.get(),
+            );
         }
         let outcome = api::handle(&mut self.app, msg.request);
         changed |= outcome.render != api::RenderDemand::None;
@@ -1935,7 +1973,7 @@ impl HeadlessServer {
         {
             let pending = crate::server::alt_screen_read::PendingAltScreenRead::start(
                 spec.terminal_id,
-                request_id.clone(),
+                request_id.clone().into(),
                 msg.respond_to,
                 response.clone(),
                 read.clone(),
