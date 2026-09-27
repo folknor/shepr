@@ -11,13 +11,10 @@ use std::time::{Duration, Instant};
 pub(super) const NONINTERACTIVE_SSH_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 pub(super) const NONINTERACTIVE_SSH_STDERR_LIMIT: usize = 16 * 1024;
 
+/// Return the XDG runtime root stored with the resolved application paths.
+/// SSH setup must not infer it from the application-scoped runtime directory.
 pub(super) fn xdg_runtime_dir(paths: &shepr_config::AppPaths) -> io::Result<&Path> {
-    paths.runtime_dir().parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "app runtime directory has no XDG runtime parent",
-        )
-    })
+    Ok(paths.xdg_runtime_dir())
 }
 
 #[derive(Clone)]
@@ -495,7 +492,7 @@ pub(super) fn write_managed_ssh_config(
     app_paths: &shepr_config::AppPaths,
 ) -> io::Result<ManagedSshConfig> {
     let config_file = app_paths.config_file();
-    let runtime_dir = xdg_runtime_dir(app_paths)?;
+    let runtime_dir = app_paths.xdg_runtime_dir();
     let paths: shepr_platform::RemoteSshConfigPaths =
         shepr_platform::remote_ssh_config_paths(app_paths.home_dir());
     let control_path = Some(shepr_platform::shared_ssh_control_path(

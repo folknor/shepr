@@ -2,6 +2,8 @@
 
 use std::fs::{self, OpenOptions};
 use std::io;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -9,6 +11,57 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod tests;
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+/// Holds the persistent sidecar lock for one user-owned config file.
+pub(super) struct ConfigUpdateLock {
+    /// `None` when the config's directory does not exist: there is nothing to
+    /// edit, and creating the directory only for a lock would leave debris.
+    _file: Option<std::fs::File>,
+}
+
+/// Serializes Shepr's read-modify-write of a user config across processes.
+/// Callers hold the returned guard from before reading the config through its
+/// atomic replacement to prevent concurrent edits from overwriting one another.
+pub(super) fn lock_config_for_update(path: &Path) -> io::Result<ConfigUpdateLock> {
+    check_config_target(path)?;
+    let target = resolve_target(path)?;
+    if target.parent().is_some_and(|parent| !parent.is_dir()) {
+        return Ok(ConfigUpdateLock { _file: None });
+    }
+    let mut lock_name = target.as_os_str().to_os_string();
+    lock_name.push(".lock");
+    let lock_path = PathBuf::from(lock_name);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&lock_path)?;
+    let metadata = file.metadata()?;
+    // SAFETY: geteuid takes no pointers and only returns the caller's effective user id.
+    let effective_uid = unsafe { libc::geteuid() };
+    if !metadata.is_file() || metadata.uid() != effective_uid {
+        return Err(io::Error::other(
+            "integration config lock must be a regular file owned by this user",
+        ));
+    }
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+
+    loop {
+        // SAFETY: flock uses only the open descriptor owned by file.
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if result == 0 {
+            return Ok(ConfigUpdateLock { _file: Some(file) });
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(error);
+    }
+}
 
 /// Check before changing assets as well as immediately before replacing a config.
 /// This is deliberately not config parsing or a transaction across multiple files.

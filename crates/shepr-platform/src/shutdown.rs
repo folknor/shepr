@@ -48,15 +48,16 @@ impl HostShutdownMonitor {
         }
     }
 
+    /// Generation associated with the current or most recent shutdown warning.
+    pub fn warning_generation(&self) -> u64 {
+        self.shared.generation.load(Ordering::Acquire)
+    }
+
     /// Tell the monitor that the session checkpoint answering the current
     /// shutdown warning is on disk, so it can release its delay inhibitor
     /// and let the shutdown proceed. A call with no warning pending, or one
     /// that races a cancellation, is ignored: each warning is numbered, and
     /// only a release for the warning still pending counts.
-    pub fn warning_generation(&self) -> u64 {
-        self.shared.generation.load(Ordering::Acquire)
-    }
-
     pub fn release_delay_lock(&self, generation: u64) {
         if self.warning_generation() == generation {
             self.checkpointed.send_replace(generation);
@@ -85,9 +86,22 @@ impl Shared {
         if self.requested.load(Ordering::Acquire) {
             return;
         }
+        tracing::info!("host shutdown requested; preserving session before pane termination");
+        self.start_warning();
+    }
+
+    /// Refresh a warning after reconnecting if the flag could have hidden a
+    /// cancellation and a second warning while logind was unavailable.
+    fn refresh_warning(&self) {
+        tracing::info!(
+            "host shutdown remains pending after reconnect; refreshing session checkpoint"
+        );
+        self.start_warning();
+    }
+
+    fn start_warning(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
         self.requested.store(true, Ordering::Release);
-        tracing::info!("host shutdown requested; preserving session before pane termination");
         (self.wake)();
     }
 
@@ -108,15 +122,36 @@ impl Shared {
 
 async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<u64>) {
     let mut retry = Duration::from_secs(1);
+    let mut refresh_pending_warning = false;
     // The sender lives in the handle, whose drop also aborts this task; a
     // closed channel only means the abort has not landed yet.
     while checkpoints.has_changed().is_ok() {
-        match watch_shutdown(&shared, &mut checkpoints).await {
-            Ok(()) => retry = Duration::from_secs(1),
+        match watch_shutdown(&shared, &mut checkpoints, refresh_pending_warning).await {
+            Ok(()) => {
+                retry = Duration::from_secs(1);
+                refresh_pending_warning = shared.requested.load(Ordering::Acquire);
+            }
             Err(err) => {
-                tracing::debug!(err = %err, retry_seconds = retry.as_secs(), "host shutdown notification unavailable");
-                tokio::time::sleep(retry).await;
-                retry = (retry * 2).min(Duration::from_secs(60));
+                let shutdown_pending = shared.requested.load(Ordering::Acquire);
+                refresh_pending_warning |= shutdown_pending;
+                let retry_delay = if shutdown_pending {
+                    Duration::from_secs(1)
+                } else {
+                    retry
+                };
+                tracing::debug!(
+                    err = %err,
+                    retry_seconds = retry_delay.as_secs(),
+                    "host shutdown notification unavailable"
+                );
+                // A lost signal stream leaves cancellation unobservable until
+                // reconnecting, so retry promptly while a warning is pending.
+                tokio::time::sleep(retry_delay).await;
+                retry = if shutdown_pending {
+                    Duration::from_secs(1)
+                } else {
+                    (retry * 2).min(Duration::from_secs(60))
+                };
             }
         }
     }
@@ -125,9 +160,10 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<u64>) {
 async fn watch_shutdown(
     shared: &Shared,
     checkpoints: &mut watch::Receiver<u64>,
+    refresh_pending_warning: bool,
 ) -> zbus::Result<()> {
     let connection = zbus::Connection::system().await?;
-    watch_connection(connection, shared, checkpoints).await
+    watch_connection(connection, shared, checkpoints, refresh_pending_warning).await
 }
 
 async fn take_inhibitor(manager: &zbus::Proxy<'_>) -> zbus::Result<zbus::zvariant::OwnedFd> {
@@ -150,6 +186,7 @@ async fn watch_connection(
     connection: zbus::Connection,
     shared: &Shared,
     checkpoints: &mut watch::Receiver<u64>,
+    refresh_pending_warning: bool,
 ) -> zbus::Result<()> {
     let manager = zbus::Proxy::new(
         &connection,
@@ -167,6 +204,13 @@ async fn watch_connection(
     tracing::debug!("host shutdown notification ready");
 
     let mut preparing: bool = manager.get_property("PreparingForShutdown").await?;
+    if preparing {
+        if refresh_pending_warning && shared.requested.load(Ordering::Acquire) {
+            shared.refresh_warning();
+        } else {
+            shared.announce();
+        }
+    }
     loop {
         if preparing {
             shared.announce();
@@ -397,7 +441,7 @@ mod tests {
             let task = tokio::spawn({
                 let shared = Arc::clone(&shared);
                 async move {
-                    watch_connection(client, &shared, &mut checkpoints)
+                    watch_connection(client, &shared, &mut checkpoints, false)
                         .await
                         .expect("test precondition");
                 }

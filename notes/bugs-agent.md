@@ -9,12 +9,8 @@
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-Hunter coverage: detection, manifests, the manifest registry and reload, integrations and config editing, and the reload call sites in shepr-server.
+IDs AGT-001 through AGT-019 were used by an earlier edition of this file and are not reused.
 
-## AGT-010 - Concurrent installs can lose settings edits
+## AGT-020 - Integration installs leave lock files in the agent's config directory
 
-Every settings edit is read-modify-write with no lock, so two concurrent `shepr integration install` runs for the same target can lose one update. The rename is atomic; the edit is not.
-
-## AGT-017 - Manifest compilation runs on the event loop
-
-Each regex now compiles once per load and the first registry load uses the config directory, but `reload_manifests` still compiles every bundled manifest synchronously on the tokio loop, both at startup and on the `server.reload-agent-manifests` API call. Moving it off needs startup preparation in `server/headless/bootstrap.rs` before `rt.block_on`, and a deferred completion for the reload request in the headless request loop or dispatcher. Comments at the call sites in `app/mod.rs` and `app/api.rs` record this.
+Agent config edits now hold a persistent sidecar flock (`integration/config_file.rs`), so every edited file gains a `<file>.lock` sibling in the user's agent directory (for example next to `~/.claude/settings.json`), and it stays after `shepr integration uninstall`. The lock inode must stay stable while editors may race, so deleting it is not free; options are a lock file under shepr's own runtime or state directory keyed by the target path, or removing the sidecar on uninstall once no other edit can be in flight.

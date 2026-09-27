@@ -21,6 +21,11 @@ pub fn run_server(
         &shepr_api::session::data_dir(paths),
         shepr_platform::logging::SERVER_LOG_FILE,
     );
+    // Compile the full registry off the tokio loop, and before App restores PTYs
+    // whose detection workers can consult it. After logging starts, so manifest
+    // override diagnostics reach the server log.
+    let agent_manifest_summaries =
+        shepr_agent::detect::manifest::reload_manifests(paths.config_dir());
 
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let event_hub = shepr_api::EventHub::default();
@@ -56,6 +61,7 @@ pub fn run_server(
             app::AppPolicy::PRODUCTION,
             api_rx,
             event_hub,
+            agent_manifest_summaries,
         );
         seed_startup_workspace_if_empty(&mut app, startup_cwd);
 

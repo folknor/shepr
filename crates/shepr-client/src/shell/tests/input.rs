@@ -403,6 +403,51 @@ fn pane_key_release_keeps_the_press_target() {
 }
 
 #[test]
+fn text_key_release_follows_its_press_only_while_the_host_reports_all_keys() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    // `h` with its associated text, then its release, as kitty reports them.
+    let press_bytes = b"\x1b[104;1;104u";
+    let release_bytes = b"\x1b[104;1:3u";
+
+    state.host_reports_all_keys = true;
+    let press = state.handle_input_bytes(press_bytes);
+    assert!(matches!(
+        &press.requests[..],
+        [ClientMessage::ClientShellPaneInput { pane_id, events }]
+            if pane_id == "pane_1"
+                && matches!(
+                    &events[..],
+                    [ClientPaneInputEvent::Key { generated_text: Some(text), .. }] if text == "h"
+                )
+    ));
+    let release = state.handle_input_bytes(release_bytes);
+    assert!(
+        matches!(
+            &release.requests[..],
+            [ClientMessage::ClientShellPaneInput { pane_id, events }]
+                if pane_id == "pane_1"
+                    && matches!(
+                        &events[..],
+                        [ClientPaneInputEvent::Key {
+                            kind: shepr_protocol::ClientKeyKind::Release,
+                            ..
+                        }]
+                    )
+        ),
+        "the leased release goes to the pane that got the press"
+    );
+
+    state.host_reports_all_keys = false;
+    let _ = state.handle_input_bytes(press_bytes);
+    let release = state.handle_input_bytes(release_bytes);
+    assert!(
+        release.requests.is_empty(),
+        "without report-all a text press holds no lease to release"
+    );
+}
+
+#[test]
 fn help_overlay_uses_live_keymap_and_owns_filter_state() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));

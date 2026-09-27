@@ -60,13 +60,13 @@ pub struct SavedSshConnector {
     profile_id: ProfileId,
     target: SshTarget,
     session: String,
+    settings: SavedSshSettings,
     state: std::sync::Mutex<ConnectorState>,
 }
 
 #[derive(Default)]
 struct ConnectorState {
     ssh: Option<RemoteSsh>,
-    ssh_setup_error: Option<(io::ErrorKind, String)>,
     remote_shepr: Option<RemoteExecutable>,
     /// Full discovery's completed round trips, while it has not finished. Only kept while
     /// there is no remembered executable.
@@ -82,27 +82,13 @@ impl SavedSshConnector {
         session: &str,
         settings: SavedSshSettings,
     ) -> Self {
-        // Resolve the local SSH setup once when the connector is created.
-        // Cache local setup failures so they cannot become plain-SSH attempts
-        // or trigger config-file creation on every reconnect attempt.
-        let (ssh, ssh_setup_error) = match RemoteSsh::new_noninteractive_with(
-            target.clone(),
-            settings.manage_ssh_config,
-            paths,
-        ) {
-            Ok(ssh) => (Some(ssh), None),
-            Err(error) => (None, Some((error.kind(), error.to_string()))),
-        };
         Self {
             paths: paths.clone(),
             profile_id: profile_id.clone(),
             target: target.clone(),
             session: session.to_owned(),
-            state: std::sync::Mutex::new(ConnectorState {
-                ssh,
-                ssh_setup_error,
-                ..ConnectorState::default()
-            }),
+            settings,
+            state: std::sync::Mutex::new(ConnectorState::default()),
         }
     }
 
@@ -135,12 +121,19 @@ impl SavedSshConnector {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((kind, message)) = &state.ssh_setup_error {
-            return Err(io::Error::new(*kind, message.clone()));
-        }
         if !state.seeded_from_disk {
             state.seeded_from_disk = true;
             state.remote_shepr = metadata_cache.load();
+        }
+        if state.ssh.is_none() {
+            // A transient local runtime-directory or managed-config failure must not
+            // disable this endpoint for the connector's lifetime. Failed setup leaves
+            // `ssh` empty, so the next scheduled connection attempt tries it again.
+            state.ssh = Some(RemoteSsh::new_noninteractive_with(
+                self.target.clone(),
+                self.settings.manage_ssh_config,
+                &self.paths,
+            )?);
         }
         let ConnectorState {
             ssh,

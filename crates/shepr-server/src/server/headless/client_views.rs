@@ -552,8 +552,8 @@ impl HeadlessServer {
         self.apply_shell_tab_geometry(client_id, start_pending_agent_resumes)
     }
 
-    /// Resize every unlocked pane after the final shell releases session geometry.
-    pub(super) fn resize_tabs_to_headless_size(&mut self) {
+    /// Resize unlocked panes to headless geometry when no shell controls their size.
+    pub(super) fn resize_tabs_to_headless_size(&mut self, start_pending_agent_resumes: bool) {
         self.sync_foreground_client_state();
         let area = Rect::new(
             0,
@@ -567,7 +567,14 @@ impl HeadlessServer {
             area,
             shepr_termio::host_term::cell_size::HostCellSize::default(),
         );
-        self.finish_shell_tab_geometry_change(true);
+        if start_pending_agent_resumes {
+            self.finish_shell_tab_geometry_change(true);
+        } else {
+            // An attach departure leaves pending agent resumes as they are.
+            for client in self.clients.values_mut() {
+                client.request_recompute();
+            }
+        }
     }
 
     pub(super) fn reapply_controlled_shell_tab_geometry(

@@ -133,6 +133,8 @@ fn parse_right_click_passthrough_modifier(value: &str) -> Result<Option<KeyModif
     }
 }
 
+/// The exact strings `follow`, `home`, and `current` are policy keywords;
+/// every other string is preserved as a literal path for launch-time parsing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum NewTerminalCwdConfig {
     #[default]
@@ -163,8 +165,8 @@ impl<'de> Deserialize<'de> for NewTerminalCwdConfig {
         D: Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        match value.trim() {
-            "" | "follow" => Ok(Self::Follow),
+        match value.as_str() {
+            "follow" => Ok(Self::Follow),
             "home" => Ok(Self::Home),
             "current" => Ok(Self::Current),
             _ => Ok(Self::Path(value)),
@@ -286,8 +288,9 @@ impl LoadedConfig {
             return Err(diagnostics);
         }
         match resolution.values {
-            Some(values) => super::ValidatedConfig::from_loaded(config, provenance, values, paths)
-                .map_err(|error| vec![super::ConfigDiagnostic::Path(error)]),
+            Some(values) => Ok(super::ValidatedConfig::from_loaded(
+                config, provenance, values, paths,
+            )),
             None => Err(vec![super::ConfigDiagnostic::Validation(
                 "configuration values could not be resolved".to_owned(),
             )]),
@@ -808,6 +811,20 @@ new_cwd = "~/Projects"
         assert_eq!(
             config.terminal.new_cwd,
             NewTerminalCwdConfig::Path("~/Projects".into())
+        );
+
+        let empty: Config =
+            toml::from_str("[terminal]\nnew_cwd = \"\"\n").expect("empty path parses");
+        assert_eq!(
+            empty.terminal.new_cwd,
+            NewTerminalCwdConfig::Path(String::new())
+        );
+
+        let padded: Config =
+            toml::from_str("[terminal]\nnew_cwd = \" home \"\n").expect("literal path parses");
+        assert_eq!(
+            padded.terminal.new_cwd,
+            NewTerminalCwdConfig::Path(" home ".into())
         );
     }
 

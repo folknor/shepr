@@ -575,6 +575,12 @@ impl HostModes {
         Ok(())
     }
 
+    /// Whether the host was last told to report every key as an escape code,
+    /// so text keys also send their repeats and releases.
+    pub(super) fn keyboard_report_all_active(&self) -> bool {
+        self.state().keyboard_report_all_active
+    }
+
     pub(super) fn sync_shell_keyboard_report_all(
         &self,
         writer: &mut impl io::Write,

@@ -18,7 +18,7 @@ use super::config_edit::{
     remove_direct_hook_commands, remove_flat_command_hook, remove_hermes_plugin_enabled,
     remove_hook_commands, remove_kimi_config_block, remove_simple_command_hook,
 };
-use super::config_file::{check_config_targets, write_config};
+use super::config_file::{check_config_targets, lock_config_for_update, write_config};
 use super::env::AgentIntegrationPaths;
 use super::file_ops::{remove_dir_all_if_exists, remove_file_if_exists, write_managed_asset};
 use super::opencode_config::{
@@ -128,6 +128,7 @@ pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<Claude
     let hook_path = hooks_dir.join(CLAUDE_HOOK_INSTALL_NAME);
 
     let settings_path = dir.join("settings.json");
+    let _settings_lock = lock_config_for_update(&settings_path)?;
     let existing_settings = if settings_path.is_file() {
         fs::read_to_string(&settings_path)?
     } else {
@@ -163,6 +164,7 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<CodexIn
     let hook_path = dir.join(CODEX_HOOK_INSTALL_NAME);
 
     let hooks_path = dir.join("hooks.json");
+    let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut hooks_file = read_json_config(&hooks_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
@@ -182,6 +184,7 @@ pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<CodexIn
     let hooks_contents = serde_json::to_string_pretty(&hooks_file)?;
 
     let config_path = dir.join("config.toml");
+    let _config_lock = lock_config_for_update(&config_path)?;
     let existing_config = if config_path.is_file() {
         fs::read_to_string(&config_path)?
     } else {
@@ -215,6 +218,7 @@ pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiInst
     let hooks_dir = dir.join("hooks");
     let hook_path = hooks_dir.join(KIMI_HOOK_INSTALL_NAME);
     let config_path = dir.join("config.toml");
+    let _config_lock = lock_config_for_update(&config_path)?;
     let existing_config = if config_path.is_file() {
         fs::read_to_string(&config_path)?
     } else {
@@ -251,6 +255,7 @@ pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<Copil
     let hook_path = hooks_dir.join(COPILOT_HOOK_INSTALL_NAME);
 
     let settings_path = dir.join("settings.json");
+    let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut settings = read_json_config(&settings_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
@@ -298,6 +303,7 @@ pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<DevinIn
     let hook_path = dir.join(DEVIN_HOOK_INSTALL_NAME);
 
     let settings_path = dir.join("config.json");
+    let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut settings = read_json_config(&settings_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
@@ -345,6 +351,7 @@ pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<DroidIn
     let hook_path = hooks_dir.join(DROID_HOOK_INSTALL_NAME);
 
     let settings_path = dir.join("settings.json");
+    let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut settings = read_json_config(&settings_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
@@ -457,6 +464,7 @@ pub(crate) fn install_hermes(paths: &AgentIntegrationPaths) -> io::Result<Hermes
     }
 
     let config_path = dir.join("config.yaml");
+    let _config_lock = lock_config_for_update(&config_path)?;
     let existing_config = if config_path.is_file() {
         fs::read_to_string(&config_path)?
     } else {
@@ -518,6 +526,7 @@ pub(crate) fn uninstall_claude(paths: &AgentIntegrationPaths) -> io::Result<Clau
     check_config_targets(&dir, &["settings.json"])?;
     let hook_path = dir.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME);
     let settings_path = dir.join("settings.json");
+    let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
     if settings_path.is_file() {
@@ -546,6 +555,7 @@ pub(crate) fn uninstall_codex(paths: &AgentIntegrationPaths) -> io::Result<Codex
     let hook_path = codex_dir.join(CODEX_HOOK_INSTALL_NAME);
     let hooks_path = codex_dir.join("hooks.json");
     let config_path = codex_dir.join("config.toml");
+    let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut updated_hooks = false;
 
     if hooks_path.is_file() {
@@ -585,6 +595,7 @@ pub(crate) fn uninstall_kimi(paths: &AgentIntegrationPaths) -> io::Result<KimiUn
     check_config_targets(&kimi_dir, &["config.toml"])?;
     let hook_path = kimi_dir.join("hooks").join(KIMI_HOOK_INSTALL_NAME);
     let config_path = kimi_dir.join("config.toml");
+    let _config_lock = lock_config_for_update(&config_path)?;
     let mut updated_config = false;
 
     if config_path.is_file() {
@@ -613,6 +624,7 @@ pub(crate) fn uninstall_copilot(
     check_config_targets(&copilot_dir, &["settings.json"])?;
     let hook_path = copilot_dir.join("hooks").join(COPILOT_HOOK_INSTALL_NAME);
     let settings_path = copilot_dir.join("settings.json");
+    let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
     if settings_path.is_file() {
@@ -660,6 +672,7 @@ pub(crate) fn uninstall_devin(paths: &AgentIntegrationPaths) -> io::Result<Devin
     check_config_targets(&devin_dir, &["config.json"])?;
     let hook_path = devin_dir.join(DEVIN_HOOK_INSTALL_NAME);
     let settings_path = devin_dir.join("config.json");
+    let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
     if settings_path.is_file() {
@@ -707,6 +720,7 @@ pub(crate) fn uninstall_droid(paths: &AgentIntegrationPaths) -> io::Result<Droid
     check_config_targets(&droid_dir, &["settings.json"])?;
     let hook_path = droid_dir.join("hooks").join(DROID_HOOK_INSTALL_NAME);
     let settings_path = droid_dir.join("settings.json");
+    let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
     if settings_path.is_file() {
@@ -812,6 +826,7 @@ pub(crate) fn uninstall_hermes(paths: &AgentIntegrationPaths) -> io::Result<Herm
     check_config_targets(&dir, &["config.yaml"])?;
     let plugin_dir = paths.directory("hermes_plugin")?;
     let config_path = dir.join("config.yaml");
+    let _config_lock = lock_config_for_update(&config_path)?;
 
     // Edit the config in memory first: a layout the editor refuses leaves the
     // plugin in place instead of enabling a plugin that no longer exists.
@@ -856,6 +871,7 @@ pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<Qode
     // list of `{type: "command", command, timeout?}` invocations. The hook
     // script reads the event payload from stdin via `hook_event_name`.
     let settings_path = dir.join("settings.json");
+    let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut settings = read_json_config(&settings_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
@@ -904,6 +920,7 @@ pub(crate) fn install_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenInst
     let hook_path = hooks_dir.join(QWEN_HOOK_INSTALL_NAME);
 
     let settings_path = dir.join("settings.json");
+    let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut settings = read_json_config(&settings_path, json!({}))?;
 
     let hooks = ensure_hooks_object(
@@ -976,6 +993,7 @@ pub(crate) fn install_letta(paths: &AgentIntegrationPaths) -> io::Result<LettaIn
     let hook_path = hooks_dir.join(LETTA_HOOK_INSTALL_NAME);
 
     let settings_path = dir.join("settings.json");
+    let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut settings = if settings_path.is_file() {
         serde_json::from_str::<Value>(&fs::read_to_string(&settings_path)?).map_err(|err| {
             io::Error::other(format!(
@@ -1044,6 +1062,7 @@ pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<Cursor
     let hook_path = dir.join(CURSOR_HOOK_INSTALL_NAME);
 
     let hooks_path = dir.join("hooks.json");
+    let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut hooks_file = read_json_config(&hooks_path, json!({ "version": 1 }))?;
 
     if hooks_file.get("version").is_none() {
@@ -1084,6 +1103,7 @@ pub(crate) fn uninstall_qodercli(
     check_config_targets(&dir, &["settings.json"])?;
     let hook_path = dir.join("hooks").join(QODERCLI_HOOK_INSTALL_NAME);
     let settings_path = dir.join("settings.json");
+    let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
     if settings_path.is_file() {
@@ -1131,6 +1151,7 @@ pub(crate) fn uninstall_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenUn
     check_config_targets(&dir, &["settings.json"])?;
     let hook_path = dir.join("hooks").join(QWEN_HOOK_INSTALL_NAME);
     let settings_path = dir.join("settings.json");
+    let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
     if settings_path.is_file() {
@@ -1178,6 +1199,7 @@ pub(crate) fn uninstall_letta(paths: &AgentIntegrationPaths) -> io::Result<Letta
     check_config_targets(&dir, &["settings.json"])?;
     let hook_path = dir.join("hooks").join(LETTA_HOOK_INSTALL_NAME);
     let settings_path = dir.join("settings.json");
+    let _settings_lock = lock_config_for_update(&settings_path)?;
     let mut updated_settings = false;
 
     if settings_path.is_file() {
@@ -1219,6 +1241,7 @@ pub(crate) fn uninstall_cursor(paths: &AgentIntegrationPaths) -> io::Result<Curs
     check_config_targets(&cursor_home, &["hooks.json"])?;
     let hook_path = cursor_home.join(CURSOR_HOOK_INSTALL_NAME);
     let hooks_path = cursor_home.join("hooks.json");
+    let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut updated_hooks = false;
 
     if hooks_path.is_file() {
@@ -1271,6 +1294,7 @@ pub(crate) fn install_mastracode(
     let hook_path = hook_dir.join(MASTRACODE_HOOK_INSTALL_NAME);
 
     let hooks_path = mastracode_home.join("hooks.json");
+    let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut hooks_file = read_json_config(&hooks_path, json!({}))?;
 
     let hooks = hooks_file.as_object_mut().ok_or_else(|| {
@@ -1315,6 +1339,7 @@ pub(crate) fn uninstall_mastracode(
         .join("hooks")
         .join(MASTRACODE_HOOK_INSTALL_NAME);
     let hooks_path = mastracode_home.join("hooks.json");
+    let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut updated_hooks = false;
 
     if hooks_path.is_file() {
@@ -1371,6 +1396,7 @@ pub(crate) fn install_antigravity_cli(
     let hook_path = hooks_dir.join(ANTIGRAVITY_CLI_HOOK_INSTALL_NAME);
 
     let hooks_path = dir.join("hooks.json");
+    let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut hooks_file = read_json_config(&hooks_path, json!({}))?;
 
     let hooks = hooks_file.as_object_mut().ok_or_else(|| {
@@ -1429,6 +1455,7 @@ pub(crate) fn uninstall_antigravity_cli(
     check_config_targets(&dir, &["hooks.json"])?;
     let hook_path = dir.join("hooks").join(ANTIGRAVITY_CLI_HOOK_INSTALL_NAME);
     let hooks_path = dir.join("hooks.json");
+    let _hooks_lock = lock_config_for_update(&hooks_path)?;
     let mut updated_hooks = false;
 
     if hooks_path.is_file() {

@@ -8,6 +8,7 @@ pub(super) fn locate_remote_shepr(ssh: &RemoteSsh) -> io::Result<RemoteExecutabl
     DiscoveryProgress::default().advance(&mut SshDiscovery {
         ssh,
         verification: CandidateVerification::StatusProbe,
+        rejected_shell_unsafe_candidate: None,
     })
 }
 
@@ -35,22 +36,40 @@ pub(super) trait DiscoverySteps {
     /// Whether `candidate` passes the caller's verification.
     fn matches(&mut self, candidate: &RemoteExecutable) -> io::Result<bool>;
     fn target(&self) -> &str;
+
+    /// A path rejected because nested remote shell commands cannot safely use it.
+    fn take_rejected_shell_unsafe_candidate(&mut self) -> Option<RejectedShellUnsafeCandidate> {
+        None
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct RejectedShellUnsafeCandidate {
+    path: String,
+    reason: String,
 }
 
 pub(super) struct SshDiscovery<'a> {
     ssh: &'a RemoteSsh,
     verification: CandidateVerification<'a>,
+    rejected_shell_unsafe_candidate: Option<RejectedShellUnsafeCandidate>,
 }
 
 impl DiscoverySteps for SshDiscovery<'_> {
     fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
         let output = self.ssh.posix_user_shell_output("command -v shepr")?;
-        path_lookup_result(&output)
+        path_lookup_result_with_rejected_candidate(
+            &output,
+            &mut self.rejected_shell_unsafe_candidate,
+        )
     }
 
     fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
         let output = self.ssh.sh_output("command -v shepr\n")?;
-        path_lookup_result(&output)
+        path_lookup_result_with_rejected_candidate(
+            &output,
+            &mut self.rejected_shell_unsafe_candidate,
+        )
     }
 
     fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>> {
@@ -60,9 +79,12 @@ impl DiscoverySteps for SshDiscovery<'_> {
         if !output.status.success() {
             return Err(command_failed("remote binary discovery failed", &output));
         }
-        Ok(remote_executables_from_path_discovery(
-            &String::from_utf8_lossy(&output.stdout),
-        ))
+        Ok(
+            remote_executables_from_path_discovery_with_rejected_candidate(
+                &String::from_utf8_lossy(&output.stdout),
+                &mut self.rejected_shell_unsafe_candidate,
+            ),
+        )
     }
 
     fn matches(&mut self, candidate: &RemoteExecutable) -> io::Result<bool> {
@@ -92,12 +114,26 @@ impl DiscoverySteps for SshDiscovery<'_> {
     fn target(&self) -> &str {
         self.ssh.target()
     }
+
+    fn take_rejected_shell_unsafe_candidate(&mut self) -> Option<RejectedShellUnsafeCandidate> {
+        self.rejected_shell_unsafe_candidate.take()
+    }
+}
+
+#[cfg(test)]
+pub(super) fn path_lookup_result(output: &Output) -> io::Result<Option<RemoteExecutable>> {
+    let mut rejected_candidate = None;
+    path_lookup_result_with_rejected_candidate(output, &mut rejected_candidate)
 }
 
 /// Reads a `command -v shepr` result. A failed lookup means no `shepr` on that PATH,
 /// except when the typed failure says ssh itself exited 255: then nothing was learned
-/// about the remote, and recording "not found" would be wrong.
-pub(super) fn path_lookup_result(output: &Output) -> io::Result<Option<RemoteExecutable>> {
+/// about the remote, and recording "not found" would be wrong. A path rejected for
+/// needing shell quoting is recorded in `rejected_candidate`.
+fn path_lookup_result_with_rejected_candidate(
+    output: &Output,
+    rejected_candidate: &mut Option<RejectedShellUnsafeCandidate>,
+) -> io::Result<Option<RemoteExecutable>> {
     if !output.status.success() {
         let error = command_failed("remote SSH connection failed", output);
         if super::SshFailureDiagnostic::from_error(&error).is_link_failure() {
@@ -105,9 +141,12 @@ pub(super) fn path_lookup_result(output: &Output) -> io::Result<Option<RemoteExe
         }
         return Ok(None);
     }
-    Ok(remote_executable_from_path_discovery(
-        &String::from_utf8_lossy(&output.stdout),
-    ))
+    Ok(
+        remote_executable_from_path_discovery_with_rejected_candidate(
+            &String::from_utf8_lossy(&output.stdout),
+            rejected_candidate,
+        ),
+    )
 }
 
 /// What full discovery of the remote executable has learned so far: the result of every
@@ -137,6 +176,7 @@ pub(crate) struct DiscoveryProgress {
     candidates: Option<Vec<RemoteExecutable>>,
     /// How many of `candidates` were probed and did not match.
     probed: usize,
+    rejected_shell_unsafe_candidate: Option<RejectedShellUnsafeCandidate>,
 }
 
 impl DiscoveryProgress {
@@ -163,6 +203,7 @@ impl DiscoveryProgress {
     ) -> io::Result<RemoteExecutable> {
         if self.login_shell_path.is_none() {
             self.login_shell_path = Some(steps.path_via_login_shell()?);
+            self.remember_rejected_candidate(steps);
         }
         let mut path_candidate = self.login_shell_path.clone().flatten();
         if path_candidate.is_none() {
@@ -170,6 +211,7 @@ impl DiscoveryProgress {
             // /bin/sh while retaining the login-shell probe for shell-initialized PATHs.
             if self.sh_path.is_none() {
                 self.sh_path = Some(steps.path_via_sh()?);
+                self.remember_rejected_candidate(steps);
             }
             path_candidate = self.sh_path.clone().flatten();
         }
@@ -178,7 +220,9 @@ impl DiscoveryProgress {
             if let Some(candidate) = path_candidate {
                 push_if_new_remote_binary_candidate(&mut candidates, candidate);
             }
-            for candidate in steps.known_locations()? {
+            let known_locations = steps.known_locations()?;
+            self.remember_rejected_candidate(steps);
+            for candidate in known_locations {
                 push_if_new_remote_binary_candidate(&mut candidates, candidate);
             }
             self.candidates = Some(candidates);
@@ -190,13 +234,31 @@ impl DiscoveryProgress {
             }
             self.probed += 1;
         }
+        let rejection = self
+            .rejected_shell_unsafe_candidate
+            .as_ref()
+            .map(|candidate| {
+                format!(
+                    "; rejected executable path {:?}: {}",
+                    candidate.path, candidate.reason
+                )
+            })
+            .unwrap_or_default();
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             format!(
-                "matching Shepr is not ready on {}; install or update it there manually and retry",
+                "matching Shepr is not ready on {}{rejection}; install or update it there manually and retry",
                 steps.target(),
             ),
         ))
+    }
+
+    fn remember_rejected_candidate(&mut self, steps: &mut impl DiscoverySteps) {
+        if let Some(candidate) = steps.take_rejected_shell_unsafe_candidate()
+            && self.rejected_shell_unsafe_candidate.is_none()
+        {
+            self.rejected_shell_unsafe_candidate = Some(candidate);
+        }
     }
 
     /// Whether any round trip has completed, so the next `advance` resumes mid-way.
@@ -227,12 +289,16 @@ pub(crate) fn resume_installed_remote_shepr_discovery(
     progress.advance(&mut SshDiscovery {
         ssh,
         verification: CandidateVerification::StatusProbe,
+        rejected_shell_unsafe_candidate: None,
     })
 }
 
 /// The executable the API bridge runs: the same candidates as the connector,
-/// confirmed by the forwarding check instead of the status probe. The two
-/// proofs stay separate because the metadata cache records only this one.
+/// confirmed by the forwarding check instead of the status probe. The shared
+/// metadata file stores a path hint only. A saved connector validates a cached
+/// path through connection establishment and rediscovers after a non-link
+/// failure; the API bridge repeats its session-specific `--check` and marks a
+/// failed hint stale for rediscovery.
 pub(crate) fn discover_remote_api_executable(
     ssh: &RemoteSsh,
     session: &str,
@@ -240,6 +306,7 @@ pub(crate) fn discover_remote_api_executable(
     DiscoveryProgress::default().advance(&mut SshDiscovery {
         ssh,
         verification: CandidateVerification::ApiForwarding { session },
+        rejected_shell_unsafe_candidate: None,
     })
 }
 
@@ -290,20 +357,62 @@ fi
     )
 }
 
+#[cfg(test)]
 pub(super) fn remote_executables_from_path_discovery(stdout: &str) -> Vec<RemoteExecutable> {
+    let mut rejected_candidate = None;
+    remote_executables_from_path_discovery_with_rejected_candidate(stdout, &mut rejected_candidate)
+}
+
+fn remote_executables_from_path_discovery_with_rejected_candidate(
+    stdout: &str,
+    rejected_candidate: &mut Option<RejectedShellUnsafeCandidate>,
+) -> Vec<RemoteExecutable> {
     stdout
         .lines()
-        .filter_map(remote_executable_from_path)
+        .filter_map(|path| {
+            remote_executable_from_path_recording_rejection(path, rejected_candidate)
+        })
         .collect()
 }
 
+#[cfg(test)]
 pub(super) fn remote_executable_from_path_discovery(stdout: &str) -> Option<RemoteExecutable> {
-    stdout.lines().find_map(remote_executable_from_path)
+    let mut rejected_candidate = None;
+    remote_executable_from_path_discovery_with_rejected_candidate(stdout, &mut rejected_candidate)
 }
 
-pub(super) fn remote_executable_from_path(path: &str) -> Option<RemoteExecutable> {
+fn remote_executable_from_path_discovery_with_rejected_candidate(
+    stdout: &str,
+    rejected_candidate: &mut Option<RejectedShellUnsafeCandidate>,
+) -> Option<RemoteExecutable> {
+    stdout
+        .lines()
+        .find_map(|path| remote_executable_from_path_recording_rejection(path, rejected_candidate))
+}
+
+/// Parses one discovered path. The first absolute path rejected because it needs
+/// shell quoting is kept in `rejected_candidate`, so a failed discovery can say why
+/// an installed binary was skipped.
+fn remote_executable_from_path_recording_rejection(
+    path: &str,
+    rejected_candidate: &mut Option<RejectedShellUnsafeCandidate>,
+) -> Option<RemoteExecutable> {
     let path = path.trim();
-    RemoteExecutable::parse(path.to_owned()).ok()
+    match RemoteExecutable::parse(path.to_owned()) {
+        Ok(executable) => Some(executable),
+        Err(reason) => {
+            if rejected_candidate.is_none()
+                && path.starts_with('/')
+                && RemoteExecutable::needs_shell_quoting(path)
+            {
+                *rejected_candidate = Some(RejectedShellUnsafeCandidate {
+                    path: path.to_owned(),
+                    reason,
+                });
+            }
+            None
+        }
+    }
 }
 
 pub(super) fn remote_client_status(

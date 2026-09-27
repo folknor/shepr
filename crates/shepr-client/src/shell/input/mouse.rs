@@ -211,19 +211,16 @@ impl ClientShellState {
         metrics: Option<shepr_protocol::ScrollMetrics>,
         outcome: &mut ClientShellInput,
     ) {
+        // Selections hold absolute rows. Without the pane's scroll origin a
+        // viewport row cannot be mapped to one, so the selection is not moved.
+        let Some(metrics) = metrics else {
+            return;
+        };
+        let (viewport_row, col) = selection_cell(column, row, hit.inner_rect);
+        let absolute_row = metrics.absolute_row_at_viewport(viewport_row);
         if self.word_selection_gesture.is_some() {
-            let (viewport_row, col) = selection_cell(column, row, hit.inner_rect);
-            let absolute_row = metrics.map_or_else(
-                || shepr_vt::AbsRow(u64::from(viewport_row.0)),
-                |metrics| metrics.absolute_row_at_viewport(viewport_row),
-            );
             self.drag_word_selection((absolute_row, col), outcome);
         } else if let Some(selection) = self.selection.as_mut() {
-            let (viewport_row, col) = selection_cell(column, row, hit.inner_rect);
-            let absolute_row = metrics.map_or_else(
-                || shepr_vt::AbsRow(u64::from(viewport_row.0)),
-                |metrics| metrics.absolute_row_at_viewport(viewport_row),
-            );
             selection.drag(shepr_vt::Point::new(absolute_row, col));
         }
     }
@@ -1820,34 +1817,39 @@ impl ClientShellState {
                             col: mouse.column.saturating_sub(hit.inner_rect.x),
                             at: std::time::Instant::now(),
                         };
-                        if mouse.modifiers.is_empty()
-                            && previous_pane_click
-                                .as_ref()
-                                .is_some_and(|previous| previous.is_double_click_for(&click))
-                        {
-                            self.request_word_selection(
-                                &hit,
-                                click.viewport_row,
-                                click.col,
-                                outcome,
-                            );
-                        } else {
-                            if mouse.modifiers.is_empty() {
-                                self.last_pane_click = Some(click);
+                        if let Some(metrics) = hit.scroll {
+                            if mouse.modifiers.is_empty()
+                                && previous_pane_click
+                                    .as_ref()
+                                    .is_some_and(|previous| previous.is_double_click_for(&click))
+                            {
+                                self.request_word_selection(
+                                    &hit,
+                                    metrics,
+                                    click.viewport_row,
+                                    click.col,
+                                    outcome,
+                                );
+                            } else {
+                                if mouse.modifiers.is_empty() {
+                                    self.last_pane_click = Some(click);
+                                }
+                                self.selection_focus_pending = (self.focused_pane_id().as_deref()
+                                    != Some(hit.pane_id.as_str()))
+                                .then(|| hit.pane_id.clone());
+                                let (viewport_row, col) =
+                                    selection_cell(mouse.column, mouse.row, hit.inner_rect);
+                                let absolute_row = metrics.absolute_row_at_viewport(viewport_row);
+                                self.selection = Some(shepr_vt::selection::Selection::anchor(
+                                    hit.pane_id.clone(),
+                                    shepr_vt::Point::new(absolute_row, col),
+                                ));
                             }
-                            self.selection_focus_pending = (self.focused_pane_id().as_deref()
-                                != Some(hit.pane_id.as_str()))
-                            .then(|| hit.pane_id.clone());
-                            let (viewport_row, col) =
-                                selection_cell(mouse.column, mouse.row, hit.inner_rect);
-                            let absolute_row = hit.scroll.map_or_else(
-                                || shepr_vt::AbsRow(u64::from(viewport_row.0)),
-                                |metrics| metrics.absolute_row_at_viewport(viewport_row),
-                            );
-                            self.selection = Some(shepr_vt::selection::Selection::anchor(
-                                hit.pane_id.clone(),
-                                shepr_vt::Point::new(absolute_row, col),
-                            ));
+                        } else {
+                            // Selections hold absolute rows. Without the scroll
+                            // origin this click cannot be anchored in them; it
+                            // only clears the old selection.
+                            self.selection = None;
                         }
                     }
                     self.push_endpoint_method(

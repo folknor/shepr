@@ -729,10 +729,11 @@ impl ClientLoop<'_> {
             {
                 warn!(err = %err, "failed to re-assert host mouse capture");
             }
+            let host_reports_all_keys = state.host_modes.keyboard_report_all_active();
             let Some(shell) = state.mode.shell_mut() else {
                 return Ok(ClientLoopAction::NextEvent);
             };
-            let outcome = shell.handle_host_input(inputs);
+            let outcome = shell.handle_host_input(inputs, host_reports_all_keys);
             let frame = outcome
                 .repaint
                 .then(|| {

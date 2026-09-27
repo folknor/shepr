@@ -150,10 +150,14 @@ impl ClientShellState {
         outcome
     }
 
+    /// `host_reports_all_keys` is the host keyboard mode the input arrived
+    /// under; it decides whether text key presses can hold input leases.
     pub(crate) fn handle_host_input(
         &mut self,
         inputs: Vec<super::super::ParsedHostInput>,
+        host_reports_all_keys: bool,
     ) -> ClientShellInput {
+        self.host_reports_all_keys = host_reports_all_keys;
         let mut outcome = ClientShellInput::default();
         self.begin_input_batch(!inputs.is_empty(), &mut outcome);
         for input in inputs {
@@ -304,7 +308,10 @@ impl ClientShellState {
             return;
         }
         let lease_key = shepr_termio::input::InputLeaseKey::new(LOCAL_INPUT_SOURCE, &key);
-        let key = self.input_leases.normalize_press(&lease_key, key);
+        let host_reports_all_keys = self.host_reports_all_keys;
+        let key = self
+            .input_leases
+            .normalize_press(&lease_key, key, host_reports_all_keys);
         match key.kind {
             KeyEventKind::Press => {
                 let initial_context = self.input_context();
@@ -319,6 +326,7 @@ impl ClientShellState {
                     Some(&initial_context),
                     Some(&resulting_context),
                     target,
+                    host_reports_all_keys,
                 );
                 self.execute_repeat_plan(lease_key, key, plan, outcome);
             }

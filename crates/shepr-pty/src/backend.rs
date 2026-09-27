@@ -177,7 +177,7 @@ fn prepare_pty_child() -> io::Result<()> {
     if unsafe { libc::ioctl(0, libc::TIOCSCTTY as _, 0) } == -1 {
         return Err(io::Error::last_os_error());
     }
-    mark_inherited_fds_cloexec();
+    mark_inherited_fds_cloexec()?;
     Ok(())
 }
 
@@ -185,7 +185,7 @@ fn prepare_pty_child() -> io::Result<()> {
 /// from reaching pane processes. They are marked close-on-exec rather than
 /// closed so std's own exec-error pipe keeps working and a failed exec is still
 /// reported by `spawn()`.
-fn mark_inherited_fds_cloexec() {
+fn mark_inherited_fds_cloexec() -> io::Result<()> {
     let first_fd: libc::c_uint = 3;
     // SAFETY: close_range(2) with CLOSE_RANGE_CLOEXEC only sets a flag on
     // this child's own descriptor table; it takes integers and reads no memory.
@@ -198,7 +198,7 @@ fn mark_inherited_fds_cloexec() {
         )
     };
     if result == 0 {
-        return;
+        return Ok(());
     }
 
     // Kernels before 5.11 lack CLOSE_RANGE_CLOEXEC. Walk procfs with raw
@@ -213,7 +213,7 @@ fn mark_inherited_fds_cloexec() {
         )
     };
     if directory_fd < 0 {
-        return;
+        return Err(io::Error::last_os_error());
     }
 
     const DIRENT_RECLEN_OFFSET: usize = 16;
@@ -234,29 +234,33 @@ fn mark_inherited_fds_cloexec() {
             break;
         }
         if bytes_read < 0 {
-            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
                 continue;
             }
-            break;
+            return Err(err);
         }
 
         let Ok(bytes_read) = usize::try_from(bytes_read) else {
-            break;
+            return Err(io::Error::from_raw_os_error(libc::EIO));
         };
         if bytes_read > buffer.len() {
-            break;
+            return Err(io::Error::from_raw_os_error(libc::EIO));
         }
         let mut offset = 0;
-        while offset + DIRENT_NAME_OFFSET <= bytes_read {
+        while offset < bytes_read {
+            if bytes_read - offset < DIRENT_NAME_OFFSET {
+                return Err(io::Error::from_raw_os_error(libc::EIO));
+            }
             let reclen_offset = offset + DIRENT_RECLEN_OFFSET;
             let record_len =
                 u16::from_ne_bytes([buffer[reclen_offset], buffer[reclen_offset + 1]]) as usize;
             if record_len <= DIRENT_NAME_OFFSET || offset + record_len > bytes_read {
-                break;
+                return Err(io::Error::from_raw_os_error(libc::EIO));
             }
             let name = &buffer[offset + DIRENT_NAME_OFFSET..offset + record_len];
             let Some(name_len) = name.iter().position(|byte| *byte == 0) else {
-                break;
+                return Err(io::Error::from_raw_os_error(libc::EIO));
             };
             let mut fd = 0i32;
             let mut valid_fd = name_len > 0;
@@ -281,7 +285,14 @@ fn mark_inherited_fds_cloexec() {
                 if flags >= 0 {
                     // SAFETY: as above; this changes only the child's own
                     // descriptor flags and reads no memory.
-                    unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+                    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                } else {
+                    let err = io::Error::last_os_error();
+                    if err.raw_os_error() != Some(libc::EBADF) {
+                        return Err(err);
+                    }
                 }
             }
             offset += record_len;
@@ -290,6 +301,7 @@ fn mark_inherited_fds_cloexec() {
 
     // SAFETY: `directory_fd` was returned by open above and is owned here.
     unsafe { libc::close(directory_fd) };
+    Ok(())
 }
 
 #[cfg(test)]

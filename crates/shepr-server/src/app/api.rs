@@ -50,10 +50,12 @@ impl App {
             // the API server handles ping, SSH agent leases, subscriptions and
             // waits (including `agent.wait`) on the connection thread and
             // rejects `client_shell.surface.set`; the headless server
-            // intercepts window titles and `agent.prompt` before calling this
-            // function. Reaching here is a routing bug, reported as such.
+            // intercepts window titles, `agent.prompt` and manifest reloads
+            // before calling this function. Reaching here is a routing bug,
+            // reported as such.
             Method::Ping(_)
             | Method::ServerStop(_)
+            | Method::ServerReloadAgentManifests(_)
             | Method::ServerSshAgentRegister(_)
             | Method::ClientWindowTitleSet(_)
             | Method::ClientWindowTitleClear(_)
@@ -82,17 +84,6 @@ impl App {
                     .map(agent_manifest_info)
                     .collect(),
             },
-            Method::ServerReloadAgentManifests(_) => {
-                // Compiles on the app loop: the headless API dispatcher needs
-                // an immediate result, and a reload is a rare explicit command.
-                let summaries =
-                    shepr_agent::detect::manifest::reload_manifests(self.paths.config_dir());
-                self.state.agent_manifest_summaries = summaries.clone();
-                self.reset_all_agent_detection_runtimes();
-                ResponseResult::AgentManifestReload {
-                    manifests: summaries.into_iter().map(agent_manifest_info).collect(),
-                }
-            }
             Method::SessionSnapshot(_) => return self.handle_session_snapshot(request.id),
             Method::WorkspaceList(_) => return self.handle_workspace_list(request.id),
             Method::WorkspaceGet(target) => return self.handle_workspace_get(request.id, &target),
@@ -198,6 +189,17 @@ impl App {
 
         Ok(response)
     }
+
+    pub(crate) fn complete_agent_manifest_reload(
+        &mut self,
+        summaries: Vec<shepr_agent::detect::manifest::AgentManifestSummary>,
+    ) -> shepr_api::schema::ResponseResult {
+        self.state.agent_manifest_summaries = summaries.clone();
+        self.reset_all_agent_detection_runtimes();
+        shepr_api::schema::ResponseResult::AgentManifestReload {
+            manifests: summaries.into_iter().map(agent_manifest_info).collect(),
+        }
+    }
 }
 
 fn agent_manifest_info(
@@ -232,7 +234,7 @@ mod tests {
     use shepr_api::schema::ResponseResult;
 
     #[tokio::test]
-    async fn server_reload_agent_manifests_resets_detection_runtimes() {
+    async fn completed_server_agent_manifest_reload_resets_detection_runtimes() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &shepr_config::Config::default(),
@@ -250,14 +252,9 @@ mod tests {
         let reset_notify = runtime.agent_detection_reset_notify_for_test();
         app.terminal_runtimes.insert(terminal_id, runtime);
 
-        let response =
-            app.handle_api_request_after_internal_events_drained(shepr_api::schema::Request {
-                id: "reload_manifests".into(),
-                method: shepr_api::schema::Method::ServerReloadAgentManifests(
-                    shepr_api::schema::EmptyParams::default(),
-                ),
-            });
-        let ResponseResult::AgentManifestReload { manifests } = response.expect("reload succeeds")
+        let summaries = shepr_agent::detect::manifest::reload_manifests(app.paths.config_dir());
+        let ResponseResult::AgentManifestReload { manifests } =
+            app.complete_agent_manifest_reload(summaries)
         else {
             panic!("expected manifest reload result");
         };

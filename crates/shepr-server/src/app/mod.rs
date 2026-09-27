@@ -125,7 +125,15 @@ impl App {
         let lease =
             shepr_mux::persist::DataDirLease::acquire(&shepr_api::session::data_dir(&paths))
                 .expect("test session lease");
-        Self::with_paths(&config, &paths, lease, policy, api_rx, event_hub)
+        Self::with_paths(
+            &config,
+            &paths,
+            lease,
+            policy,
+            api_rx,
+            event_hub,
+            Vec::new(),
+        )
     }
 
     pub(crate) fn with_paths(
@@ -135,22 +143,15 @@ impl App {
         policy: AppPolicy,
         api_rx: tokio::sync::mpsc::UnboundedReceiver<shepr_api::ApiRequestMessage>,
         event_hub: shepr_api::EventHub,
+        agent_manifest_summaries: Vec<shepr_agent::detect::manifest::AgentManifestSummary>,
     ) -> Self {
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
         let render_notify = Arc::new(Notify::new());
         let render_dirty = Arc::new(shepr_mux::render_signal::RenderSignal::new());
         let settings = state::AppSettings::from_config(config);
 
-        // Build the manifest registry with local overrides before restored
-        // PTYs start detection; detection reaching the registry first would
-        // build it from the bundled manifests alone.
-        #[cfg(not(any(test, feature = "test-api")))]
-        let agent_manifest_summaries =
-            shepr_agent::detect::manifest::reload_manifests(paths.config_dir());
-        // Nextest runs each unit test in a fresh process. Manifest-sensitive tests reload
-        // explicitly; unrelated App tests should not compile every bundled regex.
-        #[cfg(any(test, feature = "test-api"))]
-        let agent_manifest_summaries = Vec::new();
+        // `agent_manifest_summaries` come from bootstrap, which builds the
+        // process-wide registry before restore can start PTY detection.
 
         // Try to restore previous session
         let mut restored_terminals = std::collections::HashMap::new();
@@ -1669,11 +1670,11 @@ mod tests {
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
 
-        app.handle_internal_event(AppEvent::PaneDied {
+        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
             pane_id: first_pane,
             exit_reason: shepr_platform::ChildExitReason::Interrupted,
         });
-        app.handle_internal_event(AppEvent::PaneDied {
+        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
             pane_id: second_pane,
             exit_reason: shepr_platform::ChildExitReason::Interrupted,
         });
@@ -1699,7 +1700,7 @@ mod tests {
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
 
-        app.handle_internal_event(AppEvent::PaneDied {
+        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
             pane_id,
             exit_reason: shepr_platform::ChildExitReason::Interrupted,
         });
@@ -1755,7 +1756,7 @@ mod tests {
             app.state.set_active_index(Some(0));
             app.state.ensure_test_terminals();
 
-            app.handle_internal_event(AppEvent::PaneDied {
+            app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
                 pane_id,
                 exit_reason: shepr_platform::ChildExitReason::Interrupted,
             });
@@ -1764,7 +1765,7 @@ mod tests {
             app.state.ensure_test_terminals();
             app.state.mark_session_dirty();
             if another_interrupted_exit {
-                app.handle_internal_event(AppEvent::PaneDied {
+                app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
                     pane_id: app.state.workspaces[0].tabs[0].root_pane,
                     exit_reason: shepr_platform::ChildExitReason::Interrupted,
                 });

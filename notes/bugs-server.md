@@ -23,22 +23,10 @@ Hot path; breaks "Hot paths multiply".
 - This runs on every `RenderDemand::Full`: any internal event, API request, server event or agent state change, capped at 60 Hz.
 - Fix: make the shell projection event-driven. Bump a revision when topology, labels, agent state or metadata change, and rebuild only then. The config is encoded once at startup, but those bytes still ride in every `ClientShellSnapshot`: a copy per render per shell client, plus a byte comparison on the server and another on the client. Send them once per connection (or as an `Arc<[u8]>`, which needs serde's `rc` feature).
 
+## SRV-018 - A pending-agent-resume test is order dependent
+
+`headless_scheduled_tasks_start_pending_agent_resume_without_foreground_client` failed once in a full shepr-server test run and passed on rerun and alone. It looks timing or order dependent; find what it waits on and make the wait deterministic.
+
 ## SRV-013 - ApiDispatcher swap dance
 
 The `ApiDispatcher` swap dance (`with_api_dispatcher` taking it out, then `with_server_dispatcher` swapping it back in during dispatch) works, but it is hard to follow. `HeadlessServer` and `ApiDispatcher` are really one owner, and splitting routing state out as a plain struct passed by `&mut` would remove the swaps.
-
-## SRV-014 - Pane-exit checkpoints save the session inline on the event loop
-
-`save_session_now()` (`app/session.rs`), reached from pane-exit checkpoints in `app/events.rs`, joins any in-flight writer and does the filesystem work inline on the tokio loop. Ordinary saves now run on the writer thread and retry on failure, but this path still pauses every client for the length of a disk write, including history formatting.
-
-## SRV-015 - A failing save during a host-shutdown warning holds the logind delay lock
-
-When logind warns of a host shutdown, the server checkpoints and then releases the delay lock. If the save keeps failing, `freeze_for_host_shutdown` returns early and the lock is never released, so host shutdown waits until logind's `InhibitDelayMaxSec` runs out. Probably acceptable, but the lock should be released after a bounded number of failed attempts.
-
-## SRV-016 - An attach client's pane keeps its size after it leaves with no shell connected
-
-When a terminal-attach client disconnects and no shell client is connected, the headless resize is skipped (it now runs only when the departing client was an active shell, so that attach departures do not start pending agent resumes). The attached pane keeps the departed client's size until a shell connects. Resizing to headless geometry should be split from the agent-resume side effect so both departures restore the size.
-
-## SRV-017 - ClientRegistry::is_empty is dead outside tests
-
-`crates/shepr-server/src/server/clients.rs`, `ClientRegistry::is_empty`, is used only by tests. `brokkr clippy --lib` flags it as dead code; the all-targets run hides it. Gate it to tests or remove it.

@@ -13,11 +13,7 @@ Hunter coverage: all of `crates/shepr-remote` plus the platform code it lands in
 
 ## RMT-001 - A managed-SSH setup failure surfaces at first connect, not at launch
 
-Managed SSH config creation is now a hard error and never falls back to plain ssh; `SavedSshConnector` creates the setup once and caches a failure. But `SavedSshConnector::new` is infallible, so the cached error reaches the client on the first connection attempt instead of failing the client launch. Making it launch-fatal needs the client's endpoint supervisor to surface it.
-
-## RMT-004 - Metadata cache holds two kinds of result though the doc says one
-
-`discovery.rs` says "The two proofs stay separate because the metadata cache records only this one" (the API-forwarding check). But `saved.rs` (`metadata_cache.store(&discovered)`) writes the status-probe result into the same per-profile file. The API bridge then trusts it as `used_cached_metadata`. The stale marker in `cached_remote_api_command` covers this at runtime, so it is harmless, but the stated contract is false. Either key the two caches apart or fix the doc.
+Managed SSH config creation is a hard error and never falls back to plain ssh, and a saved connector now retries a failed setup on its next attempt. But `SavedSshConnector::new` is infallible, so a setup error that would fail on every attempt (for example an over-long `XDG_RUNTIME_DIR`) reaches the client only on the first connection attempt instead of failing the client launch. Making it launch-fatal needs the client's endpoint supervisor to surface it.
 
 ## RMT-006 - SSH failure classification is plain substring matching
 
@@ -51,24 +47,13 @@ Managed SSH config creation is now a hard error and never falls back to plain ss
 - `EndpointCatalogChanges` has retire-and-restart handling for a changed target/session, but the documented add/remove-only machine commands can never produce that change.
 - `SavedSshApiBridge::start` writes a temporary ssh config dir even when it uses cached metadata.
 - `wait_with_output_timeout` captures remote stdout/stderr with no size limit.
+- `SavedSshConnector::connect` keeps an unreachable "saved SSH transport is unavailable" branch after the lazy setup; `xdg_runtime_dir()` in `remote/ssh.rs` is now a trivial `Ok` wrapper.
 
-## RMT-012 - The SSH runtime root is derived by stripping a path component, and its length limit is undocumented
+## RMT-017 - Two remote paths still skip the build check, and the flock checks are duplicated
 
-`crates/shepr-remote/src/remote/ssh.rs`, `xdg_runtime_dir()`, takes the XDG runtime root as `paths.runtime_dir().parent()`. That works only while `runtime_dir` is exactly `$XDG_RUNTIME_DIR/shepr`; an explicit `AppPaths` accessor would not depend on it. The ControlMaster path budget (16-hex hash, `-%C`, OpenSSH's 17-byte staging suffix) leaves 32 bytes for the directory, so an `XDG_RUNTIME_DIR` longer than that makes managed SSH a hard error. That is intended but documented nowhere a user would see.
-
-## RMT-013 - A saved machine's cached SSH setup error never clears
-
-`crates/shepr-remote/src/remote/saved.rs`. `SavedSshConnector` caches a local managed-SSH setup failure for the connector's whole lifetime. The machine fails soft, but a transient runtime-dir problem can only be cleared by restarting the client.
-
-## RMT-015 - A running remote daemon from another build is accepted without a check
-
-`remote/server_lifecycle.rs`: when a detached server is already running on the remote host, it returns early without checking that daemon's build. Discovery now rejects a mismatched installed binary, but a stale daemon left running from an earlier build still passes and then fails at the bridge preamble check (`remote/host.rs`), so every retry repeats the round trips. It should compare the running daemon's build and report a Compatibility error once.
-
-## RMT-016 - Discovery silently skips remote binaries whose path needs quoting
-
-Executable paths must now be shell-safe (no spaces or quotes), because remote commands nest shell quoting. Discovery drops a candidate that fails that rule without saying so, so a user whose shepr sits under such a path sees "not found" rather than the reason. Report the rejected candidate in the error.
-
-Related smell: the catalog update lock in `machine/catalog.rs` (`acquire_catalog_update_lock`, blocking flock) repeats the open, ownership and mode checks of `shepr_platform::ipc::acquire_socket_startup_lock` (non-blocking); one platform helper could serve both.
+- The API-forwarding discovery probe (`remote_api_forwarding_supported`, `remote-api-bridge --check`) does not compare the remote build identity; only the status probe does.
+- Saved connector attempts through `remote/host.rs` check that the remote server socket is listening but do not preflight the running daemon's build, so a stale daemon is caught only by the bridge handshake.
+- `machine/catalog.rs` (`acquire_catalog_update_lock`, blocking flock) repeats the open, ownership, mode and flock work of `shepr_platform::ipc::acquire_socket_startup_lock` (non-blocking). One platform helper taking a sidecar path and a blocking flag, returning a guard, could serve both, and the agent config-edit lock too.
 
 ## RMT-011 - Idle saved machines may drop every minute without a keepalive (unverified)
 

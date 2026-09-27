@@ -145,6 +145,8 @@ pub fn resolve_indexed_action(
 ) -> Option<KeybindAction> {
     let actual_modifiers = shepr_config::normalize_key_combo((key.code, key.modifiers)).1;
 
+    // The second pass only reaches combos accepted by the config matcher's full
+    // code-and-modifier check, including its legacy shifted-key forms.
     for exact_modifiers in [true, false] {
         let trigger_matches = |binding: &shepr_config::IndexedKeybind| {
             let dispatch_matches = match dispatch {

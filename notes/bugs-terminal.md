@@ -21,30 +21,13 @@ Hunter coverage: shepr-vt findings were checked against the pinned vte and alacr
 - This is realistic: a synchronized-update frame is replayed in a single batch (`stop_sync` runs inside one `with_handler`), and vte buffers up to 2 MB. Output full of blank or identical lines, or clear-heavy TUI redraws, will hit it.
 - Fix direction: don't use pointer identity plus a weak hash. Count evictions directly. Either have the handler observe `linefeed`/`scroll_up` at the history limit, or take a real content hash including flags and zerowidth. Better still is a stable per-row sequence number that the tracker owns. It is worth rewriting.
 
-## TRM-006 - Scanner framing diverges from vte for XTGETTCAP and DCS
-
-- **XTGETTCAP body:** vte's passthrough ignores DEL and bytes 0x80-0xFF other than 0x9C. The scanner buffers them, so a request containing them gets no reply.
-- **DCS ignore vs passthrough:** the scanner merges vte's `DcsIgnore` (which ignores 0x9C) with `DcsPassthrough` (which ends on 0x9C). The hunter found no observable difference, because both only resync on ESC. The module doc's claim of "mirroring framing" is slightly overstated.
-
 ## TRM-010 - One blocking-pool thread per pane for the child's whole life
 
-`crates/shepr-mux/src/pane/runtime.rs`.
+`crates/shepr-mux/src/pane/runtime.rs`, child watcher.
 - `tokio::task::spawn_blocking(move || child.wait())` holds a thread from Tokio's blocking pool (512 by default) until the child exits.
 - The same pool runs detection's `foreground_process_group_id` and `probe_foreground_process`, the synchronized-output flush, and the theme probe. With enough panes those tasks queue forever.
-- Also likely: `Runtime` drop waits for blocking tasks unless `shutdown_timeout` or `shutdown_background` is used, so an exit path that leaves pane processes alive would hang the server on `wait()`. The hunter did not verify which runtime shutdown the server uses.
-- Fix: reap from a pidfd. `ProcessHandle` already opens one: register it with `AsyncFd`, then `waitid(P_PIDFD)`. That avoids a dedicated thread per child.
-
-## TRM-032 - Resize replies can be overtaken by a concurrent PTY read
-
-`crates/shepr-mux/src/pane/runtime.rs`, `PaneRuntime::resize`. The replies a resize produces are computed by `terminal.resize` before `io.resize` queues them in the actor inbox, outside the actor's `response_order` lock. A PTY read that lands between those two calls queues its own replies first, so the child can see them ahead of the resize's. Closing it means the actor's `resize` taking a closure that produces the replies under `response_order`, as `write_terminal_response` already does.
-
-## TRM-030 - passwd_field drops non-UTF-8 home and shell paths
-
-`crates/shepr-pty/src/command.rs`, `passwd_field`. It converts the passwd entry with `CStr::to_str()`, so a non-UTF-8 home directory or login shell is discarded. `SHELL` and `HOME` from the environment now keep their raw bytes; the passwd path should too (`OsStr::from_bytes`).
-
-## TRM-031 - The old-kernel descriptor-close fallback fails soft
-
-`crates/shepr-pty/src/backend.rs`, pre-exec. When `close_range` is unavailable, descriptors are marked close-on-exec by walking `/proc/self/fd`. If procfs cannot be opened, the walk silently does nothing and the pane process inherits every server descriptor. Spawn should fail instead.
+- The server runtime already shuts down with a 100 ms timeout (`server/headless/bootstrap.rs`), so a live waiter cannot hang shutdown; the cost is the pool thread per pane.
+- Fix: reap from a pidfd. `ProcessHandle` already opens one, but `ProcessHandle::pidfd()` is private to `shepr-platform/src/process.rs`. Add an owned pidfd readiness API there (with a fallback for handles without pidfds), register it with `AsyncFd`, then `waitid(P_PIDFD)` in the watcher (a comment at the watcher records this). The fixer needs both files.
 
 ## TRM-020 - Kitty keys that shepr parses cannot be encoded again, so they are dropped
 
@@ -55,7 +38,7 @@ Hunter coverage: shepr-vt findings were checked against the pinned vte and alacr
 - Related: keypad codepoints 57399-57426 are collapsed into `Char('0')` / `Up` and so on, so a REPORT_ALL_KEYS child can never see keypad identity. `TerminalKey` has nowhere to carry it. Caps Lock and Num Lock bits of the kitty modifier field are likewise dropped by `key_modifiers_from_u8`.
 - Fix: keep the kitty functional codepoint in `TerminalKey`, and emit `CSI <cp>;mods[:ev]u` for it when REPORT_ALL_KEYS (or DISAMBIGUATE, for the keys the spec lists) is active.
 
-Structural suggestion from the hunter: `TerminalKey` built on crossterm's `KeyCode` is the root of this entry and TRM-021: it can't represent kitty functional codepoints, keypad identity or lock state. A shepr-owned key model (kitty codepoint, shifted and base-layout alternates, a keypad flag, full modifier and lock bits) would make a lossless round trip possible. It would also let one encoder handle kitty, modifyOtherKeys and legacy output from the same data, replacing today's three layered fallbacks in `encode_terminal_key`. The US shifted-ASCII table is currently duplicated between `input/encode.rs` and `copy_mode.rs` (a parity test guards it); the key model would own it once.
+Structural suggestion from the hunter: `TerminalKey` built on crossterm's `KeyCode` is the root of this entry and TRM-021: it can't represent kitty functional codepoints, keypad identity or lock state. A shepr-owned key model (kitty codepoint, shifted and base-layout alternates, a keypad flag, full modifier and lock bits) would make a lossless round trip possible. It would also let one encoder handle kitty, modifyOtherKeys and legacy output from the same data, replacing today's three layered fallbacks in `encode_terminal_key`.
 
 ## TRM-021 - modifyOtherKeys encoding is only half implemented
 
@@ -63,19 +46,4 @@ Structural suggestion from the hunter: `TerminalKey` built on crossterm's `KeyCo
 - `KeyEncodeModes::modify_other_keys` is documented as "xterm modifyOtherKeys level (0, 1 or 2)", and AGENTS.md says shepr tracks it through shepr-vt. But the encoder only handles Enter, Esc, Tab and Backspace.
 - At level 2, xterm encodes every modified key, for example Ctrl+Shift+a as `CSI 27;6;97~`, Ctrl+1, Ctrl+. and Alt+letter. shepr falls back to legacy instead, so Ctrl+Shift+a reaches the child as `^A`. A child that asked for level 2 (neovim does) can't tell those chords apart.
 - Level 1 also misses the "no well-known meaning" chords such as Ctrl+digit and Ctrl+Shift+letter.
-
-## TRM-022 - Text-key lease rule assumes the host never sends REPORT_ALL_KEYS
-
-`crates/shepr-termio/src/input/lease.rs`.
-- `complete_press` returns `Ignore` without taking a lease for any key with `generated_text`. Its comment justifies this with "Without kitty REPORT_ALL_KEYS on the host ... a key that committed text gets no release event."
-- But `host_term/modes.rs::set_host_kitty_keyboard_report_all(true)` pushes flags 31 (report-all plus associated text). In that mode every text key arrives as CSI u with associated text, gets `generated_text`, and does get Release and Repeat events.
-- Those releases and repeats have no lease. So they aren't routed to the pane that got the press, and `plan_repeat` falls into untracked reprocessing.
-- Needs confirming against the server-side caller. The rule should depend on the host mode, not on whether `generated_text` is present.
-
-## TRM-027 - Selection highlight can land on the wrong rows without scroll metrics
-
-`crates/shepr-termio/src/selection_render.rs`. When `scroll_metrics` is `None`, the viewport row is used as the absolute row. A selection stored in absolute coordinates will highlight the wrong rows whenever there is scrollback. This is only correct if the caller guarantees metrics are always present.
-
-## TRM-028 - resolve_indexed_action second pass relies on matched_index for modifier correctness
-
-`crates/shepr-termio/src/input/keybindings.rs`. With `exact_modifiers == false`, it accepts bindings whose normalized modifiers differ from the key's. Correctness then rests entirely on `IndexedKeybind::matched_index` rejecting modifier mismatches. That is fragile, and the hunter did not verify it in shepr-config.
+- When this is reworked: in a pane that asked for report-all, raw IME text arrives with generated text and takes a forwarded lease, so losing focus sends that pane one extra (matched) release event. Harmless today; the key model should decide it explicitly.

@@ -11,16 +11,18 @@
 //! inside synchronized updates too. Do not add sequences here that vte
 //! dispatches.
 //!
-//! The scanner mirrors vte's framing so it agrees with the core about where
-//! each sequence starts and ends. vte only understands 7-bit controls: in
+//! The scanner follows vte's framing for sequences that can produce scan
+//! events. It collapses uninspected DCS states when their difference cannot
+//! affect those events. vte only understands 7-bit controls: in
 //! ground state every byte other than ESC is text or a no-op control (raw C1
 //! bytes such as 0x90 are executed as no-ops, never open a sequence), so the
 //! scanner only leaves ground on ESC. Inside sequences: OSC ends on BEL, ESC,
-//! CAN or SUB; a DCS body ends on ESC, CAN, SUB or a raw 0x9C (vte's only
-//! 8-bit control, and only in DCS passthrough); SOS/PM/APC strings end on ESC,
-//! CAN or SUB. Events carry the offset just past the byte that completed them,
-//! relative to the slice handed to [`Scanner::scan`], so callers can
-//! interleave the core's own replies with ours in byte order.
+//! CAN or SUB; inspected DCS passthrough ends on ESC, CAN, SUB or raw 0x9C.
+//! For other DCS forms, the scanner merges vte's ignore and passthrough states
+//! because their raw-0x9C distinction cannot change our events. SOS/PM/APC
+//! strings end on ESC, CAN or SUB. Events carry the offset just past the byte
+//! that completed them, relative to the slice handed to [`Scanner::scan`], so
+//! callers can interleave the core's own replies with ours in byte order.
 
 const MAX_CSI_BYTES: usize = 64;
 // A PATH_MAX path can be percent-encoded to about 12 KiB in a file URI, before
@@ -193,6 +195,9 @@ impl Scanner {
                     self.enter(State::Ground);
                 }
                 0x18 | 0x1a => self.enter(State::Ground),
+                // vte's DCS passthrough drops DEL and high bytes other than
+                // ST. They must not invalidate an otherwise valid capability.
+                0x7f | 0x80..=0x9b | 0x9d..=0xff => {}
                 _ => {
                     if self.buffer.len() >= MAX_XTGETTCAP_BYTES {
                         self.overflow = true;
@@ -201,7 +206,8 @@ impl Scanner {
                     }
                 }
             },
-            // vte's DCS passthrough for every other DCS.
+            // We collapse vte's DcsIgnore and DcsPassthrough here. Their raw
+            // 0x9C difference cannot change scanner events: both resume on ESC.
             State::DcsIgnore => match byte {
                 0x1b => self.enter(State::Escape),
                 0x18 | 0x1a | 0x9c => self.enter(State::Ground),
@@ -480,6 +486,18 @@ mod tests {
             assert_eq!(replies[0], b"\x1bP1+r5463\x1b\\");
             assert_chunk_equivalence(bytes);
         }
+    }
+
+    #[test]
+    fn xtgettcap_ignores_del_and_high_bytes_in_the_body() {
+        let bytes: &[u8] = b"\x1bP+q54\x7f\x80\xff63\x1b\\";
+        let events = scan_chunks(&[bytes]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].event,
+            ScanEvent::Xtgettcap(vec![b"\x1bP1+r5463\x1b\\".to_vec()])
+        );
+        assert_chunk_equivalence(bytes);
     }
 
     /// vte only understands 7-bit controls: a raw C1 DCS (0x90) is executed as

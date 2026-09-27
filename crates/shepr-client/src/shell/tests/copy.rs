@@ -2361,7 +2361,13 @@ fn word_selection_result_survives_focus_snapshot_lag() {
     state.compose(106, 20).expect("composed frame");
     let hit = state.hits.panes[0].clone();
     let mut request = ClientShellInput::default();
-    state.request_word_selection(&hit, 0, 1, &mut request);
+    let metrics = shepr_protocol::ScrollMetrics {
+        offset_from_bottom: 0,
+        max_offset_from_bottom: 0,
+        viewport_rows: 2,
+        history_origin: shepr_vt::AbsRow(0),
+    };
+    state.request_word_selection(&hit, metrics, 0, 1, &mut request);
     let request_id = match &request.actions[0] {
         ClientShellAction::Endpoint { request, .. } => request.id.clone(),
         _ => unreachable!(),

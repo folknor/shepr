@@ -413,8 +413,7 @@ pub(crate) fn print_help(requested_session: Option<shepr_config::SessionId>) {
 }
 
 pub(super) fn print_read_response(response: &serde_json::Value) -> CliResult<i32> {
-    if response.get("error").is_some() {
-        eprintln!("{response}");
+    if print_response_error(response)? {
         return Ok(1);
     }
     if let Some(text) = response["result"]["read"]["text"].as_str() {
@@ -714,11 +713,7 @@ fn session_delete(name: &str, json: bool, paths: &shepr_config::AppPaths) -> Cli
 }
 
 pub(super) fn print_response(response: &serde_json::Value) -> CliResult<i32> {
-    if response.get("error").is_some() {
-        eprintln!(
-            "{}",
-            serde_json::to_string(response).map_err(std::io::Error::other)?
-        );
+    if print_response_error(response)? {
         return Ok(1);
     }
 
@@ -727,6 +722,17 @@ pub(super) fn print_response(response: &serde_json::Value) -> CliResult<i32> {
         serde_json::to_string(response).map_err(std::io::Error::other)?
     );
     Ok(0)
+}
+
+fn print_response_error(response: &serde_json::Value) -> CliResult<bool> {
+    if response.get("error").is_none() {
+        return Ok(false);
+    }
+    eprintln!(
+        "{}",
+        serde_json::to_string(response).map_err(std::io::Error::other)?
+    );
+    Ok(true)
 }
 
 fn send_ok_request(context: &target::CliContext, method: Method) -> CliResult<i32> {
@@ -738,11 +744,7 @@ fn send_ok_request(context: &target::CliContext, method: Method) -> CliResult<i3
         },
     )?;
 
-    if response.get("error").is_some() {
-        eprintln!(
-            "{}",
-            serde_json::to_string(&response).map_err(std::io::Error::other)?
-        );
+    if print_response_error(&response)? {
         return Ok(1);
     }
 

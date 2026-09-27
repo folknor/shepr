@@ -50,7 +50,9 @@ pub fn check_saved_ssh(
         RemoteSsh::new_noninteractive_with(target.clone(), settings.manage_ssh_config, paths)?;
     ssh.set_session_name(session.to_owned());
     let remote = find_installed_remote_shepr(&ssh)?;
-    match remote_server_status(&ssh, &remote)? {
+    let status = remote_server_status(&ssh, &remote)?;
+    ensure_remote_server_build(ssh.target(), &status)?;
+    match status {
         RemoteServerStatus::Running {
             detached_server_daemon: true,
             ..
@@ -86,7 +88,9 @@ pub fn prepare_saved_ssh(
     if !output.status.success() {
         return Err(command_failed("remote server startup failed", &output));
     }
-    match remote_server_status(&ssh, &prepared.remote_shepr)? {
+    let status = remote_server_status(&ssh, &prepared.remote_shepr)?;
+    ensure_remote_server_build(ssh.target(), &status)?;
+    match status {
         RemoteServerStatus::Running {
             detached_server_daemon: true,
             ..

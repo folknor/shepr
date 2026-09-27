@@ -446,17 +446,23 @@ impl PtyIoActorHandle {
         }
     }
 
+    /// Produce resize replies and queue them at one point in the response
+    /// order. The closure may take the terminal core lock, so it runs under
+    /// `response_order` but never under the inbox lock.
     pub fn resize(
         &self,
         geometry: shepr_core::geometry::PaneGeometry,
-        terminal_responses: Vec<Bytes>,
+        terminal_responses: impl FnOnce() -> Vec<Bytes>,
     ) {
+        let _order = crate::locks::lock_auxiliary(&self.response_order);
+        let terminal_responses = terminal_responses();
         let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
         if inbox.shutdown {
             return;
         }
         inbox.replace_resize(geometry, terminal_responses);
         drop(inbox);
+        drop(_order);
         self.wake_actor();
     }
 
@@ -2076,12 +2082,12 @@ mod tests {
         handle.write_terminal_response(|| Some(Bytes::from_static(b"before")));
         handle.resize(
             shepr_core::geometry::PaneGeometry::new(80, 20, 8, 16),
-            vec![Bytes::from_static(b"old")],
+            || vec![Bytes::from_static(b"old")],
         );
         handle.write_terminal_response(|| Some(Bytes::from_static(b"middle")));
         handle.resize(
             shepr_core::geometry::PaneGeometry::new(120, 40, 9, 18),
-            vec![Bytes::from_static(b"new")],
+            || vec![Bytes::from_static(b"new")],
         );
 
         let inbox = crate::locks::lock_auxiliary(&handle.inbox);
@@ -2170,7 +2176,7 @@ mod tests {
         handle.write_terminal_response(|| Some(Bytes::from_static(b"earlier")));
         handle.resize(
             shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
-            vec![Bytes::from_static(b"resize")],
+            || vec![Bytes::from_static(b"resize")],
         );
         handle.write_terminal_response(|| Some(Bytes::from_static(b"later")));
 
@@ -2196,7 +2202,7 @@ mod tests {
         });
         handle.resize(
             shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
-            vec![Bytes::from_static(b"resize-reply")],
+            || vec![Bytes::from_static(b"resize-reply")],
         );
         handle.write_terminal_response(|| Some(Bytes::from_static(b"later")));
 
@@ -2256,7 +2262,7 @@ mod tests {
         });
         handle.resize(
             shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
-            vec![Bytes::from_static(b"reply")],
+            || vec![Bytes::from_static(b"reply")],
         );
         handle
             .try_write_user_input(Bytes::from_static(b"typed"))
@@ -2292,7 +2298,7 @@ mod tests {
         );
 
         let newer = shepr_core::geometry::PaneGeometry::new(120, 50, 9, 18);
-        handle.resize(newer, Vec::new());
+        handle.resize(newer, Vec::new);
         succeed.store(true, Ordering::Release);
         runner.pump().expect("newer resize applies");
         assert_eq!(*crate::locks::lock_auxiliary(&applied), [newer]);
@@ -2328,7 +2334,7 @@ mod tests {
 
         handle.resize(
             shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
-            Vec::new(),
+            Vec::new,
         );
         runner.pump().expect("pump with blocked input");
         assert_eq!(

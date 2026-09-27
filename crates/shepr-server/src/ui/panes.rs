@@ -1122,6 +1122,17 @@ mod tests {
         assert_eq!(info.inner_rect, area);
     }
 
+    /// Scroll metrics for a live view with no scrollback: viewport row N is
+    /// absolute row N.
+    fn zero_origin_metrics(viewport_rows: usize) -> Option<shepr_protocol::ScrollMetrics> {
+        Some(shepr_protocol::ScrollMetrics {
+            offset_from_bottom: 0,
+            max_offset_from_bottom: 0,
+            viewport_rows,
+            history_origin: shepr_vt::AbsRow(0),
+        })
+    }
+
     #[test]
     fn selection_highlight_uses_one_uniform_style() {
         let palette = Palette::catppuccin();
@@ -1163,7 +1174,7 @@ mod tests {
                     frame.buffer_mut(),
                     &PaneId::from_raw(1),
                     Rect::new(0, 0, 4, 1),
-                    None,
+                    zero_origin_metrics(1),
                     &palette,
                     host_theme,
                 );
@@ -1206,7 +1217,7 @@ mod tests {
             &mut buffer,
             &PaneId::from_raw(1),
             Rect::new(1, 1, 4, 3),
-            None,
+            zero_origin_metrics(3),
             &palette,
             host_theme,
         );
@@ -1227,10 +1238,24 @@ mod tests {
             &mut buffer,
             &PaneId::from_raw(1),
             Rect::new(10, 10, 4, 3),
+            zero_origin_metrics(3),
+            &palette,
+            host_theme,
+        );
+
+        // Without scroll metrics viewport rows cannot be mapped to the
+        // selection's absolute rows, so nothing is painted.
+        let mut unmapped = Buffer::empty(Rect::new(0, 0, 4, 2));
+        render_selection_highlight(
+            selection.as_ref(),
+            &mut unmapped,
+            &PaneId::from_raw(1),
+            Rect::new(0, 0, 4, 2),
             None,
             &palette,
             host_theme,
         );
+        assert_eq!(unmapped, Buffer::empty(Rect::new(0, 0, 4, 2)));
     }
 
     #[test]

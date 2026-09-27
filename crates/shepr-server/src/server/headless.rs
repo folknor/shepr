@@ -15,7 +15,7 @@
 //!   and pane spawn failure during restore
 
 use crate::server::ClientId;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
@@ -88,9 +88,15 @@ enum LoopEvent {
     Timer,
     Internal(AppEvent),
     Api(Box<shepr_api::ApiRequestMessage>),
+    AgentManifestReload(AgentManifestReloadCompletion),
     ServerEvent(ServerEvent),
     RenderRequested,
     ClientListenerReady,
+}
+
+pub(super) struct AgentManifestReloadCompletion {
+    pub(super) request_token: u64,
+    pub(super) result: Result<Vec<shepr_agent::detect::manifest::AgentManifestSummary>, String>,
 }
 
 /// Whether one direct terminal-attach input reached the pane, for
@@ -160,8 +166,10 @@ pub struct HeadlessServer {
     /// Window title set through `client.window_title.set`. While present it wins
     /// over the configured `ui.window_title` until the API clears it again.
     api_window_title: Option<String>,
-    /// Routes API work that is parked behind alternate-screen reads.
+    /// Routes requests parked behind alternate-screen reads or manifest reloads.
     api_dispatcher: ApiDispatcher,
+    agent_manifest_reload_tx: mpsc::UnboundedSender<AgentManifestReloadCompletion>,
+    agent_manifest_reload_rx: mpsc::UnboundedReceiver<AgentManifestReloadCompletion>,
     /// Whether the set of panes whose PTY output should wake the loop at once
     /// (`sync_immediate_pty_sources`) may be stale. That set depends only on
     /// the clients and on workspace/tab/pane topology, which change only while
@@ -196,6 +204,8 @@ pub struct HeadlessServer {
     server_event_tx: mpsc::Sender<ServerEvent>,
     /// Acknowledgements for shutdown frames queued to client writer threads.
     shutdown_flushes: Vec<tokio::sync::oneshot::Receiver<()>>,
+    /// Pane exits held until their pre-removal session checkpoint reaches disk.
+    pending_checkpointed_pane_exits: VecDeque<shepr_mux::events::AppEvent>,
 }
 
 impl HeadlessServer {
@@ -223,6 +233,7 @@ impl HeadlessServer {
 
         // Channel for server events from client threads.
         let (server_event_tx, server_event_rx) = mpsc::channel(64);
+        let (agent_manifest_reload_tx, agent_manifest_reload_rx) = mpsc::unbounded_channel();
 
         let headless_size = app.state.settings.headless_size;
         Ok(Self {
@@ -245,6 +256,8 @@ impl HeadlessServer {
             sent_window_title: None,
             api_window_title: None,
             api_dispatcher: ApiDispatcher::default(),
+            agent_manifest_reload_tx,
+            agent_manifest_reload_rx,
             immediate_pty_sources_dirty: true,
             host_input_modes_dirty: true,
             headless_size,
@@ -254,6 +267,7 @@ impl HeadlessServer {
             server_event_rx,
             server_event_tx,
             shutdown_flushes: Vec::new(),
+            pending_checkpointed_pane_exits: VecDeque::new(),
         })
     }
 
@@ -439,6 +453,10 @@ impl HeadlessServer {
                         Some(msg) => LoopEvent::Api(Box::new(msg)),
                         None => LoopEvent::Timer,
                     },
+                    maybe_reload = self.agent_manifest_reload_rx.recv() => match maybe_reload {
+                        Some(completion) => LoopEvent::AgentManifestReload(completion),
+                        None => LoopEvent::Timer,
+                    },
                     maybe_ev = self.app.event_rx.recv() => match maybe_ev {
                         Some(ev) => LoopEvent::Internal(ev),
                         None => LoopEvent::Timer,
@@ -502,6 +520,11 @@ impl HeadlessServer {
                         render_demand.join(RenderDemand::Full);
                     }
                 }
+                LoopEvent::AgentManifestReload(completion) => {
+                    if self.complete_agent_manifest_reload(completion) {
+                        render_demand.join(RenderDemand::Full);
+                    }
+                }
                 LoopEvent::ServerEvent(ev) => {
                     if self.handle_server_event_with_render_impact(ev) == RenderDemand::Full {
                         render_demand.join(RenderDemand::Full);
@@ -527,7 +550,7 @@ impl HeadlessServer {
         if self.app.policy.persists_session()
             || self.lifecycle.frozen_session_policy().unwrap_or(false)
         {
-            self.app.save_session_before_teardown();
+            self.app.save_session_before_teardown_async().await;
         }
         self.app.terminal_runtimes.clear();
         if !shepr_mux::pane::wait_for_pane_session_teardowns(Duration::from_secs(3)) {
@@ -764,6 +787,12 @@ impl HeadlessServer {
     }
 
     fn remove_client_and_resize_if_needed(&mut self, client_id: ClientId) {
+        let was_terminal_attach = self.clients.get(&client_id).is_some_and(|client| {
+            matches!(
+                &client.mode,
+                crate::server::clients::ClientConnectionMode::TerminalAttach { .. }
+            )
+        });
         let restore_shell_controller = self.clients.get(&client_id).and_then(|client| {
             let ClientConnectionMode::TerminalAttach { terminal_id, .. } = &client.mode else {
                 return None;
@@ -782,9 +811,10 @@ impl HeadlessServer {
             // Hand each tab it controlled to a remaining viewer and resize
             // to that viewer, so no pane keeps the departed client's size.
             self.reapply_controlled_shell_tab_geometry(true);
-        } else if was_shell_client {
-            // The last shell is gone: nothing holds session geometry anymore.
-            self.resize_tabs_to_headless_size();
+        } else if was_shell_client || was_terminal_attach {
+            // With no shell surfaces, every departing client releases its
+            // geometry. Only a shell departure also settles pending resumes.
+            self.resize_tabs_to_headless_size(was_shell_client);
         }
     }
 
@@ -2039,6 +2069,19 @@ impl HeadlessServer {
 
         if self.app.session_saver.is_due(now) {
             self.app.start_background_session_save();
+        }
+
+        self.sync_host_shutdown_freeze(now);
+        let pane_exit_checkpoint_ready = self.app.take_pane_exit_checkpoint_ready();
+        if pane_exit_checkpoint_ready
+            || (!self.app.policy.persists_session() && !self.app.pane_exit_checkpoint_requested())
+        {
+            let queued = self.pending_checkpointed_pane_exits.len();
+            for _ in 0..queued {
+                if let Some(ev) = self.pending_checkpointed_pane_exits.pop_front() {
+                    changed |= self.handle_internal_event_with_forwarding(ev);
+                }
+            }
         }
 
         if let Some(deadline) = self

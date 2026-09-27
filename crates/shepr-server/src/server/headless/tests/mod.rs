@@ -127,6 +127,7 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
         .set_nonblocking(ListenerNonblockingMode::Accept)
         .expect("set listener nonblocking");
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
+    let (agent_manifest_reload_tx, agent_manifest_reload_rx) = mpsc::unbounded_channel();
     let stop_requested = Arc::new(AtomicBool::new(false));
     let headless_size = app.state.settings.headless_size;
     let mut resolved_config = Vec::new();
@@ -148,6 +149,8 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
         sent_window_title: None,
         api_window_title: None,
         api_dispatcher: ApiDispatcher::default(),
+        agent_manifest_reload_tx,
+        agent_manifest_reload_rx,
         immediate_pty_sources_dirty: true,
         host_input_modes_dirty: true,
         headless_size,
@@ -157,6 +160,7 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
         server_event_rx,
         server_event_tx,
         shutdown_flushes: Vec::new(),
+        pending_checkpointed_pane_exits: std::collections::VecDeque::new(),
     }
 }
 

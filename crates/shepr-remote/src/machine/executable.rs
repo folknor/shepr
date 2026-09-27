@@ -23,13 +23,7 @@ impl RemoteExecutable {
         // The command is nested inside /bin/sh -c and then parsed by the remote
         // login shell. Keep paths as plain shell words because nested quote
         // escaping is not reliable across the non-POSIX login shells we support.
-        if !value.chars().all(|ch| {
-            ch.is_ascii_alphanumeric()
-                || matches!(
-                    ch,
-                    '@' | '%' | '_' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
-                )
-        }) {
+        if !has_only_shell_safe_characters(&value) {
             return Err(
                 "remote Shepr executable path must contain only unquoted shell-safe characters"
                     .into(),
@@ -44,6 +38,22 @@ impl RemoteExecutable {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Whether `value` would be rejected only because a nested remote shell
+    /// command could not use it as a plain word.
+    pub fn needs_shell_quoting(value: &str) -> bool {
+        !has_only_shell_safe_characters(value)
+    }
+}
+
+fn has_only_shell_safe_characters(value: &str) -> bool {
+    value.chars().all(|ch| {
+        ch.is_ascii_alphanumeric()
+            || matches!(
+                ch,
+                '@' | '%' | '_' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
+            )
+    })
 }
 
 #[cfg(test)]

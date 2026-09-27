@@ -181,14 +181,18 @@ impl HeadlessServer {
     /// Applies warning and cancellation notifications from logind to the
     /// lifecycle state machine. A warning checkpoints before freezing saves;
     /// cancellation thaws and marks the live session dirty again.
-    pub(super) fn sync_host_shutdown_freeze(&mut self, now: Instant) {
+    pub(super) fn sync_host_shutdown_freeze(&mut self, _now: Instant) {
         if self.lifecycle.phase() == ShutdownPhase::Stopping {
             return;
         }
 
         if !self.lifecycle.host_shutdown_requested() {
+            let was_warning = self.lifecycle.phase() == ShutdownPhase::HostShutdownWarning;
             if let Some(freeze) = self.lifecycle.cancel_host_shutdown() {
+                self.app.cancel_host_shutdown_checkpoint();
                 self.thaw_after_host_shutdown(&freeze);
+            } else if was_warning {
+                self.app.cancel_host_shutdown_checkpoint();
             }
             return;
         }
@@ -200,7 +204,9 @@ impl HeadlessServer {
                 }
             }
             ShutdownPhase::HostShutdownWarning => {
-                if !self.app.policy.persists_session() || self.app.session_saver.is_due(now) {
+                if !self.app.policy.persists_session()
+                    || self.app.host_shutdown_checkpoint_result_ready()
+                {
                     self.freeze_for_host_shutdown();
                 }
             }
@@ -231,11 +237,17 @@ impl HeadlessServer {
             .as_ref()
             .map(shepr_platform::HostShutdownMonitor::warning_generation);
         let persist_session = self.app.policy.persists_session();
-        if persist_session && !self.app.save_session_now() {
-            return;
+        if persist_session {
+            let Some(saved) = self.app.take_host_shutdown_checkpoint_result() else {
+                self.app.request_host_shutdown_checkpoint();
+                return;
+            };
+            if !saved {
+                warn!("host shutdown checkpoint failed repeatedly; releasing the delay lock");
+            }
         }
         self.app.policy = crate::app::AppPolicy::Suspended;
-        self.app.session_saver.clear_deadline();
+        self.app.session_saver.freeze_session_saves();
         if let (Some(monitor), Some(generation)) = (self.host_shutdown_monitor.as_ref(), generation)
         {
             monitor.release_delay_lock(generation);

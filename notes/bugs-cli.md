@@ -17,8 +17,4 @@ There are two separate notions of mismatch:
 - `restart_needed` is driven by protocol compatibility.
 - `server_binary_stale` is driven by the version string.
 
-`session stop` and local `server stop` also deliberately skip the protocol check "to stop a server from another build". This is defensible for a binary replaced in place, but it adds code surface (the `protocol_guard` and `Compatibility::Unknown` paths, `restart_after_update_guidance`) that could be reduced to one exact build-id check. (Remote discovery now requires an exact version and protocol match.)
-
-## CMD-005 - Duplicated error-printing paths
-
-`send_ok_request` and `print_response` duplicate the "error, print to stderr, return 1" logic. `print_read_response` prints errors with `{response}`, but `print_response` uses `serde_json::to_string`. The output is the same; it is just an inconsistency.
+`session stop` and local `server stop` also deliberately skip the protocol check "to stop a server from another build". This is defensible for a binary replaced in place, but it adds code surface (the `protocol_guard` and `Compatibility::Unknown` paths, `restart_after_update_guidance`) that could be reduced to one exact build-id check. (Remote discovery and remote daemon startup now require an exact version and protocol match.)

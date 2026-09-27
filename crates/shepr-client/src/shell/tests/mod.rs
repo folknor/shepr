@@ -89,7 +89,14 @@ fn surface() -> PaneSurfaceFrame {
                 height: 2,
             },
             scrollbar_rect: None,
-            scroll: None,
+            // A live pane always reports its scroll position; selections
+            // need it to map viewport rows to absolute rows.
+            scroll: Some(shepr_protocol::PaneSurfaceScrollMetrics {
+                offset_from_bottom: 0,
+                max_offset_from_bottom: 0,
+                viewport_rows: 2,
+                history_origin: shepr_vt::AbsRow(0),
+            }),
             focused: true,
             mouse_reporting: false,
             sgr_pixel_mouse: false,

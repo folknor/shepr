@@ -81,6 +81,37 @@ fn abandoned_and_failed_publication_leave_config_unchanged() {
 }
 
 #[test]
+fn config_update_lock_covers_the_full_read_modify_write() {
+    let dir = Directory::new();
+    let path = dir.0.join("settings.json");
+    fs::write(&path, "0").expect("test precondition");
+
+    let start = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let workers: Vec<_> = (0..2)
+        .map(|_| {
+            let path = path.clone();
+            let start = std::sync::Arc::clone(&start);
+            std::thread::spawn(move || {
+                start.wait();
+                let _lock = lock_config_for_update(&path).expect("test precondition");
+                let value = fs::read_to_string(&path)
+                    .expect("test precondition")
+                    .parse::<u32>()
+                    .expect("test precondition");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                write_config(&path, (value + 1).to_string()).expect("test precondition");
+            })
+        })
+        .collect();
+    start.wait();
+    for worker in workers {
+        worker.join().expect("test precondition");
+    }
+
+    assert_eq!(fs::read_to_string(path).expect("test precondition"), "2");
+}
+
+#[test]
 fn hard_links_are_rejected_before_staging_and_rechecked_before_commit() {
     let dir = Directory::new();
     let path = dir.0.join("config");

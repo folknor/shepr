@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     CONFIG_PATH_ENV_VAR, Config, ConfigDiagnostic, ConfigProvenance, ConfigSource,
-    NewTerminalCwdConfig, ValidatedConfig,
+    NewTerminalCwdConfig, ValidatedConfig, ValidatedTerminalConfig,
     model::{ConfigDocumentState, LoadedConfig},
+    validated::CwdCheck,
 };
 
 pub fn app_dir_name() -> &'static str {
@@ -32,6 +33,7 @@ pub fn app_dir_name() -> &'static str {
 pub struct AppPaths {
     config_dir: PathBuf,
     state_dir: PathBuf,
+    xdg_runtime_dir: PathBuf,
     runtime_dir: PathBuf,
     config_file: PathBuf,
     home_dir: Option<PathBuf>,
@@ -59,6 +61,7 @@ impl<'de> Deserialize<'de> for AppPaths {
         struct Wire {
             config_dir: PathBuf,
             state_dir: PathBuf,
+            xdg_runtime_dir: PathBuf,
             runtime_dir: PathBuf,
             config_file: PathBuf,
             home_dir: Option<PathBuf>,
@@ -72,6 +75,7 @@ impl<'de> Deserialize<'de> for AppPaths {
         let paths = Self {
             config_dir: wire.config_dir,
             state_dir: wire.state_dir,
+            xdg_runtime_dir: wire.xdg_runtime_dir,
             runtime_dir: wire.runtime_dir,
             config_file: wire.config_file,
             home_dir: wire.home_dir,
@@ -106,6 +110,7 @@ impl AppPaths {
         for (name, path) in [
             ("config_dir", self.config_dir()),
             ("state_dir", self.state_dir()),
+            ("XDG runtime directory", self.xdg_runtime_dir()),
             ("runtime_dir", self.runtime_dir()),
             ("config_file", self.config_file()),
             ("API socket", self.server_address.api_socket()),
@@ -130,6 +135,11 @@ impl AppPaths {
 
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
+    }
+
+    /// The XDG runtime root before the application-specific directory is added.
+    pub fn xdg_runtime_dir(&self) -> &Path {
+        &self.xdg_runtime_dir
     }
 
     pub fn runtime_dir(&self) -> &Path {
@@ -198,6 +208,7 @@ impl AppPaths {
         Self {
             config_dir: root.join("config"),
             state_dir: root.join("state"),
+            xdg_runtime_dir: root.to_path_buf(),
             runtime_dir: root.join("runtime"),
             config_file: root.join("config/config.toml"),
             home_dir: home_dir.map(Path::to_path_buf),
@@ -328,9 +339,11 @@ fn resolve_paths_from_env(
     // XDG_RUNTIME_DIR has no base-directory fallback in the XDG spec. Empty
     // and relative values count as unset, which is an error for shepr because
     // its runtime sockets need a user-private runtime directory.
-    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
+    let xdg_runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty() && path.is_absolute())
+        .filter(|path| !path.as_os_str().is_empty() && path.is_absolute());
+    let runtime_dir = xdg_runtime_dir
+        .as_ref()
         .map(|path| path.join(app_dir_name()))
         .ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR must be set to an absolute path"));
 
@@ -395,10 +408,20 @@ fn resolve_paths_from_env(
         }
     };
 
-    match (config_dir, state_dir, runtime_dir, config_file) {
-        (Some(config_dir), Some(state_dir), Some(runtime_dir), Some(config_file))
-            if diagnostics.is_empty() =>
-        {
+    match (
+        config_dir,
+        state_dir,
+        xdg_runtime_dir,
+        runtime_dir,
+        config_file,
+    ) {
+        (
+            Some(config_dir),
+            Some(state_dir),
+            Some(xdg_runtime_dir),
+            Some(runtime_dir),
+            Some(config_file),
+        ) if diagnostics.is_empty() => {
             let server_address = super::ServerAddress::resolve_paths(
                 &runtime_dir,
                 &session_id,
@@ -439,6 +462,7 @@ fn resolve_paths_from_env(
             Ok(AppPaths {
                 config_dir,
                 state_dir,
+                xdg_runtime_dir,
                 runtime_dir,
                 config_file,
                 home_dir: Some(home_dir),
@@ -518,15 +542,11 @@ impl Config {
     /// `config check` command reports these; `load_validated` rejects them,
     /// so `config check` passes exactly when a launch would accept the config.
     pub fn load_for_check(paths: &AppPaths) -> LoadedConfig {
-        let mut loaded = Self::load_from_path(paths.config_file());
-        let new_cwd = match loaded.document_state {
-            ConfigDocumentState::Unavailable => loaded.unavailable_new_cwd.as_ref(),
-            ConfigDocumentState::Missing | ConfigDocumentState::Loaded => {
-                Some(&loaded.config.terminal.new_cwd)
-            }
-        };
-        if let Some(new_cwd) = new_cwd
-            && let Some(error) = configured_new_cwd_home_path_error(new_cwd, paths.home_dir())
+        let mut loaded = Self::load_from_path_with_paths(paths.config_file(), paths);
+        if loaded.document_state == ConfigDocumentState::Unavailable
+            && let Some(new_cwd) = loaded.unavailable_new_cwd.as_ref()
+            && let Err(error) =
+                ValidatedTerminalConfig::parse_new_cwd(new_cwd, paths, CwdCheck::AtLaunch)
         {
             loaded.diagnostics.push(ConfigDiagnostic::Path(error));
         }
@@ -540,25 +560,40 @@ impl Config {
         Self::load_for_check(paths).into_validated(paths.clone())
     }
 
-    fn load_from_path(path: &Path) -> LoadedConfig {
+    fn load_from_path_with_paths(path: &Path, paths: &AppPaths) -> LoadedConfig {
         match read_optional_config(path) {
-            Ok(Some(content)) => Self::load_from_str(&content),
+            Ok(Some(content)) => Self::load_from_str_with_paths(&content, paths),
             Ok(None) => {
                 let config = Self::default();
                 let provenance = match ConfigProvenance::from_config(&config, None) {
                     Ok(provenance) => provenance,
                     Err(error) => {
-                        return default_loaded_config(vec![ConfigDiagnostic::Provenance(format!(
-                            "config provenance error: {error}"
-                        ))]);
+                        return default_loaded_config(
+                            vec![ConfigDiagnostic::Provenance(format!(
+                                "config provenance error: {error}"
+                            ))],
+                            paths,
+                        );
                     }
                 };
-                let resolution = super::validated::ConfigResolution::parse(&config, &provenance);
+                let resolution = super::validated::ConfigResolution::parse(
+                    &config,
+                    &provenance,
+                    paths,
+                    CwdCheck::AtLaunch,
+                );
                 let diagnostics = resolution
                     .diagnostics
                     .iter()
                     .cloned()
                     .map(ConfigDiagnostic::Validation)
+                    .chain(
+                        resolution
+                            .path_diagnostics
+                            .iter()
+                            .cloned()
+                            .map(ConfigDiagnostic::Path),
+                    )
                     .collect();
                 LoadedConfig {
                     provenance,
@@ -569,13 +604,14 @@ impl Config {
                     unavailable_new_cwd: None,
                 }
             }
-            Err(err) => default_loaded_config(vec![ConfigDiagnostic::Read(format!(
-                "config read error: {err}"
-            ))]),
+            Err(err) => default_loaded_config(
+                vec![ConfigDiagnostic::Read(format!("config read error: {err}"))],
+                paths,
+            ),
         }
     }
 
-    fn load_from_str(content: &str) -> LoadedConfig {
+    fn load_from_str_with_paths(content: &str, paths: &AppPaths) -> LoadedConfig {
         match content.parse::<toml::Table>() {
             Ok(table) => {
                 let document = toml::Value::Table(table);
@@ -585,17 +621,23 @@ impl Config {
                             match ConfigProvenance::from_config(&config, Some(&document)) {
                                 Ok(provenance) => provenance,
                                 Err(error) => {
-                                    let mut loaded =
-                                        default_loaded_config(vec![ConfigDiagnostic::Provenance(
-                                            format!("config provenance error: {error}"),
-                                        )]);
+                                    let mut loaded = default_loaded_config(
+                                        vec![ConfigDiagnostic::Provenance(format!(
+                                            "config provenance error: {error}"
+                                        ))],
+                                        paths,
+                                    );
                                     loaded.unavailable_new_cwd =
                                         Some(config.terminal.new_cwd.clone());
                                     return loaded;
                                 }
                             };
-                        let resolution =
-                            super::validated::ConfigResolution::parse(&config, &provenance);
+                        let resolution = super::validated::ConfigResolution::parse(
+                            &config,
+                            &provenance,
+                            paths,
+                            CwdCheck::AtLaunch,
+                        );
                         let (unknown_sections, unknown_diagnostics) =
                             unknown_top_level_sections(&document, &ignored_keys);
                         let mut diagnostics = unknown_diagnostics
@@ -617,6 +659,13 @@ impl Config {
                                 .cloned()
                                 .map(ConfigDiagnostic::Validation),
                         );
+                        diagnostics.extend(
+                            resolution
+                                .path_diagnostics
+                                .iter()
+                                .cloned()
+                                .map(ConfigDiagnostic::Path),
+                        );
                         LoadedConfig {
                             config,
                             provenance,
@@ -627,9 +676,12 @@ impl Config {
                         }
                     }
                     Err(err) => {
-                        let mut loaded = default_loaded_config(vec![ConfigDiagnostic::Parse(
-                            format!("config parse error: {err}"),
-                        )]);
+                        let mut loaded = default_loaded_config(
+                            vec![ConfigDiagnostic::Parse(format!(
+                                "config parse error: {err}"
+                            ))],
+                            paths,
+                        );
                         loaded.unavailable_new_cwd = configured_new_cwd_for_check(&document);
                         loaded
                     }
@@ -638,10 +690,24 @@ impl Config {
             // Broken TOML has no typed document to project independent config
             // checks from; keep the parser diagnostic instead of interpreting
             // fragments of malformed source text.
-            Err(err) => default_loaded_config(vec![ConfigDiagnostic::Parse(format!(
-                "config parse error: {err}"
-            ))]),
+            Err(err) => default_loaded_config(
+                vec![ConfigDiagnostic::Parse(format!(
+                    "config parse error: {err}"
+                ))],
+                paths,
+            ),
         }
+    }
+}
+
+#[cfg(test)]
+impl Config {
+    fn load_from_path(path: &Path) -> LoadedConfig {
+        Self::load_from_path_with_paths(path, &AppPaths::default())
+    }
+
+    fn load_from_str(content: &str) -> LoadedConfig {
+        Self::load_from_str_with_paths(content, &AppPaths::default())
     }
 }
 
@@ -656,10 +722,11 @@ pub fn load_validated(paths: &AppPaths) -> Result<ValidatedConfig, Vec<ConfigDia
     Config::load_validated(paths)
 }
 
-fn default_loaded_config(diagnostics: Vec<ConfigDiagnostic>) -> LoadedConfig {
+fn default_loaded_config(diagnostics: Vec<ConfigDiagnostic>, paths: &AppPaths) -> LoadedConfig {
     let config = Config::default();
     let provenance = ConfigProvenance::defaults(&config);
-    let resolution = super::validated::ConfigResolution::parse(&config, &provenance);
+    let resolution =
+        super::validated::ConfigResolution::parse(&config, &provenance, paths, CwdCheck::AtLaunch);
     LoadedConfig {
         config,
         provenance,
@@ -668,33 +735,6 @@ fn default_loaded_config(diagnostics: Vec<ConfigDiagnostic>) -> LoadedConfig {
         document_state: ConfigDocumentState::Unavailable,
         unavailable_new_cwd: None,
     }
-}
-
-pub(crate) fn configured_home_path_error(
-    config: &Config,
-    home_dir: Option<&Path>,
-) -> Option<String> {
-    configured_new_cwd_home_path_error(&config.terminal.new_cwd, home_dir)
-}
-
-fn configured_new_cwd_home_path_error(
-    new_cwd: &NewTerminalCwdConfig,
-    home_dir: Option<&Path>,
-) -> Option<String> {
-    let result = match new_cwd {
-        NewTerminalCwdConfig::Home => home_dir
-            .map(Path::to_path_buf)
-            .ok_or_else(shepr_core::pathutil::missing_home_error),
-        NewTerminalCwdConfig::Path(path) if path == "~" || path.starts_with("~/") => {
-            shepr_core::pathutil::expand_tilde_path_with_home(path, home_dir)
-        }
-        NewTerminalCwdConfig::Follow
-        | NewTerminalCwdConfig::Current
-        | NewTerminalCwdConfig::Path(_) => return None,
-    };
-    result
-        .err()
-        .map(|err| format!("terminal.new_cwd cannot be resolved: {err}"))
 }
 
 #[derive(Deserialize)]
@@ -1047,6 +1087,37 @@ tab_bar_right = [
     }
 
     #[test]
+    fn config_check_reports_cwd_path_when_another_value_fails_to_parse() {
+        let scratch = shepr_test_support::ScratchDir::new("config-check-cwd-path");
+        let paths =
+            AppPaths::test_with_context(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
+        std::fs::write(
+            paths.config_file(),
+            "[terminal]\nnew_cwd = \"missing-directory\"\n[server]\nheadless_cols = \"wide\"\n",
+        )
+        .expect("write config fixture");
+
+        let report = Config::load_for_check(&paths);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message().contains("config parse error")),
+            "missing parse diagnostic: {:?}",
+            report.diagnostics
+        );
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message().contains("terminal.new_cwd")),
+            "missing cwd diagnostic: {:?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
     fn config_path_honours_the_override_variable() {
         let env = shepr_test_support::IsolatedEnv::new();
         assert_eq!(
@@ -1271,6 +1342,7 @@ id = "example"
             paths.state_dir(),
             env.home().join(".local/state").join(app_dir_name())
         );
+        assert_eq!(paths.xdg_runtime_dir(), env.path().join("runtime"));
         assert_eq!(
             paths.runtime_dir(),
             env.path().join("runtime").join(app_dir_name())

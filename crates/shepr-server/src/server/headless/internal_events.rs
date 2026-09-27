@@ -41,7 +41,10 @@ impl HeadlessServer {
                 self.app.handle_internal_event_with_pane_updates(ev);
                 true
             }
-            AppEvent::PaneDied { pane_id, .. } => {
+            AppEvent::PaneDied {
+                pane_id,
+                exit_reason,
+            } => {
                 let focus_before = self.shell_focus_targets();
                 let focused_tabs_before = self.focused_shell_tabs();
                 let pane_id_val = *pane_id;
@@ -57,7 +60,21 @@ impl HeadlessServer {
                     .state
                     .publish_pane_process_exit_if_agent(pane_id_val)
                 {
+                    self.app.sync_full_lifecycle_authority_detection_pauses();
                     self.app.emit_pane_state_update(&update);
+                }
+
+                if exit_reason.requires_session_checkpoint()
+                    && self
+                        .app
+                        .state
+                        .prepare_pane_removal_by_id(pane_id_val)
+                        .is_some()
+                    && !self.app.checkpoint_session_before_pane_exit()
+                {
+                    // Keep the pre-exit layout live until its checkpoint is durable.
+                    self.pending_checkpointed_pane_exits.push_back(ev);
+                    return false;
                 }
 
                 self.app.handle_internal_event_with_pane_updates(ev);

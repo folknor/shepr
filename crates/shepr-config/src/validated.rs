@@ -1,5 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use super::{
     AppPaths, Config, SidebarBounds,
@@ -272,9 +273,9 @@ pub struct ValidatedUiConfig {
 }
 
 /// Working directory policy resolved from launch config.
-/// `Path` has a leading `~` already expanded against the captured home
-/// directory. It is not promised to be absolute or to exist: whether a
-/// directory is usable is a runtime fact the pane launch checks when it spawns.
+/// `Path` is an existing absolute directory. Configured relative paths are
+/// resolved against the process working directory captured at launch, so
+/// creating a pane later does not depend on the caller's working directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NewTerminalCwd {
     Follow,
@@ -290,34 +291,98 @@ pub struct ValidatedTerminalConfig {
     pub new_cwd: NewTerminalCwd,
 }
 
+/// Whether resolving `terminal.new_cwd` checks the directory on this host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CwdCheck {
+    /// The process loading the config file: the directory must exist here.
+    AtLaunch,
+    /// A config decoded from a server, possibly on another host. The sender
+    /// already checked the directory against its own filesystem; only the
+    /// pure resolution (tilde, relative join) is repeated.
+    Received,
+}
+
 impl ValidatedTerminalConfig {
-    fn from_config(config: &TerminalConfig) -> Self {
-        let new_cwd = match &config.new_cwd {
-            NewTerminalCwdConfig::Follow => NewTerminalCwd::Follow,
-            NewTerminalCwdConfig::Home => NewTerminalCwd::Home,
-            NewTerminalCwdConfig::Current => NewTerminalCwd::Current,
-            NewTerminalCwdConfig::Path(path) => {
-                NewTerminalCwd::Path(std::path::PathBuf::from(path))
-            }
-        };
-        Self {
+    fn parse(config: &TerminalConfig, paths: &AppPaths, check: CwdCheck) -> Result<Self, String> {
+        Ok(Self {
             default_shell: config.default_shell.clone(),
             login_shell: config.login_shell,
-            new_cwd,
-        }
+            new_cwd: Self::parse_new_cwd(&config.new_cwd, paths, check)?,
+        })
     }
 
-    /// Expand a `~` in `new_cwd` once, against the paths captured with the
-    /// config. `configured_home_path_error` reports the same failure as a
-    /// diagnostic before any caller reaches this.
-    fn expand_home(mut self, home_dir: Option<&std::path::Path>) -> Result<Self, String> {
-        if let NewTerminalCwd::Path(path) = &self.new_cwd {
-            let expanded = shepr_core::pathutil::expand_tilde_path_with_home(path, home_dir)
+    pub(crate) fn parse_new_cwd(
+        configured: &NewTerminalCwdConfig,
+        paths: &AppPaths,
+        check: CwdCheck,
+    ) -> Result<NewTerminalCwd, String> {
+        let check_dir = |path: &Path| match check {
+            CwdCheck::AtLaunch => checked_new_cwd_directory(path),
+            CwdCheck::Received => Ok(path.to_path_buf()),
+        };
+        match configured {
+            NewTerminalCwdConfig::Follow => Ok(NewTerminalCwd::Follow),
+            NewTerminalCwdConfig::Home => {
+                let path = paths.home_dir().ok_or_else(|| {
+                    format!(
+                        "terminal.new_cwd cannot be resolved: {}",
+                        shepr_core::pathutil::missing_home_error()
+                    )
+                })?;
+                check_dir(path)?;
+                Ok(NewTerminalCwd::Home)
+            }
+            NewTerminalCwdConfig::Current => {
+                let path = paths.current_dir().ok_or_else(|| {
+                    "terminal.new_cwd current directory was unavailable at launch".to_owned()
+                })?;
+                check_dir(path)?;
+                Ok(NewTerminalCwd::Current)
+            }
+            NewTerminalCwdConfig::Path(configured_path) => {
+                if configured_path.is_empty() {
+                    return Err(
+                        "terminal.new_cwd path must not be empty; use \"follow\" explicitly"
+                            .to_owned(),
+                    );
+                }
+                let path = shepr_core::pathutil::expand_tilde_path_with_home(
+                    configured_path,
+                    paths.home_dir(),
+                )
                 .map_err(|err| format!("terminal.new_cwd cannot be resolved: {err}"))?;
-            self.new_cwd = NewTerminalCwd::Path(expanded);
+                let absolute = if path.is_absolute() {
+                    path
+                } else {
+                    let current_dir = paths.current_dir().ok_or_else(|| {
+                        "terminal.new_cwd relative path requires a launch working directory"
+                            .to_owned()
+                    })?;
+                    current_dir.join(path)
+                };
+                check_dir(&absolute).map(NewTerminalCwd::Path)
+            }
         }
-        Ok(self)
     }
+}
+
+fn checked_new_cwd_directory(path: &Path) -> Result<PathBuf, String> {
+    if !path.is_absolute() {
+        return Err("terminal.new_cwd must resolve to an absolute path".to_owned());
+    }
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        format!(
+            "terminal.new_cwd directory {} is unavailable: {error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "terminal.new_cwd must name an existing directory: {}",
+            path.display()
+        ));
+    }
+    Ok(path.to_path_buf())
 }
 
 impl ValidatedUiConfig {
@@ -383,11 +448,17 @@ pub(crate) struct ValidatedValues {
 #[derive(Debug, Clone)]
 pub(crate) struct ConfigResolution {
     pub(crate) diagnostics: Vec<String>,
+    pub(crate) path_diagnostics: Vec<String>,
     pub(crate) values: Option<ValidatedValues>,
 }
 
 impl ConfigResolution {
-    pub(crate) fn parse(config: &Config, provenance: &ConfigProvenance) -> Self {
+    pub(crate) fn parse(
+        config: &Config,
+        provenance: &ConfigProvenance,
+        paths: &AppPaths,
+        check: CwdCheck,
+    ) -> Self {
         let keybind_validation = config.compute_keybind_validation(|field| {
             provenance.key_is_configured(&format!("keys.{field}"))
         });
@@ -403,6 +474,7 @@ impl ConfigResolution {
         );
         let tab_bar_right = super::tab_bar::parse_tab_bar_right_entries(&config.ui.tab_bar_right);
         let window_title = WindowTitleTemplate::parse(&config.ui.window_title);
+        let terminal = ValidatedTerminalConfig::parse(&config.terminal, paths, check);
         let mouse_scroll_lines = u16::try_from(config.ui.mouse_scroll_lines())
             .ok()
             .and_then(std::num::NonZeroU16::new);
@@ -436,8 +508,12 @@ impl ConfigResolution {
                 config.ui.mouse_scroll_lines()
             ));
         }
+        let mut path_diagnostics = Vec::new();
+        if let Err(error) = &terminal {
+            path_diagnostics.push(error.clone());
+        }
 
-        let values = if diagnostics.is_empty() {
+        let values = if diagnostics.is_empty() && path_diagnostics.is_empty() {
             match (
                 keybind_validation.live,
                 palette,
@@ -446,6 +522,7 @@ impl ConfigResolution {
                 mouse_scroll_lines,
                 tab_bar_right,
                 window_title,
+                terminal,
             ) {
                 (
                     Some(live_keybinds),
@@ -455,6 +532,7 @@ impl ConfigResolution {
                     Some(mouse_scroll_lines),
                     Ok(tab_bar_right),
                     Ok(window_title),
+                    Ok(terminal),
                 ) => Some(ValidatedValues {
                     headless_size,
                     palette,
@@ -466,7 +544,7 @@ impl ConfigResolution {
                         tab_bar_right,
                         window_title,
                     ),
-                    terminal: ValidatedTerminalConfig::from_config(&config.terminal),
+                    terminal,
                 }),
                 _ => None,
             }
@@ -476,6 +554,7 @@ impl ConfigResolution {
 
         Self {
             diagnostics,
+            path_diagnostics,
             values,
         }
     }
@@ -502,19 +581,18 @@ impl ValidatedConfig {
         provenance: ConfigProvenance,
         paths: AppPaths,
     ) -> Result<Self, Vec<String>> {
-        Self::from_resolution(config, provenance, paths)
+        Self::from_resolution(config, provenance, paths, CwdCheck::AtLaunch)
     }
 
-    /// Build from a load whose diagnostics, including the home-path check, are
-    /// already empty.
+    /// Build from a load whose diagnostics, including checked terminal paths,
+    /// are already empty.
     pub(crate) fn from_loaded(
         config: Config,
         provenance: ConfigProvenance,
         values: ValidatedValues,
         paths: AppPaths,
-    ) -> Result<Self, String> {
-        let terminal = values.terminal.expand_home(paths.home_dir())?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             config,
             provenance,
             paths,
@@ -522,27 +600,24 @@ impl ValidatedConfig {
             headless_size: values.headless_size,
             live_keybinds: values.live_keybinds,
             ui: values.ui,
-            terminal,
-        })
+            terminal: values.terminal,
+        }
     }
 
     fn from_resolution(
         config: Config,
         provenance: ConfigProvenance,
         paths: AppPaths,
+        check: CwdCheck,
     ) -> Result<Self, Vec<String>> {
-        let resolution = ConfigResolution::parse(&config, &provenance);
+        let resolution = ConfigResolution::parse(&config, &provenance, &paths, check);
         let mut diagnostics = resolution.diagnostics;
-        if let Some(error) = super::io::configured_home_path_error(&config, paths.home_dir()) {
-            diagnostics.push(error);
-        }
+        diagnostics.extend(resolution.path_diagnostics);
         if !diagnostics.is_empty() {
             return Err(diagnostics);
         }
         match resolution.values {
-            Some(values) => {
-                Self::from_loaded(config, provenance, values, paths).map_err(|error| vec![error])
-            }
+            Some(values) => Ok(Self::from_loaded(config, provenance, values, paths)),
             None => Err(vec!["configuration could not be resolved".to_owned()]),
         }
     }
@@ -696,8 +771,10 @@ impl<'de> Deserialize<'de> for ValidatedConfig {
         } = Wire::deserialize(deserializer)?;
         let config = config.into_config().map_err(de::Error::custom)?;
         // Rebuild runtime values from the raw config so the receiver applies
-        // the same validation boundary as the server.
-        Self::from_resolution(config, provenance, paths)
+        // the same validation boundary as the server. The paths are the
+        // sender's, possibly on another host, so the new_cwd directory is not
+        // looked up on this filesystem.
+        Self::from_resolution(config, provenance, paths, CwdCheck::Received)
             .map_err(|diagnostics| de::Error::custom(diagnostics.join("\n")))
     }
 }
@@ -708,6 +785,9 @@ mod tests {
 
     #[test]
     fn validated_config_resolves_runtime_values_once() {
+        let scratch = shepr_test_support::ScratchDir::new("validated-config-cwd");
+        let configured_cwd = scratch.join("relative/worktree");
+        std::fs::create_dir_all(&configured_cwd).expect("create configured cwd");
         let mut config = Config::default();
         config.server.headless_cols = 92;
         config.server.headless_rows = 31;
@@ -720,9 +800,11 @@ mod tests {
         }];
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("relative/worktree".to_owned());
         let provenance = ConfigProvenance::defaults(&config);
+        let paths =
+            AppPaths::test_with_context(scratch.path(), Some(scratch.path()), Some(scratch.path()));
 
-        let validated = ValidatedConfig::new(config, provenance, AppPaths::default())
-            .expect("test configuration is valid");
+        let validated =
+            ValidatedConfig::new(config, provenance, paths).expect("test configuration is valid");
 
         assert_eq!(
             validated.headless_size(),
@@ -738,28 +820,50 @@ mod tests {
         ));
         assert_eq!(
             validated.terminal().new_cwd,
-            NewTerminalCwd::Path(std::path::PathBuf::from("relative/worktree"))
+            NewTerminalCwd::Path(configured_cwd)
         );
     }
 
     #[test]
     fn validated_config_expands_home_in_new_cwd_path_once() {
+        let scratch = shepr_test_support::ScratchDir::new("validated-config-home-cwd");
+        let home = scratch.join("home");
+        let configured_cwd = home.join("work");
+        std::fs::create_dir_all(&configured_cwd).expect("create home cwd");
         let mut config = Config::default();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("~/work".to_owned());
         let provenance = ConfigProvenance::defaults(&config);
-        let paths = AppPaths::test_with_context(
-            std::path::Path::new("/shepr-test-root"),
-            Some(std::path::Path::new("/home/shepr-test")),
-            None,
-        );
+        let paths = AppPaths::test_with_context(scratch.path(), Some(&home), Some(scratch.path()));
 
         let validated =
             ValidatedConfig::new(config, provenance, paths).expect("test configuration is valid");
 
         assert_eq!(
             validated.terminal().new_cwd,
-            NewTerminalCwd::Path(std::path::PathBuf::from("/home/shepr-test/work"))
+            NewTerminalCwd::Path(configured_cwd)
         );
+    }
+
+    #[test]
+    fn validated_config_rejects_empty_and_missing_new_cwd_paths() {
+        let scratch = shepr_test_support::ScratchDir::new("validated-config-invalid-cwd");
+        let paths =
+            AppPaths::test_with_context(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+
+        for (path, expected) in [("", "must not be empty"), ("missing", "unavailable")] {
+            let mut config = Config::default();
+            config.terminal.new_cwd = NewTerminalCwdConfig::Path(path.to_owned());
+            let error = ValidatedConfig::new(
+                config.clone(),
+                ConfigProvenance::defaults(&config),
+                paths.clone(),
+            )
+            .expect_err("invalid cwd must fail config parsing");
+            assert!(
+                error.iter().any(|message| message.contains(expected)),
+                "expected {expected:?} in {error:?}"
+            );
+        }
     }
 
     #[test]
@@ -793,6 +897,34 @@ mod tests {
         assert!(
             error.to_string().contains("resolved home_dir"),
             "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn wire_deserialization_does_not_look_up_the_senders_cwd_directory() {
+        // A remote server's new_cwd names a directory on the remote host; the
+        // receiving client must not require it on its own filesystem.
+        let scratch = shepr_test_support::ScratchDir::new("validated-config-cwd-wire");
+        let sender_dir = scratch.join("sender/project");
+        std::fs::create_dir_all(&sender_dir).expect("create sender cwd");
+        let mut config = Config::default();
+        config.terminal.new_cwd = NewTerminalCwdConfig::Path("project".to_owned());
+        let paths = AppPaths::test_with_context(
+            scratch.path(),
+            Some(scratch.path()),
+            Some(&scratch.join("sender")),
+        );
+        let validated =
+            ValidatedConfig::new(config.clone(), ConfigProvenance::defaults(&config), paths)
+                .expect("the sender's directory exists");
+        let wire = serde_json::to_value(validated).expect("serialize test config");
+        std::fs::remove_dir_all(scratch.join("sender")).expect("remove sender cwd");
+
+        let received =
+            serde_json::from_value::<ValidatedConfig>(wire).expect("receiver skips the lookup");
+        assert_eq!(
+            received.terminal().new_cwd,
+            NewTerminalCwd::Path(sender_dir)
         );
     }
 }

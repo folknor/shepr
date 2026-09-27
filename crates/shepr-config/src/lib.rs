@@ -82,7 +82,17 @@ impl Config {
     #[cfg(any(test, feature = "test-support"))]
     pub fn collect_diagnostics(&self) -> Vec<String> {
         let provenance = ConfigProvenance::defaults(self);
-        validated::ConfigResolution::parse(self, &provenance).diagnostics
+        let resolution = validated::ConfigResolution::parse(
+            self,
+            &provenance,
+            &AppPaths::default(),
+            validated::CwdCheck::AtLaunch,
+        );
+        resolution
+            .diagnostics
+            .into_iter()
+            .chain(resolution.path_diagnostics)
+            .collect()
     }
 }
 

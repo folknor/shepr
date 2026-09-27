@@ -297,3 +297,51 @@ fn exhausted_discovery_reports_not_ready_and_starts_over_next_time() {
     assert!(progress.advance(&mut host).is_ok());
     assert_eq!(host.calls, ["login", "known", "probe /usr/bin/shepr"]);
 }
+
+#[test]
+fn exhausted_discovery_names_a_path_rejected_for_shell_quoting() {
+    struct QuotedInstall(Option<RejectedShellUnsafeCandidate>);
+    impl DiscoverySteps for QuotedInstall {
+        fn path_via_login_shell(&mut self) -> io::Result<Option<RemoteExecutable>> {
+            Ok(
+                remote_executable_from_path_discovery_with_rejected_candidate(
+                    "/home/a b/bin/shepr\n",
+                    &mut self.0,
+                ),
+            )
+        }
+        fn path_via_sh(&mut self) -> io::Result<Option<RemoteExecutable>> {
+            Ok(None)
+        }
+        fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>> {
+            Ok(Vec::new())
+        }
+        fn matches(&mut self, _candidate: &RemoteExecutable) -> io::Result<bool> {
+            Ok(false)
+        }
+        fn target(&self) -> &str {
+            "build"
+        }
+        fn take_rejected_shell_unsafe_candidate(&mut self) -> Option<RejectedShellUnsafeCandidate> {
+            self.0.take()
+        }
+    }
+
+    let error = DiscoveryProgress::default()
+        .advance(&mut QuotedInstall(None))
+        .expect_err("the only install needs quoting");
+    assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    let message = error.to_string();
+    assert!(message.contains("\"/home/a b/bin/shepr\""), "{message}");
+    assert!(message.contains("shell-safe"), "{message}");
+
+    let mut rejected = None;
+    assert!(
+        remote_executable_from_path_discovery_with_rejected_candidate("bin/shepr\n", &mut rejected)
+            .is_none()
+    );
+    assert!(
+        rejected.is_none(),
+        "a relative path is not a quoting rejection"
+    );
+}

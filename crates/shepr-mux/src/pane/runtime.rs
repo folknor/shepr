@@ -148,13 +148,18 @@ impl PaneRuntimeIo {
         }
     }
 
-    fn resize(&self, geometry: shepr_core::geometry::PaneGeometry, terminal_responses: Vec<Bytes>) {
+    fn resize(
+        &self,
+        geometry: shepr_core::geometry::PaneGeometry,
+        terminal_responses: impl FnOnce() -> Vec<Bytes>,
+    ) {
         match self {
             PaneRuntimeIo::Actor(actor) => {
                 actor.resize(geometry, terminal_responses);
             }
             #[cfg(any(test, feature = "test-api"))]
             PaneRuntimeIo::TestChannel { resize_tx, .. } => {
+                let _ = terminal_responses();
                 let _ = resize_tx.send((
                     geometry.rows(),
                     geometry.cols(),
@@ -726,6 +731,11 @@ impl PaneRuntime {
             let child_liveness = Arc::clone(&child_liveness);
             let events = events.clone();
             let rt = tokio::runtime::Handle::current();
+            // Moving this waiter to AsyncFd needs the pidfd already held by
+            // ProcessHandle, but that descriptor is private to shepr-platform.
+            // Expose a waitable pidfd there before replacing the sole Child
+            // reaper; do not open a second process handle or add a polling loop
+            // here.
             tokio::task::spawn_blocking(move || {
                 // Blocking waitpid on this child only; no process-wide SIGCHLD
                 // handling is involved.
@@ -1094,13 +1104,19 @@ impl PaneRuntime {
             return;
         }
         self.current_size.set(size);
-        let _content_write_guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
-        self.content_seq.fetch_add(1, Ordering::AcqRel);
-        let terminal_responses = self.terminal.resize(size);
-        self.content_seq.fetch_add(1, Ordering::Release);
-        drop(_content_write_guard);
+        self.io.resize(size, || {
+            // A PTY read holds the same actor reply-order lock while it
+            // parses bytes and queues any replies. Resizing the terminal
+            // under that lock keeps its replies in the same order as the
+            // terminal state that produced them.
+            let _content_write_guard = shepr_vt::lock_auxiliary(&self.content_write_lock);
+            self.content_seq.fetch_add(1, Ordering::AcqRel);
+            let terminal_responses = self.terminal.resize(size);
+            self.content_seq.fetch_add(1, Ordering::Release);
+            drop(_content_write_guard);
+            terminal_responses
+        });
         mark_detection_content_changed(&self.detection_content_seq);
-        self.io.resize(size, terminal_responses);
     }
 
     /// Scroll up by N lines (into scrollback history).

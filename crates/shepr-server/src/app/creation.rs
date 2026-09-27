@@ -24,7 +24,8 @@ pub(crate) fn resolve_new_terminal_cwd(
         NewTerminalCwd::Current => current_dir
             .map(std::path::Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("/")),
-        // Config validation already expanded `~` against the captured home.
+        // Config validation resolved it to an absolute directory at launch
+        // (`~` expanded, relative paths joined to the launch directory).
         NewTerminalCwd::Path(path) => path.clone(),
     }
 }

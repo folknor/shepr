@@ -28,15 +28,12 @@ impl ClientShellState {
     pub(super) fn request_word_selection(
         &mut self,
         hit: &PaneHit,
+        metrics: shepr_protocol::ScrollMetrics,
         viewport_row: u16,
         col: u16,
         outcome: &mut ClientShellInput,
     ) {
-        let viewport_row = shepr_vt::ViewportRow(viewport_row);
-        let row = hit.scroll.map_or_else(
-            || shepr_vt::AbsRow(u64::from(viewport_row.0)),
-            |metrics| metrics.absolute_row_at_viewport(viewport_row),
-        );
+        let row = metrics.absolute_row_at_viewport(shepr_vt::ViewportRow(viewport_row));
         self.word_selection_generation = self.word_selection_generation.saturating_add(1);
         self.word_selection_gesture = Some(ClientWordSelection {
             pane_id: hit.pane_id.clone(),

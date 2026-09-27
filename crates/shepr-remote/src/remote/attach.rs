@@ -994,6 +994,7 @@ mod tests {
             .expect("test precondition"),
             RemoteServerStatus::Running {
                 version: Some("0.6.0".into()),
+                protocol: Some(8),
                 detached_server_daemon: true
             }
         );

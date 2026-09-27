@@ -165,7 +165,7 @@ impl PtyCommand {
         let inherited = self.get_env("SHELL").and_then(trimmed_shell);
         let candidate = inherited.clone().unwrap_or_else(|| match policy {
             ShellResolutionPolicy::PaneProgram => OsString::from("/bin/sh"),
-            ShellResolutionPolicy::ChildEnvironment => OsString::from(passwd_shell()),
+            ShellResolutionPolicy::ChildEnvironment => passwd_shell(),
         });
         match self.search_path(&candidate, cwd) {
             Ok(resolved) => Ok(resolved),
@@ -179,7 +179,7 @@ impl PtyCommand {
                         "SHELL is not executable; falling back to passwd shell"
                     );
                 }
-                let fallback = OsString::from(passwd_shell());
+                let fallback = passwd_shell();
                 Ok(self
                     .search_path(&fallback, cwd)
                     .unwrap_or_else(|_| OsString::from("/bin/sh")))
@@ -196,7 +196,6 @@ impl PtyCommand {
         }
         passwd_field(|entry| entry.pw_dir.cast_const())
             .filter(|home| Path::new(home).is_absolute() && Path::new(home).is_dir())
-            .map(OsString::from)
             .unwrap_or_else(|| OsString::from("/"))
     }
 
@@ -327,22 +326,22 @@ fn base_env() -> BTreeMap<OsString, OsString> {
     std::env::vars_os().collect()
 }
 
-fn passwd_shell() -> String {
+fn passwd_shell() -> OsString {
     match passwd_field(|entry| entry.pw_shell.cast_const()) {
         Some(shell) if access_ok(Path::new(&shell), libc::X_OK) => shell,
         Some(shell) => {
             tracing::warn!(
-                shell = %shell,
+                shell = %shell.to_string_lossy(),
                 "passwd shell is not executable, falling back to /bin/sh"
             );
-            "/bin/sh".to_string()
+            OsString::from("/bin/sh")
         }
-        None => "/bin/sh".to_string(),
+        None => OsString::from("/bin/sh"),
     }
 }
 
 /// Read one string field of the current user's passwd entry.
-fn passwd_field(select: fn(&libc::passwd) -> *const libc::c_char) -> Option<String> {
+fn passwd_field(select: fn(&libc::passwd) -> *const libc::c_char) -> Option<OsString> {
     let mut buf: Vec<libc::c_char> = vec![0; 1024];
     loop {
         // SAFETY: an all-zero passwd value has null pointers and zero scalars,
@@ -373,10 +372,8 @@ fn passwd_field(select: fn(&libc::passwd) -> *const libc::c_char) -> Option<Stri
         }
         // SAFETY: after a successful getpwuid_r call, the selected field is a
         // NUL-terminated string inside the still-live result buffer.
-        return unsafe { CStr::from_ptr(field) }
-            .to_str()
-            .ok()
-            .map(str::to_owned);
+        let bytes = unsafe { CStr::from_ptr(field) }.to_bytes();
+        return Some(OsStr::from_bytes(bytes).to_owned());
     }
 }
 

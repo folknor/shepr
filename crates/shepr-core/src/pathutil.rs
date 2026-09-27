@@ -77,7 +77,11 @@ fn tilde_expansion(path: &OsStr) -> Option<TildeExpansion<'_>> {
     if bytes == b"~" {
         Some(TildeExpansion::Home)
     } else if bytes.starts_with(b"~/") {
-        Some(TildeExpansion::Relative(OsStr::from_bytes(&bytes[2..])))
+        let mut suffix = &bytes[2..];
+        while suffix.first() == Some(&b'/') {
+            suffix = &suffix[1..];
+        }
+        Some(TildeExpansion::Relative(OsStr::from_bytes(suffix)))
     } else {
         None
     }
@@ -104,6 +108,14 @@ mod tests {
         assert_eq!(
             expand("~", &home).expect("test precondition"),
             PathBuf::from("/home/me")
+        );
+        assert_eq!(
+            expand("~//x", &home).expect("test precondition"),
+            PathBuf::from("/home/me/x")
+        );
+        assert_eq!(
+            expand("~///x", &home).expect("test precondition"),
+            PathBuf::from("/home/me/x")
         );
         assert_eq!(
             expand("/tmp/state", &|_| None).expect("test precondition"),

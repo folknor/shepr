@@ -317,10 +317,6 @@ impl ClientRegistry {
         self.connections.iter()
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.connections.is_empty()
-    }
-
     pub(crate) fn allocate_client_id(&mut self) -> ClientId {
         let id = self.next_client_id;
         self.next_client_id = self.next_client_id.saturating_add(1);

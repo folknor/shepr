@@ -12,9 +12,10 @@ pub(super) const REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from
 pub(super) enum RemoteServerStatus {
     Running {
         version: Option<String>,
+        protocol: Option<u32>,
         /// Started as a detached daemon, so an SSH drop disconnects only the
-        /// client. A daemon lifecycle requirement, not a build check: the
-        /// build is settled by the preamble when the client attaches.
+        /// client. A daemon lifecycle requirement; `ensure_remote_server_build`
+        /// checks the build separately.
         detached_server_daemon: bool,
     },
     NotRunning,
@@ -24,6 +25,7 @@ pub(super) enum RemoteServerStatus {
 pub(super) struct RemoteServerStatusJson {
     pub(super) running: bool,
     pub(super) version: Option<String>,
+    pub(super) protocol: Option<u32>,
     pub(super) capabilities: Option<RemoteServerCapabilitiesJson>,
 }
 
@@ -36,19 +38,49 @@ pub(super) fn ensure_remote_server_ready(
     ssh: &RemoteSsh,
     remote_shepr: &RemoteExecutable,
 ) -> io::Result<()> {
+    let status = remote_server_status(ssh, remote_shepr)?;
     let RemoteServerStatus::Running {
         version,
         detached_server_daemon: false,
-    } = remote_server_status(ssh, remote_shepr)?
+        ..
+    } = &status
+    else {
+        return ensure_remote_server_build(ssh.target(), &status);
+    };
+    if confirm_remote_server_stop(&ssh.destination(), version.as_deref())? {
+        return stop_remote_server(ssh, remote_shepr);
+    }
+    ensure_remote_server_build(ssh.target(), &status)
+}
+
+/// Rejects a running remote server from another build once, before a bridge starts
+/// and fails its preamble on every retry. A stopped server passes: the bridge starts
+/// one from the discovered executable, whose build discovery already matched.
+pub(super) fn ensure_remote_server_build(
+    target: &str,
+    status: &RemoteServerStatus,
+) -> io::Result<()> {
+    let RemoteServerStatus::Running {
+        version, protocol, ..
+    } = status
     else {
         return Ok(());
     };
-    if confirm_remote_server_stop(&ssh.destination(), version.as_deref())? {
-        stop_remote_server(ssh, remote_shepr)?;
+    let expected_version = shepr_protocol::build_version();
+    if version.as_deref() == Some(expected_version.as_str())
+        && *protocol == Some(shepr_protocol::PROTOCOL_VERSION)
+    {
+        return Ok(());
     }
-    Ok(())
+    Err(remote_server_compatibility_error(
+        target,
+        version.as_deref(),
+        *protocol,
+    ))
 }
 
+/// Queries the remote server's state without judging its build, so shutdown polling
+/// can watch a server from another build go away.
 pub(super) fn remote_server_status(
     ssh: &RemoteSsh,
     remote_shepr: &RemoteExecutable,
@@ -74,10 +106,32 @@ pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<Remote
     }
     Ok(RemoteServerStatus::Running {
         version: parsed.version,
+        protocol: parsed.protocol,
         detached_server_daemon: parsed
             .capabilities
             .is_some_and(|capabilities| capabilities.detached_server_daemon),
     })
+}
+
+fn remote_server_compatibility_error(
+    target: &str,
+    version: Option<&str>,
+    protocol: Option<u32>,
+) -> io::Error {
+    let version = version
+        .filter(|version| version.chars().all(|ch| ch.is_ascii_graphic()))
+        .unwrap_or("unknown");
+    let protocol = protocol
+        .map(|protocol| protocol.to_string())
+        .unwrap_or_else(|| "unknown".to_owned());
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "remote Shepr server compatibility error on {target}: found version {version} and protocol {protocol}; this client requires version {} and protocol {}. Restart the remote server with this build and retry",
+            shepr_protocol::build_version(),
+            shepr_protocol::PROTOCOL_VERSION
+        ),
+    )
 }
 
 /// Offers to restart a remote server that was not started as a detached
@@ -170,5 +224,44 @@ pub(super) fn read_remote_confirmation(
             io::ErrorKind::Interrupted,
             "remote setup cancelled: expected yes or no",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn running(version: Option<String>, protocol: Option<u32>) -> RemoteServerStatus {
+        RemoteServerStatus::Running {
+            version,
+            protocol,
+            detached_server_daemon: true,
+        }
+    }
+
+    #[test]
+    fn only_a_running_server_from_this_build_passes_the_build_check() {
+        let this_build = running(
+            Some(shepr_protocol::build_version()),
+            Some(shepr_protocol::PROTOCOL_VERSION),
+        );
+        assert!(ensure_remote_server_build("host", &this_build).is_ok());
+        assert!(ensure_remote_server_build("host", &RemoteServerStatus::NotRunning).is_ok());
+
+        for stale in [
+            running(
+                Some("0.0.0-old".into()),
+                Some(shepr_protocol::PROTOCOL_VERSION),
+            ),
+            running(
+                Some(shepr_protocol::build_version()),
+                Some(shepr_protocol::PROTOCOL_VERSION.wrapping_add(1)),
+            ),
+            running(None, None),
+        ] {
+            let error = ensure_remote_server_build("host", &stale).expect_err("stale daemon");
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            assert!(error.to_string().contains("compatibility error on host"));
+        }
     }
 }

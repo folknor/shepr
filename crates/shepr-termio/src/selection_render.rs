@@ -27,6 +27,12 @@ pub fn render_selection_highlight<P: PartialEq>(
     else {
         return;
     };
+    // Selection rows are absolute. Without the scroll origin, viewport rows
+    // cannot be mapped back to them, so painting a fallback can mark the wrong
+    // content when scrollback exists.
+    let Some(scroll_metrics) = scroll_metrics else {
+        return;
+    };
     let style = automatic_selection_style(p, host_theme);
     // `inner` can extend past the buffer: the client composes pane surfaces whose
     // geometry was produced for a different layout (a resize or sidebar toggle racing
@@ -39,10 +45,7 @@ pub fn render_selection_highlight<P: PartialEq>(
     for screen_y in visible.top()..visible.bottom() {
         let y = screen_y - inner.y;
         let row = shepr_vt::ViewportRow(y);
-        let absolute_row = scroll_metrics.map_or_else(
-            || shepr_vt::AbsRow(u64::from(row.0)),
-            |metrics| metrics.absolute_row_at_viewport(row),
-        );
+        let absolute_row = scroll_metrics.absolute_row_at_viewport(row);
         for screen_x in visible.left()..visible.right() {
             let x = screen_x - inner.x;
             if selection.contains(shepr_vt::Point::new(absolute_row, x))

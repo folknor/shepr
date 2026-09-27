@@ -90,8 +90,11 @@ impl App {
                 exit_reason, ..
             } if exit_reason.requires_session_checkpoint() && pane_removal_plan.is_some()
         );
-        if checkpointed_pane_exit {
-            self.checkpoint_session_before_pane_exit();
+        // The headless loop holds a checkpointed exit until its save settles
+        // (`checkpoint_session_before_pane_exit`), so this only reports a
+        // caller that skipped that step; the pane is still removed.
+        if checkpointed_pane_exit && !self.pane_exit_checkpoint_settled() {
+            tracing::warn!("pane exit reached removal before its session checkpoint settled");
         }
 
         if let AppEvent::PaneDied { pane_id, .. } = &ev
@@ -194,7 +197,7 @@ impl App {
         }
     }
 
-    fn sync_full_lifecycle_authority_detection_pauses(&self) {
+    pub(crate) fn sync_full_lifecycle_authority_detection_pauses(&self) {
         for workspace in &self.state.workspaces {
             for tab in &workspace.tabs {
                 for pane in tab.panes.values() {

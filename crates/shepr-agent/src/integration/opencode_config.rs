@@ -6,13 +6,16 @@ use jsonc_parser::ParseOptions;
 use jsonc_parser::cst::{CstInputValue, CstRootNode};
 use serde_json::Value;
 
-use super::config_file::{check_config_target, write_config};
+use super::config_file::{
+    ConfigUpdateLock, check_config_target, lock_config_for_update, write_config,
+};
 
 const TUI_CONFIG_NAME: &str = "tui.jsonc";
 
 pub(crate) struct PluginConfigEdit {
     path: PathBuf,
     updated_contents: Option<String>,
+    _update_lock: Option<ConfigUpdateLock>,
 }
 
 impl PluginConfigEdit {
@@ -20,6 +23,7 @@ impl PluginConfigEdit {
         Self {
             path,
             updated_contents: None,
+            _update_lock: None,
         }
     }
 
@@ -119,6 +123,7 @@ fn prepare_plugin(
     plugin_spec: &str,
 ) -> io::Result<PluginConfigEdit> {
     check_config_target(&config_path)?;
+    let update_lock = lock_config_for_update(&config_path)?;
     let content = if config_path.is_file() {
         fs::read_to_string(&config_path)?
     } else {
@@ -152,6 +157,7 @@ fn prepare_plugin(
     Ok(PluginConfigEdit {
         path: config_path,
         updated_contents: Some(root.to_string()),
+        _update_lock: Some(update_lock),
     })
 }
 
@@ -178,6 +184,7 @@ pub(crate) fn remove_cli_plugin(config_dir: &Path, plugin_spec: &str) -> io::Res
 
 fn remove_plugin(config_path: &Path, key: &str, plugin_spec: &str) -> io::Result<bool> {
     check_config_target(config_path)?;
+    let _update_lock = lock_config_for_update(config_path)?;
     if !config_path.is_file() {
         return Ok(false);
     }
@@ -356,7 +363,10 @@ mod tests {
             actual, original,
             "failed registration must preserve preferences"
         );
-        assert_eq!(remaining_files, 1, "temporary files must be cleaned up");
+        assert_eq!(
+            remaining_files, 2,
+            "only the config and persistent update lock should remain"
+        );
     }
 
     #[test]

@@ -663,6 +663,9 @@ pub struct ClientShellState {
     pub(super) pane_scroll_targets: HashMap<shepr_protocol::PublicPaneId, usize>,
     pub(super) host_mouse_pixels: Option<shepr_termio::input::mouse::HostPixels>,
     pub(super) input_leases: ClientInputLeases,
+    /// Whether the host sends every key, text keys included, as an escape
+    /// code with its release (kitty REPORT_ALL_KEYS). Set per host input batch.
+    pub(super) host_reports_all_keys: bool,
     pub(super) next_request_id: u64,
     pub(super) pending_requests: HashMap<shepr_protocol::RequestId, PendingEndpointRequest>,
     pub(super) endpoint_notice_seen: HashSet<ClientEndpointNoticeKey>,
@@ -755,6 +758,7 @@ impl ClientShellState {
             pane_scroll_targets: HashMap::new(),
             host_mouse_pixels: None,
             input_leases: ClientInputLeases::default(),
+            host_reports_all_keys: false,
             next_request_id: 1,
             pending_requests: HashMap::new(),
             endpoint_notice_seen: HashSet::new(),

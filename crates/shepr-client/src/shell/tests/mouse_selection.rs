@@ -38,6 +38,40 @@ fn selection_repaint_cadence_does_not_leave_work_after_another_composition() {
 }
 
 #[test]
+fn a_pane_without_scroll_metrics_takes_no_selection() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = None;
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("pane frame");
+    let pane = state.hits.panes[0].clone();
+    let mut mouse = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: pane.inner_rect.x,
+        row: pane.inner_rect.y + 1,
+        modifiers: KeyModifiers::empty(),
+    };
+    let press = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
+    assert!(
+        state.selection.is_none(),
+        "viewport rows are not absolute rows without the scroll origin"
+    );
+    assert!(
+        press.actions.iter().any(|action| matches!(
+            action,
+            ClientShellAction::Endpoint { request, .. }
+                if matches!(request.method, shepr_api::schema::Method::PaneFocus(_))
+        )),
+        "the click still focuses the pane"
+    );
+    mouse.kind = MouseEventKind::Drag(MouseButton::Left);
+    mouse.column += 2;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
+    assert!(state.selection.is_none());
+}
+
+#[test]
 fn selection_release_copies_latest_position_before_deferred_paint() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
@@ -984,11 +1018,14 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     framed.extend(framer.flush_timeout_framed());
     assert_eq!(framed.len(), 1);
     let framed = framed.pop().expect("one framed pixel mouse");
-    let outcome = state.handle_host_input(vec![crate::ParsedHostInput {
-        raw: framed.raw,
-        event: framed.event,
-        pixel_mouse: Some(shepr_termio::input::mouse::HostPixels { x, y, geometry }),
-    }]);
+    let outcome = state.handle_host_input(
+        vec![crate::ParsedHostInput {
+            raw: framed.raw,
+            event: framed.event,
+            pixel_mouse: Some(shepr_termio::input::mouse::HostPixels { x, y, geometry }),
+        }],
+        false,
+    );
     assert!(matches!(
         &outcome.requests[..],
         [ClientMessage::ClientShellPaneInput { pane_id, events }]
