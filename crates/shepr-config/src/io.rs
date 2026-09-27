@@ -29,7 +29,6 @@ pub fn app_dir_name() -> &'static str {
 /// passed to consumers. Production constructors reject unresolved path inputs
 /// that would put files relative to the working directory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(any(test, feature = "test-support"), derive(Default))]
 pub struct AppPaths {
     config_dir: PathBuf,
     state_dir: PathBuf,
@@ -40,6 +39,15 @@ pub struct AppPaths {
     session_id: super::SessionId,
     server_address: super::ServerAddress,
     provenance: PathProvenance,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Default for AppPaths {
+    fn default() -> Self {
+        // Keep no-I/O fixtures wire-resolvable; filesystem tests use ScratchDir-backed paths.
+        let root = Path::new("/nonexistent/shepr-test-config");
+        Self::test_with_context(root, Some(root), None)
+    }
 }
 
 impl<'de> Deserialize<'de> for AppPaths {
@@ -86,6 +94,7 @@ pub struct PathProvenance {
     pub runtime_dir: ConfigSource,
     pub config_file: ConfigSource,
     pub home_dir: ConfigSource,
+    /// Captured from the process at launch; no config setting selects its source.
     pub current_dir: ConfigSource,
     pub session_id: ConfigSource,
     pub api_socket: ConfigSource,

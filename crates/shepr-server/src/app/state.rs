@@ -187,10 +187,6 @@ impl AppState {
         self.session_dirty = true;
     }
 
-    pub(crate) fn refresh_agent_manifest_summaries(&mut self) {
-        self.agent_manifest_summaries = shepr_agent::detect::manifest::manifest_summaries();
-    }
-
     /// Geometry a new pane's PTY is sized against: the most recently computed
     /// pane surface, or the headless size before any view has been computed
     /// (at startup, or when no client has ever attached).

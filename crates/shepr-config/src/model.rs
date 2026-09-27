@@ -172,7 +172,7 @@ impl<'de> Deserialize<'de> for NewTerminalCwdConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct TerminalConfig {
     /// Executable used for new interactive panes. Empty means SHELL, then /bin/sh.
@@ -183,7 +183,7 @@ pub struct TerminalConfig {
     pub new_cwd: NewTerminalCwdConfig,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SessionConfig {
     /// Resume supported AI-agent panes into their native conversation sessions
@@ -231,7 +231,7 @@ pub fn validated_sidebar_bounds(min: u16, max: u16) -> Option<SidebarBounds> {
     (min <= max).then_some(SidebarBounds { min, max })
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
     pub theme: ThemeConfig,
@@ -430,7 +430,7 @@ impl PaneBordersConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct UiConfig {
     /// Expanded sidebar width (columns). Default: 26. While unset, the client
@@ -531,7 +531,7 @@ impl ImeCursorShape {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ServerConfig {
     /// Virtual terminal width used when no client is attached. Default: 120.
@@ -540,7 +540,7 @@ pub struct ServerConfig {
     pub headless_rows: u16,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AdvancedConfig {
     /// Approximate scrollback budget in bytes per pane terminal, converted to a
@@ -551,7 +551,7 @@ pub struct AdvancedConfig {
     pub scrollback_limit_bytes: usize,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct RemoteConfig {
     /// Add keepalive fallbacks and private connection reuse for `shepr --remote`.
@@ -574,7 +574,7 @@ where
     let names = Vec::<String>::deserialize(deserializer)?;
     let mut agents = Vec::with_capacity(names.len());
     for name in names {
-        let Some(agent) = crate::ConfigAgent::parse_label(&name) else {
+        let Some(agent) = crate::agent::parse_config_agent(&name) else {
             return Err(de::Error::custom(format!(
                 "unknown agent name {name:?} in experimental.cjk_ime_agents"
             )));
@@ -602,7 +602,7 @@ where
     sequence.end()
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ExperimentalConfig {
     /// Allow launching shepr inside an existing shepr pane. Default: false.
@@ -625,9 +625,8 @@ pub struct ExperimentalConfig {
     /// Restrict `reveal_hidden_cursor_for_cjk_ime` to focused panes whose
     /// detected agent matches one of these names (case-insensitive). Empty
     /// list means apply to any focused pane. Unknown names are a config error.
-    /// Accepted names: pi, claude, codex, gemini, cursor, devin, cline,
-    /// opencode, copilot, kimi, kiro, droid, amp, grok, hermes, kilo,
-    /// qodercli, qoder, qwen, qwen-code, letta, letta-code, maki.
+    /// Agent labels and aliases are accepted; executable paths and suffixes are
+    /// not config names.
     /// Default: empty.
     #[serde(
         deserialize_with = "deserialize_cjk_ime_agents",
@@ -989,7 +988,7 @@ cjk_ime_cursor_shape = "bar"
 
         let toml = r#"
 [experimental]
-cjk_ime_agents = ["claude", "codex"]
+cjk_ime_agents = ["claude", "codex", " Claude-Code "]
 "#;
         let config: Config = toml::from_str(toml).expect("test precondition");
         assert_eq!(

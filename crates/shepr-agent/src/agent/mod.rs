@@ -780,19 +780,9 @@ impl Agent {
         if !self.descriptor().prompt_observation {
             return false;
         }
-        let recent: String = content
-            .lines()
-            .rev()
-            .take(12)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .flat_map(str::chars)
-            .filter(|ch| !ch.is_whitespace())
-            .collect();
-        recent.contains("›AskCodextodoanything")
-            && !recent.contains("model:loading")
-            && !recent.contains("Resumingsession")
+        contains_recent_non_whitespace(content, "›AskCodextodoanything")
+            && !contains_recent_non_whitespace(content, "model:loading")
+            && !contains_recent_non_whitespace(content, "Resumingsession")
     }
 
     pub fn parse_label(value: &str) -> Option<Self> {
@@ -821,6 +811,55 @@ impl Agent {
     pub fn screen_manifest_agents() -> impl Iterator<Item = Self> {
         Self::all().filter(|agent| agent.screen_manifest())
     }
+}
+
+fn contains_recent_non_whitespace(content: &str, needle: &str) -> bool {
+    const MAX_PROMPT_READY_NEEDLE_CHARS: usize = 32;
+
+    let mut needle_chars = ['\0'; MAX_PROMPT_READY_NEEDLE_CHARS];
+    let mut needle_len = 0;
+    for character in needle.chars().rev() {
+        let Some(slot) = needle_chars.get_mut(needle_len) else {
+            return false;
+        };
+        *slot = character;
+        needle_len += 1;
+    }
+    if needle_len == 0 {
+        return true;
+    }
+
+    let needle = &needle_chars[..needle_len];
+    let mut prefix = [0; MAX_PROMPT_READY_NEEDLE_CHARS];
+    for index in 1..needle_len {
+        let mut matched = prefix[index - 1];
+        while matched > 0 && needle[index] != needle[matched] {
+            matched = prefix[matched - 1];
+        }
+        if needle[index] == needle[matched] {
+            matched += 1;
+        }
+        prefix[index] = matched;
+    }
+
+    // Reverse both streams so the last twelve lines can be searched without buffering.
+    let recent_lines = content.lines().rev().take(12);
+    let mut matched = 0;
+    for character in recent_lines.flat_map(|line| line.chars().rev()) {
+        if character.is_whitespace() {
+            continue;
+        }
+        while matched > 0 && character != needle[matched] {
+            matched = prefix[matched - 1];
+        }
+        if character == needle[matched] {
+            matched += 1;
+            if matched == needle_len {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 pub fn launch_env_to_scrub() -> impl Iterator<Item = &'static str> {
@@ -1084,6 +1123,8 @@ mod tests {
         assert!(Agent::Codex.env_to_scrub().contains(&"CODEX_THREAD_ID"));
         assert!(Agent::Omp.env_to_scrub().contains(&"OMPCODE"));
         assert!(Agent::Codex.prompt_ready("› Ask Codex to do anything"));
+        assert!(Agent::Codex.prompt_ready("› Ask Codex to do\nanything"));
+        assert!(!Agent::Codex.prompt_ready("› Ask Codex to do anything\nmodel:\nloading"));
         assert!(!Agent::Claude.prompt_ready("› Ask Codex to do anything"));
         assert_eq!(
             Agent::screen_manifest_agents().count(),

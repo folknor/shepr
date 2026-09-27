@@ -108,7 +108,7 @@ mod tests {
             target: "mac".into(),
             session: "fleet".into(),
         };
-        let metadata = RemoteExecutable::parse("/some path/shepr").expect("test precondition");
+        let metadata = RemoteExecutable::parse("/some-path/shepr").expect("test precondition");
         assert!(first.load().is_none());
         first.store(&metadata);
         second.store(&metadata);
@@ -129,7 +129,7 @@ mod tests {
         let mut stored: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&first.path).expect("test precondition"))
                 .expect("test precondition");
-        assert_eq!(stored["executable"], "/some path/shepr");
+        assert_eq!(stored["executable"], "/some-path/shepr");
         assert!(stored.get("version").is_none());
         assert!(stored.get("os").is_none());
         stored["future_field"] = true.into();

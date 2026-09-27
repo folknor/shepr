@@ -130,8 +130,8 @@ impl ApiClient {
 }
 
 /// Client-side bound for ordinary requests. It trails the server's own bound
-/// so that, when the app main loop is stalled, the server's more specific
-/// `server_unavailable` answer arrives before the client gives up.
+/// so the server can report that the request timed out with an unknown outcome
+/// before the client gives up on the socket.
 const ORDINARY_RESPONSE_TIMEOUT: Duration =
     Duration::from_secs(crate::server::ORDINARY_REQUEST_TIMEOUT.as_secs() + 5);
 
@@ -168,10 +168,15 @@ pub(crate) fn response_timeout(request: &Request) -> Option<Duration> {
         Method::EventsWait(params) => wait_bound(params.timeout_ms),
         Method::AgentWait(params) => wait_bound(params.timeout_ms),
         Method::PaneWaitForOutput(params) => wait_bound(params.timeout_ms),
-        Method::AgentPrompt(params) => params
-            .wait
-            .as_ref()
-            .and_then(|wait| wait_bound(wait.timeout_ms)),
+        Method::AgentPrompt(params) => {
+            // Omitting `timeout_ms` also leaves the app's submission deadline
+            // empty. A hidden client cap could report failure while the queued
+            // prompt remains live and is typed later.
+            params
+                .wait
+                .as_ref()
+                .and_then(|wait| wait_bound(wait.timeout_ms))
+        }
         _ => Some(ORDINARY_RESPONSE_TIMEOUT),
     }
 }

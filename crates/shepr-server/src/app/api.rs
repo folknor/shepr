@@ -73,19 +73,18 @@ impl App {
                     format!("{method_name} is not handled by the app"),
                 );
             }
-            Method::ServerAgentManifests(_) => {
-                self.state.refresh_agent_manifest_summaries();
-                ResponseResult::AgentManifestStatus {
-                    manifests: self
-                        .state
-                        .agent_manifest_summaries
-                        .clone()
-                        .into_iter()
-                        .map(agent_manifest_info)
-                        .collect(),
-                }
-            }
+            Method::ServerAgentManifests(_) => ResponseResult::AgentManifestStatus {
+                manifests: self
+                    .state
+                    .agent_manifest_summaries
+                    .clone()
+                    .into_iter()
+                    .map(agent_manifest_info)
+                    .collect(),
+            },
             Method::ServerReloadAgentManifests(_) => {
+                // Compiles on the app loop: the headless API dispatcher needs
+                // an immediate result, and a reload is a rare explicit command.
                 let summaries =
                     shepr_agent::detect::manifest::reload_manifests(self.paths.config_dir());
                 self.state.agent_manifest_summaries = summaries.clone();
@@ -281,6 +280,13 @@ mod tests {
             api_rx,
             shepr_api::EventHub::default(),
         );
+        app.state.agent_manifest_summaries =
+            vec![shepr_agent::detect::manifest::AgentManifestSummary {
+                agent: Agent::Codex,
+                active_source: shepr_agent::detect::manifest::ManifestSource::Bundled,
+                warning: None,
+            }];
+        let cached_summaries = app.state.agent_manifest_summaries.clone();
         app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("manifest-status")];
         app.state.ensure_test_terminals();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
@@ -302,7 +308,8 @@ mod tests {
         else {
             panic!("expected manifest status result");
         };
-        assert!(!manifests.is_empty());
+        assert_eq!(manifests.len(), 1);
+        assert_eq!(app.state.agent_manifest_summaries, cached_summaries);
         assert!(
             tokio::time::timeout(
                 std::time::Duration::from_millis(10),

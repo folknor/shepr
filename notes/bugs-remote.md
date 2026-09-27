@@ -15,29 +15,9 @@ Hunter coverage: all of `crates/shepr-remote` plus the platform code it lands in
 
 Managed SSH config creation is now a hard error and never falls back to plain ssh; `SavedSshConnector` creates the setup once and caches a failure. But `SavedSshConnector::new` is infallible, so the cached error reaches the client on the first connection attempt instead of failing the client launch. Making it launch-fatal needs the client's endpoint supervisor to surface it.
 
-## RMT-002 - Saved-machine catalog edits can be lost
-
-`machine/catalog.rs`. `add_ssh`/`remove_ssh` followed by `store_profiles` is load → modify → rename with no lock. Two `shepr machine add/remove` running at once silently lose one change. The code says catalog edits happen while clients run, so this is a real partial-failure hole. Fix: an `flock` on a lock file around the read-modify-write.
-
-## RMT-003 - "Matching Shepr" discovery does not check the build
-
-`remote/discovery.rs`. `StatusProbe` accepts any candidate whose `status client --json` has *some* `version` (`parse_client_status_json(...).find(|s| s.version.is_some())`). The not-ready message still says "matching Shepr is not ready".
-- The build is only checked later, by the handshake preamble (see `server_lifecycle.rs` and `host.rs`).
-- A mismatched remote install fails the handshake, which is not a link failure. `SavedSshConnector::connect` then drops its remembered executable and runs full discovery again, which finds the same binary. So every retry does the full set of SSH round trips, forever.
-- Fix: have the probe compare the build/protocol identity (`shepr_protocol::build_version()` / `PROTOCOL_VERSION`) so discovery fails once with a clear Compatibility error.
-
-Related: CMD-004 (two separate notions of build mismatch in the CLI).
-
 ## RMT-004 - Metadata cache holds two kinds of result though the doc says one
 
-`discovery.rs` says "The two proofs stay separate because the metadata cache records only this one" (the API-forwarding check). But `saved.rs:181` (`metadata_cache.store(&discovered)`) writes the status-probe result into the same per-profile file. The API bridge then trusts it as `used_cached_metadata`. The stale marker in `cached_remote_api_command` covers this at runtime, so it is harmless, but the stated contract is false. Either key the two caches apart or fix the doc.
-
-## RMT-005 - Remote command quoting breaks for executable paths that need quoting
-
-`launch.rs`: `cached_remote_api_command`, `RemoteExecutable::bridge_command`.
-- The comments require the wrapped `/bin/sh -c '<script>'` to contain nothing to escape, so that non-POSIX login shells (xonsh, nushell) receive one plain word.
-- But `RemoteExecutable::parse` accepts paths with spaces (its own test marks `/home/a b/shepr` valid). `shell_quote` then puts `'\''` inside the outer quote, exactly what the comment rules out.
-- Fix: reject such paths in `RemoteExecutable::parse`, or pass the script on stdin/base64 so nothing is nested.
+`discovery.rs` says "The two proofs stay separate because the metadata cache records only this one" (the API-forwarding check). But `saved.rs` (`metadata_cache.store(&discovered)`) writes the status-probe result into the same per-profile file. The API bridge then trusts it as `used_cached_metadata`. The stale marker in `cached_remote_api_command` covers this at runtime, so it is harmless, but the stated contract is false. Either key the two caches apart or fix the doc.
 
 ## RMT-006 - SSH failure classification is plain substring matching
 
@@ -58,11 +38,10 @@ Related: CMD-004 (two separate notions of build mismatch in the CLI).
 - `reported_failure` always blocks up to 1s even when nothing failed.
 - The failure channel is `sync_channel(1)` with `try_send`, so a failure left over from an earlier connection on the same bridge can be reported for a later one.
 
-## RMT-009 - Remote-host server probing can start duplicate daemons
+## RMT-009 - Remote-host server probing is loose
 
 `autodetect.rs`, used by `host.rs::ensure_remote_server_running`.
-- `is_server_listening_at` treats any unexpected connect error (e.g. EACCES) as "not listening" and starts a second daemon.
-- Two bridges arriving at once (client bridge plus API bridge) both start daemons. This relies on the server refusing the second bind (see FND-001, which reports that the server's bind does not reliably refuse).
+- `is_server_listening_at` treats any unexpected connect error (e.g. EACCES) as "not listening" and starts a second daemon. (A second daemon is now refused cleanly by the data-dir lease and the socket startup lock, so this costs a wasted spawn, not a broken server.)
 - Every probe opens and drops a real client connection, which the server has to time out.
 - Structurally, `autodetect` (local server launch) does not belong in `shepr-remote`. It belongs with the client or binary.
 
@@ -81,9 +60,15 @@ Related: CMD-004 (two separate notions of build mismatch in the CLI).
 
 `crates/shepr-remote/src/remote/saved.rs`. `SavedSshConnector` caches a local managed-SSH setup failure for the connector's whole lifetime. The machine fails soft, but a transient runtime-dir problem can only be cleared by restarting the client.
 
-## RMT-014 - Remote bridges prepare their local socket without the startup lock
+## RMT-015 - A running remote daemon from another build is accepted without a check
 
-`crates/shepr-remote/src/remote/bridge.rs` (~67) calls `prepare_socket_path` on the bridge's local socket without `acquire_socket_startup_lock`, the flock the API server now takes before the stale-socket unlink. Two bridges racing for the same machine can each see the socket as stale and unlink the other's live one.
+`remote/server_lifecycle.rs`: when a detached server is already running on the remote host, it returns early without checking that daemon's build. Discovery now rejects a mismatched installed binary, but a stale daemon left running from an earlier build still passes and then fails at the bridge preamble check (`remote/host.rs`), so every retry repeats the round trips. It should compare the running daemon's build and report a Compatibility error once.
+
+## RMT-016 - Discovery silently skips remote binaries whose path needs quoting
+
+Executable paths must now be shell-safe (no spaces or quotes), because remote commands nest shell quoting. Discovery drops a candidate that fails that rule without saying so, so a user whose shepr sits under such a path sees "not found" rather than the reason. Report the rejected candidate in the error.
+
+Related smell: the catalog update lock in `machine/catalog.rs` (`acquire_catalog_update_lock`, blocking flock) repeats the open, ownership and mode checks of `shepr_platform::ipc::acquire_socket_startup_lock` (non-blocking); one platform helper could serve both.
 
 ## RMT-011 - Idle saved machines may drop every minute without a keepalive (unverified)
 

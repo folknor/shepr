@@ -463,7 +463,11 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
                         self.reply(report);
                     }
                 }
-                ExtraMode::SgrPixelsMouse | ExtraMode::ColorSchemeReport => {}
+                ExtraMode::SgrPixelsMouse => {
+                    // 1016 and 1005 select mutually exclusive mouse encodings.
+                    Handler::unset_private_mode(self.term, NamedPrivateMode::Utf8Mouse.into());
+                }
+                ExtraMode::ColorSchemeReport => {}
             }
             return;
         }
@@ -473,9 +477,13 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
                 | NamedPrivateMode::ReportCellMouseMotion
                 | NamedPrivateMode::ReportAllMouseMotion,
             ) => self.modes.x10_mouse = false,
-            // Re-asserting 1006 deliberately does not cancel 1016: apps resend
-            // it after 1016 and still expect pixel coordinates.
-            PrivateMode::Named(NamedPrivateMode::Utf8Mouse) => self.modes.sgr_pixels_mouse = false,
+            PrivateMode::Named(NamedPrivateMode::SgrMouse) => {
+                // 1006 is the base SGR mode for 1016's pixel coordinates.
+                // Applications may resend it without disabling 1016.
+            }
+            PrivateMode::Named(NamedPrivateMode::Utf8Mouse) => {
+                self.modes.sgr_pixels_mouse = false;
+            }
             PrivateMode::Named(NamedPrivateMode::SyncUpdate) => {
                 self.modes.synchronized_update = true;
             }

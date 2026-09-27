@@ -108,9 +108,7 @@ impl App {
                 self.terminal_runtimes.insert(terminal_id, runtime);
                 if let Some(label) = label {
                     let workspace_id = self.public_workspace_id(ws_idx);
-                    let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
-                        shepr_mux::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
-                    });
+                    let tab_id = self.public_tab_id(ws_idx, tab_idx);
                     if let Some(tab) = self
                         .state
                         .workspaces
@@ -118,7 +116,10 @@ impl App {
                         .and_then(|ws| ws.tabs.get_mut(tab_idx))
                     {
                         tab.set_custom_name(label);
-                        shepr_platform::logging::tab_renamed(&workspace_id, &tab_id);
+                        // A missing stable id must not be reconstructed from the tab's position.
+                        if let Some(tab_id) = tab_id {
+                            shepr_platform::logging::tab_renamed(&workspace_id, &tab_id);
+                        }
                     }
                 }
                 self.schedule_session_save();
@@ -148,12 +149,12 @@ impl App {
         let Some((ws_idx, tab_idx)) = self.parse_tab_id(&params.tab_id) else {
             return tab_not_found(id, &params.tab_id);
         };
+        let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
+            return tab_not_found(id, &params.tab_id);
+        };
         let Some(workspace_id) = self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone()) else {
             return tab_not_found(id, &params.tab_id);
         };
-        let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
-            shepr_mux::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
-        });
         let Some(tab) = self
             .state
             .workspaces
@@ -194,9 +195,9 @@ impl App {
             );
         }
 
-        let tab_id = self
-            .public_tab_id(ws_idx, tab_idx)
-            .unwrap_or_else(|| shepr_mux::workspace::public_tab_id_for_number(&ws.id, tab_idx + 1));
+        let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
+            return tab_not_found(id, &params.tab_id);
+        };
         let workspace_id = self.public_workspace_id(ws_idx);
         let insert_index = params.insert_index;
         let moved = self

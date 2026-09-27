@@ -20,6 +20,21 @@ impl RemoteExecutable {
         if value.chars().any(char::is_control) {
             return Err("remote Shepr executable path must not contain control characters".into());
         }
+        // The command is nested inside /bin/sh -c and then parsed by the remote
+        // login shell. Keep paths as plain shell words because nested quote
+        // escaping is not reliable across the non-POSIX login shells we support.
+        if !value.chars().all(|ch| {
+            ch.is_ascii_alphanumeric()
+                || matches!(
+                    ch,
+                    '@' | '%' | '_' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
+                )
+        }) {
+            return Err(
+                "remote Shepr executable path must contain only unquoted shell-safe characters"
+                    .into(),
+            );
+        }
         if value.ends_with(REMOTE_MISE_SHIM_SUFFIX) {
             return Err("remote Shepr executable path must not be a mise shim".into());
         }
@@ -38,7 +53,7 @@ mod tests {
     #[test]
     fn remote_executable_accepts_only_cacheable_absolute_paths() {
         for (path, valid) in [
-            ("/home/a b/shepr", true),
+            ("/home/a b/shepr", false),
             ("$HOME/.local/bin/shepr", false),
             ("/home/user/.local/share/mise/shims/shepr", false),
             ("/bin/shepr\nmalformed", false),

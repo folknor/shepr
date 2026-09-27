@@ -9,9 +9,9 @@ use crate::schema::{
     SuccessResponse,
 };
 use crate::server::{
-    APP_RESPONSE_TIMEOUT, CONNECTION_POLL_INTERVAL, dispatch_to_app_with_caller_timeout_result,
-    dispatch_to_app_with_timeout, dispatch_to_app_with_timeout_result, error_response_json,
-    should_stop_connection,
+    APP_RESPONSE_TIMEOUT, CONNECTION_POLL_INTERVAL, dispatch_to_app_until_stopped_result,
+    dispatch_to_app_with_caller_timeout_result, dispatch_to_app_with_timeout_result,
+    error_response_json, server_is_stopping, should_stop_connection, shutdown_wait_error,
 };
 use crate::subscriptions::ActiveSubscription;
 use crate::subscriptions::{match_output, output_match_read_source, subscription_events_after};
@@ -27,6 +27,7 @@ pub(super) fn wait_for_output(
     stream: &mut LocalStream,
     api_tx: &ApiRequestSender,
     running: &Arc<AtomicBool>,
+    server_stop: Option<&Arc<AtomicBool>>,
 ) -> std::io::Result<Option<String>> {
     let deadline = match checked_timeout_deadline(params.timeout_ms) {
         Ok(deadline) => deadline,
@@ -55,6 +56,14 @@ pub(super) fn wait_for_output(
     };
 
     loop {
+        if server_is_stopping(server_stop) {
+            shepr_platform::logging::api_wait_completed(
+                &request_id,
+                &params.pane_id,
+                "server_stopping",
+            );
+            return Ok(Some(shutdown_response(request_id)));
+        }
         if should_stop_connection(stream, running)? {
             shepr_platform::logging::api_wait_completed(
                 &request_id,
@@ -138,6 +147,7 @@ pub(super) fn wait_for_agent(
     api_tx: &ApiRequestSender,
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
+    server_stop: Option<&Arc<AtomicBool>>,
 ) -> std::io::Result<Option<String>> {
     let last_event_sequence = event_hub.current_sequence();
     let initial = match agent_get(&request_id, &params.target, api_tx) {
@@ -169,6 +179,7 @@ pub(super) fn wait_for_agent(
         api_tx,
         event_hub,
         running,
+        server_stop,
     )? {
         Some(AgentWaitOutcome::Matched(agent)) => agent_wait_success(request_id, *agent).map(Some),
         Some(AgentWaitOutcome::Response(response)) => Ok(Some(response)),
@@ -183,22 +194,25 @@ pub(super) fn prompt_agent(
     api_tx: &ApiRequestSender,
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
+    server_stop: Option<&Arc<AtomicBool>>,
 ) -> std::io::Result<Option<String>> {
     let Some(wait) = params.wait.clone() else {
-        // Deliberately unbounded. The app answers a plain prompt only once the
-        // PTY actor has written it, on a side thread, not on the main loop;
-        // an agent that is busy and not reading stdin can legitimately hold
-        // that for minutes. A timeout here would report failure for a prompt
-        // that is still queued and will be typed later (nothing can cancel
-        // it). Callers that need a bound pass `wait` with `timeout_ms`.
-        return Ok(Some(dispatch_to_app_with_timeout(
+        // Deliberately without a deadline. The app answers a plain prompt only
+        // once the PTY actor has written it, on a side thread, not on the main
+        // loop; an agent that is busy and not reading stdin can legitimately
+        // hold that for minutes. A timeout here would report failure for a
+        // prompt that is still queued and will be typed later (nothing can
+        // cancel it). Callers that need a bound pass `wait` with `timeout_ms`.
+        // The wait still ends when server shutdown starts.
+        let response = dispatch_to_app_until_stopped_result(
             Request {
-                id: request_id,
+                id: request_id.clone(),
                 method: Method::AgentPrompt(params),
             },
             api_tx,
-            None,
-        )));
+            server_stop,
+        );
+        return Ok(Some(crate::error::encode_result(request_id, response)));
     };
 
     let wait_started = std::time::Instant::now();
@@ -238,7 +252,7 @@ pub(super) fn prompt_agent(
             api_tx,
             Some(std::time::Duration::from_millis(timeout_ms) + AGENT_PROMPT_RESPONSE_GRACE),
         ),
-        None => dispatch_to_app_with_timeout_result(prompt_request, api_tx, None),
+        None => dispatch_to_app_until_stopped_result(prompt_request, api_tx, server_stop),
     };
     let Ok(prompted) = agent_from_response(&request_id, &prompt_response) else {
         return Ok(Some(crate::error::encode_result(
@@ -293,6 +307,7 @@ pub(super) fn prompt_agent(
             api_tx,
             event_hub,
             running,
+            server_stop,
         )?
         else {
             return Ok(None);
@@ -324,6 +339,7 @@ pub(super) fn prompt_agent(
         api_tx,
         event_hub,
         running,
+        server_stop,
     )?
     else {
         return Ok(None);
@@ -333,6 +349,12 @@ pub(super) fn prompt_agent(
         AgentWaitOutcome::Response(response) => return Ok(Some(response)),
     };
     agent_prompt_success(request_id, agent).map(Some)
+}
+
+/// The answer for a socket-thread wait cut short by server shutdown: every
+/// wait polls the stop flag, so none outlives the start of shutdown.
+fn shutdown_response(request_id: String) -> String {
+    crate::error::encode_result(request_id, Err(shutdown_wait_error()))
 }
 
 fn remaining_timeout_ms(total_ms: Option<u64>, started: std::time::Instant) -> Option<u64> {
@@ -382,6 +404,7 @@ fn wait_for_resolved_agent(
     api_tx: &ApiRequestSender,
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
+    server_stop: Option<&Arc<AtomicBool>>,
 ) -> std::io::Result<Option<AgentWaitOutcome>> {
     let deadline = match checked_timeout_deadline(wait.timeout_ms) {
         Ok(deadline) => deadline,
@@ -403,6 +426,11 @@ fn wait_for_resolved_agent(
     let mut last_event_sequence = wait.last_event_sequence;
 
     loop {
+        if server_is_stopping(server_stop) {
+            return Ok(Some(AgentWaitOutcome::Response(shutdown_response(
+                request_id,
+            ))));
+        }
         if should_stop_connection(stream, running)? {
             return Ok(None);
         }
@@ -725,6 +753,7 @@ pub(super) fn wait_for_event(
     api_tx: &ApiRequestSender,
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
+    server_stop: Option<&Arc<AtomicBool>>,
 ) -> std::io::Result<Option<String>> {
     let deadline = match checked_timeout_deadline(params.timeout_ms) {
         Ok(deadline) => deadline,
@@ -749,6 +778,9 @@ pub(super) fn wait_for_event(
     };
 
     loop {
+        if server_is_stopping(server_stop) {
+            return Ok(Some(shutdown_response(request_id)));
+        }
         if should_stop_connection(stream, running)? {
             return Ok(None);
         }

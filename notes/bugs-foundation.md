@@ -17,22 +17,10 @@ Hunter coverage: all of `shepr-core` and `shepr-test-support`, most of `shepr-pl
 - The doc comment describing `release_delay_lock` ("Tell the monitor that the session checkpoint...") sits on `warning_generation`, so `release_delay_lock` itself is undocumented and the getter carries the wrong contract.
 - When the D-Bus connection errors while a shutdown is pending, `requested` stays true with no inhibitor held, and the reconnect loop backs off up to 60 s. That is fine for a shutdown, but a cancellation that happens during the outage is only noticed after reconnecting.
 
-## FND-009 - Config writes fail on files carrying privileged xattrs or foreign ownership
+## FND-017 - Tilde expansion lets a doubled slash discard the home directory
 
-`crates/shepr-platform/src/config_file.rs`, `write_config_temporary`. Every xattr on the source is copied, and any `fsetxattr` failure aborts the whole write, for example `security.*` labels that need privileges, or any xattr after `fchown` has handed the file to another uid. `fchown` to a different owner also fails with EPERM for non-root. So editing an agent config that carries such attributes fails outright. Only ACL entries (`system.posix_acl_*`) need copying; the others should be best-effort.
+`crates/shepr-core/src/pathutil.rs`. For `~//x` the suffix after `~/` is `/x`, which is absolute, so `Path::join` throws the home directory away and the result is `/x`. Strip every leading slash from the suffix before joining.
 
-## FND-010 - One logging error disables logging for good
+## FND-018 - Workspace dependencies have not been audited since the crate split
 
-`crates/shepr-platform/src/logging.rs`. A single I/O error (transient ENOSPC, or a directory recreated) sets `disabled = true` forever. The process then logs nothing for the rest of its life and nothing records that it stopped.
-
-## FND-011 - ChildExitReason variants misclassify or are never produced
-
-`ChildExitReason::Interrupted` covers death by any signal, including SIGHUP/SIGKILL that shepr sends itself, and `WaitFailed` is never produced by `classify_child_exit`. (A PTY reader panic now has its own `ReaderPanicked` variant.)
-
-## FND-012 - workspace_label_from_cwd compares raw $HOME
-
-`workspace_label_from_cwd` in `shepr-core` compares the raw `$HOME` with no normalisation, so a trailing slash defeats the `~` label. It also bypasses `pathutil::home_dir`'s validation and reads the environment from a crate that is otherwise pure.
-
-## FND-013 - expand_tilde_path passes non-UTF-8 paths through unexpanded
-
-`expand_tilde_path*` passes non-UTF-8 paths through unexpanded, even ones that start with `~/`.
+The root `Cargo.toml` still depends on `unicode-segmentation`, which nothing in `src/` uses (shepr-vt dropped it too), and other root or crate dependencies may be leftovers from before the extraction into `crates/`. An audit of every manifest against actual `use` sites would trim them. `brokkr deps` also shows ratatui pulling in the termwiz backend (and with it second copies of sha2, digest, nix, thiserror, bitflags, base64, getrandom and syn 1); shepr drives the terminal through crossterm, so ratatui with default features off and only the backend in use would likely drop most duplicated versions.

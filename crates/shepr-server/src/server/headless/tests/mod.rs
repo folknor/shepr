@@ -235,6 +235,43 @@ fn default_headless_size_is_effective_without_clients() {
 }
 
 #[tokio::test]
+async fn last_shell_disconnect_restores_headless_pane_size() {
+    let mut server = test_headless_server();
+    let pane_id = install_shared_view_test_runtime(&mut server);
+    server.headless_size = shepr_core::geometry::GridSize::clamped(72, 18);
+    let (_control, _render) = connect_test_shell(&mut server, 7, 112, 36);
+    let client_size = server.app.test_runtime(pane_id).current_size();
+
+    assert!(server.handle_server_event(ServerEvent::ClientDisconnected {
+        client_id: ClientId::test_new(7),
+    }));
+
+    let target = crate::ui::TabSurfaceTarget::from_indices(&server.app.state, 0, 0)
+        .expect("test tab target");
+    let layout = crate::ui::compute_tab_surface_for(
+        &server.app.state,
+        &server.app.terminal_runtimes,
+        Some(target),
+        ratatui::layout::Rect::new(
+            0,
+            0,
+            server.headless_size.cols.get(),
+            server.headless_size.rows.get(),
+        ),
+    );
+    let pane = layout.pane_infos.first().expect("test pane geometry");
+    let headless_pane_size = (pane.inner_rect.height, pane.inner_rect.width);
+
+    assert_eq!(server.effective_size, server.headless_size);
+    assert_ne!(client_size, headless_pane_size);
+    assert_eq!(
+        server.app.test_runtime(pane_id).current_size(),
+        headless_pane_size
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
     let event_hub = shepr_api::EventHub::default();
     let mut server = test_headless_server_with_event_hub(event_hub.clone());
@@ -2410,6 +2447,59 @@ async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
     assert_ne!(
         server.app.test_runtime(second_pane).current_size(),
         stale_size
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn controller_disconnect_hands_geometry_to_a_remaining_viewer() {
+    let mut server = test_headless_server();
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("controller-disconnect");
+    let first_pane = workspace.tabs[0].root_pane;
+    let second_tab = workspace.test_add_tab(Some("second"));
+    let second_pane = workspace.tabs[second_tab].root_pane;
+    server.app.state.workspaces = vec![workspace];
+    for pane_id in [first_pane, second_pane] {
+        server.app.insert_test_runtime(
+            pane_id,
+            shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+        );
+    }
+    server.app.state.set_active_index(Some(0));
+    server.app.state.set_selected_index(Some(0));
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let second_tab_id = server
+        .app
+        .public_tab_id(0, second_tab)
+        .expect("test precondition");
+
+    let (first_control, _) = connect_test_shell(&mut server, 31, 100, 30);
+    let (second_control, _) = connect_test_shell(&mut server, 32, 70, 20);
+    let (third_control, _) = connect_test_shell(&mut server, 33, 60, 16);
+    let _ = first_control.recv().expect("first snapshot");
+    let _ = second_control.recv().expect("second snapshot");
+    let _ = third_control.recv().expect("third snapshot");
+
+    assert!(server.focus_shell_client_on_tab(ClientId::test_new(32), &second_tab_id));
+    assert!(server.claim_shell_tab_geometry(ClientId::test_new(32), false));
+    let remaining_viewer_size = server.app.test_runtime(second_pane).current_size();
+    assert!(server.focus_shell_client_on_tab(ClientId::test_new(31), &second_tab_id));
+    assert!(server.claim_shell_tab_geometry(ClientId::test_new(31), false));
+    assert_ne!(
+        server.app.test_runtime(second_pane).current_size(),
+        remaining_viewer_size
+    );
+
+    // Two shells remain, so this is not the single-shell resize path.
+    server.remove_client_and_resize_if_needed(ClientId::test_new(31));
+
+    assert_eq!(
+        server.clients.geometry_controller(&second_tab_id),
+        Some(ClientId::test_new(32))
+    );
+    assert_eq!(
+        server.app.test_runtime(second_pane).current_size(),
+        remaining_viewer_size
     );
     shutdown_test_runtimes(&mut server);
 }

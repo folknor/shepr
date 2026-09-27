@@ -83,6 +83,8 @@ pub fn parse_tab_bar_right_entries(
         ));
     }
 
+    // An over-limit list already has a diagnostic, so validate details only for accepted
+    // positions.
     for (index, entry) in entries.iter().enumerate().take(MAX_TAB_BAR_RIGHT_ENTRIES) {
         let parsed_entry = match entry {
             TabBarRightEntryConfig::Datetime { format } => {

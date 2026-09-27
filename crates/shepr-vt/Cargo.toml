@@ -9,7 +9,6 @@ alacritty_terminal = { workspace = true }
 serde = { workspace = true }
 shepr-core = { path = "../shepr-core" }
 tracing = { workspace = true }
-unicode-segmentation = { workspace = true }
 unicode-width = { workspace = true }
 
 [dev-dependencies]

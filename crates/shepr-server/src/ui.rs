@@ -17,24 +17,7 @@ use crate::app::AppState;
 use shepr_mux::pane::PaneRuntimeRegistry;
 
 /// Refresh the active view geometry without resizing any terminal runtimes.
-pub fn compute_view_with_runtime_registry(
-    app: &mut AppState,
-    terminal_runtimes: &PaneRuntimeRegistry,
-    area: Rect,
-) {
-    compute_view_internal(app, terminal_runtimes, area);
-}
-
-/// Refresh view geometry for callers that explicitly defer pane resizing.
-pub(crate) fn compute_view_without_resizing_panes(
-    app: &mut AppState,
-    terminal_runtimes: &PaneRuntimeRegistry,
-    area: Rect,
-) {
-    compute_view_internal(app, terminal_runtimes, area);
-}
-
-fn compute_view_internal(app: &mut AppState, terminal_runtimes: &PaneRuntimeRegistry, area: Rect) {
+pub fn compute_view(app: &mut AppState, terminal_runtimes: &PaneRuntimeRegistry, area: Rect) {
     let TabSurfaceLayout { pane_infos, .. } = compute_tab_surface(app, terminal_runtimes, area);
 
     app.view = crate::app::ViewState {

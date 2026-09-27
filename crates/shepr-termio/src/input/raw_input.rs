@@ -772,6 +772,9 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
             "dropping incomplete raw input buffer after timeout"
         );
         self.lone_escape_recently_flushed = false;
+        // `drain_available_chunks` consumed complete and malformed heads one
+        // event at a time. Reaching this point means the only remaining bytes
+        // are the incomplete trailing sequence, which idle timeout discards.
         self.buffer.clear();
         chunks
     }
@@ -2967,6 +2970,19 @@ mod tests {
             framer.push(&[0xC0, b'a', b'b']),
             vec![vec![0xC0], vec![b'a'], vec![b'b']]
         );
+        assert!(!framer.has_pending_input());
+    }
+
+    #[test]
+    fn timeout_discards_only_the_incomplete_tail_after_draining_events() {
+        let mut framer = RawInputByteFramer::default();
+
+        assert_eq!(
+            // A bare `ESC [` would flush as Alt+[; `ESC [ 1 ; 5` is not a key.
+            framer.push(b"\xffab\x1b[1;5"),
+            vec![vec![0xff], b"a".to_vec(), b"b".to_vec()]
+        );
+        assert!(framer.flush_timeout().is_empty());
         assert!(!framer.has_pending_input());
     }
 

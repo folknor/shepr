@@ -9,7 +9,7 @@
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-Hunter coverage: shepr-vt findings were checked against the pinned `research/vte` and alacritty sources but not run. shepr-pty was read including the reap/teardown path in shepr-mux. shepr-termio: `keybind_help.rs` and `host_term/{cell_size,theme,title}.rs` were not read, and callers in shepr-server/client were not checked.
+Hunter coverage: shepr-vt findings were checked against the pinned vte and alacritty sources but not run. shepr-pty was read including the reap/teardown path in shepr-mux. shepr-termio: `keybind_help.rs` and `host_term/{cell_size,theme,title}.rs` were not read, and callers in shepr-server/client were not checked.
 
 ## TRM-001 - Absolute row ids can be reused after a large batch
 
@@ -21,28 +21,10 @@ Hunter coverage: shepr-vt findings were checked against the pinned `research/vte
 - This is realistic: a synchronized-update frame is replayed in a single batch (`stop_sync` runs inside one `with_handler`), and vte buffers up to 2 MB. Output full of blank or identical lines, or clear-heavy TUI redraws, will hit it.
 - Fix direction: don't use pointer identity plus a weak hash. Count evictions directly. Either have the handler observe `linefeed`/`scroll_up` at the history limit, or take a real content hash including flags and zerowidth. Better still is a stable per-row sequence number that the tracker owns. It is worth rewriting.
 
-## TRM-003 - unicode_text_width / unicode_display_units do not follow the grid's width rules
-
-`crates/shepr-vt/src/cell.rs`.
-- Their docs claim "Width of text under the terminal grid's grapheme and voiced-mark rules". But alacritty sizes each char on its own (`c.width()`, with zero-width chars attached to the previous cell) and does no grapheme clustering.
-- `unicode_grapheme_cell_width` uses `str::width()` over a whole grapheme, clamped to 2. Two mismatches:
-  - `\u{263A}\u{FE0F}` (smiley plus VS16) is 1 column in the grid but reported as 2.
-  - A ZWJ family emoji is 6 columns in the grid (2+0+2+0+2) but reported as 2.
-- Consumers: `crates/shepr-termio/src/copy_mode.rs` (`first_non_blank_col`, `last_character_col`) measures row text that came from the grid, so copy-mode columns drift. `crates/shepr-client/src/shell/sidebar/agent_sidebar.rs` is also affected.
-- Fix: sum per-char `unicode_codepoint_width`. Do not use grapheme width.
-
 ## TRM-006 - Scanner framing diverges from vte for XTGETTCAP and DCS
 
 - **XTGETTCAP body:** vte's passthrough ignores DEL and bytes 0x80-0xFF other than 0x9C. The scanner buffers them, so a request containing them gets no reply.
 - **DCS ignore vs passthrough:** the scanner merges vte's `DcsIgnore` (which ignores 0x9C) with `DcsPassthrough` (which ends on 0x9C). The hunter found no observable difference, because both only resync on ESC. The module doc's claim of "mirroring framing" is slightly overstated.
-
-## TRM-007 - OSC 8 hyperlink ids are mangled on replay
-
-`crates/shepr-vt/src/format.rs`: a child-supplied hyperlink id ending in `_alacritty` loses its id on replay. An id containing `:` or `;` is emitted raw, so it can corrupt the replayed OSC 8 params.
-
-## TRM-008 - Mouse extended-encoding modes are modelled asymmetrically
-
-Setting 1005 cancels 1016, but setting 1016 does not cancel alacritty's `UTF8_MOUSE`. xterm has one extended-encoding variable for these, so the modelling is lopsided.
 
 ## TRM-009 - PTY input backpressure does not work; the actor's write queue is unbounded
 
@@ -57,13 +39,11 @@ Design note from the hunter: the actor has four synchronisation channels (tokio 
 
 ## TRM-010 - One blocking-pool thread per pane for the child's whole life
 
-`crates/shepr-mux/src/pane/runtime.rs`, around lines 453-476.
+`crates/shepr-mux/src/pane/runtime.rs`.
 - `tokio::task::spawn_blocking(move || child.wait())` holds a thread from Tokio's blocking pool (512 by default) until the child exits.
 - The same pool runs detection's `foreground_process_group_id` and `probe_foreground_process`, the synchronized-output flush, and the theme probe. With enough panes those tasks queue forever.
-- Also likely: `Runtime` drop waits for blocking tasks unless `shutdown_timeout` or `shutdown_background` is used. Any exit path that keeps pane processes alive (`preserve_processes_on_drop`) would then hang the server on `wait()`. That is exactly the "blocks waiting for the child" problem this crate claims to avoid, just moved elsewhere. The hunter did not verify which runtime shutdown the server uses.
+- Also likely: `Runtime` drop waits for blocking tasks unless `shutdown_timeout` or `shutdown_background` is used, so an exit path that leaves pane processes alive would hang the server on `wait()`. The hunter did not verify which runtime shutdown the server uses.
 - Fix: reap from a pidfd. `ProcessHandle` already opens one: register it with `AsyncFd`, then `waitid(P_PIDFD)`. That avoids a dedicated thread per child.
-
-Related: MUX-004 reports that `preserve_processes_on_drop` is `false` in every production constructor.
 
 ## TRM-014 - Resize replies can be sent out of order relative to earlier replies
 
@@ -86,20 +66,16 @@ Related: MUX-004 reports that `preserve_processes_on_drop` is `false` in every p
 
 `crates/shepr-pty/src/backend.rs`, pre-exec. When `close_range` is unavailable, descriptors are marked close-on-exec by walking `/proc/self/fd`. If procfs cannot be opened, the walk silently does nothing and the pane process inherits every server descriptor. Spawn should fail instead.
 
-## TRM-029 - The raw-input idle flush still ends in a catch-all buffer clear
-
-`crates/shepr-termio/src/input/raw_input.rs`, `RawInputByteFramer::flush_timeout`. Malformed heads are now consumed one event at a time, so by the idle flush only a single incomplete trailing sequence should remain. The flush still finishes with `self.buffer.clear()`, which would silently eat anything else if that invariant ever slips. It should drop exactly the incomplete sequence, or assert the invariant in tests.
-
 ## TRM-020 - Kitty keys that shepr parses cannot be encoded again, so they are dropped
 
 `crates/shepr-termio/src/input/encode.rs`, `parse.rs`.
 - `kitty_codepoint_to_keycode` produces F13-F35, `CapsLock`/`ScrollLock`/`NumLock`/`PrintScreen`/`Pause`/`Menu`, `KeypadBegin`, `Media(..)` and `Modifier(..)` keys.
 - `encode_kitty_functional_key` handles only arrows, Home/End/Ins/Del/PgUp/PgDn and F1-F12. For anything else `try_encode_csi_u` returns `None`, and `encode_legacy_inner` returns `vec![]` (as does `encode_f_key` for n>12).
 - So a pane that pushed REPORT_ALL_KEYS never receives modifier-key or lock-key events, and F13+ is lost under every protocol. This breaks `encode_terminal_key`'s own doc: "Encode a key event for a PTY child using the pane's negotiated keyboard protocol."
-- Related: keypad codepoints 57399-57426 are collapsed into `Char('0')` / `Up` and so on, so a REPORT_ALL_KEYS child can never see keypad identity. `TerminalKey` has nowhere to carry it.
+- Related: keypad codepoints 57399-57426 are collapsed into `Char('0')` / `Up` and so on, so a REPORT_ALL_KEYS child can never see keypad identity. `TerminalKey` has nowhere to carry it. Caps Lock and Num Lock bits of the kitty modifier field are likewise dropped by `key_modifiers_from_u8`.
 - Fix: keep the kitty functional codepoint in `TerminalKey`, and emit `CSI <cp>;mods[:ev]u` for it when REPORT_ALL_KEYS (or DISAMBIGUATE, for the keys the spec lists) is active.
 
-Structural suggestion from the hunter: `TerminalKey` built on crossterm's `KeyCode` is the root of this entry and TRM-021: it can't represent kitty functional codepoints, keypad identity or lock state. A shepr-owned key model (kitty codepoint, shifted and base-layout alternates, a keypad flag, full modifier and lock bits) would make a lossless round trip possible. It would also let one encoder handle kitty, modifyOtherKeys and legacy output from the same data, replacing today's three layered fallbacks in `encode_terminal_key`.
+Structural suggestion from the hunter: `TerminalKey` built on crossterm's `KeyCode` is the root of this entry and TRM-021: it can't represent kitty functional codepoints, keypad identity or lock state. A shepr-owned key model (kitty codepoint, shifted and base-layout alternates, a keypad flag, full modifier and lock bits) would make a lossless round trip possible. It would also let one encoder handle kitty, modifyOtherKeys and legacy output from the same data, replacing today's three layered fallbacks in `encode_terminal_key`. The US shifted-ASCII table is currently duplicated between `input/encode.rs` and `copy_mode.rs` (a parity test guards it); the key model would own it once.
 
 ## TRM-021 - modifyOtherKeys encoding is only half implemented
 
@@ -111,24 +87,10 @@ Structural suggestion from the hunter: `TerminalKey` built on crossterm's `KeyCo
 ## TRM-022 - Text-key lease rule assumes the host never sends REPORT_ALL_KEYS
 
 `crates/shepr-termio/src/input/lease.rs`.
-- `complete_press` returns `Ignore` without taking a lease for any key with `generated_text`. Its comment justifies this with "Without kitty REPORT_ALL_KEYS on the host … a key that committed text gets no release event."
+- `complete_press` returns `Ignore` without taking a lease for any key with `generated_text`. Its comment justifies this with "Without kitty REPORT_ALL_KEYS on the host ... a key that committed text gets no release event."
 - But `host_term/modes.rs::set_host_kitty_keyboard_report_all(true)` pushes flags 31 (report-all plus associated text). In that mode every text key arrives as CSI u with associated text, gets `generated_text`, and does get Release and Repeat events.
 - Those releases and repeats have no lease. So they aren't routed to the pane that got the press, and `plan_repeat` falls into untracked reprocessing.
 - Needs confirming against the server-side caller. The rule should depend on the host mode, not on whether `generated_text` is present.
-
-## TRM-024 - Legacy Ctrl/Shift encoding is incomplete and disagrees with copy mode
-
-`encode_legacy_inner`.
-- Ctrl+`?` and Ctrl+`8` send the plain character instead of DEL (0x7f), unlike xterm.
-- Shift plus a digit or punctuation key with no `shifted_codepoint` sends the unshifted character (`shifted_text_char` returns `None`, then `unwrap_or(ch)`). Meanwhile `copy_mode::copy_mode_command_char` maps the same key through a US table (`'1'` becomes `'!'`). The two layers disagree on what the key is.
-
-## TRM-025 - UTF-8 mouse encoding (1005) has no upper limit
-
-`encode_mouse_cb` Utf8 branch. xterm caps it at 2015. Past that it emits 3-byte code points, and in the surrogate range the event is silently dropped.
-
-## TRM-026 - Kitty modifier field parsed as u8
-
-`parse_kitty_key_sequence` reads the modifier field as `u8`. A value of 256 (every modifier and lock bit set) makes the whole key `Unsupported` instead of being clamped.
 
 ## TRM-027 - Selection highlight can land on the wrong rows without scroll metrics
 

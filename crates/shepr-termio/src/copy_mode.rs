@@ -62,7 +62,9 @@ pub fn copy_mode_command_char(key: &TerminalKey) -> Option<char> {
     }
 }
 
-fn shifted_ascii_char(ch: char) -> Option<char> {
+/// Shift on a US-layout key. Copy mode and the legacy key encoder share this
+/// one table so both read an unshifted key with Shift the same way.
+pub(crate) fn shifted_ascii_char(ch: char) -> Option<char> {
     match ch {
         'a'..='z' => Some(ch.to_ascii_uppercase()),
         '1' => Some('!'),
@@ -102,14 +104,14 @@ mod tests {
         assert_eq!(first_non_blank_col("  界x"), Some(2));
         // An ideographic space is a two-column blank.
         assert_eq!(first_non_blank_col("\u{3000}x"), Some(2));
-        // Joined emoji occupy the same two cells as in the terminal grid.
+        // Grid width sums the emoji codepoint widths; joiners add no columns.
         assert_eq!(
             first_non_blank_col("   \u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}x"),
             Some(3)
         );
         assert_eq!(
             last_character_col("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}x"),
-            Some(2)
+            Some(6)
         );
     }
 

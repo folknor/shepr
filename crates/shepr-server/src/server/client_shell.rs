@@ -269,7 +269,7 @@ pub(super) enum SurfaceRenderDeferred {
 }
 
 pub(super) fn render_pane_surface(
-    app: &mut app::App,
+    app: &app::App,
     target: Option<&crate::ui::TabSurfaceTarget>,
     area: Rect,
     cell_size: shepr_termio::host_term::cell_size::HostCellSize,

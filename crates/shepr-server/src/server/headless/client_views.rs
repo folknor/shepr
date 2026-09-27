@@ -552,6 +552,24 @@ impl HeadlessServer {
         self.apply_shell_tab_geometry(client_id, start_pending_agent_resumes)
     }
 
+    /// Resize every unlocked pane after the final shell releases session geometry.
+    pub(super) fn resize_tabs_to_headless_size(&mut self) {
+        self.sync_foreground_client_state();
+        let area = Rect::new(
+            0,
+            0,
+            self.headless_size.cols.get(),
+            self.headless_size.rows.get(),
+        );
+        crate::ui::resize_all_tab_surfaces(
+            &self.app.state,
+            &self.app.terminal_runtimes,
+            area,
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
+        );
+        self.finish_shell_tab_geometry_change(true);
+    }
+
     pub(super) fn reapply_controlled_shell_tab_geometry(
         &mut self,
         start_pending_agent_resumes: bool,

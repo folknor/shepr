@@ -552,7 +552,7 @@ impl HeadlessServer {
     }
 
     fn sync_runtime_view_geometry(&mut self) {
-        crate::ui::compute_view_without_resizing_panes(
+        crate::ui::compute_view(
             &mut self.app.state,
             &self.app.terminal_runtimes,
             Rect::new(
@@ -623,7 +623,7 @@ impl HeadlessServer {
     ///
     /// This is all agent state and hook reports need before they are applied:
     /// they change neither client geometry nor layout, so they do not rerun
-    /// `compute_view_without_resizing_panes` through the full
+    /// `compute_view` through the full
     /// `sync_foreground_client_state`.
     fn sync_foreground_focus_state(&mut self) {
         let Some(client) = self
@@ -770,11 +770,21 @@ impl HeadlessServer {
             };
             self.shell_geometry_controller_for_terminal(terminal_id.as_str())
         });
+        let was_shell_client = self
+            .clients
+            .get(&client_id)
+            .is_some_and(crate::server::clients::ClientConnection::is_active_shell_client);
         self.remove_client(client_id);
         if let Some((controller_id, target)) = restore_shell_controller {
             self.restore_shell_tab_geometry(controller_id, target);
-        } else {
-            self.resize_tabs_for_only_shell_client(true);
+        } else if self.has_app_client() {
+            // Removing the client dropped its geometry controller mappings.
+            // Hand each tab it controlled to a remaining viewer and resize
+            // to that viewer, so no pane keeps the departed client's size.
+            self.reapply_controlled_shell_tab_geometry(true);
+        } else if was_shell_client {
+            // The last shell is gone: nothing holds session geometry anymore.
+            self.resize_tabs_to_headless_size();
         }
     }
 

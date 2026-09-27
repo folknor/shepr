@@ -196,23 +196,27 @@ fn emit_line(
                 push_sgr(out, &style);
                 vt.style = style;
             }
-            let link = cell
-                .hyperlink()
-                .map(|link| (link.id().to_owned(), link.uri().to_owned()));
-            if link != vt.link {
+            let link = cell.hyperlink();
+            let same_link = match (&link, &vt.link) {
+                (None, None) => true,
+                (Some(link), Some((id, uri))) => link.id() == id && link.uri() == uri,
+                _ => false,
+            };
+            if !same_link {
                 if vt.link.is_some() {
                     out.push_str("\x1b]8;;\x1b\\");
                 }
-                if let Some((id, uri)) = &link {
-                    // Auto-generated ids are local to this terminal; let the
-                    // replaying terminal allocate its own.
-                    if id.ends_with("_alacritty") {
-                        let _ = write!(out, "\x1b]8;;{uri}\x1b\\");
-                    } else {
-                        let _ = write!(out, "\x1b]8;id={id};{uri}\x1b\\");
-                    }
+                if let Some(link) = &link {
+                    // vte splits OSC 8 parameters on ';', then splits fields
+                    // in the params value on ':'. Neither delimiter can occur
+                    // in an id by the time it reaches a terminal cell.
+                    // Preserve every id because explicit child ids can share
+                    // alacritty's generated-id suffix.
+                    let _ = write!(out, "\x1b]8;id={};{}\x1b\\", link.id(), link.uri());
+                    vt.link = Some((link.id().to_owned(), link.uri().to_owned()));
+                } else {
+                    vt.link = None;
                 }
-                vt.link = link;
             }
         }
         push_cell_text(out, cell);

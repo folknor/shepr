@@ -23,11 +23,19 @@ pub struct GitWorktreeInfo {
 
 #[cfg(test)]
 fn derive_label_from_cwd(cwd: &Path) -> String {
-    shepr_core::workspace_label::workspace_label_from_cwd(cwd, git_repo_root(cwd).as_deref())
+    match git_repo_root(cwd) {
+        Some(repo_root) => automatic_workspace_label(cwd, &repo_root),
+        None => fallback_label_from_cwd(cwd),
+    }
 }
 
+/// The label for a cwd outside any Git checkout: `~` for the home directory,
+/// the directory name otherwise. This runs when a workspace's identity cwd
+/// changes or its Git status is refreshed, never per frame, so `$HOME` is
+/// read here. An unusable `HOME` only means the `~` label is not offered.
 pub fn fallback_label_from_cwd(cwd: &Path) -> String {
-    shepr_core::workspace_label::workspace_label_from_cwd(cwd, None)
+    let home = shepr_core::pathutil::home_dir().ok();
+    shepr_core::workspace_label::workspace_label_from_cwd(cwd, None, home.as_deref())
 }
 
 pub fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
@@ -46,8 +54,10 @@ pub fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
     })
 }
 
+/// Inside a Git checkout the label is the checkout root's name; the home
+/// directory is never consulted, so none is resolved.
 pub(crate) fn automatic_workspace_label(cwd: &Path, repo_root: &Path) -> String {
-    shepr_core::workspace_label::workspace_label_from_cwd(cwd, Some(repo_root))
+    shepr_core::workspace_label::workspace_label_from_cwd(cwd, Some(repo_root), None)
 }
 
 pub(super) fn git_space_metadata_from_info(info: &GitWorktreeInfo) -> GitSpaceMetadata {

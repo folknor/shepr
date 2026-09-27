@@ -169,10 +169,6 @@ pub struct AgentManifestSummary {
     pub warning: Option<String>,
 }
 
-pub fn manifest_summaries() -> Vec<AgentManifestSummary> {
-    registry().summaries()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchedRule {
     pub id: String,
@@ -212,8 +208,7 @@ struct LoadedManifest {
     /// One entry per manifest rule, in manifest order.
     compiled_rules: Vec<CompiledRule>,
     /// Every distinct region any rule or gate reads; gates refer to regions by
-    /// index so each region is extracted (and lowercased) at most once per
-    /// detection input.
+    /// index so each region is extracted at most once per detection input.
     regions: Vec<CompiledRegion>,
     /// Rule indices by descending priority, manifest order within a priority.
     /// The first match in this order is the rule `explain` would select, so the
@@ -223,12 +218,18 @@ struct LoadedManifest {
     warning: Option<String>,
 }
 
+#[derive(Debug)]
+struct CompiledManifest {
+    compiled_rules: Vec<CompiledRule>,
+    regions: Vec<CompiledRegion>,
+}
+
 #[derive(Debug, Clone)]
 struct ManifestCache {
     manifests: Vec<(Agent, Option<Arc<LoadedManifest>>)>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AgentManifest {
     id: String,
@@ -236,6 +237,8 @@ pub(crate) struct AgentManifest {
     aliases: Vec<String>,
     #[serde(default)]
     rules: Vec<ManifestRule>,
+    #[serde(skip)]
+    compiled: Option<CompiledManifest>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -306,17 +309,140 @@ struct CompiledGate {
     all: Vec<CompiledGate>,
     any: Vec<CompiledGate>,
     not_gate: Vec<CompiledGate>,
-    contains: Vec<String>,
+    contains: Vec<CompiledContains>,
     regex: Vec<Regex>,
     line_regex: Vec<Regex>,
+}
+
+#[derive(Debug)]
+struct CompiledContains {
+    lowercase_needle: String,
+    prefix: Vec<usize>,
+    case_ignorable: &'static Regex,
+    cased: &'static Regex,
+}
+
+impl CompiledContains {
+    fn new(needle: &str) -> Result<Self, String> {
+        let case_ignorable = case_ignorable_regex()?;
+        let cased = cased_regex()?;
+        let lowercase_needle = needle.to_lowercase();
+        let bytes = lowercase_needle.as_bytes();
+        let mut prefix = vec![0; bytes.len()];
+        for index in 1..bytes.len() {
+            let mut matched = prefix[index - 1];
+            while matched > 0 && bytes[index] != bytes[matched] {
+                matched = prefix[matched - 1];
+            }
+            if bytes[index] == bytes[matched] {
+                matched += 1;
+            }
+            prefix[index] = matched;
+        }
+        Ok(Self {
+            lowercase_needle,
+            prefix,
+            case_ignorable,
+            cased,
+        })
+    }
+
+    fn matches(&self, text: &str) -> bool {
+        let needle = self.lowercase_needle.as_bytes();
+        if needle.is_empty() {
+            return true;
+        }
+
+        let mut matched = 0;
+        for (index, character) in text.char_indices() {
+            if character == 'Σ' {
+                let lowercase_sigma = if final_sigma(text, index, self.case_ignorable, self.cased) {
+                    'ς'
+                } else {
+                    'σ'
+                };
+                if self.feed(lowercase_sigma, needle, &mut matched) {
+                    return true;
+                }
+            } else {
+                for lowercase_character in character.to_lowercase() {
+                    if self.feed(lowercase_character, needle, &mut matched) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn feed(&self, character: char, needle: &[u8], matched: &mut usize) -> bool {
+        let mut encoded = [0; 4];
+        for &byte in character.encode_utf8(&mut encoded).as_bytes() {
+            while *matched > 0 && byte != needle[*matched] {
+                *matched = self.prefix[*matched - 1];
+            }
+            if byte == needle[*matched] {
+                *matched += 1;
+                if *matched == needle.len() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+fn final_sigma(text: &str, index: usize, case_ignorable: &Regex, cased: &Regex) -> bool {
+    fn case_ignorable_then_cased(
+        mut characters: impl Iterator<Item = char>,
+        case_ignorable: &Regex,
+        cased: &Regex,
+    ) -> bool {
+        for character in characters.by_ref() {
+            if !is_case_ignorable(character, case_ignorable) {
+                return is_cased(character, cased);
+            }
+        }
+        false
+    }
+
+    case_ignorable_then_cased(text[..index].chars().rev(), case_ignorable, cased)
+        && !case_ignorable_then_cased(
+            text[index + 'Σ'.len_utf8()..].chars(),
+            case_ignorable,
+            cased,
+        )
+}
+
+fn is_case_ignorable(character: char, property: &Regex) -> bool {
+    let mut encoded = [0; 4];
+    property.is_match(character.encode_utf8(&mut encoded))
+}
+
+fn is_cased(character: char, property: &Regex) -> bool {
+    let mut encoded = [0; 4];
+    property.is_match(character.encode_utf8(&mut encoded))
+}
+
+fn case_ignorable_regex() -> Result<&'static Regex, String> {
+    static PROPERTY: OnceLock<Result<Regex, String>> = OnceLock::new();
+    PROPERTY
+        .get_or_init(|| Regex::new(r"\p{Case_Ignorable}").map_err(|error| error.to_string()))
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+fn cased_regex() -> Result<&'static Regex, String> {
+    static PROPERTY: OnceLock<Result<Regex, String>> = OnceLock::new();
+    PROPERTY
+        .get_or_init(|| Regex::new(r"\p{Cased}").map_err(|error| error.to_string()))
+        .as_ref()
+        .map_err(Clone::clone)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CompiledRegion {
     spec: RegionSpec,
-    /// Some gate on this region has `contains` needles, which match against
-    /// the lowercased text.
-    needs_lowercase: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -368,9 +494,8 @@ impl RegionSpec {
         })
     }
 
-    /// Extract this region from the input. `lines` caches the screen split
-    /// into lines so every screen region of one input shares a single split.
-    fn extract<'a>(self, input: DetectionInput<'a>, lines: &mut Option<Vec<&'a str>>) -> &'a str {
+    /// Extract this region without building a line index for a detection tick.
+    fn extract<'a>(self, input: DetectionInput<'a>) -> &'a str {
         // OSC regions source from their dedicated fields, not the screen.
         match self {
             Self::OscTitle => return input.osc_title,
@@ -380,25 +505,22 @@ impl RegionSpec {
             _ => {}
         }
         let content = input.screen;
-        let lines: &[&'a str] = lines.get_or_insert_with(|| content.lines().collect());
         match self {
-            Self::AfterLastPromptMarker => after_last_prompt_marker(content, lines),
-            Self::BeforeCurrentPromptMarker => before_current_prompt_marker(content, lines),
+            Self::AfterLastPromptMarker => after_last_prompt_marker(content),
+            Self::BeforeCurrentPromptMarker => before_current_prompt_marker(content),
             Self::WholeRecentWithoutCurrentPromptMarker => {
-                whole_recent_without_current_prompt_marker(content, lines)
+                whole_recent_without_current_prompt_marker(content)
             }
-            Self::CurrentPromptBlockMarker => current_prompt_block_marker(lines).unwrap_or(""),
+            Self::CurrentPromptBlockMarker => current_prompt_block_marker(content).unwrap_or(""),
             Self::AfterCurrentPromptBlockMarker => {
-                after_current_prompt_block_marker(content, lines).unwrap_or("")
+                after_current_prompt_block_marker(content).unwrap_or("")
             }
-            Self::PromptBoxBody => prompt_box_body(content, lines).unwrap_or(""),
-            Self::AbovePromptBox => above_prompt_box(content, lines),
-            Self::LastNonEmptyAbovePromptBox => {
-                last_non_empty_line(above_prompt_box(content, lines))
-            }
-            Self::BottomLines(count) => bottom_lines(content, lines, count),
-            Self::BottomNonEmptyLines(count) => bottom_non_empty_lines(content, lines, count),
-            Self::TopNonEmptyLines(count) => top_non_empty_lines(content, lines, count),
+            Self::PromptBoxBody => prompt_box_body(content).unwrap_or(""),
+            Self::AbovePromptBox => above_prompt_box(content),
+            Self::LastNonEmptyAbovePromptBox => last_non_empty_line(above_prompt_box(content)),
+            Self::BottomLines(count) => bottom_lines(content, count),
+            Self::BottomNonEmptyLines(count) => bottom_non_empty_lines(content, count),
+            Self::TopNonEmptyLines(count) => top_non_empty_lines(content, count),
             Self::OscTitle
             | Self::OscProgress
             | Self::WholeRecent
@@ -461,11 +583,15 @@ const BUNDLED_MANIFESTS: &[(&str, &str)] = &[
 /// override directory instead, so they never touch this, `XDG_CONFIG_HOME`,
 /// or anything else another test running in the same process could observe.
 static MANIFESTS: OnceLock<ManifestRegistry> = OnceLock::new();
+static MANIFEST_INIT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 const MAX_RULES_PER_MANIFEST: usize = 128;
 const MAX_GATE_DEPTH: usize = 8;
 const MAX_TOTAL_GATES: usize = 512;
 const MAX_MATCHERS_PER_GATE: usize = 32;
+/// Distinct regions one manifest may read. Detection caches region texts in a
+/// fixed array of this size, so the limit is checked when compiling.
+const MAX_REGIONS_PER_MANIFEST: usize = 32;
 const MAX_TOTAL_MATCHERS: usize = 1024;
 const MAX_MATCHER_CHARS: usize = 512;
 
@@ -524,10 +650,34 @@ impl ManifestRegistry {
 
 /// Reload manifests, reading local overrides from `<config_dir>/agent-detection`.
 pub fn reload_manifests(config_dir: &Path) -> Vec<AgentManifestSummary> {
-    registry().reload(&manifest_override_dir(config_dir))
+    let override_dir = manifest_override_dir(config_dir);
+    if let Some(registry) = MANIFESTS.get() {
+        return registry.reload(&override_dir);
+    }
+
+    let _init_guard = MANIFEST_INIT_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(registry) = MANIFESTS.get() {
+        return registry.reload(&override_dir);
+    }
+
+    // The first caller knows the config directory, so include overrides in
+    // the initial build instead of compiling the bundled set twice.
+    MANIFESTS
+        .get_or_init(|| ManifestRegistry::new(Some(&override_dir)))
+        .summaries()
 }
 
 fn registry() -> &'static ManifestRegistry {
+    if let Some(registry) = MANIFESTS.get() {
+        return registry;
+    }
+    let _init_guard = MANIFEST_INIT_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     MANIFESTS.get_or_init(|| ManifestRegistry::new(None))
 }
 
@@ -591,7 +741,7 @@ fn detect_with_manifest(
     let Some(loaded) = loaded else {
         return fallback_detection(agent, false);
     };
-    let mut texts = RegionTexts::new(input, loaded.regions.len());
+    let mut texts = RegionTexts::new(input);
     for &index in &loaded.priority_order {
         let (Some(rule), Some(compiled)) = (
             loaded.manifest.rules.get(index),
@@ -713,7 +863,7 @@ fn explain_loaded_manifest(
     input: DetectionInput<'_>,
     loaded: &LoadedManifest,
 ) -> DetectionExplain {
-    let mut texts = RegionTexts::new(input, loaded.regions.len());
+    let mut texts = RegionTexts::new(input);
     let mut matched: Option<&ManifestRule> = None;
     let mut evaluated_rules = Vec::with_capacity(loaded.manifest.rules.len());
 
@@ -850,10 +1000,16 @@ fn load_manifest_uncached(agent: Agent, override_dir: Option<&Path>) -> Option<L
 }
 
 fn loaded_manifest(
-    manifest: AgentManifest,
+    mut manifest: AgentManifest,
     source: ManifestSource,
 ) -> Result<LoadedManifest, String> {
-    let (compiled_rules, regions) = compile_manifest(&manifest)?;
+    let CompiledManifest {
+        compiled_rules,
+        regions,
+    } = match manifest.compiled.take() {
+        Some(compiled) => compiled,
+        None => compile_manifest(&manifest)?,
+    };
     let mut priority_order: Vec<usize> = (0..manifest.rules.len()).collect();
     // Stable sort: equal priorities keep manifest order, matching the
     // first-wins tie break in `explain_loaded_manifest`.
@@ -970,12 +1126,12 @@ pub fn explain_to_json_value(explain: &DetectionExplain) -> serde_json::Value {
 }
 
 fn parse_manifest(content: &str) -> Result<AgentManifest, String> {
-    let manifest = toml::from_str::<AgentManifest>(content).map_err(|err| err.to_string())?;
-    validate_manifest(&manifest)?;
+    let mut manifest = toml::from_str::<AgentManifest>(content).map_err(|err| err.to_string())?;
+    manifest.compiled = Some(validate_manifest(&manifest)?);
     Ok(manifest)
 }
 
-fn validate_manifest(manifest: &AgentManifest) -> Result<(), String> {
+fn validate_manifest(manifest: &AgentManifest) -> Result<CompiledManifest, String> {
     if manifest.rules.is_empty() {
         return Err("manifest must contain at least one rule".to_string());
     }
@@ -1011,7 +1167,7 @@ fn validate_manifest(manifest: &AgentManifest) -> Result<(), String> {
             .map_err(|err| format!("rule {} has invalid matcher gates: {err}", rule.id))?;
     }
 
-    Ok(())
+    compile_manifest(manifest)
 }
 
 #[derive(Default)]
@@ -1053,8 +1209,6 @@ fn validate_gate(
     if !gate_has_positive_matcher(gate) {
         return Err(format!("{context} must contain a positive matcher"));
     }
-    validate_regex_patterns(&gate.regex, context, "regex")?;
-    validate_regex_patterns(&gate.line_regex, context, "line_regex")?;
     for nested in &gate.all {
         validate_gate(nested, "all gate", depth + 1, complexity)?;
     }
@@ -1087,8 +1241,6 @@ fn validate_not_gate(
     if !gate_has_any_matcher(gate) {
         return Err("not gate must contain a matcher".to_string());
     }
-    validate_regex_patterns(&gate.regex, "not gate", "regex")?;
-    validate_regex_patterns(&gate.line_regex, "not gate", "line_regex")?;
     for nested in &gate.all {
         validate_gate(nested, "not all gate", depth + 1, complexity)?;
     }
@@ -1129,15 +1281,6 @@ fn validate_matcher_limits(
                 "{context} matcher exceeds max length {MAX_MATCHER_CHARS}"
             ));
         }
-    }
-    Ok(())
-}
-
-fn validate_regex_patterns(patterns: &[String], context: &str, field: &str) -> Result<(), String> {
-    for pattern in patterns {
-        Regex::new(pattern).map_err(|err| {
-            format!("{context} contains invalid {field} pattern {pattern:?}: {err}")
-        })?;
     }
     Ok(())
 }
@@ -1203,17 +1346,17 @@ impl RegionTable {
         if let Some(index) = self.regions.iter().position(|region| region.spec == spec) {
             return Ok(index);
         }
-        self.regions.push(CompiledRegion {
-            spec,
-            needs_lowercase: false,
-        });
+        if self.regions.len() >= MAX_REGIONS_PER_MANIFEST {
+            return Err(format!(
+                "manifest reads more than {MAX_REGIONS_PER_MANIFEST} distinct regions"
+            ));
+        }
+        self.regions.push(CompiledRegion { spec });
         Ok(self.regions.len() - 1)
     }
 }
 
-fn compile_manifest(
-    manifest: &AgentManifest,
-) -> Result<(Vec<CompiledRule>, Vec<CompiledRegion>), String> {
+fn compile_manifest(manifest: &AgentManifest) -> Result<CompiledManifest, String> {
     let mut table = RegionTable::default();
     let rules = manifest
         .rules
@@ -1234,7 +1377,10 @@ fn compile_manifest(
                 .map_err(|err| format!("rule {} could not be compiled: {err}", rule.id))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok((rules, table.regions))
+    Ok(CompiledManifest {
+        compiled_rules: rules,
+        regions: table.regions,
+    })
 }
 
 fn compile_gate(
@@ -1246,11 +1392,6 @@ fn compile_gate(
         Some(spec) => table.intern(spec)?,
         None => inherited_region,
     };
-    if !gate.contains.is_empty()
-        && let Some(entry) = table.regions.get_mut(region)
-    {
-        entry.needs_lowercase = true;
-    }
     let mut compile_all = |gates: &[ManifestGate]| {
         gates
             .iter()
@@ -1268,17 +1409,23 @@ fn compile_gate(
         contains: gate
             .contains
             .iter()
-            .map(|needle| needle.to_lowercase())
-            .collect(),
+            .map(|needle| CompiledContains::new(needle))
+            .collect::<Result<_, _>>()?,
         regex: gate
             .regex
             .iter()
-            .map(|pattern| Regex::new(pattern).map_err(|err| err.to_string()))
+            .map(|pattern| {
+                Regex::new(pattern)
+                    .map_err(|err| format!("invalid regex pattern {pattern:?}: {err}"))
+            })
             .collect::<Result<_, _>>()?,
         line_regex: gate
             .line_regex
             .iter()
-            .map(|pattern| Regex::new(pattern).map_err(|err| err.to_string()))
+            .map(|pattern| {
+                Regex::new(pattern)
+                    .map_err(|err| format!("invalid line_regex pattern {pattern:?}: {err}"))
+            })
             .collect::<Result<_, _>>()?,
     })
 }
@@ -1292,27 +1439,18 @@ fn collect_gate_regions(gate: &CompiledGate, regions: &mut Vec<usize>) {
     }
 }
 
-/// Per-input region texts, extracted lazily and at most once each. Rules that
-/// share a region share its text, its lowercase form and the screen line split.
+/// Per-input region texts, extracted lazily and at most once each. The fixed
+/// cache is bounded by the validated distinct-region limit and needs no heap.
 struct RegionTexts<'a> {
     input: DetectionInput<'a>,
-    lines: Option<Vec<&'a str>>,
-    texts: Vec<Option<RegionText<'a>>>,
-}
-
-struct RegionText<'a> {
-    text: &'a str,
-    lower: Option<String>,
+    texts: [Option<&'a str>; MAX_REGIONS_PER_MANIFEST],
 }
 
 impl<'a> RegionTexts<'a> {
-    fn new(input: DetectionInput<'a>, region_count: usize) -> Self {
-        let mut texts = Vec::with_capacity(region_count);
-        texts.resize_with(region_count, || None);
+    fn new(input: DetectionInput<'a>) -> Self {
         Self {
             input,
-            lines: None,
-            texts,
+            texts: [None; MAX_REGIONS_PER_MANIFEST],
         }
     }
 
@@ -1324,27 +1462,12 @@ impl<'a> RegionTexts<'a> {
             if slot.is_some() {
                 continue;
             }
-            let text = region.spec.extract(self.input, &mut self.lines);
-            let lower = region.needs_lowercase.then(|| text.to_lowercase());
-            *slot = Some(RegionText { text, lower });
+            *slot = Some(region.spec.extract(self.input));
         }
     }
 
     fn text(&self, index: usize) -> &'a str {
-        self.texts
-            .get(index)
-            .and_then(Option::as_ref)
-            .map_or("", |region| region.text)
-    }
-
-    /// Lowercased text; empty unless some gate on the region uses `contains`,
-    /// which is the only reader.
-    fn lower(&self, index: usize) -> &str {
-        self.texts
-            .get(index)
-            .and_then(Option::as_ref)
-            .and_then(|region| region.lower.as_deref())
-            .unwrap_or("")
+        self.texts.get(index).and_then(|text| *text).unwrap_or("")
     }
 }
 
@@ -1380,28 +1503,43 @@ fn bounded_preview(text: &str) -> String {
     preview
 }
 
+fn every_line_regex_matches(regexes: &[Regex], text: &str) -> bool {
+    if regexes.is_empty() {
+        return true;
+    }
+    if regexes.len() > MAX_MATCHERS_PER_GATE {
+        return regexes
+            .iter()
+            .all(|regex| text.lines().any(|line| regex.is_match(line)));
+    }
+
+    let mut matched = [false; MAX_MATCHERS_PER_GATE];
+    let mut remaining = regexes.len();
+    for line in text.lines() {
+        for (index, regex) in regexes.iter().enumerate() {
+            if !matched[index] && regex.is_match(line) {
+                matched[index] = true;
+                remaining -= 1;
+            }
+        }
+        if remaining == 0 {
+            return true;
+        }
+    }
+    false
+}
+
 fn compiled_gate_matches(gate: &CompiledGate, texts: &RegionTexts<'_>) -> bool {
     let text = texts.text(gate.region);
-    if !gate.contains.is_empty() {
-        let lower_text = texts.lower(gate.region);
-        if !gate
-            .contains
-            .iter()
-            .all(|needle| lower_text.contains(needle.as_str()))
-        {
-            return false;
-        }
+    if !gate.contains.iter().all(|needle| needle.matches(text)) {
+        return false;
     }
 
     if !gate.regex.iter().all(|regex| regex.is_match(text)) {
         return false;
     }
 
-    if !gate
-        .line_regex
-        .iter()
-        .all(|regex| text.lines().any(|line| regex.is_match(line)))
-    {
+    if !every_line_regex_matches(&gate.line_regex, text) {
         return false;
     }
 
@@ -1435,7 +1573,7 @@ fn compiled_gate_matches(gate: &CompiledGate, texts: &RegionTexts<'_>) -> bool {
 
 #[cfg(test)]
 fn region<'a>(input: DetectionInput<'a>, spec: &str) -> &'a str {
-    RegionSpec::parse(spec).map_or("", |spec| spec.extract(input, &mut None))
+    RegionSpec::parse(spec).map_or("", |spec| spec.extract(input))
 }
 
 const MAX_REGION_LINE_COUNT: usize = u16::MAX as usize;
@@ -1457,90 +1595,102 @@ fn region_count(spec: &str, name: &str) -> Option<usize> {
         .filter(|count| (1..=MAX_REGION_LINE_COUNT).contains(count))
 }
 
-fn bottom_lines<'a>(content: &'a str, lines: &[&'a str], count: usize) -> &'a str {
-    let start = lines.len().saturating_sub(count);
-    slice_from_line_index(content, lines, start)
-}
-
-fn bottom_non_empty_lines<'a>(content: &'a str, lines: &[&'a str], count: usize) -> &'a str {
-    let Some(start_index) = lines
-        .iter()
-        .enumerate()
+fn bottom_lines(content: &str, count: usize) -> &str {
+    content
+        .lines()
         .rev()
-        .filter(|(_, line)| !line.trim().is_empty())
         .take(count)
         .last()
-        .map(|(index, _)| index)
+        .map_or("", |line| &content[line_start_offset(content, line)..])
+}
+
+fn bottom_non_empty_lines(content: &str, count: usize) -> &str {
+    let Some(line) = content
+        .lines()
+        .rev()
+        .filter(|line| !line.trim().is_empty())
+        .take(count)
+        .last()
     else {
         return "";
     };
-    slice_from_line_index(content, lines, start_index)
+    &content[line_start_offset(content, line)..]
 }
 
-fn top_non_empty_lines<'a>(content: &'a str, lines: &[&'a str], count: usize) -> &'a str {
-    let Some(end_index) = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
+fn top_non_empty_lines(content: &str, count: usize) -> &str {
+    let Some(line) = content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
         .take(count)
         .last()
-        .map(|(index, _)| index)
     else {
         return "";
     };
-    let byte_offset = line_start_offset(content, lines, end_index + 1);
-    &content[..byte_offset]
+    &content[..line_end_offset(content, line)]
 }
 
-fn after_last_prompt_marker<'a>(content: &'a str, lines: &[&'a str]) -> &'a str {
-    let Some(index) = lines.iter().rposition(|line| codex_prompt_line(line)) else {
+fn after_last_prompt_marker(content: &str) -> &str {
+    let mut after = None;
+    for line in content.lines() {
+        if codex_prompt_line(line) {
+            after = Some(line_end_offset(content, line));
+        }
+    }
+    after.map_or(content, |offset| &content[offset..])
+}
+
+fn before_current_prompt_marker(content: &str) -> &str {
+    let Some((prompt_start, _)) = current_codex_prompt_parts(content) else {
         return content;
     };
-    slice_from_line_index(content, lines, index + 1)
+    &content[..prompt_start.min(content.len())]
 }
 
-fn before_current_prompt_marker<'a>(content: &'a str, lines: &[&'a str]) -> &'a str {
-    let Some(index) = current_codex_prompt_index(lines) else {
-        return content;
-    };
-    let byte_offset = line_start_offset(content, lines, index);
-    &content[..byte_offset.min(content.len())]
-}
-
-fn whole_recent_without_current_prompt_marker<'a>(content: &'a str, lines: &[&'a str]) -> &'a str {
-    if current_codex_prompt_index(lines).is_some() {
+fn whole_recent_without_current_prompt_marker(content: &str) -> &str {
+    if current_codex_prompt_parts(content).is_some() {
         ""
     } else {
         content
     }
 }
 
-fn current_prompt_block_marker<'a>(lines: &[&'a str]) -> Option<&'a str> {
-    let prompt_index = current_codex_prompt_index(lines)?;
-    lines[..prompt_index]
-        .iter()
-        .rev()
-        .find(|line| codex_block_marker_line(line))
-        .copied()
+fn current_prompt_block_marker(content: &str) -> Option<&str> {
+    current_codex_prompt_parts(content)?.1.map(|(line, _)| line)
 }
 
-fn after_current_prompt_block_marker<'a>(content: &'a str, lines: &[&'a str]) -> Option<&'a str> {
-    let prompt_index = current_codex_prompt_index(lines)?;
-    let block_index = lines[..prompt_index]
-        .iter()
-        .rposition(|line| codex_block_marker_line(line))?;
-    Some(slice_from_line_index(content, lines, block_index))
+fn after_current_prompt_block_marker(content: &str) -> Option<&str> {
+    let (_, marker) = current_codex_prompt_parts(content)?;
+    let (_, marker_start) = marker?;
+    Some(&content[marker_start..])
 }
 
-fn current_codex_prompt_index(lines: &[&str]) -> Option<usize> {
-    let prompt_index = lines.iter().rposition(|line| codex_prompt_line(line))?;
-    if lines[prompt_index + 1..]
-        .iter()
-        .any(|line| codex_block_marker_line(line))
-    {
+/// The current prompt line's start offset and the block marker line (text and
+/// start offset) closest above it, in one pass. `None` when there is no
+/// prompt line or a block marker follows the last one.
+fn current_codex_prompt_parts(content: &str) -> Option<(usize, Option<(&str, usize)>)> {
+    let mut prompt_start = None;
+    let mut latest_marker = None;
+    let mut marker_before_prompt = None;
+    let mut marker_after_prompt = false;
+
+    for line in content.lines() {
+        let start = line_start_offset(content, line);
+        if codex_prompt_line(line) {
+            prompt_start = Some(start);
+            marker_before_prompt = latest_marker;
+            marker_after_prompt = false;
+        } else if codex_block_marker_line(line) {
+            latest_marker = Some((line, start));
+            if prompt_start.is_some() {
+                marker_after_prompt = true;
+            }
+        }
+    }
+
+    if marker_after_prompt {
         return None;
     }
-    Some(prompt_index)
+    prompt_start.map(|start| (start, marker_before_prompt))
 }
 
 fn codex_prompt_line(line: &str) -> bool {
@@ -1554,24 +1704,33 @@ fn codex_block_marker_line(line: &str) -> bool {
         || line.starts_with('\u{2713}')
 }
 
-fn prompt_box_body<'a>(content: &'a str, lines: &[&'a str]) -> Option<&'a str> {
-    let top = prompt_box_top_border_index(lines)?;
-    let start = line_start_offset(content, lines, top + 1);
-    let end_index = lines[top + 1..]
-        .iter()
-        .position(|line| is_horizontal_rule(line))
-        .map(|relative| top + 1 + relative)
-        .unwrap_or(lines.len());
-    let end = line_start_offset(content, lines, end_index);
-    Some(&content[start.min(content.len())..end.min(content.len())])
+fn prompt_box_body(content: &str) -> Option<&str> {
+    let (_, top_end, bottom_start) = prompt_box_bounds(content)?;
+    Some(&content[top_end.min(content.len())..bottom_start.min(content.len())])
 }
 
-fn above_prompt_box<'a>(content: &'a str, lines: &[&'a str]) -> &'a str {
-    let Some(top) = prompt_box_top_border_index(lines) else {
+fn above_prompt_box(content: &str) -> &str {
+    let Some((top_start, _, _)) = prompt_box_bounds(content) else {
         return content;
     };
-    let end = line_start_offset(content, lines, top);
-    &content[..end.min(content.len())]
+    &content[..top_start.min(content.len())]
+}
+
+fn prompt_box_bounds(content: &str) -> Option<(usize, usize, usize)> {
+    let mut penultimate_rule = None;
+    let mut last_rule = None;
+    for line in content.lines() {
+        if is_horizontal_rule(line) {
+            penultimate_rule = last_rule;
+            last_rule = Some((
+                line_start_offset(content, line),
+                line_end_offset(content, line),
+            ));
+        }
+    }
+    let (top_start, top_end) = penultimate_rule?;
+    let (bottom_start, _) = last_rule?;
+    Some((top_start, top_end, bottom_start))
 }
 
 fn after_last_horizontal_rule(content: &str) -> &str {
@@ -1601,19 +1760,6 @@ fn last_non_empty_line(content: &str) -> &str {
         .unwrap_or("")
 }
 
-fn prompt_box_top_border_index(lines: &[&str]) -> Option<usize> {
-    let mut border_count = 0;
-    for index in (0..lines.len()).rev() {
-        if is_horizontal_rule(lines[index]) {
-            border_count += 1;
-            if border_count == 2 {
-                return Some(index);
-            }
-        }
-    }
-    None
-}
-
 fn is_horizontal_rule(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -1635,19 +1781,20 @@ fn is_horizontal_rule(line: &str) -> bool {
     suffix.is_empty() || rule_chars >= 3
 }
 
-fn slice_from_line_index<'a>(content: &'a str, lines: &[&str], index: usize) -> &'a str {
-    let byte_offset = line_start_offset(content, lines, index);
-    &content[byte_offset.min(content.len())..]
-}
-
-fn line_start_offset(content: &str, lines: &[&str], index: usize) -> usize {
+fn line_start_offset(content: &str, line: &str) -> usize {
     // `str::lines()` strips both bytes of CRLF. Use the borrowed line's
     // original start address so slices retain the exact line-ending width.
-    lines
-        .get(index)
-        .map(|line| line.as_ptr().addr().saturating_sub(content.as_ptr().addr()))
-        .unwrap_or(content.len())
+    line.as_ptr()
+        .addr()
+        .saturating_sub(content.as_ptr().addr())
         .min(content.len())
+}
+
+fn line_end_offset(content: &str, line: &str) -> usize {
+    let start = line_start_offset(content, line);
+    content[start..]
+        .find('\n')
+        .map_or(content.len(), |offset| start + offset + 1)
 }
 
 #[cfg(test)]

@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 use std::io::{self, Read as _, Write as _};
+use std::os::fd::AsRawFd as _;
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -62,6 +64,8 @@ pub struct EndpointCatalog {
     catalog_path: PathBuf,
     #[serde(skip)]
     selection_path: PathBuf,
+    #[serde(skip)]
+    catalog_baseline: Vec<SavedSshEndpoint>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -76,6 +80,7 @@ impl Default for EndpointCatalog {
             ssh: Vec::new(),
             catalog_path: PathBuf::new(),
             selection_path: PathBuf::new(),
+            catalog_baseline: Vec::new(),
         }
     }
 }
@@ -129,8 +134,19 @@ impl EndpointCatalog {
         }
     }
 
-    pub fn store_profiles(&self) -> Result<(), String> {
-        self.store_to_path(&self.catalog_path)
+    /// Machine add/remove commands may load the same catalog concurrently. Lock,
+    /// reload the latest file, and replay this catalog's add/remove delta so one
+    /// command cannot replace another command's completed edit. On success this
+    /// catalog holds the stored profiles and they become its new baseline, so
+    /// a later store replays only later edits.
+    pub fn store_profiles(&mut self) -> Result<(), String> {
+        let _lock = acquire_catalog_update_lock(&self.catalog_path)?;
+        let mut latest = Self::load_from_path(&self.catalog_path)?;
+        self.apply_profile_delta(&mut latest)?;
+        latest.store_to_path(&self.catalog_path)?;
+        self.ssh = latest.ssh;
+        self.catalog_baseline = self.ssh.clone();
+        Ok(())
     }
 
     /// Saves `selected` (`None` is Local) as the next launch's selection.
@@ -219,10 +235,44 @@ impl EndpointCatalog {
         if content.len() as u64 > MAX_CATALOG_BYTES {
             return Err("endpoint catalog exceeds the storage limit".into());
         }
-        let catalog: Self = serde_json::from_str(&content)
+        let mut catalog: Self = serde_json::from_str(&content)
             .map_err(|error| format!("stored endpoint catalog is invalid: {error}"))?;
         catalog.validate()?;
+        catalog.catalog_baseline = catalog.ssh.clone();
         Ok(catalog)
+    }
+
+    fn apply_profile_delta(&self, latest: &mut Self) -> Result<(), String> {
+        for original in &self.catalog_baseline {
+            match self.ssh.iter().find(|profile| profile.id == original.id) {
+                Some(profile) if profile == original => {}
+                Some(_) => {
+                    return Err(format!(
+                        "updating saved endpoint {} is not supported",
+                        original.id
+                    ));
+                }
+                None => latest.ssh.retain(|profile| profile.id != original.id),
+            }
+        }
+
+        for profile in &self.ssh {
+            if self
+                .catalog_baseline
+                .iter()
+                .any(|original| original.id == profile.id)
+            {
+                continue;
+            }
+            match latest.ssh.iter().find(|saved| saved.id == profile.id) {
+                Some(saved) if saved == profile => {}
+                Some(_) => {
+                    return Err(format!("endpoint profile id {} already exists", profile.id));
+                }
+                None => latest.ssh.push(profile.clone()),
+            }
+        }
+        latest.validate()
     }
 
     fn store_to_path(&self, path: &Path) -> Result<(), String> {
@@ -248,7 +298,6 @@ struct CatalogFingerprint {
 }
 
 fn catalog_fingerprint(path: &Path) -> Option<CatalogFingerprint> {
-    use std::os::unix::fs::MetadataExt as _;
     let metadata = std::fs::metadata(path).ok()?;
     Some(CatalogFingerprint {
         device: metadata.dev(),
@@ -338,11 +387,59 @@ impl EndpointCatalog {
     /// selection tracker drops a selection this removed (`catalog_changed`).
     pub fn replace_profiles(&mut self, profiles: Vec<SavedSshEndpoint>) {
         self.ssh = profiles;
+        self.catalog_baseline = self.ssh.clone();
     }
 
     /// Whether `id` names a saved machine that may be selected.
     pub fn is_selectable(&self, id: &ProfileId) -> bool {
         self.ssh.iter().any(|profile| &profile.id == id)
+    }
+}
+
+/// Locks the catalog's persistent sidecar across its read, merge, and atomic write.
+/// The lock file remains beside the catalog so all writers always lock the same inode.
+fn acquire_catalog_update_lock(catalog_path: &Path) -> Result<std::fs::File, String> {
+    let parent = catalog_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .ok_or_else(|| format!("invalid endpoint catalog path: {}", catalog_path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("failed to create endpoint catalog directory: {error}"))?;
+
+    let mut lock_name = catalog_path.as_os_str().to_os_string();
+    lock_name.push(".lock");
+    let lock_path = PathBuf::from(lock_name);
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(&lock_path)
+        .map_err(|error| format!("failed to open endpoint catalog lock: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("failed to inspect endpoint catalog lock: {error}"))?;
+    // SAFETY: geteuid takes no pointers and only returns the caller's effective user id.
+    let effective_uid = unsafe { libc::geteuid() };
+    if !metadata.is_file() || metadata.uid() != effective_uid {
+        return Err("endpoint catalog lock must be a regular file owned by this user".into());
+    }
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("failed to secure endpoint catalog lock: {error}"))?;
+
+    loop {
+        // SAFETY: flock uses only the open descriptor owned by file.
+        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if result == 0 {
+            return Ok(file);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(format!("failed to lock endpoint catalog: {error}"));
     }
 }
 
@@ -444,6 +541,53 @@ mod tests {
         assert_eq!(loaded.ssh, catalog.ssh);
         assert_eq!(loaded.ssh[0].id, id);
         std::fs::remove_dir_all(path.parent().expect("test precondition"))
+            .expect("test precondition");
+    }
+
+    #[test]
+    fn concurrent_catalog_edits_replay_onto_the_latest_file() {
+        let catalog_path = path("concurrent-edits");
+        let selection_path = catalog_path.with_file_name("selection.json");
+        let load = || {
+            EndpointCatalog::load_from_paths(&catalog_path, &selection_path)
+                .expect("test precondition")
+        };
+        let mut seed = load();
+        let kept = seed
+            .add_ssh("Kept", "kept.example", "default")
+            .expect("test precondition");
+        let removed = seed
+            .add_ssh("Removed", "removed.example", "default")
+            .expect("test precondition");
+        seed.store_profiles().expect("seed store");
+
+        // Two commands load the same file before either stores.
+        let mut adder = load();
+        let mut remover = load();
+        let added = adder
+            .add_ssh("Added", "added.example", "default")
+            .expect("test precondition");
+        assert!(remover.remove_ssh(&removed));
+        adder.store_profiles().expect("adder store");
+        remover.store_profiles().expect("remover store");
+
+        let ids: Vec<ProfileId> = load().ssh.into_iter().map(|profile| profile.id).collect();
+        assert_eq!(ids, vec![kept.clone(), added.clone()]);
+        // A store adopts the merged file, so a second store replays nothing stale.
+        assert_eq!(
+            remover
+                .ssh
+                .iter()
+                .map(|profile| &profile.id)
+                .collect::<Vec<_>>(),
+            vec![&kept, &added]
+        );
+        assert!(remover.remove_ssh(&added));
+        remover.store_profiles().expect("second remover store");
+        let ids: Vec<ProfileId> = load().ssh.into_iter().map(|profile| profile.id).collect();
+        assert_eq!(ids, vec![kept]);
+
+        std::fs::remove_dir_all(catalog_path.parent().expect("test precondition"))
             .expect("test precondition");
     }
 

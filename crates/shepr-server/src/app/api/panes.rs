@@ -311,9 +311,13 @@ impl App {
             format,
             params.lines,
         )?;
-        let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
-            shepr_mux::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
-        });
+        let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) else {
+            return failure(
+                id,
+                ApiErrorCode::TabNotFound,
+                "pane tab is no longer available",
+            );
+        };
 
         success(
             id,

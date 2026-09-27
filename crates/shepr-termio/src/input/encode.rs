@@ -199,6 +199,11 @@ fn encode_mouse_cb(
             Some(vec![0x1b, b'[', b'M', cb, column, row])
         }
         MouseProtocolEncoding::Utf8 => {
+            // UTF-8 mouse mode encodes coordinates as one or two UTF-8 bytes;
+            // xterm's extended-coordinate range ends at position 2015.
+            if column > 2015 || row > 2015 {
+                return None;
+            }
             let mut bytes = Vec::with_capacity(16);
             bytes.extend_from_slice(b"\x1b[M");
             push_mouse_codepoint(&mut bytes, cb as u32 + 32)?;
@@ -670,6 +675,13 @@ fn shifted_text_char(key: &TerminalKey, ch: char) -> Option<char> {
     None
 }
 
+/// Shift applied to an unshifted US-layout key. Only the legacy encoding
+/// guesses this, with copy mode's table; the kitty protocol reports the base
+/// key instead of inferring a layout.
+fn shifted_ascii_punctuation(ch: char) -> Option<char> {
+    crate::copy_mode::shifted_ascii_char(ch)
+}
+
 fn is_shifted_ascii_punctuation(ch: char) -> bool {
     matches!(
         ch,
@@ -748,11 +760,14 @@ fn encode_legacy_inner(key: &TerminalKey) -> Vec<u8> {
                     ']' | '5' => vec![29],
                     '^' | '6' => vec![30],
                     '_' | '/' | '7' | '-' => vec![31],
+                    '?' | '8' => vec![127],
                     _ => ch.to_string().into_bytes(),
                 }
             } else {
                 let ch = if key.modifiers == KeyModifiers::SHIFT {
-                    shifted_text_char(key, ch).unwrap_or(ch)
+                    shifted_text_char(key, ch)
+                        .or_else(|| shifted_ascii_punctuation(ch))
+                        .unwrap_or(ch)
                 } else {
                     ch
                 };
@@ -932,6 +947,53 @@ mod tests {
     }
 
     #[test]
+    fn legacy_ctrl_question_and_eight_send_del() {
+        for ch in ['?', '8'] {
+            let key = KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL);
+            assert_eq!(encode_key(key, KeyboardProtocol::Legacy), vec![127]);
+        }
+    }
+
+    #[test]
+    fn legacy_shift_ascii_punctuation_matches_copy_mode_mapping() {
+        for (base, shifted) in [
+            ('1', '!'),
+            ('2', '@'),
+            ('3', '#'),
+            ('4', '$'),
+            ('5', '%'),
+            ('6', '^'),
+            ('7', '&'),
+            ('8', '*'),
+            ('9', '('),
+            ('0', ')'),
+            ('-', '_'),
+            ('=', '+'),
+            ('[', '{'),
+            (']', '}'),
+            ('\\', '|'),
+            (';', ':'),
+            ('\'', '"'),
+            (',', '<'),
+            ('.', '>'),
+            ('/', '?'),
+            ('`', '~'),
+        ] {
+            let key = TerminalKey::new(KeyCode::Char(base), KeyModifiers::SHIFT);
+            assert_eq!(
+                crate::copy_mode::copy_mode_command_char(&key),
+                Some(shifted),
+                "copy mode base={base}"
+            );
+            assert_eq!(
+                encode_terminal_key(key, KeyboardProtocol::Legacy),
+                shifted.to_string().as_bytes(),
+                "base={base}"
+            );
+        }
+    }
+
+    #[test]
     fn legacy_ctrl_non_ascii_char_uses_utf8() {
         let key = KeyEvent::new(KeyCode::Char('ß'), KeyModifiers::CONTROL);
         assert_eq!(encode_key(key, KeyboardProtocol::Legacy), "ß".as_bytes());
@@ -1035,6 +1097,42 @@ mod tests {
         .expect("mouse release should encode");
 
         assert_eq!(encoded, b"\x1b[<0;12;10m");
+    }
+
+    #[test]
+    fn utf8_mouse_encoding_caps_coordinates_at_xterms_limit() {
+        let encoded = encode_mouse_cb(
+            0,
+            false,
+            2015,
+            2015,
+            KeyModifiers::empty(),
+            MouseProtocolEncoding::Utf8,
+        );
+        assert_eq!(encoded, Some(b"\x1b[M \xdf\xbf\xdf\xbf".to_vec()));
+
+        assert_eq!(
+            encode_mouse_cb(
+                0,
+                false,
+                2016,
+                1,
+                KeyModifiers::empty(),
+                MouseProtocolEncoding::Utf8,
+            ),
+            None
+        );
+        assert_eq!(
+            encode_mouse_cb(
+                0,
+                false,
+                1,
+                2016,
+                KeyModifiers::empty(),
+                MouseProtocolEncoding::Utf8,
+            ),
+            None
+        );
     }
 
     #[test]

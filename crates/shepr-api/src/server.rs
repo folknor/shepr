@@ -41,6 +41,8 @@ pub(super) const APP_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// `agent.wait`, `pane.wait_for_output`, `agent.prompt` with `wait`) are
 /// dispatched on their own paths and are not subject to this bound.
 pub(super) const ORDINARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const ORDINARY_REQUEST_TIMEOUT_MESSAGE: &str =
+    "timed out waiting for app response; the request may still run, so its outcome is unknown";
 const INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const STREAM_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_INITIAL_REQUEST_BYTES: usize = 1024 * 1024;
@@ -440,6 +442,7 @@ fn handle_connection_with_stop(
                 api_tx,
                 event_hub,
                 running,
+                server_stop,
             );
             match &result {
                 Ok(()) => shepr_platform::logging::api_request_completed(
@@ -467,6 +470,7 @@ fn handle_connection_with_stop(
                 api_tx,
                 event_hub,
                 running,
+                server_stop,
             )?;
             finish_wait_response(&mut stream, response, &request_id, method_traits)
         }
@@ -478,6 +482,7 @@ fn handle_connection_with_stop(
                 api_tx,
                 event_hub,
                 running,
+                server_stop,
             )?;
             finish_wait_response(&mut stream, response, &request_id, method_traits)
         }
@@ -489,12 +494,19 @@ fn handle_connection_with_stop(
                 api_tx,
                 event_hub,
                 running,
+                server_stop,
             )?;
             finish_wait_response(&mut stream, response, &request_id, method_traits)
         }
         Method::PaneWaitForOutput(params) => {
-            let response =
-                wait_for_output(request_id.clone(), &params, &mut stream, api_tx, running)?;
+            let response = wait_for_output(
+                request_id.clone(),
+                &params,
+                &mut stream,
+                api_tx,
+                running,
+                server_stop,
+            )?;
             finish_wait_response(&mut stream, response, &request_id, method_traits)
         }
         method_body => {
@@ -592,10 +604,18 @@ fn handle_request(
         return response;
     }
 
-    dispatch_to_app(request, api_tx, Some(ORDINARY_REQUEST_TIMEOUT), None)
+    dispatch_to_app(
+        request,
+        api_tx,
+        Some(ORDINARY_REQUEST_TIMEOUT),
+        Some((
+            crate::error::ApiErrorCode::Timeout,
+            ORDINARY_REQUEST_TIMEOUT_MESSAGE,
+        )),
+    )
 }
 
-fn server_is_stopping(server_stop: Option<&Arc<AtomicBool>>) -> bool {
+pub(super) fn server_is_stopping(server_stop: Option<&Arc<AtomicBool>>) -> bool {
     server_stop.is_some_and(|stop| stop.load(Ordering::Acquire))
 }
 
@@ -715,6 +735,7 @@ fn stream_subscriptions(
     api_tx: &ApiRequestSender,
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
+    server_stop: Option<&Arc<AtomicBool>>,
 ) -> std::io::Result<()> {
     let event_start_sequence = event_hub.current_sequence();
     let mut subscriptions = Vec::with_capacity(params.subscriptions.len());
@@ -758,13 +779,13 @@ fn stream_subscriptions(
     // Polled as one stream so events go out in the hub's global order.
     let mut subscriptions = SubscriptionStream::new(subscriptions, event_start_sequence);
     loop {
-        if should_stop_connection(&mut stream, running)? {
+        if server_is_stopping(server_stop) || should_stop_connection(&mut stream, running)? {
             return Ok(());
         }
 
         let batch = subscriptions.poll(api_tx, event_hub);
         for event in batch.events {
-            if should_stop_connection(&mut stream, running)? {
+            if server_is_stopping(server_stop) || should_stop_connection(&mut stream, running)? {
                 return Ok(());
             }
             if let Err(err) = write_json_line(&mut stream, &event) {
@@ -828,14 +849,6 @@ pub(super) fn should_stop_connection(
     }
 
     local_stream_peer_closed(stream)
-}
-
-pub(super) fn dispatch_to_app_with_timeout(
-    request: Request,
-    api_tx: &ApiRequestSender,
-    timeout: Option<Duration>,
-) -> String {
-    dispatch_to_app(request, api_tx, timeout, None)
 }
 
 pub(super) fn dispatch_to_app_with_timeout_result(
@@ -942,6 +955,77 @@ fn dispatch_to_app_result(
             ))
         }
     }
+}
+
+/// Error text for a socket-thread wait that ended because shutdown started.
+const SHUTDOWN_WAIT_MESSAGE: &str =
+    "server is shutting down; the wait ended before its condition was met";
+
+pub(super) fn shutdown_wait_error() -> crate::error::ApiError {
+    crate::error::ApiError::new(
+        crate::error::ApiErrorCode::ServerUnavailable,
+        SHUTDOWN_WAIT_MESSAGE,
+    )
+}
+
+/// Dispatch without a deadline, but stop waiting for the answer once server
+/// shutdown starts. The app may still act on the request (a queued prompt
+/// can be typed), so the shutdown error says the outcome is unknown.
+pub(super) fn dispatch_to_app_until_stopped_result(
+    request: Request,
+    api_tx: &ApiRequestSender,
+    server_stop: Option<&Arc<AtomicBool>>,
+) -> crate::error::ApiResult {
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    if let Err(err) = api_tx.send(ApiRequestMessage {
+        request,
+        respond_to,
+    }) {
+        return Err(crate::error::ApiError::new(
+            crate::error::ApiErrorCode::ServerUnavailable,
+            format!("failed to dispatch request: {err}"),
+        ));
+    }
+    loop {
+        match response_rx.recv_timeout(CONNECTION_POLL_INTERVAL) {
+            Ok(response) => return response,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if server_is_stopping(server_stop) {
+                    return Err(crate::error::ApiError::new(
+                        crate::error::ApiErrorCode::ServerUnavailable,
+                        "server is shutting down; the request may still run, so its outcome is unknown",
+                    ));
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(crate::error::ApiError::new(
+                    crate::error::ApiErrorCode::ServerUnavailable,
+                    "request handling failed: app response channel closed",
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn stop_aware_dispatch_ends_when_shutdown_starts() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let stop = Arc::new(AtomicBool::new(true));
+    let result = dispatch_to_app_until_stopped_result(
+        Request {
+            id: "prompt".into(),
+            method: Method::AgentPrompt(crate::schema::AgentPromptParams {
+                target: "reviewer".into(),
+                text: "review this".into(),
+                wait: None,
+            }),
+        },
+        &tx,
+        Some(&stop),
+    );
+    let error = result.expect_err("shutdown ends the dispatch");
+    assert_eq!(error.code, crate::error::ApiErrorCode::ServerUnavailable);
 }
 
 #[cfg(test)]

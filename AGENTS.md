@@ -99,7 +99,8 @@ inherited socket overrides so the debug binary talks to its own server:
 - **State is separated from runtime.** `AppState` is pure data, testable
   without PTYs or async. `PaneState` is separate from `PaneRuntime`.
 - **Render is pure.** `compute_view()` in `crates/shepr-server/src/ui.rs`
-  handles geometry and mutations; `render()` takes `&AppState` and only draws.
+  updates only `AppState::view`; pane runtimes are resized by explicit geometry
+  paths, and surface drawing takes shared references and only draws.
 - **No god objects.** `crates/shepr-server/src/app/` is split into state, actions and input; keep it
   that way.
 - **Linux only.** No `#[cfg(windows)]`, `#[cfg(target_os = "macos")]` or
@@ -147,9 +148,10 @@ for sequences alacritty ignores (OSC 7, modes 9/1016/2031/2048, CSI ? 996 n,
 CSI 16 t, XTGETTCAP, modifyOtherKeys) and for the halfwidth katakana voiced
 marks U+FF9E/U+FF9F, which unicode-width calls zero-width but terminals give
 their own column. Alacritty types must not leak out of that module. When
-writing against its API, read the source instead of relying on memory: a
-checkout of the pinned `alacritty_terminal` release and the matching `vte` live
-under `research/` (`research/alacritty/alacritty_terminal/`, `research/vte/`).
+writing against its API, read the source instead of relying on memory: the
+pinned `alacritty_terminal` release and the matching `vte` are in the cargo
+registry (`~/.cargo/registry/src/*/alacritty_terminal-<version>/`,
+`~/.cargo/registry/src/*/vte-<version>/`, versions per `Cargo.lock`).
 
 PTYs do not use `alacritty_terminal::tty`: it can only add environment
 variables (panes must strip inherited host and agent ones), cannot set a

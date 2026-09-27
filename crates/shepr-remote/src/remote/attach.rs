@@ -722,8 +722,15 @@ mod tests {
     }
 
     #[test]
-    fn remote_executable_keeps_raw_resolved_paths_not_shell_expressions() {
-        let path = "/home/user's files/$literal/shepr";
+    fn remote_executable_rejects_paths_that_need_shell_quoting() {
+        for path in [
+            "/home/user's files/shepr",
+            "/home/$literal/shepr",
+            "/opt/shepr bin/shepr",
+        ] {
+            assert!(RemoteExecutable::parse(path).is_err(), "{path}");
+        }
+        let path = "/home/user/.local/bin/shepr-0.1+dev";
         let resolved = RemoteExecutable::parse(path).expect("test precondition");
         assert_eq!(resolved.as_str(), path);
         assert_eq!(resolved.quoted(), shell_quote(path));
@@ -818,14 +825,15 @@ mod tests {
     }
 
     #[test]
-    fn remote_path_discovery_quotes_discovered_binary() {
-        let remote_shepr =
-            remote_executable_from_path_discovery("/opt/shepr bin/shepr\n").expect("path binary");
-
-        assert_eq!(
-            remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME, false),
-            "/bin/sh -c 'echo; echo shepr-remote-output-ready:1; exec '\\''/opt/shepr bin/shepr'\\'' remote-client-bridge'"
-        );
+    fn remote_path_discovery_ignores_binaries_that_need_quoting() {
+        // The bridge script must reach the login shell as one quoted word
+        // with no quote inside, so a path needing quotes cannot be used.
+        for discovered in ["/opt/shepr bin/shepr\n", "/opt/shepr's/bin/shepr\n"] {
+            assert!(
+                remote_executable_from_path_discovery(discovered).is_none(),
+                "{discovered:?}"
+            );
+        }
     }
 
     /// The bridge command is interpreted by /bin/sh, not by the login shell: the
@@ -904,12 +912,12 @@ mod tests {
     #[test]
     fn remote_path_discovery_reads_multiple_absolute_paths() {
         let candidates = remote_executables_from_path_discovery(
-            "/usr/bin/shepr\nbin/shepr\n /opt/shepr bin/shepr\n",
+            "/usr/bin/shepr\nbin/shepr\n /opt/shepr-bin/shepr\n",
         );
 
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].as_str(), "/usr/bin/shepr");
-        assert_eq!(candidates[1].as_str(), "/opt/shepr bin/shepr");
+        assert_eq!(candidates[1].as_str(), "/opt/shepr-bin/shepr");
     }
 
     #[test]
@@ -951,19 +959,6 @@ mod tests {
         assert_eq!(
             remote_shepr.api_bridge_check_command("agents"),
             "test -x /home/u/.cargo/bin/shepr && /home/u/.cargo/bin/shepr --session agents remote-api-bridge --check </dev/null"
-        );
-    }
-
-    #[test]
-    fn remote_path_discovery_quotes_single_quotes_in_discovered_binary() {
-        let remote_shepr =
-            remote_executable_from_path_discovery("/opt/shepr's/bin/shepr\n").expect("path binary");
-
-        assert_eq!(
-            remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME, false),
-            posix_shell_command(
-                "echo; echo shepr-remote-output-ready:1; exec '/opt/shepr'\\''s/bin/shepr' remote-client-bridge"
-            )
         );
     }
 

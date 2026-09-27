@@ -141,6 +141,17 @@ impl App {
         let render_dirty = Arc::new(shepr_mux::render_signal::RenderSignal::new());
         let settings = state::AppSettings::from_config(config);
 
+        // Build the manifest registry with local overrides before restored
+        // PTYs start detection; detection reaching the registry first would
+        // build it from the bundled manifests alone.
+        #[cfg(not(any(test, feature = "test-api")))]
+        let agent_manifest_summaries =
+            shepr_agent::detect::manifest::reload_manifests(paths.config_dir());
+        // Nextest runs each unit test in a fresh process. Manifest-sensitive tests reload
+        // explicitly; unrelated App tests should not compile every bundled regex.
+        #[cfg(any(test, feature = "test-api"))]
+        let agent_manifest_summaries = Vec::new();
+
         // Try to restore previous session
         let mut restored_terminals = std::collections::HashMap::new();
         let mut restored_terminal_runtimes = shepr_mux::pane::PaneRuntimeRegistry::new();
@@ -218,14 +229,6 @@ impl App {
         } else {
             state::Mode::Navigate
         };
-
-        #[cfg(not(any(test, feature = "test-api")))]
-        let agent_manifest_summaries =
-            shepr_agent::detect::manifest::reload_manifests(paths.config_dir());
-        // Nextest runs each unit test in a fresh process. Manifest-sensitive tests reload
-        // explicitly; unrelated App tests should not recompile every bundled regex.
-        #[cfg(any(test, feature = "test-api"))]
-        let agent_manifest_summaries = Vec::new();
 
         let active_id =
             active.and_then(|index| workspaces.get(index).map(|workspace| workspace.id.clone()));

@@ -98,7 +98,7 @@ fn screen_input(screen: &str) -> DetectionInput<'_> {
 }
 
 fn loaded_rule_matches(loaded: &LoadedManifest, rule: usize, screen: &str) -> bool {
-    let mut texts = RegionTexts::new(screen_input(screen), loaded.regions.len());
+    let mut texts = RegionTexts::new(screen_input(screen));
     compiled_rule_matches(&loaded.compiled_rules[rule], &loaded.regions, &mut texts)
 }
 
@@ -108,7 +108,7 @@ fn synthetic_loaded(rules: &str) -> LoadedManifest {
 }
 
 fn detect_loaded(loaded: &LoadedManifest, input: DetectionInput<'_>) -> Option<String> {
-    let mut texts = RegionTexts::new(input, loaded.regions.len());
+    let mut texts = RegionTexts::new(input);
     loaded
         .priority_order
         .iter()
@@ -172,7 +172,7 @@ regex = ['low']
 }
 
 #[test]
-fn distinct_regions_are_interned_and_lowercased_only_when_contains_reads_them() {
+fn distinct_regions_are_interned_and_contains_needles_are_prepared_at_load() {
     let loaded = synthetic_loaded(
         r#"
 [[rules]]
@@ -201,9 +201,40 @@ regex = ['z']
     let bottom = &loaded.regions[loaded.compiled_rules[0].region];
     let whole = &loaded.regions[loaded.compiled_rules[2].region];
     assert_eq!(bottom.spec, RegionSpec::BottomLines(2));
-    assert!(bottom.needs_lowercase);
     assert_eq!(whole.spec, RegionSpec::WholeRecent);
-    assert!(!whole.needs_lowercase);
+    let contains = &loaded.compiled_rules[1].gate.contains[0];
+    assert!(contains.matches("Y"));
+    assert!(!contains.matches("x"));
+}
+
+#[test]
+fn contains_matches_keep_unicode_lowercase_semantics() {
+    for (text, needle) in [
+        ("İstanbul", "İSTANBUL"),
+        ("STRAẞE", "straße"),
+        ("ΟΣ", "ος"),
+        ("Kelvin", "kelvin"),
+        ("\u{039F}\u{03A3}", "\u{03BF}\u{03C3}"),
+        ("\u{03A3}\u{0391}", "\u{03C3}\u{03B1}"),
+        ("\u{03A3}\u{0391}", "\u{03C2}\u{03B1}"),
+        ("\u{0391} \u{03A3}", "\u{03C3}"),
+        ("\u{0391}\u{03A3}'.", "\u{03C2}'"),
+        ("\u{0391}\u{03A3}'\u{0392}", "\u{03C3}'\u{03B2}"),
+        ("\u{212A}elvin", "kelvin"),
+        ("Esc TO\nInterrupt", "to\ninterrupt"),
+        ("Esc TO\r\nInterrupt", "to\ninterrupt"),
+        ("aaab", "aab"),
+        ("ABABAC", "abac"),
+        ("anything", ""),
+    ] {
+        let expected = text.to_lowercase().contains(&needle.to_lowercase());
+        let compiled = CompiledContains::new(needle).expect("Unicode property regexes compile");
+        assert_eq!(
+            compiled.matches(text),
+            expected,
+            "{text:?} contains {needle:?}"
+        );
+    }
 }
 
 #[test]
@@ -401,7 +432,7 @@ not = [
 id = "line_regex"
 state = "blocked"
 priority = 20
-line_regex = ["^exact line$"]
+line_regex = ["^exact line$", "^before$"]
 "#,
         ));
 

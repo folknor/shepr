@@ -84,7 +84,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-config-layer"
 from = "shepr-config"
-allow = ["crossterm", "ratatui", "serde", "serde_ignored", "serde_json", "shepr-core", "time", "toml"]
+allow = ["crossterm", "ratatui", "serde", "serde_ignored", "serde_json", "shepr-agent", "shepr-core", "time", "toml"]
 kinds = ["normal"]
 
 [[dependency_rule]]

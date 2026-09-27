@@ -484,6 +484,7 @@ pub struct AgentsSidebarConfig {
 }
 
 impl AgentsSidebarConfig {
+    /// `rows_by_agent` uses canonical labels; callers pass `Agent::label()`.
     pub fn rows_for_agent(&self, agent: Option<&str>) -> &AgentSidebarRows {
         agent
             .and_then(|agent| self.rows_by_agent.get(agent))
@@ -796,7 +797,7 @@ rows = [[{ token = "workspace", fg = "red" }]]
 
     #[test]
     fn accepts_every_canonical_agent_override_key() {
-        let agents = ConfigAgent::ALL.to_vec();
+        let agents = ConfigAgent::all().collect::<Vec<_>>();
         let entries = agents
             .iter()
             .map(|agent| format!("{} = [[\"agent\"]]", agent.label()))

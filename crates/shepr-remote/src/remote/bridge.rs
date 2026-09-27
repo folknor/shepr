@@ -32,6 +32,7 @@ thread_local! {
 pub(crate) struct SshStdioBridge {
     local_socket: PathBuf,
     socket_identity: shepr_platform::ipc::SocketFileIdentity,
+    _socket_startup_lock: shepr_platform::ipc::SocketStartupLock,
     should_stop: Arc<AtomicBool>,
     failure_rx: mpsc::Receiver<io::Error>,
     thread: Option<JoinHandle<()>>,
@@ -64,6 +65,7 @@ impl SshStdioBridge {
         ssh_options: Option<&ManagedSshOptions>,
         noninteractive: bool,
     ) -> io::Result<Self> {
+        let socket_startup_lock = shepr_platform::ipc::acquire_socket_startup_lock(&local_socket)?;
         shepr_platform::ipc::prepare_socket_path(&local_socket, |path| {
             format!("remote bridge is already listening at {}", path.display())
         })?;
@@ -153,6 +155,7 @@ impl SshStdioBridge {
         Ok(Self {
             local_socket,
             socket_identity,
+            _socket_startup_lock: socket_startup_lock,
             should_stop,
             failure_rx,
             thread: Some(thread),

@@ -277,7 +277,7 @@ fn add(
             return Ok(2);
         }
     };
-    store_catalog(&catalog).map_err(|error| {
+    store_catalog(&mut catalog).map_err(|error| {
         std::io::Error::other(format!(
             "remote prepared, but machine was not saved: {error}"
         ))
@@ -314,7 +314,7 @@ fn remove(paths: &shepr_config::AppPaths, selector: &str) -> super::CliResult<i3
         eprintln!("machine profile {id} was not found");
         return Ok(1);
     }
-    store_catalog(&catalog)?;
+    store_catalog(&mut catalog)?;
     metadata_cache.invalidate();
     // The next launch falls back to Local instead of naming a removed machine.
     if was_selected {
@@ -330,7 +330,7 @@ fn load_catalog(paths: &shepr_config::AppPaths) -> super::CliResult<EndpointCata
     EndpointCatalog::load(paths).map_err(|error| std::io::Error::other(error).into())
 }
 
-fn store_catalog(catalog: &EndpointCatalog) -> super::CliResult<()> {
+fn store_catalog(catalog: &mut EndpointCatalog) -> super::CliResult<()> {
     catalog
         .store_profiles()
         .map_err(|error| std::io::Error::other(error).into())

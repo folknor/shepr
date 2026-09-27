@@ -12,6 +12,10 @@ pub enum ChildExitReason {
 }
 
 impl ChildExitReason {
+    /// A signaled status for a pane that is still present needs a final
+    /// session checkpoint. shepr-generated teardown signals follow pane
+    /// removal, or happen during startup failure before any pane exit event,
+    /// so they cannot skip a checkpoint for a pane that is still live.
     pub fn requires_session_checkpoint(self) -> bool {
         matches!(self, Self::Interrupted)
     }
@@ -24,6 +28,8 @@ pub(super) enum LimitedRead {
     Oversized,
 }
 
+/// Classify an exit status returned by a successful child wait. Wait errors
+/// are classified as `WaitFailed` by the child-watcher call site.
 pub fn classify_child_exit(status: &std::process::ExitStatus) -> ChildExitReason {
     use std::os::unix::process::ExitStatusExt;
 

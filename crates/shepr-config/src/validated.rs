@@ -145,6 +145,8 @@ impl ConfigProvenance {
     /// load with diagnostics never becomes a `ValidatedConfig`.
     pub(crate) fn defaults(config: &Config) -> Self {
         Self::from_config(config, None).unwrap_or_else(|_| Self {
+            // Production uses this only for a failed-load placeholder, whose diagnostics prevent it
+            // from becoming a ValidatedConfig.
             values: Vec::new(),
             ui_sidebar_width: ConfigSource::Default,
             ui_sidebar_start_collapsed: ConfigSource::Default,
@@ -634,10 +636,10 @@ impl ValidatedConfig {
 
 impl PartialEq for ValidatedConfig {
     fn eq(&self, other: &Self) -> bool {
-        let left = serde_json::to_value(WireConfig::from_config(&self.config));
-        let right = serde_json::to_value(WireConfig::from_config(&other.config));
-        matches!((left, right), (Ok(left), Ok(right))
-            if left == right && self.provenance == other.provenance && self.paths == other.paths)
+        // These inputs determine every resolved field cached on ValidatedConfig.
+        self.config == other.config
+            && self.provenance == other.provenance
+            && self.paths == other.paths
     }
 }
 
@@ -651,8 +653,7 @@ impl Eq for ValidatedConfig {}
 /// `test_from_config_with_paths`.
 #[cfg(any(test, feature = "test-support"))]
 fn test_app_paths() -> AppPaths {
-    let root = std::path::Path::new("/nonexistent/shepr-test-config");
-    AppPaths::test_with_context(root, Some(root), None)
+    AppPaths::default()
 }
 
 impl Serialize for ValidatedConfig {

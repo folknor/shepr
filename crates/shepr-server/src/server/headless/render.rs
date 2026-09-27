@@ -368,11 +368,7 @@ impl HeadlessServer {
             );
             let area = Rect::new(0, 0, cols, rows);
             let resize_panes = self.app.state.view.pane_infos.is_empty();
-            crate::ui::compute_view_with_runtime_registry(
-                &mut self.app.state,
-                &self.app.terminal_runtimes,
-                area,
-            );
+            crate::ui::compute_view(&mut self.app.state, &self.app.terminal_runtimes, area);
             if resize_panes {
                 crate::ui::resize_all_tab_surfaces(
                     &self.app.state,
@@ -512,7 +508,7 @@ impl HeadlessServer {
                     shepr_termio::host_term::cell_size::HostCellSize::default()
                 };
                 let result = render_client_shell_pane_surface(
-                    &mut self.app,
+                    &self.app,
                     shell_target.as_ref(),
                     area,
                     render_cell_size,

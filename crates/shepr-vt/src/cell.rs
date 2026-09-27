@@ -92,93 +92,61 @@ pub fn unicode_codepoint_width(codepoint: u32) -> u8 {
     }
 }
 
-/// A visible text unit and the number of terminal cells it occupies.
-/// Graphemes stay together, except that halfwidth voiced marks always get a
-/// cell of their own as they do in [`CoreHandler`].
+/// A codepoint and any following zero-width codepoints stored in its cell.
+///
+/// This follows per-codepoint grid widths, not Unicode grapheme clusters.
+/// Halfwidth voiced marks use the terminal-specific one-cell override in
+/// [`unicode_codepoint_width`].
 pub struct UnicodeDisplayUnits<'a> {
-    graphemes: unicode_segmentation::Graphemes<'a>,
-    remaining: &'a str,
+    text: &'a str,
+    characters: std::str::CharIndices<'a>,
+    next_character: Option<(usize, char, u8)>,
 }
 
 impl<'a> Iterator for UnicodeDisplayUnits<'a> {
     type Item = (&'a str, u8);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.remaining.is_empty() {
-            self.remaining = self.graphemes.next()?;
-        }
-        let special = self
-            .remaining
-            .char_indices()
-            .find(|(_, character)| is_halfwidth_voiced_mark(*character as u32));
-        if let Some((index, character)) = special {
-            if index == 0 {
-                let end = character.len_utf8();
-                let mark = &self.remaining[..end];
-                self.remaining = &self.remaining[end..];
-                return Some((mark, unicode_codepoint_width(character as u32)));
+        let (start, character, width) = match self.next_character.take() {
+            Some(next) => next,
+            None => {
+                let (index, character) = self.characters.next()?;
+                (index, character, unicode_codepoint_width(character as u32))
             }
-            let unit = &self.remaining[..index];
-            self.remaining = &self.remaining[index..];
-            return Some((unit, unicode_grapheme_cell_width(unit)));
+        };
+        let first_len = character.len_utf8();
+        let mut end = start + first_len;
+        if !character.is_control() {
+            for (index, following) in self.characters.by_ref() {
+                let following_width = unicode_codepoint_width(following as u32);
+                if following.is_control() || following_width != 0 {
+                    self.next_character = Some((index, following, following_width));
+                    break;
+                }
+                end = index + following.len_utf8();
+            }
         }
-        let unit = self.remaining;
-        self.remaining = "";
-        Some((unit, unicode_grapheme_cell_width(unit)))
+        let unit = &self.text[start..end];
+        Some((unit, width))
     }
 }
 
-fn unicode_grapheme_cell_width(grapheme: &str) -> u8 {
-    use unicode_width::UnicodeWidthStr;
-
-    if grapheme.chars().all(char::is_control) {
-        0
-    } else {
-        u8::try_from(grapheme.width().min(2)).unwrap_or(2)
-    }
-}
-
-/// Iterate text as terminal display units without allocating.
+/// Iterate text by grid cells without allocating or using grapheme widths.
+/// Each item starts with one codepoint and includes following zero-width
+/// codepoints stored with it; a leading zero-width run has width zero.
 pub fn unicode_display_units(text: &str) -> UnicodeDisplayUnits<'_> {
-    use unicode_segmentation::UnicodeSegmentation;
-
     UnicodeDisplayUnits {
-        graphemes: text.graphemes(true),
-        remaining: "",
+        text,
+        characters: text.char_indices(),
+        next_character: None,
     }
 }
 
-/// Width of text under the terminal grid's grapheme and voiced-mark rules.
+/// Width of text under the terminal grid's per-codepoint and voiced-mark rules.
 pub fn unicode_text_width(text: &str) -> usize {
     unicode_display_units(text).fold(0usize, |width, (_, unit_width)| {
         width.saturating_add(usize::from(unit_width))
     })
-}
-
-/// Width of the first grapheme cluster in `codepoints`, returned as
-/// `(codepoints consumed, cell width)`.
-#[cfg(test)]
-pub(crate) fn test_unicode_grapheme_width(codepoints: &[u32]) -> (usize, u8) {
-    use unicode_segmentation::UnicodeSegmentation;
-
-    let Some(&first) = codepoints.first() else {
-        return (0, 0);
-    };
-    if char::from_u32(first).is_none() {
-        return (1, 1);
-    }
-    let text: String = codepoints
-        .iter()
-        .map_while(|&codepoint| char::from_u32(codepoint))
-        .collect();
-    let Some(cluster) = text.graphemes(true).next() else {
-        return (0, 0);
-    };
-    let consumed = cluster.chars().count();
-    let width = unicode_display_units(cluster).fold(0u8, |width, (_, unit_width)| {
-        width.saturating_add(unit_width)
-    });
-    (consumed, width)
 }
 
 pub(super) fn cell_wide(cell: &Cell) -> CellWide {

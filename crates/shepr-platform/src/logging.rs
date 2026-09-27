@@ -12,13 +12,20 @@ const DEFAULT_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const DEFAULT_RETAINED_LOG_FILES: usize = 1;
 
 pub fn init_file_logging(dir: &Path, file_name: &str) {
-    let Ok(make_writer) = RotatingFileMakeWriter::new(
+    let make_writer = match RotatingFileMakeWriter::new(
         dir,
         file_name,
         DEFAULT_MAX_LOG_BYTES,
         DEFAULT_RETAINED_LOG_FILES,
-    ) else {
-        return;
+    ) {
+        Ok(make_writer) => make_writer,
+        Err(error) => {
+            let _ = writeln!(
+                io::stderr().lock(),
+                "shepr: could not initialize file logging: {error}"
+            );
+            return;
+        }
     };
 
     let filter =
@@ -371,7 +378,7 @@ impl RotatingFileMakeWriter {
             max_bytes,
             retained_files,
             file: None,
-            disabled: false,
+            lost_error: None,
         };
         state.open_current_file()?;
         Ok(Self {
@@ -399,23 +406,9 @@ impl Write for RotatingFileGuard {
         let Ok(mut state) = self.state.lock() else {
             return Ok(buf.len());
         };
-        if state.disabled {
-            return Ok(buf.len());
-        }
-        if state.rotate_if_needed(buf.len() as u64).is_err() {
-            state.disabled = true;
-            return Ok(buf.len());
-        }
-        if let Some(file) = state.file.as_mut() {
-            match file.write(buf) {
-                Ok(written) => Ok(written),
-                Err(_) => {
-                    state.disabled = true;
-                    Ok(buf.len())
-                }
-            }
-        } else {
-            Ok(buf.len())
+        match state.write_with_recovery(buf) {
+            Ok(written) => Ok(written),
+            Err(_) => Ok(buf.len()),
         }
     }
 
@@ -423,19 +416,8 @@ impl Write for RotatingFileGuard {
         let Ok(mut state) = self.state.lock() else {
             return Ok(());
         };
-        if state.disabled {
-            return Ok(());
-        }
-        match state.file.as_mut() {
-            Some(file) => match file.flush() {
-                Ok(()) => Ok(()),
-                Err(_) => {
-                    state.disabled = true;
-                    Ok(())
-                }
-            },
-            None => Ok(()),
-        }
+        state.flush_with_recovery();
+        Ok(())
     }
 }
 
@@ -450,7 +432,9 @@ struct RotatingFileState {
     max_bytes: u64,
     retained_files: usize,
     file: Option<File>,
-    disabled: bool,
+    /// The first write error of an ongoing outage, reported in the log once
+    /// writing works again.
+    lost_error: Option<String>,
 }
 
 /// Log files hold pane activity and error details; keep them private to the
@@ -458,6 +442,54 @@ struct RotatingFileState {
 const LOG_FILE_MODE: u32 = 0o600;
 
 impl RotatingFileState {
+    /// Write one chunk, reopening the file once on failure. A failed write
+    /// never disables logging: the next event tries again, so a full disk or
+    /// a removed directory recovers once the cause is gone. The first error of
+    /// an outage is kept and written into the log when writing resumes; it is
+    /// not sent to stderr, which is the client's TUI terminal.
+    fn write_with_recovery(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let result = match self.write_once(buf) {
+            Err(_) => {
+                self.file = None;
+                self.write_once(buf)
+            }
+            written => written,
+        };
+        if let Err(error) = &result
+            && self.lost_error.is_none()
+        {
+            self.lost_error = Some(error.to_string());
+        }
+        result
+    }
+
+    fn write_once(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.rotate_if_needed(buf.len() as u64)?;
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("log file is not open"))?;
+        if let Some(error) = self.lost_error.take()
+            && let Err(write_error) = writeln!(
+                file,
+                "shepr: file logging resumed; log lines were lost after an I/O error: {error}"
+            )
+        {
+            self.lost_error = Some(error);
+            return Err(write_error);
+        }
+        file.write(buf)
+    }
+
+    fn flush_with_recovery(&mut self) {
+        if let Some(file) = self.file.as_mut()
+            && file.flush().is_err()
+        {
+            // Reopened by the next write.
+            self.file = None;
+        }
+    }
+
     fn rotate_if_needed(&mut self, incoming_len: u64) -> io::Result<()> {
         let size = self.sync_with_path()?;
         if !self.exceeds_limit(size, incoming_len) {
@@ -658,7 +690,7 @@ mod tests {
             max_bytes: 128,
             retained_files: 2,
             file: None,
-            disabled: false,
+            lost_error: None,
         };
         state.rotate_files().expect("test precondition");
 
@@ -743,6 +775,30 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
 
         assert_eq!(contents.expect("log recreated"), "after");
+    }
+
+    #[test]
+    fn writer_recovers_after_an_io_error_and_notes_the_gap() {
+        let path = temp_log_path("recover");
+        let dir = path.parent().expect("test precondition").to_path_buf();
+        fs::create_dir_all(&dir).expect("test precondition");
+
+        let writer = RotatingFileMakeWriter::new(&dir, "shepr.log", 0, 0).expect("writer");
+        fs::remove_dir_all(&dir).expect("simulated lost log directory");
+        // The directory is gone: the write fails, but the caller is not told.
+        writer.make_writer().write_all(b"lost").expect("write");
+        fs::create_dir_all(&dir).expect("log directory restored");
+        writer.make_writer().write_all(b"after").expect("write");
+
+        let contents = fs::read_to_string(&path);
+        let _ = fs::remove_dir_all(&dir);
+
+        let contents = contents.expect("log recreated");
+        assert!(
+            contents.starts_with("shepr: file logging resumed; log lines were lost"),
+            "{contents}"
+        );
+        assert!(contents.ends_with("\nafter"), "{contents}");
     }
 
     #[test]

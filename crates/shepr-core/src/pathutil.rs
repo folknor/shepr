@@ -1,5 +1,6 @@
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 /// `$HOME`. An unset, empty, or relative `HOME` is an error rather than a
@@ -12,6 +13,7 @@ pub fn home_dir() -> io::Result<PathBuf> {
 /// Expands a leading bare `~` or `~/` to `$HOME`. The `~user` form is left
 /// untouched: resolving another user's home needs a passwd lookup, and
 /// silently turning `~bob/x` into `$HOME/bob/x` would point at the wrong place.
+/// The suffix is handled as path bytes, so non-UTF-8 names after `~/` expand too.
 ///
 /// A path that needs `$HOME` fails when `HOME` is unset, empty, or relative
 /// instead of being returned literally. The literal `~/x` is a relative path,
@@ -30,18 +32,13 @@ pub fn expand_tilde_path_with_home(
     home: Option<&Path>,
 ) -> io::Result<PathBuf> {
     let path = path.as_ref();
-    let Some(raw) = path.to_str() else {
-        return Ok(path.to_path_buf());
-    };
-    if raw == "~" {
-        return home.map(Path::to_path_buf).ok_or_else(missing_home_error);
-    }
-    if let Some(rest) = raw.strip_prefix("~/") {
-        return home
+    match tilde_expansion(path.as_os_str()) {
+        Some(TildeExpansion::Home) => home.map(Path::to_path_buf).ok_or_else(missing_home_error),
+        Some(TildeExpansion::Relative(rest)) => home
             .map(|home| home.join(rest))
-            .ok_or_else(missing_home_error);
+            .ok_or_else(missing_home_error),
+        None => Ok(path.to_path_buf()),
     }
-    Ok(path.to_path_buf())
 }
 
 pub fn missing_home_error() -> io::Error {
@@ -63,16 +60,27 @@ fn expand_tilde_path_from_env(
     path: &Path,
     env: &dyn Fn(&str) -> Option<OsString>,
 ) -> io::Result<PathBuf> {
-    let Some(raw) = path.to_str() else {
-        return Ok(path.to_path_buf());
-    };
-    if raw == "~" {
-        return home_dir_from_env(env);
+    match tilde_expansion(path.as_os_str()) {
+        Some(TildeExpansion::Home) => home_dir_from_env(env),
+        Some(TildeExpansion::Relative(rest)) => Ok(home_dir_from_env(env)?.join(rest)),
+        None => Ok(path.to_path_buf()),
     }
-    if let Some(rest) = raw.strip_prefix("~/") {
-        return Ok(home_dir_from_env(env)?.join(rest));
+}
+
+enum TildeExpansion<'a> {
+    Home,
+    Relative(&'a OsStr),
+}
+
+fn tilde_expansion(path: &OsStr) -> Option<TildeExpansion<'_>> {
+    let bytes = path.as_bytes();
+    if bytes == b"~" {
+        Some(TildeExpansion::Home)
+    } else if bytes.starts_with(b"~/") {
+        Some(TildeExpansion::Relative(OsStr::from_bytes(&bytes[2..])))
+    } else {
+        None
     }
-    Ok(path.to_path_buf())
 }
 
 #[cfg(test)]
@@ -131,6 +139,19 @@ mod tests {
         assert_eq!(
             expand(r"~\.shepr\state", &home).expect("test precondition"),
             PathBuf::from(r"~\.shepr\state")
+        );
+    }
+
+    #[test]
+    fn tilde_expansion_keeps_non_utf8_suffix_bytes() {
+        let path = Path::new(OsStr::from_bytes(b"~/caf\xe9/state"));
+        assert_eq!(
+            expand_tilde_path_from_env(path, &home).expect("test precondition"),
+            Path::new(OsStr::from_bytes(b"/home/me/caf\xe9/state"))
+        );
+        assert_eq!(
+            expand_tilde_path_with_home(path, Some(Path::new("/h"))).expect("test precondition"),
+            Path::new(OsStr::from_bytes(b"/h/caf\xe9/state"))
         );
     }
 

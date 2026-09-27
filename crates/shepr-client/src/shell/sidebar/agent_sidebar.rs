@@ -510,7 +510,7 @@ pub(super) fn render_agent_row(
 fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Style) {
     let mut offset = 0usize;
     // The cell holding the last drawn character, so zero-width characters
-    // (combining marks, variation selectors) join its grapheme.
+    // (combining marks, joiners, variation selectors) join that cell.
     let mut last_column = None;
     for (unit, char_width) in shepr_vt::unicode_display_units(text) {
         let char_width = usize::from(char_width);
@@ -601,10 +601,11 @@ mod tests {
     }
 
     #[test]
-    fn display_width_matches_terminal_graphemes_and_voiced_marks() {
+    fn display_width_matches_terminal_codepoints_and_voiced_marks() {
+        assert_eq!(display_width("\u{263a}\u{fe0f}"), 1);
         assert_eq!(
             display_width("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}"),
-            2
+            6
         );
         assert_eq!(display_width("ｶﾞx"), 3);
     }

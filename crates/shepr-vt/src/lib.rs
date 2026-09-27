@@ -47,8 +47,6 @@ pub mod selection;
 pub use cell::RenderColors;
 #[cfg(test)]
 use cell::cell_style;
-#[cfg(test)]
-pub(crate) use cell::test_unicode_grapheme_width;
 pub use cell::{
     CellBasicData, CellColor, CellView, CellWide, UnderlineStyle, unicode_codepoint_width,
     unicode_text_width,

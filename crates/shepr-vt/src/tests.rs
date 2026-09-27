@@ -66,42 +66,18 @@ fn unicode_width_helpers_match_terminal_layout_rules() {
     assert_eq!(unicode_codepoint_width('\u{ff9f}' as u32), 1);
     assert_eq!(unicode_codepoint_width('界' as u32), 2);
     assert_eq!(unicode_codepoint_width(0x11_0000), 1);
-    assert_eq!(
-        unicode_text_width("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}"),
-        2
-    );
+    assert_eq!(unicode_text_width("\u{263a}\u{fe0f}"), 1);
+    let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
+    assert_eq!(unicode_text_width(family), 6);
     assert_eq!(unicode_text_width("ｶﾞx"), 3);
-
-    let cases: &[(&[u32], usize, u8)] = &[
-        (&[], 0, 0),
-        (&['e' as u32, '\u{301}' as u32], 2, 1),
-        (&['\u{ff9e}' as u32, 'A' as u32], 1, 1),
-        (&['\u{ff9f}' as u32, 'A' as u32], 1, 1),
-        (&['ｶ' as u32, '\u{ff9e}' as u32], 2, 2),
-        (&['\u{26A0}' as u32, '\u{fe0f}' as u32], 2, 2),
-        (&['\u{26A0}' as u32, '\u{fe0e}' as u32], 2, 1),
-        (&['\u{1F1E7}' as u32, '\u{1F1F7}' as u32], 2, 2),
-        (&['\u{1F44D}' as u32, '\u{1F3FD}' as u32], 2, 2),
-        (
-            &[
-                '\u{1F468}' as u32,
-                '\u{200d}' as u32,
-                '\u{1F469}' as u32,
-                '\u{200d}' as u32,
-                '\u{1F467}' as u32,
-            ],
-            5,
-            2,
-        ),
-        (&[0x11_0000, 'A' as u32], 1, 1),
-    ];
-    for &(codepoints, consumed, width) in cases {
-        assert_eq!(
-            test_unicode_grapheme_width(codepoints),
-            (consumed, width),
-            "{codepoints:x?}"
-        );
-    }
+    assert_eq!(
+        unicode_display_units(family).collect::<Vec<_>>(),
+        vec![
+            ("\u{1f468}\u{200d}", 2),
+            ("\u{1f469}\u{200d}", 2),
+            ("\u{1f467}", 2),
+        ]
+    );
 }
 
 #[test]
@@ -158,6 +134,13 @@ fn modes_and_kitty_flags_follow_terminal_state() {
 #[test]
 fn adapter_modes_answer_decrqm_and_reset_on_ris() {
     let mut terminal = Terminal::new(20, 3, 0);
+    terminal.write(b"\x1b[?1005h\x1b[?1016h");
+    assert!(!terminal.mode_get(MODE_MOUSE_UTF8));
+    assert!(terminal.mode_get(MODE_MOUSE_SGR_PIXELS));
+    terminal.write(b"\x1b[?1005h");
+    assert!(terminal.mode_get(MODE_MOUSE_UTF8));
+    assert!(!terminal.mode_get(MODE_MOUSE_SGR_PIXELS));
+
     terminal.write(b"\x1b[?1016h\x1b[?1016$p\x1b[?2031$p\x1b[?1004$p");
     assert_eq!(
         core_replies(&mut terminal),
@@ -1021,7 +1004,7 @@ fn vt_history_round_trips_through_the_parser() {
     let mut source = Terminal::new(12, 4, 100_000);
     source.write(
         "plain \x1b[1;38;5;196mbold-red\x1b[0m \x1b[4:3;58;2;1;2;3mcurly\x1b[0m\r\n\
-         \x1b]8;id=x;https://example.test\x1b\\link\x1b]8;;\x1b\\ 界e\u{301}\r\n\
+         \x1b]8;id=x_alacritty;https://example.test\x1b\\link\x1b]8;;\x1b\\ 界e\u{301}\r\n\
          \x1b[48;2;9;8;7mwrapped-background-row\x1b[0m\r\n\
          last"
             .as_bytes(),
@@ -1035,6 +1018,7 @@ fn vt_history_round_trips_through_the_parser() {
             true,
         )
         .expect("test precondition");
+    assert!(ansi.contains("id=x_alacritty"));
 
     let mut restored = Terminal::new(12, 4, 100_000);
     restored.write(ansi.as_bytes());
@@ -1055,7 +1039,8 @@ fn vt_history_round_trips_through_the_parser() {
                 let cell = &grid[Line(y - history)][Column(x)];
                 styles.push((
                     cell_style(cell),
-                    cell.hyperlink().map(|link| link.uri().to_owned()),
+                    cell.hyperlink()
+                        .map(|link| (link.id().to_owned(), link.uri().to_owned())),
                 ));
             }
         }

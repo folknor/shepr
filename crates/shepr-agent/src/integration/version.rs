@@ -1,10 +1,12 @@
-use std::io;
+use std::io::{self, Read};
+use std::os::fd::AsRawFd;
 use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const VERSION_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const MAX_VERSION_PROBE_OUTPUT: usize = 64 * 1024;
 
 pub(crate) struct AgentVersionRequirement {
     pub label: &'static str,
@@ -107,7 +109,9 @@ pub(crate) fn enforce_agent_version(
 }
 
 /// Polls the version command so a process that exceeds the deadline is killed.
-/// Only stdout is needed; stderr is discarded as before.
+/// Stdout is drained without blocking, so a grandchild that inherits the pipe
+/// and outlives the command cannot hold the probe past the deadline. Stderr
+/// goes to /dev/null.
 fn run_version_probe(
     requirement: &AgentVersionRequirement,
     timeout: Duration,
@@ -117,27 +121,92 @@ fn run_version_probe(
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()?;
+    let Some(mut stdout) = child.stdout.take() else {
+        let _ = stop_version_probe(&mut child);
+        return Err(io::Error::other("version probe stdout was not captured"));
+    };
+    // SAFETY: fcntl(2) on the pipe fd `stdout` keeps open; integers only.
+    let flags = unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_GETFL) };
+    if flags == -1 {
+        let error = io::Error::last_os_error();
+        let _ = stop_version_probe(&mut child);
+        return Err(error);
+    }
+    // SAFETY: as above; only the status flags of our own pipe end change.
+    if unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        let error = io::Error::last_os_error();
+        let _ = stop_version_probe(&mut child);
+        return Err(error);
+    }
+
     let deadline = Instant::now() + timeout;
+    let mut output = Vec::new();
+    let mut read_buffer = [0; 4096];
+    let mut stdout_closed = false;
+    let mut status = None;
     loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return child.wait_with_output().map(Some),
-            Ok(None) if Instant::now() < deadline => {
-                thread::sleep(VERSION_PROBE_POLL_INTERVAL);
-                continue;
+        if !stdout_closed {
+            loop {
+                match stdout.read(&mut read_buffer) {
+                    Ok(0) => {
+                        stdout_closed = true;
+                        break;
+                    }
+                    Ok(read) => {
+                        // Keep draining so the child never blocks on a full
+                        // pipe, but retain only what a version line needs.
+                        let keep = read.min(MAX_VERSION_PROBE_OUTPUT.saturating_sub(output.len()));
+                        output.extend_from_slice(&read_buffer[..keep]);
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => {
+                        let _ = stop_version_probe(&mut child);
+                        return Err(error);
+                    }
+                }
             }
-            Ok(None) => {
-                // A failed kill is only an error if the child is still running.
-                if let Err(error) = child.kill()
-                    && child.try_wait()?.is_none()
-                {
+        }
+
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(Some(exited)) => status = Some(exited),
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = stop_version_probe(&mut child);
                     return Err(error);
                 }
-                child.wait()?;
-                return Ok(None);
             }
-            Err(error) => return Err(error),
         }
+
+        if stdout_closed && let Some(status) = status {
+            return Ok(Some(Output {
+                status,
+                stdout: output,
+                stderr: Vec::new(),
+            }));
+        }
+
+        if Instant::now() >= deadline {
+            if status.is_none() {
+                stop_version_probe(&mut child)?;
+            }
+            // The direct child may have exited while a grandchild still owns
+            // stdout. Drop our pipe end at the deadline instead of waiting for
+            // that unrelated process to close it.
+            return Ok(None);
+        }
+        thread::sleep(VERSION_PROBE_POLL_INTERVAL);
     }
+}
+
+fn stop_version_probe(child: &mut std::process::Child) -> io::Result<()> {
+    if let Err(error) = child.kill()
+        && child.try_wait()?.is_none()
+    {
+        return Err(error);
+    }
+    child.wait().map(|_| ())
 }
 
 #[cfg(test)]
@@ -153,5 +222,27 @@ mod tests {
             "{}",
             requirement.min_version
         );
+    }
+
+    #[test]
+    fn version_probe_deadline_includes_inherited_stdout() {
+        let requirement = AgentVersionRequirement {
+            label: "test command",
+            binary: "/bin/sh",
+            args: &["-c", "sleep 0.3 & exit 0"],
+            min_version: "0.0.0",
+        };
+        let started = Instant::now();
+        let output = run_version_probe(&requirement, Duration::from_millis(50))
+            .expect("test probe should run");
+
+        let elapsed = started.elapsed();
+        // Let the grandchild finish so it does not outlive the test process.
+        thread::sleep(
+            Duration::from_millis(300).saturating_sub(elapsed) + Duration::from_millis(50),
+        );
+
+        assert!(output.is_none());
+        assert!(elapsed < Duration::from_millis(250));
     }
 }

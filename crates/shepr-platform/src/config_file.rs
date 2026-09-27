@@ -36,11 +36,23 @@ pub fn write_config_temporary(
             // Keep ownership before restoring mode/ACLs; chown can clear mode bits.
             // SAFETY: fchown(2) on an fd `output` keeps open; integers only.
             if unsafe { libc::fchown(output.as_raw_fd(), metadata.uid(), metadata.gid()) } != 0 {
-                return Err(std::io::Error::last_os_error());
+                let error = std::io::Error::last_os_error();
+                // Replacing a writable file owned by another uid can still be
+                // valid when the caller cannot reproduce that ownership.
+                if error.raw_os_error() != Some(libc::EPERM) {
+                    return Err(error);
+                }
+                tracing::debug!(
+                    uid = metadata.uid(),
+                    gid = metadata.gid(),
+                    %error,
+                    "could not preserve config file ownership"
+                );
             }
         }
         // Replace inherited ACLs before enabling the original mode. Prepare all
-        // access controls while the temporary is empty, before writing secrets.
+        // required access controls while the temporary is empty, before writing
+        // secrets.
         copy_config_xattrs(input.as_raw_fd(), output.as_raw_fd())?;
         output.set_permissions(metadata.permissions())?;
     }
@@ -93,21 +105,33 @@ fn copy_config_xattrs(source: RawFd, destination: RawFd) -> std::io::Result<()> 
         Ok(buffer)
     }
     let source_names = names(source)?;
-    for bytes in names(destination)?.split_inclusive(|byte| *byte == 0) {
-        if !source_names
-            .split_inclusive(|byte| *byte == 0)
-            .any(|name| name == bytes)
+    let destination_names = names(destination)?;
+    for bytes in destination_names.split_inclusive(|byte| *byte == 0) {
+        let name = CStr::from_bytes_with_nul(bytes).map_err(std::io::Error::other)?;
+        if !is_posix_acl_xattr(name)
+            || source_names
+                .split_inclusive(|byte| *byte == 0)
+                .any(|source_name| source_name == bytes)
         {
-            let name = CStr::from_bytes_with_nul(bytes).map_err(std::io::Error::other)?;
-            // SAFETY: `name` is NUL-terminated and outlives the call.
-            if unsafe { libc::fremovexattr(destination, name.as_ptr()) } != 0 {
-                return Err(std::io::Error::last_os_error());
-            }
+            continue;
+        }
+        // A parent directory can give the temporary an ACL the original file
+        // did not have. Removing that inherited ACL is required to keep the
+        // original access rules; unrelated inherited labels are left to the
+        // filesystem's policy.
+        // SAFETY: `name` is NUL-terminated and outlives the call.
+        if unsafe { libc::fremovexattr(destination, name.as_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
         }
     }
     for bytes in source_names.split_inclusive(|byte| *byte == 0) {
         let name = CStr::from_bytes_with_nul(bytes).map_err(std::io::Error::other)?;
-        let original = value(source, name)?;
+        let required = is_posix_acl_xattr(name);
+        let original = match value(source, name) {
+            Ok(original) => original,
+            Err(error) if required => return Err(error),
+            Err(_) => continue,
+        };
         // Avoid requiring relabel privileges when the inherited label already matches.
         if value(destination, name).is_ok_and(|current| current == original) {
             continue;
@@ -124,8 +148,15 @@ fn copy_config_xattrs(source: RawFd, destination: RawFd) -> std::io::Result<()> 
             )
         } != 0
         {
-            return Err(std::io::Error::last_os_error());
+            let error = std::io::Error::last_os_error();
+            if required {
+                return Err(error);
+            }
         }
     }
     Ok(())
+}
+
+fn is_posix_acl_xattr(name: &std::ffi::CStr) -> bool {
+    name.to_bytes().starts_with(b"system.posix_acl_")
 }

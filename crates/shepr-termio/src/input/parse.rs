@@ -23,7 +23,11 @@ fn parse_kitty_key_sequence(data: &str) -> Option<TerminalKey> {
     }
 
     let (modifier_text, event_type) = split_modifier_and_event(modifier_part);
-    let modifier = modifier_text.parse::<u8>().ok()?.checked_sub(1)?;
+    // Parsed wide so a terminal that reports bits above num lock still
+    // yields a key; bits beyond the eight defined modifiers are dropped
+    // rather than invented as held modifiers.
+    let modifier_bits = modifier_text.parse::<u32>().ok()?.checked_sub(1)?;
+    let modifier = u8::try_from(modifier_bits & u32::from(u8::MAX)).ok()?;
 
     let mut key_fields = key_part.split(':');
     let codepoint = key_fields.next()?.parse::<u32>().ok()?;
@@ -853,6 +857,27 @@ mod tests {
         assert_eq!(key.code, KeyCode::Modifier(ModifierKeyCode::LeftShift));
         assert_eq!(key.modifiers, KeyModifiers::SHIFT);
         assert_eq!(key.kind, crossterm::event::KeyEventKind::Press);
+    }
+
+    #[test]
+    fn parse_kitty_modifier_field_keeps_only_defined_bits() {
+        // 1 + (256 | 1): an undefined high bit plus shift.
+        let key = parse_terminal_key_sequence("\x1b[97;258u").expect("test precondition");
+        assert_eq!(key.code, KeyCode::Char('a'));
+        assert_eq!(key.modifiers, KeyModifiers::SHIFT);
+
+        let key = parse_terminal_key_sequence("\x1b[97;256u").expect("test precondition");
+
+        assert_eq!(key.code, KeyCode::Char('a'));
+        assert_eq!(
+            key.modifiers,
+            KeyModifiers::SHIFT
+                | KeyModifiers::ALT
+                | KeyModifiers::CONTROL
+                | KeyModifiers::SUPER
+                | KeyModifiers::HYPER
+                | KeyModifiers::META
+        );
     }
 
     #[test]
