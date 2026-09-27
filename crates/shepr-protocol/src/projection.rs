@@ -9,6 +9,8 @@ pub struct ClientShellSnapshot {
     /// Monotonic replacement revision within one endpoint boot.
     pub revision: ProjectionRevision,
     /// Positional encoding of the endpoint's resolved configuration and provenance.
+    /// Present on the first snapshot of a connection; empty later means reuse
+    /// that connection's validated config.
     #[serde(
         serialize_with = "codec::serialize_bounded_bytes::<MAX_FRAME_SIZE, _>",
         deserialize_with = "codec::deserialize_bounded_bytes::<MAX_FRAME_SIZE, _>"

@@ -82,6 +82,33 @@ fn repeated_endpoint_snapshots_reuse_the_validated_config() {
 }
 
 #[test]
+fn inactive_endpoint_keeps_config_when_later_snapshots_omit_bytes() {
+    let (mut state, endpoint_id) = state_with_remote();
+    let mut later = state
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.endpoint_id == endpoint_id)
+        .and_then(|endpoint| endpoint.snapshot.as_deref())
+        .expect("remote snapshot")
+        .clone();
+    later.revision = later.revision.next();
+    later.resolved_config.clear();
+    later.workspaces[0].label = "later".into();
+    state.cache_endpoint_snapshot(&endpoint_id, Box::new(later));
+
+    assert!(state.activate_endpoint_projection(&endpoint_id));
+    assert!(state.active_resolved_config.is_some());
+    assert_eq!(
+        state
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.workspaces.first())
+            .map(|workspace| workspace.label.as_str()),
+        Some("later")
+    );
+}
+
+#[test]
 fn multi_machine_sidebar_draws_the_workspace_drop_marker() {
     let (mut state, _) = state_with_remote();
     state.compose(120, 40).expect("test precondition");

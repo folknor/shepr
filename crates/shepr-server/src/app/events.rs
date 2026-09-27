@@ -26,6 +26,7 @@ impl App {
             .state
             .apply_workspace_git_statuses(&self.terminal_runtimes, results);
         if changed {
+            self.state.mark_shell_projection_dirty();
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }
@@ -69,6 +70,9 @@ impl App {
         } = ev
         {
             let changed = self.handle_tab_bar_command_finished(segment_index, result);
+            if changed {
+                self.state.mark_shell_projection_dirty();
+            }
             return (Vec::new(), Self::render_demand_if(changed));
         }
 
@@ -180,6 +184,7 @@ impl App {
         self.emit_events(pane_exit_container_events);
 
         self.shutdown_detached_terminal_runtimes();
+        self.state.mark_shell_projection_dirty();
         (pane_updates, shepr_api::RenderDemand::Full)
     }
 

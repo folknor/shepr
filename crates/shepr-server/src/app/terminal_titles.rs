@@ -10,23 +10,11 @@ pub(crate) struct TerminalTitleChanges {
 }
 
 impl App {
-    pub(crate) fn terminal_title_sidebar_changed(&self, changes: &TerminalTitleChanges) -> bool {
-        let config = &self.state.settings.sidebar_agents;
-        std::iter::once(&config.rows)
-            .chain(config.rows_by_agent.values())
-            .flatten()
-            .flatten()
-            .any(|token| match token.parts().0 {
-                shepr_config::AgentSidebarToken::TerminalTitle => changes.raw_changed,
-                shepr_config::AgentSidebarToken::TerminalTitleStripped => changes.stripped_changed,
-                _ => false,
-            })
-    }
-
     pub(crate) fn sync_pending_terminal_titles(&mut self) -> TerminalTitleChanges {
         let sources = self.render_dirty.pending_terminal_title_sources();
         let changes = self.sync_terminal_titles(&sources);
-        if self.terminal_title_sidebar_changed(&changes) {
+        if changes.raw_changed || changes.stripped_changed {
+            self.state.mark_shell_projection_dirty();
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }
@@ -188,8 +176,6 @@ mod tests {
         app.state.workspaces = vec![Workspace::test_new("one")];
         app.state.set_active_index(Some(0));
         app.state.ensure_test_terminals();
-        app.state.settings.sidebar_agents.rows =
-            vec![vec![shepr_config::AgentSidebarToken::TerminalTitleStripped]];
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let terminal_id = app.state.workspaces[0]
             .terminal_id(pane_id)
@@ -205,39 +191,6 @@ mod tests {
         assert!(changes.stripped_changed);
         let render_request = app.render_dirty.take();
         assert!(render_request.generic);
-    }
-
-    #[test]
-    fn sidebar_redraws_only_for_the_configured_title_form() {
-        let event_hub = shepr_api::EventHub::default();
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &Config::default(),
-            crate::app::AppPolicy::TEST,
-            api_rx,
-            event_hub,
-        );
-        app.state.settings.sidebar_agents.rows = vec![vec![shepr_config::AgentSidebarToken::Agent]];
-        app.state.settings.sidebar_agents.rows_by_agent.insert(
-            "claude".into(),
-            vec![vec![shepr_config::AgentSidebarToken::TerminalTitleStripped]],
-        );
-
-        let spinner_only = TerminalTitleChanges {
-            raw_changed: true,
-            ..TerminalTitleChanges::default()
-        };
-        assert!(!app.terminal_title_sidebar_changed(&spinner_only));
-        assert!(app.terminal_title_sidebar_changed(&TerminalTitleChanges {
-            stripped_changed: true,
-            ..TerminalTitleChanges::default()
-        }));
-
-        app.state.settings.sidebar_agents.rows_by_agent.insert(
-            "claude".into(),
-            vec![vec![shepr_config::AgentSidebarToken::TerminalTitle]],
-        );
-        assert!(app.terminal_title_sidebar_changed(&spinner_only));
     }
 
     fn pane_updated_events(event_hub: &shepr_api::EventHub) -> usize {

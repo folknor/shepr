@@ -62,6 +62,9 @@ impl HeadlessServer {
                 {
                     self.app.sync_full_lifecycle_authority_detection_pauses();
                     self.app.emit_pane_state_update(&update);
+                    // The agent row changes even when removal waits for its
+                    // checkpoint below.
+                    self.app.state.mark_shell_projection_dirty();
                 }
 
                 if exit_reason.requires_session_checkpoint()

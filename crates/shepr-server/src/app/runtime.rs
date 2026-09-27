@@ -35,6 +35,8 @@ impl App {
     }
 
     pub(crate) fn expire_metadata_at(&mut self, deadline: Instant, now: Instant) {
+        // Expiring labels, titles or tokens changes agent and workspace rows.
+        self.state.mark_shell_projection_dirty();
         for update in self.state.expire_agent_metadata_at(deadline, now) {
             self.emit_pane_state_update(&update);
         }

@@ -2,16 +2,78 @@ use super::*;
 use crate::server::ClientId;
 use crate::server::clients::RenderTargetMode;
 
-/// The session snapshot a shell projection is built from. The projection never
-/// reads the pane layout trees, so they are dropped before the snapshot is
-/// copied for each shell client.
-fn shell_session_snapshot(app: &app::App) -> shepr_api::schema::SessionSnapshot {
-    let mut snapshot = app.session_snapshot();
-    snapshot.layouts = Vec::new();
-    snapshot
+/// How often shell projections are rechecked for inputs that change without
+/// an event: `/proc` cwd and foreground cwd of shells that do not report
+/// OSC 7, and the new-workspace cwd derived from them.
+pub(super) const SHELL_CWD_REFRESH_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(1);
+
+/// The layout-free session snapshot every shell projection is built from,
+/// shared by all shell clients.
+pub(super) struct ShellSessionCache {
+    /// `AppState::shell_projection_revision` this snapshot was built at.
+    pub(super) revision: u64,
+    /// When the snapshot last read the `/proc`-derived fields.
+    pub(super) built_at: Instant,
+    pub(super) session: shepr_api::schema::SessionSnapshot,
 }
 
 impl HeadlessServer {
+    pub(super) fn shell_cwd_refresh_deadline(&self) -> Option<Instant> {
+        self.clients.latest_shell_client()?;
+        self.shell_session_cache
+            .as_ref()
+            .map(|cache| cache.built_at + SHELL_CWD_REFRESH_INTERVAL)
+    }
+
+    pub(super) fn shell_cwd_refresh_due(&self, now: Instant) -> bool {
+        self.shell_cwd_refresh_deadline()
+            .is_some_and(|deadline| deadline <= now)
+    }
+
+    fn rebuild_shell_session_cache(&mut self) {
+        self.shell_session_cache = Some(ShellSessionCache {
+            revision: self.app.state.shell_projection_revision,
+            built_at: Instant::now(),
+            session: self.app.shell_session_snapshot(),
+        });
+    }
+
+    /// Timer path for inputs no event reports. Rebuilds the shared session and
+    /// projects it for every shell client without sending anything. Only when
+    /// some client's projection differs from what it was last sent does the
+    /// shared generation move and a full render get requested, so an idle
+    /// server pays one session build and one projection per client each
+    /// interval, not a surface render. This also bounds how long any missed
+    /// invalidation can leave a client stale.
+    pub(super) fn refresh_shell_projection_sources(&mut self) -> bool {
+        self.rebuild_shell_session_cache();
+        let Some(cache) = self.shell_session_cache.as_ref() else {
+            return false;
+        };
+        let changed = self.clients.values().any(|client| {
+            let Some(shell) = client.shell_state() else {
+                return false;
+            };
+            let Some(sent) = shell.snapshot.as_ref() else {
+                return true;
+            };
+            let candidate = crate::server::client_shell::snapshot_from_session(
+                &self.app,
+                cache.session.clone(),
+                &[],
+                &self.client_shell_boot_id,
+                shell.projection_revision.get(),
+                shell.location.as_ref(),
+            );
+            candidate != *sent
+        });
+        if changed {
+            self.shell_session_generation = self.shell_session_generation.wrapping_add(1);
+        }
+        changed
+    }
+
     fn shell_focused_runtime(
         &self,
         client_id: ClientId,
@@ -469,14 +531,23 @@ impl HeadlessServer {
         }
 
         let mut broken_clients: Vec<ClientId> = Vec::new();
-        // The session snapshot every shell projection is diffed against is
-        // built at most once per render and shared: copies for all but the
-        // last shell client, the original for the last one.
-        let mut shell_clients_left = render_targets
+        let shell_clients = render_targets
             .iter()
             .filter(|target| matches!(&target.mode, RenderTargetMode::Shell))
             .count();
-        let mut shared_session_snapshot: Option<shepr_api::schema::SessionSnapshot> = None;
+        // Rebuild the shared session only when application state that feeds
+        // it changed. `/proc`-derived fields are rechecked by the headless
+        // loop's timer (`refresh_shell_projection_sources`), not here.
+        let app_revision = self.app.state.shell_projection_revision;
+        let refresh_session = shell_clients > 0
+            && self
+                .shell_session_cache
+                .as_ref()
+                .is_none_or(|cache| cache.revision != app_revision);
+        if refresh_session {
+            self.rebuild_shell_session_cache();
+            self.shell_session_generation = self.shell_session_generation.wrapping_add(1);
+        }
         // (client, is shell client, claimed bytes, frame limit)
         let mut oversized_notices: Vec<(ClientId, bool, usize, usize)> = Vec::new();
         for target in render_targets {
@@ -488,12 +559,6 @@ impl HeadlessServer {
             let cell_size = target.cell_size;
             let mode = target.mode;
             let is_shell = matches!(&mode, RenderTargetMode::Shell);
-            let last_shell_client = if is_shell {
-                shell_clients_left = shell_clients_left.saturating_sub(1);
-                shell_clients_left == 0
-            } else {
-                false
-            };
             let area = Rect::new(0, 0, cols, rows);
             let shell_target = self.shell_target_for_client(client_id);
             let shell_render = if is_shell
@@ -533,58 +598,64 @@ impl HeadlessServer {
             };
             let mut shell_projection_revision = shepr_protocol::ProjectionRevision::ZERO;
             if is_shell {
-                let session = if last_shell_client {
-                    shared_session_snapshot
-                        .take()
-                        .unwrap_or_else(|| shell_session_snapshot(&self.app))
-                } else {
-                    shared_session_snapshot
-                        .get_or_insert_with(|| shell_session_snapshot(&self.app))
-                        .clone()
-                };
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     continue;
                 };
-                let mut candidate = crate::server::client_shell::snapshot_from_session(
-                    &self.app,
-                    session,
-                    &self.resolved_config,
-                    &self.client_shell_boot_id,
-                    client
-                        .shell_state()
-                        .map_or(0, |shell| shell.projection_revision.get()),
-                    client
-                        .shell_state()
-                        .and_then(|shell| shell.location.as_ref()),
-                );
-                let snapshot_changed = client
-                    .shell_state()
-                    .is_some_and(|shell| shell.snapshot.as_ref() != Some(&candidate));
-                if snapshot_changed {
-                    let Some(shell) = client.shell_state_mut() else {
+                let needs_projection = client.shell_state().is_some_and(|shell| {
+                    shell.session_generation != self.shell_session_generation
+                        || shell.snapshot.is_none()
+                });
+                if needs_projection {
+                    let Some(cache) = self.shell_session_cache.as_ref() else {
                         continue;
                     };
-                    shell.projection_revision = shell.projection_revision.next();
-                    candidate.revision = shell.projection_revision;
-                    let snapshot_message = shepr_protocol::endpoint::snapshot_message(&candidate);
-                    let snapshot_framed = match Self::frame_server_message(&snapshot_message) {
-                        Ok(framed) => framed,
-                        Err(err) => {
-                            warn!(?client_id, err = %err, "failed to frame endpoint snapshot");
+                    let mut candidate = crate::server::client_shell::snapshot_from_session(
+                        &self.app,
+                        // Focus and active-tab cwd differ per client. Copy only
+                        // when the shared source generation changed.
+                        cache.session.clone(),
+                        &[],
+                        &self.client_shell_boot_id,
+                        client
+                            .shell_state()
+                            .map_or(0, |shell| shell.projection_revision.get()),
+                        client
+                            .shell_state()
+                            .and_then(|shell| shell.location.as_ref()),
+                    );
+                    let snapshot_changed = client
+                        .shell_state()
+                        .is_some_and(|shell| shell.snapshot.as_ref() != Some(&candidate));
+                    if snapshot_changed {
+                        let Some(shell) = client.shell_state_mut() else {
+                            continue;
+                        };
+                        shell.projection_revision = shell.projection_revision.next();
+                        candidate.revision = shell.projection_revision;
+                        let snapshot_message =
+                            shepr_protocol::endpoint::snapshot_message(&candidate);
+                        let snapshot_framed = match Self::frame_server_message(&snapshot_message) {
+                            Ok(framed) => framed,
+                            Err(err) => {
+                                warn!(?client_id, err = %err, "failed to frame endpoint snapshot");
+                                broken_clients.push(client_id);
+                                continue;
+                            }
+                        };
+                        let Some(writer) = client.writer.as_ref().cloned() else {
+                            broken_clients.push(client_id);
+                            continue;
+                        };
+                        if writer.control.send(snapshot_framed).is_err() {
                             broken_clients.push(client_id);
                             continue;
                         }
-                    };
-                    let Some(writer) = client.writer.as_ref().cloned() else {
-                        broken_clients.push(client_id);
-                        continue;
-                    };
-                    if writer.control.send(snapshot_framed).is_err() {
-                        broken_clients.push(client_id);
-                        continue;
+                        if let Some(shell) = client.shell_state_mut() {
+                            shell.snapshot = Some(candidate);
+                        }
                     }
                     if let Some(shell) = client.shell_state_mut() {
-                        shell.snapshot = Some(candidate);
+                        shell.session_generation = self.shell_session_generation;
                     }
                 }
                 let Some(shell) = client.shell_state() else {

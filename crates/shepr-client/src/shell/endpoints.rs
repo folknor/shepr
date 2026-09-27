@@ -359,6 +359,16 @@ impl ClientShellState {
             .collect::<std::collections::HashSet<_>>();
         recency.retain(|pane_id, _| live_agent_ids.contains(pane_id));
         let endpoint = &mut self.endpoints[index];
+        if !snapshot.resolved_config.is_empty() {
+            endpoint.resolved_config = shepr_protocol::codec::from_slice_exact::<
+                shepr_config::ValidatedConfig,
+            >(&snapshot.resolved_config)
+            .ok()
+            .map(|config| CachedEndpointConfig {
+                wire: snapshot.resolved_config.clone(),
+                config: std::sync::Arc::new(config),
+            });
+        }
         endpoint.agent_recency = recency;
         endpoint.snapshot_generation = generation;
         endpoint.snapshot = Some(snapshot);

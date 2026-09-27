@@ -15,6 +15,14 @@ impl App {
     }
 
     pub(crate) fn session_snapshot(&self) -> SessionSnapshot {
+        self.session_snapshot_with_layouts(true)
+    }
+
+    pub(crate) fn shell_session_snapshot(&self) -> SessionSnapshot {
+        self.session_snapshot_with_layouts(false)
+    }
+
+    fn session_snapshot_with_layouts(&self, include_layouts: bool) -> SessionSnapshot {
         let focused_workspace_id = self.state.active.as_ref().map(ToString::to_string);
         let focused_tab_id = self.state.active_tab_id.as_ref().map(ToString::to_string);
         let focused_pane_id = self.state.active_index().and_then(|ws_idx| {
@@ -31,7 +39,8 @@ impl App {
                 if let Some(tab) = self.tab_info(ws_idx, tab_idx) {
                     tabs.push(tab);
                 }
-                if let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) {
+                if include_layouts && let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx)
+                {
                     layouts.push(layout);
                 }
             }

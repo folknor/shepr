@@ -18,7 +18,24 @@ impl App {
         &mut self,
         request: shepr_api::schema::Request,
     ) -> Outcome {
-        let render = if request.method.traits().mutates_ui {
+        let mutates_ui = request.method.traits().mutates_ui;
+        // These methods change scroll position, split ratios or PTY input
+        // only; the shell snapshot carries none of those. Anything the agent
+        // does in response arrives later as its own event.
+        let changes_shell_projection = mutates_ui
+            && !matches!(
+                &request.method,
+                shepr_api::schema::Method::PaneScroll(_)
+                    | shepr_api::schema::Method::PaneClear(_)
+                    | shepr_api::schema::Method::PaneResize(_)
+                    | shepr_api::schema::Method::LayoutSetSplitRatio(_)
+                    | shepr_api::schema::Method::AgentSendKeys(_)
+                    | shepr_api::schema::Method::AgentPrompt(_)
+            );
+        let render = if mutates_ui {
+            if changes_shell_projection {
+                self.state.mark_shell_projection_dirty();
+            }
             RenderDemand::Full
         } else {
             RenderDemand::None

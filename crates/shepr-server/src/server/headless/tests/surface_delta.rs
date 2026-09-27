@@ -36,6 +36,7 @@ async fn surface_delta_reconstructs_metadata_text_and_hyperlinks() {
 
     let initial_projection_revision = initial.projection_revision;
     server.app.state.workspaces[0].custom_name = Some("renamed workspace".into());
+    server.app.state.mark_shell_projection_dirty();
     write_shared_test_pane(
         &mut server,
         pane_id,

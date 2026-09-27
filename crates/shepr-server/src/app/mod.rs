@@ -262,6 +262,7 @@ impl App {
             host_terminal_theme: restored_host_theme,
             host_cell_size: shepr_termio::host_term::cell_size::HostCellSize::default(),
             session_dirty: false,
+            shell_projection_revision: 0,
             terminal_runtime_shutdowns: Vec::new(),
         };
 
@@ -372,6 +373,9 @@ impl App {
 
         match self.create_workspace_with_options(&cwd, true) {
             Ok(index) => {
+                // Callers include non-mutating API requests and client
+                // connects, so the shell projection is invalidated here.
+                self.state.mark_shell_projection_dirty();
                 self.emit_workspace_open_events(index);
                 if preserve_checkpoint {
                     // Automatic replacement is part of pane removal, not a new user mutation.

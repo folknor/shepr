@@ -12,7 +12,7 @@ pub(super) fn snapshot(
 ) -> shepr_protocol::ClientShellSnapshot {
     snapshot_from_session(
         app,
-        app.session_snapshot(),
+        app.shell_session_snapshot(),
         resolved_config,
         boot_id,
         revision,
@@ -20,13 +20,13 @@ pub(super) fn snapshot(
     )
 }
 
-/// Projects an already built `app.session_snapshot()` for one shell client.
-///
-/// A full render diffs every shell client's projection against what it was
-/// last sent. The session snapshot underneath is the same for all of them
-/// (only `location` is per client), so the render builds it once and hands
-/// each client its own copy instead of rebuilding the whole session per
+/// Projects an already built `app.shell_session_snapshot()` for one shell
 /// client.
+///
+/// The session snapshot underneath is cached by the headless server and shared
+/// across clients. Rendering projects it again only when the shared cache
+/// generation moves: an application revision change, or the cwd timer finding
+/// that some client's projection changed.
 pub(super) fn snapshot_from_session(
     app: &app::App,
     snapshot: shepr_api::schema::SessionSnapshot,

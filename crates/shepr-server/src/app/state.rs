@@ -80,6 +80,8 @@ pub struct AppState {
     pub(crate) host_cell_size: shepr_termio::host_term::cell_size::HostCellSize,
     /// Set when a persisted session snapshot would change.
     pub session_dirty: bool,
+    /// Invalidates the shell projection after state changes that can affect chrome.
+    pub(crate) shell_projection_revision: u64,
     /// Terminal runtimes that should be shut down by the app/runtime layer
     /// after state has detached their terminal metadata.
     pub(crate) terminal_runtime_shutdowns: Vec<shepr_protocol::TerminalId>,
@@ -90,7 +92,6 @@ pub struct AppState {
 pub(crate) struct AppSettings {
     /// Virtual terminal size (columns, rows) used when no client is attached.
     pub(crate) headless_size: shepr_core::geometry::GridSize,
-    pub(crate) sidebar_agents: shepr_config::AgentsSidebarConfig,
     pub(crate) sidebar_spaces: shepr_config::SpacesSidebarConfig,
     pub(crate) pane_borders: shepr_config::PaneBordersConfig,
     pub(crate) pane_outer_borders: bool,
@@ -119,7 +120,6 @@ impl AppSettings {
         let terminal = config.terminal();
         Self {
             headless_size: config.headless_size(),
-            sidebar_agents: ui.sidebar.agents.clone(),
             sidebar_spaces: ui.sidebar.spaces.clone(),
             pane_borders: ui.pane_borders,
             pane_outer_borders: ui.pane_outer_borders,
@@ -185,6 +185,10 @@ impl AppState {
     }
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
+    }
+
+    pub(crate) fn mark_shell_projection_dirty(&mut self) {
+        self.shell_projection_revision = self.shell_projection_revision.wrapping_add(1);
     }
 
     /// Geometry a new pane's PTY is sized against: the most recently computed
@@ -276,6 +280,7 @@ impl AppState {
             host_terminal_theme: TerminalTheme::default(),
             host_cell_size: shepr_termio::host_term::cell_size::HostCellSize::default(),
             session_dirty: false,
+            shell_projection_revision: 0,
             terminal_runtime_shutdowns: Vec::new(),
         }
     }
@@ -527,5 +532,14 @@ mod tests {
             KeyCode::Char('b'),
             KeyModifiers::SHIFT,
         ));
+    }
+
+    #[test]
+    fn shell_projection_revision_is_explicit_and_monotonic() {
+        let mut state = AppState::test_new();
+        assert_eq!(state.shell_projection_revision, 0);
+        state.mark_shell_projection_dirty();
+        state.mark_shell_projection_dirty();
+        assert_eq!(state.shell_projection_revision, 2);
     }
 }

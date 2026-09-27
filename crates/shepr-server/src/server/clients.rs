@@ -107,6 +107,8 @@ pub(crate) struct ClientShellState {
     pub(crate) location: Option<ClientShellLocation>,
     /// Last coherent shell replacement sent to this client.
     pub(crate) snapshot: Option<shepr_protocol::ClientShellSnapshot>,
+    /// Shared session-cache generation projected for this connection.
+    pub(crate) session_generation: u64,
     /// Monotonic shell replacement revision for this connection.
     pub(crate) projection_revision: shepr_protocol::ProjectionRevision,
     /// Whether this shell is waiting for one ordered endpoint command response.

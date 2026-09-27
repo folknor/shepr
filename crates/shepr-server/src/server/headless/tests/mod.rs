@@ -146,6 +146,8 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
         clients: ClientRegistry::default(),
         client_shell_boot_id: "test-boot".into(),
         resolved_config,
+        shell_session_cache: None,
+        shell_session_generation: 0,
         sent_window_title: None,
         api_window_title: None,
         pending_alt_screen_reads: Vec::new(),
@@ -288,8 +290,6 @@ async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
     server.app.state.mode = crate::app::Mode::Terminal;
-    server.app.state.settings.sidebar_agents.rows =
-        vec![vec![shepr_config::AgentSidebarToken::TerminalTitleStripped]];
     let pane_id = server.app.state.workspaces[0].tabs[0].root_pane;
     let terminal_id = server.app.state.workspaces[0].tabs[0].panes[&pane_id]
         .attached_terminal_id
@@ -637,7 +637,7 @@ fn configured_window_title_reaches_the_foreground_client_once_per_change() {
 }
 
 #[tokio::test]
-async fn focused_terminal_title_syncs_without_requesting_a_sidebar_render() {
+async fn focused_terminal_title_syncs_and_invalidates_shell_metadata() {
     let (mut server, control_rx) = window_title_test_server();
     server.app.configure_window_title("{terminal_title}");
     server.app.state.ensure_test_terminals();
@@ -655,7 +655,7 @@ async fn focused_terminal_title_syncs_without_requesting_a_sidebar_render() {
 
     assert_eq!(
         server.sync_terminal_title_sources(&HashSet::from([pane_id])),
-        (false, true)
+        (true, true)
     );
     assert_eq!(
         next_window_title(&control_rx),
@@ -670,7 +670,7 @@ async fn focused_terminal_title_syncs_without_requesting_a_sidebar_render() {
         .test_process_pty_bytes("\x1b]0;⠙ building\x07".as_bytes());
     assert_eq!(
         server.sync_terminal_title_sources(&HashSet::from([pane_id])),
-        (false, true)
+        (true, true)
     );
     assert!(no_window_title(&control_rx));
 
@@ -1344,6 +1344,389 @@ fn write_shared_test_pane(
         .test_process_pty_bytes(bytes);
 }
 
+#[tokio::test]
+async fn unchanged_shell_render_reuses_session_and_sends_no_snapshot() {
+    let mut server = test_headless_server();
+    let _input = install_focused_test_runtime(&mut server, b"BASE");
+    server.app.state.ensure_test_terminals();
+    let (control, _render) = connect_matching_test_shell(&mut server, 7);
+    let initial = client_shell_snapshot(&control);
+    assert!(
+        !initial.resolved_config.is_empty(),
+        "the first snapshot of a connection carries the config"
+    );
+    server.render_and_stream();
+    assert!(control.try_recv().is_err());
+    let built_at = server
+        .shell_session_cache
+        .as_ref()
+        .expect("session cache")
+        .built_at;
+    let generation = server.shell_session_generation;
+    let unchanged = |server: &HeadlessServer| {
+        // `built_at` only moves when the session (and its /proc probes) is
+        // rebuilt; an unmoved generation means no client was projected again.
+        assert_eq!(
+            server
+                .shell_session_cache
+                .as_ref()
+                .map(|cache| cache.built_at),
+            Some(built_at)
+        );
+        assert_eq!(server.shell_session_generation, generation);
+        assert_eq!(
+            server.clients[&7]
+                .shell_state()
+                .map(|shell| shell.session_generation),
+            Some(generation)
+        );
+    };
+
+    server.render_and_stream();
+    unchanged(&server);
+    assert!(control.try_recv().is_err());
+
+    let pane_id = server
+        .app
+        .public_pane_id(0, server.app.state.workspaces[0].tabs[0].root_pane)
+        .expect("pane id");
+    assert!(api_through_server(
+        &mut server,
+        shepr_api::schema::Method::PaneScroll(shepr_api::schema::PaneScrollParams {
+            pane_id,
+            offset_from_bottom: 0,
+        }),
+    ));
+    server.render_and_stream();
+    unchanged(&server);
+    assert!(control.try_recv().is_err());
+    shutdown_test_runtimes(&mut server);
+}
+
+/// Sends one API request the way the headless loop does and returns whether
+/// it asked for a render.
+fn api_through_server(server: &mut HeadlessServer, method: shepr_api::schema::Method) -> bool {
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    let render = server.handle_api_request_with_shutdown_check(shepr_api::ApiRequestMessage {
+        request: shepr_api::schema::Request {
+            id: "projection".into(),
+            method,
+        },
+        respond_to,
+    });
+    let response = response_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("api response");
+    assert!(response.is_ok(), "{response:?}");
+    render
+}
+
+/// Renders and returns the one replacement the change must produce.
+fn next_projection(
+    server: &mut HeadlessServer,
+    control: &std::sync::mpsc::Receiver<Vec<u8>>,
+    previous: &mut shepr_protocol::ProjectionRevision,
+) -> Box<shepr_protocol::ClientShellSnapshot> {
+    server.render_and_stream();
+    let snapshot = client_shell_snapshot(control);
+    assert!(snapshot.revision > *previous);
+    assert!(
+        snapshot.resolved_config.is_empty(),
+        "later snapshots reuse the connection's config"
+    );
+    *previous = snapshot.revision;
+    snapshot
+}
+
+#[tokio::test]
+async fn workspace_rename_reprojects_without_copying_connection_config() {
+    let mut server = test_headless_server();
+    let _input = install_focused_test_runtime(&mut server, b"BASE");
+    let (control, _render) = connect_matching_test_shell(&mut server, 7);
+    let first = client_shell_snapshot(&control);
+    server.render_and_stream();
+    assert!(control.try_recv().is_err());
+
+    let outcome = server
+        .app
+        .handle_api_request_with_render(shepr_api::schema::Request {
+            id: "rename".into(),
+            method: shepr_api::schema::Method::WorkspaceRename(
+                shepr_api::schema::WorkspaceRenameParams {
+                    workspace_id: first.workspaces[0].workspace_id.to_string(),
+                    label: "renamed".into(),
+                },
+            ),
+        });
+    assert_eq!(outcome.render, shepr_api::RenderDemand::Full);
+    server.render_and_stream();
+    let renamed = client_shell_snapshot(&control);
+    assert_eq!(renamed.workspaces[0].label, "renamed");
+    assert!(renamed.revision > first.revision);
+    assert!(renamed.resolved_config.is_empty());
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn cwd_report_and_slow_probe_refresh_shell_projection() {
+    let mut server = test_headless_server();
+    let _input = install_focused_test_runtime(&mut server, b"BASE");
+    server.app.state.ensure_test_terminals();
+    let pane_id = server.app.state.workspaces[0].tabs[0].root_pane;
+    let (control, _render) = connect_matching_test_shell(&mut server, 7);
+    let _ = client_shell_snapshot(&control);
+    server.render_and_stream();
+    assert!(control.try_recv().is_err());
+
+    let cwd = server
+        .client_socket_path
+        .parent()
+        .expect("socket directory")
+        .to_path_buf();
+    server
+        .app
+        .handle_internal_event(shepr_mux::events::AppEvent::TerminalCwdReported {
+            pane_id,
+            cwd: cwd.clone(),
+        });
+    server.render_and_stream();
+    let reported = client_shell_snapshot(&control);
+    assert_eq!(
+        reported.panes[0].cwd.as_deref(),
+        Some(cwd.to_str().expect("cwd utf8"))
+    );
+    assert!(reported.resolved_config.is_empty());
+
+    let age_cache = |server: &mut HeadlessServer| {
+        if let Some(cache) = server.shell_session_cache.as_mut() {
+            cache.built_at -= super::render::SHELL_CWD_REFRESH_INTERVAL * 2;
+        }
+    };
+
+    // Nothing changed: the timer re-reads the sources but neither moves the
+    // generation nor asks for a render, and the next check is a full interval out.
+    age_cache(&mut server);
+    assert!(server.shell_cwd_refresh_due(Instant::now()));
+    let generation = server.shell_session_generation;
+    assert!(!server.refresh_shell_projection_sources());
+    assert_eq!(server.shell_session_generation, generation);
+    assert!(!server.shell_cwd_refresh_due(Instant::now()));
+    server.render_and_stream();
+    assert!(control.try_recv().is_err());
+
+    // A change no event reports (standing in for a shell's /proc cwd) is
+    // found by the timer and reaches the client with the next render.
+    server.app.state.workspaces[0].custom_name = Some("silent".into());
+    server.render_and_stream();
+    assert!(control.try_recv().is_err(), "no event reported the change");
+    age_cache(&mut server);
+    assert!(server.refresh_shell_projection_sources());
+    server.render_and_stream();
+    assert_eq!(
+        client_shell_snapshot(&control).workspaces[0].label,
+        "silent"
+    );
+
+    // The timer only runs while a shell client is connected.
+    assert!(server.handle_server_event(ServerEvent::ClientDisconnected {
+        client_id: ClientId::test_new(7),
+    }));
+    age_cache(&mut server);
+    assert_eq!(server.shell_cwd_refresh_deadline(), None);
+    shutdown_test_runtimes(&mut server);
+}
+
+/// Each change goes through the path production uses (API request, internal
+/// event, title sync, metadata expiry) with no manual invalidation, and each
+/// must reach the client as its own fresh projection.
+#[tokio::test]
+async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
+    use shepr_api::schema::Method;
+
+    let mut server = test_headless_server();
+    let _input = install_focused_test_runtime(&mut server, b"BASE");
+    let pane_id = server.app.state.workspaces[0].tabs[0].root_pane;
+    // A second pane so zoom has something to hide.
+    server.app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    server.app.state.ensure_test_terminals();
+    let public_pane_id = server.app.public_pane_id(0, pane_id).expect("pane id");
+    let pane = |snapshot: &shepr_protocol::ClientShellSnapshot| {
+        snapshot
+            .panes
+            .iter()
+            .find(|pane| pane.pane_id.as_str() == public_pane_id.as_str())
+            .cloned()
+            .expect("projected pane")
+    };
+    let tab_id = server.app.public_tab_id(0, 0).expect("tab id");
+    let workspace_id = server.app.public_workspace_id(0);
+    let (control, _render) = connect_matching_test_shell(&mut server, 7);
+    let mut previous = client_shell_snapshot(&control).revision;
+    server.render_and_stream();
+    assert!(control.try_recv().is_err());
+
+    assert!(api_through_server(
+        &mut server,
+        Method::PaneRename(shepr_api::schema::PaneRenameParams {
+            pane_id: public_pane_id.clone(),
+            label: Some("manual".into()),
+        }),
+    ));
+    let renamed = next_projection(&mut server, &control, &mut previous);
+    assert_eq!(pane(&renamed).label.as_deref(), Some("manual"));
+
+    assert!(api_through_server(
+        &mut server,
+        Method::TabRename(shepr_api::schema::TabRenameParams {
+            tab_id: tab_id.clone(),
+            label: "named-tab".into(),
+        }),
+    ));
+    let tab = next_projection(&mut server, &control, &mut previous);
+    assert_eq!(tab.tabs[0].label, "named-tab");
+    assert!(tab.tabs[0].custom_label);
+
+    assert!(api_through_server(
+        &mut server,
+        Method::PaneInputSet(shepr_api::schema::PaneInputSetParams {
+            pane_id: public_pane_id.clone(),
+            right_click: shepr_api::schema::PaneRightClickTarget::Pane,
+        }),
+    ));
+    assert!(pane(&next_projection(&mut server, &control, &mut previous)).right_click_passthrough);
+
+    assert!(api_through_server(
+        &mut server,
+        Method::WorkspaceReportMetadata(shepr_api::schema::WorkspaceReportMetadataParams {
+            workspace_id: workspace_id.clone(),
+            source: "test".into(),
+            tokens: std::collections::HashMap::from([("ticket".into(), Some("T-1".into()))]),
+            seq: None,
+            ttl_ms: Some(60_000),
+        }),
+    ));
+    assert!(
+        !next_projection(&mut server, &control, &mut previous).workspaces[0]
+            .tokens
+            .is_empty()
+    );
+    assert!(
+        server
+            .app
+            .expire_due_metadata(Instant::now() + Duration::from_secs(120))
+    );
+    assert!(
+        next_projection(&mut server, &control, &mut previous).workspaces[0]
+            .tokens
+            .is_empty(),
+        "expired tokens leave the projection"
+    );
+
+    assert!(
+        server.handle_internal_event_with_forwarding(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(shepr_agent::detect::Agent::Pi),
+            state: shepr_agent::detect::AgentState::Working,
+            visible_blocker: false,
+            process_exited: false,
+            observed_at: Instant::now(),
+        })
+    );
+    let agent = next_projection(&mut server, &control, &mut previous);
+    assert!(agent.agents.iter().any(|entry| entry.state_change_seq > 0));
+
+    server
+        .app
+        .state
+        .runtime_for_pane_in_workspace(&server.app.terminal_runtimes, 0, pane_id)
+        .expect("pane runtime")
+        .test_process_pty_bytes(b"\x1b]0;compiling\x07");
+    let (title_changed, _) = server.sync_terminal_title_sources(&HashSet::from([pane_id]));
+    assert!(title_changed);
+    let titled = next_projection(&mut server, &control, &mut previous);
+    assert_eq!(
+        titled.agents[0].terminal_title_stripped.as_deref(),
+        Some("compiling")
+    );
+
+    let workspace_state_id = server.app.state.workspaces[0].id.to_string();
+    let cwd = server.app.state.workspaces[0].identity_cwd.clone();
+    assert!(
+        server.handle_internal_event_with_forwarding(AppEvent::GitStatusRefreshed {
+            results: vec![shepr_mux::git::WorkspaceGitStatus {
+                workspace_id: workspace_state_id,
+                resolved_identity_cwd: cwd.clone(),
+                status_cache_key: cwd,
+                demand: shepr_mux::git::GitStatusRefreshDemand::ALL,
+                auto_label: "focus-reporting".into(),
+                branch: Some("feature".into()),
+                ahead_behind: None,
+                space: None,
+            }],
+            cache_updates: Vec::new(),
+        })
+    );
+    assert_eq!(
+        next_projection(&mut server, &control, &mut previous).workspaces[0]
+            .branch
+            .as_deref(),
+        Some("feature")
+    );
+
+    assert!(api_through_server(
+        &mut server,
+        Method::PaneZoom(shepr_api::schema::PaneZoomParams {
+            pane_id: Some(public_pane_id.clone()),
+            mode: shepr_api::schema::PaneZoomMode::On,
+        }),
+    ));
+    assert!(next_projection(&mut server, &control, &mut previous).tabs[0].zoomed);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn a_reconnecting_shell_gets_the_config_again_and_later_changes() {
+    let mut server = test_headless_server();
+    let _input = install_focused_test_runtime(&mut server, b"BASE");
+    let (control, _render) = connect_matching_test_shell(&mut server, 7);
+    assert!(!client_shell_snapshot(&control).resolved_config.is_empty());
+    server.render_and_stream();
+    assert!(server.handle_server_event(ServerEvent::ClientDisconnected {
+        client_id: ClientId::test_new(7),
+    }));
+
+    // The shared cache outlives the connection; the new one is seeded fresh
+    // and still receives config bytes and subsequent changes.
+    let (control, _render) = connect_matching_test_shell(&mut server, 8);
+    let seed = client_shell_snapshot(&control);
+    assert!(!seed.resolved_config.is_empty());
+    let mut previous = seed.revision;
+    server.render_and_stream();
+    assert!(control.try_recv().is_err());
+    assert!(api_through_server(
+        &mut server,
+        shepr_api::schema::Method::WorkspaceRename(shepr_api::schema::WorkspaceRenameParams {
+            workspace_id: seed.workspaces[0].workspace_id.to_string(),
+            label: "after-reconnect".into(),
+        }),
+    ));
+    assert_eq!(
+        next_projection(&mut server, &control, &mut previous).workspaces[0].label,
+        "after-reconnect"
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn ensure_default_workspace_invalidates_the_shell_projection() {
+    let mut server = test_headless_server();
+    let revision = server.app.state.shell_projection_revision;
+    assert!(server.app.state.workspaces.is_empty());
+    assert!(server.app.ensure_default_workspace());
+    assert_ne!(server.app.state.shell_projection_revision, revision);
+    shutdown_test_runtimes(&mut server);
+}
+
 /// Pairs a render receiver with the decoder that unwraps its surface reuse
 /// and delta messages: the server encodes those against the last full
 /// surface it sent on that connection, so decoding them here needs the same
@@ -1425,6 +1808,7 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
         b"\x1b[?2026h\x1b[?1049h\x1b[2J\x1b[HPARTIAL",
     );
     server.app.state.workspaces[0].custom_name = Some("renamed during frame".into());
+    server.app.state.mark_shell_projection_dirty();
     server
         .clients
         .get_mut(&7)

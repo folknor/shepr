@@ -156,8 +156,17 @@ pub struct HeadlessServer {
     /// Process-local identity used to reject shell replacements from an earlier server boot.
     client_shell_boot_id: shepr_protocol::BootId,
     /// Config bytes are stable for the server lifetime and are encoded before
-    /// serving so rendering only clones this cached payload.
+    /// serving. Only the first snapshot of each shell connection carries them;
+    /// later snapshots send an empty payload that the client reads as "reuse".
     resolved_config: Vec<u8>,
+    /// Shared session source for shell projections; `None` until a render
+    /// with a shell client builds it.
+    shell_session_cache: Option<render::ShellSessionCache>,
+    /// Moves whenever shell projections must be recomputed: the cache was
+    /// rebuilt for a new application revision, or the cwd timer found a
+    /// projection that changed. Each shell client records the generation it
+    /// last projected.
+    shell_session_generation: u64,
     /// Outer window title last pushed, paired with the client that received it.
     /// Keying on the client means a newly attached terminal is written to even
     /// when the title itself has not changed, without every code path that
@@ -262,6 +271,8 @@ impl HeadlessServer {
             )
             .into(),
             resolved_config,
+            shell_session_cache: None,
+            shell_session_generation: 0,
             sent_window_title: None,
             api_window_title: None,
             pending_alt_screen_reads: Vec::new(),
@@ -373,16 +384,21 @@ impl HeadlessServer {
             // 5. Handle scheduled tasks.
             let now = Instant::now();
             if self.handle_scheduled_tasks_headless(now) {
+                self.app.state.mark_shell_projection_dirty();
                 render_demand.join(RenderDemand::Full);
             }
 
             self.poll_pending_alt_screen_reads(now);
             if self.process_deferred_alt_screen_reads() {
+                self.app.state.mark_shell_projection_dirty();
                 render_demand.join(RenderDemand::Full);
             }
 
             if self.clients.latest_shell_client().is_some() && self.app.ensure_default_workspace() {
                 self.immediate_pty_sources_dirty = true;
+                render_demand.join(RenderDemand::Full);
+            }
+            if self.shell_cwd_refresh_due(now) && self.refresh_shell_projection_sources() {
                 render_demand.join(RenderDemand::Full);
             }
 
@@ -459,6 +475,11 @@ impl HeadlessServer {
                 .map_or(next_deadline, |pending| {
                     Some(next_deadline.map_or(pending, |current| current.min(pending)))
                 });
+            let next_deadline = self
+                .shell_cwd_refresh_deadline()
+                .map_or(next_deadline, |cwd| {
+                    Some(next_deadline.map_or(cwd, |current| current.min(cwd)))
+                });
             let event = {
                 tokio::select! {
                     maybe_api = self.app.api_rx.recv() => match maybe_api {
@@ -534,6 +555,7 @@ impl HeadlessServer {
                 }
                 LoopEvent::AgentManifestReload(completion) => {
                     if self.complete_agent_manifest_reload(completion) {
+                        self.app.state.mark_shell_projection_dirty();
                         render_demand.join(RenderDemand::Full);
                     }
                 }
@@ -1027,8 +1049,8 @@ impl HeadlessServer {
     }
 
     /// Pulls only titles reported dirty by the PTY parser. A focused pane title
-    /// is forwarded as an independent client side effect; only sidebar title
-    /// tokens require a UI render.
+    /// is forwarded as an independent client side effect. Any changed title
+    /// also updates the shell agent metadata, so it requires a projection.
     fn sync_terminal_title_sources(
         &mut self,
         sources: &HashSet<shepr_core::layout::PaneId>,
@@ -1048,12 +1070,15 @@ impl HeadlessServer {
             .map(|tab| tab.layout.focused())
             .is_some_and(|pane_id| sources.contains(&pane_id));
         let changes = self.app.sync_terminal_titles(sources);
+        if changes.raw_changed || changes.stripped_changed {
+            self.app.state.mark_shell_projection_dirty();
+        }
         let outer_title_synced = focused_source && self.app.window_title_uses_terminal_title();
         if outer_title_synced {
             self.sync_window_title();
         }
         (
-            self.app.terminal_title_sidebar_changed(&changes),
+            changes.raw_changed || changes.stripped_changed,
             outer_title_synced,
         )
     }
@@ -1489,6 +1514,11 @@ impl HeadlessServer {
                 let snapshot_message = shepr_protocol::endpoint::snapshot_message(&seed_snapshot);
                 shell.location = Some(location);
                 shell.snapshot = Some(seed_snapshot);
+                shell.session_generation = self.shell_session_generation;
+                if let Some(snapshot) = shell.snapshot.as_mut() {
+                    // The initial frame carries config; later frames use the connection cache.
+                    snapshot.resolved_config.clear();
+                }
                 self.clients.insert(client_id, connection);
                 self.send_to_client(client_id, &snapshot_message);
                 if surface_active {
@@ -1927,7 +1957,11 @@ impl HeadlessServer {
     }
 
     fn handle_server_event_with_render_impact(&mut self, ev: ServerEvent) -> RenderDemand {
+        let pane_input = matches!(ev, ServerEvent::ClientShellPaneInput { .. });
         if self.handle_server_event(ev) {
+            if !pane_input {
+                self.app.state.mark_shell_projection_dirty();
+            }
             RenderDemand::Full
         } else {
             RenderDemand::None

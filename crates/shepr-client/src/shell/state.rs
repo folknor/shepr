@@ -887,7 +887,10 @@ impl ClientShellState {
             .iter()
             .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
             .and_then(|endpoint| endpoint.resolved_config.as_ref())
-            .filter(|cached| cached.wire == snapshot.resolved_config)
+            // A zero-length config is the connection-local reuse marker.
+            .filter(|cached| {
+                snapshot.resolved_config.is_empty() || cached.wire == snapshot.resolved_config
+            })
             .map(|cached| std::sync::Arc::clone(&cached.config));
         let snapshot_config = match cached_config {
             Some(config) => config,

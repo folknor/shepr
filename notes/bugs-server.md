@@ -9,16 +9,8 @@
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-Hunter coverage: `src/app/` limited to `mod.rs`, `session.rs`, `runtime.rs`, `creation.rs`, `api.rs`, `api_helpers.rs`, `api/session.rs` and the first part of `api/layouts.rs`. Not read: the rest of `src/app/`, `clients.rs`, `pane_input.rs`, `alt_screen_read.rs`, `render_stream.rs`, `retained_surface.rs` and `bootstrap.rs`.
+IDs SRV-001 through SRV-018 were used by an earlier edition of this file and are not reused.
 
-## SRV-001 - Every full render rebuilds the whole session snapshot, with /proc reads per pane
+## SRV-019 - A client shell request can move the session's default focus without a render
 
-Hot path; breaks "Hot paths multiply".
-- `render_and_stream` (`server/headless/render.rs`) calls `shell_session_snapshot`, which calls `App::session_snapshot()` (`app/api/session.rs`).
-- That runs `pane_info` for every pane in every workspace. Its own comment (`app/creation.rs`) says it does "a few /proc reads" for `foreground_cwd`, plus `cwd_for_pane`.
-- It also builds `pane_layout_snapshot` for every tab. `shell_session_snapshot` then throws the layouts away (`snapshot.layouts = Vec::new()`). Its doc says they are "dropped before the snapshot is copied", but they are still computed every time.
-- `snapshot_from_session` (`server/client_shell.rs`) then, per shell client:
-  - resolves `resolved_new_workspace_cwd_from_tab` for every workspace (more /proc cwd lookups);
-  - clones the snapshot and compares it field by field with the last one sent.
-- This runs on every `RenderDemand::Full`: any internal event, API request, server event or agent state change, capped at 60 Hz.
-- Fix: make the shell projection event-driven. Bump a revision when topology, labels, agent state or metadata change, and rebuild only then. The config is encoded once at startup, but those bytes still ride in every `ClientShellSnapshot`: a copy per render per shell client, plus a byte comparison on the server and another on the client. Send them once per connection (or as an `Arc<[u8]>`, which needs serde's `rc` feature).
+`handle_client_shell_api_request` ignores the return value of `set_default_shell_target_from_client`, which mutates app state through `switch_workspace_tab`. Shell projections are unaffected (per-client locations override the default), but the session's default focus can change without the loop asking for a render, so anything that reads the default target sees it late. Honour the return value.
