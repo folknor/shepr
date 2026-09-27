@@ -98,7 +98,7 @@ pub(super) fn run_on_machine(
     }
     let config = super::load_validated_config(paths)?;
     let ssh_settings = shepr_remote::SavedSshSettings {
-        manage_ssh_config: config.remote.manage_ssh_config,
+        manage_ssh_config: config.remote().manage_ssh_config,
     };
     let profiles = EndpointCatalog::load_profiles(paths).map_err(io::Error::other)?;
     let profile = match resolve_machine(&profiles, selector) {

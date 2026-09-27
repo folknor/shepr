@@ -11,7 +11,9 @@ use std::{
 use tokio::io::AsyncReadExt;
 
 use super::{App, state::TabBarStatusSegment};
+#[cfg(test)]
 use shepr_config::TabBarRightEntryConfig;
+use shepr_config::ValidatedTabBarRightEntry;
 
 impl App {
     /// Environment and working directory for tab bar status commands.
@@ -119,7 +121,7 @@ impl App {
     /// result that comes back.
     pub(super) fn configure_tab_bar_status(
         &mut self,
-        entries: &[TabBarRightEntryConfig],
+        entries: &[ValidatedTabBarRightEntry],
         separator: &str,
     ) {
         self.tab_bar_status.datetimes.clear();
@@ -128,50 +130,39 @@ impl App {
         self.state.tab_bar_right_separator = sanitize_separator(separator);
 
         let now = std::time::Instant::now();
-        for entry in entries.iter().take(shepr_config::MAX_TAB_BAR_RIGHT_ENTRIES) {
+        for entry in entries {
             match entry {
-                TabBarRightEntryConfig::Zoom => {
+                ValidatedTabBarRightEntry::Zoom => {
                     self.state.tab_bar_right.push(TabBarStatusSegment::Zoom);
                 }
-                TabBarRightEntryConfig::Hostname => {
+                ValidatedTabBarRightEntry::Hostname => {
                     self.state
                         .tab_bar_right
                         .push(TabBarStatusSegment::Text(sanitize_status_text(
                             shepr_platform::hostname().as_deref().unwrap_or_default(),
                         )));
                 }
-                TabBarRightEntryConfig::Datetime { format } => {
-                    let Ok(format) = shepr_config::parse_tab_bar_datetime_format(format) else {
-                        continue;
-                    };
-                    let value = format_local_datetime(&format);
+                ValidatedTabBarRightEntry::Datetime { format } => {
+                    let value = format_local_datetime(format);
                     let segment_index = self.state.tab_bar_right.len();
                     self.state
                         .tab_bar_right
                         .push(TabBarStatusSegment::Text(value));
                     self.tab_bar_status.datetimes.push(TabBarDatetimeRuntime {
                         segment_index,
-                        format,
+                        format: format.clone(),
                     });
                 }
-                TabBarRightEntryConfig::Text { text } => {
+                ValidatedTabBarRightEntry::Text { text } => {
                     self.state
                         .tab_bar_right
                         .push(TabBarStatusSegment::Text(sanitize_literal_text(text)));
                 }
-                TabBarRightEntryConfig::Command {
+                ValidatedTabBarRightEntry::Command {
                     command,
                     interval_seconds,
                     timeout_seconds,
                 } => {
-                    if command.trim().is_empty()
-                        || *interval_seconds == 0
-                        || *interval_seconds > shepr_config::MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS
-                        || *timeout_seconds == 0
-                        || *timeout_seconds > shepr_config::MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS
-                    {
-                        continue;
-                    }
                     let segment_index = self.state.tab_bar_right.len();
                     self.state
                         .tab_bar_right
@@ -179,8 +170,8 @@ impl App {
                     self.tab_bar_status.commands.push(TabBarCommandRuntime {
                         segment_index,
                         command: command.clone(),
-                        interval: Duration::from_secs(*interval_seconds),
-                        timeout: Duration::from_secs(*timeout_seconds),
+                        interval: Duration::from_secs(interval_seconds.get()),
+                        timeout: Duration::from_secs(timeout_seconds.get()),
                         next_run_at: now,
                         task: None,
                     });
@@ -190,6 +181,19 @@ impl App {
 
         self.tab_bar_status.next_datetime_refresh =
             (!self.tab_bar_status.datetimes.is_empty()).then_some(now + DATETIME_REFRESH_INTERVAL);
+    }
+
+    /// Test helper: parse raw entries like config validation does. Invalid
+    /// entries are a broken test, so they panic instead of being skipped.
+    #[cfg(test)]
+    pub(super) fn configure_tab_bar_status_config(
+        &mut self,
+        entries: &[TabBarRightEntryConfig],
+        separator: &str,
+    ) {
+        let entries = shepr_config::parse_validated_tab_bar_entries(entries)
+            .expect("test tab bar entries are valid");
+        self.configure_tab_bar_status(&entries, separator);
     }
 
     pub(crate) fn handle_tab_bar_status_tasks(&mut self, now: std::time::Instant) -> bool {
@@ -694,7 +698,7 @@ mod tests {
             survived.display()
         );
         let mut app = test_app();
-        app.configure_tab_bar_status(
+        app.configure_tab_bar_status_config(
             &[TabBarRightEntryConfig::Command {
                 command,
                 interval_seconds: 5,
@@ -729,7 +733,7 @@ mod tests {
     #[tokio::test]
     async fn in_flight_command_has_no_second_deadline() {
         let mut app = test_app();
-        app.configure_tab_bar_status(
+        app.configure_tab_bar_status_config(
             &[TabBarRightEntryConfig::Command {
                 command: MULTILINE_COMMAND.into(),
                 interval_seconds: 5,
@@ -749,7 +753,7 @@ mod tests {
     #[test]
     fn datetime_refresh_updates_its_segment_once_per_deadline() {
         let mut app = test_app();
-        app.configure_tab_bar_status(
+        app.configure_tab_bar_status_config(
             &[TabBarRightEntryConfig::Datetime {
                 format: "%Y-%m-%d %H:%M:%S".into(),
             }],

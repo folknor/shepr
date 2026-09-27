@@ -19,17 +19,9 @@ Hot path; breaks "Hot paths multiply".
 - It also builds `pane_layout_snapshot` for every tab. `shell_session_snapshot` then throws the layouts away (`snapshot.layouts = Vec::new()`). Its doc says they are "dropped before the snapshot is copied", but they are still computed every time.
 - `snapshot_from_session` (`server/client_shell.rs`) then, per shell client:
   - resolves `resolved_new_workspace_cwd_from_tab` for every workspace (more /proc cwd lookups);
-  - re-encodes the whole `ValidatedConfig` with the codec (`client_shell.rs:234-236`);
   - clones the snapshot and compares it field by field with the last one sent.
 - This runs on every `RenderDemand::Full`: any internal event, API request, server event or agent state change, capped at 60 Hz.
-- Fix: make the shell projection event-driven. Bump a revision when topology, labels, agent state or metadata change, and rebuild only then. Keep the config bytes, which never change after launch, as encoded once.
-
-## SRV-002 - expect() in production on the render path
-
-- `client_shell.rs:236`: `.expect("validated configuration must encode for the client protocol")` breaks "No `unwrap()` in production code".
-- If encoding ever fails, the server panics mid-render for all clients. Encoding once at startup (see SRV-001) turns this into a launch failure, which matches "any config problem fails the launch".
-
-Related: CFG-005.
+- Fix: make the shell projection event-driven. Bump a revision when topology, labels, agent state or metadata change, and rebuild only then. The config is encoded once at startup, but those bytes still ride in every `ClientShellSnapshot`: a copy per render per shell client, plus a byte comparison on the server and another on the client. Send them once per connection (or as an `Arc<[u8]>`, which needs serde's `rc` feature).
 
 ## SRV-004 - The exhaustive internal-event drain before each API request can starve it
 

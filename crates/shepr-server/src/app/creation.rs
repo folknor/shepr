@@ -3,34 +3,29 @@ use std::path::PathBuf;
 use super::{App, api_helpers::pane_agent_status};
 use shepr_api::error::{ApiError, ApiErrorCode};
 use shepr_api::schema::{EventData, EventEnvelope};
-use shepr_config::NewTerminalCwdConfig;
+use shepr_config::NewTerminalCwd;
 use shepr_mux::workspace::Workspace;
 
 pub(crate) fn resolve_new_terminal_cwd(
-    policy: &NewTerminalCwdConfig,
+    policy: &NewTerminalCwd,
     home_dir: Option<&std::path::Path>,
     current_dir: Option<&std::path::Path>,
     follow_cwd: Option<PathBuf>,
 ) -> PathBuf {
     match policy {
-        NewTerminalCwdConfig::Follow => follow_cwd
+        NewTerminalCwd::Follow => follow_cwd
             .or_else(|| home_dir.map(std::path::Path::to_path_buf))
             .or_else(|| current_dir.map(std::path::Path::to_path_buf))
             .unwrap_or_else(|| PathBuf::from("/")),
-        NewTerminalCwdConfig::Home => home_dir
+        NewTerminalCwd::Home => home_dir
             .map(std::path::Path::to_path_buf)
             .or_else(|| current_dir.map(std::path::Path::to_path_buf))
             .unwrap_or_else(|| PathBuf::from("/")),
-        NewTerminalCwdConfig::Current => current_dir
+        NewTerminalCwd::Current => current_dir
             .map(std::path::Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("/")),
-        NewTerminalCwdConfig::Path(path) => {
-            shepr_core::pathutil::expand_tilde_path_with_home(path, home_dir).unwrap_or_else(|_| {
-                current_dir
-                    .map(std::path::Path::to_path_buf)
-                    .unwrap_or_else(|| PathBuf::from("/"))
-            })
-        }
+        // Config validation already expanded `~` against the captured home.
+        NewTerminalCwd::Path(path) => path.clone(),
     }
 }
 

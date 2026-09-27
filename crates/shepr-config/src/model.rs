@@ -209,8 +209,22 @@ impl Default for SessionConfig {
 /// `u16::clamp(min, max)` call site (`u16::clamp` panics when `min > max`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SidebarBounds {
-    pub min: u16,
-    pub max: u16,
+    min: u16,
+    max: u16,
+}
+
+impl SidebarBounds {
+    pub fn min(self) -> u16 {
+        self.min
+    }
+
+    pub fn max(self) -> u16 {
+        self.max
+    }
+
+    pub fn clamp_width(self, width: u16) -> u16 {
+        width.clamp(self.min, self.max)
+    }
 }
 
 pub fn validated_sidebar_bounds(min: u16, max: u16) -> Option<SidebarBounds> {
@@ -233,11 +247,17 @@ pub struct Config {
 
 #[derive(Debug)]
 pub struct LoadedConfig {
-    pub config: Config,
-    pub provenance: super::ConfigProvenance,
-    pub(crate) keybind_validation: super::keybinds::KeybindValidation,
+    pub(crate) config: Config,
+    pub(crate) provenance: super::ConfigProvenance,
+    pub(crate) resolution: super::validated::ConfigResolution,
     pub diagnostics: Vec<super::ConfigDiagnostic>,
     pub(crate) document_state: ConfigDocumentState,
+}
+
+impl LoadedConfig {
+    pub fn provenance(&self) -> &super::ConfigProvenance {
+        &self.provenance
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,15 +272,22 @@ impl LoadedConfig {
         self,
         paths: super::AppPaths,
     ) -> Result<super::ValidatedConfig, Vec<super::ConfigDiagnostic>> {
-        if self.diagnostics.is_empty() {
-            super::ValidatedConfig::from_loaded(
-                self.config,
-                self.provenance,
-                self.keybind_validation,
-                paths,
-            )
-        } else {
-            Err(self.diagnostics)
+        let Self {
+            config,
+            provenance,
+            resolution,
+            diagnostics,
+            ..
+        } = self;
+        if !diagnostics.is_empty() {
+            return Err(diagnostics);
+        }
+        match resolution.values {
+            Some(values) => super::ValidatedConfig::from_loaded(config, provenance, values, paths)
+                .map_err(|error| vec![super::ConfigDiagnostic::Path(error)]),
+            None => Err(vec![super::ConfigDiagnostic::Validation(
+                "configuration values could not be resolved".to_owned(),
+            )]),
         }
     }
 }
@@ -1222,7 +1249,12 @@ headless_rows = 50
 "#,
         )
         .expect("test precondition");
-        assert!(invalid.invalid_headless_size_diagnostic().is_some());
+        assert!(
+            invalid
+                .collect_diagnostics()
+                .iter()
+                .any(|diag| diag.contains("server.headless_cols"))
+        );
         assert_eq!(invalid.server.headless_cols, 0);
     }
 

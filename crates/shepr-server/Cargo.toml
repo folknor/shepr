@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [features]
-test-api = ["dep:shepr-test-support", "shepr-mux/test-api"]
+test-api = ["dep:shepr-test-support", "shepr-mux/test-api", "shepr-config/test-support"]
 
 [dependencies]
 base64 = { workspace = true }

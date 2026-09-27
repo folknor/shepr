@@ -100,7 +100,6 @@ pub struct App {
     pub render_notify: Arc<Notify>,
     pub(crate) render_dirty: Arc<shepr_mux::render_signal::RenderSignal>,
     pub(crate) full_redraw_pending: bool,
-    resolved_config: shepr_config::ValidatedConfig,
     pub(crate) paths: shepr_config::AppPaths,
 }
 
@@ -164,7 +163,7 @@ impl App {
         ));
         let (workspaces, active, selected) = if let Some(snap) = snapshot {
             let history = config
-                .experimental
+                .experimental()
                 .pane_history
                 .then(|| shepr_mux::persist::load_history(&session_data_dir))
                 .flatten();
@@ -190,7 +189,7 @@ impl App {
                 settings.pane_scrollback_limit_bytes,
                 &settings.default_shell,
                 settings.login_shell,
-                config.session.resume_agents_on_restore,
+                config.session().resume_agents_on_restore,
                 &event_tx,
                 &render_notify,
                 &render_dirty,
@@ -286,13 +285,13 @@ impl App {
             agent_metadata_deadline: None,
             pending_agent_resume_deadline: None,
             startup_per_agent_delay: Duration::from_millis(
-                config.session.startup_per_agent_delay_ms.into(),
+                config.session().startup_per_agent_delay_ms.into(),
             ),
             next_agent_resume_at: None,
             session_saver: session::SessionSaver::new(session_writer),
             tab_bar_status: tab_bar_status::TabBarStatus::default(),
             window_title_template: None,
-            persist_pane_history: config.experimental.pane_history,
+            persist_pane_history: config.experimental().pane_history,
             pane_history_carry,
             last_render_at: None,
             last_presentation_at: None,
@@ -303,11 +302,13 @@ impl App {
             render_notify,
             render_dirty,
             full_redraw_pending: false,
-            resolved_config: config.clone(),
             paths,
         };
-        app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
-        app.configure_window_title(&config.ui.window_title);
+        app.configure_tab_bar_status(
+            &config.ui().tab_bar_right,
+            &config.ui().tab_bar_right_separator,
+        );
+        app.configure_validated_window_title(config.ui().window_title.as_ref());
         app
     }
 
@@ -354,10 +355,6 @@ impl App {
             .find_map(|ws| ws.terminal_id(pane_id))
             .and_then(|terminal_id| self.terminal_runtimes.get(terminal_id))
             .expect("pane must have a live runtime")
-    }
-
-    pub(crate) fn resolved_config(&self) -> &shepr_config::ValidatedConfig {
-        &self.resolved_config
     }
 
     pub(crate) fn ensure_default_workspace(&mut self) -> bool {
@@ -433,7 +430,7 @@ mod tests {
     #[test]
     fn tab_bar_command_events_render_only_when_visible_output_changes() {
         let mut app = test_app();
-        app.configure_tab_bar_status(
+        app.configure_tab_bar_status_config(
             &[shepr_config::TabBarRightEntryConfig::Command {
                 command: "status".into(),
                 interval_seconds: 5,
@@ -836,7 +833,7 @@ mod tests {
     #[test]
     fn new_terminal_cwd_follow_uses_source_cwd() {
         let cwd = creation::resolve_new_terminal_cwd(
-            &shepr_config::NewTerminalCwdConfig::Follow,
+            &shepr_config::NewTerminalCwd::Follow,
             None,
             None,
             Some(std::path::PathBuf::from("/tmp/shepr-source")),
@@ -851,7 +848,7 @@ mod tests {
         let home = env.home();
 
         let cwd = creation::resolve_new_terminal_cwd(
-            &shepr_config::NewTerminalCwdConfig::Follow,
+            &shepr_config::NewTerminalCwd::Follow,
             Some(home.as_path()),
             None,
             None,
@@ -863,7 +860,7 @@ mod tests {
     #[test]
     fn new_terminal_cwd_path_uses_configured_path() {
         let cwd = creation::resolve_new_terminal_cwd(
-            &shepr_config::NewTerminalCwdConfig::Path("/tmp/shepr-fixed".into()),
+            &shepr_config::NewTerminalCwd::Path("/tmp/shepr-fixed".into()),
             None,
             None,
             Some(std::path::PathBuf::from("/tmp/shepr-source")),

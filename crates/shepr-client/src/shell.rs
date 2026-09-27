@@ -73,10 +73,11 @@ use ratatui::style::{Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
 use super::endpoint::{ClientEndpointId, ClientEndpointStatus, SavedSshEndpoint};
+#[cfg(any(test, feature = "test-support"))]
+use shepr_config::Config;
 use shepr_config::theme::Palette;
 use shepr_config::{
-    Config, LiveKeybindConfig, SidebarCollapsedModeConfig, SpacesSidebarConfig,
-    TabBarPositionConfig,
+    LiveKeybindConfig, SidebarCollapsedModeConfig, SpacesSidebarConfig, TabBarPositionConfig,
 };
 use shepr_protocol::{
     ClientMessage, ClientMousePosition, ClientPaneInputEvent, ClientShellSnapshot, ClientShellTab,

@@ -472,13 +472,26 @@ impl Config {
             Ok(Some(content)) => Self::load_from_str(&content),
             Ok(None) => {
                 let config = Self::default();
-                let provenance = ConfigProvenance::defaults(&config);
-                let keybind_validation = config.compute_keybind_validation(|_| false);
+                let provenance = match ConfigProvenance::from_config(&config, None) {
+                    Ok(provenance) => provenance,
+                    Err(error) => {
+                        return default_loaded_config(vec![ConfigDiagnostic::Provenance(format!(
+                            "config provenance error: {error}"
+                        ))]);
+                    }
+                };
+                let resolution = super::validated::ConfigResolution::parse(&config, &provenance);
+                let diagnostics = resolution
+                    .diagnostics
+                    .iter()
+                    .cloned()
+                    .map(ConfigDiagnostic::Validation)
+                    .collect();
                 LoadedConfig {
                     provenance,
                     config,
-                    keybind_validation,
-                    diagnostics: Vec::new(),
+                    resolution,
+                    diagnostics,
                     document_state: ConfigDocumentState::Missing,
                 }
             }
@@ -505,9 +518,8 @@ impl Config {
                                     ]);
                                 }
                             };
-                        let keybind_validation = config.compute_keybind_validation(|field| {
-                            provenance.key_is_configured(&format!("keys.{field}"))
-                        });
+                        let resolution =
+                            super::validated::ConfigResolution::parse(&config, &provenance);
                         let (unknown_sections, unknown_diagnostics) =
                             unknown_top_level_sections(&document, &ignored_keys);
                         let mut diagnostics = unknown_diagnostics
@@ -523,15 +535,16 @@ impl Config {
                                 .collect(),
                         ).into_iter().map(ConfigDiagnostic::Unknown));
                         diagnostics.extend(
-                            config
-                                .collect_diagnostics_with_keybind_validation(&keybind_validation)
-                                .into_iter()
+                            resolution
+                                .diagnostics
+                                .iter()
+                                .cloned()
                                 .map(ConfigDiagnostic::Validation),
                         );
                         LoadedConfig {
                             config,
                             provenance,
-                            keybind_validation,
+                            resolution,
                             diagnostics,
                             document_state: ConfigDocumentState::Loaded,
                         }
@@ -548,20 +561,34 @@ impl Config {
     }
 }
 
+/// Parse the config for the launch-time inspection command and retain every
+/// diagnostic without constructing a runtime configuration.
+pub fn load_for_check(paths: &AppPaths) -> LoadedConfig {
+    Config::load_for_check(paths)
+}
+
+/// Parse, resolve and validate the config for an application process.
+pub fn load_validated(paths: &AppPaths) -> Result<ValidatedConfig, Vec<ConfigDiagnostic>> {
+    Config::load_validated(paths)
+}
+
 fn default_loaded_config(diagnostics: Vec<ConfigDiagnostic>) -> LoadedConfig {
     let config = Config::default();
     let provenance = ConfigProvenance::defaults(&config);
-    let keybind_validation = config.compute_keybind_validation(|_| false);
+    let resolution = super::validated::ConfigResolution::parse(&config, &provenance);
     LoadedConfig {
         config,
         provenance,
-        keybind_validation,
+        resolution,
         diagnostics,
         document_state: ConfigDocumentState::Unavailable,
     }
 }
 
-fn configured_home_path_error(config: &Config, home_dir: Option<&Path>) -> Option<String> {
+pub(crate) fn configured_home_path_error(
+    config: &Config,
+    home_dir: Option<&Path>,
+) -> Option<String> {
     let result = match &config.terminal.new_cwd {
         NewTerminalCwdConfig::Home => home_dir
             .map(Path::to_path_buf)
@@ -767,6 +794,62 @@ mod tests {
 
         let parse_error = Config::load_from_str("[server]\nheadless_cols = \"wide\"\n");
         assert!(parse_error.into_validated(AppPaths::default()).is_err());
+    }
+
+    #[test]
+    fn config_check_collects_all_semantic_diagnostics() {
+        let scratch = shepr_test_support::ScratchDir::new("config-diagnostics");
+        let paths = AppPaths::test_at(scratch.path());
+        std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
+        std::fs::write(
+            paths.config_file(),
+            r#"
+[theme]
+name = "not-a-theme"
+[theme.custom]
+red = "not-a-color"
+[server]
+headless_cols = 0
+[keys]
+prefix = "ctrl+"
+zoom = "prefix+not-a-key"
+[ui]
+sidebar_width = 80
+sidebar_min_width = 50
+sidebar_max_width = 30
+window_title = "{unknown}"
+tab_bar_right = [
+  { type = "datetime", format = "%Q" },
+  { type = "command", command = "", interval_seconds = 0, timeout_seconds = 0 },
+]
+"#,
+        )
+        .expect("write invalid config fixture");
+
+        let report = Config::load_for_check(&paths);
+        let messages = report
+            .diagnostics
+            .iter()
+            .map(ConfigDiagnostic::message)
+            .collect::<Vec<_>>();
+        for expected in [
+            "theme.name",
+            "theme.custom.red",
+            "server.headless_cols",
+            "keys.prefix",
+            "keys.zoom",
+            "sidebar_min_width",
+            "ui.window_title",
+            "ui.tab_bar_right[0]",
+            "ui.tab_bar_right[1] command",
+            "ui.tab_bar_right[1] interval_seconds",
+            "ui.tab_bar_right[1] timeout_seconds",
+        ] {
+            assert!(
+                messages.iter().any(|message| message.contains(expected)),
+                "missing {expected:?} from {messages:?}"
+            );
+        }
     }
 
     #[test]
@@ -983,7 +1066,7 @@ sidebar_width = 26
 agent_panel_sort = "priority"
 "#,
         );
-        assert!(loaded.keybind_validation.prefix_diag.is_none());
+        assert!(loaded.resolution.values.is_some());
         assert!(
             loaded
                 .provenance

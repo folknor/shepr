@@ -5,11 +5,19 @@ use shepr_protocol::FrameData;
 
 pub(super) fn snapshot(
     app: &app::App,
+    resolved_config: &[u8],
     boot_id: &str,
     revision: u64,
     location: Option<&crate::server::clients::ClientShellLocation>,
 ) -> shepr_protocol::ClientShellSnapshot {
-    snapshot_from_session(app, app.session_snapshot(), boot_id, revision, location)
+    snapshot_from_session(
+        app,
+        app.session_snapshot(),
+        resolved_config,
+        boot_id,
+        revision,
+        location,
+    )
 }
 
 /// Projects an already built `app.session_snapshot()` for one shell client.
@@ -22,6 +30,7 @@ pub(super) fn snapshot(
 pub(super) fn snapshot_from_session(
     app: &app::App,
     snapshot: shepr_api::schema::SessionSnapshot,
+    resolved_config: &[u8],
     boot_id: &str,
     revision: u64,
     location: Option<&crate::server::clients::ClientShellLocation>,
@@ -231,14 +240,10 @@ pub(super) fn snapshot_from_session(
         })
         .collect();
 
-    let mut resolved_config = Vec::new();
-    shepr_protocol::codec::encode_into(&mut resolved_config, app.resolved_config())
-        .expect("validated configuration must encode for the client protocol");
-
     shepr_protocol::ClientShellSnapshot {
         boot_id: boot_id.into(),
         revision: revision.into(),
-        resolved_config,
+        resolved_config: resolved_config.to_vec(),
         focused_workspace_id,
         focused_tab_id,
         focused_pane_id,
@@ -512,7 +517,10 @@ mod tests {
 
         let second_workspace_id = app.state.workspaces[1].id.clone();
         let zoomed_tab_id = app.public_tab_id(1, 0).expect("zoomed tab id");
-        let snapshot = snapshot(&app, "boot", 1, None);
+        let resolved_config =
+            shepr_protocol::codec::to_vec(&shepr_config::ValidatedConfig::test_default())
+                .expect("encode test config");
+        let snapshot = snapshot(&app, &resolved_config, "boot", 1, None);
 
         for workspace in &snapshot.workspaces {
             assert_eq!(

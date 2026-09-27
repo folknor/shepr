@@ -120,6 +120,7 @@ impl WindowTitleTemplate {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn window_title_diagnostics(template: &str) -> Option<String> {
     WindowTitleTemplate::parse(template)
         .err()

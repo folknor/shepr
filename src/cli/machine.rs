@@ -293,7 +293,7 @@ fn saved_ssh_settings(
 ) -> super::CliResult<shepr_remote::SavedSshSettings> {
     let config = super::load_validated_config(paths)?;
     Ok(shepr_remote::SavedSshSettings {
-        manage_ssh_config: config.remote.manage_ssh_config,
+        manage_ssh_config: config.remote().manage_ssh_config,
     })
 }
 

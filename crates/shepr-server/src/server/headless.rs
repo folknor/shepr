@@ -149,6 +149,9 @@ pub struct HeadlessServer {
     clients: ClientRegistry,
     /// Process-local identity used to reject shell replacements from an earlier server boot.
     client_shell_boot_id: shepr_protocol::BootId,
+    /// Config bytes are stable for the server lifetime and are encoded before
+    /// serving so rendering only clones this cached payload.
+    resolved_config: Vec<u8>,
     /// Outer window title last pushed, paired with the client that received it.
     /// Keying on the client means a newly attached terminal is written to even
     /// when the title itself has not changed, without every code path that
@@ -203,6 +206,7 @@ impl HeadlessServer {
     pub fn new(
         app: app::App,
         api_server: Option<shepr_api::ServerHandle>,
+        resolved_config: Vec<u8>,
         stop_requested: Arc<AtomicBool>,
     ) -> io::Result<Self> {
         let client_path = client_socket_path(&app.paths);
@@ -235,6 +239,7 @@ impl HeadlessServer {
                     .as_nanos()
             )
             .into(),
+            resolved_config,
             sent_window_title: None,
             api_window_title: None,
             api_dispatcher: ApiDispatcher::default(),
@@ -1420,6 +1425,7 @@ impl HeadlessServer {
                 shell.projection_revision = shepr_protocol::ProjectionRevision::new(1);
                 let seed_snapshot = client_shell_snapshot(
                     &self.app,
+                    &self.resolved_config,
                     &self.client_shell_boot_id,
                     shell.projection_revision.get(),
                     None,

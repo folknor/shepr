@@ -20,12 +20,10 @@ impl ClientShellState {
     /// clipped to the new pane area; the endpoint resize waits for the release (see
     /// `ClientChromeDrag::SidebarWidth`).
     fn set_sidebar_width_from_column(&mut self, column: u16, outcome: &mut ClientShellInput) {
-        let bounds = shepr_config::validated_sidebar_bounds(
-            self.config.sidebar_min_width,
-            self.config.sidebar_max_width,
-        )
-        .expect("sidebar bounds are validated at launch");
-        let width = column.saturating_add(1).clamp(bounds.min, bounds.max);
+        let width = self
+            .config
+            .sidebar_bounds
+            .clamp_width(column.saturating_add(1));
         if self.sidebar_width != width {
             self.sidebar_width = width;
             self.sidebar_width_manual = true;
@@ -355,11 +353,11 @@ impl ClientShellState {
         let offset_from_bottom = match mouse.kind {
             MouseEventKind::ScrollUp => metrics
                 .offset_from_bottom
-                .saturating_add(self.config.mouse_scroll_lines)
+                .saturating_add(usize::from(self.config.mouse_scroll_lines))
                 .min(metrics.max_offset_from_bottom),
             MouseEventKind::ScrollDown => metrics
                 .offset_from_bottom
-                .saturating_sub(self.config.mouse_scroll_lines),
+                .saturating_sub(usize::from(self.config.mouse_scroll_lines)),
             _ => unreachable!(),
         };
         if offset_from_bottom != metrics.offset_from_bottom {
@@ -1971,7 +1969,7 @@ impl ClientShellState {
                 position,
                 geometry,
                 modifiers: crate::input_wire::wire_modifiers(modifiers),
-                lines: u16::try_from(self.config.mouse_scroll_lines).unwrap_or(u16::MAX),
+                lines: self.config.mouse_scroll_lines,
             },
             outcome,
         );

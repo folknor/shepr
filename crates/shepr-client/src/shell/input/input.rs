@@ -375,7 +375,7 @@ impl ClientShellState {
                     position: gesture.last_position,
                     geometry,
                     modifiers: crate::input_wire::wire_modifiers(modifiers),
-                    lines: u16::try_from(self.config.mouse_scroll_lines).unwrap_or(u16::MAX),
+                    lines: self.config.mouse_scroll_lines,
                 },
                 outcome,
             );

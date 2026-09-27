@@ -21,8 +21,7 @@ pub(crate) enum ClientShellKeybindingSource {
 
 pub struct ClientShellConfig {
     pub(super) sidebar_width: u16,
-    pub(super) sidebar_min_width: u16,
-    pub(super) sidebar_max_width: u16,
+    pub(super) sidebar_bounds: shepr_config::SidebarBounds,
     pub(super) sidebar_start_collapsed: bool,
     pub(super) sidebar_collapsed_mode: SidebarCollapsedModeConfig,
     pub(super) tab_bar_position: TabBarPositionConfig,
@@ -39,7 +38,7 @@ pub struct ClientShellConfig {
     pub(super) prompt_new_workspace_name: bool,
     pub(super) confirm_close: bool,
     pub(super) mouse_capture: bool,
-    pub(super) mouse_scroll_lines: usize,
+    pub(super) mouse_scroll_lines: u16,
     pub(super) right_click_passthrough_modifiers: Option<crossterm::event::KeyModifiers>,
     pub(super) redraw_on_focus_gained: bool,
     pub(super) preferences_path: Option<std::path::PathBuf>,
@@ -599,6 +598,7 @@ pub struct ClientShellState {
     pub(super) machine_diagnostics: super::machine_diagnostics::MachineDiagnostics,
     pub(super) config: ClientShellConfig,
     pub(super) snapshot: Option<Box<ClientShellSnapshot>>,
+    pub(super) active_resolved_config: Option<std::sync::Arc<shepr_config::ValidatedConfig>>,
     pub(super) active_snapshot_generation: Option<u64>,
     pub(super) pane_surface_generation: Option<u64>,
     pub(super) pane_surface: Option<PaneSurfaceFrame>,
@@ -684,10 +684,10 @@ impl ClientShellState {
         let sidebar_collapsed = preferences
             .sidebar_collapsed
             .unwrap_or(config.sidebar_start_collapsed);
-        let sidebar_width = preferences
-            .sidebar_width
-            .unwrap_or(config.sidebar_width)
-            .clamp(config.sidebar_min_width, config.sidebar_max_width);
+        let sidebar_width = match preferences.sidebar_width {
+            Some(width) => config.sidebar_bounds.clamp_width(width),
+            None => config.sidebar_width,
+        };
         let sidebar_section_split = preferences
             .sidebar_section_split
             .unwrap_or(super::sidebar_tokens::SectionSplit::DEFAULT);
@@ -698,6 +698,7 @@ impl ClientShellState {
             machine_diagnostics: Default::default(),
             config,
             snapshot: None,
+            active_resolved_config: None,
             active_snapshot_generation: None,
             pane_surface_generation: None,
             pane_surface: None,
@@ -877,14 +878,45 @@ impl ClientShellState {
         {
             return;
         }
-        let snapshot_config: shepr_config::ValidatedConfig =
-            match shepr_protocol::codec::from_slice_exact(&snapshot.resolved_config) {
-                Ok(config) => config,
-                Err(error) => {
-                    self.set_endpoint_error(format!("invalid endpoint configuration: {error}"));
-                    return;
+        let cached_config = self
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+            .and_then(|endpoint| endpoint.resolved_config.as_ref())
+            .filter(|cached| cached.wire == snapshot.resolved_config)
+            .map(|cached| std::sync::Arc::clone(&cached.config));
+        let snapshot_config = match cached_config {
+            Some(config) => config,
+            None => {
+                let config = match shepr_protocol::codec::from_slice_exact::<
+                    shepr_config::ValidatedConfig,
+                >(&snapshot.resolved_config)
+                {
+                    Ok(config) => std::sync::Arc::new(config),
+                    Err(error) => {
+                        self.set_endpoint_error(format!("invalid endpoint configuration: {error}"));
+                        return;
+                    }
+                };
+                if let Some(endpoint) = self
+                    .endpoints
+                    .iter_mut()
+                    .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
+                {
+                    endpoint.resolved_config = Some(super::endpoints::CachedEndpointConfig {
+                        wire: snapshot.resolved_config.clone(),
+                        config: std::sync::Arc::clone(&config),
+                    });
                 }
-            };
+                config
+            }
+        };
+        let endpoint_keybindings_changed =
+            self.active_resolved_config.as_ref().is_none_or(|current| {
+                !std::sync::Arc::ptr_eq(current, &snapshot_config)
+                    && !current.same_keybinding_resolution(&snapshot_config)
+            });
+        self.active_resolved_config = Some(std::sync::Arc::clone(&snapshot_config));
         // Screen revisions restart per connection. Keep the displayed surface for selection
         // content comparisons, but retire speculative frames from the old connection.
         if generation_changed {
@@ -892,14 +924,6 @@ impl ClientShellState {
         }
         self.active_snapshot_generation = generation;
         self.graphics_scope = graphics_scope;
-        let endpoint_keybindings_changed = self.snapshot.as_ref().is_none_or(|current| {
-            match shepr_protocol::codec::from_slice_exact::<shepr_config::ValidatedConfig>(
-                &current.resolved_config,
-            ) {
-                Ok(config) => !config.same_keybinding_resolution(&snapshot_config),
-                Err(_) => true,
-            }
-        });
         // Endpoint-sourced keymaps follow its resolved config. Local and
         // RemoteLocal keep the keymap built from this client's config.
         let snapshot_keybindings_changed =

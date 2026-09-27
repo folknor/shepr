@@ -1,11 +1,15 @@
-use std::fmt;
-use std::ops::Deref;
-
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use std::fmt;
 
 use super::{
-    AppPaths, Config,
-    wire::{WireConfig, WireKeybindCache, WirePalette},
+    AppPaths, Config, SidebarBounds,
+    model::{
+        AdvancedConfig, ExperimentalConfig, NewTerminalCwdConfig, RemoteConfig, SessionConfig,
+        TerminalConfig, UiConfig,
+    },
+    tab_bar::ValidatedTabBarRightEntry,
+    window_title::WindowTitleTemplate,
+    wire::WireConfig,
 };
 
 /// The source that selected a resolved configuration value.
@@ -136,8 +140,9 @@ impl ConfigProvenance {
             .filter(|origin| origin.key.starts_with("keys."))
     }
 
-    /// Build a default-origin record for values constructed outside process
-    /// startup, such as test fixtures and snapshots built by unit tests.
+    /// Build a default-origin record for test fixtures and for the placeholder
+    /// config a failed load carries alongside its (non-empty) diagnostics; a
+    /// load with diagnostics never becomes a `ValidatedConfig`.
     pub(crate) fn defaults(config: &Config) -> Self {
         Self::from_config(config, None).unwrap_or_else(|_| Self {
             values: Vec::new(),
@@ -231,6 +236,249 @@ fn collect_toml_paths(
     }
 }
 
+/// Configuration values that runtime code consumes after launch validation.
+/// The width and bounds travel together and stay private, so the width is
+/// always inside the bounds and no crate outside this one can build a value.
+#[derive(Debug, Clone)]
+pub struct ValidatedUiConfig {
+    sidebar_width: u16,
+    sidebar_bounds: SidebarBounds,
+    pub sidebar_start_collapsed: bool,
+    pub sidebar_collapsed_mode: super::SidebarCollapsedModeConfig,
+    pub mouse_capture: bool,
+    pub copy_on_select: bool,
+    pub host_cursor: super::HostCursorModeConfig,
+    pub right_click_passthrough_modifiers: Option<crossterm::event::KeyModifiers>,
+    pub redraw_on_focus_gained: bool,
+    pub mouse_scroll_lines: std::num::NonZeroU16,
+    pub confirm_close: bool,
+    pub prompt_new_tab_name: bool,
+    pub prompt_new_workspace_name: bool,
+    pub pane_borders: super::PaneBordersConfig,
+    pub pane_outer_borders: bool,
+    pub pane_scrollbars: bool,
+    pub pane_gaps: bool,
+    pub show_agent_labels_on_pane_borders: bool,
+    pub hide_tab_bar_when_single_tab: bool,
+    pub tab_bar_position: super::TabBarPositionConfig,
+    pub tab_bar_right: Vec<ValidatedTabBarRightEntry>,
+    pub tab_bar_right_separator: String,
+    pub window_title: Option<WindowTitleTemplate>,
+    pub agent_panel_sort: super::AgentPanelSortConfig,
+    pub status_indicators: super::StatusIndicatorStyle,
+    pub sidebar: super::SidebarConfig,
+}
+
+/// Working directory policy resolved from launch config.
+/// `Path` has a leading `~` already expanded against the captured home
+/// directory. It is not promised to be absolute or to exist: whether a
+/// directory is usable is a runtime fact the pane launch checks when it spawns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NewTerminalCwd {
+    Follow,
+    Home,
+    Current,
+    Path(std::path::PathBuf),
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidatedTerminalConfig {
+    pub default_shell: String,
+    pub login_shell: bool,
+    pub new_cwd: NewTerminalCwd,
+}
+
+impl ValidatedTerminalConfig {
+    fn from_config(config: &TerminalConfig) -> Self {
+        let new_cwd = match &config.new_cwd {
+            NewTerminalCwdConfig::Follow => NewTerminalCwd::Follow,
+            NewTerminalCwdConfig::Home => NewTerminalCwd::Home,
+            NewTerminalCwdConfig::Current => NewTerminalCwd::Current,
+            NewTerminalCwdConfig::Path(path) => {
+                NewTerminalCwd::Path(std::path::PathBuf::from(path))
+            }
+        };
+        Self {
+            default_shell: config.default_shell.clone(),
+            login_shell: config.login_shell,
+            new_cwd,
+        }
+    }
+
+    /// Expand a `~` in `new_cwd` once, against the paths captured with the
+    /// config. `configured_home_path_error` reports the same failure as a
+    /// diagnostic before any caller reaches this.
+    fn expand_home(mut self, home_dir: Option<&std::path::Path>) -> Result<Self, String> {
+        if let NewTerminalCwd::Path(path) = &self.new_cwd {
+            let expanded = shepr_core::pathutil::expand_tilde_path_with_home(path, home_dir)
+                .map_err(|err| format!("terminal.new_cwd cannot be resolved: {err}"))?;
+            self.new_cwd = NewTerminalCwd::Path(expanded);
+        }
+        Ok(self)
+    }
+}
+
+impl ValidatedUiConfig {
+    /// Configured expanded sidebar width, already clamped to `sidebar_bounds`.
+    pub fn sidebar_width(&self) -> u16 {
+        self.sidebar_width
+    }
+
+    pub fn sidebar_bounds(&self) -> SidebarBounds {
+        self.sidebar_bounds
+    }
+
+    fn from_config(
+        config: &UiConfig,
+        bounds: SidebarBounds,
+        mouse_scroll_lines: std::num::NonZeroU16,
+        tab_bar_right: Vec<ValidatedTabBarRightEntry>,
+        window_title: Option<WindowTitleTemplate>,
+    ) -> Self {
+        Self {
+            sidebar_width: bounds.clamp_width(config.sidebar_width),
+            sidebar_bounds: bounds,
+            sidebar_start_collapsed: config.sidebar_start_collapsed,
+            sidebar_collapsed_mode: config.sidebar_collapsed_mode,
+            mouse_capture: config.mouse_capture,
+            copy_on_select: config.copy_on_select,
+            host_cursor: config.host_cursor,
+            right_click_passthrough_modifiers: config.right_click_passthrough_modifiers(),
+            redraw_on_focus_gained: config.redraw_on_focus_gained,
+            mouse_scroll_lines,
+            confirm_close: config.confirm_close,
+            prompt_new_tab_name: config.prompt_new_tab_name,
+            prompt_new_workspace_name: config.prompt_new_workspace_name,
+            pane_borders: config.pane_borders,
+            pane_outer_borders: config.pane_outer_borders,
+            pane_scrollbars: config.pane_scrollbars,
+            pane_gaps: config.pane_gaps,
+            show_agent_labels_on_pane_borders: config.show_agent_labels_on_pane_borders,
+            hide_tab_bar_when_single_tab: config.hide_tab_bar_when_single_tab,
+            tab_bar_position: config.tab_bar_position,
+            tab_bar_right,
+            tab_bar_right_separator: config.tab_bar_right_separator.clone(),
+            window_title,
+            agent_panel_sort: config.agent_panel_sort,
+            status_indicators: config.status_indicators,
+            sidebar: config.sidebar.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ValidatedValues {
+    pub(crate) headless_size: shepr_core::geometry::GridSize,
+    pub(crate) palette: crate::theme::Palette,
+    pub(crate) live_keybinds: super::LiveKeybindConfig,
+    pub(crate) ui: ValidatedUiConfig,
+    pub(crate) terminal: ValidatedTerminalConfig,
+}
+
+/// Results of parsing each value used at runtime, plus every diagnostic found.
+/// No fallback values escape this boundary: `values` is present only when all
+/// parsed fields are valid.
+#[derive(Debug, Clone)]
+pub(crate) struct ConfigResolution {
+    pub(crate) diagnostics: Vec<String>,
+    pub(crate) values: Option<ValidatedValues>,
+}
+
+impl ConfigResolution {
+    pub(crate) fn parse(config: &Config, provenance: &ConfigProvenance) -> Self {
+        let keybind_validation = config.compute_keybind_validation(|field| {
+            provenance.key_is_configured(&format!("keys.{field}"))
+        });
+        let palette =
+            config.resolve_palette_with_ui_accent(provenance.is_explicit(UiPreferenceKey::Accent));
+        let headless_size = shepr_core::geometry::GridSize::new(
+            config.server.headless_cols,
+            config.server.headless_rows,
+        );
+        let sidebar_bounds = super::validated_sidebar_bounds(
+            config.ui.sidebar_min_width,
+            config.ui.sidebar_max_width,
+        );
+        let tab_bar_right = super::tab_bar::parse_tab_bar_right_entries(&config.ui.tab_bar_right);
+        let window_title = WindowTitleTemplate::parse(&config.ui.window_title);
+        let mouse_scroll_lines = u16::try_from(config.ui.mouse_scroll_lines())
+            .ok()
+            .and_then(std::num::NonZeroU16::new);
+
+        let mut diagnostics = keybind_validation.diagnostics.clone();
+        if let Err(errors) = &palette {
+            diagnostics.extend(errors.iter().cloned());
+        }
+        if let Err(errors) = &tab_bar_right {
+            diagnostics.extend(errors.iter().cloned());
+        }
+        if let Err(error) = &window_title {
+            diagnostics.push(format!("ui.window_title {error}"));
+        }
+        if sidebar_bounds.is_none() {
+            diagnostics.push(format!(
+                "ui.sidebar_min_width ({}) is greater than sidebar_max_width ({})",
+                config.ui.sidebar_min_width, config.ui.sidebar_max_width
+            ));
+        }
+        if headless_size.is_none() {
+            diagnostics.push(format!(
+                "server.headless_cols and server.headless_rows must be greater than zero (got {}x{})",
+                config.server.headless_cols, config.server.headless_rows
+            ));
+        }
+        if mouse_scroll_lines.is_none() {
+            diagnostics.push(format!(
+                "ui.mouse_scroll_lines must be between 1 and {} (got {})",
+                u16::MAX,
+                config.ui.mouse_scroll_lines()
+            ));
+        }
+
+        let values = if diagnostics.is_empty() {
+            match (
+                keybind_validation.live,
+                palette,
+                headless_size,
+                sidebar_bounds,
+                mouse_scroll_lines,
+                tab_bar_right,
+                window_title,
+            ) {
+                (
+                    Some(live_keybinds),
+                    Ok(palette),
+                    Some(headless_size),
+                    Some(sidebar_bounds),
+                    Some(mouse_scroll_lines),
+                    Ok(tab_bar_right),
+                    Ok(window_title),
+                ) => Some(ValidatedValues {
+                    headless_size,
+                    palette,
+                    live_keybinds,
+                    ui: ValidatedUiConfig::from_config(
+                        &config.ui,
+                        sidebar_bounds,
+                        mouse_scroll_lines,
+                        tab_bar_right,
+                        window_title,
+                    ),
+                    terminal: ValidatedTerminalConfig::from_config(&config.terminal),
+                }),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        Self {
+            diagnostics,
+            values,
+        }
+    }
+}
+
 /// Immutable, validated configuration resolved at the process boundary.
 /// Runtime preferences continue to live in their own mutable state.
 #[derive(Debug, Clone)]
@@ -239,7 +487,10 @@ pub struct ValidatedConfig {
     provenance: ConfigProvenance,
     paths: AppPaths,
     resolved_palette: crate::theme::Palette,
-    keybind_validation: super::keybinds::KeybindValidation,
+    headless_size: shepr_core::geometry::GridSize,
+    live_keybinds: super::LiveKeybindConfig,
+    ui: ValidatedUiConfig,
+    terminal: ValidatedTerminalConfig,
 }
 
 impl ValidatedConfig {
@@ -249,45 +500,49 @@ impl ValidatedConfig {
         provenance: ConfigProvenance,
         paths: AppPaths,
     ) -> Result<Self, Vec<String>> {
-        let keybind_validation = config.compute_keybind_validation(|field| {
-            provenance.key_is_configured(&format!("keys.{field}"))
-        });
-        let resolved_palette = config
-            .resolve_palette_with_ui_accent(provenance.is_explicit(UiPreferenceKey::Accent))?;
-        let diagnostics = config.collect_diagnostics_with_keybind_validation(&keybind_validation);
-        if !diagnostics.is_empty() {
-            return Err(diagnostics);
-        }
-        Ok(Self {
-            config,
-            provenance,
-            paths,
-            resolved_palette,
-            keybind_validation,
-        })
+        Self::from_resolution(config, provenance, paths)
     }
 
+    /// Build from a load whose diagnostics, including the home-path check, are
+    /// already empty.
     pub(crate) fn from_loaded(
         config: Config,
         provenance: ConfigProvenance,
-        keybind_validation: super::keybinds::KeybindValidation,
+        values: ValidatedValues,
         paths: AppPaths,
-    ) -> Result<Self, Vec<super::ConfigDiagnostic>> {
-        let resolved_palette = config
-            .resolve_palette_with_ui_accent(provenance.is_explicit(UiPreferenceKey::Accent))
-            .map_err(|diagnostics| {
-                diagnostics
-                    .into_iter()
-                    .map(super::ConfigDiagnostic::Validation)
-                    .collect::<Vec<_>>()
-            })?;
+    ) -> Result<Self, String> {
+        let terminal = values.terminal.expand_home(paths.home_dir())?;
         Ok(Self {
             config,
             provenance,
             paths,
-            resolved_palette,
-            keybind_validation,
+            resolved_palette: values.palette,
+            headless_size: values.headless_size,
+            live_keybinds: values.live_keybinds,
+            ui: values.ui,
+            terminal,
         })
+    }
+
+    fn from_resolution(
+        config: Config,
+        provenance: ConfigProvenance,
+        paths: AppPaths,
+    ) -> Result<Self, Vec<String>> {
+        let resolution = ConfigResolution::parse(&config, &provenance);
+        let mut diagnostics = resolution.diagnostics;
+        if let Some(error) = super::io::configured_home_path_error(&config, paths.home_dir()) {
+            diagnostics.push(error);
+        }
+        if !diagnostics.is_empty() {
+            return Err(diagnostics);
+        }
+        match resolution.values {
+            Some(values) => {
+                Self::from_loaded(config, provenance, values, paths).map_err(|error| vec![error])
+            }
+            None => Err(vec!["configuration could not be resolved".to_owned()]),
+        }
     }
 
     pub fn provenance(&self) -> &ConfigProvenance {
@@ -302,28 +557,41 @@ impl ValidatedConfig {
         &self.resolved_palette
     }
 
+    pub fn headless_size(&self) -> shepr_core::geometry::GridSize {
+        self.headless_size
+    }
+
+    pub fn ui(&self) -> &ValidatedUiConfig {
+        &self.ui
+    }
+
+    pub fn terminal(&self) -> &ValidatedTerminalConfig {
+        &self.terminal
+    }
+
+    pub fn session(&self) -> &SessionConfig {
+        &self.config.session
+    }
+
+    pub fn advanced(&self) -> &AdvancedConfig {
+        &self.config.advanced
+    }
+
+    pub fn experimental(&self) -> &ExperimentalConfig {
+        &self.config.experimental
+    }
+
+    pub fn remote(&self) -> &RemoteConfig {
+        &self.config.remote
+    }
+
     pub fn live_keybinds(&self) -> super::LiveKeybindConfig {
-        super::LiveKeybindConfig {
-            prefix: self.keybind_validation.prefix,
-            keybinds: self.keybind_validation.keybinds.clone(),
-        }
+        self.live_keybinds.clone()
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn validated_live_keybinds(&self) -> Result<super::LiveKeybindConfig, Vec<String>> {
-        if self.keybind_validation.prefix_diag.is_some()
-            || !self.keybind_validation.keybind_diags.is_empty()
-        {
-            Err(self
-                .keybind_validation
-                .prefix_diag
-                .iter()
-                .cloned()
-                .chain(self.keybind_validation.keybind_diags.iter().cloned())
-                .collect())
-        } else {
-            Ok(self.live_keybinds())
-        }
+        Ok(self.live_keybinds())
     }
 
     pub fn same_keybinding_resolution(&self, other: &Self) -> bool {
@@ -376,36 +644,22 @@ impl PartialEq for ValidatedConfig {
 
 impl Eq for ValidatedConfig {}
 
-impl Deref for ValidatedConfig {
-    type Target = Config;
-
-    fn deref(&self) -> &Self::Target {
-        &self.config
-    }
-}
-
 impl Serialize for ValidatedConfig {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let keybindings = WireKeybindCache::from_validation(&self.keybind_validation)
-            .map_err(serde::ser::Error::custom)?;
         #[derive(Serialize)]
         struct Wire<'a> {
             config: WireConfig,
             provenance: &'a ConfigProvenance,
             paths: &'a AppPaths,
-            palette: WirePalette,
-            keybindings: WireKeybindCache,
         }
 
         Wire {
             config: WireConfig::from_config(&self.config),
             provenance: &self.provenance,
             paths: &self.paths,
-            palette: WirePalette::from(&self.resolved_palette),
-            keybindings,
         }
         .serialize(serializer)
     }
@@ -421,25 +675,102 @@ impl<'de> Deserialize<'de> for ValidatedConfig {
             config: WireConfig,
             provenance: ConfigProvenance,
             paths: AppPaths,
-            palette: WirePalette,
-            keybindings: WireKeybindCache,
         }
 
         let Wire {
             config,
             provenance,
             paths,
-            palette,
-            keybindings,
         } = Wire::deserialize(deserializer)?;
         let config = config.into_config().map_err(de::Error::custom)?;
-        let keybind_validation = keybindings.into_validation().map_err(de::Error::custom)?;
-        Ok(Self {
-            config,
-            provenance,
-            paths,
-            resolved_palette: palette.into(),
-            keybind_validation,
-        })
+        // Rebuild runtime values from the raw config so the receiver applies
+        // the same validation boundary as the server.
+        Self::from_resolution(config, provenance, paths)
+            .map_err(|diagnostics| de::Error::custom(diagnostics.join("\n")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validated_config_resolves_runtime_values_once() {
+        let mut config = Config::default();
+        config.server.headless_cols = 92;
+        config.server.headless_rows = 31;
+        config.ui.sidebar_min_width = 12;
+        config.ui.sidebar_max_width = 30;
+        config.ui.sidebar_width = 80;
+        config.ui.window_title = "{hostname}: {workspace}".to_owned();
+        config.ui.tab_bar_right = vec![super::super::TabBarRightEntryConfig::Datetime {
+            format: "%H:%M".to_owned(),
+        }];
+        config.terminal.new_cwd = NewTerminalCwdConfig::Path("relative/worktree".to_owned());
+        let provenance = ConfigProvenance::defaults(&config);
+
+        let validated = ValidatedConfig::new(config, provenance, AppPaths::default())
+            .expect("test configuration is valid");
+
+        assert_eq!(
+            validated.headless_size(),
+            shepr_core::geometry::GridSize::new(92, 31).expect("non-zero test dimensions")
+        );
+        assert_eq!(validated.ui().sidebar_width(), 30);
+        assert_eq!(validated.ui().sidebar_bounds().min(), 12);
+        assert_eq!(validated.ui().sidebar_bounds().max(), 30);
+        assert!(validated.ui().window_title.is_some());
+        assert!(matches!(
+            validated.ui().tab_bar_right.as_slice(),
+            [ValidatedTabBarRightEntry::Datetime { .. }]
+        ));
+        assert_eq!(
+            validated.terminal().new_cwd,
+            NewTerminalCwd::Path(std::path::PathBuf::from("relative/worktree"))
+        );
+    }
+
+    #[test]
+    fn validated_config_expands_home_in_new_cwd_path_once() {
+        let mut config = Config::default();
+        config.terminal.new_cwd = NewTerminalCwdConfig::Path("~/work".to_owned());
+        let provenance = ConfigProvenance::defaults(&config);
+        let paths = AppPaths::test_with_context(
+            std::path::Path::new("/shepr-test-root"),
+            Some(std::path::Path::new("/home/shepr-test")),
+            None,
+        );
+
+        let validated =
+            ValidatedConfig::new(config, provenance, paths).expect("test configuration is valid");
+
+        assert_eq!(
+            validated.terminal().new_cwd,
+            NewTerminalCwd::Path(std::path::PathBuf::from("/home/shepr-test/work"))
+        );
+    }
+
+    #[test]
+    fn wire_deserialization_revalidates_raw_config() {
+        let validated = ValidatedConfig::test_default();
+        let mut wire = serde_json::to_value(validated).expect("serialize test config");
+        wire["config"]["server"]["headless_cols"] = serde_json::json!(0);
+
+        assert!(serde_json::from_value::<ValidatedConfig>(wire).is_err());
+    }
+
+    #[test]
+    fn wire_deserialization_checks_home_cwd_against_captured_paths() {
+        let validated = ValidatedConfig::test_default();
+        let mut wire = serde_json::to_value(validated).expect("serialize test config");
+        wire["config"]["terminal"]["new_cwd"] = serde_json::json!("Home");
+        wire["paths"]["home_dir"] = serde_json::Value::Null;
+
+        let error = serde_json::from_value::<ValidatedConfig>(wire)
+            .expect_err("home cwd requires the captured home directory");
+        assert!(
+            error.to_string().contains("terminal.new_cwd"),
+            "unexpected error: {error}"
+        );
     }
 }

@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [features]
-test-support = []
+test-support = ["shepr-config/test-support"]
 
 [dependencies]
 base64 = { workspace = true }

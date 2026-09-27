@@ -13,20 +13,28 @@ use super::App;
 use shepr_config::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken};
 
 impl App {
+    pub(crate) fn configure_validated_window_title(
+        &mut self,
+        template: Option<&WindowTitleTemplate>,
+    ) {
+        self.window_title_template = template.cloned().map(|template| {
+            // Resolve the hostname once here rather than per render.
+            let hostname = if template.uses(WindowTitleToken::Hostname) {
+                shepr_platform::hostname().unwrap_or_default()
+            } else {
+                String::new()
+            };
+            (template, hostname)
+        });
+    }
+
+    /// Test helper: parse like config validation does. An invalid template is
+    /// a broken test, not a disabled title, so it panics.
+    #[cfg(test)]
     pub(crate) fn configure_window_title(&mut self, template: &str) {
-        self.window_title_template =
-            WindowTitleTemplate::parse(template)
-                .ok()
-                .flatten()
-                .map(|template| {
-                    // Resolve the hostname once here rather than per render.
-                    let hostname = if template.uses(WindowTitleToken::Hostname) {
-                        shepr_platform::hostname().unwrap_or_default()
-                    } else {
-                        String::new()
-                    };
-                    (template, hostname)
-                });
+        let template =
+            WindowTitleTemplate::parse(template).expect("test window title template is valid");
+        self.configure_validated_window_title(template.as_ref());
     }
 
     /// Whether `ui.window_title` asks Shepr to own the outer terminal title at
@@ -180,11 +188,8 @@ mod tests {
     }
 
     #[test]
-    fn invalid_template_disables_window_titles() {
-        let mut app = test_app();
-        app.configure_window_title("{nope}");
-
-        assert_eq!(app.window_title(), None);
+    fn invalid_template_is_rejected_before_it_reaches_the_app() {
+        assert!(shepr_config::WindowTitleTemplate::parse("{nope}").is_err());
     }
 
     #[test]

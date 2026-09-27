@@ -552,6 +552,7 @@ impl HeadlessServer {
                 let mut candidate = crate::server::client_shell::snapshot_from_session(
                     &self.app,
                     session,
+                    &self.resolved_config,
                     &self.client_shell_boot_id,
                     client
                         .shell_state()

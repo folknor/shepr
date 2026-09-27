@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 use serde::{Deserialize, Serialize};
 
 pub(crate) const DEFAULT_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 5;
@@ -5,6 +7,23 @@ pub(crate) const DEFAULT_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 2;
 pub const MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS: u64 = 31_536_000;
 pub const MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS: u64 = 3_600;
 pub const MAX_TAB_BAR_RIGHT_ENTRIES: usize = 16;
+
+#[derive(Debug, Clone)]
+pub enum ValidatedTabBarRightEntry {
+    Zoom,
+    Hostname,
+    Datetime {
+        format: time::format_description::OwnedFormatItem,
+    },
+    Text {
+        text: String,
+    },
+    Command {
+        command: String,
+        interval_seconds: NonZeroU64,
+        timeout_seconds: NonZeroU64,
+    },
+}
 
 fn default_datetime_format() -> String {
     "%H:%M".to_string()
@@ -53,8 +72,11 @@ pub fn parse_tab_bar_datetime_format(
     Ok(format)
 }
 
-pub(crate) fn tab_bar_right_diagnostics(entries: &[TabBarRightEntryConfig]) -> Vec<String> {
+pub fn parse_tab_bar_right_entries(
+    entries: &[TabBarRightEntryConfig],
+) -> Result<Vec<ValidatedTabBarRightEntry>, Vec<String>> {
     let mut diagnostics = Vec::new();
+    let mut parsed = Vec::with_capacity(entries.len().min(MAX_TAB_BAR_RIGHT_ENTRIES));
     if entries.len() > MAX_TAB_BAR_RIGHT_ENTRIES {
         diagnostics.push(format!(
             "ui.tab_bar_right may contain at most {MAX_TAB_BAR_RIGHT_ENTRIES} entries"
@@ -62,14 +84,14 @@ pub(crate) fn tab_bar_right_diagnostics(entries: &[TabBarRightEntryConfig]) -> V
     }
 
     for (index, entry) in entries.iter().enumerate().take(MAX_TAB_BAR_RIGHT_ENTRIES) {
-        match entry {
+        let parsed_entry = match entry {
             TabBarRightEntryConfig::Datetime { format } => {
-                if format.is_empty() {
-                    diagnostics.push(format!(
-                        "ui.tab_bar_right[{index}] datetime format is empty"
-                    ));
-                } else if let Err(err) = parse_tab_bar_datetime_format(format) {
-                    diagnostics.push(format!("ui.tab_bar_right[{index}] has {err}"));
+                match parse_tab_bar_datetime_format(format) {
+                    Ok(format) => Some(ValidatedTabBarRightEntry::Datetime { format }),
+                    Err(error) => {
+                        diagnostics.push(format!("ui.tab_bar_right[{index}] has {error}"));
+                        None
+                    }
                 }
             }
             TabBarRightEntryConfig::Command {
@@ -77,37 +99,77 @@ pub(crate) fn tab_bar_right_diagnostics(entries: &[TabBarRightEntryConfig]) -> V
                 interval_seconds,
                 timeout_seconds,
             } => {
+                let mut valid = true;
                 if command.trim().is_empty() {
                     diagnostics.push(format!("ui.tab_bar_right[{index}] command is empty"));
+                    valid = false;
                 }
                 if *interval_seconds == 0 {
                     diagnostics.push(format!(
                         "ui.tab_bar_right[{index}] interval_seconds must be at least 1"
                     ));
+                    valid = false;
                 }
                 if *interval_seconds > MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS {
                     diagnostics.push(format!(
                         "ui.tab_bar_right[{index}] interval_seconds may be at most {MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS}"
                     ));
+                    valid = false;
                 }
                 if *timeout_seconds == 0 {
                     diagnostics.push(format!(
                         "ui.tab_bar_right[{index}] timeout_seconds must be at least 1"
                     ));
+                    valid = false;
                 }
                 if *timeout_seconds > MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS {
                     diagnostics.push(format!(
                         "ui.tab_bar_right[{index}] timeout_seconds may be at most {MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS}"
                     ));
+                    valid = false;
+                }
+                if valid {
+                    match (
+                        NonZeroU64::new(*interval_seconds),
+                        NonZeroU64::new(*timeout_seconds),
+                    ) {
+                        (Some(interval_seconds), Some(timeout_seconds)) => {
+                            Some(ValidatedTabBarRightEntry::Command {
+                                command: command.clone(),
+                                interval_seconds,
+                                timeout_seconds,
+                            })
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
                 }
             }
-            TabBarRightEntryConfig::Zoom
-            | TabBarRightEntryConfig::Hostname
-            | TabBarRightEntryConfig::Text { .. } => {}
+            TabBarRightEntryConfig::Zoom => Some(ValidatedTabBarRightEntry::Zoom),
+            TabBarRightEntryConfig::Hostname => Some(ValidatedTabBarRightEntry::Hostname),
+            TabBarRightEntryConfig::Text { text } => {
+                Some(ValidatedTabBarRightEntry::Text { text: text.clone() })
+            }
+        };
+        if let Some(parsed_entry) = parsed_entry {
+            parsed.push(parsed_entry);
         }
     }
 
-    diagnostics
+    if diagnostics.is_empty() {
+        Ok(parsed)
+    } else {
+        Err(diagnostics)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn tab_bar_right_diagnostics(entries: &[TabBarRightEntryConfig]) -> Vec<String> {
+    match parse_tab_bar_right_entries(entries) {
+        Ok(_) => Vec::new(),
+        Err(diagnostics) => diagnostics,
+    }
 }
 
 #[cfg(test)]

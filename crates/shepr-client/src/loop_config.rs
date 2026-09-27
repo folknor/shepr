@@ -14,15 +14,15 @@ pub(super) struct ClientSettings {
 
 impl ClientSettings {
     pub(super) fn from_config(config: &shepr_config::ValidatedConfig) -> Self {
+        let ui = config.ui();
         Self {
-            mouse_scroll_lines: u16::try_from(config.ui.mouse_scroll_lines().max(1))
-                .unwrap_or(u16::MAX),
-            redraw_on_focus_gained: config.ui.redraw_on_focus_gained,
-            host_cursor: config.ui.host_cursor,
+            mouse_scroll_lines: ui.mouse_scroll_lines.get(),
+            redraw_on_focus_gained: ui.redraw_on_focus_gained,
+            host_cursor: ui.host_cursor,
             pixel_geometry_enabled: false,
             pixel_geometry_fallback: false,
-            mouse_capture_active: config.ui.mouse_capture,
-            manage_ssh_config: config.remote.manage_ssh_config,
+            mouse_capture_active: ui.mouse_capture,
+            manage_ssh_config: config.remote().manage_ssh_config,
         }
     }
 }

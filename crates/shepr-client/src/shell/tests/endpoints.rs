@@ -53,6 +53,35 @@ fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
 }
 
 #[test]
+fn repeated_endpoint_snapshots_reuse_the_validated_config() {
+    let (mut state, endpoint_id) = state_with_remote();
+
+    assert!(state.activate_endpoint_projection(&endpoint_id));
+    let first = std::sync::Arc::clone(
+        &state
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.endpoint_id == endpoint_id)
+            .and_then(|endpoint| endpoint.resolved_config.as_ref())
+            .expect("first endpoint snapshot resolves its config")
+            .config,
+    );
+
+    assert!(state.activate_endpoint_projection(&endpoint_id));
+    let second = std::sync::Arc::clone(
+        &state
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.endpoint_id == endpoint_id)
+            .and_then(|endpoint| endpoint.resolved_config.as_ref())
+            .expect("second endpoint snapshot keeps its cached config")
+            .config,
+    );
+
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+}
+
+#[test]
 fn multi_machine_sidebar_draws_the_workspace_drop_marker() {
     let (mut state, _) = state_with_remote();
     state.compose(120, 40).expect("test precondition");

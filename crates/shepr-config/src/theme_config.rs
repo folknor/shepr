@@ -21,36 +21,6 @@ pub struct ThemeConfig {
     pub custom: Option<CustomThemeColors>,
 }
 
-impl ThemeConfig {
-    pub(crate) fn diagnostics(&self) -> Vec<String> {
-        let valid = THEME_NAMES.join(", ");
-        let name = [("theme.name", self.name.as_deref())]
-            .into_iter()
-            .filter_map(|(field, value)| {
-                let value = value?;
-                canonical_theme_name(value).is_none().then(|| {
-                    format!("unknown theme name {field} = {value:?}; valid themes: {valid}")
-                })
-            });
-        let colors = self
-            .custom
-            .iter()
-            .flat_map(CustomThemeColors::entries)
-            .filter_map(|(field, value)| color_diagnostic(field, value?));
-        name.chain(colors).collect()
-    }
-}
-
-/// Diagnostic for a configured colour value that `try_parse_color` cannot read,
-/// or `None` when the value is valid.
-pub(crate) fn color_diagnostic(field: &str, value: &str) -> Option<String> {
-    try_parse_color(value).is_none().then(|| {
-        format!(
-            "invalid color {field} = {value:?}; expected #rrggbb, #rgb, rgb(r, g, b), a color name, or reset"
-        )
-    })
-}
-
 /// Per-token color overrides. All fields optional - only set what you want to change.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
@@ -77,42 +47,24 @@ pub struct CustomThemeColors {
 }
 
 impl CustomThemeColors {
-    /// Every override as `(config key, value)`, for diagnostics.
-    fn entries(&self) -> [(&'static str, Option<&str>); 19] {
-        [
-            ("theme.custom.accent", self.accent.as_deref()),
-            ("theme.custom.panel_bg", self.panel_bg.as_deref()),
-            ("theme.custom.sidebar_bg", self.sidebar_bg.as_deref()),
-            ("theme.custom.active_row_bg", self.active_row_bg.as_deref()),
-            ("theme.custom.selection_bg", self.selection_bg.as_deref()),
-            ("theme.custom.surface0", self.surface0.as_deref()),
-            ("theme.custom.surface1", self.surface1.as_deref()),
-            ("theme.custom.surface_dim", self.surface_dim.as_deref()),
-            ("theme.custom.overlay0", self.overlay0.as_deref()),
-            ("theme.custom.overlay1", self.overlay1.as_deref()),
-            ("theme.custom.text", self.text.as_deref()),
-            ("theme.custom.subtext0", self.subtext0.as_deref()),
-            ("theme.custom.mauve", self.mauve.as_deref()),
-            ("theme.custom.green", self.green.as_deref()),
-            ("theme.custom.yellow", self.yellow.as_deref()),
-            ("theme.custom.red", self.red.as_deref()),
-            ("theme.custom.blue", self.blue.as_deref()),
-            ("theme.custom.teal", self.teal.as_deref()),
-            ("theme.custom.peach", self.peach.as_deref()),
-        ]
-    }
-
     pub(crate) fn parse(&self) -> Result<ParsedThemeColors, Vec<String>> {
+        let mut diagnostics = Vec::new();
         macro_rules! color {
             ($field:ident) => {
-                parse_configured_color(
+                match parse_configured_color(
                     concat!("theme.custom.", stringify!($field)),
                     self.$field.as_deref(),
-                )?
+                ) {
+                    Ok(color) => color,
+                    Err(errors) => {
+                        diagnostics.extend(errors);
+                        None
+                    }
+                }
             };
         }
 
-        Ok(ParsedThemeColors {
+        let parsed = ParsedThemeColors {
             accent: color!(accent),
             panel_bg: color!(panel_bg),
             sidebar_bg: color!(sidebar_bg),
@@ -132,7 +84,12 @@ impl CustomThemeColors {
             blue: color!(blue),
             teal: color!(teal),
             peach: color!(peach),
-        })
+        };
+        if diagnostics.is_empty() {
+            Ok(parsed)
+        } else {
+            Err(diagnostics)
+        }
     }
 }
 
@@ -154,17 +111,48 @@ pub(crate) fn resolve_palette(
     config: &super::Config,
     ui_accent_is_explicit: bool,
 ) -> Result<crate::theme::Palette, Vec<String>> {
+    let mut diagnostics = Vec::new();
     let name = config.theme.name.as_deref().unwrap_or("catppuccin");
-    let canonical = canonical_theme_name(name).ok_or_else(|| {
-        vec![format!(
+    let canonical = canonical_theme_name(name).or_else(|| {
+        diagnostics.push(format!(
             "unknown theme name theme.name = {name:?}; valid themes: {}",
             THEME_NAMES.join(", ")
-        )]
-    })?;
-    let mut palette = crate::theme::Palette::from_name(canonical)
-        .ok_or_else(|| vec![format!("theme {canonical:?} has no built-in palette")])?;
-    if let Some(custom) = &config.theme.custom {
-        let overrides = custom.parse()?;
+        ));
+        None
+    });
+    let base_palette = canonical.and_then(|canonical| {
+        let palette = crate::theme::Palette::from_name(canonical);
+        if palette.is_none() {
+            diagnostics.push(format!("theme {canonical:?} has no built-in palette"));
+        }
+        palette
+    });
+    let overrides = config
+        .theme
+        .custom
+        .as_ref()
+        .map(CustomThemeColors::parse)
+        .unwrap_or_else(|| Ok(ParsedThemeColors::default()));
+    if let Err(errors) = &overrides {
+        diagnostics.extend(errors.iter().cloned());
+    }
+    let ui_accent = match parse_configured_color("ui.accent", Some(config.ui.accent.as_str())) {
+        Ok(color) => color,
+        Err(errors) => {
+            diagnostics.extend(errors);
+            None
+        }
+    };
+    if !diagnostics.is_empty() {
+        return Err(diagnostics);
+    }
+
+    let Some(mut palette) = base_palette else {
+        return Err(vec![
+            "the built-in theme palette could not be resolved".into(),
+        ]);
+    };
+    if let Ok(overrides) = overrides {
         palette = palette.with_overrides(&overrides);
     }
     let custom_accent = config
@@ -173,8 +161,11 @@ pub(crate) fn resolve_palette(
         .as_ref()
         .is_some_and(|custom| custom.accent.is_some());
     if !custom_accent && ui_accent_is_explicit {
-        let accent = parse_configured_color("ui.accent", Some(config.ui.accent.as_str()))?
-            .ok_or_else(|| vec!["ui.accent was marked configured without a value".to_owned()])?;
+        let Some(accent) = ui_accent else {
+            return Err(vec![
+                "ui.accent was marked configured without a value".to_owned(),
+            ]);
+        };
         palette.accent = accent;
     }
     Ok(palette)
@@ -274,8 +265,8 @@ name = "catppucin"
         )
         .expect("test precondition");
 
-        let diagnostics = config.theme.diagnostics();
-        assert_eq!(diagnostics.len(), 1);
+        let diagnostics = config.collect_diagnostics();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert!(diagnostics[0].contains("theme.name = \"catppucin\""));
         assert!(diagnostics[0].contains("valid themes:"));
     }
@@ -367,7 +358,7 @@ peach = "#aééb"
         )
         .expect("test precondition");
 
-        let diagnostics = config.theme.diagnostics();
+        let diagnostics = config.collect_diagnostics();
         assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
         assert!(diagnostics[0].contains("theme.custom.red = \"bluish\""));
         assert!(diagnostics[1].contains("theme.custom.peach = \"#aééb\""));

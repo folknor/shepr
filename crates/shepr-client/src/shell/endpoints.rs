@@ -6,9 +6,26 @@ pub(crate) struct ClientShellEndpoint {
     pub(crate) label: String,
     pub(crate) status: ClientEndpointStatus,
     pub(crate) snapshot: Option<Box<ClientShellSnapshot>>,
+    /// Config bytes are stable for a server boot; cache their launch-time parse across snapshots.
+    pub(crate) resolved_config: Option<CachedEndpointConfig>,
     /// Connection generation that produced `snapshot`. `None` is reserved for local tests.
     pub(crate) snapshot_generation: Option<u64>,
     pub(crate) agent_recency: HashMap<String, u64>,
+}
+
+#[derive(Clone)]
+pub(crate) struct CachedEndpointConfig {
+    pub(crate) wire: Vec<u8>,
+    pub(crate) config: std::sync::Arc<shepr_config::ValidatedConfig>,
+}
+
+impl std::fmt::Debug for CachedEndpointConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CachedEndpointConfig")
+            .field("wire_bytes", &self.wire.len())
+            .finish_non_exhaustive()
+    }
 }
 
 pub(super) struct MachineHit {
@@ -46,6 +63,7 @@ impl ClientShellState {
                 status: previous
                     .map_or(ClientEndpointStatus::Connecting, |endpoint| endpoint.status),
                 snapshot: previous.and_then(|endpoint| endpoint.snapshot.clone()),
+                resolved_config: previous.and_then(|endpoint| endpoint.resolved_config.clone()),
                 snapshot_generation: previous.and_then(|endpoint| endpoint.snapshot_generation),
                 agent_recency: previous
                     .map(|endpoint| endpoint.agent_recency.clone())
@@ -71,6 +89,7 @@ impl ClientShellState {
         self.active_endpoint_id = ClientEndpointId::Local;
         self.mode = ClientShellMode::Terminal;
         self.snapshot = None;
+        self.active_resolved_config = None;
         self.graphics_scope = "local:unavailable".to_owned();
     }
 
@@ -403,6 +422,7 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         label: "Local".into(),
         status: ClientEndpointStatus::Online,
         snapshot: None,
+        resolved_config: None,
         snapshot_generation: None,
         agent_recency: HashMap::new(),
     }

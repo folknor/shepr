@@ -31,19 +31,18 @@ impl ClientShellState {
 impl ClientShellConfig {
     #[cfg(any(test, feature = "test-support"))]
     pub fn from_config(config: &Config) -> Self {
+        let validated = shepr_config::ValidatedConfig::test_from_config(config.clone(), None);
         Self::from_config_with_configured(
-            config,
+            validated.ui(),
             preferences::ConfiguredChrome::default(),
-            config
-                .resolve_palette()
-                .unwrap_or_else(|_| shepr_config::theme::Palette::catppuccin()),
-            config.live_keybinds(),
+            validated.palette().clone(),
+            validated.live_keybinds(),
         )
     }
 
     pub(crate) fn from_validated_config(config: &shepr_config::ValidatedConfig) -> Self {
         Self::from_config_with_configured(
-            config,
+            config.ui(),
             preferences::ConfiguredChrome::from_validated_config(config),
             config.palette().clone(),
             config.live_keybinds(),
@@ -51,35 +50,34 @@ impl ClientShellConfig {
     }
 
     fn from_config_with_configured(
-        config: &Config,
+        config: &shepr_config::ValidatedUiConfig,
         configured: preferences::ConfiguredChrome,
         palette: shepr_config::theme::Palette,
         keybinds: LiveKeybindConfig,
     ) -> Self {
         Self {
-            sidebar_width: config.ui.sidebar_width,
-            sidebar_min_width: config.ui.sidebar_min_width,
-            sidebar_max_width: config.ui.sidebar_max_width,
-            sidebar_start_collapsed: config.ui.sidebar_start_collapsed,
-            sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
-            tab_bar_position: config.ui.tab_bar_position,
-            hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
-            spaces: config.ui.sidebar.spaces.clone(),
-            agents: config.ui.sidebar.agents.clone(),
-            agent_panel_sort: config.ui.agent_panel_sort,
-            status_indicators: config.ui.status_indicators,
-            copy_on_select: config.ui.copy_on_select,
+            sidebar_width: config.sidebar_width(),
+            sidebar_bounds: config.sidebar_bounds(),
+            sidebar_start_collapsed: config.sidebar_start_collapsed,
+            sidebar_collapsed_mode: config.sidebar_collapsed_mode,
+            tab_bar_position: config.tab_bar_position,
+            hide_tab_bar_when_single_tab: config.hide_tab_bar_when_single_tab,
+            spaces: config.sidebar.spaces.clone(),
+            agents: config.sidebar.agents.clone(),
+            agent_panel_sort: config.agent_panel_sort,
+            status_indicators: config.status_indicators,
+            copy_on_select: config.copy_on_select,
             palette,
             // One validation pass; the launch already rejected invalid bindings.
             keybinds,
             keybinding_source: ClientShellKeybindingSource::RemoteLocal,
-            prompt_new_tab_name: config.ui.prompt_new_tab_name,
-            prompt_new_workspace_name: config.ui.prompt_new_workspace_name,
-            confirm_close: config.ui.confirm_close,
-            mouse_capture: config.ui.mouse_capture,
-            mouse_scroll_lines: config.ui.mouse_scroll_lines(),
-            right_click_passthrough_modifiers: config.ui.right_click_passthrough_modifiers(),
-            redraw_on_focus_gained: config.ui.redraw_on_focus_gained,
+            prompt_new_tab_name: config.prompt_new_tab_name,
+            prompt_new_workspace_name: config.prompt_new_workspace_name,
+            confirm_close: config.confirm_close,
+            mouse_capture: config.mouse_capture,
+            mouse_scroll_lines: config.mouse_scroll_lines.get(),
+            right_click_passthrough_modifiers: config.right_click_passthrough_modifiers,
+            redraw_on_focus_gained: config.redraw_on_focus_gained,
             preferences_path: None,
             preferences: preferences::ClientChromePreferences::default()
                 .without_configured(configured),
@@ -132,13 +130,15 @@ impl ClientShellConfig {
         tab_count: usize,
         sidebar_width: u16,
     ) -> ClientShellLayout {
+        // Expanded widths already come from the validated config or an input
+        // path that clamps user preferences and drag positions on entry.
         let sidebar_width = if sidebar_collapsed {
             match self.sidebar_collapsed_mode {
                 SidebarCollapsedModeConfig::Compact => 4,
                 SidebarCollapsedModeConfig::Hidden => 0,
             }
         } else {
-            sidebar_width.clamp(self.sidebar_min_width, self.sidebar_max_width)
+            sidebar_width
         }
         .min(cols.saturating_sub(1));
         let main = Rect::new(sidebar_width, 0, cols.saturating_sub(sidebar_width), rows);
@@ -177,11 +177,10 @@ impl ClientShellConfig {
             .preferences
             .sidebar_collapsed
             .unwrap_or(self.sidebar_start_collapsed);
-        let sidebar_width = self
-            .preferences
-            .sidebar_width
-            .unwrap_or(self.sidebar_width)
-            .clamp(self.sidebar_min_width, self.sidebar_max_width);
+        let sidebar_width = match self.preferences.sidebar_width {
+            Some(width) => self.sidebar_bounds.clamp_width(width),
+            None => self.sidebar_width,
+        };
         let surface = self
             .layout(cols, rows, sidebar_collapsed, 0, sidebar_width)
             .pane_surface;

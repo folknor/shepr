@@ -1,7 +1,7 @@
 #[cfg(any(test, feature = "test-api"))]
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
-use shepr_config::NewTerminalCwdConfig;
+use shepr_config::NewTerminalCwd;
 
 use shepr_core::layout::PaneId;
 use shepr_mux::workspace::PaneChromeInfo as PaneInfo;
@@ -107,29 +107,32 @@ pub(crate) struct AppSettings {
     pub(crate) cjk_ime_cursor_shape: u8,
     pub(crate) default_shell: String,
     pub(crate) login_shell: bool,
-    pub(crate) new_terminal_cwd: NewTerminalCwdConfig,
+    pub(crate) new_terminal_cwd: NewTerminalCwd,
     pub(crate) pane_scrollback_limit_bytes: usize,
     pub(crate) palette: Palette,
 }
 
 impl AppSettings {
     pub(crate) fn from_config(config: &shepr_config::ValidatedConfig) -> Self {
+        let ui = config.ui();
+        let experimental = config.experimental();
+        let terminal = config.terminal();
         Self {
             headless_size: config.headless_size(),
-            sidebar_agents: config.ui.sidebar.agents.clone(),
-            sidebar_spaces: config.ui.sidebar.spaces.clone(),
-            pane_borders: config.ui.pane_borders,
-            pane_outer_borders: config.ui.pane_outer_borders,
-            pane_scrollbars: config.ui.pane_scrollbars,
-            pane_gaps: config.ui.pane_gaps,
-            show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
-            reveal_hidden_cursor_for_cjk_ime: config.experimental.reveal_hidden_cursor_for_cjk_ime,
-            cjk_ime_agents: config.experimental.cjk_ime_agents.clone(),
-            cjk_ime_cursor_shape: config.experimental.cjk_ime_cursor_shape.to_decscusr(),
-            default_shell: config.terminal.default_shell.clone(),
-            login_shell: config.terminal.login_shell,
-            new_terminal_cwd: config.terminal.new_cwd.clone(),
-            pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
+            sidebar_agents: ui.sidebar.agents.clone(),
+            sidebar_spaces: ui.sidebar.spaces.clone(),
+            pane_borders: ui.pane_borders,
+            pane_outer_borders: ui.pane_outer_borders,
+            pane_scrollbars: ui.pane_scrollbars,
+            pane_gaps: ui.pane_gaps,
+            show_agent_labels_on_pane_borders: ui.show_agent_labels_on_pane_borders,
+            reveal_hidden_cursor_for_cjk_ime: experimental.reveal_hidden_cursor_for_cjk_ime,
+            cjk_ime_agents: experimental.cjk_ime_agents.clone(),
+            cjk_ime_cursor_shape: experimental.cjk_ime_cursor_shape.to_decscusr(),
+            default_shell: terminal.default_shell.clone(),
+            login_shell: terminal.login_shell,
+            new_terminal_cwd: terminal.new_cwd.clone(),
+            pane_scrollback_limit_bytes: config.advanced().scrollback_limit_bytes,
             palette: config.palette().clone(),
         }
     }

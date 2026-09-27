@@ -222,18 +222,17 @@ mod tests {
 
     #[test]
     fn clear_pane_is_unbound_by_default_and_configurable() {
-        assert!(
-            shepr_config::Config::default()
-                .keybinds()
-                .clear_pane
-                .bindings
-                .is_empty()
-        );
+        let default = shepr_config::ValidatedConfig::test_default().live_keybinds();
+        assert!(default.keybinds.clear_pane.bindings.is_empty());
         let config: shepr_config::Config =
             toml::from_str("[keys]\nclear_pane = [\"super+k\", \"prefix+ctrl+k\"]")
                 .expect("test precondition");
         assert!(config.collect_diagnostics().is_empty());
-        let keybinds = config.keybinds();
+        let config = shepr_config::ValidatedConfig::test_from_config(
+            config,
+            Some("[keys]\nclear_pane = [\"super+k\", \"prefix+ctrl+k\"]"),
+        );
+        let keybinds = config.live_keybinds().keybinds;
         assert!(matches!(
             resolve_direct_binding(
                 &keybinds,
@@ -259,10 +258,10 @@ mod tests {
 
     #[test]
     fn one_shared_resolver_handles_direct_prefix_and_indexed_bindings() {
-        let keybinds = Keybinds {
-            next_tab: shepr_config::ActionKeybinds::direct("ctrl+n"),
-            ..Keybinds::default()
-        };
+        let mut keybinds = shepr_config::ValidatedConfig::test_default()
+            .live_keybinds()
+            .keybinds;
+        keybinds.next_tab = shepr_config::ActionKeybinds::direct("ctrl+n");
 
         let direct = TerminalKey::new(KeyCode::Char('n'), KeyModifiers::CONTROL);
         assert!(matches!(
@@ -285,7 +284,9 @@ mod tests {
 
     #[test]
     fn prefix_resolution_uses_shared_generated_character_fallback() {
-        let keybinds = Keybinds::default();
+        let keybinds = shepr_config::ValidatedConfig::test_default()
+            .live_keybinds()
+            .keybinds;
         let key = TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
             .with_generated_text(Some("?".to_owned()));
 

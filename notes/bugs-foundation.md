@@ -65,7 +65,7 @@ Related: TRM-011 (reader panic reported as `Exited`).
 
 ## FND-016 - Per-crate test builds rely on workspace feature unification
 
-shepr-termio, shepr-client and shepr-mux tests only compiled under the whole workspace until their `test-support` features were enabled through dev-dependencies. shepr-api and shepr-server build alone; shepr-remote and shepr-vt have not been checked for the same gap.
+shepr-termio, shepr-client and shepr-mux tests only compiled under the whole workspace until their `test-support` features were enabled through dev-dependencies. shepr-remote and shepr-vt have not been checked for the same gap. shepr-server's `test-api` feature has it too: `server/headless/tests/mod.rs` uses `shepr_api::error::test_json` and `EventHub::events_after`, which need `shepr-api/test-support`, but `test-api` does not enable it.
 
 ## FND-015 - PaneId::alloc wraps to the placeholder id
 

@@ -17,39 +17,14 @@ Hunter coverage: every source file in the crate except `theme.rs`, `diagnostic.r
 - implement the spec (treat empty as unset), or
 - reword the claim to "XDG, strict: a set variable must be absolute".
 
-## CFG-005 - Config::headless_size() panics on unvalidated configs
-
-`lib.rs:110-114`, uses `.expect`. This breaks the "no unwrap in production" rule, and it is only safe if every `Config` was validated. That is not guaranteed:
-- `Config` has public fields and a public `Default`.
-- `ValidatedConfig`'s `Deserialize` (`validated.rs:414-445`) rebuilds the config and keybinds from the wire with no validation, and clears `prefix_diag` and `keybind_diags`.
-- `KeybindValidation`, `Palette` and sidebar bounds cross the wire the same way.
-
-The hunter's structural recommendation (parse, don't validate): the core design flaw is that `ValidatedConfig` is a `Deref<Target = Config>` over raw strings and integers, with validity tracked by a separate diagnostics pass. Because of this:
-- consumers re-parse `window_title`, the `tab_bar_right` datetime formats and `accent`;
-- they re-derive sidebar bounds (`validated_sidebar_bounds` exists only so callers do not trip `u16::clamp`'s panic) and headless size;
-- `KeybindValidation` still has to carry the fallback values;
-- `Deserialize` can build a "validated" config that was never validated.
-
-Proposed rewrite:
-1. `ValidatedConfig` holds typed, already-parsed fields: `GridSize`, `SidebarBounds` with the width clamped inside it, `Option<WindowTitleTemplate>`, `OwnedFormatItem`s, `Palette`, `Keybinds`, and a typed `NewTerminalCwd`.
-2. `Config` becomes a private TOML DTO.
-3. Validation returns either this struct or the diagnostics, with no fallbacks left in the parsers.
-4. The wire form sends that typed struct (or re-runs validation on receipt).
-5. `headless_size()` can then no longer fail and the `expect` disappears.
-
-Keybinding fallbacks belong to the same rewrite. Diagnostic wording no longer says bindings are "disabled", but validation still builds candidate values while collecting errors: an invalid prefix becomes a `ctrl+b` placeholder and invalid entries are skipped when building `Keybinds`. Only the launch-time diagnostics gate stops them, and the public raw `Config::keybinds()` accessor can hand those candidates to a caller that skips validation (in-tree only tests do).
-
-Related gap: `ui.sidebar_width` is never checked against min and max. What happens to an out-of-range width is decided by the consumer, which the hunter could not trace.
-
-Related: SRV-002 (the server re-encodes `ValidatedConfig` per render with an `expect`).
-
 ## CFG-009 - terminal.new_cwd is only partly checked
 
 `model.rs:160-173`, `io.rs:516-531`.
 - `""` silently means `follow`.
 - `" home "` is trimmed to `Home`, but `"  /x "` keeps its whitespace as a `Path`.
 - Relative paths such as `"projects"` are accepted with no rule for what they are relative to.
-- Only `~` and `home` are checked at load time. A non-existent absolute path passes, so any failure surfaces at pane spawn rather than launch. The hunter could not see how the pane spawner handles that.
+- Only `~` and `home` are checked at load time. A non-existent absolute path passes, so any failure surfaces at pane spawn rather than launch.
+- `~` is now expanded once at validation, but the PTY layer still falls back to HOME (with a warning) for a non-directory path. The typed config deliberately leaves `NewTerminalCwd::Path` as a plain path (documented at `model.rs` and `validated.rs`) because nothing enforces more; deciding the rule here would let it become a checked absolute directory.
 
 ## CFG-010 - ConfigAgent duplicates shepr_agent::agent::Agent
 
@@ -65,11 +40,15 @@ Related: SRV-002 (the server re-encodes `ValidatedConfig` per render with an `ex
 
 ## CFG-013 - Small config smells
 
-- `ValidatedConfig`'s `PartialEq` ignores the palette and the keybind cache, and treats a failed serialization as "not equal".
-- `ConfigProvenance::defaults` swallows its error and returns an empty record.
+- `ValidatedConfig`'s `PartialEq` serializes both sides to JSON and treats a failed serialization as "not equal".
+- `ConfigProvenance::defaults` swallows its error and returns an empty record. Production now only reaches it for the placeholder a failed load carries, which never becomes a `ValidatedConfig`.
 - `PathProvenance.current_dir` is always `Default`.
 - `tab_bar_right_diagnostics` only checks the first 16 entries. That is harmless, because more than 16 entries is already an error.
 
 ## CFG-014 - ServerAddress::resolve accepts relative paths directly
 
 `address.rs`. `AppPaths` now validates socket overrides (non-empty, absolute, UTF-8) before resolving them, but `ServerAddress::resolve` stays a public, infallible constructor that takes any path, relative included. Its only external callers found are tests in `crates/shepr-server/src/server/socket_paths.rs`, which also still say "legacy" in a client-override test name and fixture path. Either make the constructor crate-private or validate inside it.
+
+## CFG-015 - AppPaths decoded off the wire skips resolve's checks
+
+`AppPaths` derives `Deserialize`, so a value decoded from a peer never goes through the checks `AppPaths::resolve` makes (absolute paths, validated overrides). Today the client uses the decoded paths only for the home-path check when it re-validates an endpoint's config, but nothing stops a later caller trusting them.

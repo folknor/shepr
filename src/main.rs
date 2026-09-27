@@ -17,12 +17,15 @@ mod netside_tests;
 #[cfg(test)]
 mod test_support;
 
-fn should_block_nested(config: &shepr_config::Config) -> bool {
+fn should_block_nested(config: &shepr_config::ValidatedConfig) -> bool {
     should_block_nested_for_env(config, std::env::var(SHEPR_ENV_VAR).ok().as_deref())
 }
 
-fn should_block_nested_for_env(config: &shepr_config::Config, shepr_env: Option<&str>) -> bool {
-    !config.experimental.allow_nested && shepr_env == Some(SHEPR_ENV_VALUE)
+fn should_block_nested_for_env(
+    config: &shepr_config::ValidatedConfig,
+    shepr_env: Option<&str>,
+) -> bool {
+    !config.experimental().allow_nested && shepr_env == Some(SHEPR_ENV_VALUE)
 }
 
 fn random_nested_message() -> &'static str {
@@ -36,7 +39,7 @@ fn random_nested_message() -> &'static str {
     NESTED_SHEPR_MESSAGES[index]
 }
 
-fn exit_if_nested_disabled(config: &shepr_config::Config) {
+fn exit_if_nested_disabled(config: &shepr_config::ValidatedConfig) {
     if should_block_nested(config) {
         eprintln!("\x1b[1merror:\x1b[0m nested shepr is disabled by default.");
         eprintln!("see configuration if you want to enable it.");
@@ -190,7 +193,7 @@ fn main() -> io::Result<()> {
     if let Some(remote_launch) = remote_launch {
         let remote_target = remote_launch.target.clone();
         let ssh_settings = shepr_remote::SavedSshSettings {
-            manage_ssh_config: loaded_config.remote.manage_ssh_config,
+            manage_ssh_config: loaded_config.remote().manage_ssh_config,
         };
         if let Err(err) = shepr_remote::run_remote(remote_launch, ssh_settings, paths) {
             eprintln!("error: {err}");
@@ -229,7 +232,7 @@ fn load_validated_config_or_exit(
             std::process::exit(1);
         }
     };
-    match shepr_config::Config::load_validated(&paths) {
+    match shepr_config::load_validated(&paths) {
         Ok(config) => config,
         Err(diagnostics) => {
             eprintln!("shepr: configuration error:");
@@ -289,20 +292,22 @@ mod tests {
 
     #[test]
     fn nested_shepr_blocks_when_env_is_set() {
-        let config = shepr_config::Config::default();
+        let config = shepr_config::ValidatedConfig::test_default();
         assert!(should_block_nested_for_env(&config, Some(SHEPR_ENV_VALUE)));
     }
 
     #[test]
     fn nested_shepr_does_not_block_when_allowed() {
-        let config: shepr_config::Config =
-            toml::from_str("[experimental]\nallow_nested = true\n").expect("test precondition");
+        let config = shepr_config::ValidatedConfig::test_from_config(
+            toml::from_str("[experimental]\nallow_nested = true\n").expect("test precondition"),
+            Some("[experimental]\nallow_nested = true\n"),
+        );
         assert!(!should_block_nested_for_env(&config, Some(SHEPR_ENV_VALUE)));
     }
 
     #[test]
     fn nested_shepr_does_not_block_without_env() {
-        let config = shepr_config::Config::default();
+        let config = shepr_config::ValidatedConfig::test_default();
         assert!(!should_block_nested_for_env(&config, None));
     }
 

@@ -268,20 +268,12 @@ pub struct Keybinds {
     pub toggle_sidebar: ActionKeybinds,
 }
 
-/// Candidate keybind values accompany diagnostics so config check can report
-/// all problems; launch loading rejects this result when diagnostics exist.
+/// Parsing collects every diagnostic, but exposes no partial keymap when a
+/// prefix or any candidate binding is invalid.
 #[derive(Debug, Clone)]
 pub(crate) struct KeybindValidation {
-    pub(super) prefix_diag: Option<String>,
-    pub(super) prefix: KeyCombo,
-    pub(super) keybind_diags: Vec<String>,
-    pub(super) keybinds: Keybinds,
-}
-
-impl Default for Keybinds {
-    fn default() -> Self {
-        Config::default().keybinds()
-    }
+    pub(super) diagnostics: Vec<String>,
+    pub(super) live: Option<LiveKeybindConfig>,
 }
 
 #[derive(Clone)]
@@ -302,16 +294,16 @@ struct RegisteredBinding {
 }
 
 struct BindingRegistry {
-    prefix_combo: KeyCombo,
+    prefix_combo: Option<KeyCombo>,
     prefix_source: BindingSource,
     direct: std::collections::HashMap<KeyCombo, RegisteredBinding>,
     prefix: std::collections::HashMap<KeyCombo, RegisteredBinding>,
 }
 
 impl BindingRegistry {
-    fn new(prefix_combo: KeyCombo, prefix_source: BindingSource) -> Self {
+    fn new(prefix_combo: Option<KeyCombo>, prefix_source: BindingSource) -> Self {
         Self {
-            prefix_combo: normalize_key_combo(prefix_combo),
+            prefix_combo: prefix_combo.map(normalize_key_combo),
             prefix_source,
             direct: std::collections::HashMap::new(),
             prefix: std::collections::HashMap::new(),
@@ -327,8 +319,9 @@ impl BindingRegistry {
             });
     }
 
-    fn prefix_rhs_is_reserved(&self, combo: KeyCombo) -> bool {
-        normalize_key_combo(combo) == self.prefix_combo
+    fn reserved_prefix(&self, combo: KeyCombo) -> Option<KeyCombo> {
+        self.prefix_combo
+            .filter(|prefix| normalize_key_combo(combo) == *prefix)
     }
 
     fn conflict(&self, binding: &ResolvedBinding) -> Option<&RegisteredBinding> {
@@ -362,20 +355,26 @@ impl Config {
         is_configured: impl Fn(&str) -> bool,
     ) -> KeybindValidation {
         let mut diagnostics = Vec::new();
-        let (prefix, prefix_diag) = parse_key_combo_with_diagnostic(
-            &self.keys.prefix,
-            "keys.prefix",
-            (KeyCode::Char('b'), KeyModifiers::CONTROL),
-        );
+        let prefix = parse_key_combo(&self.keys.prefix);
+        if prefix.is_none() {
+            diagnostics.push(format!(
+                "invalid keybinding: keys.prefix = {:?}",
+                self.keys.prefix
+            ));
+        }
         let prefix_source = if is_configured("prefix") {
             BindingSource::User
         } else {
             BindingSource::Default
         };
         let mut registry = BindingRegistry::new(prefix, prefix_source);
-        registry.reserve_direct(prefix, "keys.prefix", prefix_source);
+        if let Some(prefix) = prefix {
+            registry.reserve_direct(prefix, "keys.prefix", prefix_source);
+        }
         let mut navigate_registry = BindingRegistry::new(prefix, prefix_source);
-        navigate_registry.reserve_direct(prefix, "keys.prefix", prefix_source);
+        if let Some(prefix) = prefix {
+            navigate_registry.reserve_direct(prefix, "keys.prefix", prefix_source);
+        }
         reserve_navigate_runtime_keys(&mut navigate_registry);
 
         macro_rules! empty_action {
@@ -551,12 +550,11 @@ impl Config {
             apply_action!(keybinds.toggle_sidebar, toggle_sidebar, source);
         }
 
-        KeybindValidation {
-            prefix_diag,
-            prefix,
-            keybind_diags: diagnostics,
-            keybinds,
-        }
+        let live = match (diagnostics.is_empty(), prefix) {
+            (true, Some(prefix)) => Some(LiveKeybindConfig { prefix, keybinds }),
+            _ => None,
+        };
+        KeybindValidation { diagnostics, live }
     }
 }
 
@@ -759,8 +757,10 @@ fn reject_binding(
     diagnostics: &mut Vec<String>,
     source: BindingSource,
 ) -> bool {
-    if binding.trigger.is_prefix() && registry.prefix_rhs_is_reserved(binding.trigger.combo()) {
-        let prefix = format_key_combo(registry.prefix_combo);
+    if binding.trigger.is_prefix()
+        && let Some(prefix_combo) = registry.reserved_prefix(binding.trigger.combo())
+    {
+        let prefix = format_key_combo(prefix_combo);
         let diag = if source == BindingSource::Default
             && registry.prefix_source == BindingSource::User
         {
@@ -1035,22 +1035,6 @@ fn single_key_char(s: &str) -> Option<char> {
     }
 }
 
-fn parse_key_combo_with_diagnostic(
-    s: &str,
-    field: &str,
-    placeholder: KeyCombo,
-) -> (KeyCombo, Option<String>) {
-    match parse_key_combo(s) {
-        Some(binding) => (binding, None),
-        None => {
-            // This placeholder lets config check collect the remaining errors;
-            // load_validated rejects the config while this diagnostic is present.
-            let diag = format!("invalid keybinding: {field} = {s:?}");
-            (placeholder, Some(diag))
-        }
-    }
-}
-
 pub fn normalize_key_combo((mut code, mut modifiers): KeyCombo) -> KeyCombo {
     if matches!(code, KeyCode::Tab) && modifiers.contains(KeyModifiers::SHIFT) {
         code = KeyCode::BackTab;
@@ -1256,11 +1240,19 @@ mod tests {
             .collect()
     }
 
-    fn diagnostics_and_keybinds(config: &Config, configured: &[&str]) -> (Vec<String>, Keybinds) {
+    fn parse_keybinds(config: &Config, configured: &[&str]) -> Option<Keybinds> {
+        let validation = config.compute_keybind_validation(|field| configured.contains(&field));
+        validation.live.map(|live| live.keybinds)
+    }
+
+    fn diagnostics_and_keybinds(
+        config: &Config,
+        configured: &[&str],
+    ) -> (Vec<String>, Option<Keybinds>) {
         let validation = config.compute_keybind_validation(|field| configured.contains(&field));
         (
-            config.collect_diagnostics_with_keybind_validation(&validation),
-            validation.keybinds,
+            validation.diagnostics,
+            validation.live.map(|live| live.keybinds),
         )
     }
 
@@ -1294,7 +1286,11 @@ prefix = "ö"
         )
         .expect("test precondition");
         assert_eq!(
-            config.live_keybinds().prefix,
+            config
+                .compute_keybind_validation(|_| false)
+                .live
+                .expect("valid unicode prefix")
+                .prefix,
             (KeyCode::Char('ö'), KeyModifiers::empty())
         );
         assert!(config.collect_diagnostics().is_empty());
@@ -1374,7 +1370,7 @@ next_tab = "prefix+n"
 "#,
         )
         .expect("test precondition");
-        let kb = config.keybinds();
+        let kb = parse_keybinds(&config, &[]).expect("valid keybindings");
         assert_eq!(
             binding_triggers(&kb.next_tab),
             vec![BindingTrigger::Prefix((
@@ -1386,7 +1382,7 @@ next_tab = "prefix+n"
 
     #[test]
     fn goto_defaults_to_prefix_g() {
-        let kb = Config::default().keybinds();
+        let kb = parse_keybinds(&Config::default(), &[]).expect("default keybindings");
         assert_eq!(
             binding_triggers(&kb.goto),
             vec![BindingTrigger::Prefix((
@@ -1398,7 +1394,7 @@ next_tab = "prefix+n"
 
     #[test]
     fn copy_mode_uses_tmux_prefix_bracket_by_default() {
-        let kb = Config::default().keybinds();
+        let kb = parse_keybinds(&Config::default(), &[]).expect("default keybindings");
         assert_eq!(
             binding_triggers(&kb.copy_mode),
             vec![BindingTrigger::Prefix((
@@ -1410,7 +1406,7 @@ next_tab = "prefix+n"
 
     #[test]
     fn back_and_forth_keybinds_are_unset_by_default() {
-        let kb = Config::default().keybinds();
+        let kb = parse_keybinds(&Config::default(), &[]).expect("default keybindings");
         assert!(kb.last_pane.bindings.is_empty());
     }
 
@@ -1423,7 +1419,7 @@ next_tab = ["prefix+n", "ctrl+alt+]"]
 "#,
         )
         .expect("test precondition");
-        let kb = config.keybinds();
+        let kb = parse_keybinds(&config, &[]).expect("valid keybindings");
         assert_eq!(
             binding_triggers(&kb.next_tab),
             vec![
@@ -1448,9 +1444,7 @@ close_tab = "X"
         )
         .expect("test precondition");
         let diagnostics = config.collect_diagnostics();
-        let keybinds = config.keybinds();
-        assert!(keybinds.new_tab.bindings.is_empty());
-        assert!(keybinds.close_tab.bindings.is_empty());
+        assert!(config.compute_keybind_validation(|_| false).live.is_none());
         assert!(
             diagnostics
                 .iter()
@@ -1611,7 +1605,7 @@ help = "prefix+ctrl+a"
         )
         .expect("test precondition");
         let diagnostics = config.collect_diagnostics();
-        assert!(config.keybinds().help.bindings.is_empty());
+        assert!(parse_keybinds(&config, &[]).is_none());
         assert!(diagnostics.iter().any(|diag| {
             diag.contains("reserved keybinding")
                 && diag.contains("keys.help")
@@ -1626,7 +1620,7 @@ help = "prefix+ctrl+b"
 "#,
         )
         .expect("test precondition");
-        assert!(!config.keybinds().help.bindings.is_empty());
+        assert!(parse_keybinds(&config, &[]).is_some());
     }
 
     #[test]
@@ -1640,22 +1634,10 @@ navigate_pane_down = "ctrl+j"
 "#,
         )
         .expect("test precondition");
-        let keybinds = config.keybinds();
+        let keybinds = parse_keybinds(&config, &[]);
         let diagnostics = config.collect_diagnostics();
 
-        assert!(
-            keybinds
-                .navigate
-                .workspace_up
-                .matches_direct_key(&TerminalKey::new(KeyCode::Char('j'), KeyModifiers::empty()))
-        );
-        assert!(keybinds.navigate.workspace_down.bindings.is_empty());
-        assert!(
-            keybinds
-                .navigate
-                .pane_down
-                .matches_direct_key(&TerminalKey::new(KeyCode::Char('j'), KeyModifiers::CONTROL))
-        );
+        assert!(keybinds.is_none());
         assert!(diagnostics.iter().any(|diag| {
             diag.contains("keybinding conflict")
                 && diag.contains("keys.navigate_workspace_up")
@@ -1672,10 +1654,10 @@ navigate_workspace_up = ["esc", "alt+esc", "enter", "1", "tab", "shift+tab", "le
 "#,
         )
         .expect("test precondition");
-        let keybinds = config.keybinds();
+        let keybinds = parse_keybinds(&config, &[]);
         let diagnostics = config.collect_diagnostics();
 
-        assert!(keybinds.navigate.workspace_up.bindings.is_empty());
+        assert!(keybinds.is_none());
         assert_eq!(
             diagnostics
                 .iter()
@@ -1698,17 +1680,22 @@ navigate_workspace_down = ["n", "f"]
 "#,
         )
         .expect("test precondition");
-        let keybinds = config.keybinds();
+        let keybinds = parse_keybinds(&config, &[]);
         let diagnostics = config.collect_diagnostics();
 
+        assert!(keybinds.is_some());
         assert!(
             keybinds
+                .as_ref()
+                .expect("valid keybindings")
                 .navigate
                 .workspace_down
                 .matches_direct_key(&TerminalKey::new(KeyCode::Char('n'), KeyModifiers::empty()))
         );
         assert!(
             keybinds
+                .as_ref()
+                .expect("valid keybindings")
                 .navigate
                 .workspace_down
                 .matches_direct_key(&TerminalKey::new(KeyCode::Char('f'), KeyModifiers::empty()))
@@ -1729,7 +1716,7 @@ navigate_pane_down = "j"
 "#,
         )
         .expect("test precondition");
-        let keybinds = config.keybinds();
+        let keybinds = parse_keybinds(&config, &[]).expect("valid keybindings");
 
         assert!(
             keybinds
@@ -1750,11 +1737,10 @@ navigate_workspace_down = "ctrl+a"
 "#,
         )
         .expect("test precondition");
-        let keybinds = config.keybinds();
+        let keybinds = parse_keybinds(&config, &[]);
         let diagnostics = config.collect_diagnostics();
 
-        assert!(keybinds.navigate.workspace_up.bindings.is_empty());
-        assert!(keybinds.navigate.workspace_down.bindings.is_empty());
+        assert!(keybinds.is_none());
         assert!(diagnostics.iter().any(|diag| {
             diag.contains("navigate keybinding must not include prefix")
                 && diag.contains("keys.navigate_workspace_up")
@@ -1775,7 +1761,7 @@ switch_workspace = "prefix+shift+1..9"
 "#,
         )
         .expect("test precondition");
-        let kb = config.keybinds();
+        let kb = parse_keybinds(&config, &[]).expect("valid keybindings");
         assert_eq!(kb.switch_workspace.len(), 9);
         assert_eq!(
             kb.switch_workspace[0].trigger,
@@ -1795,16 +1781,9 @@ switch_tab = "prefix+?"
         .expect("test precondition");
 
         let diagnostics = config.collect_diagnostics();
-        let kb = config.keybinds();
+        let kb = parse_keybinds(&config, &[]);
 
-        assert!(kb.switch_tab.is_empty());
-        assert_eq!(
-            binding_triggers(&kb.help),
-            vec![BindingTrigger::Prefix((
-                KeyCode::Char('?'),
-                KeyModifiers::empty()
-            ))]
-        );
+        assert!(kb.is_none());
         assert!(diagnostics.iter().any(|diag| {
             diag.contains("indexed keybinding must use 1..9") && diag.contains("keys.switch_tab")
         }));
@@ -1817,7 +1796,7 @@ switch_tab = "prefix+?"
 
     #[test]
     fn default_keymap_is_prefix_first_and_tab_centered() {
-        let kb = Config::default().keybinds();
+        let kb = parse_keybinds(&Config::default(), &[]).expect("default keybindings");
         assert_eq!(
             binding_triggers(&kb.next_tab),
             vec![BindingTrigger::Prefix((
@@ -1885,8 +1864,8 @@ new_workspace = "prefix+n"
         )
         .expect("test precondition");
         let diagnostics = config.collect_diagnostics();
-        let kb = config.keybinds();
-        assert!(kb.next_tab.bindings.is_empty() || kb.new_workspace.bindings.is_empty());
+        let kb = parse_keybinds(&config, &[]);
+        assert!(kb.is_none());
         assert!(diagnostics.iter().any(|diag| {
             diag.contains("keybinding conflict")
                 && diag.contains("keys.new_workspace")
@@ -1904,21 +1883,14 @@ new_tab = "prefix+z"
         )
         .expect("test precondition");
 
-        let (diagnostics, kb) = diagnostics_and_keybinds(&config, &["new_tab"]);
+        let (diagnostics, keybinds) = diagnostics_and_keybinds(&config, &["new_tab"]);
 
         assert!(diagnostics.iter().any(|diag| {
             diag.contains("keybinding conflict")
                 && diag.contains("keys.new_tab")
                 && diag.contains("keys.zoom")
         }));
-        assert_eq!(
-            binding_triggers(&kb.new_tab),
-            vec![BindingTrigger::Prefix((
-                KeyCode::Char('z'),
-                KeyModifiers::empty()
-            ))]
-        );
-        assert!(kb.zoom.bindings.is_empty());
+        assert!(keybinds.is_none());
     }
 
     #[test]
@@ -1928,9 +1900,10 @@ new_tab = "prefix+z"
                 toml::from_str(&format!("[keys]\nnew_tab = \"prefix+z\"\nzoom = {zoom}\n"))
                     .expect("test precondition");
 
-            let (diagnostics, kb) = diagnostics_and_keybinds(&config, &["new_tab", "zoom"]);
+            let (diagnostics, keybinds) = diagnostics_and_keybinds(&config, &["new_tab", "zoom"]);
 
             assert!(diagnostics.is_empty(), "zoom = {zoom}: {diagnostics:?}");
+            let kb = keybinds.expect("all bindings valid");
             assert_eq!(
                 binding_triggers(&kb.new_tab),
                 vec![BindingTrigger::Prefix((
@@ -1949,18 +1922,14 @@ new_tab = "prefix+z"
         ] {
             let config: Config = toml::from_str(&format!("[keys]\nprefix = {prefix:?}\n"))
                 .expect("test precondition");
-            let (diagnostics, kb) = diagnostics_and_keybinds(&config, &["prefix"]);
+            let (diagnostics, keybinds) = diagnostics_and_keybinds(&config, &["prefix"]);
 
             assert!(
                 diagnostics
                     .iter()
                     .any(|diag| diag.contains(diagnostic) && diag.contains(field))
             );
-            if prefix == "h" {
-                assert!(kb.navigate.pane_left.bindings.is_empty());
-            } else {
-                assert!(kb.next_tab.bindings.is_empty());
-            }
+            assert!(keybinds.is_none());
         }
     }
 
@@ -1976,16 +1945,8 @@ swap_pane_right = "prefix+shift+l"
         .expect("test precondition");
 
         let diagnostics = config.collect_diagnostics();
-        let kb = config.keybinds();
-
-        assert_eq!(
-            binding_triggers(&kb.previous_workspace),
-            vec![BindingTrigger::Prefix((
-                KeyCode::Char('l'),
-                KeyModifiers::SHIFT
-            ))]
-        );
-        assert!(kb.swap_pane_right.bindings.is_empty());
+        let kb = parse_keybinds(&config, &[]);
+        assert!(kb.is_none());
         assert!(diagnostics.iter().any(|diag| {
             diag.contains("keybinding conflict")
                 && diag.contains("keys.previous_workspace")

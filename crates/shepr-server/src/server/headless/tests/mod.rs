@@ -129,6 +129,12 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
     let stop_requested = Arc::new(AtomicBool::new(false));
     let headless_size = app.state.settings.headless_size;
+    let mut resolved_config = Vec::new();
+    shepr_protocol::codec::encode_into(
+        &mut resolved_config,
+        &shepr_config::ValidatedConfig::test_default(),
+    )
+    .expect("test config encodes");
 
     HeadlessServer {
         app,
@@ -138,6 +144,7 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
         client_socket_identity,
         clients: ClientRegistry::default(),
         client_shell_boot_id: "test-boot".into(),
+        resolved_config,
         sent_window_title: None,
         api_window_title: None,
         api_dispatcher: ApiDispatcher::default(),

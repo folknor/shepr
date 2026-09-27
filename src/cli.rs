@@ -506,9 +506,9 @@ fn config_check() -> i32 {
     // aborting the check.
     let (diagnostics, provenance) = match shepr_config::AppPaths::resolve() {
         Ok(paths) => {
-            let loaded = shepr_config::Config::load_for_check(&paths);
+            let loaded = shepr_config::load_for_check(&paths);
             let mut sources = loaded
-                .provenance
+                .provenance()
                 .values()
                 .iter()
                 .map(|origin| format!("{} = {} <- {}", origin.key, origin.value, origin.source))
@@ -588,7 +588,7 @@ fn config_check() -> i32 {
 fn load_validated_config(
     paths: &shepr_config::AppPaths,
 ) -> CliResult<shepr_config::ValidatedConfig> {
-    shepr_config::Config::load_validated(paths).map_err(|diagnostics| {
+    shepr_config::load_validated(paths).map_err(|diagnostics| {
         CliError::Io(std::io::Error::other(format!(
             "configuration error:\n  {}",
             diagnostics

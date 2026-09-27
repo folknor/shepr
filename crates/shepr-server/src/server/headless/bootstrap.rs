@@ -5,6 +5,8 @@ pub fn run_server(
     config: &shepr_config::ValidatedConfig,
     paths: &shepr_config::AppPaths,
 ) -> io::Result<()> {
+    let resolved_config = encode_resolved_config(config)?;
+
     // Consume the startup-cwd hint before anything below starts a thread: the
     // API server thread, the tokio workers and session restore all run
     // concurrently afterwards, and unsetting a variable while another thread
@@ -58,15 +60,16 @@ pub fn run_server(
         seed_startup_workspace_if_empty(&mut app, startup_cwd);
 
         // Create the headless server.
-        let mut server = match HeadlessServer::new(app, Some(_api_server), stop_requested) {
-            Ok(server) => server,
-            Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
-                eprintln!("error: shepr server is already running");
-                eprintln!("client socket: {}", client_socket_path(paths).display());
-                std::process::exit(1);
-            }
-            Err(err) => return Err(err),
-        };
+        let mut server =
+            match HeadlessServer::new(app, Some(_api_server), resolved_config, stop_requested) {
+                Ok(server) => server,
+                Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
+                    eprintln!("error: shepr server is already running");
+                    eprintln!("client socket: {}", client_socket_path(paths).display());
+                    std::process::exit(1);
+                }
+                Err(err) => return Err(err),
+            };
 
         info!(
             api_socket = %shepr_api::socket_path(paths).display(),
@@ -85,6 +88,16 @@ pub fn run_server(
     rt.shutdown_timeout(Duration::from_millis(100));
     shepr_platform::logging::shutdown("server");
     result
+}
+
+fn encode_resolved_config(config: &shepr_config::ValidatedConfig) -> io::Result<Vec<u8>> {
+    let mut encoded = Vec::new();
+    shepr_protocol::codec::encode_into(&mut encoded, config).map_err(|error| {
+        io::Error::other(format!(
+            "validated configuration could not be encoded for the client protocol: {error}"
+        ))
+    })?;
+    Ok(encoded)
 }
 
 fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathBuf>) {

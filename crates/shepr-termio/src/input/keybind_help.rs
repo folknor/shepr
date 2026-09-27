@@ -241,8 +241,8 @@ mod tests {
 
     #[test]
     fn help_lists_every_default_pane_binding() {
-        let config = shepr_config::Config::default();
-        let groups = keybind_help_groups(&config.keybinds(), config.live_keybinds().prefix);
+        let live = shepr_config::ValidatedConfig::test_default().live_keybinds();
+        let groups = keybind_help_groups(&live.keybinds, live.prefix);
         let entries: Vec<_> = groups.iter().flat_map(|(_, entries)| entries).collect();
         for (key, label) in [
             ("prefix+[", "copy mode"),
