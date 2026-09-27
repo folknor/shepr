@@ -394,7 +394,7 @@ impl App {
     pub(super) fn agent_info(
         &self,
         ws_idx: usize,
-        pane_id: crate::layout::PaneId,
+        pane_id: crate::core::layout::PaneId,
     ) -> Option<crate::api::schema::AgentInfo> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let pane_state = ws.pane_state(pane_id)?;

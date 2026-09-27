@@ -4,7 +4,7 @@ use std::cmp::Reverse;
 
 use ratatui::layout::{Direction, Rect};
 
-use crate::geometry::SplitBranch;
+use crate::core::geometry::SplitBranch;
 
 /// First-child share of a BSP split, constrained to leave room for both panes.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -752,15 +752,15 @@ mod tests {
         TileLayout::from_saved(
             Node::Split {
                 direction: Direction::Horizontal,
-                ratio: crate::layout::SplitRatio::clamped(0.3),
+                ratio: crate::core::layout::SplitRatio::clamped(0.3),
                 first: Box::new(Node::Pane(pane(1))),
                 second: Box::new(Node::Split {
                     direction: Direction::Vertical,
-                    ratio: crate::layout::SplitRatio::clamped(0.6),
+                    ratio: crate::core::layout::SplitRatio::clamped(0.6),
                     first: Box::new(Node::Pane(pane(2))),
                     second: Box::new(Node::Split {
                         direction: Direction::Horizontal,
-                        ratio: crate::layout::SplitRatio::clamped(0.4),
+                        ratio: crate::core::layout::SplitRatio::clamped(0.4),
                         first: Box::new(Node::Pane(pane(3))),
                         second: Box::new(Node::Pane(pane(4))),
                     }),
@@ -940,10 +940,10 @@ mod tests {
         let mut layout = TileLayout::from_saved(
             Node::Split {
                 direction: Direction::Horizontal,
-                ratio: crate::layout::SplitRatio::clamped(0.6),
+                ratio: crate::core::layout::SplitRatio::clamped(0.6),
                 first: Box::new(Node::Split {
                     direction: Direction::Vertical,
-                    ratio: crate::layout::SplitRatio::clamped(0.5),
+                    ratio: crate::core::layout::SplitRatio::clamped(0.5),
                     first: Box::new(Node::Pane(pane(1))),
                     second: Box::new(Node::Pane(pane(2))),
                 }),
@@ -969,10 +969,10 @@ mod tests {
         let mut layout = TileLayout::from_saved(
             Node::Split {
                 direction: Direction::Vertical,
-                ratio: crate::layout::SplitRatio::clamped(0.6),
+                ratio: crate::core::layout::SplitRatio::clamped(0.6),
                 first: Box::new(Node::Split {
                     direction: Direction::Horizontal,
-                    ratio: crate::layout::SplitRatio::clamped(0.5),
+                    ratio: crate::core::layout::SplitRatio::clamped(0.5),
                     first: Box::new(Node::Pane(pane(1))),
                     second: Box::new(Node::Pane(pane(2))),
                 }),
@@ -998,16 +998,16 @@ mod tests {
         let mut layout = TileLayout::from_saved(
             Node::Split {
                 direction: Direction::Vertical,
-                ratio: crate::layout::SplitRatio::clamped(0.5),
+                ratio: crate::core::layout::SplitRatio::clamped(0.5),
                 first: Box::new(Node::Split {
                     direction: Direction::Horizontal,
-                    ratio: crate::layout::SplitRatio::clamped(0.5),
+                    ratio: crate::core::layout::SplitRatio::clamped(0.5),
                     first: Box::new(Node::Pane(pane(1))),
                     second: Box::new(Node::Pane(pane(2))),
                 }),
                 second: Box::new(Node::Split {
                     direction: Direction::Horizontal,
-                    ratio: crate::layout::SplitRatio::clamped(0.5),
+                    ratio: crate::core::layout::SplitRatio::clamped(0.5),
                     first: Box::new(Node::Pane(pane(3))),
                     second: Box::new(Node::Pane(pane(4))),
                 }),

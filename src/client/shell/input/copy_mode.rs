@@ -705,7 +705,7 @@ impl ClientShellState {
         let row = copy_mode.cursor.row.absolute(history_origin);
         if linewise {
             copy_mode.selection = Some(ClientCopySelection::Linewise { anchor_row: row });
-            self.selection = Some(crate::selection::Selection::line_range(
+            self.selection = Some(crate::vt::selection::Selection::line_range(
                 copy_mode.pane_id.clone(),
                 row,
                 row,
@@ -715,7 +715,7 @@ impl ClientShellState {
             copy_mode.selection = Some(ClientCopySelection::Character {
                 anchor: crate::vt::Point::new(row, copy_mode.cursor.col),
             });
-            self.selection = Some(crate::selection::Selection::anchor(
+            self.selection = Some(crate::vt::selection::Selection::anchor(
                 copy_mode.pane_id.clone(),
                 crate::vt::Point::new(row, copy_mode.cursor.col),
             ));
@@ -734,7 +734,7 @@ impl ClientShellState {
             return;
         };
         self.selection = Some(match selection {
-            ClientCopySelection::Character { anchor } => crate::selection::Selection::range(
+            ClientCopySelection::Character { anchor } => crate::vt::selection::Selection::range(
                 copy_mode.pane_id.clone(),
                 anchor,
                 crate::vt::Point::new(
@@ -743,7 +743,7 @@ impl ClientShellState {
                 ),
             ),
             ClientCopySelection::Linewise { anchor_row } => {
-                crate::selection::Selection::line_range(
+                crate::vt::selection::Selection::line_range(
                     copy_mode.pane_id.clone(),
                     anchor_row,
                     copy_mode.cursor.row.absolute(history_origin),
@@ -874,7 +874,7 @@ impl ClientShellState {
         let live_selection = self
             .selection
             .as_ref()
-            .is_some_and(crate::selection::Selection::is_visible);
+            .is_some_and(crate::vt::selection::Selection::is_visible);
         if copy
             && !live_selection
             && let Some((pane_id, text_match)) = self.copy_mode.as_ref().and_then(|copy_mode| {
@@ -888,7 +888,7 @@ impl ClientShellState {
                 .copy_hit()
                 .and_then(|hit| hit.scroll)
                 .map_or(crate::vt::AbsRow(0), |metrics| metrics.history_origin);
-            self.selection = Some(crate::selection::Selection::range(
+            self.selection = Some(crate::vt::selection::Selection::range(
                 pane_id,
                 crate::vt::Point::new(
                     text_match.start.row.absolute(history_origin),
@@ -908,7 +908,7 @@ impl ClientShellState {
             && self
                 .selection
                 .as_ref()
-                .is_some_and(crate::selection::Selection::is_visible)
+                .is_some_and(crate::vt::selection::Selection::is_visible)
         {
             // A visible explicit selection is live. If the fallback above supplied
             // a search match, retain the revision that established its boundaries.

@@ -77,7 +77,7 @@ fn client_shell_geometry_error(
 }
 
 /// Direct-attach geometry as the server will use it.
-type TerminalGeometry = crate::geometry::HostGeometry;
+type TerminalGeometry = crate::core::geometry::HostGeometry;
 
 /// Bounds a direct-attach client's reported geometry.
 ///
@@ -1815,7 +1815,7 @@ mod tests {
 
     #[test]
     fn client_shell_validation_rejects_empty_surface() {
-        assert!(crate::geometry::GridSize::new(0, 29).is_none());
+        assert!(crate::core::geometry::GridSize::new(0, 29).is_none());
         assert_eq!(
             client_shell_geometry_error(
                 crate::protocol::ClientSurfaceSize { cols: 0, rows: 29 },

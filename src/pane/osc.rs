@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use tracing::info;
 
-use crate::layout::PaneId;
+use crate::core::layout::PaneId;
 
 use super::terminal::GhosttyPaneCore;
 
@@ -409,7 +409,7 @@ pub(super) fn restore_host_terminal_theme_if_needed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::PaneId;
+    use crate::core::layout::PaneId;
 
     #[test]
     fn bulk_osc_scan_matches_bytewise_state() {

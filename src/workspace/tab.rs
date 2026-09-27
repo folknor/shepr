@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use ratatui::layout::Direction;
 
 use super::PaneSpawnHandles;
-use crate::layout::{Node, PaneId, TileLayout};
+use crate::core::layout::{Node, PaneId, TileLayout};
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::pane::{PaneRuntime, PaneRuntimeRegistry};
 use crate::protocol::TerminalId;

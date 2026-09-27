@@ -6,6 +6,9 @@ pub(crate) const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(30);
 
 const PANE_COLORTERM: &str = "truecolor";
+pub(crate) const SHEPR_PANE_ID_ENV_VAR: &str = "SHEPR_PANE_ID";
+const SHEPR_TAB_ID_ENV_VAR: &str = "SHEPR_TAB_ID";
+const SHEPR_WORKSPACE_ID_ENV_VAR: &str = "SHEPR_WORKSPACE_ID";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum LaunchPurpose {
@@ -113,7 +116,13 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
         cmd.env(key, value);
     }
     cmd.env(crate::SHEPR_ENV_VAR, crate::SHEPR_ENV_VALUE);
-    crate::integration::apply_pane_base_env(cmd, &launch_env.api_socket_path);
+    cmd.env(
+        crate::config::SOCKET_PATH_ENV_VAR,
+        &launch_env.api_socket_path,
+    );
+    if let Ok(executable) = crate::platform::launch_executable() {
+        cmd.env("SHEPR_BIN_PATH", executable);
+    }
     match &launch_env.identity {
         PaneLaunchIdentity::Inherit => {}
         PaneLaunchIdentity::Managed {
@@ -121,15 +130,9 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
             tab_id,
             pane_id,
         } => {
-            cmd.env(
-                crate::integration::SHEPR_WORKSPACE_ID_ENV_VAR,
-                workspace_id.as_str(),
-            );
-            cmd.env(crate::integration::SHEPR_TAB_ID_ENV_VAR, tab_id.to_string());
-            cmd.env(
-                crate::integration::SHEPR_PANE_ID_ENV_VAR,
-                pane_id.to_string(),
-            );
+            cmd.env(SHEPR_WORKSPACE_ID_ENV_VAR, workspace_id.as_str());
+            cmd.env(SHEPR_TAB_ID_ENV_VAR, tab_id.to_string());
+            cmd.env(SHEPR_PANE_ID_ENV_VAR, pane_id.to_string());
         }
     }
 }

@@ -136,7 +136,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert_eq!(server.clients.foreground_client_id(), Some(client_id));
     assert_eq!(
         server.effective_size,
-        crate::geometry::GridSize::clamped(101, 37)
+        crate::core::geometry::GridSize::clamped(101, 37)
     );
 
     server.render_and_stream();

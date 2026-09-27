@@ -7,8 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ratatui::layout::Direction;
 use tokio::sync::{Notify, mpsc};
 
-use crate::events::{AheadBehind, AppEvent, GitSpaceMetadata, fallback_label_from_cwd};
-use crate::layout::{PaneId, TileLayout};
+use crate::core::layout::{PaneId, TileLayout};
+use crate::events::AppEvent;
+use crate::git::{AheadBehind, GitSpaceMetadata, fallback_label_from_cwd};
 use crate::pane::{PaneLaunchEnv, PaneRuntime, PaneRuntimeRegistry, PaneState};
 use crate::protocol::{
     PublicPaneId, PublicTabId, TerminalId, WorkspaceId, decode_public_number, encode_public_number,
@@ -1409,9 +1410,9 @@ mod tests {
     #[test]
     fn linked_worktree_auto_label_uses_checkout_name_not_repo_name() {
         let (base, repo, checkout) =
-            crate::events::git::test_support::create_repo_with_linked_worktree("linked-auto-label");
+            crate::git::test_support::create_repo_with_linked_worktree("linked-auto-label");
 
-        let (snapshot, _) = crate::events::git::git_status_snapshot_for_cwd(&checkout, None);
+        let (snapshot, _) = crate::git::git_status_snapshot_for_cwd(&checkout, None);
         let space = snapshot.space;
         let auto_label = snapshot.auto_label;
 

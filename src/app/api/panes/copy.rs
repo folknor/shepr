@@ -70,7 +70,7 @@ impl App {
         {
             return Err(("stale_content", "pane content changed".to_owned()));
         }
-        let selection = crate::selection::Selection::range(
+        let selection = crate::vt::selection::Selection::range(
             pane_id,
             crate::vt::Point::new(params.anchor.row, params.anchor.col),
             crate::vt::Point::new(params.cursor.row, params.cursor.col),
@@ -138,7 +138,7 @@ impl App {
                 let width = runtime
                     .terminal_dimensions()
                     .map_or(1, |(cols, _)| cols.max(1));
-                let selection = crate::selection::Selection::range(
+                let selection = crate::vt::selection::Selection::range(
                     pane_id,
                     crate::vt::Point::new(absolute_cursor_row, 0),
                     crate::vt::Point::new(absolute_cursor_row, width.saturating_sub(1)),

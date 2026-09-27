@@ -93,8 +93,8 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
             height: 19,
         },
         path: vec![
-            crate::geometry::SplitBranch::First,
-            crate::geometry::SplitBranch::Second,
+            crate::core::geometry::SplitBranch::First,
+            crate::core::geometry::SplitBranch::Second,
         ],
     });
     state.set_pane_surface(pane_surface);
@@ -137,8 +137,8 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
             height: 19,
         },
         path: vec![
-            crate::geometry::SplitBranch::First,
-            crate::geometry::SplitBranch::Second,
+            crate::core::geometry::SplitBranch::First,
+            crate::core::geometry::SplitBranch::Second,
         ],
     });
     state.set_snapshot(Box::new(replacement));
@@ -886,7 +886,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
     for (surface_revision, content_revision, width, alternate_screen_active) in
         [(5, 6, 4, false), (6, 8, 3, false)]
     {
-        state.selection = Some(crate::selection::Selection::anchor(
+        state.selection = Some(crate::vt::selection::Selection::anchor(
             "pane_1".into(),
             crate::vt::Point::new(crate::vt::AbsRow(12), 0),
         ));

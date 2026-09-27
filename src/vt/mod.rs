@@ -43,6 +43,7 @@ mod read;
 mod render;
 mod rows;
 mod scan;
+pub(crate) mod selection;
 pub use cell::RenderColors;
 #[cfg(test)]
 use cell::cell_style;
@@ -336,7 +337,7 @@ pub struct Terminal {
     max_scrollback: usize,
     history_lines: usize,
     default_palette: [RgbColor; 256],
-    cell: Option<crate::geometry::CellPx>,
+    cell: Option<crate::core::geometry::CellPx>,
     modes: ExtraModes,
     color_scheme: Option<ColorScheme>,
     /// The host's default foreground/background. They sit under the child's
@@ -638,7 +639,7 @@ impl Terminal {
         self.modes.cursor_shape_set
     }
 
-    pub fn resize(&mut self, geometry: crate::geometry::PaneGeometry) {
+    pub fn resize(&mut self, geometry: crate::core::geometry::PaneGeometry) {
         let cols = geometry.cols();
         let rows = geometry.rows();
         let cell = geometry.cell;

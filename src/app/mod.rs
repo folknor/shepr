@@ -26,7 +26,6 @@ mod tab_bar_status;
 mod terminal_targets;
 mod terminal_titles;
 mod window_title;
-pub(crate) mod word_bounds;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -78,7 +77,7 @@ pub struct App {
     pub(crate) event_rx: mpsc::Receiver<AppEvent>,
     pub(crate) api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
     pub(crate) event_hub: crate::api::EventHub,
-    pub(crate) last_focus: Option<(usize, crate::layout::PaneId)>,
+    pub(crate) last_focus: Option<(usize, crate::core::layout::PaneId)>,
     pub(crate) policy: AppPolicy,
     pub(crate) git_refresh: git_refresh::GitRefreshScheduler,
     pub(crate) agent_metadata_deadline: Option<Instant>,
@@ -327,7 +326,7 @@ impl App {
     #[cfg(test)]
     pub(crate) fn insert_test_runtime(
         &mut self,
-        pane_id: crate::layout::PaneId,
+        pane_id: crate::core::layout::PaneId,
         runtime: crate::pane::PaneRuntime,
     ) {
         let terminal_id = self
@@ -342,7 +341,10 @@ impl App {
 
     /// The live runtime of `pane_id`, looked up the way production does.
     #[cfg(test)]
-    pub(crate) fn test_runtime(&self, pane_id: crate::layout::PaneId) -> &crate::pane::PaneRuntime {
+    pub(crate) fn test_runtime(
+        &self,
+        pane_id: crate::core::layout::PaneId,
+    ) -> &crate::pane::PaneRuntime {
         self.state
             .workspaces
             .iter()
@@ -474,14 +476,14 @@ mod tests {
             .expect("test precondition");
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
-            results: vec![crate::events::WorkspaceGitStatus {
+            results: vec![crate::git::WorkspaceGitStatus {
                 workspace_id,
                 resolved_identity_cwd: resolved_identity_cwd.clone(),
                 status_cache_key: resolved_identity_cwd,
-                demand: crate::events::GitStatusRefreshDemand::ALL,
+                demand: crate::git::GitStatusRefreshDemand::ALL,
                 auto_label: "one".into(),
                 branch: Some("render-dirty-test".into()),
-                ahead_behind: Some(crate::events::AheadBehind {
+                ahead_behind: Some(crate::git::AheadBehind {
                     ahead: 1,
                     behind: 0,
                 }),

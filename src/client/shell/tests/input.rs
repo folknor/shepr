@@ -626,7 +626,7 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
         &[((0, 0), "L".into(), "https://example.test".into())],
     );
     state.set_pane_surface(pane_surface);
-    let mut selection = crate::selection::Selection::range(
+    let mut selection = crate::vt::selection::Selection::range(
         "pane_1".into(),
         crate::vt::Point::new(crate::vt::AbsRow(0), 0),
         crate::vt::Point::new(crate::vt::AbsRow(0), 1),

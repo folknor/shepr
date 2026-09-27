@@ -115,7 +115,7 @@ pub(super) struct PaneSplitHit {
     pub(super) pos: u16,
     pub(super) area: Rect,
     pub(super) hit_rect: Rect,
-    pub(super) path: Vec<crate::geometry::SplitBranch>,
+    pub(super) path: Vec<crate::core::geometry::SplitBranch>,
     pub(super) topology_signature: u64,
 }
 
@@ -639,7 +639,7 @@ pub(crate) struct ClientShellState {
     pub(super) overlay: Option<ClientShellOverlay>,
     pub(super) previous_pane_id: Option<crate::protocol::PublicPaneId>,
     pub(super) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
-    pub(super) selection: Option<crate::selection::Selection<crate::protocol::PublicPaneId>>,
+    pub(super) selection: Option<crate::vt::selection::Selection<crate::protocol::PublicPaneId>>,
     /// Pane a mouse selection was started in while another pane held focus.
     /// The click's `PaneFocus` travels the serialized command lane, so
     /// snapshots can still report the old focus for a while; until one shows

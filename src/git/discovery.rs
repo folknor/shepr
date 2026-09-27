@@ -343,7 +343,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::events::git::test_support::{live_git_space, run_git, temp_test_dir};
+    use crate::git::test_support::{live_git_space, run_git, temp_test_dir};
 
     #[test]
     fn oversized_loose_ref_is_unavailable_not_absent() {
@@ -562,9 +562,7 @@ mod tests {
     #[test]
     fn bare_source_and_linked_checkout_share_repo_name_but_not_auto_label() {
         let (base, bare, checkout) =
-            crate::events::git::test_support::create_bare_repo_with_linked_worktree(
-                "bare-linked-labels",
-            );
+            crate::git::test_support::create_bare_repo_with_linked_worktree("bare-linked-labels");
 
         let bare_space = live_git_space(&bare).expect("test precondition");
         let checkout_space = live_git_space(&checkout).expect("test precondition");

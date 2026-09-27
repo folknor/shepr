@@ -12,9 +12,9 @@ use super::agent_detection::{
 use super::cwd::UsableCwd;
 use super::launch::LaunchPurpose;
 use super::terminal::PaneTerminal;
+use crate::core::layout::PaneId;
 use crate::detect::{Agent, AgentState};
 use crate::events::AppEvent;
-use crate::layout::PaneId;
 
 pub(super) const RELEASE_REACQUIRE_SUPPRESSION: std::time::Duration =
     std::time::Duration::from_secs(1);

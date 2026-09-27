@@ -178,10 +178,10 @@ pub struct HeadlessServer {
     /// the loop sleeps again.
     host_input_modes_dirty: bool,
     /// Configured virtual terminal size used when no clients are connected.
-    headless_size: crate::geometry::GridSize,
+    headless_size: crate::core::geometry::GridSize,
     /// Shared pane runtime size derived from the foreground client, or the
     /// configured headless size when no clients are connected.
-    effective_size: crate::geometry::GridSize,
+    effective_size: crate::core::geometry::GridSize,
     /// Owns running, host-shutdown warning/freeze, cancellation and stopping.
     lifecycle: ShutdownLifecycle,
     /// Watches logind for shutdown warnings; `None` before `run` and while the
@@ -967,7 +967,7 @@ impl HeadlessServer {
     /// tokens require a UI render.
     fn sync_terminal_title_sources(
         &mut self,
-        sources: &HashSet<crate::layout::PaneId>,
+        sources: &HashSet<crate::core::layout::PaneId>,
     ) -> (bool, bool) {
         let focused_source = self
             .foreground_window_title_target()
@@ -1318,7 +1318,7 @@ impl HeadlessServer {
         self.app
             .start_pending_agent_resume_for_terminal(&real_terminal_id, rows, cols, true);
         if let Some(runtime) = self.app.terminal_runtimes.get(&real_terminal_id) {
-            runtime.resize(crate::geometry::PaneGeometry::new(
+            runtime.resize(crate::core::geometry::PaneGeometry::new(
                 cols,
                 rows,
                 cell_size.width_px,
@@ -1359,7 +1359,7 @@ impl HeadlessServer {
                 let pixel_mouse = pixel_mouse && observed.is_known();
                 let mut connection = ClientConnection::new_with_mode(
                     ClientConnectionMode::TerminalPending,
-                    crate::geometry::GridSize::clamped(cols, rows),
+                    crate::core::geometry::GridSize::clamped(cols, rows),
                     observed,
                     last_activity,
                     protocol::RenderEncoding::TerminalAnsi,
@@ -1399,7 +1399,7 @@ impl HeadlessServer {
                 };
                 let mut connection = ClientConnection::new_with_mode(
                     ClientConnectionMode::shell(),
-                    crate::geometry::GridSize::clamped(surface_cols, surface_rows),
+                    crate::core::geometry::GridSize::clamped(surface_cols, surface_rows),
                     observed,
                     last_activity,
                     protocol::RenderEncoding::SemanticFrame,
@@ -1536,7 +1536,7 @@ impl HeadlessServer {
                     ..
                 }) = self.clients.get_mut(&client_id)
                 {
-                    *terminal_size = crate::geometry::GridSize::clamped(cols, rows);
+                    *terminal_size = crate::core::geometry::GridSize::clamped(cols, rows);
                     *cell_size = observed;
                     *client_pixel_mouse = pixel_mouse;
                     render_state.request_repaint();
@@ -1546,7 +1546,7 @@ impl HeadlessServer {
                 };
                 if let Some((terminal_id, cell_size)) = direct_terminal_id {
                     if let Some(runtime) = self.app.terminal_runtimes.get(&terminal_id) {
-                        runtime.resize(crate::geometry::PaneGeometry::new(
+                        runtime.resize(crate::core::geometry::PaneGeometry::new(
                             cols,
                             rows,
                             cell_size.width_px,
@@ -1564,7 +1564,7 @@ impl HeadlessServer {
                     ..
                 }) = self.clients.get_mut(&client_id)
                 {
-                    *terminal_size = crate::geometry::GridSize::clamped(cols, rows);
+                    *terminal_size = crate::core::geometry::GridSize::clamped(cols, rows);
                     *cell_size = observed;
                     *client_pixel_mouse = pixel_mouse;
                     render_state.request_repaint();
@@ -1587,7 +1587,7 @@ impl HeadlessServer {
                     return false;
                 }
                 client.terminal_size =
-                    crate::geometry::GridSize::clamped(surface_cols, surface_rows);
+                    crate::core::geometry::GridSize::clamped(surface_cols, surface_rows);
                 let observed = crate::host_term::cell_size::HostCellSize {
                     width_px: cell_width_px,
                     height_px: cell_height_px,

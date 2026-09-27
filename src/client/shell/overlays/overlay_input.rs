@@ -164,7 +164,7 @@ impl ClientShellState {
         let suggested_name = cwd
             .as_deref()
             .map(std::path::Path::new)
-            .map(crate::events::derive_label_from_cwd)
+            .map(crate::git::derive_label_from_cwd)
             .unwrap_or_else(|| "workspace".to_owned());
         self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
             title: "new workspace",

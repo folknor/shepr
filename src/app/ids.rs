@@ -3,7 +3,7 @@ use super::App;
 impl App {
     pub(crate) fn find_pane(
         &self,
-        pane_id: crate::layout::PaneId,
+        pane_id: crate::core::layout::PaneId,
     ) -> Option<(usize, &crate::pane::PaneState)> {
         self.state
             .workspaces
@@ -39,7 +39,7 @@ impl App {
     pub(crate) fn public_pane_id(
         &self,
         ws_idx: usize,
-        pane_id: crate::layout::PaneId,
+        pane_id: crate::core::layout::PaneId,
     ) -> Option<String> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let pane_number = ws.public_pane_number(pane_id)?;
@@ -56,7 +56,7 @@ impl App {
     pub(crate) fn tab_index_for_pane(
         &self,
         ws_idx: usize,
-        pane_id: crate::layout::PaneId,
+        pane_id: crate::core::layout::PaneId,
     ) -> Option<usize> {
         self.state
             .workspaces
@@ -67,7 +67,7 @@ impl App {
     pub(super) fn pane_launch_env(
         &self,
         ws_idx: usize,
-        pane_id: crate::layout::PaneId,
+        pane_id: crate::core::layout::PaneId,
         extra_env: Vec<(String, String)>,
     ) -> Option<crate::pane::PaneLaunchEnv> {
         let tab_idx = self.tab_index_for_pane(ws_idx, pane_id)?;
@@ -126,7 +126,7 @@ impl App {
     /// Raw internal pane ids (`p_<raw>`) are not accepted: they restart every
     /// process, so after a server restart they name a different pane. The
     /// `<workspace>-N` form is gone too; nothing emits it.
-    pub(crate) fn parse_pane_id(&self, id: &str) -> Option<(usize, crate::layout::PaneId)> {
+    pub(crate) fn parse_pane_id(&self, id: &str) -> Option<(usize, crate::core::layout::PaneId)> {
         let public_id = id.parse::<crate::protocol::PublicPaneId>().ok()?;
         let current_id = (|| {
             let ws_idx = self.parse_workspace_id(public_id.workspace_id())?;
@@ -144,7 +144,7 @@ impl App {
     pub(crate) fn parse_current_public_pane_id(
         &self,
         id: &str,
-    ) -> Option<(usize, crate::layout::PaneId)> {
+    ) -> Option<(usize, crate::core::layout::PaneId)> {
         let (ws_idx, pane_id) = self.parse_pane_id(id)?;
         (self.public_pane_id(ws_idx, pane_id).as_deref() == Some(id)).then_some((ws_idx, pane_id))
     }

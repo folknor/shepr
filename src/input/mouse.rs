@@ -8,7 +8,7 @@ pub(crate) enum Position {
 /// padding, so this cannot be reconstructed from the reported cell pitch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HostPixelExtent {
-    grid: crate::geometry::GridSize,
+    grid: crate::core::geometry::GridSize,
     pub(crate) width_px: u32,
     pub(crate) height_px: u32,
 }
@@ -31,7 +31,7 @@ impl HostPixelExtent {
 
     pub(crate) fn new(cols: u16, rows: u16, width_px: u32, height_px: u32) -> Option<Self> {
         (width_px > 0 && height_px > 0).then_some(Self {
-            grid: crate::geometry::GridSize::new(cols, rows)?,
+            grid: crate::core::geometry::GridSize::new(cols, rows)?,
             width_px,
             height_px,
         })

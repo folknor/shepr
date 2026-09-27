@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::layout::PaneId;
+use crate::core::layout::PaneId;
 use bytes::Bytes;
 use tokio::sync::mpsc::{self, error::TryRecvError as DataTryRecvError};
 use tracing::{debug, error, warn};
@@ -65,7 +65,7 @@ pub(crate) enum ReaderExit {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PtyResize {
-    geometry: crate::geometry::PaneGeometry,
+    geometry: crate::core::geometry::PaneGeometry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,7 +224,7 @@ impl PtyIoActorHandle {
 
     pub(crate) fn resize(
         &self,
-        geometry: crate::geometry::PaneGeometry,
+        geometry: crate::core::geometry::PaneGeometry,
         terminal_responses: Vec<Bytes>,
     ) {
         {
@@ -1635,11 +1635,11 @@ mod tests {
         };
 
         handle.resize(
-            crate::geometry::PaneGeometry::new(80, 20, 8, 16),
+            crate::core::geometry::PaneGeometry::new(80, 20, 8, 16),
             vec![Bytes::from_static(b"old")],
         );
         handle.resize(
-            crate::geometry::PaneGeometry::new(120, 40, 9, 18),
+            crate::core::geometry::PaneGeometry::new(120, 40, 9, 18),
             vec![Bytes::from_static(b"new")],
         );
         handle.write_terminal_response(|| Some(Bytes::from_static(b"response")));
@@ -1649,7 +1649,7 @@ mod tests {
             controls.resize,
             Some(PtyResizeRequest {
                 resize: PtyResize {
-                    geometry: crate::geometry::PaneGeometry::new(120, 40, 9, 18),
+                    geometry: crate::core::geometry::PaneGeometry::new(120, 40, 9, 18),
                 },
                 terminal_responses: vec![Bytes::from_static(b"new")],
             })
@@ -1744,7 +1744,7 @@ mod tests {
         let response = Bytes::from_static(b"\x1B[48;40;100;720;900t");
 
         handle.resize(
-            crate::geometry::PaneGeometry::new(100, 40, 9, 18),
+            crate::core::geometry::PaneGeometry::new(100, 40, 9, 18),
             vec![response.clone()],
         );
 

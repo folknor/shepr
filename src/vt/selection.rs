@@ -5,10 +5,7 @@
 //! its text as the viewport moves and lets readers reject rows evicted from
 //! terminal history.
 
-use crate::{
-    layout::PaneId,
-    vt::{AbsRow, Point},
-};
+use super::{AbsRow, Point};
 
 /// Current phase of a selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +21,7 @@ enum Phase {
 
 /// A text selection within a terminal pane.
 #[derive(Debug, Clone)]
-pub struct Selection<P = PaneId> {
+pub struct Selection<P> {
     /// Which pane the selection belongs to.
     pub pane_id: P,
     anchor: Point<AbsRow>,
@@ -173,8 +170,8 @@ mod tests {
         Point::new(AbsRow(row), col)
     }
 
-    fn selection(sr: u64, sc: u16, er: u64, ec: u16) -> Selection {
-        Selection::range(PaneId::from_raw(0), point(sr, sc), point(er, ec))
+    fn selection(sr: u64, sc: u16, er: u64, ec: u16) -> Selection<()> {
+        Selection::range((), point(sr, sc), point(er, ec))
     }
 
     #[test]
@@ -207,7 +204,7 @@ mod tests {
 
     #[test]
     fn anchor_is_hidden_until_dragged_and_finish_rejects_clicks() {
-        let mut selection = Selection::anchor(PaneId::from_raw(0), point(5, 10));
+        let mut selection = Selection::anchor((), point(5, 10));
         assert!(!selection.is_visible());
         assert!(!selection.contains(point(5, 10)));
         assert!(selection.is_just_click());

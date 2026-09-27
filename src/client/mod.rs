@@ -329,7 +329,7 @@ async fn run_client_loop(
     initial: Option<LocalStream>,
     endpoint_catalog: endpoint::EndpointCatalog,
     local_failure_policy: endpoint::LocalFailurePolicy,
-    initial_geometry: crate::geometry::HostGeometry,
+    initial_geometry: crate::core::geometry::HostGeometry,
     should_quit: Arc<AtomicBool>,
     mut config: ClientLoopConfig,
     attach_escape: Option<AttachEscapeState>,
@@ -363,7 +363,7 @@ async fn run_client_loop(
         direct_keyboard_protocol: crate::host_term::modes::DirectHostKeyboardState::default(),
         pane_keyboard_report_all: false,
         keyboard_report_all_active: false,
-        reported_geometry: crate::geometry::HostGeometry::new(
+        reported_geometry: crate::core::geometry::HostGeometry::new(
             cols,
             rows,
             initial_cell_width_px,
@@ -454,7 +454,7 @@ async fn run_client_loop(
     std::thread::spawn(move || {
         resize_poll_loop(
             &resize_tx,
-            crate::geometry::HostGeometry::new(
+            crate::core::geometry::HostGeometry::new(
                 cols,
                 rows,
                 initial_cell_width_px,
@@ -613,7 +613,7 @@ impl ClientLoop<'_> {
                 self.supervisors.spawn_due(
                     std::time::Instant::now(),
                     endpoint::EndpointConnectOptions {
-                        geometry: crate::geometry::HostGeometry::new(
+                        geometry: crate::core::geometry::HostGeometry::new(
                             self.state.reported_geometry.cols(),
                             self.state.reported_geometry.rows(),
                             cell.width(),
@@ -910,7 +910,7 @@ impl ClientLoop<'_> {
                 cell_height_px,
                 pixel_geometry_exact,
             );
-        state.reported_geometry = crate::geometry::HostGeometry::new(
+        state.reported_geometry = crate::core::geometry::HostGeometry::new(
             new_cols,
             new_rows,
             cell_width_px,

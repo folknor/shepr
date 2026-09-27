@@ -132,7 +132,7 @@ fn failed_selection_copy_does_not_send_terminal_input() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
-    state.selection = Some(crate::selection::Selection::range(
+    state.selection = Some(crate::vt::selection::Selection::range(
         "pane_1".into(),
         crate::vt::Point::new(crate::vt::AbsRow(0), 0),
         crate::vt::Point::new(crate::vt::AbsRow(0), 2),

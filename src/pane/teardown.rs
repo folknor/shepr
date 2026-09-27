@@ -4,7 +4,7 @@ use std::sync::{
 };
 use tracing::{info, warn};
 
-use crate::layout::PaneId;
+use crate::core::layout::PaneId;
 
 /// The pane's child identity and the observations used to decide whether it
 /// has exited or has been reaped. Keeping the process handle with the pid and

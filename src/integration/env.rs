@@ -2,12 +2,7 @@ use std::io;
 use std::path::PathBuf;
 use std::{collections::HashMap, io::ErrorKind};
 
-pub(crate) use crate::pathutil::{expand_tilde_path, home_dir};
-use crate::pty::PtyCommand;
-
-pub(crate) const SHEPR_PANE_ID_ENV_VAR: &str = "SHEPR_PANE_ID";
-pub(crate) const SHEPR_TAB_ID_ENV_VAR: &str = "SHEPR_TAB_ID";
-pub(crate) const SHEPR_WORKSPACE_ID_ENV_VAR: &str = "SHEPR_WORKSPACE_ID";
+pub(crate) use crate::core::pathutil::{expand_tilde_path, home_dir};
 
 pub(crate) const PI_CODING_AGENT_DIR_ENV_VAR: &str = "PI_CODING_AGENT_DIR";
 pub(crate) const OMP_CONFIG_DIR_ENV_VAR: &str = "PI_CONFIG_DIR";
@@ -92,13 +87,6 @@ impl AgentIntegrationPaths {
 fn absolute_xdg_home(variable: &str) -> Option<PathBuf> {
     let path = std::env::var_os(variable).map(PathBuf::from)?;
     path.is_absolute().then_some(path)
-}
-
-pub(crate) fn apply_pane_base_env(cmd: &mut PtyCommand, api_socket_path: &std::path::Path) {
-    cmd.env(crate::config::SOCKET_PATH_ENV_VAR, api_socket_path);
-    if let Ok(executable) = crate::platform::launch_executable() {
-        cmd.env("SHEPR_BIN_PATH", executable);
-    }
 }
 
 pub(crate) fn pi_extension_dir() -> io::Result<PathBuf> {

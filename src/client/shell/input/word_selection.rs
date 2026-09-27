@@ -2,7 +2,10 @@
 //! endpoint; that content must stay out of logs and error messages here.
 
 use super::*;
-use crate::app::word_bounds::word_bounds_at_column;
+
+#[path = "word_bounds.rs"]
+mod word_bounds;
+use word_bounds::word_bounds_at_column;
 
 /// Held second press. Keep only one row read in flight and use the latest
 /// pointer position when it returns, so remote latency cannot queue up motion.
@@ -146,7 +149,7 @@ impl ClientShellState {
             .unwrap_or((gesture.cursor.1, gesture.cursor.1));
         let start = (gesture.anchor.0, anchor_start).min((gesture.cursor.0, start_col));
         let end = (gesture.anchor.0, anchor_end).max((gesture.cursor.0, end_col));
-        self.selection = Some(crate::selection::Selection::range(
+        self.selection = Some(crate::vt::selection::Selection::range(
             gesture.pane_id.clone(),
             crate::vt::Point::new(start.0, start.1),
             crate::vt::Point::new(end.0, end.1),

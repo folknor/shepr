@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use ratatui::layout::Direction;
 use serde::{Deserialize, Serialize};
 
-use crate::layout::Node;
+use crate::core::layout::Node;
 use crate::pane::PaneRuntimeRegistry;
 use crate::protocol::TerminalId;
 use crate::workspace::Workspace;

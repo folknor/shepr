@@ -430,7 +430,7 @@ pub(super) fn render_pane_surface(
 }
 
 fn split_hit_rect(
-    split: &crate::layout::SplitBorder,
+    split: &crate::core::layout::SplitBorder,
     pane_borders: bool,
     pane_gaps: bool,
     pane_frames: &[Rect],
@@ -534,12 +534,12 @@ mod tests {
 
     #[test]
     fn split_hits_follow_released_border_and_gap_geometry() {
-        let horizontal = crate::layout::SplitBorder {
+        let horizontal = crate::core::layout::SplitBorder {
             pos: 20,
             direction: ratatui::layout::Direction::Horizontal,
             ratio: 0.5,
             area: Rect::new(2, 3, 40, 12),
-            path: vec![crate::geometry::SplitBranch::First],
+            path: vec![crate::core::geometry::SplitBranch::First],
         };
         assert_eq!(
             split_hit_rect(&horizontal, true, false, &[]),
@@ -555,19 +555,19 @@ mod tests {
         );
         assert_eq!(split_hit_rect(&horizontal, false, false, &[]), None);
 
-        let vertical = crate::layout::SplitBorder {
+        let vertical = crate::core::layout::SplitBorder {
             pos: 9,
             direction: ratatui::layout::Direction::Vertical,
             ratio: 0.5,
             area: Rect::new(2, 3, 40, 12),
-            path: vec![crate::geometry::SplitBranch::Second],
+            path: vec![crate::core::geometry::SplitBranch::Second],
         };
         assert_eq!(
             split_hit_rect(&vertical, true, true, &[]),
             Some(Rect::new(2, 8, 40, 2))
         );
 
-        let edge = crate::layout::SplitBorder {
+        let edge = crate::core::layout::SplitBorder {
             pos: 0,
             direction: ratatui::layout::Direction::Horizontal,
             ratio: 0.5,

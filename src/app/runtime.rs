@@ -155,7 +155,7 @@ mod tests {
         assert!(app.can_present_now(foreground_echo));
     }
 
-    fn test_app_with_pane() -> (super::super::App, crate::layout::PaneId) {
+    fn test_app_with_pane() -> (super::super::App, crate::core::layout::PaneId) {
         let mut app = super::super::App::new(
             &crate::config::Config::default(),
             crate::app::AppPolicy::TEST,

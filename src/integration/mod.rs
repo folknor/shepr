@@ -12,10 +12,7 @@ mod types;
 mod version;
 
 pub(crate) use actions::{install_target, uninstall_target};
-pub(crate) use env::{
-    AgentIntegrationPaths, SHEPR_PANE_ID_ENV_VAR, SHEPR_TAB_ID_ENV_VAR, SHEPR_WORKSPACE_ID_ENV_VAR,
-    apply_pane_base_env,
-};
+pub(crate) use env::AgentIntegrationPaths;
 pub(crate) use registry::{
     installed_integration_statuses, integration_target_label, print_outdated_update_notice,
 };

@@ -1,0 +1,39 @@
+use super::*;
+
+impl TerminalState {
+    pub fn new(id: TerminalId, cwd: PathBuf) -> Self {
+        Self {
+            id,
+            cwd,
+            detected_agent: None,
+            fallback_state: AgentState::Unknown,
+            fallback_visible_blocker: false,
+            fallback_observed_at: None,
+            hook_authority: None,
+            agent_metadata: HashMap::new(),
+            metadata_tokens: crate::terminal::metadata_tokens::MetadataTokens::default(),
+            persisted_agent_session: None,
+            terminal_title: None,
+            manual_label: None,
+            agent_name: None,
+            agent_name_owner: None,
+            managed_agent: None,
+            prompt_ready_agent: None,
+            managed_agent_launch_session: None,
+            hook_report_sequences: HashMap::new(),
+            hook_report_accepted_at: HashMap::new(),
+            suppressed_full_lifecycle_hook_reports: HashMap::new(),
+            stale_full_lifecycle_hook_sessions: HashMap::new(),
+            metadata_report_sequences: HashMap::new(),
+            metadata_report_agents: HashMap::new(),
+            metadata_token_sequence_sources: std::collections::HashSet::new(),
+            state: AgentState::Unknown,
+            last_agent_state_change_seq: None,
+            revision: 0,
+            launch_argv: None,
+            recent_agent_process_exit: None,
+            pending_agent_resume_plan: None,
+            restore_error: None,
+        }
+    }
+}

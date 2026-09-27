@@ -57,10 +57,9 @@ impl Harness {
     }
 
     fn resize(&mut self, width: u16, height: u16) {
-        for reply in self
-            .pane
-            .resize(crate::geometry::PaneGeometry::new(width, height, 8, 16))
-        {
+        for reply in self.pane.resize(crate::core::geometry::PaneGeometry::new(
+            width, height, 8, 16,
+        )) {
             self.effects.replies.extend_from_slice(&reply);
         }
         self.width = width;

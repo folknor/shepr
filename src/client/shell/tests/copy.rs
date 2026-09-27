@@ -241,7 +241,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
         state
             .selection
             .as_ref()
-            .is_some_and(crate::selection::Selection::is_visible)
+            .is_some_and(crate::vt::selection::Selection::is_visible)
     );
     let selected = state.compose(106, 20).expect("selected frame");
     let selected_cell =
@@ -333,7 +333,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
         state
             .selection
             .as_ref()
-            .is_some_and(crate::selection::Selection::is_finalized)
+            .is_some_and(crate::vt::selection::Selection::is_finalized)
     );
 
     // A patch that redraws selected text must retain the same live terminal range.
@@ -361,7 +361,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
         state
             .selection
             .as_ref()
-            .is_some_and(crate::selection::Selection::is_finalized)
+            .is_some_and(crate::vt::selection::Selection::is_finalized)
     );
 
     let highlighted = state.compose(106, 20).expect("highlighted frame");
@@ -554,7 +554,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         state
             .selection
             .as_ref()
-            .is_some_and(crate::selection::Selection::is_visible)
+            .is_some_and(crate::vt::selection::Selection::is_visible)
     );
 
     let copy = state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
@@ -1060,7 +1060,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         state
             .selection
             .as_ref()
-            .is_some_and(crate::selection::Selection::is_visible)
+            .is_some_and(crate::vt::selection::Selection::is_visible)
     );
 
     let reverse = state.handle_raw_events(vec![RawInputEvent::Key(
@@ -2023,7 +2023,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     ))]);
     assert_eq!(state.mode, ClientShellMode::Terminal);
 
-    let mut other_selection = crate::selection::Selection::range(
+    let mut other_selection = crate::vt::selection::Selection::range(
         "pane_2".into(),
         crate::vt::Point::new(crate::vt::AbsRow(0), 0),
         crate::vt::Point::new(crate::vt::AbsRow(0), 1),
@@ -2106,7 +2106,7 @@ fn retained_selection_copy_suppresses_key_repeats() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
-    let mut selection = crate::selection::Selection::range(
+    let mut selection = crate::vt::selection::Selection::range(
         "pane_1".into(),
         crate::vt::Point::new(crate::vt::AbsRow(0), 0),
         crate::vt::Point::new(crate::vt::AbsRow(0), 1),
@@ -2405,7 +2405,7 @@ fn word_selection_result_survives_focus_snapshot_lag() {
         state
             .selection
             .as_ref()
-            .is_some_and(crate::selection::Selection::is_visible)
+            .is_some_and(crate::vt::selection::Selection::is_visible)
     );
 }
 

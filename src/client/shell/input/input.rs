@@ -485,7 +485,7 @@ impl ClientShellState {
             && self
                 .selection
                 .as_ref()
-                .is_some_and(crate::selection::Selection::is_visible)
+                .is_some_and(crate::vt::selection::Selection::is_visible)
         {
             self.request_selection_copy(outcome, true);
             self.selection = None;
@@ -900,7 +900,7 @@ impl ClientShellState {
             retained_selection: self
                 .selection
                 .as_ref()
-                .is_some_and(crate::selection::Selection::is_visible),
+                .is_some_and(crate::vt::selection::Selection::is_visible),
         }
     }
 

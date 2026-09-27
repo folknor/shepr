@@ -5,9 +5,9 @@ use ratatui::layout::Direction;
 use tokio::sync::{Notify, mpsc};
 use tracing::{error, warn};
 
+use crate::core::layout::{Node, PaneId, TileLayout};
 use crate::detect::AgentState;
 use crate::events::AppEvent;
-use crate::layout::{Node, PaneId, TileLayout};
 use crate::pane::PaneRuntime;
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::protocol::TerminalId;
@@ -338,7 +338,7 @@ fn restore_workspace(
         custom_name: snap.custom_name.clone(),
         identity_cwd: snap.identity_cwd.clone(),
         cached_identity_cwd: snap.identity_cwd.clone(),
-        cached_auto_label: crate::events::fallback_label_from_cwd(&snap.identity_cwd),
+        cached_auto_label: crate::git::fallback_label_from_cwd(&snap.identity_cwd),
         cached_git_status_key: snap.identity_cwd.clone(),
         cached_git_branch: None,
         cached_git_ahead_behind: None,
@@ -813,7 +813,7 @@ fn remap_inner(snap: &LayoutSnapshot, id_map: &mut HashMap<u32, PaneId>) -> Node
             };
             Node::Split {
                 direction: dir,
-                ratio: crate::layout::valid_split_ratio(*ratio),
+                ratio: crate::core::layout::valid_split_ratio(*ratio),
                 first: Box::new(first_node),
                 second: Box::new(second_node),
             }
@@ -892,11 +892,11 @@ mod tests {
     fn capture_and_restore_node_round_trip() {
         let node = Node::Split {
             direction: Direction::Horizontal,
-            ratio: crate::layout::SplitRatio::clamped(0.5),
+            ratio: crate::core::layout::SplitRatio::clamped(0.5),
             first: Box::new(Node::Pane(PaneId::from_raw(0))),
             second: Box::new(Node::Split {
                 direction: Direction::Vertical,
-                ratio: crate::layout::SplitRatio::clamped(0.3),
+                ratio: crate::core::layout::SplitRatio::clamped(0.3),
                 first: Box::new(Node::Pane(PaneId::from_raw(1))),
                 second: Box::new(Node::Pane(PaneId::from_raw(2))),
             }),
@@ -1401,7 +1401,7 @@ mod tests {
         let missing = PaneId::from_raw(12);
         let node = Node::Split {
             direction: Direction::Horizontal,
-            ratio: crate::layout::SplitRatio::clamped(0.5),
+            ratio: crate::core::layout::SplitRatio::clamped(0.5),
             first: Box::new(Node::Pane(keep)),
             second: Box::new(Node::Pane(missing)),
         };

@@ -237,7 +237,7 @@ impl ClientShellState {
         let was_dragging = self
             .selection
             .as_ref()
-            .is_some_and(crate::selection::Selection::is_dragging);
+            .is_some_and(crate::vt::selection::Selection::is_dragging);
         let moved_from_anchor = self.selection.as_ref().is_some_and(|selection| {
             let anchor = selection.anchor_position();
             let top = metrics.map_or(
@@ -860,7 +860,7 @@ impl ClientShellState {
                                         .path
                                         .into_iter()
                                         .map(|branch| {
-                                            branch == crate::geometry::SplitBranch::Second
+                                            branch == crate::core::geometry::SplitBranch::Second
                                         })
                                         .collect(),
                                     ratio,
@@ -1029,7 +1029,7 @@ impl ClientShellState {
                                             .path
                                             .into_iter()
                                             .map(|branch| {
-                                                branch == crate::geometry::SplitBranch::Second
+                                                branch == crate::core::geometry::SplitBranch::Second
                                             })
                                             .collect(),
                                         ratio,
@@ -1316,14 +1316,14 @@ impl ClientShellState {
             let copied = self
                 .selection
                 .as_mut()
-                .is_some_and(crate::selection::Selection::finish);
+                .is_some_and(crate::vt::selection::Selection::finish);
             if copied && self.config.copy_on_select {
                 self.request_selection_copy(outcome, true);
                 self.selection = None;
             } else if self
                 .selection
                 .as_ref()
-                .is_some_and(crate::selection::Selection::is_just_click)
+                .is_some_and(crate::vt::selection::Selection::is_just_click)
             {
                 self.selection = None;
             }
@@ -1826,7 +1826,7 @@ impl ClientShellState {
                                 || crate::vt::AbsRow(u64::from(viewport_row.0)),
                                 |metrics| metrics.absolute_row_at_viewport(viewport_row),
                             );
-                            self.selection = Some(crate::selection::Selection::anchor(
+                            self.selection = Some(crate::vt::selection::Selection::anchor(
                                 hit.pane_id.clone(),
                                 crate::vt::Point::new(absolute_row, col),
                             ));

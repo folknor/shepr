@@ -130,7 +130,7 @@ pub(super) fn read_config_with_user_paths(
 
 fn git_user_config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
-    let home = crate::pathutil::home_dir().ok();
+    let home = crate::core::pathutil::home_dir().ok();
     let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute());

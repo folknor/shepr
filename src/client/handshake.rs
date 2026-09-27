@@ -102,7 +102,7 @@ fn preamble_error(error: protocol::preamble::PreambleError) -> ClientError {
 pub(super) fn do_handshake(
     stream: &mut LocalStream,
     role: ClientProcessRole,
-    geometry: crate::geometry::HostGeometry,
+    geometry: crate::core::geometry::HostGeometry,
     shell_surface_size: Option<crate::protocol::ClientSurfaceSize>,
     mouse_capture: bool,
     surface_active: bool,
@@ -262,7 +262,7 @@ mod tests {
         let error = do_handshake(
             &mut client,
             ClientProcessRole::Local,
-            crate::geometry::HostGeometry::new(80, 24, 8, 16, false),
+            crate::core::geometry::HostGeometry::new(80, 24, 8, 16, false),
             surface,
             false,
             true,
@@ -306,7 +306,7 @@ mod tests {
         let error = do_handshake(
             &mut client,
             ClientProcessRole::Local,
-            crate::geometry::HostGeometry::new(80, 24, 8, 16, false),
+            crate::core::geometry::HostGeometry::new(80, 24, 8, 16, false),
             Some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
             false,
             true,
@@ -327,7 +327,7 @@ mod tests {
         let error = do_handshake(
             &mut client,
             ClientProcessRole::Local,
-            crate::geometry::HostGeometry::new(80, 24, 8, 16, false),
+            crate::core::geometry::HostGeometry::new(80, 24, 8, 16, false),
             Some(crate::protocol::ClientSurfaceSize { cols: 80, rows: 24 }),
             false,
             false,

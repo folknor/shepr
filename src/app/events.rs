@@ -18,8 +18,8 @@ impl App {
 
     fn handle_git_status_refreshed(
         &mut self,
-        results: Vec<crate::events::WorkspaceGitStatus>,
-        cache_updates: Vec<(std::path::PathBuf, crate::events::GitStatusCacheEntry)>,
+        results: Vec<crate::git::WorkspaceGitStatus>,
+        cache_updates: Vec<(std::path::PathBuf, crate::git::GitStatusCacheEntry)>,
     ) -> bool {
         self.git_refresh.finish(Instant::now(), cache_updates);
         let changed = self
@@ -345,7 +345,11 @@ impl App {
         events
     }
 
-    pub(crate) fn emit_pane_updated(&mut self, ws_idx: usize, pane_id: crate::layout::PaneId) {
+    pub(crate) fn emit_pane_updated(
+        &mut self,
+        ws_idx: usize,
+        pane_id: crate::core::layout::PaneId,
+    ) {
         if let Some(pane) = self.pane_info(ws_idx, pane_id) {
             self.emit_event(crate::api::schema::EventEnvelope {
                 data: crate::api::schema::EventData::PaneUpdated { pane },
@@ -391,7 +395,11 @@ impl App {
         }
     }
 
-    pub(crate) fn emit_focus_api_events(&mut self, ws_idx: usize, pane_id: crate::layout::PaneId) {
+    pub(crate) fn emit_focus_api_events(
+        &mut self,
+        ws_idx: usize,
+        pane_id: crate::core::layout::PaneId,
+    ) {
         self.emit_event(crate::api::schema::EventEnvelope {
             data: crate::api::schema::EventData::WorkspaceFocused {
                 workspace_id: self.public_workspace_id(ws_idx),
@@ -455,7 +463,7 @@ impl App {
     pub(crate) fn send_pane_focus_event(
         &self,
         ws_idx: usize,
-        pane_id: crate::layout::PaneId,
+        pane_id: crate::core::layout::PaneId,
         event: crate::vt::FocusEvent,
     ) {
         let Some(runtime) = self.state.workspaces.get(ws_idx).and_then(|_| {

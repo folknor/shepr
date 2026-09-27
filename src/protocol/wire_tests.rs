@@ -1,6 +1,6 @@
 use super::style::RATATUI_UNDERLINE_STYLE_SHIFT;
 use super::*;
-use crate::geometry::SplitBranch;
+use crate::core::geometry::SplitBranch;
 use serde::Serialize;
 use std::io::{self, Read};
 

@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Block, Borders},
 };
 
-use crate::layout::{PaneId, PaneInfo as LayoutPaneInfo, TileLayout};
+use crate::core::layout::{PaneId, PaneInfo as LayoutPaneInfo, TileLayout};
 
 /// Layout position with the chrome and content geometry added for a view.
 #[derive(Clone)]

@@ -202,7 +202,7 @@ fn resolve_paths_from_env(
     )
     .map_err(|error| vec![format!("session selection error: {error}")])?;
 
-    let home_dir = crate::pathutil::home_dir().map_err(|error| vec![error.to_string()])?;
+    let home_dir = crate::core::pathutil::home_dir().map_err(|error| vec![error.to_string()])?;
     let current_dir = std::env::current_dir().ok();
     let (config_dir, config_dir_source) =
         platform_xdg_dir("XDG_CONFIG_HOME", ".config", Some(&home_dir))
@@ -517,9 +517,9 @@ fn configured_home_path_error(config: &Config, home_dir: Option<&Path>) -> Optio
     let result = match &config.terminal.new_cwd {
         NewTerminalCwdConfig::Home => home_dir
             .map(Path::to_path_buf)
-            .ok_or_else(crate::pathutil::missing_home_error),
+            .ok_or_else(crate::core::pathutil::missing_home_error),
         NewTerminalCwdConfig::Path(path) if path == "~" || path.starts_with("~/") => {
-            crate::pathutil::expand_tilde_path_with_home(path, home_dir)
+            crate::core::pathutil::expand_tilde_path_with_home(path, home_dir)
         }
         NewTerminalCwdConfig::Follow
         | NewTerminalCwdConfig::Current

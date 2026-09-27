@@ -6,7 +6,7 @@ use crate::server::clients::ClientShellTopology;
 pub(super) struct ShellFocusTarget {
     pub(super) tab_id: crate::protocol::PublicTabId,
     pub(super) workspace_id: crate::protocol::WorkspaceId,
-    pub(super) pane_id: crate::layout::PaneId,
+    pub(super) pane_id: crate::core::layout::PaneId,
 }
 
 fn classify_shell_focus_transition<'a>(
@@ -485,7 +485,7 @@ impl HeadlessServer {
         &self,
         client_id: ClientId,
         workspace_index: usize,
-        pane_id: crate::layout::PaneId,
+        pane_id: crate::core::layout::PaneId,
     ) -> bool {
         let Some(target) = self.shell_target_for_client(client_id) else {
             return false;

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::events::{AheadBehind, WorkspaceGitStatusSnapshot};
+use super::{AheadBehind, WorkspaceGitStatusSnapshot};
 
 use super::{
     config::{ConfigCtx, FileDep, deps_current, read_config, stamp, upstream_full_ref},
@@ -337,7 +337,7 @@ fn parse_git_ahead_behind_output(stdout: &str) -> Option<AheadBehind> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::git::test_support::{
+    use crate::git::test_support::{
         live_git_space, run_git, temp_test_dir, write_fake_tracked_repo,
     };
 
@@ -542,7 +542,7 @@ mod tests {
             snapshot: WorkspaceGitStatusSnapshot {
                 auto_label: "repo".into(),
                 branch: Some("main".into()),
-                ahead_behind: Some(crate::events::AheadBehind {
+                ahead_behind: Some(crate::git::AheadBehind {
                     ahead: 2,
                     behind: 1,
                 }),
@@ -582,7 +582,7 @@ mod tests {
             snapshot: WorkspaceGitStatusSnapshot {
                 auto_label: "repo".into(),
                 branch: Some("main".into()),
-                ahead_behind: Some(crate::events::AheadBehind {
+                ahead_behind: Some(crate::git::AheadBehind {
                     ahead: 4,
                     behind: 0,
                 }),
@@ -621,7 +621,7 @@ mod tests {
             snapshot: WorkspaceGitStatusSnapshot {
                 auto_label: "repo".into(),
                 branch: Some("main".into()),
-                ahead_behind: Some(crate::events::AheadBehind {
+                ahead_behind: Some(crate::git::AheadBehind {
                     ahead: 0,
                     behind: 3,
                 }),
@@ -695,9 +695,7 @@ mod tests {
     #[test]
     fn linked_worktree_refresh_keeps_checkout_name_as_auto_label() {
         let (base, _, checkout) =
-            crate::events::git::test_support::create_repo_with_linked_worktree(
-                "linked-refresh-label",
-            );
+            crate::git::test_support::create_repo_with_linked_worktree("linked-refresh-label");
 
         let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, None);
 

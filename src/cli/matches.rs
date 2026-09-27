@@ -87,7 +87,7 @@ pub(super) fn resolve_cwd(
             "--cwd {raw}: with --machine the directory must be an absolute path on that machine"
         ));
     }
-    let expanded = crate::pathutil::expand_tilde_path_with_home(raw, home_dir)
+    let expanded = crate::core::pathutil::expand_tilde_path_with_home(raw, home_dir)
         .map_err(|err| format!("--cwd {raw}: {err}"))?;
     let absolute = if expanded.is_absolute() {
         expanded

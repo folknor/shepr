@@ -10,7 +10,9 @@ mod state;
 mod teardown;
 mod terminal;
 
-pub(crate) use launch::{MANAGED_AGENT_RESUME_TIMEOUT, PaneLaunchEnv, PaneShellConfig};
+pub(crate) use launch::{
+    MANAGED_AGENT_RESUME_TIMEOUT, PaneLaunchEnv, PaneShellConfig, SHEPR_PANE_ID_ENV_VAR,
+};
 pub use runtime::PaneRuntime;
 pub(crate) use runtime::WheelRouting;
 pub(crate) use runtime_registry::PaneRuntimeRegistry;

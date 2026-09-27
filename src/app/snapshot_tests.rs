@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use ratatui::layout::{Direction, Rect};
 
 use super::{AppState, Mode};
-use crate::layout::NavDirection;
+use crate::core::layout::NavDirection;
 use crate::pane::PaneRuntimeRegistry;
 use crate::persist::snapshot::*;
 use crate::workspace::Workspace;
@@ -27,6 +27,26 @@ fn state_with_workspaces(names: &[&str]) -> AppState {
         state.mode = Mode::Terminal;
     }
     state
+}
+
+fn refresh_test_view(state: &mut AppState, area: Rect) {
+    state.view.terminal_area = area;
+    state.view.pane_infos = state
+        .active_index()
+        .and_then(|ws_idx| state.workspaces.get(ws_idx))
+        .and_then(|workspace| workspace.tabs.get(workspace.active_tab))
+        .map(|tab| {
+            state
+                .pane_geometry_in(area)
+                .tab_panes(&tab.layout, tab.zoomed)
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut pane| {
+            pane.inner_rect = crate::workspace::pane_inner_rect(pane.rect, pane.borders);
+            pane
+        })
+        .collect();
 }
 
 fn capture_from_state(state: &AppState) -> SessionSnapshot {
@@ -332,11 +352,7 @@ fn capture_contract_tracks_focus_navigation() {
     let mut state = state_with_workspaces(&["one"]);
     let root = state.workspaces[0].tabs[0].root_pane;
     let second = state.workspaces[0].test_split(Direction::Horizontal);
-    crate::ui::compute_view_with_runtime_registry(
-        &mut state,
-        &crate::pane::PaneRuntimeRegistry::new(),
-        Rect::new(0, 0, 106, 20),
-    );
+    refresh_test_view(&mut state, Rect::new(0, 0, 106, 20));
 
     state.navigate_pane(NavDirection::Right);
 
@@ -351,11 +367,7 @@ fn capture_contract_tracks_resize_ratio_changes() {
     let root = state.workspaces[0].tabs[0].root_pane;
     state.workspaces[0].test_split(Direction::Horizontal);
     state.workspaces[0].layout.focus_pane(root);
-    crate::ui::compute_view_with_runtime_registry(
-        &mut state,
-        &crate::pane::PaneRuntimeRegistry::new(),
-        Rect::new(0, 0, 106, 20),
-    );
+    refresh_test_view(&mut state, Rect::new(0, 0, 106, 20));
     let before = capture_from_state(&state);
 
     state.resize_pane(NavDirection::Right);
@@ -624,7 +636,10 @@ async fn capture_contract_tracks_history_for_each_pane() {
     assert!(second_history.ansi.contains("second-pane-history"));
 }
 
-fn root_history(history: &SessionHistorySnapshot, root: crate::layout::PaneId) -> Option<&str> {
+fn root_history(
+    history: &SessionHistorySnapshot,
+    root: crate::core::layout::PaneId,
+) -> Option<&str> {
     history.workspaces[0].tabs[0]
         .panes
         .get(&root.raw())

@@ -90,7 +90,7 @@ pub(super) fn write_fake_tracked_repo(root: &Path) {
 
 /// The Git space production derives for `cwd`: the `space` a branch-only
 /// status refresh reports, the same call the background refresh makes.
-pub(super) fn live_git_space(cwd: &Path) -> Option<crate::events::GitSpaceMetadata> {
+pub(super) fn live_git_space(cwd: &Path) -> Option<crate::git::GitSpaceMetadata> {
     super::status::git_status_snapshot_for_cwd_with_demand(
         cwd,
         None,

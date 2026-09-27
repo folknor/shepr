@@ -219,7 +219,7 @@ impl HeadlessServer {
     /// Any presentation or geometry uncertainty falls back to the complete renderer.
     pub(super) fn render_retained_pane_surface_and_stream(
         &mut self,
-        pty_sources: &HashSet<crate::layout::PaneId>,
+        pty_sources: &HashSet<crate::core::layout::PaneId>,
     ) -> bool {
         macro_rules! fallback {
             ($reason:literal) => {{

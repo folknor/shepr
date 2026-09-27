@@ -105,9 +105,9 @@ impl Config {
             .collect()
     }
 
-    pub(crate) fn headless_size(&self) -> crate::geometry::GridSize {
+    pub(crate) fn headless_size(&self) -> crate::core::geometry::GridSize {
         // `load_validated` rejects zero dimensions before any app is built.
-        crate::geometry::GridSize::new(self.server.headless_cols, self.server.headless_rows)
+        crate::core::geometry::GridSize::new(self.server.headless_cols, self.server.headless_rows)
             .expect("headless size is validated before launch")
     }
 

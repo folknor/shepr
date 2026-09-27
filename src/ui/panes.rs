@@ -47,7 +47,7 @@ fn terminal_inner_rect(rt: &PaneRuntime, pane_inner: Rect, pane_scrollbars: bool
 fn runtime_for_tab_pane<'a>(
     terminal_runtimes: &'a PaneRuntimeRegistry,
     tab: &'a crate::workspace::Tab,
-    pane_id: crate::layout::PaneId,
+    pane_id: crate::core::layout::PaneId,
 ) -> Option<(&'a crate::protocol::TerminalId, &'a PaneRuntime)> {
     let terminal_id = tab.terminal_id(pane_id)?;
     terminal_runtimes
@@ -100,7 +100,7 @@ pub(super) fn resize_pane_infos(
             continue;
         };
         if !app.direct_attach_resize_locks.contains(terminal_id) {
-            rt.resize(crate::geometry::PaneGeometry::new(
+            rt.resize(crate::core::geometry::PaneGeometry::new(
                 info.inner_rect.width,
                 info.inner_rect.height,
                 cell_size.width_px,
@@ -172,7 +172,7 @@ pub(super) fn render_panes(
     frame: &mut Frame,
     target: Option<&super::tab_surface::TabSurfaceTarget>,
     pane_infos: &[PaneInfo],
-    split_borders: &[crate::layout::SplitBorder],
+    split_borders: &[crate::core::layout::SplitBorder],
 ) {
     let Some(target) = target else {
         return;
@@ -218,7 +218,7 @@ fn render_pane_borders(
     app: &AppState,
     ws: &crate::workspace::Workspace,
     pane_infos: &[PaneInfo],
-    split_borders: &[crate::layout::SplitBorder],
+    split_borders: &[crate::core::layout::SplitBorder],
     frame: &mut Frame,
 ) {
     if !app.settings.pane_borders.draws_borders()
@@ -265,7 +265,7 @@ fn render_pane_borders(
 
 fn add_split_border_cells(
     pane_gaps: bool,
-    split_borders: &[crate::layout::SplitBorder],
+    split_borders: &[crate::core::layout::SplitBorder],
     cells: &mut std::collections::HashMap<(u16, u16), LineCell>,
 ) {
     if pane_gaps {
@@ -462,7 +462,7 @@ fn line_cell_symbol(line: LineCell) -> &'static str {
 }
 
 pub(crate) fn render_selection_highlight<P: PartialEq>(
-    selection: Option<&crate::selection::Selection<P>>,
+    selection: Option<&crate::vt::selection::Selection<P>>,
     buffer: &mut Buffer,
     pane_id: &P,
     inner: Rect,
@@ -624,10 +624,10 @@ fn color_to_rgb(color: Color) -> Option<Rgb> {
 mod tests {
     use super::*;
     use crate::config::PaneBordersConfig;
-    use crate::layout::PaneId;
+    use crate::core::layout::PaneId;
     use crate::pane::PaneRuntime;
-    use crate::selection::Selection;
     use crate::terminal::TerminalState;
+    use crate::vt::selection::Selection;
     use crate::workspace::Workspace;
 
     /// A registry holding `runtime` as the live runtime of `pane_id`, keyed
@@ -651,7 +651,7 @@ mod tests {
     fn render_view_pane_borders(
         app: &AppState,
         ws: &Workspace,
-        split_borders: &[crate::layout::SplitBorder],
+        split_borders: &[crate::core::layout::SplitBorder],
         frame: &mut Frame,
     ) {
         render_pane_borders(app, ws, &app.view.pane_infos, split_borders, frame);
@@ -986,19 +986,19 @@ mod tests {
             },
         ];
         let split_borders = vec![
-            crate::layout::SplitBorder {
+            crate::core::layout::SplitBorder {
                 pos: 2,
                 direction: ratatui::layout::Direction::Horizontal,
                 ratio: 0.5,
                 area: Rect::new(0, 0, 4, 4),
                 path: vec![],
             },
-            crate::layout::SplitBorder {
+            crate::core::layout::SplitBorder {
                 pos: 2,
                 direction: ratatui::layout::Direction::Vertical,
                 ratio: 0.5,
                 area: Rect::new(0, 0, 4, 4),
-                path: vec![crate::geometry::SplitBranch::First],
+                path: vec![crate::core::geometry::SplitBranch::First],
             },
         ];
         let ws = Workspace::test_new("test");

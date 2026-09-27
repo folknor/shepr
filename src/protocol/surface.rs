@@ -1,5 +1,5 @@
 use super::*;
-use crate::geometry::SplitBranch;
+use crate::core::geometry::SplitBranch;
 use serde::{Deserialize, Serialize};
 
 /// Origin-relative geometry for one pane in a rendered pane surface.

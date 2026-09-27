@@ -15,7 +15,7 @@ impl HeadlessServer {
     fn shell_focused_runtime(
         &self,
         client_id: ClientId,
-    ) -> Option<(&crate::pane::PaneRuntime, crate::layout::PaneId)> {
+    ) -> Option<(&crate::pane::PaneRuntime, crate::core::layout::PaneId)> {
         let target = self.shell_target_for_client(client_id)?;
         let (workspace_index, tab_index) = target.resolve(&self.app.state)?;
         let tab = self
@@ -298,7 +298,7 @@ impl HeadlessServer {
 
     fn pty_source_visible_to_render_targets(
         &self,
-        pane_id: crate::layout::PaneId,
+        pane_id: crate::core::layout::PaneId,
         has_app_target: bool,
         direct_terminal_targets: &HashSet<&str>,
     ) -> bool {
@@ -309,7 +309,7 @@ impl HeadlessServer {
 
     pub(super) fn pty_sources_visible_to_any_render_target(
         &self,
-        sources: &HashSet<crate::layout::PaneId>,
+        sources: &HashSet<crate::core::layout::PaneId>,
     ) -> bool {
         let (has_app_target, direct_terminal_targets) = self.pty_render_targets();
         if !has_app_target && direct_terminal_targets.is_empty() {
@@ -327,14 +327,14 @@ impl HeadlessServer {
 
     fn terminal_id_for_pane(
         &self,
-        pane_id: crate::layout::PaneId,
+        pane_id: crate::core::layout::PaneId,
     ) -> Option<&crate::protocol::TerminalId> {
         self.app
             .find_pane(pane_id)
             .map(|(_, pane)| &pane.attached_terminal_id)
     }
 
-    fn any_shell_surface_contains_pane(&self, pane_id: crate::layout::PaneId) -> bool {
+    fn any_shell_surface_contains_pane(&self, pane_id: crate::core::layout::PaneId) -> bool {
         self.clients.iter().any(|(&client_id, client)| {
             if !client.is_active_shell_client() || client.writer.is_none() {
                 return false;

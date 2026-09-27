@@ -87,7 +87,7 @@ pub(super) fn private_mode(mode: u16) -> PrivateMode {
 pub(super) fn in_band_size_report(
     rows: usize,
     cols: usize,
-    cell: Option<crate::geometry::CellPx>,
+    cell: Option<crate::core::geometry::CellPx>,
 ) -> Option<String> {
     let cell = cell?;
     let height = rows as u64 * u64::from(cell.height.get());
@@ -101,7 +101,7 @@ pub(super) fn in_band_size_report(
 pub(super) fn text_area_pixels_report(
     rows: usize,
     cols: usize,
-    cell: Option<crate::geometry::CellPx>,
+    cell: Option<crate::core::geometry::CellPx>,
 ) -> Option<String> {
     let cell = cell?;
     let height = rows as u64 * u64::from(cell.height.get());
@@ -142,7 +142,7 @@ pub(super) struct CoreHandler<'a, T: EventListener> {
     pub(super) term: &'a mut Term<T>,
     pub(super) keyboard_depth: &'a mut KeyboardStackDepth,
     pub(super) modes: &'a mut ExtraModes,
-    pub(super) cell: Option<crate::geometry::CellPx>,
+    pub(super) cell: Option<crate::core::geometry::CellPx>,
     /// The queue alacritty's listener fills; adapter replies go in as
     /// `PtyWrite`s so they keep byte order with alacritty's.
     pub(super) events: &'a Mutex<Vec<Event>>,
