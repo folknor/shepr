@@ -1,14 +1,14 @@
 use std::{
     collections::VecDeque,
     io::{Read, Write},
-    os::fd::{AsRawFd, OwnedFd},
+    os::fd::{AsRawFd, OwnedFd, RawFd},
     sync::{Arc, Mutex, mpsc as std_mpsc},
     time::{Duration, Instant},
 };
 
 use bytes::Bytes;
 use shepr_core::layout::PaneId;
-use tokio::sync::mpsc::{self, error::TryRecvError as DataTryRecvError};
+use tokio::sync::mpsc::error::TrySendError;
 use tracing::{debug, error, warn};
 
 pub use crate::submission::{QueuedSubmission, SubmissionCancel, SubmissionCancelOutcome};
@@ -21,7 +21,20 @@ use crate::{
 // timeout is only a fallback for missed wakes; PTY and wake readiness drive
 // normal responsiveness.
 const ACTOR_IDLE_POLL_MS: i32 = 1000;
-const ACTOR_COMMAND_BUFFER: usize = 1024;
+/// Unwritten bytes the inbox holds across user input, submissions and
+/// terminal replies. A single item larger than this is still admitted when
+/// nothing else is outstanding (see `PtyIoInbox::reserve`).
+const ACTOR_INBOX_MAX_BYTES: usize = 256 * 1024;
+const ACTOR_INBOX_MAX_ITEMS: usize = 1024;
+const RESIZE_RETRY_BASE: Duration = Duration::from_millis(50);
+const RESIZE_RETRY_MAX: Duration = Duration::from_secs(5);
+/// Failed ioctl attempts (50 + 100 + 200 + 400 + 800 ms of backoff) a resize
+/// may hold its replies, and every write queued after them, before the
+/// replies are released without it. The ioctl itself keeps retrying.
+const RESIZE_HOLD_ATTEMPTS: u8 = 5;
+/// Write steps one pump may take before it returns to poll, so a steady
+/// stream of input cannot starve reads of the child's output.
+const MAX_WRITE_STEPS_PER_PUMP: usize = 64;
 
 pub struct PtyReadResult {
     pub terminal_responses: Vec<Bytes>,
@@ -52,7 +65,7 @@ type CoreBrokenCheck = Box<dyn Fn() -> bool + Send + 'static>;
 /// Why the actor's IO loop ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReaderExit {
-    /// EOF, an IO error, a shutdown request or closed command queues. The
+    /// EOF, an IO error or a shutdown request. The
     /// child has gone or is being torn down; its own exit is reported by
     /// whoever reaps it.
     Closed,
@@ -68,18 +81,6 @@ struct PtyResize {
     geometry: shepr_core::geometry::PaneGeometry,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PtyResizeRequest {
-    resize: PtyResize,
-    terminal_responses: Vec<Bytes>,
-}
-
-#[derive(Default)]
-struct SharedPtyControls {
-    resize: Option<PtyResizeRequest>,
-    terminal_responses: Vec<Bytes>,
-}
-
 pub struct PtyIoActorConfig {
     pub pane_id: PaneId,
     pub master_fd: OwnedFd,
@@ -93,9 +94,48 @@ pub struct PtyIoActorConfig {
     pub core_broken: Option<CoreBrokenCheck>,
 }
 
-enum PtyIoDataCommand {
-    WriteUserInput(Bytes),
-    SubmitUserInput {
+fn submission_withdrawn_error() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "input submission withdrawn by its caller",
+    )
+}
+
+#[derive(Clone)]
+pub struct PtyIoActorHandle {
+    wake: fd::WakeWriter,
+    inbox: Arc<Mutex<PtyIoInbox>>,
+    /// Held across producing a terminal reply and queuing it, by
+    /// `write_terminal_response` and by the actor around parsing a read, so
+    /// replies enter the inbox in the order the terminal produced them. It is
+    /// separate from the inbox lock so that user input is never queued behind
+    /// a parse or a wait for the terminal core.
+    response_order: Arc<Mutex<()>>,
+}
+
+/// Everything waiting to reach the PTY, shared by the handles and the actor.
+/// Producers only push to the back of `entries` (or replace
+/// `latest_resize`); only the actor removes or inserts, so an index it takes
+/// stays valid across a moment with the lock released. The lock is never
+/// held across a syscall.
+#[derive(Default)]
+struct PtyIoInbox {
+    entries: VecDeque<PtyIoInboxEntry>,
+    pending_bytes: usize,
+    pending_items: usize,
+    next_order: u64,
+    latest_resize: Option<QueuedResize>,
+    shutdown: bool,
+}
+
+struct PtyIoInboxEntry {
+    order: u64,
+    kind: PtyIoInboxEntryKind,
+}
+
+enum PtyIoInboxEntryKind {
+    Write(PendingWrite),
+    Submission {
         text: Bytes,
         enter: Bytes,
         delay: Duration,
@@ -104,67 +144,256 @@ enum PtyIoDataCommand {
     },
 }
 
-fn submission_withdrawn_error() -> std::io::Error {
-    std::io::Error::new(
-        std::io::ErrorKind::TimedOut,
-        "input submission withdrawn by its caller",
-    )
+struct QueuedResize {
+    order: u64,
+    resize: PtyResize,
+    terminal_responses: Vec<Bytes>,
+    retry_at: Option<Instant>,
+    attempts: u8,
 }
 
-impl PtyIoDataCommand {
-    /// The bytes a rejected send carried back. A failed `try_send` returns the
-    /// very command that was offered, so for a write this is its payload; a
-    /// submission hands back its text so no arm needs a panic.
-    fn into_input_bytes(self) -> Bytes {
-        match self {
-            Self::WriteUserInput(bytes) => bytes,
-            Self::SubmitUserInput { text, .. } => text,
+impl PtyIoInbox {
+    fn next_order(&mut self) -> u64 {
+        let order = self.next_order;
+        self.next_order = self.next_order.wrapping_add(1);
+        order
+    }
+
+    /// Admit work while the outstanding total stays within the caps. One item
+    /// larger than the byte cap is admitted when no bytes are outstanding, so
+    /// a big paste or prompt still reaches a pane that is reading instead of
+    /// being refused forever; the bound is then that single item, which the
+    /// caller already held in memory.
+    fn reserve(&mut self, bytes: usize, items: usize) -> bool {
+        let Some(pending_items) = self.pending_items.checked_add(items) else {
+            return false;
+        };
+        if pending_items > ACTOR_INBOX_MAX_ITEMS {
+            return false;
+        }
+        let pending_bytes = match self.pending_bytes.checked_add(bytes) {
+            Some(total) if total <= ACTOR_INBOX_MAX_BYTES || self.pending_bytes == 0 => total,
+            _ => return false,
+        };
+        self.pending_bytes = pending_bytes;
+        self.pending_items = pending_items;
+        true
+    }
+
+    fn release_bytes(&mut self, bytes: usize) {
+        self.pending_bytes = self.pending_bytes.saturating_sub(bytes);
+    }
+
+    fn release_item(&mut self) {
+        self.pending_items = self.pending_items.saturating_sub(1);
+    }
+
+    fn push_user_input(&mut self, bytes: Bytes) -> Result<(), Bytes> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        if !self.reserve(bytes.len(), 1) {
+            return Err(bytes);
+        }
+        let order = self.next_order();
+        self.entries.push_back(PtyIoInboxEntry {
+            order,
+            kind: PtyIoInboxEntryKind::Write(PendingWrite::User(bytes)),
+        });
+        Ok(())
+    }
+
+    fn push_terminal_response(&mut self, bytes: Bytes) -> bool {
+        if bytes.is_empty() {
+            return true;
+        }
+        // Only a child that has stopped reading fills the inbox, and a reply
+        // it will read late is worth little, so an overflowing reply is
+        // dropped; user input instead gets Full. The replies already queued
+        // keep their order, and a later reply that fits still goes out (a
+        // DA1 sentinel behind a dropped answer tells the child the answer is
+        // not coming rather than leaving it waiting).
+        if !self.reserve(bytes.len(), 1) {
+            return false;
+        }
+        let order = self.next_order();
+        self.entries.push_back(PtyIoInboxEntry {
+            order,
+            kind: PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)),
+        });
+        true
+    }
+
+    fn push_submission(
+        &mut self,
+        text: Bytes,
+        enter: Bytes,
+        delay: Duration,
+        reply: std_mpsc::Sender<std::io::Result<()>>,
+        state: SharedSubmissionState,
+    ) -> Result<(), ()> {
+        let Some(bytes) = text.len().checked_add(enter.len()) else {
+            return Err(());
+        };
+        if !self.reserve(bytes, 1) {
+            return Err(());
+        }
+        let order = self.next_order();
+        self.entries.push_back(PtyIoInboxEntry {
+            order,
+            kind: PtyIoInboxEntryKind::Submission {
+                text,
+                enter,
+                delay,
+                reply,
+                state,
+            },
+        });
+        Ok(())
+    }
+
+    /// Coalesce resizes: only the newest geometry matters to the PTY, and the
+    /// replies of a superseded request describe a size that no longer holds.
+    fn replace_resize(
+        &mut self,
+        geometry: shepr_core::geometry::PaneGeometry,
+        terminal_responses: Vec<Bytes>,
+    ) {
+        if let Some(previous) = self.latest_resize.take() {
+            for bytes in previous.terminal_responses {
+                self.release_bytes(bytes.len());
+                self.release_item();
+            }
+        }
+
+        let mut accepted_responses = Vec::new();
+        for bytes in terminal_responses {
+            if bytes.is_empty() {
+                continue;
+            }
+            if self.reserve(bytes.len(), 1) {
+                accepted_responses.push(bytes);
+            }
+        }
+        let order = self.next_order();
+        self.latest_resize = Some(QueuedResize {
+            order,
+            resize: PtyResize { geometry },
+            terminal_responses: accepted_responses,
+            retry_at: None,
+            attempts: 0,
+        });
+    }
+
+    /// The entry the actor should handle next. A write already under way
+    /// always continues. While a submission is active, user input queued
+    /// behind it waits, but terminal replies and the submission's own parts
+    /// go out. Otherwise it is the front of the queue.
+    fn next_entry_index(
+        &self,
+        active_submission: bool,
+        current_order: Option<u64>,
+    ) -> Option<usize> {
+        if let Some(order) = current_order {
+            return self.entries.iter().position(|entry| entry.order == order);
+        }
+        if active_submission {
+            self.entries.iter().position(|entry| {
+                matches!(
+                    &entry.kind,
+                    PtyIoInboxEntryKind::Write(
+                        PendingWrite::TerminalResponse(_) | PendingWrite::Submission { .. }
+                    )
+                )
+            })
+        } else {
+            (!self.entries.is_empty()).then_some(0)
+        }
+    }
+
+    /// Whether a failed resize still holds its replies ahead of an entry.
+    /// Everything queued after those replies waits with them, so no later
+    /// reply overtakes them.
+    fn resize_holds(&self, order: u64) -> bool {
+        self.latest_resize
+            .as_ref()
+            .is_some_and(|resize| !resize.terminal_responses.is_empty() && resize.order < order)
+    }
+
+    /// The write the actor can start or continue now, if any.
+    fn writable_index(&self, active_submission: bool, current_order: Option<u64>) -> Option<usize> {
+        let index = self.next_entry_index(active_submission, current_order)?;
+        let entry = self.entries.get(index)?;
+        if !matches!(entry.kind, PtyIoInboxEntryKind::Write(_)) {
+            return None;
+        }
+        // A write under way was started before any resize that could hold it.
+        if current_order.is_none() && self.resize_holds(entry.order) {
+            return None;
+        }
+        Some(index)
+    }
+
+    /// Remove an entry and release what it reserved. `written` bytes of it
+    /// were already released as they were written. A submission part holds
+    /// no item of its own: the submission's item is released when the
+    /// submission finishes.
+    fn remove_entry(&mut self, index: usize, written: usize) -> Option<PtyIoInboxEntryKind> {
+        let entry = self.entries.remove(index)?;
+        let (bytes, releases_item) = match &entry.kind {
+            PtyIoInboxEntryKind::Write(
+                PendingWrite::User(bytes) | PendingWrite::TerminalResponse(bytes),
+            ) => (bytes.len(), true),
+            PtyIoInboxEntryKind::Write(PendingWrite::Submission { bytes, .. }) => {
+                (bytes.len(), false)
+            }
+            PtyIoInboxEntryKind::Submission { text, enter, .. } => {
+                (text.len().saturating_add(enter.len()), true)
+            }
+        };
+        self.release_bytes(bytes.saturating_sub(written));
+        if releases_item {
+            self.release_item();
+        }
+        Some(entry.kind)
+    }
+
+    /// Queue a resize's replies at the resize's place in the sequence: after
+    /// everything produced before the resize, ahead of everything after it.
+    /// Their bytes and items were reserved when the resize was queued.
+    fn insert_resize_replies(&mut self, order: u64, replies: Vec<Bytes>) {
+        let insert_at = self
+            .entries
+            .iter()
+            .position(|entry| entry.order > order)
+            .unwrap_or(self.entries.len());
+        for (offset, bytes) in replies.into_iter().enumerate() {
+            self.entries.insert(
+                insert_at + offset,
+                PtyIoInboxEntry {
+                    order,
+                    kind: PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)),
+                },
+            );
         }
     }
 }
 
-enum PtyIoControlCommand {
-    Shutdown,
-}
-
-#[derive(Clone)]
-pub struct PtyIoActorHandle {
-    data_tx: mpsc::Sender<PtyIoDataCommand>,
-    control_tx: std_mpsc::Sender<PtyIoControlCommand>,
-    wake: fd::WakeWriter,
-    user_writes: Arc<Mutex<UserWriteGate>>,
-    controls: Arc<Mutex<SharedPtyControls>>,
-    response_order: Arc<Mutex<()>>,
-}
-
-#[derive(Debug)]
-struct UserWriteGate {
-    accepting: bool,
-}
-
 impl PtyIoActorHandle {
-    pub fn try_write_user_input(
-        &self,
-        bytes: Bytes,
-    ) -> Result<(), mpsc::error::TrySendError<Bytes>> {
-        let user_writes = crate::locks::lock_auxiliary(&self.user_writes);
-        if !user_writes.accepting {
-            return Err(mpsc::error::TrySendError::Closed(bytes));
-        }
-        match self
-            .data_tx
-            .try_send(PtyIoDataCommand::WriteUserInput(bytes))
-        {
+    pub fn try_write_user_input(&self, bytes: Bytes) -> Result<(), TrySendError<Bytes>> {
+        let result = {
+            let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+            if inbox.shutdown {
+                return Err(TrySendError::Closed(bytes));
+            }
+            inbox.push_user_input(bytes)
+        };
+        match result {
             Ok(()) => {
                 self.wake_actor();
                 Ok(())
             }
-            Err(mpsc::error::TrySendError::Full(command)) => {
-                Err(mpsc::error::TrySendError::Full(command.into_input_bytes()))
-            }
-            Err(mpsc::error::TrySendError::Closed(command)) => Err(
-                mpsc::error::TrySendError::Closed(command.into_input_bytes()),
-            ),
+            Err(bytes) => Err(TrySendError::Full(bytes)),
         }
     }
 
@@ -174,31 +403,22 @@ impl PtyIoActorHandle {
         enter: Bytes,
         delay: Duration,
     ) -> std::io::Result<QueuedSubmission> {
-        let user_writes = crate::locks::lock_auxiliary(&self.user_writes);
-        if !user_writes.accepting {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "pty actor closed",
-            ));
-        }
         let (reply_tx, reply_rx) = std_mpsc::channel();
         let state = SubmissionState::shared();
-        self.data_tx
-            .try_send(PtyIoDataCommand::SubmitUserInput {
-                text,
-                enter,
-                delay,
-                reply: reply_tx,
-                state: Arc::clone(&state),
-            })
-            .map_err(|err| match err {
-                mpsc::error::TrySendError::Full(_) => {
+        {
+            let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+            if inbox.shutdown {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "pty actor closed",
+                ));
+            }
+            inbox
+                .push_submission(text, enter, delay, reply_tx, Arc::clone(&state))
+                .map_err(|()| {
                     std::io::Error::new(std::io::ErrorKind::WouldBlock, "pty input queue is full")
-                }
-                mpsc::error::TrySendError::Closed(_) => {
-                    std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pty actor closed")
-                }
-            })?;
+                })?;
+        }
         self.wake_actor();
         Ok(QueuedSubmission {
             completion: reply_rx,
@@ -209,15 +429,19 @@ impl PtyIoActorHandle {
         })
     }
 
+    /// Queue a terminal reply produced outside a PTY read. `response` runs
+    /// under the reply-order lock (it may take the terminal core lock), never
+    /// under the inbox lock.
     pub fn write_terminal_response(&self, response: impl FnOnce() -> Option<Bytes>) {
         let _order = crate::locks::lock_auxiliary(&self.response_order);
         let Some(bytes) = response() else {
             return;
         };
-        if !bytes.is_empty() {
-            crate::locks::lock_auxiliary(&self.controls)
-                .terminal_responses
-                .push(bytes);
+        let queued = {
+            let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+            !inbox.shutdown && inbox.push_terminal_response(bytes)
+        };
+        if queued {
             self.wake_actor();
         }
     }
@@ -227,22 +451,26 @@ impl PtyIoActorHandle {
         geometry: shepr_core::geometry::PaneGeometry,
         terminal_responses: Vec<Bytes>,
     ) {
-        {
-            let mut controls = crate::locks::lock_auxiliary(&self.controls);
-            controls.resize = Some(PtyResizeRequest {
-                resize: PtyResize { geometry },
-                terminal_responses,
-            });
+        let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+        if inbox.shutdown {
+            return;
         }
+        inbox.replace_resize(geometry, terminal_responses);
+        drop(inbox);
         self.wake_actor();
     }
 
     pub fn shutdown(&self) {
-        {
-            let mut user_writes = crate::locks::lock_auxiliary(&self.user_writes);
-            user_writes.accepting = false;
-        }
-        if self.control_tx.send(PtyIoControlCommand::Shutdown).is_ok() {
+        let changed = {
+            let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+            if inbox.shutdown {
+                false
+            } else {
+                inbox.shutdown = true;
+                true
+            }
+        };
+        if changed {
             self.wake_actor();
         }
     }
@@ -268,37 +496,30 @@ impl PtyIoActor {
         fd::set_cloexec(config.master_fd.as_raw_fd())?;
         fd::set_nonblocking(config.master_fd.as_raw_fd())?;
 
-        let (data_tx, data_rx) = mpsc::channel(ACTOR_COMMAND_BUFFER);
-        let (control_tx, control_rx) = std_mpsc::channel();
         let wake_pipe = fd::create_wake_pipe()?;
-        let user_writes = Arc::new(Mutex::new(UserWriteGate { accepting: true }));
-        let controls = Arc::new(Mutex::new(SharedPtyControls::default()));
+        let inbox = Arc::new(Mutex::new(PtyIoInbox::default()));
         let response_order = Arc::new(Mutex::new(()));
         let handle = PtyIoActorHandle {
-            data_tx,
-            control_tx,
             wake: wake_pipe.writer,
-            user_writes,
-            controls: Arc::clone(&controls),
+            inbox: Arc::clone(&inbox),
             response_order: Arc::clone(&response_order),
         };
 
         let mut runner = PtyIoActorRunner {
             pane_id: config.pane_id,
             file: std::fs::File::from(config.master_fd),
-            data_rx,
-            control_rx,
-            pending_writes: VecDeque::new(),
+            inbox,
+            response_order,
+            current_write_order: None,
             current_write_offset: 0,
             active_submission: None,
             wake_read_fd: wake_pipe.read_fd,
-            controls,
-            response_order,
             on_read: config.on_read,
             on_reader_exit: config.on_reader_exit,
             core_broken: config.core_broken,
             read_callback_panicked: false,
             poll_observer,
+            resize_pty: Box::new(resize_pty),
         };
         std::thread::Builder::new()
             .name(format!("shepr-pty-{}", config.pane_id.raw()))
@@ -320,30 +541,45 @@ impl PtyIoActor {
 struct PtyIoActorRunner {
     pane_id: PaneId,
     file: std::fs::File,
-    data_rx: mpsc::Receiver<PtyIoDataCommand>,
-    control_rx: std_mpsc::Receiver<PtyIoControlCommand>,
-    pending_writes: VecDeque<PendingWrite>,
+    inbox: Arc<Mutex<PtyIoInbox>>,
+    response_order: Arc<Mutex<()>>,
+    /// The entry whose write is under way, and how much of it is written.
+    /// The offset is zero whenever the order is `None`.
+    current_write_order: Option<u64>,
     current_write_offset: usize,
     active_submission: Option<ActiveSubmission>,
     wake_read_fd: OwnedFd,
-    controls: Arc<Mutex<SharedPtyControls>>,
-    response_order: Arc<Mutex<()>>,
     on_read: ReadCallback,
     on_reader_exit: Option<ReaderExitCallback>,
     core_broken: Option<CoreBrokenCheck>,
     read_callback_panicked: bool,
     poll_observer: Option<std_mpsc::Sender<()>>,
+    resize_pty: Box<dyn FnMut(RawFd, PtyResize) -> std::io::Result<()> + Send>,
 }
 
 struct ActiveSubmission {
     enter: Bytes,
+    /// Enter bytes reserved in the inbox but not yet queued as an entry.
+    unqueued_enter_bytes: usize,
     reply: std_mpsc::Sender<std::io::Result<()>>,
     state: SharedSubmissionState,
 }
 
 #[derive(Debug, PartialEq, Eq)]
+enum WriteStep {
+    /// Nothing can be written now.
+    Idle,
+    /// The PTY would block.
+    Blocked,
+    /// Bytes were written or an entry was retired; a finished submission
+    /// part is returned for `complete_submission_part`.
+    Progress(Option<SubmissionPart>),
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum PendingWrite {
     User(Bytes),
+    TerminalResponse(Bytes),
     Submission { bytes: Bytes, part: SubmissionPart },
 }
 
@@ -357,24 +593,9 @@ enum ReadOutcome {
 }
 
 impl PtyIoActorRunner {
-    fn enqueue_write(&mut self, bytes: Bytes) {
-        if !bytes.is_empty() {
-            self.pending_writes.push_back(PendingWrite::User(bytes));
-        }
-    }
-
-    fn enqueue_submission_write(&mut self, bytes: Bytes, part: SubmissionPart) {
-        if !bytes.is_empty() {
-            self.pending_writes
-                .push_back(PendingWrite::Submission { bytes, part });
-        }
-    }
-
     fn run(&mut self) {
-        let mut should_exit = false;
-        while !should_exit {
-            should_exit = self.drain_commands();
-            if should_exit {
+        loop {
+            if crate::locks::lock_auxiliary(&self.inbox).shutdown {
                 break;
             }
             if self.core_broken.as_ref().is_some_and(|broken| broken()) {
@@ -386,21 +607,13 @@ impl PtyIoActorRunner {
                 break;
             }
 
-            self.apply_pending_controls();
-            self.withdraw_cancelled_submission();
-
-            if !self.pending_writes.is_empty() {
-                match self.flush_pending_writes_once() {
-                    Ok(Some(part)) => self.complete_submission_part(part),
-                    Ok(None) => {}
-                    Err(err) => {
-                        self.handle_write_failure(err);
-                        break;
-                    }
-                }
+            // The wake pipe is drained right after poll returns, before this
+            // pump reads the inbox, so work pushed after the pump has read it
+            // always leaves a wake byte for the poll below.
+            if let Err(err) = self.pump() {
+                self.handle_write_failure(err);
+                break;
             }
-            self.schedule_submission_enter();
-
             if let Some(poll_observer) = &self.poll_observer {
                 let _ = poll_observer.send(());
             }
@@ -408,7 +621,7 @@ impl PtyIoActorRunner {
             match fd::poll_pty_and_wake(
                 self.file.as_raw_fd(),
                 self.wake_read_fd.as_raw_fd(),
-                !self.pending_writes.is_empty(),
+                self.has_writable_work(),
                 self.poll_timeout_ms(),
             ) {
                 Ok(readiness) => {
@@ -428,15 +641,11 @@ impl PtyIoActorRunner {
                     if readiness.pty_read_ready && !self.read_once() {
                         break;
                     }
-                    if readiness.pty_write_ready && !self.pending_writes.is_empty() {
-                        match self.flush_pending_writes_once() {
-                            Ok(Some(part)) => self.complete_submission_part(part),
-                            Ok(None) => {}
-                            Err(err) => {
-                                self.handle_write_failure(err);
-                                break;
-                            }
-                        }
+                    if readiness.pty_write_ready
+                        && let Err(err) = self.pump()
+                    {
+                        self.handle_write_failure(err);
+                        break;
                     }
                 }
                 Err(err) => {
@@ -446,7 +655,7 @@ impl PtyIoActorRunner {
             }
         }
 
-        self.close_input_queue();
+        self.close_inbox();
         if let Some(on_reader_exit) = self.on_reader_exit.take() {
             on_reader_exit(if self.read_callback_panicked {
                 ReaderExit::Panicked
@@ -457,103 +666,197 @@ impl PtyIoActorRunner {
         debug!(pane = self.pane_id.raw(), "PTY actor exiting");
     }
 
-    fn drain_commands(&mut self) -> bool {
-        if self.drain_control_commands() {
+    /// Write what the PTY takes now, handling the non-write work (resizes,
+    /// submission starts, Enter scheduling, withdrawals) around each write,
+    /// so nothing that is ready waits for the next wake or the idle poll.
+    fn pump(&mut self) -> std::io::Result<()> {
+        for _ in 0..MAX_WRITE_STEPS_PER_PUMP {
+            self.withdraw_cancelled_submission();
+            self.advance_inbox();
+            match self.write_next()? {
+                WriteStep::Idle | WriteStep::Blocked => return Ok(()),
+                WriteStep::Progress(Some(part)) => self.complete_submission_part(part),
+                WriteStep::Progress(None) => {}
+            }
+        }
+        // Out of steps with the PTY still writable: the next poll returns at
+        // once. Settle the non-write work first so it is not left waiting.
+        self.withdraw_cancelled_submission();
+        self.advance_inbox();
+        Ok(())
+    }
+
+    /// Handle every non-write inbox event that is ready. Each step either
+    /// changes the actor's state or reports nothing to do, so this ends.
+    fn advance_inbox(&mut self) {
+        while self.process_next_inbox_event() || self.schedule_submission_enter() {}
+    }
+
+    /// Apply a due resize, or start the submission at the front of the
+    /// queue. Returns whether anything changed.
+    fn process_next_inbox_event(&mut self) -> bool {
+        if self.apply_due_resize() {
             return true;
         }
+        // One submission at a time; the rest wait in queue order.
         if self.active_submission.is_some() {
             return false;
         }
-        self.drain_data_commands()
-    }
-
-    fn drain_control_commands(&mut self) -> bool {
-        let mut should_exit = false;
-        loop {
-            match self.control_rx.try_recv() {
-                Ok(command) => {
-                    if self.handle_control_command(&command) {
-                        should_exit = true;
-                        break;
-                    }
-                }
-                Err(std_mpsc::TryRecvError::Empty) => break,
-                Err(std_mpsc::TryRecvError::Disconnected) => {
-                    should_exit = true;
-                    break;
-                }
-            }
+        let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+        let Some(entry_index) = inbox.next_entry_index(false, self.current_write_order) else {
+            return false;
+        };
+        let Some(entry) = inbox.entries.get(entry_index) else {
+            return false;
+        };
+        if !matches!(entry.kind, PtyIoInboxEntryKind::Submission { .. })
+            || inbox.resize_holds(entry.order)
+        {
+            return false;
         }
-        should_exit
-    }
-
-    fn drain_data_commands(&mut self) -> bool {
-        let mut should_exit = false;
-        loop {
-            match self.data_rx.try_recv() {
-                Ok(command) => {
-                    self.handle_data_command(command);
-                    if self.active_submission.is_some() {
-                        break;
-                    }
-                }
-                Err(DataTryRecvError::Empty) => break,
-                Err(DataTryRecvError::Disconnected) => {
-                    should_exit = true;
-                    break;
-                }
-            }
-        }
-        should_exit
-    }
-
-    fn handle_data_command(&mut self, command: PtyIoDataCommand) {
-        match command {
-            PtyIoDataCommand::WriteUserInput(bytes) => self.enqueue_write(bytes),
-            PtyIoDataCommand::SubmitUserInput {
+        let Some(PtyIoInboxEntry { order, kind }) = inbox.entries.remove(entry_index) else {
+            return false;
+        };
+        let (text, enter, delay, reply, state) = match kind {
+            PtyIoInboxEntryKind::Submission {
                 text,
                 enter,
                 delay,
                 reply,
                 state,
-            } => {
-                let started = lock_state(&state).start(text.is_empty(), delay);
-                if !started {
-                    lock_state(&state).finish();
-                    let _ = reply.send(Err(submission_withdrawn_error()));
-                    return;
+            } => (text, enter, delay, reply, state),
+            kind => {
+                inbox
+                    .entries
+                    .insert(entry_index, PtyIoInboxEntry { order, kind });
+                return false;
+            }
+        };
+        if !lock_state(&state).start(text.is_empty(), delay) {
+            lock_state(&state).finish();
+            inbox.release_bytes(text.len().saturating_add(enter.len()));
+            inbox.release_item();
+            drop(inbox);
+            let _ = reply.send(Err(submission_withdrawn_error()));
+            return true;
+        }
+
+        // The text takes the submission's place in the sequence and keeps
+        // its reservation; the Enter's bytes stay reserved until it is queued.
+        if !text.is_empty() {
+            inbox.entries.insert(
+                entry_index,
+                PtyIoInboxEntry {
+                    order,
+                    kind: PtyIoInboxEntryKind::Write(PendingWrite::Submission {
+                        bytes: text,
+                        part: SubmissionPart::Text,
+                    }),
+                },
+            );
+        }
+        drop(inbox);
+        self.active_submission = Some(ActiveSubmission {
+            unqueued_enter_bytes: enter.len(),
+            enter,
+            reply,
+            state,
+        });
+        true
+    }
+
+    /// Apply the pending resize if it is due. The ioctl runs as soon as the
+    /// request arrives, not behind queued writes: a child that is not reading
+    /// stdin must still get its SIGWINCH. Only the replies take the request's
+    /// place in the sequence. The runtime has already resized the emulator,
+    /// so a failed ioctl is retried with backoff until it succeeds or a newer
+    /// request replaces it. Returns whether anything changed.
+    fn apply_due_resize(&mut self) -> bool {
+        let (order, resize) = {
+            let inbox = crate::locks::lock_auxiliary(&self.inbox);
+            let Some(pending) = inbox.latest_resize.as_ref() else {
+                return false;
+            };
+            if pending
+                .retry_at
+                .is_some_and(|retry_at| retry_at > Instant::now())
+            {
+                return false;
+            }
+            (pending.order, pending.resize)
+        };
+        let result = (self.resize_pty)(self.file.as_raw_fd(), resize);
+
+        let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+        if inbox
+            .latest_resize
+            .as_ref()
+            .is_none_or(|pending| pending.order != order)
+        {
+            // Replaced during the ioctl; the newer request is applied next.
+            return true;
+        }
+        match result {
+            Ok(()) => {
+                if let Some(done) = inbox.latest_resize.take() {
+                    if done.attempts > 0 {
+                        debug!(
+                            pane = self.pane_id.raw(),
+                            attempts = done.attempts,
+                            "PTY resize applied after retrying"
+                        );
+                    }
+                    inbox.insert_resize_replies(done.order, done.terminal_responses);
                 }
-                if !text.is_empty() {
-                    self.enqueue_submission_write(text, SubmissionPart::Text);
+                true
+            }
+            Err(err) => {
+                let Some(pending) = inbox.latest_resize.as_mut() else {
+                    return false;
+                };
+                pending.attempts = pending.attempts.saturating_add(1);
+                let attempts = pending.attempts;
+                let shift = u32::from(attempts.saturating_sub(1).min(7));
+                let delay = RESIZE_RETRY_BASE
+                    .saturating_mul(1u32 << shift)
+                    .min(RESIZE_RETRY_MAX);
+                pending.retry_at = Some(Instant::now() + delay);
+                // Holding the replies keeps them ordered, but it also holds
+                // every write queued after them. Past a few attempts the
+                // replies go out without the ioctl (they describe the
+                // emulator, which has the new size) and input flows again.
+                let released = if attempts >= RESIZE_HOLD_ATTEMPTS {
+                    std::mem::take(&mut pending.terminal_responses)
+                } else {
+                    Vec::new()
+                };
+                let released_any = !released.is_empty();
+                inbox.insert_resize_replies(order, released);
+                drop(inbox);
+                if attempts == 1 {
+                    warn!(
+                        pane = self.pane_id.raw(),
+                        err = %err,
+                        "PTY resize failed; retrying with backoff"
+                    );
+                } else if released_any {
+                    warn!(
+                        pane = self.pane_id.raw(),
+                        err = %err,
+                        attempts,
+                        "PTY resize still failing; releasing its replies and retrying"
+                    );
+                } else {
+                    debug!(
+                        pane = self.pane_id.raw(),
+                        err = %err,
+                        attempts,
+                        "PTY resize retry failed"
+                    );
                 }
-                self.active_submission = Some(ActiveSubmission {
-                    enter,
-                    reply,
-                    state,
-                });
+                released_any
             }
         }
-    }
-
-    fn handle_control_command(&mut self, command: &PtyIoControlCommand) -> bool {
-        match command {
-            PtyIoControlCommand::Shutdown => true,
-        }
-    }
-
-    fn apply_pending_controls(&mut self) {
-        let (resize, terminal_responses) = {
-            let mut controls = crate::locks::lock_auxiliary(&self.controls);
-            (
-                controls.resize.take(),
-                std::mem::take(&mut controls.terminal_responses),
-            )
-        };
-        if let Some(request) = resize {
-            self.resize(request.resize);
-            self.enqueue_terminal_responses(request.terminal_responses);
-        }
-        self.enqueue_terminal_responses(terminal_responses);
     }
 
     fn read_once(&mut self) -> bool {
@@ -574,8 +877,8 @@ impl PtyIoActorRunner {
                 ReadOutcome::WouldBlock | ReadOutcome::Closed => break,
             }
         }
-        // Replies generated while draining have nowhere to go.
-        self.pending_writes.clear();
+        // Replies generated while draining are discarded when the inbox closes.
+        self.current_write_order = None;
         self.current_write_offset = 0;
     }
 
@@ -590,6 +893,8 @@ impl PtyIoActorRunner {
                 ReadOutcome::Closed
             }
             Ok(n) => {
+                // Held across parsing and queuing this read's replies; see
+                // `PtyIoActorHandle::response_order`.
                 let response_order = Arc::clone(&self.response_order);
                 let _order = crate::locks::lock_auxiliary(&response_order);
                 // A panic in the terminal core must not unwind out of the
@@ -620,22 +925,14 @@ impl PtyIoActorRunner {
                     self.read_callback_panicked = true;
                     return ReadOutcome::Closed;
                 }
-                crate::locks::lock_auxiliary(&self.controls)
-                    .terminal_responses
-                    .extend(result.terminal_responses);
-                drop(_order);
-                let terminal_responses = std::mem::take(
-                    &mut crate::locks::lock_auxiliary(&self.controls).terminal_responses,
-                );
-                self.enqueue_terminal_responses(terminal_responses);
+                let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+                if !inbox.shutdown {
+                    for response in result.terminal_responses {
+                        let _ = inbox.push_terminal_response(response);
+                    }
+                }
                 ReadOutcome::Data
             }
-        }
-    }
-
-    fn enqueue_terminal_responses(&mut self, terminal_responses: Vec<Bytes>) {
-        for bytes in terminal_responses {
-            self.enqueue_write(bytes);
         }
     }
 
@@ -680,11 +977,35 @@ impl PtyIoActorRunner {
             .is_some_and(|submission| lock_state(&submission.state).cancelled())
     }
 
+    /// End the active submission and release everything it reserved,
+    /// including any of its parts still queued (a withdrawn part, or one left
+    /// behind by a write failure).
     fn finish_active_submission(&mut self, result: std::io::Result<()>) {
-        if let Some(submission) = self.active_submission.take() {
-            lock_state(&submission.state).finish();
-            let _ = submission.reply.send(result);
+        let Some(submission) = self.active_submission.take() else {
+            return;
+        };
+        lock_state(&submission.state).finish();
+        {
+            let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+            while let Some(index) = inbox.entries.iter().position(|entry| {
+                matches!(
+                    entry.kind,
+                    PtyIoInboxEntryKind::Write(PendingWrite::Submission { .. })
+                )
+            }) {
+                let order = inbox.entries.get(index).map(|entry| entry.order);
+                let written = if order.is_some() && order == self.current_write_order {
+                    self.current_write_order = None;
+                    std::mem::take(&mut self.current_write_offset)
+                } else {
+                    0
+                };
+                inbox.remove_entry(index, written);
+            }
+            inbox.release_bytes(submission.unqueued_enter_bytes);
+            inbox.release_item();
         }
+        let _ = submission.reply.send(result);
     }
 
     /// Drop a cancelled submission as soon as the actor sees it, rather than
@@ -697,17 +1018,17 @@ impl PtyIoActorRunner {
             return;
         };
         let should_withdraw = lock_state(&submission.state).should_withdraw();
-        if !should_withdraw {
-            return;
+        if should_withdraw {
+            // The unstarted part still queued is removed with the submission.
+            self.finish_active_submission(Err(submission_withdrawn_error()));
         }
-        self.pending_writes
-            .retain(|write| matches!(write, PendingWrite::User(_)));
-        self.finish_active_submission(Err(submission_withdrawn_error()));
     }
 
-    fn schedule_submission_enter(&mut self) {
+    /// Queue the Enter once the delay after the text has passed. Returns
+    /// whether anything changed.
+    fn schedule_submission_enter(&mut self) -> bool {
         let Some(submission) = self.active_submission.as_ref() else {
-            return;
+            return false;
         };
         let enter = submission.enter.clone();
         let state = Arc::clone(&submission.state);
@@ -715,25 +1036,54 @@ impl PtyIoActorRunner {
         match start {
             EnterStart::Cancelled => {
                 self.finish_active_submission(Err(submission_withdrawn_error()));
+                true
             }
             EnterStart::Empty => {
                 self.finish_active_submission(Ok(()));
+                true
             }
-            EnterStart::Started => self.enqueue_submission_write(enter, SubmissionPart::Enter),
-            EnterStart::NotReady => {}
+            EnterStart::Started => {
+                if !enter.is_empty() {
+                    let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+                    let order = inbox.next_order();
+                    inbox.entries.push_back(PtyIoInboxEntry {
+                        order,
+                        kind: PtyIoInboxEntryKind::Write(PendingWrite::Submission {
+                            bytes: enter,
+                            part: SubmissionPart::Enter,
+                        }),
+                    });
+                }
+                if let Some(submission) = self.active_submission.as_mut() {
+                    submission.unqueued_enter_bytes = 0;
+                }
+                true
+            }
+            EnterStart::NotReady => false,
         }
     }
 
     fn poll_timeout_ms(&self) -> i32 {
-        let Some(submission) = self.active_submission.as_ref() else {
-            return ACTOR_IDLE_POLL_MS;
+        let now = Instant::now();
+        let submission_deadline = self
+            .active_submission
+            .as_ref()
+            .and_then(|submission| lock_state(&submission.state).deadline());
+        let resize_deadline = crate::locks::lock_auxiliary(&self.inbox)
+            .latest_resize
+            .as_ref()
+            .and_then(|resize| resize.retry_at);
+        let deadline = match (submission_deadline, resize_deadline) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+            (None, None) => None,
         };
-        let Some(deadline) = lock_state(&submission.state).deadline() else {
+        let Some(deadline) = deadline else {
             return ACTOR_IDLE_POLL_MS;
         };
         i32::try_from(
             deadline
-                .saturating_duration_since(Instant::now())
+                .saturating_duration_since(now)
                 .as_millis()
                 .max(1)
                 .min(ACTOR_IDLE_POLL_MS as u128),
@@ -745,97 +1095,150 @@ impl PtyIoActorRunner {
         self.finish_active_submission(Err(err));
     }
 
-    fn close_input_queue(&mut self) {
-        self.data_rx.close();
-        self.fail_active_submission(input_submission_closed_error());
-        while let Some(command) = self.data_rx.blocking_recv() {
-            if let PtyIoDataCommand::SubmitUserInput { reply, state, .. } = command {
-                lock_state(&state).finish();
-                let _ = reply.send(Err(input_submission_closed_error()));
+    fn close_inbox(&mut self) {
+        let mut queued_submissions = Vec::new();
+        {
+            let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+            inbox.shutdown = true;
+            for entry in inbox.entries.drain(..) {
+                if let PtyIoInboxEntryKind::Submission { reply, state, .. } = entry.kind {
+                    queued_submissions.push((reply, state));
+                }
             }
+            inbox.latest_resize = None;
+            inbox.pending_bytes = 0;
+            inbox.pending_items = 0;
+        }
+        let error = input_submission_closed_error();
+        if let Some(submission) = self.active_submission.take() {
+            lock_state(&submission.state).finish();
+            let _ = submission
+                .reply
+                .send(Err(std::io::Error::new(error.kind(), error.to_string())));
+        }
+        for (reply, state) in queued_submissions {
+            lock_state(&state).finish();
+            let _ = reply.send(Err(std::io::Error::new(error.kind(), error.to_string())));
         }
     }
 
-    fn flush_pending_writes_once(&mut self) -> std::io::Result<Option<SubmissionPart>> {
-        while let Some(write) = self.pending_writes.front() {
+    /// Take one write step on the next writable entry. The inbox lock is
+    /// released around the write syscall; the entry's index stays valid
+    /// because only this thread removes or inserts entries.
+    fn write_next(&mut self) -> std::io::Result<WriteStep> {
+        let (index, order, bytes, part) = {
+            let inbox = crate::locks::lock_auxiliary(&self.inbox);
+            let Some(index) =
+                inbox.writable_index(self.active_submission.is_some(), self.current_write_order)
+            else {
+                return Ok(WriteStep::Idle);
+            };
+            let Some(entry) = inbox.entries.get(index) else {
+                return Ok(WriteStep::Idle);
+            };
+            let PtyIoInboxEntryKind::Write(write) = &entry.kind else {
+                return Ok(WriteStep::Idle);
+            };
             let (bytes, part) = match write {
-                PendingWrite::User(bytes) => (bytes, None),
-                PendingWrite::Submission { bytes, part } => (bytes, Some(*part)),
+                PendingWrite::User(bytes) | PendingWrite::TerminalResponse(bytes) => {
+                    (bytes.clone(), None)
+                }
+                PendingWrite::Submission { bytes, part } => (bytes.clone(), Some(*part)),
             };
-            // The first byte of a submission part is written under the state
-            // lock, so cancellation either skips the whole part or observes
-            // that writing has started. Later text chunks can finish without
-            // the lock because cancellation never truncates an in-flight part.
-            let state = match (part, self.current_write_offset) {
-                (Some(_), 0) => self
-                    .active_submission
-                    .as_ref()
-                    .map(|submission| Arc::clone(&submission.state)),
-                _ => None,
-            };
-            if part.is_some() && self.current_write_offset == 0 && state.is_none() {
-                self.pending_writes.pop_front();
-                return Ok(part);
-            }
-            let mut state_guard = state.as_deref().map(lock_state);
-            if state_guard
+            (index, entry.order, bytes, part)
+        };
+        let offset = self.current_write_offset;
+
+        // The first byte of a submission part is written under the state
+        // lock, so a cancel either skips the whole part or sees that it has
+        // started. Later chunks finish without it: cancellation never
+        // truncates a part in flight.
+        let state = match part {
+            Some(_) if offset == 0 => self
+                .active_submission
                 .as_ref()
-                .is_some_and(|guard| part.is_some_and(|part| !guard.can_write_first_byte(part)))
-            {
+                .map(|submission| Arc::clone(&submission.state)),
+            _ => None,
+        };
+        let mut state_guard = state.as_deref().map(lock_state);
+        let skip = match (part, offset, state_guard.as_ref()) {
+            // A part whose submission has already ended.
+            (Some(_), 0, None) => true,
+            (Some(part), 0, Some(guard)) => !guard.can_write_first_byte(part),
+            _ => false,
+        };
+        if skip {
+            drop(state_guard);
+            self.retire_entry(index, order, 0);
+            return Ok(WriteStep::Progress(part));
+        }
+
+        let write_result = self.file.write(&bytes[offset..]);
+        match write_result {
+            Ok(0) => Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "PTY actor write returned zero bytes",
+            )),
+            Ok(written) => {
+                if let (Some(guard), Some(part)) = (state_guard.as_mut(), part) {
+                    guard.first_byte_written(part);
+                }
                 drop(state_guard);
-                self.pending_writes.pop_front();
-                return Ok(part);
+                let offset = offset.saturating_add(written);
+                if offset < bytes.len() {
+                    crate::locks::lock_auxiliary(&self.inbox).release_bytes(written);
+                    self.current_write_order = Some(order);
+                    self.current_write_offset = offset;
+                    return Ok(WriteStep::Progress(None));
+                }
+                // `retire_entry` releases what the earlier chunks left.
+                self.retire_entry(index, order, offset.saturating_sub(written));
+                if part.is_some() {
+                    self.file.flush()?;
+                }
+                Ok(WriteStep::Progress(part))
             }
-            let chunk = &bytes[self.current_write_offset..];
-            match self.file.write(chunk) {
-                Ok(0) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::WriteZero,
-                        "PTY actor write returned zero bytes",
-                    ));
-                }
-                Ok(written) => {
-                    if let (Some(guard), Some(part)) = (state_guard.as_mut(), part) {
-                        guard.first_byte_written(part);
-                    }
-                    drop(state_guard);
-                    self.current_write_offset += written;
-                    if self.current_write_offset >= bytes.len() {
-                        let Some(completed) = self.pending_writes.pop_front() else {
-                            return Ok(None);
-                        };
-                        self.current_write_offset = 0;
-                        if let PendingWrite::Submission { part, .. } = completed {
-                            self.file.flush()?;
-                            return Ok(Some(part));
-                        }
-                    }
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
-                Err(err) if err.kind() == std::io::ErrorKind::Interrupted => return Ok(None),
-                Err(err) => {
-                    warn!(pane = self.pane_id.raw(), err = %err, "PTY actor write failed");
-                    self.pending_writes.clear();
-                    self.current_write_offset = 0;
-                    return Err(err);
-                }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Ok(WriteStep::Blocked),
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {
+                Ok(WriteStep::Progress(None))
+            }
+            Err(err) => {
+                warn!(pane = self.pane_id.raw(), err = %err, "PTY actor write failed");
+                Err(err)
             }
         }
-        self.file.flush()?;
-        Ok(None)
     }
 
-    fn resize(&self, resize: PtyResize) {
-        if let Err(err) = fd::resize_pty_fd(
-            self.file.as_raw_fd(),
-            resize.geometry.rows(),
-            resize.geometry.cols(),
-            resize.geometry.cell_width(),
-            resize.geometry.cell_height(),
-        ) {
-            debug!(pane = self.pane_id.raw(), err = %err, "PTY resize failed");
+    /// Remove a finished or skipped entry. `released` bytes of it were
+    /// released as earlier chunks were written.
+    fn retire_entry(&mut self, index: usize, order: u64, released: usize) {
+        self.current_write_order = None;
+        self.current_write_offset = 0;
+        let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
+        if inbox
+            .entries
+            .get(index)
+            .is_some_and(|entry| entry.order == order)
+        {
+            inbox.remove_entry(index, released);
         }
     }
+
+    fn has_writable_work(&self) -> bool {
+        crate::locks::lock_auxiliary(&self.inbox)
+            .writable_index(self.active_submission.is_some(), self.current_write_order)
+            .is_some()
+    }
+}
+
+fn resize_pty(fd: RawFd, resize: PtyResize) -> std::io::Result<()> {
+    fd::resize_pty_fd(
+        fd,
+        resize.geometry.rows(),
+        resize.geometry.cols(),
+        resize.geometry.cell_width(),
+        resize.geometry.cell_height(),
+    )
 }
 
 fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
@@ -907,74 +1310,58 @@ mod tests {
         (handle, peer, read_rx)
     }
 
-    fn actor_runner_for_unit_test() -> (PtyIoActorRunner, UnixStream) {
+    fn actor_test_parts(on_read: ReadCallback) -> (PtyIoActorRunner, PtyIoActorHandle, UnixStream) {
         let (actor_socket, peer) = UnixStream::pair().expect("socket pair");
         actor_socket
             .set_nonblocking(true)
             .expect("actor socket nonblocking");
         // SAFETY: into_raw_fd transfers this socket's sole fd ownership to OwnedFd.
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
-        let (_data_tx, data_rx) = mpsc::channel(ACTOR_COMMAND_BUFFER);
-        let (_control_tx, control_rx) = std_mpsc::channel();
         let wake_pipe = fd::create_wake_pipe().expect("wake pipe");
+        let inbox = Arc::new(Mutex::new(PtyIoInbox::default()));
+        let response_order = Arc::new(Mutex::new(()));
+        let handle = PtyIoActorHandle {
+            wake: wake_pipe.writer,
+            inbox: Arc::clone(&inbox),
+            response_order: Arc::clone(&response_order),
+        };
         let runner = PtyIoActorRunner {
             pane_id: PaneId::from_raw(1),
             file: std::fs::File::from(owned),
-            data_rx,
-            control_rx,
-            pending_writes: VecDeque::new(),
+            inbox,
+            response_order,
+            current_write_order: None,
             current_write_offset: 0,
             active_submission: None,
             wake_read_fd: wake_pipe.read_fd,
-            controls: Arc::new(Mutex::new(SharedPtyControls::default())),
-            response_order: Arc::new(Mutex::new(())),
-            on_read: Box::new(|_| PtyReadResult::empty()),
+            on_read,
             on_reader_exit: None,
             core_broken: None,
             read_callback_panicked: false,
             poll_observer: None,
+            resize_pty: Box::new(resize_pty),
         };
+        (runner, handle, peer)
+    }
+
+    fn actor_runner_for_unit_test() -> (PtyIoActorRunner, UnixStream) {
+        let (runner, _handle, peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
         (runner, peer)
     }
 
     #[test]
     fn write_failure_still_delivers_the_childs_last_output() {
-        let (actor_socket, mut peer) = UnixStream::pair().expect("socket pair");
-        actor_socket
-            .set_nonblocking(true)
-            .expect("actor socket nonblocking");
-        // SAFETY: into_raw_fd transfers this socket's sole fd ownership to OwnedFd.
-        let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
-        // Keep the senders alive so the loop does not exit on a closed queue
-        // before it reaches the pending write.
-        let (_data_tx, data_rx) = mpsc::channel(ACTOR_COMMAND_BUFFER);
-        let (_control_tx, control_rx) = std_mpsc::channel();
-        let wake_pipe = fd::create_wake_pipe().expect("wake pipe");
         let (read_tx, read_rx) = std_mpsc::channel();
-        let mut runner = PtyIoActorRunner {
-            pane_id: PaneId::from_raw(1),
-            file: std::fs::File::from(owned),
-            data_rx,
-            control_rx,
-            pending_writes: VecDeque::new(),
-            current_write_offset: 0,
-            active_submission: None,
-            wake_read_fd: wake_pipe.read_fd,
-            controls: Arc::new(Mutex::new(SharedPtyControls::default())),
-            response_order: Arc::new(Mutex::new(())),
-            on_read: Box::new(move |bytes| {
-                let _ = read_tx.send(Bytes::copy_from_slice(bytes));
-                PtyReadResult::empty()
-            }),
-            on_reader_exit: None,
-            core_broken: None,
-            read_callback_panicked: false,
-            poll_observer: None,
-        };
+        let (mut runner, _handle, mut peer) = actor_test_parts(Box::new(move |bytes| {
+            let _ = read_tx.send(Bytes::copy_from_slice(bytes));
+            PtyReadResult::empty()
+        }));
         // The child prints its last words and exits with a reply still queued.
         peer.write_all(b"last-output").expect("peer write");
         drop(peer);
-        runner.enqueue_write(Bytes::from_static(b"queued-reply"));
+        crate::locks::lock_auxiliary(&runner.inbox)
+            .push_user_input(Bytes::from_static(b"queued-reply"))
+            .expect("test write fits inbox");
 
         runner.run();
 
@@ -986,64 +1373,127 @@ mod tests {
 
     #[test]
     fn rejected_user_input_hands_its_bytes_back() {
-        let (data_tx, data_rx) = mpsc::channel(1);
-        let (control_tx, _control_rx) = std_mpsc::channel();
         let (wake, _wake_read_fd) = test_wake_pair();
         let handle = PtyIoActorHandle {
-            data_tx,
-            control_tx,
             wake,
-            user_writes: Arc::new(Mutex::new(UserWriteGate { accepting: true })),
-            controls: Arc::new(Mutex::new(SharedPtyControls::default())),
+            inbox: Arc::new(Mutex::new(PtyIoInbox::default())),
             response_order: Arc::new(Mutex::new(())),
         };
         handle
-            .try_write_user_input(Bytes::from_static(b"fill"))
+            .try_write_user_input(Bytes::from(vec![b'f'; ACTOR_INBOX_MAX_BYTES]))
             .expect("first write fits the queue");
         match handle.try_write_user_input(Bytes::from_static(b"full")) {
-            Err(mpsc::error::TrySendError::Full(bytes)) => assert_eq!(bytes, "full"),
+            Err(TrySendError::Full(bytes)) => assert_eq!(bytes, "full"),
             other => panic!("expected a full queue, got {other:?}"),
         }
-        drop(data_rx);
+        handle.shutdown();
         match handle.try_write_user_input(Bytes::from_static(b"closed")) {
-            Err(mpsc::error::TrySendError::Closed(bytes)) => assert_eq!(bytes, "closed"),
+            Err(TrySendError::Closed(bytes)) => assert_eq!(bytes, "closed"),
             other => panic!("expected a closed queue, got {other:?}"),
         }
     }
 
     #[test]
+    fn unread_child_stdin_keeps_input_bounded_and_returns_full() {
+        let (mut actor_socket, _peer) = UnixStream::pair().expect("socket pair");
+        actor_socket
+            .set_nonblocking(true)
+            .expect("actor socket nonblocking");
+        assert!(fill_send_buffer(&mut actor_socket) > 0);
+        // SAFETY: into_raw_fd transfers this socket's sole fd ownership to OwnedFd.
+        let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
+        let handle = PtyIoActor::spawn(PtyIoActorConfig {
+            pane_id: PaneId::from_raw(1),
+            master_fd: owned,
+            on_read: Box::new(|_| PtyReadResult::empty()),
+            on_reader_exit: None,
+            core_broken: None,
+        })
+        .expect("actor spawn");
+
+        let chunk = Bytes::from(vec![b'x'; 16 * 1024]);
+        let mut rejected = None;
+        for _ in 0..(ACTOR_INBOX_MAX_BYTES / chunk.len() + 8) {
+            match handle.try_write_user_input(chunk.clone()) {
+                Ok(()) => {}
+                Err(TrySendError::Full(bytes)) => {
+                    rejected = Some(bytes);
+                    break;
+                }
+                Err(TrySendError::Closed(_)) => panic!("live actor closed unexpectedly"),
+            }
+        }
+
+        assert_eq!(rejected, Some(chunk));
+        let inbox = crate::locks::lock_auxiliary(&handle.inbox);
+        assert!(inbox.pending_bytes <= ACTOR_INBOX_MAX_BYTES);
+        assert!(inbox.pending_bytes > 0, "unread input remains queued");
+        assert!(inbox.pending_items <= ACTOR_INBOX_MAX_ITEMS);
+        drop(inbox);
+        handle.shutdown();
+    }
+
+    #[test]
     fn actor_ignores_empty_user_input_write() {
-        let (mut runner, _peer) = actor_runner_for_unit_test();
-
-        runner.handle_data_command(PtyIoDataCommand::WriteUserInput(Bytes::new()));
-
-        assert!(runner.pending_writes.is_empty());
+        let (runner, _peer) = actor_runner_for_unit_test();
+        let inbox = crate::locks::lock_auxiliary(&runner.inbox);
+        assert_eq!(inbox.pending_bytes, 0);
+        drop(inbox);
+        let result = crate::locks::lock_auxiliary(&runner.inbox).push_user_input(Bytes::new());
+        assert!(result.is_ok());
+        assert!(
+            crate::locks::lock_auxiliary(&runner.inbox)
+                .entries
+                .is_empty()
+        );
     }
 
     #[test]
     fn submission_part_does_not_wait_for_following_protocol_write() {
-        let (mut runner, _peer) = actor_runner_for_unit_test();
+        let (mut runner, mut peer) = actor_runner_for_unit_test();
         let state = SubmissionState::shared();
         assert!(lock_state(&state).start(false, Duration::ZERO));
         let (reply, _completion) = std_mpsc::channel();
         runner.active_submission = Some(ActiveSubmission {
             enter: Bytes::new(),
+            unqueued_enter_bytes: 0,
             reply,
             state,
         });
-        runner.enqueue_submission_write(Bytes::from_static(b"prompt"), SubmissionPart::Text);
-        runner.enqueue_write(Bytes::from_static(b"response"));
+        {
+            let mut inbox = crate::locks::lock_auxiliary(&runner.inbox);
+            inbox.reserve(14, 2);
+            let submission_order = inbox.next_order();
+            inbox.entries.push_back(PtyIoInboxEntry {
+                order: submission_order,
+                kind: PtyIoInboxEntryKind::Write(PendingWrite::Submission {
+                    bytes: Bytes::from_static(b"prompt"),
+                    part: SubmissionPart::Text,
+                }),
+            });
+            let reply_order = inbox.next_order();
+            inbox.entries.push_back(PtyIoInboxEntry {
+                order: reply_order,
+                kind: PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(
+                    Bytes::from_static(b"response"),
+                )),
+            });
+        }
 
         assert_eq!(
-            runner
-                .flush_pending_writes_once()
-                .expect("test precondition"),
-            Some(SubmissionPart::Text)
+            runner.write_next().expect("test precondition"),
+            WriteStep::Progress(Some(SubmissionPart::Text))
         );
-        assert_eq!(
-            runner.pending_writes[0],
-            PendingWrite::User(Bytes::from_static(b"response"))
-        );
+        let mut prompt = [0; 6];
+        peer.read_exact(&mut prompt)
+            .expect("prompt was written first");
+        assert_eq!(&prompt, b"prompt");
+        let inbox = crate::locks::lock_auxiliary(&runner.inbox);
+        assert!(matches!(
+            inbox.entries.front().map(|entry| &entry.kind),
+            Some(PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)))
+                if bytes.as_ref() == b"response"
+        ));
     }
 
     #[test]
@@ -1063,7 +1513,7 @@ mod tests {
     #[test]
     fn actor_delays_enter_from_completed_prompt_write() {
         let (handle, mut peer, _read_rx) = actor_with_socket_pair();
-        let text = Bytes::from(vec![b'x'; 4 * 1024 * 1024]);
+        let text = Bytes::from(vec![b'x'; 240 * 1024]);
         let text_len = text.len();
         let delay = Duration::from_millis(200);
         let reader = std::thread::spawn(move || {
@@ -1621,98 +2071,59 @@ mod tests {
     }
 
     #[test]
-    fn resize_keeps_latest_request_when_command_queue_is_full() {
-        let (data_tx, _data_rx) = mpsc::channel(1);
-        let (control_tx, _control_rx) = std_mpsc::channel();
-        data_tx
-            .try_send(PtyIoDataCommand::WriteUserInput(Bytes::from_static(
-                b"fill",
-            )))
-            .expect("fill command queue");
-        let controls = Arc::new(Mutex::new(SharedPtyControls::default()));
-        let (wake, _wake_read_fd) = test_wake_pair();
-        let handle = PtyIoActorHandle {
-            data_tx,
-            control_tx,
-            wake,
-            user_writes: Arc::new(Mutex::new(UserWriteGate { accepting: true })),
-            controls: Arc::clone(&controls),
-            response_order: Arc::new(Mutex::new(())),
-        };
-
+    fn resize_keeps_latest_request_without_reordering_queued_replies() {
+        let (_runner, handle, _peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
+        handle.write_terminal_response(|| Some(Bytes::from_static(b"before")));
         handle.resize(
             shepr_core::geometry::PaneGeometry::new(80, 20, 8, 16),
             vec![Bytes::from_static(b"old")],
         );
+        handle.write_terminal_response(|| Some(Bytes::from_static(b"middle")));
         handle.resize(
             shepr_core::geometry::PaneGeometry::new(120, 40, 9, 18),
             vec![Bytes::from_static(b"new")],
         );
-        handle.write_terminal_response(|| Some(Bytes::from_static(b"response")));
 
-        let controls = crate::locks::lock_auxiliary(&controls);
+        let inbox = crate::locks::lock_auxiliary(&handle.inbox);
         assert_eq!(
-            controls.resize,
-            Some(PtyResizeRequest {
-                resize: PtyResize {
-                    geometry: shepr_core::geometry::PaneGeometry::new(120, 40, 9, 18),
-                },
-                terminal_responses: vec![Bytes::from_static(b"new")],
+            inbox
+                .latest_resize
+                .as_ref()
+                .map(|resize| resize.resize.geometry),
+            Some(shepr_core::geometry::PaneGeometry::new(120, 40, 9, 18))
+        );
+        assert_eq!(
+            inbox
+                .latest_resize
+                .as_ref()
+                .map(|resize| resize.terminal_responses.as_slice()),
+            Some(&[Bytes::from_static(b"new")][..])
+        );
+        let responses: Vec<_> = inbox
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)) => {
+                    Some(bytes.as_ref())
+                }
+                _ => None,
             })
-        );
-        assert_eq!(
-            controls.terminal_responses,
-            vec![Bytes::from_static(b"response")]
-        );
+            .collect();
+        assert_eq!(responses, [b"before".as_slice(), b"middle".as_slice()]);
     }
 
     #[test]
     fn appearance_transition_report_precedes_query_of_new_scheme() {
-        let (actor_socket, mut peer) = UnixStream::pair().expect("socket pair");
-        actor_socket
-            .set_nonblocking(true)
-            .expect("actor socket nonblocking");
-        // SAFETY: into_raw_fd transfers this socket's sole fd ownership to OwnedFd.
-        let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
-        let (data_tx, data_rx) = mpsc::channel(ACTOR_COMMAND_BUFFER);
-        let (control_tx, control_rx) = std_mpsc::channel();
-        let wake_pipe = fd::create_wake_pipe().expect("wake pipe");
-        let controls = Arc::new(Mutex::new(SharedPtyControls::default()));
-        let response_order = Arc::new(Mutex::new(()));
         let light = Arc::new(AtomicBool::new(false));
         let query_light = Arc::clone(&light);
-        let runner = PtyIoActorRunner {
-            pane_id: PaneId::from_raw(1),
-            file: std::fs::File::from(owned),
-            data_rx,
-            control_rx,
-            pending_writes: VecDeque::new(),
-            current_write_offset: 0,
-            active_submission: None,
-            wake_read_fd: wake_pipe.read_fd,
-            controls: Arc::clone(&controls),
-            response_order: Arc::clone(&response_order),
-            on_read: Box::new(move |_| PtyReadResult {
-                terminal_responses: vec![if query_light.load(Ordering::Acquire) {
-                    Bytes::from_static(b"query-light")
-                } else {
-                    Bytes::from_static(b"query-dark")
-                }],
-                core_broken: false,
-            }),
-            on_reader_exit: None,
-            core_broken: None,
-            read_callback_panicked: false,
-            poll_observer: None,
-        };
-        let handle = PtyIoActorHandle {
-            data_tx,
-            control_tx,
-            wake: wake_pipe.writer,
-            user_writes: Arc::new(Mutex::new(UserWriteGate { accepting: true })),
-            controls,
-            response_order,
-        };
+        let (runner, handle, mut peer) = actor_test_parts(Box::new(move |_| PtyReadResult {
+            terminal_responses: vec![if query_light.load(Ordering::Acquire) {
+                Bytes::from_static(b"query-light")
+            } else {
+                Bytes::from_static(b"query-dark")
+            }],
+            core_broken: false,
+        }));
         let (changed_tx, changed_rx) = std_mpsc::channel();
         let (continue_tx, continue_rx) = std_mpsc::channel();
 
@@ -1735,29 +2146,377 @@ mod tests {
         appearance.join().expect("appearance thread joins");
         let runner = reader.join().expect("reader thread joins");
 
+        let inbox = crate::locks::lock_auxiliary(&runner.inbox);
+        let responses: Vec<_> = inbox
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)) => {
+                    Some(bytes.as_ref())
+                }
+                _ => None,
+            })
+            .collect();
         assert_eq!(
-            runner.pending_writes,
-            VecDeque::from([
-                PendingWrite::User(Bytes::from_static(b"live-light")),
-                PendingWrite::User(Bytes::from_static(b"query-light")),
-            ])
+            responses,
+            [b"live-light".as_slice(), b"query-light".as_slice()]
         );
     }
 
     #[test]
     fn resize_writes_terminal_responses_after_applying_resize() {
-        let (handle, mut peer, _read_rx) = actor_with_socket_pair();
-        let response = Bytes::from_static(b"\x1B[48;40;100;720;900t");
+        let (mut runner, handle, mut peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
+        runner.resize_pty = Box::new(|_, _| Ok(()));
+        handle.write_terminal_response(|| Some(Bytes::from_static(b"earlier")));
+        handle.resize(
+            shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
+            vec![Bytes::from_static(b"resize")],
+        );
+        handle.write_terminal_response(|| Some(Bytes::from_static(b"later")));
+
+        runner.pump().expect("queued response writes");
+
+        let mut bytes = [0; 18];
+        peer.read_exact(&mut bytes)
+            .expect("peer receives replies in inbox order");
+        assert_eq!(&bytes, b"earlierresizelater");
+    }
+
+    #[test]
+    fn failed_resize_is_retried_without_dropping_its_reply() {
+        let (mut runner, handle, mut peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let resize_calls = Arc::clone(&calls);
+        runner.resize_pty = Box::new(move |_, _| {
+            if resize_calls.fetch_add(1, Ordering::AcqRel) == 0 {
+                Err(std::io::Error::other("temporary ioctl failure"))
+            } else {
+                Ok(())
+            }
+        });
+        handle.resize(
+            shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
+            vec![Bytes::from_static(b"resize-reply")],
+        );
+        handle.write_terminal_response(|| Some(Bytes::from_static(b"later")));
+
+        runner.pump().expect("pump with a failing resize");
+        {
+            let mut inbox = crate::locks::lock_auxiliary(&runner.inbox);
+            let resize = inbox
+                .latest_resize
+                .as_mut()
+                .expect("failed resize stays queued");
+            assert_eq!(resize.attempts, 1);
+            assert!(resize.retry_at.is_some());
+            assert_eq!(
+                resize.terminal_responses,
+                [Bytes::from_static(b"resize-reply")]
+            );
+            resize.retry_at = Some(Instant::now());
+        }
+        // The later reply waits behind the held one.
+        peer.set_nonblocking(true).expect("peer nonblocking");
+        let mut probe = [0u8; 1];
+        assert!(
+            peer.read(&mut probe).is_err(),
+            "nothing overtakes a held resize reply"
+        );
+        peer.set_nonblocking(false).expect("peer blocking");
+
+        runner.pump().expect("resize reply write succeeds");
+        assert_eq!(calls.load(Ordering::Acquire), 2);
+        assert!(
+            crate::locks::lock_auxiliary(&runner.inbox)
+                .latest_resize
+                .is_none()
+        );
+        let mut response = [0; 17];
+        peer.read_exact(&mut response)
+            .expect("reply follows successful resize retry");
+        assert_eq!(&response, b"resize-replylater");
+    }
+
+    #[test]
+    fn a_resize_that_keeps_failing_stops_holding_input_and_a_newer_one_replaces_it() {
+        let (mut runner, handle, mut peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
+        let succeed = Arc::new(AtomicBool::new(false));
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        runner.resize_pty = Box::new({
+            let succeed = Arc::clone(&succeed);
+            let applied = Arc::clone(&applied);
+            move |_, resize| {
+                if succeed.load(Ordering::Acquire) {
+                    crate::locks::lock_auxiliary(&applied).push(resize.geometry);
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other("persistent ioctl failure"))
+                }
+            }
+        });
+        handle.resize(
+            shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
+            vec![Bytes::from_static(b"reply")],
+        );
+        handle
+            .try_write_user_input(Bytes::from_static(b"typed"))
+            .expect("input queues");
+
+        for attempt in 1..=RESIZE_HOLD_ATTEMPTS {
+            runner.pump().expect("pump with a failing resize");
+            let mut inbox = crate::locks::lock_auxiliary(&runner.inbox);
+            let resize = inbox
+                .latest_resize
+                .as_mut()
+                .expect("failed resize stays queued");
+            assert_eq!(resize.attempts, attempt);
+            let retry_in = resize
+                .retry_at
+                .expect("failure schedules a retry")
+                .saturating_duration_since(Instant::now());
+            assert!(retry_in > Duration::ZERO && retry_in <= RESIZE_RETRY_MAX);
+            resize.retry_at = Some(Instant::now());
+        }
+        // Released: the reply and the input behind it go out, the ioctl is
+        // still pending.
+        let mut received = [0; 10];
+        peer.read_exact(&mut received)
+            .expect("held reply and input are released");
+        assert_eq!(&received, b"replytyped");
+        assert!(
+            crate::locks::lock_auxiliary(&runner.inbox)
+                .latest_resize
+                .as_ref()
+                .is_some_and(|resize| resize.terminal_responses.is_empty()),
+            "the ioctl keeps retrying after the replies are released"
+        );
+
+        let newer = shepr_core::geometry::PaneGeometry::new(120, 50, 9, 18);
+        handle.resize(newer, Vec::new());
+        succeed.store(true, Ordering::Release);
+        runner.pump().expect("newer resize applies");
+        assert_eq!(*crate::locks::lock_auxiliary(&applied), [newer]);
+        assert!(
+            crate::locks::lock_auxiliary(&runner.inbox)
+                .latest_resize
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn resize_is_applied_while_earlier_input_waits_on_an_unread_pty() {
+        let (mut runner, handle, _peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        runner.resize_pty = Box::new({
+            let calls = Arc::clone(&calls);
+            move |_, _| {
+                calls.fetch_add(1, Ordering::AcqRel);
+                Ok(())
+            }
+        });
+        // More than the socket buffer holds; the peer never reads.
+        handle
+            .try_write_user_input(Bytes::from(vec![b'x'; 4 * 1024 * 1024]))
+            .expect("one oversized write enters an empty inbox");
+        runner.pump().expect("fill the PTY");
+        assert!(
+            !crate::locks::lock_auxiliary(&runner.inbox)
+                .entries
+                .is_empty(),
+            "the write is still waiting on the PTY"
+        );
 
         handle.resize(
             shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
-            vec![response.clone()],
+            Vec::new(),
         );
+        runner.pump().expect("pump with blocked input");
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            1,
+            "the child gets its SIGWINCH without reading stdin first"
+        );
+    }
 
-        let mut buf = vec![0; response.len()];
-        peer.read_exact(&mut buf)
-            .expect("peer receives resize response");
-        assert_eq!(Bytes::from(buf), response);
+    #[test]
+    fn oversized_input_is_admitted_only_into_an_empty_inbox() {
+        let (wake, _wake_read_fd) = test_wake_pair();
+        let handle = PtyIoActorHandle {
+            wake,
+            inbox: Arc::new(Mutex::new(PtyIoInbox::default())),
+            response_order: Arc::new(Mutex::new(())),
+        };
+        let paste = Bytes::from(vec![b'p'; ACTOR_INBOX_MAX_BYTES * 2]);
+        handle
+            .try_write_user_input(paste.clone())
+            .expect("a large paste reaches an idle pane");
+        match handle.try_write_user_input(Bytes::from_static(b"k")) {
+            Err(TrySendError::Full(bytes)) => assert_eq!(bytes, "k"),
+            other => panic!("expected a full queue, got {other:?}"),
+        }
+        match handle.try_write_user_input(paste) {
+            Err(TrySendError::Full(bytes)) => assert_eq!(bytes.len(), ACTOR_INBOX_MAX_BYTES * 2),
+            other => panic!("expected a full queue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unread_child_stdin_bounds_terminal_replies() {
+        let (mut actor_socket, peer) = UnixStream::pair().expect("socket pair");
+        actor_socket
+            .set_nonblocking(true)
+            .expect("actor socket nonblocking");
+        assert!(fill_send_buffer(&mut actor_socket) > 0);
+        // SAFETY: into_raw_fd transfers this socket's sole fd ownership to OwnedFd.
+        let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
+        const REPLY_LEN: usize = 4096;
+        let (read_tx, read_rx) = std_mpsc::channel();
+        let handle = PtyIoActor::spawn(PtyIoActorConfig {
+            pane_id: PaneId::from_raw(1),
+            master_fd: owned,
+            // Every read is a query that earns a reply, as for a child that
+            // prints DA1 or DSR in a loop.
+            on_read: Box::new(move |bytes| {
+                let _ = read_tx.send(bytes.len());
+                PtyReadResult {
+                    terminal_responses: vec![Bytes::from(vec![b'r'; REPLY_LEN])],
+                    core_broken: false,
+                }
+            }),
+            on_reader_exit: None,
+            core_broken: None,
+        })
+        .expect("actor spawn");
+
+        // The child never reads its stdin; it only prints queries.
+        const QUERY_BYTES: usize = 4 * 1024 * 1024;
+        let mut writer = peer.try_clone().expect("clone peer writer");
+        let query_writer = std::thread::spawn(move || {
+            let chunk = vec![b'q'; 1024];
+            for _ in 0..QUERY_BYTES / chunk.len() {
+                writer.write_all(&chunk).expect("child prints queries");
+            }
+        });
+        let mut read = 0;
+        while read < QUERY_BYTES {
+            read += read_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("actor keeps reading queries");
+        }
+        query_writer.join().expect("query writer joins");
+
+        let inbox = crate::locks::lock_auxiliary(&handle.inbox);
+        assert!(inbox.pending_bytes <= ACTOR_INBOX_MAX_BYTES);
+        assert!(inbox.pending_items <= ACTOR_INBOX_MAX_ITEMS);
+        let queued: usize = inbox
+            .entries
+            .iter()
+            .map(|entry| match &entry.kind {
+                PtyIoInboxEntryKind::Write(PendingWrite::TerminalResponse(bytes)) => bytes.len(),
+                _ => 0,
+            })
+            .sum();
+        assert!(
+            queued <= ACTOR_INBOX_MAX_BYTES,
+            "queued {queued} reply bytes"
+        );
+        assert!(
+            queued > ACTOR_INBOX_MAX_BYTES - 2 * REPLY_LEN,
+            "replies fill the inbox up to its bound"
+        );
+        drop(inbox);
         handle.shutdown();
+        drop(peer);
+    }
+
+    #[test]
+    fn submission_queued_behind_input_starts_without_waiting_for_the_idle_poll() {
+        let (runner, handle, mut peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
+        handle
+            .try_write_user_input(Bytes::from_static(b"focus"))
+            .expect("input queues");
+        let completion = handle
+            .queue_user_input_submission(
+                Bytes::from_static(b"prompt"),
+                Bytes::from_static(b"\r"),
+                Duration::ZERO,
+            )
+            .expect("submission queues")
+            .completion;
+        // Both wakes were consumed by an earlier poll, as when they land
+        // while the actor is already awake.
+        fd::drain_wake_fd(runner.wake_read_fd.as_raw_fd()).expect("drain wake");
+
+        let started = Instant::now();
+        let actor = std::thread::spawn(move || {
+            let mut runner = runner;
+            runner.run();
+        });
+        peer.set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("peer timeout");
+        let mut received = [0; 12];
+        peer.read_exact(&mut received)
+            .expect("peer receives input then the prompt");
+        assert_eq!(&received, b"focusprompt\r");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the submission must not wait for the idle poll"
+        );
+        completion
+            .recv_timeout(Duration::from_secs(1))
+            .expect("actor reports submission")
+            .expect("submission completes");
+        handle.shutdown();
+        actor.join().expect("actor joins");
+    }
+
+    #[test]
+    fn finished_and_withdrawn_submissions_release_their_reservation() {
+        let (mut runner, handle, mut peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
+        let queued = handle
+            .queue_user_input_submission(
+                Bytes::from_static(b"prompt"),
+                Bytes::from_static(b"\r"),
+                Duration::from_secs(5),
+            )
+            .expect("submission queues");
+        runner.pump().expect("text writes");
+        let mut prompt = [0; 6];
+        peer.read_exact(&mut prompt).expect("peer receives prompt");
+        assert_eq!(
+            queued.cancel.cancel(),
+            SubmissionCancelOutcome::TextUnsubmitted
+        );
+        runner.pump().expect("withdraw the Enter");
+        queued
+            .completion
+            .recv_timeout(Duration::from_secs(1))
+            .expect("actor reports the cancel")
+            .expect_err("a cancelled submission does not complete");
+        {
+            let inbox = crate::locks::lock_auxiliary(&runner.inbox);
+            assert_eq!((inbox.pending_bytes, inbox.pending_items), (0, 0));
+        }
+
+        let completion = handle
+            .queue_user_input_submission(
+                Bytes::from_static(b"again"),
+                Bytes::from_static(b"\r"),
+                Duration::ZERO,
+            )
+            .expect("submission queues")
+            .completion;
+        runner.pump().expect("submission writes");
+        let mut written = [0; 6];
+        peer.read_exact(&mut written)
+            .expect("peer receives submission");
+        assert_eq!(&written, b"again\r");
+        completion
+            .recv_timeout(Duration::from_secs(1))
+            .expect("actor reports submission")
+            .expect("submission completes");
+        let inbox = crate::locks::lock_auxiliary(&runner.inbox);
+        assert_eq!((inbox.pending_bytes, inbox.pending_items), (0, 0));
+        assert!(inbox.entries.is_empty());
     }
 }

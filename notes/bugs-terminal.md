@@ -26,17 +26,6 @@ Hunter coverage: shepr-vt findings were checked against the pinned vte and alacr
 - **XTGETTCAP body:** vte's passthrough ignores DEL and bytes 0x80-0xFF other than 0x9C. The scanner buffers them, so a request containing them gets no reply.
 - **DCS ignore vs passthrough:** the scanner merges vte's `DcsIgnore` (which ignores 0x9C) with `DcsPassthrough` (which ends on 0x9C). The hunter found no observable difference, because both only resync on ESC. The module doc's claim of "mirroring framing" is slightly overstated.
 
-## TRM-009 - PTY input backpressure does not work; the actor's write queue is unbounded
-
-`crates/shepr-pty/src/actor.rs`.
-- The API promises backpressure: `ACTOR_COMMAND_BUFFER = 1024`, and `try_write_user_input` returns `TrySendError::Full` with the bytes handed back.
-- In practice, `drain_data_commands` moves every queued command into `pending_writes` (an unbounded `VecDeque`) on every loop iteration, whether or not the PTY can take writes. The only time it holds back is while a submission is active.
-- So `Full` is almost never returned. When a child stops reading stdin, pastes and keystrokes keep piling up in memory.
-- Terminal responses are worse. `read_chunk` pushes each `on_read` result into `pending_writes` with no limit. A child that prints queries such as DA1/DSR/XTGETTCAP in a loop and never reads stdin grows server memory for as long as it runs. That is a server-wide memory exhaustion caused by one pane.
-- Fix: make `pending_writes` the bounded queue. Stop draining `data_rx` once the queued bytes pass a limit, and cap or coalesce terminal responses. When a child is not reading, dropping or coalescing replies is the correct terminal behaviour.
-
-Design note from the hunter: the actor has four synchronisation channels (tokio mpsc, std mpsc for control, a `Mutex<SharedPtyControls>`, a `response_order` mutex) plus a `UserWriteGate` mutex. A single mutex-protected inbox (bounded bytes, latest resize, shutdown flag) plus the wake pipe would remove the cross-channel ordering issues (this entry and TRM-014) and the unreachable `Full` case. That is a worthwhile rewrite.
-
 ## TRM-010 - One blocking-pool thread per pane for the child's whole life
 
 `crates/shepr-mux/src/pane/runtime.rs`.
@@ -45,18 +34,9 @@ Design note from the hunter: the actor has four synchronisation channels (tokio 
 - Also likely: `Runtime` drop waits for blocking tasks unless `shutdown_timeout` or `shutdown_background` is used, so an exit path that leaves pane processes alive would hang the server on `wait()`. The hunter did not verify which runtime shutdown the server uses.
 - Fix: reap from a pidfd. `ProcessHandle` already opens one: register it with `AsyncFd`, then `waitid(P_PIDFD)`. That avoids a dedicated thread per child.
 
-## TRM-014 - Resize replies can be sent out of order relative to earlier replies
+## TRM-032 - Resize replies can be overtaken by a concurrent PTY read
 
-`crates/shepr-pty/src/actor.rs`, `apply_pending_controls`.
-- A resize request's responses are queued before any `controls.terminal_responses` that were pushed earlier, for example an appearance report queued before the resize.
-- `write_terminal_response` has a `response_order` lock precisely to keep replies ordered. Resize replies skip that ordering.
-
-## TRM-015 - A failed resize is swallowed; PTY and emulator sizes can diverge
-
-`crates/shepr-pty/src/actor.rs` `resize`, `fd.rs` `resize_pty_fd`.
-- `clamp_pane_size` in runtime.rs says "the PTY and the emulator always agree on the size".
-- `PaneRuntime::resize` resizes the emulator first, then asks the actor. If the ioctl fails, the actor logs at `debug!` and nothing else happens.
-- Not exiting the process is correct. But the size contract then breaks silently, and `current_size` already holds the new value, so the next identical resize is skipped as a no-op and nothing retries.
+`crates/shepr-mux/src/pane/runtime.rs`, `PaneRuntime::resize`. The replies a resize produces are computed by `terminal.resize` before `io.resize` queues them in the actor inbox, outside the actor's `response_order` lock. A PTY read that lands between those two calls queues its own replies first, so the child can see them ahead of the resize's. Closing it means the actor's `resize` taking a closure that produces the replies under `response_order`, as `write_terminal_response` already does.
 
 ## TRM-030 - passwd_field drops non-UTF-8 home and shell paths
 

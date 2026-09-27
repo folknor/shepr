@@ -7,9 +7,9 @@ use shepr_protocol::{AttachScrollDirection, AttachScrollSource, ClientPaneInputE
 /// Why one piece of pane input did not reach the PTY.
 ///
 /// Input is handed to the PTY actor with a non-blocking send. The actor's
-/// queue holds on the order of a thousand pending writes, so it is only full
-/// when the child has stopped reading its terminal (suspended, wedged, or
-/// flooded). Waiting for room is not an option: the server event loop is
+/// inbox holds up to 256 KiB (and a thousand items) of unwritten input and
+/// replies, so it is only full when the child has stopped reading its
+/// terminal (suspended, wedged, or flooded). Waiting for room is not an option: the server event loop is
 /// shared by every pane and client, and blocking it on one stuck child would
 /// freeze all of them. Queuing elsewhere would only grow an unbounded backlog
 /// for a process that is not consuming it, and would have to preserve order
