@@ -6,7 +6,8 @@ use crossterm::event::{KeyModifiers, MouseEventKind};
 use tracing::debug;
 
 use crate::api::schema::{PaneReadResult, ResponseResult};
-use crate::terminal::{ScreenSnapshot, TerminalId, TerminalRuntime, UpwardMerge};
+use crate::protocol::TerminalId;
+use crate::terminal::{ScreenSnapshot, TerminalRuntime, UpwardMerge};
 
 const INITIAL_QUIET: Duration = Duration::from_millis(10);
 const OUTPUT_QUIET: Duration = Duration::from_millis(10);

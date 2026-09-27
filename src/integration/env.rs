@@ -95,7 +95,7 @@ fn absolute_xdg_home(variable: &str) -> Option<PathBuf> {
 }
 
 pub(crate) fn apply_pane_base_env(cmd: &mut PtyCommand, api_socket_path: &std::path::Path) {
-    cmd.env(crate::api::SOCKET_PATH_ENV_VAR, api_socket_path);
+    cmd.env(crate::config::SOCKET_PATH_ENV_VAR, api_socket_path);
     if let Ok(executable) = crate::platform::launch_executable() {
         cmd.env("SHEPR_BIN_PATH", executable);
     }

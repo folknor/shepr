@@ -245,7 +245,7 @@ impl RemoteSsh {
         let mut ssh = Self::new(
             target,
             manage_ssh_config,
-            crate::session::DEFAULT_SESSION_NAME.into(),
+            crate::config::DEFAULT_SESSION_NAME.into(),
             paths,
         );
         ssh.noninteractive = true;

@@ -3,7 +3,7 @@
 //! `build.rs` fingerprints the source tree this binary was built from; see
 //! its module doc for why a hand-maintained version cannot stand in for it.
 
-include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
+include!(concat!(env!("OUT_DIR"), "/build_id.rs"));
 
 /// Package version plus the source fingerprint as semver build metadata, for
 /// example `0.1.0+0123456789abcdef`. The package version alone is the same
@@ -30,7 +30,7 @@ mod tests {
     #[test]
     fn protocol_version_leaves_room_for_mismatch_tests() {
         // Tests build a mismatching peer with `PROTOCOL_VERSION + 1` or `- 1`.
-        let version = std::hint::black_box(PROTOCOL_VERSION);
+        let version = std::hint::black_box(crate::protocol::PROTOCOL_VERSION);
         assert!(version > 0 && version < u32::MAX, "{version}");
     }
 }

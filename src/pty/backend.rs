@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn pty_spawn_leaves_one_parent_pty_fd() {
-        let _guard = crate::vt::lock_auxiliary(pty_fd_test_lock());
+        let _guard = crate::pty::locks::lock_auxiliary(pty_fd_test_lock());
         let before = parent_pty_fd_count();
         let mut cmd = PtyCommand::new("/bin/cat");
         cmd.env(crate::SHEPR_ENV_VAR, crate::SHEPR_ENV_VALUE);

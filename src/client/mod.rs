@@ -103,7 +103,7 @@ fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
 enum ClientLaunchMode {
     Shell,
     Attach {
-        terminal_id: crate::terminal::TerminalId,
+        terminal_id: crate::protocol::TerminalId,
         takeover: bool,
         escape: AttachEscapeState,
     },

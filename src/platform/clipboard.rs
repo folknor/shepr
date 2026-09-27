@@ -246,7 +246,7 @@ pub(super) fn run_clipboard_command(
 
     // Nonblocking, so a helper that stops reading cannot hold this write
     // past the deadline.
-    let written = crate::pty::fd::set_nonblocking(stdin.as_raw_fd())
+    let written = set_nonblocking(stdin.as_raw_fd())
         .and_then(|()| write_all_until(&mut stdin, bytes, deadline));
     if written.is_err() {
         kill_and_reap(&mut child);
@@ -308,4 +308,17 @@ fn detach_clipboard_owner(child: std::process::Child) -> bool {
     }
 
     true
+}
+
+fn set_nonblocking(fd: std::os::fd::RawFd) -> std::io::Result<()> {
+    // SAFETY: fcntl only inspects or updates flags on the borrowed live fd.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fd remains open for this call and F_SETFL receives flag bits.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }

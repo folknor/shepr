@@ -733,7 +733,7 @@ impl HeadlessServer {
     fn report_client_shell_input_failures(
         &mut self,
         client_id: ClientId,
-        pane_id: &crate::workspace::PublicPaneId,
+        pane_id: &crate::protocol::PublicPaneId,
         failures: &crate::server::pane_input::PaneInputFailures,
     ) {
         warn!(?client_id, pane_id = %pane_id, err = %failures, "targeted client shell input failed");
@@ -814,7 +814,7 @@ impl HeadlessServer {
     /// allocate a `to_string()` per terminal on every attach keystroke, mouse
     /// event and render.
     #[cfg(test)]
-    fn terminal_id_by_string(&self, terminal_id: &str) -> Option<&crate::terminal::TerminalId> {
+    fn terminal_id_by_string(&self, terminal_id: &str) -> Option<&crate::protocol::TerminalId> {
         self.app
             .state
             .terminals
@@ -1177,7 +1177,7 @@ impl HeadlessServer {
 
     fn shutdown_terminal_stream_clients(
         &mut self,
-        terminal_id: &crate::terminal::TerminalId,
+        terminal_id: &crate::protocol::TerminalId,
         reason: &str,
     ) {
         let client_ids = terminal_stream_client_ids(&self.clients, terminal_id);
@@ -1210,7 +1210,7 @@ impl HeadlessServer {
     fn attach_terminal_client(
         &mut self,
         client_id: ClientId,
-        terminal_id: &crate::terminal::TerminalId,
+        terminal_id: &crate::protocol::TerminalId,
         takeover: bool,
     ) -> bool {
         if !self.client_is_pending_terminal_mode(client_id) {

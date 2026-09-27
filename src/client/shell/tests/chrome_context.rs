@@ -564,8 +564,8 @@ fn selection_without_a_previous_surface_is_dropped_by_the_next_surface() {
     state.set_snapshot(Box::new(snapshot()));
     state.selection = Some(crate::selection::Selection::range(
         "pane_1".into(),
-        crate::terminal::Point::new(crate::terminal::AbsRow(0), 0),
-        crate::terminal::Point::new(crate::terminal::AbsRow(0), 2),
+        crate::vt::Point::new(crate::vt::AbsRow(0), 0),
+        crate::vt::Point::new(crate::vt::AbsRow(0), 2),
     ));
     state.set_pane_surface(surface());
     assert!(state.selection.is_none());

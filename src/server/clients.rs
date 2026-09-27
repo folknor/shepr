@@ -2,14 +2,14 @@ use std::collections::HashMap;
 use std::ops::Index;
 
 use crate::api::RenderDemand;
+use crate::protocol::PublicTabId;
+use crate::protocol::TerminalId;
 use crate::protocol::{
     ClientKeyCode, ClientKeyKind, ClientMouseButton, ClientMouseKind, ClientPaneInputEvent,
     RenderEncoding,
 };
 use crate::server::client_transport::ClientWriter;
 use crate::server::render_stream::ClientRenderState;
-use crate::terminal::TerminalId;
-use crate::workspace::PublicTabId;
 
 /// Identity of a connection accepted by this server. Only the registry's
 /// allocator mints production values; disconnecting never reuses one.
@@ -507,21 +507,21 @@ enum ClientShellPressId {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ClientShellHeldInput {
-    pub(crate) target: crate::workspace::PublicPaneId,
+    pub(crate) target: crate::protocol::PublicPaneId,
     pub(crate) release: ClientPaneInputEvent,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ClientShellLocation {
-    pub(crate) focused_workspace_id: Option<crate::workspace::WorkspaceId>,
-    pub(crate) active_tab_ids: HashMap<crate::workspace::WorkspaceId, PublicTabId>,
+    pub(crate) focused_workspace_id: Option<crate::protocol::WorkspaceId>,
+    pub(crate) active_tab_ids: HashMap<crate::protocol::WorkspaceId, PublicTabId>,
 }
 
 pub(crate) struct ClientShellTopology {
-    pub(crate) focused_workspace_id: Option<crate::workspace::WorkspaceId>,
-    pub(crate) fallback_workspace_id: Option<crate::workspace::WorkspaceId>,
-    pub(crate) active_tab_ids: HashMap<crate::workspace::WorkspaceId, PublicTabId>,
-    pub(crate) tab_workspace_ids: HashMap<PublicTabId, crate::workspace::WorkspaceId>,
+    pub(crate) focused_workspace_id: Option<crate::protocol::WorkspaceId>,
+    pub(crate) fallback_workspace_id: Option<crate::protocol::WorkspaceId>,
+    pub(crate) active_tab_ids: HashMap<crate::protocol::WorkspaceId, PublicTabId>,
+    pub(crate) tab_workspace_ids: HashMap<PublicTabId, crate::protocol::WorkspaceId>,
 }
 
 impl ClientShellLocation {
@@ -547,13 +547,13 @@ impl ClientShellLocation {
             .and_then(|workspace_id| self.active_tab_ids.get(workspace_id))
     }
 
-    pub(crate) fn focus_workspace(&mut self, workspace_id: crate::workspace::WorkspaceId) {
+    pub(crate) fn focus_workspace(&mut self, workspace_id: crate::protocol::WorkspaceId) {
         self.focused_workspace_id = Some(workspace_id);
     }
 
     pub(crate) fn focus_tab(
         &mut self,
-        workspace_id: crate::workspace::WorkspaceId,
+        workspace_id: crate::protocol::WorkspaceId,
         tab_id: PublicTabId,
     ) {
         self.focused_workspace_id = Some(workspace_id.clone());
@@ -710,7 +710,7 @@ impl ClientConnection {
 
     pub(crate) fn track_shell_input(
         &mut self,
-        target: &crate::workspace::PublicPaneId,
+        target: &crate::protocol::PublicPaneId,
         events: &[ClientPaneInputEvent],
     ) {
         let Some(shell) = self.shell_state_mut() else {

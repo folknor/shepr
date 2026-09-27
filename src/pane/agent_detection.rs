@@ -444,8 +444,8 @@ mod tests {
     #[test]
     fn codex_startup_prompt_survives_terminal_wraps() {
         let wrapped = "header\n› Ask Codex to do\nanything\nfooter";
-        assert!(crate::agents::Agent::Codex.prompt_ready(wrapped));
-        assert!(!crate::agents::Agent::Codex.prompt_ready(&format!("model: load\ning\n{wrapped}")));
+        assert!(crate::agent::Agent::Codex.prompt_ready(wrapped));
+        assert!(!crate::agent::Agent::Codex.prompt_ready(&format!("model: load\ning\n{wrapped}")));
     }
 
     #[test]

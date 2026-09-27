@@ -144,9 +144,9 @@ impl TerminalState {
             .or_else(|| {
                 crate::detect::Agent::all().find(|agent| {
                     let agent_label = crate::detect::agent_label(*agent);
-                    crate::agent_resume::is_official_agent_source(source, agent_label)
+                    crate::agent::resume::is_official_agent_source(source, agent_label)
                         || applies_to_source.is_some_and(|source| {
-                            crate::agent_resume::is_official_agent_source(source, agent_label)
+                            crate::agent::resume::is_official_agent_source(source, agent_label)
                         })
                 })
             })
@@ -163,9 +163,9 @@ impl TerminalState {
         };
         let exited_agent_label = crate::detect::agent_label(exit.agent);
         agent_label.and_then(crate::detect::parse_agent_label) == Some(exit.agent)
-            || crate::agent_resume::is_official_agent_source(source, exited_agent_label)
+            || crate::agent::resume::is_official_agent_source(source, exited_agent_label)
             || applies_to_source.is_some_and(|source| {
-                crate::agent_resume::is_official_agent_source(source, exited_agent_label)
+                crate::agent::resume::is_official_agent_source(source, exited_agent_label)
             })
     }
 
@@ -632,7 +632,7 @@ mod tests {
 
     use super::*;
     use crate::detect::Agent;
-    use crate::terminal::TerminalId;
+    use crate::protocol::TerminalId;
 
     fn test_terminal() -> TerminalState {
         TerminalState::new(TerminalId::alloc(), "/tmp".into())

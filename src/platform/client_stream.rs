@@ -5,19 +5,19 @@ use std::{
     time::Instant,
 };
 
-fn shutdown_client_stream(stream: &crate::ipc::LocalStream) -> std::io::Result<()> {
-    let crate::ipc::LocalStream::UdSocket(stream) = stream;
+fn shutdown_client_stream(stream: &interprocess::local_socket::Stream) -> std::io::Result<()> {
+    let interprocess::local_socket::Stream::UdSocket(stream) = stream;
     stream.inner().shutdown(std::net::Shutdown::Both)
 }
 
-pub(crate) struct ClientStreamReader<'a>(pub(crate) &'a mut crate::ipc::LocalStream);
+pub(crate) struct ClientStreamReader<'a>(pub(crate) &'a mut interprocess::local_socket::Stream);
 
 impl Read for ClientStreamReader<'_> {
     fn read(&mut self, data: &mut [u8]) -> std::io::Result<usize> {
         loop {
             match self.0.read(data) {
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    let crate::ipc::LocalStream::UdSocket(stream) = &*self.0;
+                    let interprocess::local_socket::Stream::UdSocket(stream) = &*self.0;
                     // Sleep until input or shutdown, without polling quiet observers.
                     if let Err(error) = poll_fd_readable(stream.inner().as_raw_fd(), -1)
                         && error.kind() != std::io::ErrorKind::Interrupted
@@ -32,12 +32,12 @@ impl Read for ClientStreamReader<'_> {
 }
 
 pub(crate) fn write_client_stream(
-    stream: &crate::ipc::LocalStream,
+    stream: &interprocess::local_socket::Stream,
     mut data: &[u8],
 ) -> std::io::Result<()> {
     use std::io;
 
-    let crate::ipc::LocalStream::UdSocket(socket) = stream;
+    let interprocess::local_socket::Stream::UdSocket(socket) = stream;
     let mut socket = socket.inner();
     let Some(timeout) = socket.write_timeout()? else {
         return socket.write_all(data);
@@ -77,9 +77,11 @@ pub(crate) fn write_client_stream(
     Ok(())
 }
 
-pub(crate) fn wait_client_stream_readable(stream: &crate::ipc::LocalStream) -> std::io::Result<()> {
+pub(crate) fn wait_client_stream_readable(
+    stream: &interprocess::local_socket::Stream,
+) -> std::io::Result<()> {
     use std::os::fd::AsFd as _;
-    let crate::ipc::LocalStream::UdSocket(stream) = stream;
+    let interprocess::local_socket::Stream::UdSocket(stream) = stream;
     // Bound cancellation latency without polling idle connections hundreds of times per second.
     match poll_fd_readable(stream.as_fd().as_raw_fd(), 100) {
         Err(error) if error.kind() != std::io::ErrorKind::Interrupted => Err(error),

@@ -5,7 +5,8 @@ use ratatui::layout::Direction;
 use serde::{Deserialize, Serialize};
 
 use crate::layout::Node;
-use crate::terminal::{TerminalId, TerminalRuntimeRegistry};
+use crate::protocol::TerminalId;
+use crate::terminal::TerminalRuntimeRegistry;
 use crate::workspace::Workspace;
 
 /// Current snapshot format version. Files with any other version are ignored.
@@ -126,9 +127,9 @@ pub struct PaneSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneAgentSessionSnapshot {
-    pub source: crate::agents::AgentSource,
-    pub agent: crate::agents::Agent,
-    pub session_ref: crate::agent_resume::AgentSessionRef,
+    pub source: crate::agent::AgentSource,
+    pub agent: crate::agent::Agent,
+    pub session_ref: crate::agent::resume::AgentSessionRef,
 }
 
 /// Saved screen history of one pane. Files written by older builds also carry
@@ -160,7 +161,7 @@ pub enum DirectionSnapshot {
 pub fn capture(
     workspaces: &[Workspace],
     terminals: &std::collections::HashMap<
-        crate::terminal::TerminalId,
+        crate::protocol::TerminalId,
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -186,7 +187,7 @@ pub fn capture(
 fn capture_workspace(
     ws: &Workspace,
     terminals: &std::collections::HashMap<
-        crate::terminal::TerminalId,
+        crate::protocol::TerminalId,
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -226,7 +227,7 @@ fn capture_workspace(
 fn capture_tab(
     tab: &crate::workspace::Tab,
     terminals: &std::collections::HashMap<
-        crate::terminal::TerminalId,
+        crate::protocol::TerminalId,
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -259,11 +260,11 @@ fn capture_tab(
                 && let Some(session_ref) = authority.session_ref.as_ref()
             {
                 return Some(PaneAgentSessionSnapshot {
-                    source: crate::agents::AgentSource::from_pair(
+                    source: crate::agent::AgentSource::from_pair(
                         &authority.source,
                         &authority.agent_label,
                     )?,
-                    agent: crate::agents::Agent::parse_canonical_label(&authority.agent_label)?,
+                    agent: crate::agent::Agent::parse_canonical_label(&authority.agent_label)?,
                     session_ref: session_ref.clone(),
                 });
             }
@@ -1374,10 +1375,10 @@ mod tests {
             Some(crate::detect::Agent::Pi),
             crate::detect::AgentState::Idle,
         );
-        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+        terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
             source: "shepr:pi".into(),
-            agent: crate::agents::Agent::Pi,
-            session_ref: crate::agent_resume::AgentSessionRef::path(session_path.clone())
+            agent: crate::agent::Agent::Pi,
+            session_ref: crate::agent::resume::AgentSessionRef::path(session_path.clone())
                 .expect("test precondition"),
         });
         terminal.set_hook_authority_with_session_ref(
@@ -1385,7 +1386,7 @@ mod tests {
             "pi".into(),
             crate::detect::AgentState::Working,
             None,
-            crate::agent_resume::AgentSessionRef::path(session_path.clone()),
+            crate::agent::resume::AgentSessionRef::path(session_path.clone()),
             Some(20),
         );
 
@@ -1399,7 +1400,7 @@ mod tests {
         assert_eq!(agent_session.agent, "pi");
         assert_eq!(
             agent_session.session_ref.kind(),
-            crate::agent_resume::AgentSessionRefKind::Path
+            crate::agent::resume::AgentSessionRefKind::Path
         );
         assert_eq!(agent_session.session_ref.value_str(), session_path);
     }
@@ -1416,10 +1417,10 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test precondition")
-            .set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            .set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
                 source: "shepr:opencode".into(),
-                agent: crate::agents::Agent::OpenCode,
-                session_ref: crate::agent_resume::AgentSessionRef::id("opencode-session")
+                agent: crate::agent::Agent::OpenCode,
+                session_ref: crate::agent::resume::AgentSessionRef::id("opencode-session")
                     .expect("test precondition"),
             });
 
@@ -1433,7 +1434,7 @@ mod tests {
         assert_eq!(agent_session.agent, "opencode");
         assert_eq!(
             agent_session.session_ref.kind(),
-            crate::agent_resume::AgentSessionRefKind::Id
+            crate::agent::resume::AgentSessionRefKind::Id
         );
         assert_eq!(agent_session.session_ref.value_str(), "opencode-session");
     }

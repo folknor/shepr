@@ -25,7 +25,7 @@ pub enum Mode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PaneFocusTarget {
-    pub workspace_id: crate::workspace::WorkspaceId,
+    pub workspace_id: crate::protocol::WorkspaceId,
     pub pane_id: PaneId,
 }
 
@@ -43,18 +43,18 @@ pub enum TabBarStatusSegment {
 /// it is handed, keyed by terminal id.
 pub struct AppState {
     pub terminals:
-        std::collections::HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
+        std::collections::HashMap<crate::protocol::TerminalId, crate::terminal::TerminalState>,
     /// Terminal ids whose size is currently owned by a direct attach client.
-    pub direct_attach_resize_locks: std::collections::HashSet<crate::terminal::TerminalId>,
+    pub direct_attach_resize_locks: std::collections::HashSet<crate::protocol::TerminalId>,
     /// Keeps a pane's pre-move public id (`<old workspace>:p<n>`) resolving
     /// after a cross-workspace pane move.
     pub(crate) public_pane_id_aliases:
-        std::collections::HashMap<crate::workspace::PublicPaneId, PaneId>,
+        std::collections::HashMap<crate::protocol::PublicPaneId, PaneId>,
     pub workspaces: Vec<Workspace>,
-    pub active: Option<crate::workspace::WorkspaceId>,
-    pub(crate) active_tab_id: Option<crate::workspace::PublicTabId>,
+    pub active: Option<crate::protocol::WorkspaceId>,
+    pub(crate) active_tab_id: Option<crate::protocol::PublicTabId>,
     pub(crate) previous_pane_focus: Option<PaneFocusTarget>,
-    pub selected: Option<crate::workspace::WorkspaceId>,
+    pub selected: Option<crate::protocol::WorkspaceId>,
     pub mode: Mode,
     pub should_quit: bool,
     // Geometry of the most recently computed server pane surface.
@@ -82,7 +82,7 @@ pub struct AppState {
     pub session_dirty: bool,
     /// Terminal runtimes that should be shut down by the app/runtime layer
     /// after state has detached their terminal metadata.
-    pub(crate) terminal_runtime_shutdowns: Vec<crate::terminal::TerminalId>,
+    pub(crate) terminal_runtime_shutdowns: Vec<crate::protocol::TerminalId>,
 }
 
 /// Runtime-ready settings copied once from the immutable launch config.
@@ -102,7 +102,7 @@ pub(crate) struct AppSettings {
     pub(crate) reveal_hidden_cursor_for_cjk_ime: bool,
     /// Restrict cursor reveal to focused panes whose detected agent matches
     /// one of these. An empty vector applies to any focused pane.
-    pub(crate) cjk_ime_agents: Vec<crate::detect::Agent>,
+    pub(crate) cjk_ime_agents: Vec<crate::config::ConfigAgent>,
     /// DECSCUSR shape parameter (1-6) for the IME anchor cursor.
     pub(crate) cjk_ime_cursor_shape: u8,
     pub(crate) default_shell: String,
@@ -166,7 +166,7 @@ impl AppState {
         self.active_tab_id = self.active_index().and_then(|index| {
             let workspace = self.workspaces.get(index)?;
             let tab = workspace.tabs.get(workspace.active_tab)?;
-            Some(crate::workspace::PublicTabId::new(
+            Some(crate::protocol::PublicTabId::new(
                 workspace.id.to_string(),
                 tab.number,
             ))
@@ -345,7 +345,7 @@ impl AppState {
         let active_tab = &active_workspace.tabs[active_workspace.active_tab];
         assert_eq!(
             self.active_tab_id.as_ref(),
-            Some(&crate::workspace::PublicTabId::new(
+            Some(&crate::protocol::PublicTabId::new(
                 active_workspace.id.to_string(),
                 active_tab.number
             )),
@@ -399,7 +399,7 @@ impl AppState {
                 "{context} references missing pane {pane_id:?}"
             );
         };
-        let assert_workspace_pane = |workspace_id: &crate::workspace::WorkspaceId,
+        let assert_workspace_pane = |workspace_id: &crate::protocol::WorkspaceId,
                                      pane_id: PaneId,
                                      context: &str| {
             let ws_idx = workspace_id_to_idx

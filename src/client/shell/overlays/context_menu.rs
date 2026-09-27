@@ -69,7 +69,7 @@ impl ClientShellState {
 
     pub(super) fn open_tab_context_menu(
         &mut self,
-        tab_id: crate::workspace::PublicTabId,
+        tab_id: crate::protocol::PublicTabId,
         x: u16,
         y: u16,
     ) {
@@ -93,7 +93,7 @@ impl ClientShellState {
 
     pub(super) fn open_pane_context_menu(
         &mut self,
-        pane_id: crate::workspace::PublicPaneId,
+        pane_id: crate::protocol::PublicPaneId,
         x: u16,
         y: u16,
     ) {
@@ -219,7 +219,7 @@ impl ClientShellState {
 
     fn activate_tab_context_action(
         &mut self,
-        tab_id: crate::workspace::PublicTabId,
+        tab_id: crate::protocol::PublicTabId,
         workspace_id: String,
         action: ClientContextMenuAction,
         outcome: &mut ClientShellInput,
@@ -295,9 +295,9 @@ impl ClientShellState {
 
     fn activate_pane_context_action(
         &mut self,
-        pane_id: crate::workspace::PublicPaneId,
+        pane_id: crate::protocol::PublicPaneId,
         workspace_id: String,
-        source_pane_id: Option<crate::workspace::PublicPaneId>,
+        source_pane_id: Option<crate::protocol::PublicPaneId>,
         right_click_passthrough: bool,
         action: ClientContextMenuAction,
         outcome: &mut ClientShellInput,

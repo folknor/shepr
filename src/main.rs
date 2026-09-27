@@ -11,9 +11,7 @@ const NESTED_SHEPR_MESSAGES: [&str; 6] = [
     "recursion detected. base case not found. aborting.",
 ];
 
-mod agent_resume;
-mod agent_status;
-mod agents;
+mod agent;
 mod api;
 mod app;
 mod blit;
@@ -136,7 +134,7 @@ fn main() -> io::Result<()> {
     };
     let requested_session = match requested_session
         .as_deref()
-        .map(session::SessionId::parse)
+        .map(config::SessionId::parse)
         .transpose()
     {
         Ok(session) => session,
@@ -252,7 +250,7 @@ fn main() -> io::Result<()> {
 }
 
 fn load_validated_config_or_exit(
-    requested_session: Option<session::SessionId>,
+    requested_session: Option<config::SessionId>,
 ) -> config::ValidatedConfig {
     let paths = match config::AppPaths::resolve_with_session(requested_session) {
         Ok(paths) => paths,

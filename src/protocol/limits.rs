@@ -2,9 +2,9 @@
 // Protocol constants
 // ---------------------------------------------------------------------------
 
-/// Protocol identity of this build: a fold of the source fingerprint into
-/// `1..u32::MAX`, so it changes whenever any source file does.
-pub const PROTOCOL_VERSION: u32 = crate::build_info::PROTOCOL_VERSION;
+// Protocol identity of this build: a fold of the source fingerprint into
+// `1..u32::MAX`, so it changes whenever any source file does.
+include!(concat!(env!("OUT_DIR"), "/protocol_identity.rs"));
 
 /// How a server's advertised protocol relates to this build. Client-protocol
 /// connections are settled by the preamble; this is for the JSON API, which

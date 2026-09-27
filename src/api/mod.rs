@@ -18,8 +18,6 @@ use tokio::sync::mpsc;
 
 use crate::api::schema::Request;
 
-pub const SOCKET_PATH_ENV_VAR: &str = "SHEPR_SOCKET_PATH";
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum RenderDemand {
     #[default]

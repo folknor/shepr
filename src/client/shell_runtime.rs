@@ -951,7 +951,10 @@ mod tests {
         Box::new(crate::protocol::ClientShellSnapshot {
             boot_id: boot_id.into(),
             revision: crate::protocol::ProjectionRevision::new(1),
-            resolved_config: crate::config::ValidatedConfig::test_default(),
+            resolved_config: crate::protocol::codec::to_vec(
+                &crate::config::ValidatedConfig::test_default(),
+            )
+            .expect("test config encodes"),
             focused_workspace_id: None,
             focused_tab_id: None,
             focused_pane_id: None,

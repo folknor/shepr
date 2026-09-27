@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 /// Origin-relative geometry for one pane in a rendered pane surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSurfacePane {
-    pub pane_id: crate::workspace::PublicPaneId,
+    pub pane_id: PublicPaneId,
     pub content_revision: u64,
     pub rect: SurfaceRect,
     pub inner_rect: SurfaceRect,
@@ -23,7 +23,7 @@ pub struct PaneSurfaceScrollMetrics {
     pub offset_from_bottom: u64,
     pub max_offset_from_bottom: u64,
     pub viewport_rows: u64,
-    pub history_origin: crate::terminal::AbsRow,
+    pub history_origin: crate::vt::AbsRow,
 }
 
 /// One draggable BSP split handle relative to a pane surface.

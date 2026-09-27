@@ -40,7 +40,10 @@ fn test_snapshot(boot_id: &str, revision: u64) -> crate::protocol::ClientShellSn
     crate::protocol::ClientShellSnapshot {
         boot_id: boot_id.into(),
         revision: revision.into(),
-        resolved_config: crate::config::ValidatedConfig::test_default(),
+        resolved_config: crate::protocol::codec::to_vec(
+            &crate::config::ValidatedConfig::test_default(),
+        )
+        .expect("test config encodes"),
         focused_workspace_id: None,
         focused_tab_id: None,
         focused_pane_id: None,
@@ -388,7 +391,10 @@ fn activation_requires_an_exact_snapshot_surface_revision_pair() {
     let snapshot = crate::protocol::ClientShellSnapshot {
         boot_id: "remote-boot".into(),
         revision: crate::protocol::ProjectionRevision::new(2),
-        resolved_config: crate::config::ValidatedConfig::test_default(),
+        resolved_config: crate::protocol::codec::to_vec(
+            &crate::config::ValidatedConfig::test_default(),
+        )
+        .expect("test config encodes"),
         focused_workspace_id: None,
         focused_tab_id: None,
         focused_pane_id: None,

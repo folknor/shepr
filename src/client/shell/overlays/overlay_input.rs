@@ -721,7 +721,7 @@ impl ClientShellState {
 
     pub(super) fn request_tab_close(
         &mut self,
-        tab_id: &crate::workspace::PublicTabId,
+        tab_id: &crate::protocol::PublicTabId,
         outcome: &mut ClientShellInput,
     ) {
         let workspace_id = self.snapshot.as_deref().and_then(|snapshot| {
@@ -785,7 +785,7 @@ impl ClientShellState {
     fn open_close_confirmation(
         &mut self,
         workspace_id: String,
-        tab_id: Option<crate::workspace::PublicTabId>,
+        tab_id: Option<crate::protocol::PublicTabId>,
     ) -> bool {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return false;

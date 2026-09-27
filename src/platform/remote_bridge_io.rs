@@ -10,7 +10,7 @@ use std::{
 /// stay out of logs and error messages here and in `remote_bridge` (log byte
 /// counts or error kinds, never the buffers).
 pub(crate) fn forward_remote_bridge_stdio(
-    stream: crate::ipc::LocalStream,
+    stream: interprocess::local_socket::Stream,
     idle_timeout: bool,
 ) -> std::io::Result<()> {
     forward_remote_bridge_stdio_with_timeout(
@@ -20,7 +20,7 @@ pub(crate) fn forward_remote_bridge_stdio(
 }
 
 pub(super) fn forward_remote_bridge_stdio_with_timeout(
-    stream: crate::ipc::LocalStream,
+    stream: interprocess::local_socket::Stream,
     idle_timeout: Option<Duration>,
 ) -> std::io::Result<()> {
     use interprocess::TryClone as _;
@@ -36,7 +36,7 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
             &mut stdin,
             &mut TrackedIo::new(&mut stdin_to_socket, activity),
         );
-        let crate::ipc::LocalStream::UdSocket(stream) = stdin_to_socket;
+        let interprocess::local_socket::Stream::UdSocket(stream) = stdin_to_socket;
         let _ = stream.inner().shutdown(std::net::Shutdown::Write);
     });
     copy_flush(&mut socket_to_stdout, &mut stdout)
@@ -72,9 +72,9 @@ impl RemoteBridgeWake {
         self.writer.shutdown(std::net::Shutdown::Write)
     }
 
-    pub(crate) fn wait(&self, stream: &crate::ipc::LocalStream) -> std::io::Result<()> {
+    pub(crate) fn wait(&self, stream: &interprocess::local_socket::Stream) -> std::io::Result<()> {
         use std::os::fd::AsFd as _;
-        let crate::ipc::LocalStream::UdSocket(stream) = stream;
+        let interprocess::local_socket::Stream::UdSocket(stream) = stream;
         let mut descriptors = [
             libc::pollfd {
                 fd: stream.as_fd().as_raw_fd(),

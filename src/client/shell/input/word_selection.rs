@@ -8,15 +8,15 @@ use crate::app::word_bounds::word_bounds_at_column;
 /// pointer position when it returns, so remote latency cannot queue up motion.
 #[derive(Debug)]
 pub(super) struct ClientWordSelection {
-    pub(super) pane_id: crate::workspace::PublicPaneId,
+    pub(super) pane_id: crate::protocol::PublicPaneId,
     pub(super) focus_confirmed: bool,
-    anchor: (crate::terminal::AbsRow, u16),
+    anchor: (crate::vt::AbsRow, u16),
     anchor_bounds: Option<(u16, u16)>,
-    cursor: (crate::terminal::AbsRow, u16),
+    cursor: (crate::vt::AbsRow, u16),
     end_col: u16,
     content_revision: Option<u64>,
-    cached_row: Option<(crate::terminal::AbsRow, String)>,
-    pending_row: Option<crate::terminal::AbsRow>,
+    cached_row: Option<(crate::vt::AbsRow, String)>,
+    pending_row: Option<crate::vt::AbsRow>,
     pub(super) dragged: bool,
     pub(super) released: bool,
 }
@@ -29,9 +29,9 @@ impl ClientShellState {
         col: u16,
         outcome: &mut ClientShellInput,
     ) {
-        let viewport_row = crate::terminal::ViewportRow(viewport_row);
+        let viewport_row = crate::vt::ViewportRow(viewport_row);
         let row = hit.scroll.map_or_else(
-            || crate::terminal::AbsRow(u64::from(viewport_row.0)),
+            || crate::vt::AbsRow(u64::from(viewport_row.0)),
             |metrics| metrics.absolute_row_at_viewport(viewport_row),
         );
         self.word_selection_generation = self.word_selection_generation.saturating_add(1);
@@ -69,7 +69,7 @@ impl ClientShellState {
 
     fn request_word_selection_row(
         &mut self,
-        row: crate::terminal::AbsRow,
+        row: crate::vt::AbsRow,
         outcome: &mut ClientShellInput,
     ) {
         let Some(gesture) = self.word_selection_gesture.as_mut() else {
@@ -104,7 +104,7 @@ impl ClientShellState {
 
     pub(super) fn drag_word_selection(
         &mut self,
-        cursor: (crate::terminal::AbsRow, u16),
+        cursor: (crate::vt::AbsRow, u16),
         outcome: &mut ClientShellInput,
     ) {
         let Some(gesture) = self.word_selection_gesture.as_mut() else {
@@ -148,8 +148,8 @@ impl ClientShellState {
         let end = (gesture.anchor.0, anchor_end).max((gesture.cursor.0, end_col));
         self.selection = Some(crate::selection::Selection::range(
             gesture.pane_id.clone(),
-            crate::terminal::Point::new(start.0, start.1),
-            crate::terminal::Point::new(end.0, end.1),
+            crate::vt::Point::new(start.0, start.1),
+            crate::vt::Point::new(end.0, end.1),
         ));
         if gesture.released {
             let dragged = gesture.dragged;
@@ -173,7 +173,7 @@ impl ClientShellState {
     pub(super) fn complete_word_selection_row(
         &mut self,
         pane_id: &str,
-        absolute_row: crate::terminal::AbsRow,
+        absolute_row: crate::vt::AbsRow,
         generation: u64,
         result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
     ) -> (bool, Vec<ClientShellAction>) {

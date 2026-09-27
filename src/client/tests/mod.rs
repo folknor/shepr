@@ -405,7 +405,7 @@ fn client_error_display_detached_named_session_reattach_hint() {
     let err = ClientError::ServerShutdown {
         reason: Some(crate::protocol::ShutdownReason::Detached),
     };
-    let session = crate::session::SessionId::parse("work").expect("test precondition");
+    let session = crate::config::SessionId::parse("work").expect("test precondition");
     let paths = crate::config::AppPaths::default();
     let context = ClientErrorContext::new(
         paths.server_address().attach_command(&session),
@@ -425,7 +425,7 @@ fn client_error_display_detached_remote_reattach_hint_takes_precedence() {
         crate::remote::REATTACH_COMMAND_ENV_VAR,
         "shepr --remote host --session work",
     );
-    env.set(crate::session::SESSION_ENV_VAR, "work");
+    env.set(crate::config::SESSION_ENV_VAR, "work");
     let err = ClientError::ServerShutdown {
         reason: Some(crate::protocol::ShutdownReason::Detached),
     };

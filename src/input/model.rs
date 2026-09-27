@@ -1,3 +1,4 @@
+use crate::protocol::KittyKeyboardFlags;
 use crossterm::event::KeyboardEnhancementFlags;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
@@ -87,13 +88,27 @@ impl TerminalKey {
     }
 }
 
+impl crate::config::BindingKey for TerminalKey {
+    fn code(&self) -> KeyCode {
+        self.code
+    }
+
+    fn modifiers(&self) -> KeyModifiers {
+        self.modifiers
+    }
+
+    fn shifted_codepoint(&self) -> Option<u32> {
+        self.shifted_codepoint
+    }
+}
+
 impl From<KeyEvent> for TerminalKey {
     fn from(value: KeyEvent) -> Self {
         Self::new(value.code, value.modifiers).with_kind(value.kind)
     }
 }
 
-pub(crate) const KITTY_FLAG_REPORT_ALL_KEYS: u16 = 0b0000_1000;
+pub(crate) const KITTY_FLAG_REPORT_ALL_KEYS: u16 = KittyKeyboardFlags::REPORT_ALL_KEYS.bits();
 
 pub fn ime_compatible_keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
     // Do not request kitty REPORT_ALL_KEYS (flag 8): it breaks IME and compose

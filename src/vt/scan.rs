@@ -365,7 +365,7 @@ fn xtgettcap_response(cap_hex: &[u8]) -> Option<Vec<u8>> {
 fn xtgettcap_value(cap_hex: &[u8]) -> Option<Option<&'static [u8]>> {
     match cap_hex {
         // TN: terminal name.
-        b"544E" => Some(Some(crate::pane::PANE_TERM.as_bytes())),
+        b"544E" => Some(Some(super::PANE_TERM.as_bytes())),
         // Co / colors: palette size.
         b"436F" => Some(Some(b"256")),
         b"636F6C6F7273" => Some(Some(b"256")),

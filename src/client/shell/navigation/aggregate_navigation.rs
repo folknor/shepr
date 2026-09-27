@@ -43,7 +43,7 @@ pub(super) struct AggregateAgentRow<'a> {
 
 pub(super) struct AggregateAgentTarget {
     pub(super) endpoint_id: ClientEndpointId,
-    pub(super) pane_id: crate::workspace::PublicPaneId,
+    pub(super) pane_id: crate::protocol::PublicPaneId,
 }
 
 pub(super) fn aggregate_agent_rows<'a>(
@@ -56,7 +56,7 @@ pub(super) fn aggregate_agent_rows<'a>(
             super::agent_sidebar::ordered_agent_pane_ids(endpoint.snapshot, sort)
                 .into_iter()
                 .filter_map(move |pane_id| {
-                    let typed_pane_id = pane_id.parse::<crate::workspace::PublicPaneId>().ok()?;
+                    let typed_pane_id = pane_id.parse::<crate::protocol::PublicPaneId>().ok()?;
                     let agent = endpoint
                         .snapshot
                         .agents

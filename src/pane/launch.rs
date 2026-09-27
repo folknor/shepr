@@ -1,11 +1,10 @@
+use crate::protocol::{PublicPaneId, PublicTabId, WorkspaceId};
 use crate::pty::PtyCommand;
-use crate::workspace::{PublicPaneId, PublicTabId, WorkspaceId};
 
 /// Time allowed for a restored agent to appear after its resume launch.
 pub(crate) const MANAGED_AGENT_RESUME_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(30);
 
-pub(crate) const PANE_TERM: &str = "xterm-256color";
 const PANE_COLORTERM: &str = "truecolor";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -20,7 +19,7 @@ pub(super) fn apply_pane_terminal_env(cmd: &mut PtyCommand) {
     // that launched the app. Advertising the inherited TERM leaks the host terminal
     // identity into shells and across SSH, which breaks redraw and cursor movement
     // when the remote side lacks matching terminfo entries.
-    cmd.env("TERM", PANE_TERM);
+    cmd.env("TERM", crate::vt::PANE_TERM);
     cmd.env("COLORTERM", PANE_COLORTERM);
     cmd.env("TERM_PROGRAM", "shepr");
     cmd.env("TERM_PROGRAM_VERSION", crate::build_info::version());
@@ -102,10 +101,12 @@ impl PaneLaunchEnv {
 }
 
 pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunchEnv) {
-    crate::platform::ssh_agent::apply_pane_env(cmd, &launch_env.api_socket_path);
+    if let Some(path) = crate::platform::ssh_agent::pane_agent_socket(&launch_env.api_socket_path) {
+        cmd.env("SSH_AUTH_SOCK", path);
+    }
     // A new pane is not a child agent of the process that started the server.
     // Explicit launch env below can opt back into an intentional child session.
-    for key in crate::agents::launch_env_to_scrub() {
+    for key in crate::agent::launch_env_to_scrub() {
         cmd.env_remove(key);
     }
     for (key, value) in &launch_env.extra {

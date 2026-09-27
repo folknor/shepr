@@ -421,7 +421,7 @@ fn render_navigator_overlay(
         offset_from_bottom: max.saturating_sub(scroll),
         max_offset_from_bottom: max,
         viewport_rows: usize::from(body.height),
-        history_origin: crate::terminal::AbsRow(0),
+        history_origin: crate::vt::AbsRow(0),
     };
     let scrollbar =
         (max > 0 && body.width > 1).then_some(Rect::new(body.right() - 1, body.y, 1, body.height));
@@ -825,7 +825,7 @@ fn render_help_overlay(
         offset_from_bottom: max_scroll.saturating_sub(scroll),
         max_offset_from_bottom: max_scroll,
         viewport_rows,
-        history_origin: crate::terminal::AbsRow(0),
+        history_origin: crate::vt::AbsRow(0),
     };
     let scrollbar = needs_scrollbar.then_some(Rect::new(
         body.right().saturating_sub(1),

@@ -2,11 +2,11 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::agents::IntegrationTarget as Target;
+use crate::agent::IntegrationTarget as Target;
 
 use super::command::hook_command;
 
-pub(crate) fn integration_target_label(target: crate::agents::IntegrationTarget) -> &'static str {
+pub(crate) fn integration_target_label(target: crate::agent::IntegrationTarget) -> &'static str {
     target.label()
 }
 
@@ -17,7 +17,7 @@ struct IntegrationSpec {
     directory: &'static str,
     path: &'static [&'static str],
     version: u32,
-    events: &'static [crate::agents::IntegrationHookEvent],
+    events: &'static [crate::agent::IntegrationHookEvent],
 }
 
 const INTEGRATION_SPECS: &[IntegrationSpec] = &[
@@ -167,7 +167,7 @@ const INTEGRATION_SPECS: &[IntegrationSpec] = &[
     },
 ];
 
-pub(crate) fn integration_asset(target: crate::agents::IntegrationTarget) -> Option<&'static str> {
+pub(crate) fn integration_asset(target: crate::agent::IntegrationTarget) -> Option<&'static str> {
     INTEGRATION_SPECS
         .iter()
         .copied()
@@ -176,8 +176,8 @@ pub(crate) fn integration_asset(target: crate::agents::IntegrationTarget) -> Opt
 }
 
 fn integration_hook_events(
-    target: crate::agents::IntegrationTarget,
-) -> &'static [crate::agents::IntegrationHookEvent] {
+    target: crate::agent::IntegrationTarget,
+) -> &'static [crate::agent::IntegrationHookEvent] {
     INTEGRATION_SPECS
         .iter()
         .find(|spec| spec.target == target)
@@ -206,7 +206,7 @@ pub(crate) fn outdated_installed_integrations(
 
 fn integration_specs(
     paths: &super::env::AgentIntegrationPaths,
-) -> impl Iterator<Item = (crate::agents::IntegrationTarget, io::Result<PathBuf>, u32)> + '_ {
+) -> impl Iterator<Item = (crate::agent::IntegrationTarget, io::Result<PathBuf>, u32)> + '_ {
     INTEGRATION_SPECS.iter().copied().map(move |spec| {
         let path = paths.directory(spec.directory).map(|mut path| {
             for part in spec.path {
@@ -219,7 +219,7 @@ fn integration_specs(
 }
 
 pub(crate) fn integration_update_instructions(
-    targets: &[crate::agents::IntegrationTarget],
+    targets: &[crate::agent::IntegrationTarget],
 ) -> String {
     let commands: Vec<String> = targets
         .iter()
@@ -372,7 +372,7 @@ fn kimi_hooks_registered(config_path: &Path, hook_path: &Path) -> bool {
     let Some(entries) = config.get("hooks").and_then(toml::Value::as_array) else {
         return false;
     };
-    integration_hook_events(crate::agents::IntegrationTarget::Kimi)
+    integration_hook_events(crate::agent::IntegrationTarget::Kimi)
         .iter()
         .all(|hook| {
             hook.action.is_some_and(|action| {
@@ -390,7 +390,7 @@ fn kimi_hooks_registered(config_path: &Path, hook_path: &Path) -> bool {
 /// Convert an agent's hook events into the commands its integration registers.
 fn hook_event_commands(
     hook_path: &Path,
-    events: &[crate::agents::IntegrationHookEvent],
+    events: &[crate::agent::IntegrationHookEvent],
 ) -> Vec<(&'static str, String)> {
     events
         .iter()
@@ -408,11 +408,8 @@ fn hook_event_commands(
 ///
 /// Pi, OMP and Kilo load every file in their plugin directory, so the file is
 /// its own registration. Grok and opencode are checked by their own helpers.
-fn hook_registration_is_current(
-    target: crate::agents::IntegrationTarget,
-    hook_path: &Path,
-) -> bool {
-    use crate::agents::IntegrationTarget as Target;
+fn hook_registration_is_current(target: crate::agent::IntegrationTarget, hook_path: &Path) -> bool {
+    use crate::agent::IntegrationTarget as Target;
 
     let json_in = |levels: usize, file: &str, root: HooksRoot, expected: &[(&str, String)]| {
         ancestor(hook_path, levels)
@@ -426,7 +423,7 @@ fn hook_registration_is_current(
             HooksRoot::HooksKey,
             &hook_event_commands(
                 hook_path,
-                integration_hook_events(crate::agents::IntegrationTarget::Claude),
+                integration_hook_events(crate::agent::IntegrationTarget::Claude),
             ),
         ),
         Target::Codex => {
@@ -436,7 +433,7 @@ fn hook_registration_is_current(
                 HooksRoot::HooksKey,
                 &hook_event_commands(
                     hook_path,
-                    integration_hook_events(crate::agents::IntegrationTarget::Codex),
+                    integration_hook_events(crate::agent::IntegrationTarget::Codex),
                 ),
             ) && ancestor(hook_path, 1)
                 .is_some_and(|dir| codex_hooks_feature_enabled(&dir.join("config.toml")))
@@ -445,15 +442,14 @@ fn hook_registration_is_current(
             2,
             "settings.json",
             HooksRoot::HooksKey,
-            &integration_hook_events(crate::agents::IntegrationTarget::Copilot)
+            &integration_hook_events(crate::agent::IntegrationTarget::Copilot)
                 .iter()
                 .map(|hook| {
                     (
                         hook.event,
                         hook_command(
                             hook_path,
-                            hook.action
-                                .map(crate::agents::IntegrationHookAction::as_str),
+                            hook.action.map(crate::agent::IntegrationHookAction::as_str),
                         ),
                     )
                 })
@@ -465,7 +461,7 @@ fn hook_registration_is_current(
             HooksRoot::HooksKey,
             &hook_event_commands(
                 hook_path,
-                integration_hook_events(crate::agents::IntegrationTarget::Devin),
+                integration_hook_events(crate::agent::IntegrationTarget::Devin),
             ),
         ),
         Target::Droid => json_in(
@@ -474,7 +470,7 @@ fn hook_registration_is_current(
             HooksRoot::HooksKey,
             &hook_event_commands(
                 hook_path,
-                integration_hook_events(crate::agents::IntegrationTarget::Droid),
+                integration_hook_events(crate::agent::IntegrationTarget::Droid),
             ),
         ),
         Target::Qodercli => json_in(
@@ -483,7 +479,7 @@ fn hook_registration_is_current(
             HooksRoot::HooksKey,
             &hook_event_commands(
                 hook_path,
-                integration_hook_events(crate::agents::IntegrationTarget::Qodercli),
+                integration_hook_events(crate::agent::IntegrationTarget::Qodercli),
             ),
         ),
         Target::Qwen => json_in(
@@ -492,7 +488,7 @@ fn hook_registration_is_current(
             HooksRoot::HooksKey,
             &hook_event_commands(
                 hook_path,
-                integration_hook_events(crate::agents::IntegrationTarget::Qwen),
+                integration_hook_events(crate::agent::IntegrationTarget::Qwen),
             ),
         ),
         Target::Letta => json_in(
@@ -501,7 +497,7 @@ fn hook_registration_is_current(
             HooksRoot::HooksKey,
             &hook_event_commands(
                 hook_path,
-                integration_hook_events(crate::agents::IntegrationTarget::Letta),
+                integration_hook_events(crate::agent::IntegrationTarget::Letta),
             ),
         ),
         Target::Cursor => json_in(
@@ -510,7 +506,7 @@ fn hook_registration_is_current(
             HooksRoot::HooksKey,
             &hook_event_commands(
                 hook_path,
-                integration_hook_events(crate::agents::IntegrationTarget::Cursor),
+                integration_hook_events(crate::agent::IntegrationTarget::Cursor),
             ),
         ),
         Target::Mastracode => json_in(
@@ -519,7 +515,7 @@ fn hook_registration_is_current(
             HooksRoot::Document,
             &hook_event_commands(
                 hook_path,
-                integration_hook_events(crate::agents::IntegrationTarget::Mastracode),
+                integration_hook_events(crate::agent::IntegrationTarget::Mastracode),
             ),
         ),
         Target::AntigravityCli => ancestor(hook_path, 2).is_some_and(|dir| {
@@ -565,7 +561,7 @@ fn integration_state_for_path(
 }
 
 pub(crate) fn integration_status_at(
-    target: crate::agents::IntegrationTarget,
+    target: crate::agent::IntegrationTarget,
     path: PathBuf,
     expected_version: u32,
 ) -> super::IntegrationStatus {
@@ -575,13 +571,13 @@ pub(crate) fn integration_status_at(
     // registers it, so a current hook script with a missing or broken config
     // is a nonfunctional install: report it as outdated so `shepr integration
     // status` flags it and a reinstall rewrites both files.
-    if target == crate::agents::IntegrationTarget::Grok
+    if target == crate::agent::IntegrationTarget::Grok
         && state == super::IntegrationStatusKind::Current
         && !grok_hook_config_is_valid(&path)
     {
         state = super::IntegrationStatusKind::Outdated;
     }
-    if target == crate::agents::IntegrationTarget::Opencode
+    if target == crate::agent::IntegrationTarget::Opencode
         && state == super::IntegrationStatusKind::Current
         && !opencode_tui_integration_is_valid(&path, expected_version)
     {
@@ -623,14 +619,14 @@ pub(crate) fn parse_integration_version(content: &str) -> Option<u32> {
 #[cfg(test)]
 mod registration_tests {
     use super::*;
-    use crate::agents::IntegrationTarget;
+    use crate::agent::IntegrationTarget;
     use crate::integration::IntegrationStatusKind;
 
     #[test]
     fn antigravity_integration_uses_the_canonical_agent_label() {
         assert_eq!(
             integration_target_label(IntegrationTarget::AntigravityCli),
-            crate::agents::Agent::Antigravity.label()
+            crate::agent::Agent::Antigravity.label()
         );
     }
 

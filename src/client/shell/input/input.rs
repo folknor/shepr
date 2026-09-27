@@ -904,7 +904,7 @@ impl ClientShellState {
         }
     }
 
-    pub(super) fn focused_pane_id(&self) -> Option<crate::workspace::PublicPaneId> {
+    pub(super) fn focused_pane_id(&self) -> Option<crate::protocol::PublicPaneId> {
         self.snapshot
             .as_deref()
             .and_then(|snapshot| snapshot.focused_pane_id.clone())

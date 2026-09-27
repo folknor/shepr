@@ -2,8 +2,6 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use serde::{Deserialize, Serialize};
-
 use interprocess::local_socket::traits::Stream as _;
 
 use crate::ipc::LocalStream;
@@ -13,144 +11,14 @@ use crate::ipc::LocalStream;
 // `ipc::bind_private_local_listener` in the server and API, and the peer check
 // on accept is theirs, so nothing here needs the staged bind or `SO_PEERCRED`.
 
-pub const SESSION_ENV_VAR: &str = "SHEPR_SESSION";
-pub const DEFAULT_SESSION_NAME: &str = "default";
+use crate::config::DEFAULT_SESSION_NAME;
+#[cfg(test)]
+use crate::config::SESSION_ENV_VAR;
+use crate::config::{SessionId, SessionName, SessionNameError};
 
-const MAX_SESSION_NAME_LEN: usize = 64;
 const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 const STOP_WAIT_POLL: Duration = Duration::from_millis(25);
 const MIN_SOCKET_TIMEOUT: Duration = Duration::from_millis(1);
-
-/// A validated non-default session name.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct SessionName(String);
-
-impl SessionName {
-    pub fn parse(name: &str) -> Result<Self, SessionError> {
-        if name == DEFAULT_SESSION_NAME {
-            return Err(SessionError::InvalidName(
-                "default is reserved for the default session".into(),
-            ));
-        }
-        validate_name(name)?;
-        Ok(Self(name.to_owned()))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// The session identity selected for this process. The default session has no
-/// directory component; named sessions live below `sessions/<name>`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum SessionId {
-    #[default]
-    Default,
-    Named(SessionName),
-}
-
-impl SessionId {
-    /// Parse a session name supplied by the user. `default` is the spelling
-    /// for the default session and is not a valid `SessionName`.
-    pub fn parse(name: &str) -> Result<Self, SessionError> {
-        if name == DEFAULT_SESSION_NAME {
-            Ok(Self::Default)
-        } else {
-            SessionName::parse(name).map(Self::Named)
-        }
-    }
-
-    /// Resolve the command-line selection or inherited session value. An API
-    /// socket override makes an inherited session irrelevant to socket
-    /// routing, matching the legacy behavior for malformed inherited values.
-    pub(crate) fn resolve(
-        requested: Option<Self>,
-        inherited: Option<&str>,
-        api_socket_override_present: bool,
-    ) -> Result<(Self, bool), SessionError> {
-        if let Some(requested) = requested {
-            return Ok((requested, true));
-        }
-        let Some(inherited) = inherited else {
-            return Ok((Self::Default, false));
-        };
-        match Self::parse(inherited) {
-            Ok(session) => Ok((session, false)),
-            Err(_) if api_socket_override_present => Ok((Self::Default, false)),
-            Err(error) => Err(error),
-        }
-    }
-
-    pub fn name(&self) -> Option<&str> {
-        match self {
-            Self::Default => None,
-            Self::Named(name) => Some(name.as_str()),
-        }
-    }
-
-    pub fn display_name(&self) -> &str {
-        self.name().unwrap_or(DEFAULT_SESSION_NAME)
-    }
-
-    pub fn is_default(&self) -> bool {
-        matches!(self, Self::Default)
-    }
-
-    pub fn data_dir(&self, paths: &crate::config::AppPaths) -> PathBuf {
-        self.data_dir_under(paths.state_dir())
-    }
-
-    pub(crate) fn data_dir_under(&self, state_dir: &Path) -> PathBuf {
-        match self {
-            Self::Default => state_dir.to_path_buf(),
-            Self::Named(name) => sessions_dir_under(state_dir).join(name.as_str()),
-        }
-    }
-
-    pub fn api_socket_path(&self, paths: &crate::config::AppPaths) -> PathBuf {
-        self.api_socket_path_under(paths.runtime_dir())
-    }
-
-    pub(crate) fn api_socket_path_under(&self, runtime_dir: &Path) -> PathBuf {
-        self.data_dir_under(runtime_dir).join("shepr.sock")
-    }
-
-    pub fn client_socket_path(&self, paths: &crate::config::AppPaths) -> PathBuf {
-        self.client_socket_path_under(paths.runtime_dir())
-    }
-
-    pub(crate) fn client_socket_path_under(&self, runtime_dir: &Path) -> PathBuf {
-        crate::server::socket_paths::derive_client_socket_from_api_socket(
-            &self.api_socket_path_under(runtime_dir),
-        )
-    }
-
-    pub fn attach_command(&self) -> String {
-        match self {
-            Self::Default => "shepr".to_string(),
-            Self::Named(name) => format!("shepr session attach {}", name.as_str()),
-        }
-    }
-
-    pub fn stop_command(&self) -> String {
-        match self {
-            Self::Default => "shepr server stop".to_string(),
-            Self::Named(name) => format!("shepr session stop {}", name.as_str()),
-        }
-    }
-
-    pub(crate) fn apply_to_child_command(&self, command: &mut std::process::Command) {
-        match self {
-            Self::Default => {
-                command.env_remove(SESSION_ENV_VAR);
-            }
-            Self::Named(name) => {
-                command.env(SESSION_ENV_VAR, name.as_str());
-            }
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionInfo {
@@ -251,6 +119,12 @@ impl std::error::Error for SessionError {
             | Self::Io { source, .. } => Some(source),
             _ => None,
         }
+    }
+}
+
+impl From<SessionNameError> for SessionError {
+    fn from(SessionNameError(message): SessionNameError) -> Self {
+        Self::InvalidName(message)
     }
 }
 
@@ -364,7 +238,7 @@ pub fn session_info(
 }
 
 pub fn parse_target_name(name: &str) -> Result<SessionId, SessionError> {
-    SessionId::parse(name)
+    SessionId::parse(name).map_err(Into::into)
 }
 
 pub fn stop_session(
@@ -657,30 +531,8 @@ fn socket_timeout_from_remaining(remaining: Duration) -> Option<Duration> {
 }
 
 pub fn validate_name(name: &str) -> Result<(), SessionError> {
-    if name.is_empty() {
-        return Err(SessionError::InvalidName(
-            "session name cannot be empty".into(),
-        ));
-    }
-    if name.len() > MAX_SESSION_NAME_LEN {
-        return Err(SessionError::InvalidName(format!(
-            "session name cannot be longer than {MAX_SESSION_NAME_LEN} bytes"
-        )));
-    }
-    if name == "." || name == ".." {
-        return Err(SessionError::InvalidName(
-            "session name cannot be . or ..".into(),
-        ));
-    }
-    if !name
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
-        return Err(SessionError::InvalidName(
-            "session name may only contain ASCII letters, numbers, '.', '_' and '-'".into(),
-        ));
-    }
-    Ok(())
+    crate::config::validate_session_name(name)
+        .map_err(|SessionNameError(message)| SessionError::InvalidName(message))
 }
 
 #[cfg(test)]
@@ -831,7 +683,7 @@ mod tests {
     fn requested_session_does_not_mutate_the_parent_environment() {
         let env = IsolatedEnv::new();
         env.set(SESSION_ENV_VAR, "inherited");
-        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
+        env.set(crate::config::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
         let requested = SessionId::parse("work").expect("test precondition");
 
         let (resolved, explicit) =
@@ -842,7 +694,7 @@ mod tests {
         assert!(explicit);
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("inherited"));
         assert_eq!(
-            std::env::var(crate::api::SOCKET_PATH_ENV_VAR).as_deref(),
+            std::env::var(crate::config::SOCKET_PATH_ENV_VAR).as_deref(),
             Ok("/tmp/inherited.sock")
         );
     }
@@ -857,7 +709,7 @@ mod tests {
     fn requested_default_session_ignores_inherited_session_and_socket() {
         let env = IsolatedEnv::new();
         env.set(SESSION_ENV_VAR, "work");
-        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
+        env.set(crate::config::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
         let paths = crate::config::AppPaths::resolve_with_session(Some(SessionId::Default))
             .expect("isolated paths resolve");
 
@@ -951,7 +803,7 @@ mod tests {
     #[test]
     fn restart_after_update_guidance_respects_socket_override() {
         let env = IsolatedEnv::new();
-        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/custom-shepr.sock");
+        env.set(crate::config::SOCKET_PATH_ENV_VAR, "/tmp/custom-shepr.sock");
         let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
 
         assert_eq!(
@@ -965,7 +817,7 @@ mod tests {
         let env = IsolatedEnv::new();
         env.set(SESSION_ENV_VAR, "work");
         env.set(
-            crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR,
+            crate::config::CLIENT_SOCKET_PATH_ENV_VAR,
             "/tmp/work-client.sock",
         );
         let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
@@ -980,7 +832,7 @@ mod tests {
     fn explicit_session_socket_ignores_inherited_socket_override() {
         let env = IsolatedEnv::new();
         env.set(SESSION_ENV_VAR, "work");
-        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
+        env.set(crate::config::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
         let paths = crate::config::AppPaths::resolve_with_session(Some(
             SessionId::parse("work").expect("test precondition"),
         ))
@@ -1001,7 +853,7 @@ mod tests {
     fn env_socket_override_wins_without_explicit_session() {
         let env = IsolatedEnv::new();
         env.set(SESSION_ENV_VAR, "work");
-        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/explicit.sock");
+        env.set(crate::config::SOCKET_PATH_ENV_VAR, "/tmp/explicit.sock");
         let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
 
         assert_eq!(
@@ -1014,7 +866,7 @@ mod tests {
     fn env_socket_override_skips_invalid_env_session_validation_without_explicit_session() {
         let env = IsolatedEnv::new();
         env.set(SESSION_ENV_VAR, "bad/name");
-        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/shepr.sock");
+        env.set(crate::config::SOCKET_PATH_ENV_VAR, "/tmp/shepr.sock");
         let paths =
             crate::config::AppPaths::resolve().expect("socket override skips session validation");
         assert_eq!(

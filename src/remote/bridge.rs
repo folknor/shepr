@@ -600,13 +600,10 @@ pub(super) fn run_client_process(
     let exe = crate::platform::launch_executable()?;
     let status = Command::new(exe)
         .arg("client")
-        .env(
-            crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR,
-            local_socket,
-        )
+        .env(crate::config::CLIENT_SOCKET_PATH_ENV_VAR, local_socket)
         .env(REATTACH_COMMAND_ENV_VAR, reattach_command)
         .env(REMOTE_KEYBINDINGS_ENV_VAR, keybindings.as_str())
-        .env_remove(crate::api::SOCKET_PATH_ENV_VAR)
+        .env_remove(crate::config::SOCKET_PATH_ENV_VAR)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())

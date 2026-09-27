@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn local_session_target_resolves_named_session_socket() {
         let env = crate::test_support::IsolatedEnv::new();
-        env.set(crate::session::SESSION_ENV_VAR, "work");
+        env.set(crate::config::SESSION_ENV_VAR, "work");
         let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
         let client = ApiClient::local(&paths);
         let socket = client.socket_path();

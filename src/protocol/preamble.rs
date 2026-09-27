@@ -64,7 +64,7 @@ impl std::fmt::Display for PreambleError {
                 "protocol mismatch: peer is a different shepr build (build {}, protocol {}); this is build {} (protocol {}). Install the same shepr build on both sides and restart the server",
                 peer.build_id,
                 peer.protocol_version,
-                crate::build_info::BUILD_ID,
+                super::limits::BUILD_ID,
                 super::PROTOCOL_VERSION,
             ),
         }
@@ -82,7 +82,7 @@ impl std::error::Error for PreambleError {
 
 /// This build's preamble.
 pub fn local_preamble() -> [u8; PREAMBLE_LEN] {
-    encode(super::PROTOCOL_VERSION, crate::build_info::BUILD_ID)
+    encode(super::PROTOCOL_VERSION, super::limits::BUILD_ID)
 }
 
 fn encode(protocol_version: u32, build_id: &str) -> [u8; PREAMBLE_LEN] {
@@ -168,7 +168,10 @@ mod tests {
                 let message = PreambleError::DifferentBuild(peer).to_string();
                 assert!(message.contains("protocol mismatch"), "{message}");
                 assert!(message.contains("00000000deadbeef"), "{message}");
-                assert!(message.contains(crate::build_info::BUILD_ID), "{message}");
+                assert!(
+                    message.contains(super::super::limits::BUILD_ID),
+                    "{message}"
+                );
             }
             other => panic!("expected a different build, got {other:?}"),
         }
@@ -177,7 +180,7 @@ mod tests {
     #[test]
     fn same_version_but_different_build_id_is_still_a_mismatch() {
         let other = encode(super::super::PROTOCOL_VERSION, "ffffffffffffffff");
-        if crate::build_info::BUILD_ID == "ffffffffffffffff" {
+        if super::super::limits::BUILD_ID == "ffffffffffffffff" {
             return;
         }
         assert!(matches!(

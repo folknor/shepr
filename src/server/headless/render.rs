@@ -329,7 +329,7 @@ impl HeadlessServer {
     fn terminal_id_for_pane(
         &self,
         pane_id: crate::layout::PaneId,
-    ) -> Option<&crate::terminal::TerminalId> {
+    ) -> Option<&crate::protocol::TerminalId> {
         self.app
             .find_pane(pane_id)
             .map(|(_, pane)| &pane.attached_terminal_id)

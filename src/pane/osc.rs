@@ -965,8 +965,8 @@ mod tests {
             assert_eq!(
                 core.terminal
                     .read_text_viewport(
-                        crate::terminal::Point::new(crate::terminal::ViewportRow(0), 0),
-                        crate::terminal::Point::new(crate::terminal::ViewportRow(0), 0),
+                        crate::vt::Point::new(crate::vt::ViewportRow(0), 0),
+                        crate::vt::Point::new(crate::vt::ViewportRow(0), 0),
                         false,
                     )
                     .expect("test precondition"),

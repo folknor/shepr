@@ -39,23 +39,23 @@ const KIMI_INTEGRATION_VERSION: u32 = 3;
 const KIMI_CONFIG_BLOCK_BEGIN: &str = "# >>> shepr kimi integration";
 const KIMI_CONFIG_BLOCK_END: &str = "# <<< shepr kimi integration";
 const KIMI_MIN_VERSION: &str = "0.14.0";
-const KIMI_HOOK_EVENTS: &[crate::agents::IntegrationHookEvent] =
-    crate::agents::Agent::Kimi.integration_hook_events();
+const KIMI_HOOK_EVENTS: &[crate::agent::IntegrationHookEvent] =
+    crate::agent::Agent::Kimi.integration_hook_events();
 const COPILOT_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const COPILOT_HOOK_ASSET: &str = include_str!("assets/copilot/shepr-agent-state.sh");
 const COPILOT_INTEGRATION_VERSION: u32 = 2;
-const COPILOT_HOOK_EVENTS: &[crate::agents::IntegrationHookEvent] =
-    crate::agents::Agent::GithubCopilot.integration_hook_events();
+const COPILOT_HOOK_EVENTS: &[crate::agent::IntegrationHookEvent] =
+    crate::agent::Agent::GithubCopilot.integration_hook_events();
 const DEVIN_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const DEVIN_HOOK_ASSET: &str = include_str!("assets/devin/shepr-agent-state.sh");
 const DEVIN_INTEGRATION_VERSION: u32 = 2;
-const DEVIN_HOOK_EVENTS: &[crate::agents::IntegrationHookEvent] =
-    crate::agents::Agent::Devin.integration_hook_events();
+const DEVIN_HOOK_EVENTS: &[crate::agent::IntegrationHookEvent] =
+    crate::agent::Agent::Devin.integration_hook_events();
 const DROID_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const DROID_HOOK_ASSET: &str = include_str!("assets/droid/shepr-agent-state.sh");
 const DROID_INTEGRATION_VERSION: u32 = 2;
-const DROID_HOOK_EVENTS: &[crate::agents::IntegrationHookEvent] =
-    crate::agents::Agent::Droid.integration_hook_events();
+const DROID_HOOK_EVENTS: &[crate::agent::IntegrationHookEvent] =
+    crate::agent::Agent::Droid.integration_hook_events();
 const OPENCODE_PLUGIN_INSTALL_NAME: &str = "shepr-agent-state.js";
 const OPENCODE_PLUGIN_ASSET: &str = include_str!("assets/opencode/shepr-agent-state.js");
 const OPENCODE_TUI_PLUGIN_INSTALL_NAME: &str = "shepr-tui-session.js";
@@ -77,13 +77,13 @@ const HERMES_INTEGRATION_VERSION: u32 = 1;
 const QODERCLI_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const QODERCLI_HOOK_ASSET: &str = include_str!("assets/qodercli/shepr-agent-state.sh");
 const QODERCLI_INTEGRATION_VERSION: u32 = 1;
-const QODERCLI_HOOK_EVENTS: &[crate::agents::IntegrationHookEvent] =
-    crate::agents::Agent::Qodercli.integration_hook_events();
+const QODERCLI_HOOK_EVENTS: &[crate::agent::IntegrationHookEvent] =
+    crate::agent::Agent::Qodercli.integration_hook_events();
 const QWEN_HOOK_INSTALL_NAME: &str = "shepr-agent-session.sh";
 const QWEN_HOOK_ASSET: &str = include_str!("assets/qwen/shepr-agent-session.sh");
 const QWEN_INTEGRATION_VERSION: u32 = 1;
-const QWEN_HOOK_EVENTS: &[crate::agents::IntegrationHookEvent] =
-    crate::agents::Agent::Qwen.integration_hook_events();
+const QWEN_HOOK_EVENTS: &[crate::agent::IntegrationHookEvent] =
+    crate::agent::Agent::Qwen.integration_hook_events();
 const LETTA_HOOK_INSTALL_NAME: &str = "shepr-agent-session.sh";
 const LETTA_HOOK_ASSET: &str = include_str!("assets/letta/shepr-agent-session.sh");
 const LETTA_INTEGRATION_VERSION: u32 = 1;
@@ -99,15 +99,15 @@ const ANTIGRAVITY_CLI_INTEGRATION_VERSION: u32 = 1;
 /// under one Shepr-owned block that install rewrites and uninstall removes.
 const ANTIGRAVITY_CLI_HOOK_BLOCK_NAME: &str = "shepr";
 const ANTIGRAVITY_CLI_HOOK_TIMEOUT_SEC: u64 = 10;
-const ANTIGRAVITY_CLI_HOOK_EVENTS: &[crate::agents::IntegrationHookEvent] =
-    crate::agents::Agent::Antigravity.integration_hook_events();
+const ANTIGRAVITY_CLI_HOOK_EVENTS: &[crate::agent::IntegrationHookEvent] =
+    crate::agent::Agent::Antigravity.integration_hook_events();
 const INTEGRATION_VERSION_MARKER: &str = "SHEPR_INTEGRATION_VERSION=";
 const MASTRACODE_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const MASTRACODE_HOOK_ASSET: &str = include_str!("assets/mastracode/shepr-agent-state.sh");
 const MASTRACODE_INTEGRATION_VERSION: u32 = 4;
 const MASTRACODE_HOOK_TIMEOUT_MS: u64 = 10_000;
-const MASTRACODE_HOOK_EVENTS: &[crate::agents::IntegrationHookEvent] =
-    crate::agents::Agent::Mastracode.integration_hook_events();
+const MASTRACODE_HOOK_EVENTS: &[crate::agent::IntegrationHookEvent] =
+    crate::agent::Agent::Mastracode.integration_hook_events();
 const GROK_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
 const GROK_HOOK_CONFIG_INSTALL_NAME: &str = "shepr.json";
 const GROK_HOOK_ASSET: &str = include_str!("assets/grok/shepr-agent-state.sh");

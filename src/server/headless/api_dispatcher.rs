@@ -8,7 +8,7 @@ pub(super) enum AltScreenReadConflict {
 }
 
 pub(super) struct AltScreenReadSpec {
-    pub(super) terminal_id: crate::terminal::TerminalId,
+    pub(super) terminal_id: crate::protocol::TerminalId,
     pub(super) lines: usize,
     pub(super) unwrap: bool,
     pub(super) initial: crate::terminal::ScreenSnapshot,
@@ -360,7 +360,7 @@ impl ApiDispatcher {
         self.read_conflict(
             terminal_id
                 .as_ref()
-                .map(crate::terminal::TerminalId::as_str),
+                .map(crate::protocol::TerminalId::as_str),
             request,
         )
     }

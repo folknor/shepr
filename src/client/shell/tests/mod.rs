@@ -11,7 +11,10 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
         boot_id: "boot-1".into(),
         revision: crate::protocol::ProjectionRevision::new(1),
-        resolved_config: crate::config::ValidatedConfig::test_default(),
+        resolved_config: crate::protocol::codec::to_vec(
+            &crate::config::ValidatedConfig::test_default(),
+        )
+        .expect("test config encodes"),
         focused_workspace_id: Some("ws_1".into()),
         focused_tab_id: Some("tab_1".into()),
         focused_pane_id: Some("pane_1".into()),

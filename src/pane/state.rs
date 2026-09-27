@@ -1,4 +1,4 @@
-use crate::terminal::TerminalId;
+use crate::protocol::TerminalId;
 
 /// Viewport state for a pane.
 ///

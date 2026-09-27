@@ -83,7 +83,7 @@ pub(super) fn snapshot_from_session(
                 .and_then(|location| {
                     location
                         .active_tab_ids
-                        .get(&crate::workspace::WorkspaceId::new(workspace_id.as_str()))
+                        .get(&crate::protocol::WorkspaceId::new(workspace_id.as_str()))
                 })
                 .cloned()
                 .or_else(|| workspace.active_tab_id.parse().ok())?;
@@ -120,7 +120,7 @@ pub(super) fn snapshot_from_session(
         .tabs
         .into_iter()
         .filter_map(|tab| {
-            let tab_id: crate::workspace::PublicTabId = tab.tab_id.parse().ok()?;
+            let tab_id: crate::protocol::PublicTabId = tab.tab_id.parse().ok()?;
             let state = app
                 .parse_tab_id(&tab_id)
                 .and_then(|(workspace_index, tab_index)| {
@@ -146,7 +146,7 @@ pub(super) fn snapshot_from_session(
         .panes
         .into_iter()
         .filter_map(|pane| {
-            let pane_id: crate::workspace::PublicPaneId = pane.pane_id.parse().ok()?;
+            let pane_id: crate::protocol::PublicPaneId = pane.pane_id.parse().ok()?;
             let focused = focused_pane_id.as_deref() == Some(pane_id.as_str());
             let right_click_passthrough = app
                 .parse_pane_id(&pane_id)
@@ -231,10 +231,14 @@ pub(super) fn snapshot_from_session(
         })
         .collect();
 
+    let mut resolved_config = Vec::new();
+    protocol::codec::encode_into(&mut resolved_config, app.resolved_config())
+        .expect("validated configuration must encode for the client protocol");
+
     protocol::ClientShellSnapshot {
         boot_id: boot_id.into(),
         revision: revision.into(),
-        resolved_config: app.resolved_config().clone(),
+        resolved_config,
         focused_workspace_id,
         focused_tab_id,
         focused_pane_id,

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::detect::Agent;
+use super::ConfigAgent;
 
 const MAX_SIDEBAR_ROWS: usize = 16;
 const MAX_SIDEBAR_TOKENS_PER_ROW: usize = 16;
@@ -421,7 +421,7 @@ where
 {
     let rows_by_agent = BTreeMap::<String, AgentSidebarRows>::deserialize(deserializer)?;
     for (id, rows) in &rows_by_agent {
-        if crate::detect::parse_canonical_agent_label(id).is_none() {
+        if ConfigAgent::parse_canonical_label(id).is_none() {
             return Err(serde::de::Error::custom(format!(
                 "unknown canonical agent id `{id}` in sidebar rows_by_agent"
             )));
@@ -442,9 +442,9 @@ pub struct AgentsSidebarConfig {
 }
 
 impl AgentsSidebarConfig {
-    pub(crate) fn rows_for_agent(&self, agent: Option<Agent>) -> &AgentSidebarRows {
+    pub(crate) fn rows_for_agent(&self, agent: Option<&str>) -> &AgentSidebarRows {
         agent
-            .and_then(|agent| self.rows_by_agent.get(crate::detect::agent_label(agent)))
+            .and_then(|agent| self.rows_by_agent.get(agent))
             .unwrap_or(&self.rows)
     }
 }
@@ -730,10 +730,10 @@ rows = [[{ token = "$status", rules = [{ contains = "error", bold = true }] }]]
 
     #[test]
     fn accepts_every_canonical_agent_override_key() {
-        let agents = Agent::all().collect::<Vec<_>>();
+        let agents = ConfigAgent::ALL.to_vec();
         let entries = agents
             .iter()
-            .map(|agent| format!("{} = [[\"agent\"]]", crate::detect::agent_label(*agent)))
+            .map(|agent| format!("{} = [[\"agent\"]]", agent.label()))
             .collect::<Vec<_>>()
             .join("\n");
         let input = format!("[ui.sidebar.agents.rows_by_agent]\n{entries}\n");

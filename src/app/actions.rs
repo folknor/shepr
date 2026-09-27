@@ -84,7 +84,7 @@ pub(crate) enum PaneRemovalCommit {
 pub(crate) struct WorkspaceRemovalOutcome {
     pub(crate) workspace_id: String,
     pub(crate) pane_ids: Vec<PaneId>,
-    pub(crate) terminal_ids: Vec<crate::terminal::TerminalId>,
+    pub(crate) terminal_ids: Vec<crate::protocol::TerminalId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,7 +107,7 @@ pub(crate) struct TabRemovalOutcome {
     pub(crate) workspace_index: usize,
     pub(crate) scope: TabRemovalScope,
     pub(crate) pane_ids: Vec<PaneId>,
-    pub(crate) terminal_ids: Vec<crate::terminal::TerminalId>,
+    pub(crate) terminal_ids: Vec<crate::protocol::TerminalId>,
     pub(crate) tab: Option<TabRemoval>,
 }
 
@@ -130,7 +130,7 @@ pub(crate) struct PaneCreationOutcome {
     pub(crate) workspace_index: usize,
     pub(crate) tab_index: usize,
     pub(crate) pane_id: PaneId,
-    pub(crate) terminal_id: crate::terminal::TerminalId,
+    pub(crate) terminal_id: crate::protocol::TerminalId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,7 +199,7 @@ impl AppState {
         let ws = self.workspaces.get(ws_idx)?;
         let pane_id = ws.focused_pane_id()?;
         Some(PaneFocusTarget {
-            workspace_id: crate::workspace::WorkspaceId::new(ws.id.to_string()),
+            workspace_id: crate::protocol::WorkspaceId::new(ws.id.to_string()),
             pane_id,
         })
     }
@@ -320,7 +320,7 @@ impl AppState {
             return;
         };
         let target = PaneFocusTarget {
-            workspace_id: crate::workspace::WorkspaceId::new(ws.id.to_string()),
+            workspace_id: crate::protocol::WorkspaceId::new(ws.id.to_string()),
             pane_id,
         };
         if previous.as_ref() != Some(&target) {
@@ -344,7 +344,7 @@ impl AppState {
         };
         let previous = self.current_pane_focus_target();
         let target = PaneFocusTarget {
-            workspace_id: crate::workspace::WorkspaceId::new(ws.id.to_string()),
+            workspace_id: crate::protocol::WorkspaceId::new(ws.id.to_string()),
             pane_id,
         };
         if previous.as_ref() == Some(&target) {
@@ -637,7 +637,7 @@ impl AppState {
     pub(crate) fn terminal_ids_for_workspace(
         &self,
         ws_idx: usize,
-    ) -> Vec<crate::terminal::TerminalId> {
+    ) -> Vec<crate::protocol::TerminalId> {
         self.workspaces
             .get(ws_idx)
             .into_iter()
@@ -661,7 +661,7 @@ impl AppState {
         &self,
         ws_idx: usize,
         pane_id: PaneId,
-    ) -> Option<crate::terminal::TerminalId> {
+    ) -> Option<crate::protocol::TerminalId> {
         self.workspaces
             .get(ws_idx)?
             .pane_state(pane_id)
@@ -670,7 +670,7 @@ impl AppState {
 
     pub(crate) fn remove_unattached_terminal_ids(
         &mut self,
-        terminal_ids: impl IntoIterator<Item = crate::terminal::TerminalId>,
+        terminal_ids: impl IntoIterator<Item = crate::protocol::TerminalId>,
     ) {
         for terminal_id in terminal_ids {
             let still_attached = self.workspaces.iter().any(|ws| {
@@ -919,7 +919,7 @@ impl AppState {
             });
         }
         let last = self.workspaces.len() - 1;
-        let position_of = |id: Option<crate::workspace::WorkspaceId>,
+        let position_of = |id: Option<crate::protocol::WorkspaceId>,
                            workspaces: &[crate::workspace::Workspace]| {
             id.and_then(|id| workspaces.iter().position(|ws| ws.id == id))
         };
@@ -1213,7 +1213,7 @@ impl AppState {
                 seq,
                 session_ref,
             } => {
-                if crate::agent_resume::is_reserved_native_state_source(&source, &agent_label) {
+                if crate::agent::resume::is_reserved_native_state_source(&source, &agent_label) {
                     self.update_terminal_state(pane_id, |terminal| {
                         terminal.set_agent_session_ref(source, agent_label, session_ref, seq)
                     })
@@ -1301,7 +1301,7 @@ impl AppState {
                 seq,
                 ..
             } => {
-                if crate::agent_resume::is_official_agent_source(&source, &agent_label) {
+                if crate::agent::resume::is_official_agent_source(&source, &agent_label) {
                     Vec::new()
                 } else {
                     self.update_terminal_state(pane_id, |terminal| {
@@ -1425,7 +1425,7 @@ impl AppState {
     /// snapshots.
     fn record_agent_state_change_seq(
         &mut self,
-        terminal_id: &crate::terminal::TerminalId,
+        terminal_id: &crate::protocol::TerminalId,
         change: &EffectiveStateChange,
     ) {
         if change.previous_state == change.state {
@@ -1585,7 +1585,7 @@ mod tests {
             .split_pane(root_pane, Direction::Horizontal, 0.5)
             .expect("test precondition");
         assert_eq!(state.workspaces[0].pane_count(), 1);
-        let terminal_id = crate::terminal::TerminalId::alloc();
+        let terminal_id = crate::protocol::TerminalId::alloc();
         let terminal = crate::terminal::TerminalState::new(
             terminal_id.clone(),
             std::path::PathBuf::from("/tmp"),
@@ -1647,7 +1647,7 @@ mod tests {
         let mut state = app_with_workspaces(&["one"]);
         let workspace = &state.workspaces[0];
         let (layout, root_pane) = crate::layout::TileLayout::new();
-        let terminal_id = crate::terminal::TerminalId::alloc();
+        let terminal_id = crate::protocol::TerminalId::alloc();
         let mut pane =
             crate::workspace::TabPane::new(crate::pane::PaneState::new(terminal_id.clone()));
         pane.public_number = workspace.next_public_pane_number();
@@ -2312,7 +2312,7 @@ mod tests {
             state: AgentState::Blocked,
             message: None,
             seq: Some(1),
-            session_ref: crate::agent_resume::AgentSessionRef::id("claude-session"),
+            session_ref: crate::agent::resume::AgentSessionRef::id("claude-session"),
         });
         let terminal = state
             .terminals
@@ -2365,10 +2365,10 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test precondition");
-        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+        terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
             source: "shepr:pi".into(),
-            agent: crate::agents::Agent::Pi,
-            session_ref: crate::agent_resume::AgentSessionRef::path(
+            agent: crate::agent::Agent::Pi,
+            session_ref: crate::agent::resume::AgentSessionRef::path(
                 std::env::current_dir()
                     .expect("test precondition")
                     .join("release-session.jsonl")
@@ -2434,7 +2434,7 @@ mod tests {
             state: AgentState::Working,
             message: None,
             seq: Some(1),
-            session_ref: crate::agent_resume::AgentSessionRef::id("devin-session"),
+            session_ref: crate::agent::resume::AgentSessionRef::id("devin-session"),
         });
 
         let terminal = state
@@ -2465,7 +2465,7 @@ mod tests {
             state: AgentState::Working,
             message: None,
             seq: Some(20),
-            session_ref: crate::agent_resume::AgentSessionRef::path(first_session),
+            session_ref: crate::agent::resume::AgentSessionRef::path(first_session),
         });
         assert_eq!(first_updates.len(), 1);
         state.session_dirty = false;
@@ -2477,7 +2477,7 @@ mod tests {
             state: AgentState::Working,
             message: None,
             seq: Some(21),
-            session_ref: crate::agent_resume::AgentSessionRef::path(second_session),
+            session_ref: crate::agent::resume::AgentSessionRef::path(second_session),
         });
 
         assert!(second_updates.is_empty());

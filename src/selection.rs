@@ -7,7 +7,7 @@
 
 use crate::{
     layout::PaneId,
-    terminal::{AbsRow, Point},
+    vt::{AbsRow, Point},
 };
 
 /// Current phase of a selection.

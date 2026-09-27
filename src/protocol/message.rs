@@ -28,10 +28,10 @@ impl std::error::Error for HandshakeRefusal {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NoticeKind {
     InputDropped {
-        terminal_id: crate::terminal::TerminalId,
+        terminal_id: TerminalId,
     },
     PaneInputDropped {
-        pane_id: crate::workspace::PublicPaneId,
+        pane_id: PublicPaneId,
         events: usize,
     },
     PasteRejected {

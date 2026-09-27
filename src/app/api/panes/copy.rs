@@ -72,8 +72,8 @@ impl App {
         }
         let selection = crate::selection::Selection::range(
             pane_id,
-            crate::terminal::Point::new(params.anchor.row, params.anchor.col),
-            crate::terminal::Point::new(params.cursor.row, params.cursor.col),
+            crate::vt::Point::new(params.anchor.row, params.anchor.col),
+            crate::vt::Point::new(params.cursor.row, params.cursor.col),
         );
         let Some(text) = runtime.extract_selection(&selection) else {
             return Err((
@@ -131,7 +131,7 @@ impl App {
         }
         let origin = runtime
             .scroll_metrics()
-            .map_or(crate::terminal::AbsRow(0), |metrics| metrics.history_origin);
+            .map_or(crate::vt::AbsRow(0), |metrics| metrics.history_origin);
         let absolute_cursor_row = params.cursor.row.absolute(origin);
         let target = match params.motion {
             PaneCopyMotion::LineEnd | PaneCopyMotion::FirstNonBlank => {
@@ -140,8 +140,8 @@ impl App {
                     .map_or(1, |(cols, _)| cols.max(1));
                 let selection = crate::selection::Selection::range(
                     pane_id,
-                    crate::terminal::Point::new(absolute_cursor_row, 0),
-                    crate::terminal::Point::new(absolute_cursor_row, width.saturating_sub(1)),
+                    crate::vt::Point::new(absolute_cursor_row, 0),
+                    crate::vt::Point::new(absolute_cursor_row, width.saturating_sub(1)),
                 );
                 let Some(text) = runtime.extract_selection(&selection) else {
                     return failure(

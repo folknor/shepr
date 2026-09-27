@@ -61,11 +61,11 @@ pub(super) struct ShellHitMap {
     pub(super) workspace_scrollbar: Rect,
     pub(super) workspace_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) workspace_max_scroll: usize,
-    pub(super) tabs: Vec<(Rect, crate::workspace::PublicTabId)>,
+    pub(super) tabs: Vec<(Rect, crate::protocol::PublicTabId)>,
     pub(super) panes: Vec<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
-    pub(super) agents: Vec<(Rect, crate::workspace::PublicPaneId)>,
-    pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, crate::workspace::PublicPaneId)>,
+    pub(super) agents: Vec<(Rect, crate::protocol::PublicPaneId)>,
+    pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, crate::protocol::PublicPaneId)>,
     pub(super) agent_body: Rect,
     pub(super) agent_scrollbar: Rect,
     pub(super) agent_scroll_metrics: Option<crate::pane::ScrollMetrics>,
@@ -102,7 +102,7 @@ pub(super) struct PaneHit {
     pub(super) inner_rect: Rect,
     pub(super) scrollbar_rect: Option<Rect>,
     pub(super) scroll: Option<crate::pane::ScrollMetrics>,
-    pub(super) pane_id: crate::workspace::PublicPaneId,
+    pub(super) pane_id: crate::protocol::PublicPaneId,
     pub(super) mouse_reporting: bool,
     pub(super) sgr_pixel_mouse: bool,
     pub(super) pixel_width: u32,
@@ -129,13 +129,13 @@ pub(super) struct ClientPaneMouseGesture {
 
 pub(super) struct ClientWorkspacePress {
     pub(super) endpoint_id: ClientEndpointId,
-    pub(super) workspace_id: crate::workspace::WorkspaceId,
+    pub(super) workspace_id: crate::protocol::WorkspaceId,
     pub(super) start_column: u16,
     pub(super) start_row: u16,
 }
 
 pub(super) struct ClientTabPress {
-    pub(super) tab_id: crate::workspace::PublicTabId,
+    pub(super) tab_id: crate::protocol::PublicTabId,
     pub(super) workspace_id: String,
     pub(super) start_column: u16,
     pub(super) start_row: u16,
@@ -162,17 +162,17 @@ pub(super) enum ClientChromeDrag {
         grab_row_offset: u16,
     },
     Tab {
-        tab_id: crate::workspace::PublicTabId,
+        tab_id: crate::protocol::PublicTabId,
         workspace_id: String,
         insert_index: Option<usize>,
     },
     Workspace {
-        source_workspace_id: crate::workspace::WorkspaceId,
+        source_workspace_id: crate::protocol::WorkspaceId,
         target: Option<(Option<String>, u16)>,
     },
     PaneSplit {
         hit: PaneSplitHit,
-        tab_id: crate::workspace::PublicTabId,
+        tab_id: crate::protocol::PublicTabId,
         grab_offset: i32,
         last_sent_ratio: Option<f32>,
         last_sent_at: Option<std::time::Instant>,
@@ -272,12 +272,12 @@ pub(super) enum ClientRenameTarget {
         default_name: String,
     },
     Tab {
-        tab_id: crate::workspace::PublicTabId,
+        tab_id: crate::protocol::PublicTabId,
         auto_name: bool,
         original_name: String,
     },
     Pane {
-        pane_id: crate::workspace::PublicPaneId,
+        pane_id: crate::protocol::PublicPaneId,
     },
 }
 
@@ -306,7 +306,7 @@ pub(super) enum ClientNavigatorTarget {
     },
     Pane {
         endpoint_id: ClientEndpointId,
-        pane_id: crate::workspace::PublicPaneId,
+        pane_id: crate::protocol::PublicPaneId,
     },
 }
 
@@ -365,13 +365,13 @@ pub(super) enum ClientContextMenuTarget {
         workspace_id: String,
     },
     Tab {
-        tab_id: crate::workspace::PublicTabId,
+        tab_id: crate::protocol::PublicTabId,
         workspace_id: String,
     },
     Pane {
-        pane_id: crate::workspace::PublicPaneId,
+        pane_id: crate::protocol::PublicPaneId,
         workspace_id: String,
-        source_pane_id: Option<crate::workspace::PublicPaneId>,
+        source_pane_id: Option<crate::protocol::PublicPaneId>,
         has_manual_label: bool,
         right_click_passthrough: bool,
     },
@@ -392,7 +392,7 @@ pub(super) struct ClientContextMenuItem {
 
 #[derive(Debug)]
 pub(super) struct ClientTabCloseConfirmation {
-    pub(super) tab_id: crate::workspace::PublicTabId,
+    pub(super) tab_id: crate::protocol::PublicTabId,
     pub(super) workspace: WorkspaceNavigationTarget,
 }
 
@@ -435,21 +435,21 @@ pub(super) enum PendingEndpointKind {
     Generic,
     SelectionCopy,
     PaneScroll {
-        pane_id: crate::workspace::PublicPaneId,
+        pane_id: crate::protocol::PublicPaneId,
         serial: u64,
     },
     WordSelection {
-        pane_id: crate::workspace::PublicPaneId,
-        absolute_row: crate::terminal::AbsRow,
+        pane_id: crate::protocol::PublicPaneId,
+        absolute_row: crate::vt::AbsRow,
         generation: u64,
     },
     CopyMotion {
-        pane_id: crate::workspace::PublicPaneId,
+        pane_id: crate::protocol::PublicPaneId,
         origin: crate::api::schema::PaneTextPoint,
         session_generation: u64,
     },
     CopySearch {
-        pane_id: crate::workspace::PublicPaneId,
+        pane_id: crate::protocol::PublicPaneId,
         origin: crate::api::schema::PaneTextPoint,
         query: String,
         direction: crate::api::schema::PaneCopySearchDirection,
@@ -492,7 +492,7 @@ pub(crate) struct ClientShellEndpointError {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ClientInputTarget {
-    Pane(crate::workspace::PublicPaneId),
+    Pane(crate::protocol::PublicPaneId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -506,7 +506,7 @@ type ClientInputLeases = crate::input::InputLeaseTable<u8, ClientInputContext, C
 
 #[derive(Clone, Debug)]
 pub(super) struct ClientPaneClick {
-    pub(super) pane_id: crate::workspace::PublicPaneId,
+    pub(super) pane_id: crate::protocol::PublicPaneId,
     pub(super) viewport_row: u16,
     pub(super) col: u16,
     pub(super) at: std::time::Instant,
@@ -529,7 +529,7 @@ pub(super) enum ClientSelectionAutoscrollDirection {
 
 #[derive(Clone, Debug)]
 pub(super) struct ClientSelectionAutoscroll {
-    pub(super) pane_id: crate::workspace::PublicPaneId,
+    pub(super) pane_id: crate::protocol::PublicPaneId,
     pub(super) direction: ClientSelectionAutoscrollDirection,
     pub(super) last_mouse_column: u16,
     pub(super) last_mouse_row: u16,
@@ -541,10 +541,10 @@ pub(super) struct ClientSelectionAutoscroll {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ClientCopySelection {
     Character {
-        anchor: crate::terminal::Point<crate::terminal::AbsRow>,
+        anchor: crate::vt::Point<crate::vt::AbsRow>,
     },
     Linewise {
-        anchor_row: crate::terminal::AbsRow,
+        anchor_row: crate::vt::AbsRow,
     },
 }
 
@@ -574,7 +574,7 @@ pub(super) struct ClientCopySearchResult {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ClientCopyModeState {
-    pub(super) pane_id: crate::workspace::PublicPaneId,
+    pub(super) pane_id: crate::protocol::PublicPaneId,
     pub(super) content_revision: u64,
     pub(super) geometry: (u16, u16),
     pub(super) alternate_screen_active: bool,
@@ -620,7 +620,7 @@ pub(crate) struct ClientShellState {
     pub(super) tab_press: Option<ClientTabPress>,
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
-    pub(super) pending_agent_reveal: Option<(ClientEndpointId, crate::workspace::PublicPaneId)>,
+    pub(super) pending_agent_reveal: Option<(ClientEndpointId, crate::protocol::PublicPaneId)>,
     pub(super) tab_scroll: usize,
     pub(super) reveal_focused_workspace: bool,
     pub(super) reveal_focused_tab: bool,
@@ -637,14 +637,14 @@ pub(crate) struct ClientShellState {
     pub(super) pending_workspace_highlight: Option<PendingWorkspaceHighlight>,
     pub(super) reveal_navigation_workspace: bool,
     pub(super) overlay: Option<ClientShellOverlay>,
-    pub(super) previous_pane_id: Option<crate::workspace::PublicPaneId>,
+    pub(super) previous_pane_id: Option<crate::protocol::PublicPaneId>,
     pub(super) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
-    pub(super) selection: Option<crate::selection::Selection<crate::workspace::PublicPaneId>>,
+    pub(super) selection: Option<crate::selection::Selection<crate::protocol::PublicPaneId>>,
     /// Pane a mouse selection was started in while another pane held focus.
     /// The click's `PaneFocus` travels the serialized command lane, so
     /// snapshots can still report the old focus for a while; until one shows
     /// this pane focused, those snapshots must not cancel the drag.
-    pub(super) selection_focus_pending: Option<crate::workspace::PublicPaneId>,
+    pub(super) selection_focus_pending: Option<crate::protocol::PublicPaneId>,
     pub(super) last_pane_click: Option<ClientPaneClick>,
     pub(super) selection_autoscroll: Option<ClientSelectionAutoscroll>,
     pub(super) selection_autoscroll_deadline: Option<std::time::Instant>,
@@ -657,9 +657,9 @@ pub(crate) struct ClientShellState {
     pub(super) copy_operation_queue: VecDeque<ClientCopyOperation>,
     pub(super) copy_input_queue: VecDeque<crate::input::TerminalKey>,
     pub(super) next_scroll_serial: u64,
-    pub(super) pane_scroll_in_flight: HashMap<crate::workspace::PublicPaneId, u64>,
-    pub(super) pane_scroll_queued: HashMap<crate::workspace::PublicPaneId, usize>,
-    pub(super) pane_scroll_targets: HashMap<crate::workspace::PublicPaneId, usize>,
+    pub(super) pane_scroll_in_flight: HashMap<crate::protocol::PublicPaneId, u64>,
+    pub(super) pane_scroll_queued: HashMap<crate::protocol::PublicPaneId, usize>,
+    pub(super) pane_scroll_targets: HashMap<crate::protocol::PublicPaneId, usize>,
     pub(super) host_mouse_pixels: Option<crate::input::mouse::HostPixels>,
     pub(super) input_leases: ClientInputLeases,
     pub(super) next_request_id: u64,
@@ -876,6 +876,14 @@ impl ClientShellState {
         {
             return;
         }
+        let snapshot_config: crate::config::ValidatedConfig =
+            match crate::protocol::codec::from_slice_exact(&snapshot.resolved_config) {
+                Ok(config) => config,
+                Err(error) => {
+                    self.set_endpoint_error(format!("invalid endpoint configuration: {error}"));
+                    return;
+                }
+            };
         // Screen revisions restart per connection. Keep the displayed surface for selection
         // content comparisons, but retire speculative frames from the old connection.
         if generation_changed {
@@ -884,9 +892,12 @@ impl ClientShellState {
         self.active_snapshot_generation = generation;
         self.graphics_scope = graphics_scope;
         let endpoint_keybindings_changed = self.snapshot.as_ref().is_none_or(|current| {
-            !current
-                .resolved_config
-                .same_keybinding_resolution(&snapshot.resolved_config)
+            match crate::protocol::codec::from_slice_exact::<crate::config::ValidatedConfig>(
+                &current.resolved_config,
+            ) {
+                Ok(config) => !config.same_keybinding_resolution(&snapshot_config),
+                Err(_) => true,
+            }
         });
         // Endpoint-sourced keymaps follow its resolved config. Local and
         // RemoteLocal keep the keymap built from this client's config.
@@ -919,7 +930,7 @@ impl ClientShellState {
             self.previous_pane_id = Some(previous.clone());
         }
         if snapshot_keybindings_changed {
-            if let Err(err) = self.config.apply_snapshot_config(&snapshot.resolved_config) {
+            if let Err(err) = self.config.apply_snapshot_config(&snapshot_config) {
                 self.set_endpoint_error(err);
             } else if matches!(
                 self.mode,
@@ -1053,7 +1064,7 @@ impl ClientShellState {
                 .as_deref()
                 .and_then(|id| self.navigation_target(&self.active_endpoint_id, id));
         }
-        let pane_exists = |pane_id: &crate::workspace::PublicPaneId| {
+        let pane_exists = |pane_id: &crate::protocol::PublicPaneId| {
             snapshot.panes.iter().any(|pane| &pane.pane_id == pane_id)
         };
         self.pane_scroll_in_flight

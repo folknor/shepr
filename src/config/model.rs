@@ -539,14 +539,14 @@ impl Default for RemoteConfig {
 
 fn deserialize_cjk_ime_agents<'de, D>(
     deserializer: D,
-) -> Result<Vec<crate::detect::Agent>, D::Error>
+) -> Result<Vec<crate::config::ConfigAgent>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let names = Vec::<String>::deserialize(deserializer)?;
     let mut agents = Vec::with_capacity(names.len());
     for name in names {
-        let Some(agent) = crate::detect::parse_agent_label(&name) else {
+        let Some(agent) = crate::config::ConfigAgent::parse_label(&name) else {
             return Err(de::Error::custom(format!(
                 "unknown agent name {name:?} in experimental.cjk_ime_agents"
             )));
@@ -559,7 +559,7 @@ where
 }
 
 fn serialize_cjk_ime_agents<S>(
-    agents: &[crate::detect::Agent],
+    agents: &[crate::config::ConfigAgent],
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -569,7 +569,7 @@ where
 
     let mut sequence = serializer.serialize_seq(Some(agents.len()))?;
     for agent in agents {
-        sequence.serialize_element(crate::detect::agent_label(*agent))?;
+        sequence.serialize_element(agent.label())?;
     }
     sequence.end()
 }
@@ -605,7 +605,7 @@ pub struct ExperimentalConfig {
         deserialize_with = "deserialize_cjk_ime_agents",
         serialize_with = "serialize_cjk_ime_agents"
     )]
-    pub cjk_ime_agents: Vec<crate::detect::Agent>,
+    pub cjk_ime_agents: Vec<crate::config::ConfigAgent>,
     /// Cursor shape rendered for the IME anchor when
     /// `reveal_hidden_cursor_for_cjk_ime` is enabled. Default: "steady_block".
     pub cjk_ime_cursor_shape: ImeCursorShape,
@@ -966,7 +966,10 @@ cjk_ime_agents = ["claude", "codex"]
         let config: Config = toml::from_str(toml).expect("test precondition");
         assert_eq!(
             config.experimental.cjk_ime_agents,
-            vec![crate::detect::Agent::Claude, crate::detect::Agent::Codex]
+            vec![
+                crate::config::ConfigAgent::Claude,
+                crate::config::ConfigAgent::Codex
+            ]
         );
     }
 

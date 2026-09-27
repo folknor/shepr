@@ -224,7 +224,7 @@ fn add_args(matches: &ArgMatches) -> AddArgs {
         target: required(matches, "ssh-target"),
         label: required(matches, "label"),
         session: string(matches, "remote-session")
-            .unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_owned()),
+            .unwrap_or_else(|| crate::config::DEFAULT_SESSION_NAME.to_owned()),
     }
 }
 

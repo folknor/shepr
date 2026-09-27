@@ -15,8 +15,8 @@ pub(super) struct EndpointLease {
 #[derive(Clone, Debug, Default)]
 pub(super) struct ActivationEvidence {
     pub(super) snapshot_revision: Option<u64>,
-    pub(super) focused_workspace_id: Option<crate::workspace::WorkspaceId>,
-    pub(super) focused_pane_id: Option<crate::workspace::PublicPaneId>,
+    pub(super) focused_workspace_id: Option<crate::protocol::WorkspaceId>,
+    pub(super) focused_pane_id: Option<crate::protocol::PublicPaneId>,
     pub(super) surface: Option<crate::protocol::PaneSurfaceFrame>,
 }
 

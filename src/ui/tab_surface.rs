@@ -9,8 +9,8 @@ use crate::ui::PaneChromeInfo as PaneInfo;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TabSurfaceTarget {
-    pub(crate) workspace_id: crate::workspace::WorkspaceId,
-    pub(crate) tab_id: crate::workspace::PublicTabId,
+    pub(crate) workspace_id: crate::protocol::WorkspaceId,
+    pub(crate) tab_id: crate::protocol::PublicTabId,
 }
 
 impl TabSurfaceTarget {
@@ -23,7 +23,7 @@ impl TabSurfaceTarget {
         let tab = workspace.tabs.get(tab_index)?;
         Some(Self {
             workspace_id: workspace.id.clone(),
-            tab_id: crate::workspace::PublicTabId::new(workspace.id.as_str(), tab.number),
+            tab_id: crate::protocol::PublicTabId::new(workspace.id.as_str(), tab.number),
         })
     }
 
@@ -200,7 +200,12 @@ pub(crate) fn tab_surface_cursor(
                 .and_then(|ws| ws.terminal_id(info.id))
                 .and_then(|terminal_id| app.terminals.get(terminal_id))
                 .and_then(|terminal| terminal.detected_agent);
-            detected.is_some_and(|agent| app.settings.cjk_ime_agents.contains(&agent))
+            detected.is_some_and(|agent| {
+                app.settings
+                    .cjk_ime_agents
+                    .iter()
+                    .any(|configured| configured.label() == agent.label())
+            })
         });
 
     if let Some(cursor) = runtime.cursor_state(info.inner_rect, true) {

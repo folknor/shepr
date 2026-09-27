@@ -5,7 +5,7 @@
 
 pub mod manifest;
 
-pub use crate::agents::Agent;
+pub use crate::agent::Agent;
 
 mod proc_tree;
 pub use proc_tree::{
@@ -157,13 +157,13 @@ pub fn detect_agent_with_osc(
 }
 
 pub(crate) fn full_lifecycle_hook_authority(source: &str, agent_label: &str) -> bool {
-    crate::agents::AgentSource::from_pair(source, agent_label)
+    crate::agent::AgentSource::from_pair(source, agent_label)
         .and_then(|source| source.agent())
         .is_some_and(|agent| agent.descriptor().full_lifecycle_hook_authority)
 }
 
 pub(crate) fn session_identity_only_integration(source: &str, agent_label: &str) -> bool {
-    crate::agents::AgentSource::from_pair(source, agent_label)
+    crate::agent::AgentSource::from_pair(source, agent_label)
         .and_then(|source| source.agent())
         .is_some_and(|agent| agent.descriptor().session_identity_only_integration)
 }

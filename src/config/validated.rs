@@ -238,7 +238,7 @@ pub struct ValidatedConfig {
     config: Config,
     provenance: ConfigProvenance,
     paths: AppPaths,
-    resolved_palette: crate::app::state::Palette,
+    resolved_palette: crate::theme::Palette,
     keybind_validation: super::keybinds::KeybindValidation,
 }
 
@@ -298,7 +298,7 @@ impl ValidatedConfig {
         &self.paths
     }
 
-    pub(crate) fn palette(&self) -> &crate::app::state::Palette {
+    pub(crate) fn palette(&self) -> &crate::theme::Palette {
         &self.resolved_palette
     }
 

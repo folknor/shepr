@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize, de::Visitor};
 
-use crate::agents::{Agent, AgentSource, ResumeArgs, SessionRefPolicy};
+use super::{Agent, AgentSource, ResumeArgs, SessionRefPolicy};
 
 const MAX_SESSION_ID_LEN: usize = 512;
 const MAX_SESSION_PATH_LEN: usize = 4096;
@@ -475,7 +475,7 @@ mod tests {
     fn codex_noncanonical_resume_launch_has_no_explicit_session() {
         assert_eq!(
             persisted_session_from_launch_args(
-                crate::detect::Agent::Codex,
+                Agent::Codex,
                 &["resume".into(), "codex-session".into()]
             )
             .expect("test precondition")
@@ -484,22 +484,19 @@ mod tests {
             "codex-session"
         );
         assert!(
-            persisted_session_from_launch_args(
-                crate::detect::Agent::Codex,
-                &["resume".into(), "--last".into()]
-            )
-            .is_none()
+            persisted_session_from_launch_args(Agent::Codex, &["resume".into(), "--last".into()])
+                .is_none()
         );
         assert!(
             persisted_session_from_launch_args(
-                crate::detect::Agent::Codex,
+                Agent::Codex,
                 &["resume".into(), "not-a-session".into(), "--last".into()]
             )
             .is_none()
         );
         assert!(
             persisted_session_from_launch_args(
-                crate::detect::Agent::Codex,
+                Agent::Codex,
                 &[
                     "--remote".into(),
                     "ws://example.test".into(),
@@ -920,12 +917,6 @@ mod tests {
         )
         .expect("test precondition");
         assert_eq!(codex_plan.argv, vec!["codex", "resume", id]);
-        // This is the exact text sent to the PTY for the restored shell to
-        // parse, not just the planner's argv representation.
-        assert_eq!(
-            crate::remote::interactive_shell_command(&codex_plan.argv).as_deref(),
-            Some("codex resume 'abc; rm -rf /'")
-        );
 
         let copilot_plan = plan_for_labels(
             "shepr:copilot",

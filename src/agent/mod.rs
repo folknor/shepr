@@ -1,6 +1,8 @@
 //! Agent identity and facts that must agree across detection, integrations,
 //! resume, pane launch policy and presentation.
 
+pub mod resume;
+
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::OnceLock;

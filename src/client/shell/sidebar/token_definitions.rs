@@ -89,7 +89,7 @@ pub(crate) fn agent_rows(
     state_text: &str,
 ) -> Vec<Vec<ResolvedToken>> {
     config
-        .rows_for_agent(context.canonical_agent)
+        .rows_for_agent(context.canonical_agent.map(crate::agent::Agent::label))
         .iter()
         .filter_map(|row| {
             let resolved = row

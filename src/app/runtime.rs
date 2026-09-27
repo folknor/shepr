@@ -6,7 +6,7 @@ use std::time::Duration;
 use super::{App, MIN_RENDER_INTERVAL};
 
 impl App {
-    pub(crate) fn shutdown_terminal_runtime(&mut self, terminal_id: &crate::terminal::TerminalId) {
+    pub(crate) fn shutdown_terminal_runtime(&mut self, terminal_id: &crate::protocol::TerminalId) {
         if let Some(runtime) = self.terminal_runtimes.remove(terminal_id) {
             runtime.shutdown();
         }

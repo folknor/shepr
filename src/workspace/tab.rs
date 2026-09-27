@@ -7,7 +7,8 @@ use ratatui::layout::Direction;
 use super::PaneSpawnHandles;
 use crate::layout::{Node, PaneId, TileLayout};
 use crate::pane::{PaneLaunchEnv, PaneState};
-use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
+use crate::protocol::TerminalId;
+use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
 
 pub(crate) type DetachedPane = (PaneId, TerminalId);
 

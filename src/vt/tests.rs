@@ -134,7 +134,7 @@ fn modes_and_kitty_flags_follow_terminal_state() {
     assert!(terminal.mode_get(1));
     assert!(terminal.mode_get(MODE_CURSOR_BLINK));
     assert!(terminal.mode_get(MODE_URGENCY_HINTS));
-    assert_eq!(terminal.kitty_keyboard_flags().bits(), 1);
+    assert_eq!(terminal.kitty_keyboard_flags(), 1);
     assert!(terminal.mouse_tracking_enabled());
     assert!(terminal.mode_get(1000));
     assert!(terminal.mode_get(1006));
@@ -152,7 +152,7 @@ fn modes_and_kitty_flags_follow_terminal_state() {
     terminal.write(b"\x1b[?12l\x1b[?1042l");
     assert!(!terminal.mode_get(MODE_CURSOR_BLINK));
     assert!(!terminal.mode_get(MODE_URGENCY_HINTS));
-    assert_eq!(terminal.kitty_keyboard_flags().bits(), 0);
+    assert_eq!(terminal.kitty_keyboard_flags(), 0);
 }
 
 #[test]
@@ -729,23 +729,23 @@ fn kitty_keyboard_push_flood_is_bounded_without_panicking() {
         terminal.write(&flood);
         terminal.write(suffix);
         assert_eq!(terminal.keyboard_depth.primary, max, "{prefix:?}");
-        assert_eq!(terminal.kitty_keyboard_flags().bits(), 1);
+        assert_eq!(terminal.kitty_keyboard_flags(), 1);
 
         // At the cap a push replaces the top entry, so the new mode is active
         // and one pop returns to the entry beneath it.
         terminal.write(b"\x1b[>3u");
         assert_eq!(terminal.keyboard_depth.primary, max);
-        assert_eq!(terminal.kitty_keyboard_flags().bits(), 3);
+        assert_eq!(terminal.kitty_keyboard_flags(), 3);
         terminal.write(b"\x1b[<u");
-        assert_eq!(terminal.kitty_keyboard_flags().bits(), 1);
+        assert_eq!(terminal.kitty_keyboard_flags(), 1);
 
         // alacritty's real stack is bounded too: popping the mirrored depth
         // empties it.
         terminal.write(format!("\x1b[<{}u", max - 2).as_bytes());
-        assert_eq!(terminal.kitty_keyboard_flags().bits(), 1);
+        assert_eq!(terminal.kitty_keyboard_flags(), 1);
         terminal.write(b"\x1b[<u");
         assert_eq!(terminal.keyboard_depth.primary, 0);
-        assert_eq!(terminal.kitty_keyboard_flags().bits(), 0);
+        assert_eq!(terminal.kitty_keyboard_flags(), 0);
     }
 }
 
@@ -770,12 +770,12 @@ fn kitty_keyboard_depth_follows_screen_swaps_and_ris() {
         ),
         (3, 7)
     );
-    assert_eq!(terminal.kitty_keyboard_flags().bits(), 1);
+    assert_eq!(terminal.kitty_keyboard_flags(), 1);
     terminal.write(b"\x1b[<9u");
     assert_eq!(terminal.keyboard_depth.primary, 0);
     terminal.write(b"\x1b[?1049h\x1bc");
     assert_eq!(terminal.keyboard_depth, KeyboardStackDepth::default());
-    assert_eq!(terminal.kitty_keyboard_flags().bits(), 0);
+    assert_eq!(terminal.kitty_keyboard_flags(), 0);
 }
 
 #[test]

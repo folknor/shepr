@@ -138,7 +138,7 @@ fn frame_server_message_refuses_payloads_over_the_frame_cap() {
 
     let oversized = HeadlessServer::frame_server_message(&ServerMessage::ClientShellError {
         kind: protocol::NoticeKind::PaneInputDropped {
-            pane_id: crate::workspace::PublicPaneId::new(
+            pane_id: crate::protocol::PublicPaneId::new(
                 format!("w{}", "x".repeat(MAX_FRAME_SIZE + 1)),
                 1,
             ),
@@ -2556,13 +2556,13 @@ async fn public_workspace_focus_preserves_each_clients_remembered_tabs() {
     );
     assert_eq!(
         first_location.active_tab_ids
-            [&crate::workspace::WorkspaceId::new(first_workspace_id.as_str())]
+            [&crate::protocol::WorkspaceId::new(first_workspace_id.as_str())]
             .to_string(),
         second_tab_id
     );
     assert_eq!(
         second_location.active_tab_ids
-            [&crate::workspace::WorkspaceId::new(first_workspace_id.as_str())]
+            [&crate::protocol::WorkspaceId::new(first_workspace_id.as_str())]
             .to_string(),
         first_tab_id
     );
@@ -3364,7 +3364,7 @@ fn terminal_attach_rejects_missing_terminal_and_removes_client() {
 }
 
 fn with_terminal_session_test_server(
-    test: impl FnOnce(&mut HeadlessServer, crate::terminal::TerminalId, String, String),
+    test: impl FnOnce(&mut HeadlessServer, crate::protocol::TerminalId, String, String),
 ) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -3620,7 +3620,7 @@ fn terminal_attach_is_rejected_during_alt_screen_read() {
         assert!(
             !server
                 .clients
-                .has_attach_owner(&crate::terminal::TerminalId::test_new(&terminal_id_string))
+                .has_attach_owner(&crate::protocol::TerminalId::test_new(&terminal_id_string))
         );
         let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
         assert_eq!(
@@ -3659,7 +3659,7 @@ fn terminal_attach_rejects_second_client_without_takeover() {
             server
                 .clients
                 .attach_owners()
-                .get(&crate::terminal::TerminalId::test_new(&terminal_id_string)),
+                .get(&crate::protocol::TerminalId::test_new(&terminal_id_string)),
             Some(&ClientId::test_new(7))
         );
     });
@@ -3692,7 +3692,7 @@ fn terminal_attach_takeover_replaces_existing_client() {
             server
                 .clients
                 .attach_owners()
-                .get(&crate::terminal::TerminalId::test_new(&terminal_id_string)),
+                .get(&crate::protocol::TerminalId::test_new(&terminal_id_string)),
             Some(&ClientId::test_new(8))
         );
     });
@@ -3718,7 +3718,7 @@ fn terminal_attach_detach_sends_shutdown_before_removal() {
         assert!(
             !server
                 .clients
-                .has_attach_owner(&crate::terminal::TerminalId::test_new(&terminal_id_string))
+                .has_attach_owner(&crate::protocol::TerminalId::test_new(&terminal_id_string))
         );
         let reason = read_server_shutdown_reason(control_rx.recv().expect("shutdown message"));
         assert_eq!(reason, Some("detached".to_owned()));
@@ -4915,7 +4915,7 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
         .terminals
         .get_mut(&terminal_id)
         .expect("test terminal should exist")
-        .pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+        .pending_agent_resume_plan = Some(crate::agent::resume::test_codex_plan(
         "shepr:codex\0codex\0Id\0codex-session",
         vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
     ));
@@ -4967,7 +4967,7 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
         .terminals
         .get_mut(&terminal_id)
         .expect("test terminal should exist")
-        .pending_agent_resume_plan = Some(crate::agent_resume::test_codex_plan(
+        .pending_agent_resume_plan = Some(crate::agent::resume::test_codex_plan(
         "shepr:codex\0codex\0Id\0codex-session",
         vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
     ));
@@ -5004,7 +5004,7 @@ fn terminal_attach_resize_uses_known_cell_geometry_without_pixel_mouse() {
             RenderEncoding::SemanticFrame,
             None,
         );
-        client.mode = ClientConnectionMode::terminal_attach(crate::terminal::TerminalId::test_new(
+        client.mode = ClientConnectionMode::terminal_attach(crate::protocol::TerminalId::test_new(
             terminal_id.clone(),
         ));
         server.clients.insert(1, client);
@@ -5114,7 +5114,7 @@ async fn direct_terminal_clients_never_become_foreground_or_claim_tab_geometry()
         (1, ClientConnectionMode::TerminalPending),
         (
             2,
-            ClientConnectionMode::terminal_attach(crate::terminal::TerminalId::test_new("t1")),
+            ClientConnectionMode::terminal_attach(crate::protocol::TerminalId::test_new("t1")),
         ),
     ] {
         server.clients.insert(
@@ -5402,7 +5402,7 @@ fn direct_terminal_streams_child_keyboard_and_mouse_modes() {
         server.clients.insert(
             1,
             ClientConnection::new_with_mode(
-                ClientConnectionMode::terminal_attach(crate::terminal::TerminalId::test_new(
+                ClientConnectionMode::terminal_attach(crate::protocol::TerminalId::test_new(
                     terminal_id.clone(),
                 )),
                 crate::geometry::GridSize::clamped(80, 24),
@@ -5553,7 +5553,7 @@ fn direct_terminal_mouse_uses_runtime_protocol_encoding() {
         server.clients.insert(
             1,
             ClientConnection::new_with_mode(
-                ClientConnectionMode::terminal_attach(crate::terminal::TerminalId::test_new(
+                ClientConnectionMode::terminal_attach(crate::protocol::TerminalId::test_new(
                     terminal_id.clone(),
                 )),
                 crate::geometry::GridSize::clamped(80, 24),
@@ -5598,7 +5598,7 @@ fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
         server.clients.insert(
             1,
             ClientConnection::new_with_mode(
-                ClientConnectionMode::terminal_attach(crate::terminal::TerminalId::test_new(
+                ClientConnectionMode::terminal_attach(crate::protocol::TerminalId::test_new(
                     terminal_id.clone(),
                 )),
                 crate::geometry::GridSize::clamped(80, 24),

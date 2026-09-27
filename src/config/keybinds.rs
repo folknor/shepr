@@ -4,9 +4,15 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use serde::{Deserialize, Serialize};
 
 use super::Config;
-use crate::input::TerminalKey;
 
 pub type KeyCombo = (KeyCode, KeyModifiers);
+
+/// The key fields needed to resolve configured bindings.
+pub trait BindingKey {
+    fn code(&self) -> KeyCode;
+    fn modifiers(&self) -> KeyModifiers;
+    fn shifted_codepoint(&self) -> Option<u32>;
+}
 
 #[derive(Debug, Clone)]
 pub struct LiveKeybindConfig {
@@ -78,7 +84,7 @@ impl ResolvedBinding {
         key_event_matches_combo(key, self.trigger.combo())
     }
 
-    fn matches_terminal_key(&self, key: &TerminalKey) -> bool {
+    fn matches_terminal_key(&self, key: &impl BindingKey) -> bool {
         terminal_key_matches_combo(key, self.trigger.combo())
     }
 }
@@ -127,13 +133,13 @@ impl ActionKeybinds {
             .any(|binding| binding.trigger.is_prefix() && binding.matches_key_event(key))
     }
 
-    pub fn matches_prefix_key(&self, key: &TerminalKey) -> bool {
+    pub fn matches_prefix_key(&self, key: &impl BindingKey) -> bool {
         self.bindings
             .iter()
             .any(|binding| binding.trigger.is_prefix() && binding.matches_terminal_key(key))
     }
 
-    pub fn matches_direct_key(&self, key: &TerminalKey) -> bool {
+    pub fn matches_direct_key(&self, key: &impl BindingKey) -> bool {
         self.bindings
             .iter()
             .any(|binding| binding.trigger.is_direct() && binding.matches_terminal_key(key))
@@ -183,13 +189,13 @@ pub struct IndexedKeybind {
 }
 
 impl IndexedKeybind {
-    pub fn matched_index(&self, key: &TerminalKey) -> Option<usize> {
+    pub fn matched_index(&self, key: &impl BindingKey) -> Option<usize> {
         let combo = self.trigger.combo();
         let (expected_code, _) = normalize_key_combo(combo);
         let KeyCode::Char(key_number @ '1'..='9') = expected_code else {
             return None;
         };
-        let legacy_shifted_number = matches!(key.code, KeyCode::Char(c)
+        let legacy_shifted_number = matches!(key.code(), KeyCode::Char(c)
             if shifted_number_symbol(c) == Some(key_number)
                 && indexed_shifted_number_matches(key, combo, key_number));
         if terminal_key_matches_combo(key, combo) || legacy_shifted_number {
@@ -1034,8 +1040,8 @@ pub fn key_event_matches_combo(key: &KeyEvent, combo: KeyCombo) -> bool {
     key_parts_match_combo(key.code, key.modifiers, None, combo)
 }
 
-pub fn terminal_key_matches_combo(key: &TerminalKey, combo: KeyCombo) -> bool {
-    key_parts_match_combo(key.code, key.modifiers, key.shifted_codepoint, combo)
+pub fn terminal_key_matches_combo(key: &impl BindingKey, combo: KeyCombo) -> bool {
+    key_parts_match_combo(key.code(), key.modifiers(), key.shifted_codepoint(), combo)
 }
 
 fn key_parts_match_combo(
@@ -1135,11 +1141,11 @@ fn shifted_number_symbol(ch: char) -> Option<char> {
         .find_map(|(number, symbol)| (*symbol == ch).then_some(*number))
 }
 
-fn indexed_shifted_number_matches(key: &TerminalKey, combo: KeyCombo, number: char) -> bool {
+fn indexed_shifted_number_matches(key: &impl BindingKey, combo: KeyCombo, number: char) -> bool {
     let (expected_code, expected_modifiers) = normalize_key_combo(combo);
     matches!(expected_code, KeyCode::Char(expected) if expected == number)
         && expected_modifiers.contains(KeyModifiers::SHIFT)
-        && key.modifiers == expected_modifiers.difference(KeyModifiers::SHIFT)
+        && key.modifiers() == expected_modifiers.difference(KeyModifiers::SHIFT)
 }
 
 fn shifted_char_matches_expected(

@@ -9,8 +9,9 @@ use crate::detect::AgentState;
 use crate::events::AppEvent;
 use crate::layout::{Node, PaneId, TileLayout};
 use crate::pane::{PaneLaunchEnv, PaneState};
+use crate::protocol::TerminalId;
 use crate::render_signal::RenderSignal;
-use crate::terminal::{TerminalId, TerminalRuntime, TerminalState};
+use crate::terminal::{TerminalRuntime, TerminalState};
 use crate::workspace::Workspace;
 
 use super::snapshot::{
@@ -24,11 +25,11 @@ use super::{
 
 struct AgentRestoreState<'a> {
     enabled: bool,
-    resumed_sessions: &'a mut HashSet<crate::agent_resume::AgentResumeKey>,
+    resumed_sessions: &'a mut HashSet<crate::agent::resume::AgentResumeKey>,
 }
 
 struct PaneRestoreStartup<'a> {
-    restore_plan: Option<crate::agent_resume::AgentResumePlan>,
+    restore_plan: Option<crate::agent::resume::AgentResumePlan>,
     initial_history_ansi: Option<&'a str>,
     duplicate_agent_session: bool,
 }
@@ -74,7 +75,7 @@ enum RestoredPaneStart {
     Running { duplicate_agent_session: bool },
     /// The pane waits for the event loop to type its agent's resume command
     /// into a fresh shell.
-    PendingResume(crate::agent_resume::AgentResumePlan),
+    PendingResume(crate::agent::resume::AgentResumePlan),
     /// Nothing could be started (the reason is shown in the pane). The pane
     /// keeps its saved state verbatim so the next start can try again.
     Unavailable(String),
@@ -247,7 +248,7 @@ fn restore_workspace(
     rows: u16,
     cols: u16,
     runtime_context: &RestoreRuntimeContext<'_>,
-    resumed_agent_sessions: &mut HashSet<crate::agent_resume::AgentResumeKey>,
+    resumed_agent_sessions: &mut HashSet<crate::agent::resume::AgentResumeKey>,
 ) -> Option<RestoredWorkspace> {
     let mut tabs = Vec::new();
     // Where each saved tab ended up, `None` for a dropped one.
@@ -269,7 +270,7 @@ fn restore_workspace(
         .map(|(old_raw, public_number)| {
             (
                 *old_raw,
-                crate::workspace::PublicPaneId::new(workspace_id.as_str(), *public_number)
+                crate::protocol::PublicPaneId::new(workspace_id.as_str(), *public_number)
                     .to_string(),
             )
         })
@@ -446,7 +447,7 @@ fn restore_tab(
     rows: u16,
     cols: u16,
     runtime_context: &RestoreRuntimeContext<'_>,
-    resumed_agent_sessions: &mut HashSet<crate::agent_resume::AgentResumeKey>,
+    resumed_agent_sessions: &mut HashSet<crate::agent::resume::AgentResumeKey>,
     public_pane_ids_by_old_raw: &HashMap<u32, String>,
 ) -> Option<RestoredTab> {
     let (node, id_map) = restore_node_remapped(&snap.layout);
@@ -517,11 +518,11 @@ fn restore_tab(
             .and_then(|old_id| public_pane_ids_by_old_raw.get(&old_id))
             .map(String::as_str);
         let launch_env = public_pane_id
-            .and_then(|pane_id| pane_id.parse::<crate::workspace::PublicPaneId>().ok())
+            .and_then(|pane_id| pane_id.parse::<crate::protocol::PublicPaneId>().ok())
             .map(|pane_id| {
                 PaneLaunchEnv::from_extra(Vec::new()).with_identity(
-                    crate::workspace::WorkspaceId::new(workspace_id),
-                    crate::workspace::PublicTabId::new(workspace_id, number),
+                    crate::protocol::WorkspaceId::new(workspace_id),
+                    crate::protocol::PublicTabId::new(workspace_id, number),
                     pane_id,
                 )
             })
@@ -693,18 +694,18 @@ fn pane_restore_startup<'a>(
 fn restore_plan_for_snapshot(
     session: &PaneAgentSessionSnapshot,
     resume_agents_on_restore: bool,
-) -> Option<crate::agent_resume::AgentResumePlan> {
+) -> Option<crate::agent::resume::AgentResumePlan> {
     if !resume_agents_on_restore {
         return None;
     }
     let persisted = persisted_agent_session_from_snapshot(session)?;
-    crate::agent_resume::plan(&persisted)
+    crate::agent::resume::plan(&persisted)
 }
 
 fn persisted_agent_session_from_snapshot(
     session: &PaneAgentSessionSnapshot,
-) -> Option<crate::agent_resume::PersistedAgentSession> {
-    crate::agent_resume::session_ref_from_snapshot(
+) -> Option<crate::agent::resume::PersistedAgentSession> {
+    crate::agent::resume::session_ref_from_snapshot(
         &session.source,
         session.agent,
         &session.session_ref,
@@ -714,7 +715,7 @@ fn persisted_agent_session_from_snapshot(
 fn restored_terminal_agent_session(
     session: Option<&PaneAgentSessionSnapshot>,
     duplicate_agent_session: bool,
-) -> Option<crate::agent_resume::PersistedAgentSession> {
+) -> Option<crate::agent::resume::PersistedAgentSession> {
     if duplicate_agent_session {
         return None;
     }
@@ -725,8 +726,8 @@ fn restored_terminal_agent_session(
 fn take_restore_plan_for_snapshot(
     session: &PaneAgentSessionSnapshot,
     resume_agents_on_restore: bool,
-    resumed_agent_sessions: &mut HashSet<crate::agent_resume::AgentResumeKey>,
-) -> Option<crate::agent_resume::AgentResumePlan> {
+    resumed_agent_sessions: &mut HashSet<crate::agent::resume::AgentResumeKey>,
+) -> Option<crate::agent::resume::AgentResumePlan> {
     restore_plan_for_snapshot(session, resume_agents_on_restore)
         .filter(|plan| resumed_agent_sessions.insert(plan.dedupe_key.clone()))
 }
@@ -1025,8 +1026,8 @@ mod tests {
             pane.launch_argv = Some(vec!["just".into(), "dev".into()]);
             pane.agent_session = Some(super::super::snapshot::PaneAgentSessionSnapshot {
                 source: "shepr:codex".into(),
-                agent: crate::agents::Agent::Codex,
-                session_ref: crate::agent_resume::AgentSessionRef::id("codex-session")
+                agent: crate::agent::Agent::Codex,
+                session_ref: crate::agent::resume::AgentSessionRef::id("codex-session")
                     .expect("test precondition"),
             });
             if missing_cwd {
@@ -1362,7 +1363,7 @@ mod tests {
         let probe = crate::workspace::generate_workspace_id();
         let next =
             crate::workspace::public_workspace_number(&probe).expect("test precondition") + 1;
-        let taken = format!("w{}", crate::workspace::encode_public_number(next));
+        let taken = format!("w{}", crate::protocol::encode_public_number(next));
         let tab = |id: u32| vec![tab_snapshot("t", LayoutSnapshot::Pane(id), &[id])];
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -1433,8 +1434,8 @@ mod tests {
         let pi_session_path = test_session_path("pi-session.jsonl");
         let session = super::super::snapshot::PaneAgentSessionSnapshot {
             source: "shepr:pi".into(),
-            agent: crate::agents::Agent::Pi,
-            session_ref: crate::agent_resume::AgentSessionRef::path(pi_session_path.clone())
+            agent: crate::agent::Agent::Pi,
+            session_ref: crate::agent::resume::AgentSessionRef::path(pi_session_path.clone())
                 .expect("test precondition"),
         };
 
@@ -1448,8 +1449,8 @@ mod tests {
 
         let unsupported_path = super::super::snapshot::PaneAgentSessionSnapshot {
             source: "shepr:claude".into(),
-            agent: crate::agents::Agent::Claude,
-            session_ref: crate::agent_resume::AgentSessionRef::path(test_session_path(
+            agent: crate::agent::Agent::Claude,
+            session_ref: crate::agent::resume::AgentSessionRef::path(test_session_path(
                 "claude-session",
             ))
             .expect("test precondition"),
@@ -1462,8 +1463,8 @@ mod tests {
         let pi_session_path = test_session_path("pi-session.jsonl");
         let session = super::super::snapshot::PaneAgentSessionSnapshot {
             source: "shepr:pi".into(),
-            agent: crate::agents::Agent::Pi,
-            session_ref: crate::agent_resume::AgentSessionRef::path(pi_session_path.clone())
+            agent: crate::agent::Agent::Pi,
+            session_ref: crate::agent::resume::AgentSessionRef::path(pi_session_path.clone())
                 .expect("test precondition"),
         };
         let mut resumed = HashSet::new();
@@ -1484,8 +1485,8 @@ mod tests {
     fn pane_restore_startup_suppresses_history_for_native_agent_resume() {
         let session = super::super::snapshot::PaneAgentSessionSnapshot {
             source: "shepr:pi".into(),
-            agent: crate::agents::Agent::Pi,
-            session_ref: crate::agent_resume::AgentSessionRef::path(test_session_path(
+            agent: crate::agent::Agent::Pi,
+            session_ref: crate::agent::resume::AgentSessionRef::path(test_session_path(
                 "pi-session.jsonl",
             ))
             .expect("test precondition"),
@@ -1510,8 +1511,8 @@ mod tests {
     fn pane_restore_startup_suppresses_history_for_duplicate_native_agent_session() {
         let session = super::super::snapshot::PaneAgentSessionSnapshot {
             source: "shepr:pi".into(),
-            agent: crate::agents::Agent::Pi,
-            session_ref: crate::agent_resume::AgentSessionRef::path(test_session_path(
+            agent: crate::agent::Agent::Pi,
+            session_ref: crate::agent::resume::AgentSessionRef::path(test_session_path(
                 "pi-session.jsonl",
             ))
             .expect("test precondition"),
@@ -1539,8 +1540,8 @@ mod tests {
     fn pane_restore_startup_keeps_history_without_native_agent_resume() {
         let session = super::super::snapshot::PaneAgentSessionSnapshot {
             source: "shepr:pi".into(),
-            agent: crate::agents::Agent::Pi,
-            session_ref: crate::agent_resume::AgentSessionRef::path(test_session_path(
+            agent: crate::agent::Agent::Pi,
+            session_ref: crate::agent::resume::AgentSessionRef::path(test_session_path(
                 "pi-session.jsonl",
             ))
             .expect("test precondition"),
@@ -1566,8 +1567,8 @@ mod tests {
     fn restore_rehydrates_agent_session_metadata() {
         let session = super::super::snapshot::PaneAgentSessionSnapshot {
             source: "shepr:hermes".into(),
-            agent: crate::agents::Agent::Hermes,
-            session_ref: crate::agent_resume::AgentSessionRef::id("hermes-session")
+            agent: crate::agent::Agent::Hermes,
+            session_ref: crate::agent::resume::AgentSessionRef::id("hermes-session")
                 .expect("test precondition"),
         };
 
@@ -1582,8 +1583,8 @@ mod tests {
     fn restore_does_not_rehydrate_duplicate_agent_session_metadata() {
         let session = super::super::snapshot::PaneAgentSessionSnapshot {
             source: "shepr:pi".into(),
-            agent: crate::agents::Agent::Pi,
-            session_ref: crate::agent_resume::AgentSessionRef::path(test_session_path(
+            agent: crate::agent::Agent::Pi,
+            session_ref: crate::agent::resume::AgentSessionRef::path(test_session_path(
                 "pi-session.jsonl",
             ))
             .expect("test precondition"),
@@ -1660,8 +1661,8 @@ mod tests {
             failed.label = Some("keep my pane".into());
             failed.agent_session = Some(super::super::snapshot::PaneAgentSessionSnapshot {
                 source: "shepr:opencode".into(),
-                agent: crate::agents::Agent::OpenCode,
-                session_ref: crate::agent_resume::AgentSessionRef::id("keep-my-session")
+                agent: crate::agent::Agent::OpenCode,
+                session_ref: crate::agent::resume::AgentSessionRef::id("keep-my-session")
                     .expect("test precondition"),
             });
             let (events, _rx) = mpsc::channel(32);
@@ -1768,8 +1769,8 @@ mod tests {
                             managed_agent_kind: Some("opencode".into()),
                             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                                 source: "shepr:opencode".into(),
-                                agent: crate::agents::Agent::OpenCode,
-                                session_ref: crate::agent_resume::AgentSessionRef::id(
+                                agent: crate::agent::Agent::OpenCode,
+                                session_ref: crate::agent::resume::AgentSessionRef::id(
                                     "opencode-session",
                                 )
                                 .expect("test precondition"),
@@ -1990,8 +1991,8 @@ mod tests {
             managed_agent_kind: None,
             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                 source: "shepr:codex".into(),
-                agent: crate::agents::Agent::Codex,
-                session_ref: crate::agent_resume::AgentSessionRef::id("codex-session")
+                agent: crate::agent::Agent::Codex,
+                session_ref: crate::agent::resume::AgentSessionRef::id("codex-session")
                     .expect("test precondition"),
             }),
             launch_argv: None,
@@ -2103,8 +2104,8 @@ mod tests {
                             managed_agent_kind: None,
                             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                                 source: "shepr:codex".into(),
-                                agent: crate::agents::Agent::Codex,
-                                session_ref: crate::agent_resume::AgentSessionRef::id(
+                                agent: crate::agent::Agent::Codex,
+                                session_ref: crate::agent::resume::AgentSessionRef::id(
                                     "codex-session",
                                 )
                                 .expect("test precondition"),

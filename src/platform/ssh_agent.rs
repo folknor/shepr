@@ -16,8 +16,6 @@ use std::time::{Duration, Instant};
 use interprocess::ConnectWaitMode;
 use interprocess::local_socket::{ConnectOptions, GenericFilePath, ToFsName};
 
-use crate::ipc::LocalStream;
-
 const PROBE_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
@@ -37,8 +35,8 @@ pub(crate) struct SshAgentLease {
     id: u64,
 }
 
-pub(crate) fn socket_path(paths: &crate::config::AppPaths) -> PathBuf {
-    agent_path_for(&crate::api::socket_path(paths))
+pub(crate) fn socket_path(api_socket_path: &Path) -> PathBuf {
+    agent_path_for(api_socket_path)
 }
 
 fn agent_path_for(api_path: &Path) -> PathBuf {
@@ -62,7 +60,7 @@ fn live_socket(path: &Path) -> bool {
         return false;
     };
     // Never wait for a full accept queue or retain a forwarded SSH channel after probing.
-    let Ok(LocalStream::UdSocket(stream)) = ConnectOptions::new()
+    let Ok(interprocess::local_socket::Stream::UdSocket(stream)) = ConnectOptions::new()
         .name(name)
         .wait_mode(ConnectWaitMode::Timeout(Duration::ZERO))
         .nonblocking_stream(true)
@@ -207,11 +205,11 @@ impl Drop for SshAgentLease {
     }
 }
 
-pub(crate) fn apply_pane_env(command: &mut crate::pty::PtyCommand, api_socket_path: &Path) {
+pub(crate) fn pane_agent_socket(api_socket_path: &Path) -> Option<PathBuf> {
     let path = agent_path_for(api_socket_path);
-    if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-        command.env("SSH_AUTH_SOCK", path);
-    }
+    fs::symlink_metadata(&path)
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        .then_some(path)
 }
 
 #[cfg(test)]

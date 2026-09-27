@@ -31,7 +31,7 @@ impl CliContext {
             target: RefCell::new(ApiTarget::Local),
             protocol_checked: Cell::new(false),
             caller_pane_id: std::env::var(crate::integration::SHEPR_PANE_ID_ENV_VAR).ok(),
-            caller_socket: std::env::var_os(crate::api::SOCKET_PATH_ENV_VAR),
+            caller_socket: std::env::var_os(crate::config::SOCKET_PATH_ENV_VAR),
         }
     }
 

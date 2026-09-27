@@ -219,7 +219,7 @@ fn parse_configured_color(
 pub(crate) fn resolve_palette(
     config: &super::Config,
     ui_accent_is_explicit: bool,
-) -> Result<crate::app::state::Palette, Vec<String>> {
+) -> Result<crate::theme::Palette, Vec<String>> {
     let name = config.theme.name.as_deref().unwrap_or("catppuccin");
     let canonical = canonical_theme_name(name).ok_or_else(|| {
         vec![format!(
@@ -227,7 +227,7 @@ pub(crate) fn resolve_palette(
             THEME_NAMES.join(", ")
         )]
     })?;
-    let mut palette = crate::app::state::Palette::from_name(canonical)
+    let mut palette = crate::theme::Palette::from_name(canonical)
         .ok_or_else(|| vec![format!("theme {canonical:?} has no built-in palette")])?;
     if let Some(custom) = &config.theme.custom {
         let overrides = custom.parse()?;

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::agents::{KIMI_ASK_USER_QUESTION_MATCHER, KIMI_OTHER_TOOL_MATCHER};
+use crate::agent::{KIMI_ASK_USER_QUESTION_MATCHER, KIMI_OTHER_TOOL_MATCHER};
 use crate::test_support::IsolatedEnv;
 
 #[test]
@@ -41,12 +41,12 @@ fn extract_version_triple_orders_versions() {
 
 #[test]
 fn agent_version_requirement_only_set_for_kimi() {
-    let requirement = agent_version_requirement(crate::agents::IntegrationTarget::Kimi)
+    let requirement = agent_version_requirement(crate::agent::IntegrationTarget::Kimi)
         .expect("kimi must have a version requirement");
     assert_eq!(requirement.binary, "kimi");
     assert_eq!(requirement.min_version, KIMI_MIN_VERSION);
-    assert!(agent_version_requirement(crate::agents::IntegrationTarget::Claude).is_none());
-    assert!(agent_version_requirement(crate::agents::IntegrationTarget::Codex).is_none());
+    assert!(agent_version_requirement(crate::agent::IntegrationTarget::Claude).is_none());
+    assert!(agent_version_requirement(crate::agent::IntegrationTarget::Codex).is_none());
 }
 
 #[test]
@@ -398,7 +398,7 @@ fn outdated_integrations_treat_missing_version_marker_as_outdated() {
     let outdated = outdated_installed_integrations(&AgentIntegrationPaths::resolve());
 
     assert_eq!(outdated.len(), 1);
-    assert_eq!(outdated[0].target, crate::agents::IntegrationTarget::Pi);
+    assert_eq!(outdated[0].target, crate::agent::IntegrationTarget::Pi);
     assert_eq!(outdated[0].path, extension_path);
     assert_eq!(outdated[0].installed_version, None);
     assert_eq!(outdated[0].expected_version, PI_INTEGRATION_VERSION);
@@ -842,7 +842,7 @@ fn install_kimi_writes_hook_and_updates_config() {
     for hook in KIMI_HOOK_EVENTS {
         let action = hook
             .action
-            .map(crate::agents::IntegrationHookAction::as_str)
+            .map(crate::agent::IntegrationHookAction::as_str)
             .expect("Kimi hook action should be present");
         assert_kimi_hook(
             &config,
@@ -866,22 +866,22 @@ fn kimi_question_hooks_report_blocked_until_the_question_finishes() {
     assert!(has_event(
         "PreToolUse",
         Some(KIMI_ASK_USER_QUESTION_MATCHER),
-        crate::agents::IntegrationHookAction::Blocked,
+        crate::agent::IntegrationHookAction::Blocked,
     ));
     assert!(has_event(
         "PostToolUse",
         Some(KIMI_ASK_USER_QUESTION_MATCHER),
-        crate::agents::IntegrationHookAction::Working,
+        crate::agent::IntegrationHookAction::Working,
     ));
     assert!(has_event(
         "PostToolUseFailure",
         Some(KIMI_ASK_USER_QUESTION_MATCHER),
-        crate::agents::IntegrationHookAction::Working,
+        crate::agent::IntegrationHookAction::Working,
     ));
     assert!(has_event(
         "PreToolUse",
         Some(KIMI_OTHER_TOOL_MATCHER),
-        crate::agents::IntegrationHookAction::Working,
+        crate::agent::IntegrationHookAction::Working,
     ));
 }
 
@@ -1157,7 +1157,7 @@ fn install_devin_writes_hook_and_updates_settings() {
     for hook in DEVIN_HOOK_EVENTS {
         let action = hook
             .action
-            .map(crate::agents::IntegrationHookAction::as_str)
+            .map(crate::agent::IntegrationHookAction::as_str)
             .expect("Devin hook action should be present");
         let command = settings["hooks"][hook.event][0]["hooks"][0]["command"]
             .as_str()
@@ -1330,7 +1330,7 @@ fn install_droid_writes_hook_to_settings() {
     for hook in DROID_HOOK_EVENTS {
         let action = hook
             .action
-            .map(crate::agents::IntegrationHookAction::as_str)
+            .map(crate::agent::IntegrationHookAction::as_str)
             .expect("Droid hook action should be present");
         let command = settings["hooks"][hook.event][0]["hooks"][0]["command"]
             .as_str()
@@ -1503,7 +1503,7 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
         );
         assert_eq!(
             integration_status_at(
-                crate::agents::IntegrationTarget::Opencode,
+                crate::agent::IntegrationTarget::Opencode,
                 installed.plugin_path,
                 OPENCODE_INTEGRATION_VERSION,
             )
@@ -1594,7 +1594,7 @@ fn opencode_v2_install_status_and_uninstall_preserve_cli_preferences() {
     assert_eq!(installed.cli_config_path, Some(cli.clone()));
     let status = || {
         integration_status_at(
-            crate::agents::IntegrationTarget::Opencode,
+            crate::agent::IntegrationTarget::Opencode,
             installed.plugin_path.clone(),
             OPENCODE_INTEGRATION_VERSION,
         )
@@ -1638,7 +1638,7 @@ fn opencode_hard_link_rejection_precedes_install_and_uninstall_asset_changes() {
     fs::write(&config, original).expect("test precondition");
     let alias = base.join("linked-config");
     fs::hard_link(&config, &alias).expect("test precondition");
-    let target = crate::agents::IntegrationTarget::Opencode;
+    let target = crate::agent::IntegrationTarget::Opencode;
     for error in [
         install_target(&AgentIntegrationPaths::resolve(), target).expect_err("test precondition"),
         uninstall_target(&AgentIntegrationPaths::resolve(), target).expect_err("test precondition"),
@@ -1740,7 +1740,7 @@ fn opencode_status_requires_the_tui_plugin_and_config_entry() {
     let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
     let status = || {
         integration_status_at(
-            crate::agents::IntegrationTarget::Opencode,
+            crate::agent::IntegrationTarget::Opencode,
             installed.plugin_path.clone(),
             OPENCODE_INTEGRATION_VERSION,
         )
@@ -2569,7 +2569,7 @@ fn install_qodercli_writes_hook_and_updates_settings() {
     for hook in QODERCLI_HOOK_EVENTS {
         let action = hook
             .action
-            .map(crate::agents::IntegrationHookAction::as_str)
+            .map(crate::agent::IntegrationHookAction::as_str)
             .expect("QoderCLI hook action should be present");
         assert!(
             hooks.contains_key(hook.event),
@@ -3454,7 +3454,7 @@ fn cursor_integration_status_is_current_after_install() {
     let statuses = installed_integration_statuses(&AgentIntegrationPaths::resolve());
     let cursor = statuses
         .iter()
-        .find(|status| status.target == crate::agents::IntegrationTarget::Cursor)
+        .find(|status| status.target == crate::agent::IntegrationTarget::Cursor)
         .expect("cursor integration status");
     assert_eq!(cursor.state, IntegrationStatusKind::Current);
     assert_eq!(cursor.installed_version, Some(CURSOR_INTEGRATION_VERSION));
@@ -3518,7 +3518,7 @@ fn install_mastracode_writes_hook_and_updates_hooks_json() {
     for hook in MASTRACODE_HOOK_EVENTS {
         let action = hook
             .action
-            .map(crate::agents::IntegrationHookAction::as_str)
+            .map(crate::agent::IntegrationHookAction::as_str)
             .expect("Mastracode hook action should be present");
         let entries = hooks
             .get(hook.event)
@@ -3865,7 +3865,7 @@ fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
     for hook in ANTIGRAVITY_CLI_HOOK_EVENTS {
         let action = hook
             .action
-            .map(crate::agents::IntegrationHookAction::as_str)
+            .map(crate::agent::IntegrationHookAction::as_str)
             .expect("Antigravity hook action should be present");
         let entries = block
             .get(hook.event)
@@ -4005,7 +4005,7 @@ fn grok_integration_status_is_current_after_install() {
     let statuses = installed_integration_statuses(&AgentIntegrationPaths::resolve());
     let grok = statuses
         .iter()
-        .find(|status| status.target == crate::agents::IntegrationTarget::Grok)
+        .find(|status| status.target == crate::agent::IntegrationTarget::Grok)
         .expect("grok integration status");
     assert_eq!(grok.state, IntegrationStatusKind::Current);
     assert_eq!(grok.installed_version, Some(GROK_INTEGRATION_VERSION));
@@ -4027,7 +4027,7 @@ fn grok_status_reports_outdated_when_hook_config_missing_or_broken() {
     let grok_state = || {
         installed_integration_statuses(&AgentIntegrationPaths::resolve())
             .into_iter()
-            .find(|status| status.target == crate::agents::IntegrationTarget::Grok)
+            .find(|status| status.target == crate::agent::IntegrationTarget::Grok)
             .expect("grok integration status")
             .state
     };

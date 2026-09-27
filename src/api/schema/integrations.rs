@@ -1,1 +1,1 @@
-pub use crate::agents::IntegrationTarget;
+pub use crate::agent::IntegrationTarget;

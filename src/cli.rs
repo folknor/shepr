@@ -384,7 +384,7 @@ impl Invocation {
     }
 }
 
-pub(crate) fn print_help(requested_session: Option<crate::session::SessionId>) {
+pub(crate) fn print_help(requested_session: Option<crate::config::SessionId>) {
     crate::platform::begin_cli_output();
     let help = spec::command().render_help().to_string();
     print!("{help}");
@@ -425,7 +425,7 @@ pub(crate) fn run_on_machine(command: Option<&CliCommand>, selector: &str) -> Cl
 /// Runs one parsed CLI command. Launch modes are handled by `main` directly.
 pub(crate) fn run(
     command: &CliCommand,
-    requested_session: Option<crate::session::SessionId>,
+    requested_session: Option<crate::config::SessionId>,
 ) -> CliResult<i32> {
     if matches!(command, CliCommand::Config(ConfigCommand::Check)) {
         return Ok(config_check());
@@ -461,7 +461,7 @@ fn dispatch_with_config(
 }
 
 fn resolve_app_paths(
-    requested_session: Option<crate::session::SessionId>,
+    requested_session: Option<crate::config::SessionId>,
 ) -> CliResult<crate::config::AppPaths> {
     crate::config::AppPaths::resolve_with_session(requested_session).map_err(|diagnostics| {
         CliError::Io(std::io::Error::other(format!(

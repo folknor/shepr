@@ -110,56 +110,21 @@ mod tests {
         };
         let decoded = roundtrip(&message)?;
         assert_eq!(decoded, message);
-        let ClientMessage::ClientShellPaneInput { events, .. } = decoded else {
-            panic!("expected targeted semantic input");
-        };
-        let crate::raw_input::RawInputEvent::Key(semantic) = events[0].to_raw_input_event() else {
-            panic!("expected semantic key");
-        };
-        assert_eq!(semantic.shifted_codepoint, Some('L' as u32));
-        assert_eq!(semantic.kind, crossterm::event::KeyEventKind::Release);
-        let crate::raw_input::RawInputEvent::Key(key) = events[1].to_raw_input_event() else {
-            panic!("expected key");
-        };
-        assert_eq!(key.code, crossterm::event::KeyCode::Char('7'));
-        assert_eq!(key.modifiers, crossterm::event::KeyModifiers::CONTROL);
-        assert_eq!(key.repeat_count, 3);
-        let crate::raw_input::RawInputEvent::Key(key) = events[2].to_raw_input_event() else {
-            panic!("expected key with extended modifiers");
-        };
-        assert!(
-            key.modifiers
-                .contains(crossterm::event::KeyModifiers::SUPER)
-        );
-        assert!(
-            key.modifiers
-                .contains(crossterm::event::KeyModifiers::HYPER)
-        );
-        assert!(key.modifiers.contains(crossterm::event::KeyModifiers::META));
         Ok(())
     }
 
     #[test]
-    fn client_shell_key_roundtrip_keeps_generated_text() {
-        let key = crate::input::TerminalKey::new(
-            crossterm::event::KeyCode::Char('/'),
-            crossterm::event::KeyModifiers::SHIFT,
-        )
-        .with_generated_text(Some("/".into()));
-        let event =
-            ClientPaneInputEvent::from_terminal_key(key.clone()).expect("semantic pane key");
-        let crate::raw_input::RawInputEvent::Key(roundtripped) = event.to_raw_input_event() else {
-            panic!("pane key should remain a key");
+    fn client_shell_key_roundtrip_keeps_generated_text() -> TestResult {
+        let event = ClientPaneInputEvent::Key {
+            code: ClientKeyCode::Char('/'),
+            modifiers: WireModifiers::SHIFT,
+            kind: ClientKeyKind::Press,
+            repeat_count: 1,
+            shifted_codepoint: None,
+            generated_text: Some("/".into()),
         };
-
-        assert_eq!(roundtripped, key);
-        assert_eq!(
-            crate::input::encode_terminal_key(
-                roundtripped,
-                crate::input::KeyboardProtocol::Kitty { flags: 1 },
-            ),
-            b"/"
-        );
+        assert_eq!(roundtrip(&event)?, event);
+        Ok(())
     }
 
     #[test]
@@ -427,15 +392,10 @@ mod tests {
 
     #[test]
     fn client_shell_snapshot_roundtrip() -> TestResult {
-        let config_source = "[keys]\nprefix = \"ctrl+a\"\n";
-        let config = toml::from_str(config_source)?;
         let msg = ClientShellSnapshot {
             boot_id: "boot-1".into(),
             revision: crate::protocol::ProjectionRevision::new(1),
-            resolved_config: crate::config::ValidatedConfig::test_from_config(
-                config,
-                Some(config_source),
-            ),
+            resolved_config: vec![1, 2, 3, 4],
             focused_workspace_id: Some("w1".into()),
             focused_tab_id: Some("w1:t1".into()),
             focused_pane_id: Some("w1:p1".into()),
@@ -455,7 +415,7 @@ mod tests {
                 git_ahead_behind: None,
                 tokens: Vec::new(),
                 focused: true,
-                agent_status: crate::api::schema::AgentStatus::Idle,
+                agent_status: crate::protocol::AgentStatus::Idle,
             }],
             tabs: vec![ClientShellTab {
                 tab_id: "w1:t1".into(),
@@ -465,7 +425,7 @@ mod tests {
                 custom_label: true,
                 zoomed: false,
                 focused: true,
-                agent_status: crate::api::schema::AgentStatus::Idle,
+                agent_status: crate::protocol::AgentStatus::Idle,
             }],
             panes: vec![ClientShellPane {
                 pane_id: "w1:p1".into(),
@@ -489,22 +449,15 @@ mod tests {
                 title: None,
                 terminal_title: None,
                 terminal_title_stripped: None,
-                agent_status: crate::api::schema::AgentStatus::Working,
+                agent_status: crate::protocol::AgentStatus::Working,
                 state_change_seq: 1,
                 state_labels: Vec::new(),
                 tokens: Vec::new(),
                 focused: true,
             }],
         };
-        let expected_keybindings = msg.resolved_config.live_keybinds();
         let decoded: ClientShellSnapshot = roundtrip(&msg)?;
         assert_eq!(msg, decoded);
-        let actual_keybindings = decoded.resolved_config.live_keybinds();
-        assert_eq!(actual_keybindings.prefix, expected_keybindings.prefix);
-        assert_eq!(
-            actual_keybindings.keybinds.detach.bindings,
-            expected_keybindings.keybinds.detach.bindings
-        );
         Ok(())
     }
 

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
-use crate::agents::IntegrationTarget as Target;
+use crate::agent::IntegrationTarget as Target;
 
 use super::claude_settings::{
     install as install_claude_settings, uninstall as uninstall_claude_settings,
@@ -261,15 +261,11 @@ pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<Copil
         "copilot settings hooks",
     )?;
     for hook in COPILOT_HOOK_EVENTS {
-        let action = hook
-            .action
-            .map(crate::agents::IntegrationHookAction::as_str);
+        let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         remove_direct_hook_commands(hooks, hook.event, &hook_path, action)?;
     }
     for hook in COPILOT_HOOK_EVENTS {
-        let action = hook
-            .action
-            .map(crate::agents::IntegrationHookAction::as_str);
+        let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         ensure_direct_command_hook(
             hooks,
             hook.event,
@@ -312,15 +308,11 @@ pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<DevinIn
         "devin settings hooks",
     )?;
     for hook in DEVIN_HOOK_EVENTS {
-        let action = hook
-            .action
-            .map(crate::agents::IntegrationHookAction::as_str);
+        let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         remove_hook_commands(hooks, hook.event, &hook_path, action)?;
     }
     for hook in DEVIN_HOOK_EVENTS {
-        let action = hook
-            .action
-            .map(crate::agents::IntegrationHookAction::as_str);
+        let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         ensure_command_hook(
             hooks,
             hook.event,
@@ -363,15 +355,11 @@ pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<DroidIn
         "droid settings hooks",
     )?;
     for hook in DROID_HOOK_EVENTS {
-        let action = hook
-            .action
-            .map(crate::agents::IntegrationHookAction::as_str);
+        let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         remove_hook_commands(hooks, hook.event, &hook_path, action)?;
     }
     for hook in DROID_HOOK_EVENTS {
-        let action = hook
-            .action
-            .map(crate::agents::IntegrationHookAction::as_str);
+        let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         ensure_command_hook(
             hooks,
             hook.event,
@@ -641,8 +629,7 @@ pub(crate) fn uninstall_copilot(
                     hooks,
                     hook.event,
                     &hook_path,
-                    hook.action
-                        .map(crate::agents::IntegrationHookAction::as_str),
+                    hook.action.map(crate::agent::IntegrationHookAction::as_str),
                 )?;
             }
         }
@@ -689,8 +676,7 @@ pub(crate) fn uninstall_devin(paths: &AgentIntegrationPaths) -> io::Result<Devin
                     hooks,
                     hook.event,
                     &hook_path,
-                    hook.action
-                        .map(crate::agents::IntegrationHookAction::as_str),
+                    hook.action.map(crate::agent::IntegrationHookAction::as_str),
                 )?;
             }
         }
@@ -736,8 +722,7 @@ pub(crate) fn uninstall_droid(paths: &AgentIntegrationPaths) -> io::Result<Droid
                     hooks,
                     hook.event,
                     &hook_path,
-                    hook.action
-                        .map(crate::agents::IntegrationHookAction::as_str),
+                    hook.action.map(crate::agent::IntegrationHookAction::as_str),
                 )?;
             }
         }
@@ -869,15 +854,11 @@ pub(crate) fn install_qodercli(paths: &AgentIntegrationPaths) -> io::Result<Qode
         "qodercli settings hooks",
     )?;
     for hook in QODERCLI_HOOK_EVENTS {
-        let action = hook
-            .action
-            .map(crate::agents::IntegrationHookAction::as_str);
+        let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         remove_hook_commands(hooks, hook.event, &hook_path, action)?;
     }
     for hook in QODERCLI_HOOK_EVENTS {
-        let action = hook
-            .action
-            .map(crate::agents::IntegrationHookAction::as_str);
+        let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         ensure_command_hook(
             hooks,
             hook.event,
@@ -921,9 +902,7 @@ pub(crate) fn install_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenInst
         "qwen settings hooks",
     )?;
     for hook in QWEN_HOOK_EVENTS {
-        let action = hook
-            .action
-            .map(crate::agents::IntegrationHookAction::as_str);
+        let action = hook.action.map(crate::agent::IntegrationHookAction::as_str);
         remove_hook_commands(hooks, hook.event, &hook_path, action)?;
         ensure_command_hook(
             hooks,
@@ -1117,8 +1096,7 @@ pub(crate) fn uninstall_qodercli(
                     hooks,
                     hook.event,
                     &hook_path,
-                    hook.action
-                        .map(crate::agents::IntegrationHookAction::as_str),
+                    hook.action.map(crate::agent::IntegrationHookAction::as_str),
                 )?;
             }
         }
@@ -1165,8 +1143,7 @@ pub(crate) fn uninstall_qwen(paths: &AgentIntegrationPaths) -> io::Result<QwenUn
                     hooks,
                     hook.event,
                     &hook_path,
-                    hook.action
-                        .map(crate::agents::IntegrationHookAction::as_str),
+                    hook.action.map(crate::agent::IntegrationHookAction::as_str),
                 )?;
             }
         }
@@ -1288,10 +1265,7 @@ pub(crate) fn install_mastracode(
     })?;
 
     for hook in MASTRACODE_HOOK_EVENTS {
-        let Some(action) = hook
-            .action
-            .map(crate::agents::IntegrationHookAction::as_str)
-        else {
+        let Some(action) = hook.action.map(crate::agent::IntegrationHookAction::as_str) else {
             continue;
         };
         remove_flat_command_hook(hooks, hook.event, &hook_command(&hook_path, Some(action)))?;
@@ -1338,10 +1312,7 @@ pub(crate) fn uninstall_mastracode(
         })?;
 
         for hook in MASTRACODE_HOOK_EVENTS {
-            let Some(action) = hook
-                .action
-                .map(crate::agents::IntegrationHookAction::as_str)
-            else {
+            let Some(action) = hook.action.map(crate::agent::IntegrationHookAction::as_str) else {
                 continue;
             };
             updated_hooks |= remove_flat_command_hook(
@@ -1420,10 +1391,7 @@ pub(crate) fn antigravity_cli_hook_command(hook_path: &Path, action: &str) -> St
 pub(crate) fn antigravity_cli_hook_block(hook_path: &Path) -> Value {
     let mut block = Map::new();
     for hook in ANTIGRAVITY_CLI_HOOK_EVENTS {
-        let Some(action) = hook
-            .action
-            .map(crate::agents::IntegrationHookAction::as_str)
-        else {
+        let Some(action) = hook.action.map(crate::agent::IntegrationHookAction::as_str) else {
             continue;
         };
         let handler = json!({

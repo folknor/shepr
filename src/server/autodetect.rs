@@ -284,9 +284,9 @@ mod tests {
     #[test]
     fn server_daemon_command_clears_socket_overrides_for_explicit_session() {
         let env = IsolatedEnv::new();
-        env.set(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
+        env.set(crate::config::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
         env.set("SHEPR_CLIENT_SOCKET_PATH", "/tmp/inherited-client.sock");
-        let session = crate::session::SessionId::parse("work").expect("test precondition");
+        let session = crate::config::SessionId::parse("work").expect("test precondition");
         let paths = crate::config::AppPaths::resolve_with_session(Some(session))
             .expect("isolated paths resolve");
 
@@ -298,14 +298,13 @@ mod tests {
         let envs: Vec<_> = command.get_envs().collect();
 
         assert!(envs.iter().any(|(key, value)| {
-            *key == OsStr::new(crate::api::SOCKET_PATH_ENV_VAR) && value.is_none()
+            *key == OsStr::new(crate::config::SOCKET_PATH_ENV_VAR) && value.is_none()
         }));
         assert!(envs.iter().any(|(key, value)| {
             *key == OsStr::new("SHEPR_CLIENT_SOCKET_PATH") && value.is_none()
         }));
         assert!(envs.iter().any(|(key, value)| {
-            *key == OsStr::new(crate::session::SESSION_ENV_VAR)
-                && value == &Some(OsStr::new("work"))
+            *key == OsStr::new(crate::config::SESSION_ENV_VAR) && value == &Some(OsStr::new("work"))
         }));
     }
 
@@ -464,7 +463,7 @@ test "$sid" = "$$"
     fn validate_running_server_compatibility_fails_when_status_api_missing() {
         let env = IsolatedEnv::new();
         let path = env.path().join("api.sock");
-        env.set(crate::api::SOCKET_PATH_ENV_VAR, &path);
+        env.set(crate::config::SOCKET_PATH_ENV_VAR, &path);
         let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
 
         let err = validate_running_server_compatibility(&paths).expect_err("test precondition");
@@ -478,7 +477,7 @@ test "$sid" = "$$"
     #[test]
     fn validate_running_server_compatibility_names_session_commands_for_protocol_mismatch() {
         let env = IsolatedEnv::new();
-        env.set(crate::session::SESSION_ENV_VAR, "work");
+        env.set(crate::config::SESSION_ENV_VAR, "work");
         let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
         let path = crate::session::api_socket_path_for(&paths, paths.session_id());
         std::fs::create_dir_all(path.parent().expect("test precondition"))

@@ -34,6 +34,7 @@
 
 mod cell;
 mod color;
+mod coords;
 mod format;
 mod handler;
 mod locks;
@@ -53,6 +54,8 @@ pub use cell::{
 };
 use cell::{CellText, cell_graphemes, cell_text, cell_text_into, cell_wide};
 pub(crate) use cell::{RowWrap, ScreenTextCell, ScreenTextRow, unicode_display_units};
+pub const PANE_TERM: &str = "xterm-256color";
+
 pub use color::{ColorQuery, ColorQueryTarget, DefaultColor, RgbColor, default_palette};
 pub use render::{CursorVisualStyle, Dirty, RenderState};
 pub(crate) use scan::{ProgressReport, WorkingDirectoryReport};
@@ -77,7 +80,8 @@ use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, T
 use alacritty_terminal::vte::ansi::{Color, CursorShape, Handler, NamedColor, Processor, Rgb};
 use unicode_width::UnicodeWidthChar;
 
-use crate::terminal::{AbsRow, Point, ScreenRow, ViewportRow};
+pub(crate) use coords::Point;
+pub use coords::{AbsRow, ScreenRow, ViewportRow};
 
 use self::format::Format;
 use self::handler::{CoreHandler, KeyboardStackDepth};
@@ -751,33 +755,18 @@ impl Terminal {
         Ok(())
     }
 
-    /// Active kitty keyboard flags (bit 0 disambiguate … bit 4 associated text).
-    pub fn kitty_keyboard_flags(&self) -> crate::protocol::KittyKeyboardFlags {
-        let term_mode = *self.term.mode();
-        let mut flags = crate::protocol::KittyKeyboardFlags::NONE;
-        for (mode, bit) in [
-            (
-                TermMode::DISAMBIGUATE_ESC_CODES,
-                crate::protocol::KittyKeyboardFlags::DISAMBIGUATE,
-            ),
-            (
-                TermMode::REPORT_EVENT_TYPES,
-                crate::protocol::KittyKeyboardFlags::REPORT_EVENT_TYPES,
-            ),
-            (
-                TermMode::REPORT_ALTERNATE_KEYS,
-                crate::protocol::KittyKeyboardFlags::REPORT_ALTERNATE_KEYS,
-            ),
-            (
-                TermMode::REPORT_ALL_KEYS_AS_ESC,
-                crate::protocol::KittyKeyboardFlags::REPORT_ALL_KEYS,
-            ),
-            (
-                TermMode::REPORT_ASSOCIATED_TEXT,
-                crate::protocol::KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT,
-            ),
+    /// Active kitty keyboard flags (bit 0 disambiguate through bit 4 associated text).
+    pub fn kitty_keyboard_flags(&self) -> u16 {
+        let mode = *self.term.mode();
+        let mut flags = 0;
+        for (term_mode, bit) in [
+            (TermMode::DISAMBIGUATE_ESC_CODES, 1),
+            (TermMode::REPORT_EVENT_TYPES, 2),
+            (TermMode::REPORT_ALTERNATE_KEYS, 4),
+            (TermMode::REPORT_ALL_KEYS_AS_ESC, 8),
+            (TermMode::REPORT_ASSOCIATED_TEXT, 16),
         ] {
-            if term_mode.contains(mode) {
+            if mode.contains(term_mode) {
                 flags |= bit;
             }
         }

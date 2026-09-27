@@ -1,3 +1,4 @@
+use interprocess::local_socket::{ToFsName as _, traits::Stream as _};
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -11,7 +12,10 @@ fn bridge_child() {
     let Some(path) = std::env::var_os("SHEPR_BRIDGE_TEST_SOCKET") else {
         return;
     };
-    let stream = crate::ipc::connect_local_stream(&PathBuf::from(path)).expect("test precondition");
+    let name = PathBuf::from(path)
+        .to_fs_name::<interprocess::local_socket::GenericFilePath>()
+        .expect("test precondition");
+    let stream = interprocess::local_socket::Stream::connect(name).expect("test precondition");
     let timeout = (std::env::var_os("SHEPR_BRIDGE_TEST_LEGACY").is_none()).then_some(TIMEOUT);
     super::forward_remote_bridge_stdio_with_timeout(stream, timeout).expect("test precondition");
 }

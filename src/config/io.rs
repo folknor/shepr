@@ -37,8 +37,8 @@ pub struct AppPaths {
     config_file: PathBuf,
     home_dir: Option<PathBuf>,
     current_dir: Option<PathBuf>,
-    session_id: crate::session::SessionId,
-    server_address: crate::server::socket_paths::ServerAddress,
+    session_id: super::SessionId,
+    server_address: super::ServerAddress,
     provenance: PathProvenance,
 }
 
@@ -80,11 +80,11 @@ impl AppPaths {
         self.current_dir.as_deref()
     }
 
-    pub fn session_id(&self) -> &crate::session::SessionId {
+    pub fn session_id(&self) -> &super::SessionId {
         &self.session_id
     }
 
-    pub fn server_address(&self) -> &crate::server::socket_paths::ServerAddress {
+    pub fn server_address(&self) -> &super::ServerAddress {
         &self.server_address
     }
 
@@ -102,7 +102,7 @@ impl AppPaths {
     /// snapshot. `Some(Default)` represents an explicit request for the
     /// default session and therefore takes precedence over socket overrides.
     pub fn resolve_with_session(
-        requested_session: Option<crate::session::SessionId>,
+        requested_session: Option<super::SessionId>,
     ) -> Result<Self, Vec<String>> {
         let session_source = requested_session
             .as_ref()
@@ -113,7 +113,7 @@ impl AppPaths {
     /// Resolve only the machine catalog's local paths, without allowing local
     /// session or socket environment values to affect a remote command.
     pub(crate) fn resolve_for_machine() -> Result<Self, Vec<String>> {
-        resolve_paths_from_env(Some(crate::session::SessionId::Default), None)
+        resolve_paths_from_env(Some(super::SessionId::Default), None)
     }
 
     #[cfg(test)]
@@ -134,10 +134,10 @@ impl AppPaths {
             config_file: root.join("config/config.toml"),
             home_dir: home_dir.map(Path::to_path_buf),
             current_dir: current_dir.map(Path::to_path_buf),
-            session_id: crate::session::SessionId::Default,
-            server_address: crate::server::socket_paths::ServerAddress::resolve(
+            session_id: super::SessionId::Default,
+            server_address: super::ServerAddress::resolve(
                 &root.join("runtime"),
-                &crate::session::SessionId::Default,
+                &super::SessionId::Default,
                 false,
                 None,
                 None,
@@ -185,18 +185,17 @@ fn platform_xdg_dir(
 }
 
 fn resolve_paths_from_env(
-    requested_session: Option<crate::session::SessionId>,
+    requested_session: Option<super::SessionId>,
     requested_session_source: Option<ConfigSource>,
 ) -> Result<AppPaths, Vec<String>> {
     let session_selection_was_forced = requested_session.is_some();
-    let api_socket_override = std::env::var(crate::api::SOCKET_PATH_ENV_VAR).ok();
-    let client_socket_override =
-        std::env::var(crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR).ok();
-    let inherited_session = std::env::var(crate::session::SESSION_ENV_VAR).ok();
+    let api_socket_override = std::env::var(super::SOCKET_PATH_ENV_VAR).ok();
+    let client_socket_override = std::env::var(super::CLIENT_SOCKET_PATH_ENV_VAR).ok();
+    let inherited_session = std::env::var(super::SESSION_ENV_VAR).ok();
     let inherited_session_accepted = inherited_session
         .as_deref()
-        .is_some_and(|name| crate::session::SessionId::parse(name).is_ok());
-    let (session_id, session_was_requested) = crate::session::SessionId::resolve(
+        .is_some_and(|name| super::SessionId::parse(name).is_ok());
+    let (session_id, session_was_requested) = super::SessionId::resolve(
         requested_session,
         inherited_session.as_deref(),
         api_socket_override.is_some(),
@@ -284,7 +283,7 @@ fn resolve_paths_from_env(
         (Some(config_dir), Some(state_dir), Some(runtime_dir), Some(config_file))
             if diagnostics.is_empty() =>
         {
-            let server_address = crate::server::socket_paths::ServerAddress::resolve(
+            let server_address = super::ServerAddress::resolve(
                 &runtime_dir,
                 &session_id,
                 session_was_requested,
@@ -297,14 +296,14 @@ fn resolve_paths_from_env(
             let session_source = if let Some(source) = requested_session_source {
                 source
             } else if inherited_session_accepted && !session_selection_was_forced {
-                ConfigSource::EnvironmentVariable(crate::session::SESSION_ENV_VAR.to_owned())
+                ConfigSource::EnvironmentVariable(super::SESSION_ENV_VAR.to_owned())
             } else {
                 ConfigSource::Default
             };
             let api_socket_source = if session_selection_was_forced {
                 session_source.clone()
             } else if api_socket_override.is_some() {
-                ConfigSource::EnvironmentVariable(crate::api::SOCKET_PATH_ENV_VAR.to_owned())
+                ConfigSource::EnvironmentVariable(super::SOCKET_PATH_ENV_VAR.to_owned())
             } else if inherited_session_accepted {
                 session_source.clone()
             } else {
@@ -313,11 +312,9 @@ fn resolve_paths_from_env(
             let client_socket_source = if session_selection_was_forced {
                 session_source.clone()
             } else if api_socket_override.is_some() {
-                ConfigSource::EnvironmentVariable(crate::api::SOCKET_PATH_ENV_VAR.to_owned())
+                ConfigSource::EnvironmentVariable(super::SOCKET_PATH_ENV_VAR.to_owned())
             } else if client_socket_override.is_some() {
-                ConfigSource::EnvironmentVariable(
-                    crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR.to_owned(),
-                )
+                ConfigSource::EnvironmentVariable(super::CLIENT_SOCKET_PATH_ENV_VAR.to_owned())
             } else if inherited_session_accepted {
                 session_source.clone()
             } else {
@@ -738,10 +735,7 @@ mod tests {
         std::fs::remove_file(path).expect("remove config fixture");
         let defaults = Config::load_validated(&paths).expect("missing config uses defaults");
         assert!(defaults.validated_live_keybinds().is_ok());
-        assert_eq!(
-            defaults.palette(),
-            &crate::app::state::Palette::catppuccin()
-        );
+        assert_eq!(defaults.palette(), &crate::theme::Palette::catppuccin());
 
         std::fs::write(
             path,
@@ -811,23 +805,26 @@ mod tests {
     #[test]
     fn socket_path_provenance_is_tracked_independently() {
         let env = crate::test_support::IsolatedEnv::new();
-        env.remove(crate::api::SOCKET_PATH_ENV_VAR);
-        env.remove(crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR);
+        env.remove(crate::config::SOCKET_PATH_ENV_VAR);
+        env.remove(crate::config::CLIENT_SOCKET_PATH_ENV_VAR);
 
-        env.set(crate::api::SOCKET_PATH_ENV_VAR, env.path().join("api.sock"));
+        env.set(
+            crate::config::SOCKET_PATH_ENV_VAR,
+            env.path().join("api.sock"),
+        );
         let paths = AppPaths::resolve().expect("API socket override resolves");
         assert_eq!(
             paths.provenance().api_socket,
-            ConfigSource::EnvironmentVariable(crate::api::SOCKET_PATH_ENV_VAR.to_owned())
+            ConfigSource::EnvironmentVariable(crate::config::SOCKET_PATH_ENV_VAR.to_owned())
         );
         assert_eq!(
             paths.provenance().client_socket,
-            ConfigSource::EnvironmentVariable(crate::api::SOCKET_PATH_ENV_VAR.to_owned())
+            ConfigSource::EnvironmentVariable(crate::config::SOCKET_PATH_ENV_VAR.to_owned())
         );
 
-        env.remove(crate::api::SOCKET_PATH_ENV_VAR);
+        env.remove(crate::config::SOCKET_PATH_ENV_VAR);
         env.set(
-            crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR,
+            crate::config::CLIENT_SOCKET_PATH_ENV_VAR,
             env.path().join("client.sock"),
         );
         let paths = AppPaths::resolve().expect("client socket override resolves");
@@ -837,18 +834,16 @@ mod tests {
         );
         assert_eq!(
             paths.provenance().client_socket,
-            ConfigSource::EnvironmentVariable(
-                crate::server::socket_paths::CLIENT_SOCKET_PATH_ENV_VAR.to_owned()
-            )
+            ConfigSource::EnvironmentVariable(crate::config::CLIENT_SOCKET_PATH_ENV_VAR.to_owned())
         );
     }
 
     #[test]
     fn path_provenance_distinguishes_cli_and_internal_session_selection() {
         let env = crate::test_support::IsolatedEnv::new();
-        env.set(crate::session::SESSION_ENV_VAR, "inherited");
+        env.set(crate::config::SESSION_ENV_VAR, "inherited");
 
-        let cli = AppPaths::resolve_with_session(Some(crate::session::SessionId::Default))
+        let cli = AppPaths::resolve_with_session(Some(crate::config::SessionId::Default))
             .expect("CLI session paths resolve");
         assert_eq!(
             cli.provenance().session_id,

@@ -146,7 +146,7 @@ fn start_server_inner(
     info!(path = %path.display(), "api server listening");
 
     let ssh_agents = match crate::platform::ssh_agent::SshAgentRegistry::new(
-        crate::platform::ssh_agent::socket_path(paths),
+        crate::platform::ssh_agent::socket_path(&crate::api::socket_path(paths)),
         std::env::var_os("SSH_AUTH_SOCK").map(PathBuf::from),
     ) {
         Ok(registry) => Some(registry),
@@ -1168,7 +1168,7 @@ mod tests {
     fn socket_path_prefers_explicit_env_override() {
         let env = IsolatedEnv::new();
         let unique = env.path().join("override.sock");
-        env.set(crate::api::SOCKET_PATH_ENV_VAR, &unique);
+        env.set(crate::config::SOCKET_PATH_ENV_VAR, &unique);
         let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
         assert_eq!(socket_path(&paths), unique);
     }
@@ -1185,7 +1185,7 @@ mod tests {
     #[test]
     fn socket_path_uses_named_session_dir() {
         let env = IsolatedEnv::new();
-        env.set(crate::session::SESSION_ENV_VAR, "work");
+        env.set(crate::config::SESSION_ENV_VAR, "work");
         let paths = crate::config::AppPaths::resolve().expect("isolated paths resolve");
 
         let expected = paths

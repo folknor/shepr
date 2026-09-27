@@ -186,7 +186,7 @@ struct RetainedRecipient<'a> {
 }
 
 struct CollectedPanePatch {
-    pane_id: crate::workspace::PublicPaneId,
+    pane_id: crate::protocol::PublicPaneId,
     patch: crate::pane::TerminalDirtyPatch,
     content_revision: u64,
     scroll_metrics: Option<crate::pane::ScrollMetrics>,

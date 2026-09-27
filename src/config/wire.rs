@@ -34,57 +34,130 @@ pub(super) struct WireConfig {
     remote: RemoteConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct WirePalette {
-    accent: crate::protocol::WireColor,
-    panel_bg: crate::protocol::WireColor,
-    sidebar_bg: crate::protocol::WireColor,
-    active_row_bg: crate::protocol::WireColor,
-    selection_bg: crate::protocol::WireColor,
-    surface0: crate::protocol::WireColor,
-    surface1: crate::protocol::WireColor,
-    surface_dim: crate::protocol::WireColor,
-    overlay0: crate::protocol::WireColor,
-    overlay1: crate::protocol::WireColor,
-    text: crate::protocol::WireColor,
-    subtext0: crate::protocol::WireColor,
-    mauve: crate::protocol::WireColor,
-    green: crate::protocol::WireColor,
-    yellow: crate::protocol::WireColor,
-    red: crate::protocol::WireColor,
-    blue: crate::protocol::WireColor,
-    teal: crate::protocol::WireColor,
-    peach: crate::protocol::WireColor,
+/// A terminal color represented without packing a tag into a scalar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+enum PaletteColor {
+    Reset,
+    Black,
+    Red,
+    Green,
+    Yellow,
+    Blue,
+    Magenta,
+    Cyan,
+    Gray,
+    DarkGray,
+    LightRed,
+    LightGreen,
+    LightYellow,
+    LightBlue,
+    LightMagenta,
+    LightCyan,
+    White,
+    Indexed(u8),
+    Rgb(u8, u8, u8),
 }
 
-impl From<&crate::app::state::Palette> for WirePalette {
-    fn from(palette: &crate::app::state::Palette) -> Self {
-        use crate::protocol::WireColor;
-        Self {
-            accent: WireColor::from_ratatui(palette.accent),
-            panel_bg: WireColor::from_ratatui(palette.panel_bg),
-            sidebar_bg: WireColor::from_ratatui(palette.sidebar_bg),
-            active_row_bg: WireColor::from_ratatui(palette.active_row_bg),
-            selection_bg: WireColor::from_ratatui(palette.selection_bg),
-            surface0: WireColor::from_ratatui(palette.surface0),
-            surface1: WireColor::from_ratatui(palette.surface1),
-            surface_dim: WireColor::from_ratatui(palette.surface_dim),
-            overlay0: WireColor::from_ratatui(palette.overlay0),
-            overlay1: WireColor::from_ratatui(palette.overlay1),
-            text: WireColor::from_ratatui(palette.text),
-            subtext0: WireColor::from_ratatui(palette.subtext0),
-            mauve: WireColor::from_ratatui(palette.mauve),
-            green: WireColor::from_ratatui(palette.green),
-            yellow: WireColor::from_ratatui(palette.yellow),
-            red: WireColor::from_ratatui(palette.red),
-            blue: WireColor::from_ratatui(palette.blue),
-            teal: WireColor::from_ratatui(palette.teal),
-            peach: WireColor::from_ratatui(palette.peach),
+impl PaletteColor {
+    fn from_ratatui(color: ratatui::style::Color) -> Self {
+        match color {
+            ratatui::style::Color::Reset => Self::Reset,
+            ratatui::style::Color::Black => Self::Black,
+            ratatui::style::Color::Red => Self::Red,
+            ratatui::style::Color::Green => Self::Green,
+            ratatui::style::Color::Yellow => Self::Yellow,
+            ratatui::style::Color::Blue => Self::Blue,
+            ratatui::style::Color::Magenta => Self::Magenta,
+            ratatui::style::Color::Cyan => Self::Cyan,
+            ratatui::style::Color::Gray => Self::Gray,
+            ratatui::style::Color::DarkGray => Self::DarkGray,
+            ratatui::style::Color::LightRed => Self::LightRed,
+            ratatui::style::Color::LightGreen => Self::LightGreen,
+            ratatui::style::Color::LightYellow => Self::LightYellow,
+            ratatui::style::Color::LightBlue => Self::LightBlue,
+            ratatui::style::Color::LightMagenta => Self::LightMagenta,
+            ratatui::style::Color::LightCyan => Self::LightCyan,
+            ratatui::style::Color::White => Self::White,
+            ratatui::style::Color::Indexed(index) => Self::Indexed(index),
+            ratatui::style::Color::Rgb(red, green, blue) => Self::Rgb(red, green, blue),
+        }
+    }
+
+    fn to_ratatui(self) -> ratatui::style::Color {
+        match self {
+            Self::Reset => ratatui::style::Color::Reset,
+            Self::Black => ratatui::style::Color::Black,
+            Self::Red => ratatui::style::Color::Red,
+            Self::Green => ratatui::style::Color::Green,
+            Self::Yellow => ratatui::style::Color::Yellow,
+            Self::Blue => ratatui::style::Color::Blue,
+            Self::Magenta => ratatui::style::Color::Magenta,
+            Self::Cyan => ratatui::style::Color::Cyan,
+            Self::Gray => ratatui::style::Color::Gray,
+            Self::DarkGray => ratatui::style::Color::DarkGray,
+            Self::LightRed => ratatui::style::Color::LightRed,
+            Self::LightGreen => ratatui::style::Color::LightGreen,
+            Self::LightYellow => ratatui::style::Color::LightYellow,
+            Self::LightBlue => ratatui::style::Color::LightBlue,
+            Self::LightMagenta => ratatui::style::Color::LightMagenta,
+            Self::LightCyan => ratatui::style::Color::LightCyan,
+            Self::White => ratatui::style::Color::White,
+            Self::Indexed(index) => ratatui::style::Color::Indexed(index),
+            Self::Rgb(red, green, blue) => ratatui::style::Color::Rgb(red, green, blue),
         }
     }
 }
 
-impl From<WirePalette> for crate::app::state::Palette {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct WirePalette {
+    accent: PaletteColor,
+    panel_bg: PaletteColor,
+    sidebar_bg: PaletteColor,
+    active_row_bg: PaletteColor,
+    selection_bg: PaletteColor,
+    surface0: PaletteColor,
+    surface1: PaletteColor,
+    surface_dim: PaletteColor,
+    overlay0: PaletteColor,
+    overlay1: PaletteColor,
+    text: PaletteColor,
+    subtext0: PaletteColor,
+    mauve: PaletteColor,
+    green: PaletteColor,
+    yellow: PaletteColor,
+    red: PaletteColor,
+    blue: PaletteColor,
+    teal: PaletteColor,
+    peach: PaletteColor,
+}
+
+impl From<&crate::theme::Palette> for WirePalette {
+    fn from(palette: &crate::theme::Palette) -> Self {
+        Self {
+            accent: PaletteColor::from_ratatui(palette.accent),
+            panel_bg: PaletteColor::from_ratatui(palette.panel_bg),
+            sidebar_bg: PaletteColor::from_ratatui(palette.sidebar_bg),
+            active_row_bg: PaletteColor::from_ratatui(palette.active_row_bg),
+            selection_bg: PaletteColor::from_ratatui(palette.selection_bg),
+            surface0: PaletteColor::from_ratatui(palette.surface0),
+            surface1: PaletteColor::from_ratatui(palette.surface1),
+            surface_dim: PaletteColor::from_ratatui(palette.surface_dim),
+            overlay0: PaletteColor::from_ratatui(palette.overlay0),
+            overlay1: PaletteColor::from_ratatui(palette.overlay1),
+            text: PaletteColor::from_ratatui(palette.text),
+            subtext0: PaletteColor::from_ratatui(palette.subtext0),
+            mauve: PaletteColor::from_ratatui(palette.mauve),
+            green: PaletteColor::from_ratatui(palette.green),
+            yellow: PaletteColor::from_ratatui(palette.yellow),
+            red: PaletteColor::from_ratatui(palette.red),
+            blue: PaletteColor::from_ratatui(palette.blue),
+            teal: PaletteColor::from_ratatui(palette.teal),
+            peach: PaletteColor::from_ratatui(palette.peach),
+        }
+    }
+}
+
+impl From<WirePalette> for crate::theme::Palette {
     fn from(palette: WirePalette) -> Self {
         Self {
             accent: palette.accent.to_ratatui(),
@@ -200,7 +273,7 @@ struct WireExperimentalConfig {
     allow_nested: bool,
     pane_history: bool,
     reveal_hidden_cursor_for_cjk_ime: bool,
-    cjk_ime_agents: Vec<WireAgent>,
+    cjk_ime_agents: Vec<super::ConfigAgent>,
     cjk_ime_cursor_shape: super::model::ImeCursorShape,
 }
 
@@ -210,12 +283,7 @@ impl WireExperimentalConfig {
             allow_nested: config.allow_nested,
             pane_history: config.pane_history,
             reveal_hidden_cursor_for_cjk_ime: config.reveal_hidden_cursor_for_cjk_ime,
-            cjk_ime_agents: config
-                .cjk_ime_agents
-                .iter()
-                .copied()
-                .map(Into::into)
-                .collect(),
+            cjk_ime_agents: config.cjk_ime_agents.clone(),
             cjk_ime_cursor_shape: config.cjk_ime_cursor_shape,
         }
     }
@@ -225,99 +293,8 @@ impl WireExperimentalConfig {
             allow_nested: self.allow_nested,
             pane_history: self.pane_history,
             reveal_hidden_cursor_for_cjk_ime: self.reveal_hidden_cursor_for_cjk_ime,
-            cjk_ime_agents: self.cjk_ime_agents.into_iter().map(Into::into).collect(),
+            cjk_ime_agents: self.cjk_ime_agents,
             cjk_ime_cursor_shape: self.cjk_ime_cursor_shape,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-enum WireAgent {
-    Pi,
-    Claude,
-    Codex,
-    Gemini,
-    Cursor,
-    Devin,
-    Antigravity,
-    Cline,
-    Omp,
-    Mastracode,
-    OpenCode,
-    GithubCopilot,
-    Kimi,
-    Kiro,
-    Droid,
-    Amp,
-    Grok,
-    Hermes,
-    Kilo,
-    Qodercli,
-    Qwen,
-    Letta,
-    Maki,
-    Muse,
-}
-
-impl From<crate::agents::Agent> for WireAgent {
-    fn from(agent: crate::agents::Agent) -> Self {
-        use crate::agents::Agent;
-        match agent {
-            Agent::Pi => Self::Pi,
-            Agent::Claude => Self::Claude,
-            Agent::Codex => Self::Codex,
-            Agent::Gemini => Self::Gemini,
-            Agent::Cursor => Self::Cursor,
-            Agent::Devin => Self::Devin,
-            Agent::Antigravity => Self::Antigravity,
-            Agent::Cline => Self::Cline,
-            Agent::Omp => Self::Omp,
-            Agent::Mastracode => Self::Mastracode,
-            Agent::OpenCode => Self::OpenCode,
-            Agent::GithubCopilot => Self::GithubCopilot,
-            Agent::Kimi => Self::Kimi,
-            Agent::Kiro => Self::Kiro,
-            Agent::Droid => Self::Droid,
-            Agent::Amp => Self::Amp,
-            Agent::Grok => Self::Grok,
-            Agent::Hermes => Self::Hermes,
-            Agent::Kilo => Self::Kilo,
-            Agent::Qodercli => Self::Qodercli,
-            Agent::Qwen => Self::Qwen,
-            Agent::Letta => Self::Letta,
-            Agent::Maki => Self::Maki,
-            Agent::Muse => Self::Muse,
-        }
-    }
-}
-
-impl From<WireAgent> for crate::agents::Agent {
-    fn from(agent: WireAgent) -> Self {
-        match agent {
-            WireAgent::Pi => Self::Pi,
-            WireAgent::Claude => Self::Claude,
-            WireAgent::Codex => Self::Codex,
-            WireAgent::Gemini => Self::Gemini,
-            WireAgent::Cursor => Self::Cursor,
-            WireAgent::Devin => Self::Devin,
-            WireAgent::Antigravity => Self::Antigravity,
-            WireAgent::Cline => Self::Cline,
-            WireAgent::Omp => Self::Omp,
-            WireAgent::Mastracode => Self::Mastracode,
-            WireAgent::OpenCode => Self::OpenCode,
-            WireAgent::GithubCopilot => Self::GithubCopilot,
-            WireAgent::Kimi => Self::Kimi,
-            WireAgent::Kiro => Self::Kiro,
-            WireAgent::Droid => Self::Droid,
-            WireAgent::Amp => Self::Amp,
-            WireAgent::Grok => Self::Grok,
-            WireAgent::Hermes => Self::Hermes,
-            WireAgent::Kilo => Self::Kilo,
-            WireAgent::Qodercli => Self::Qodercli,
-            WireAgent::Qwen => Self::Qwen,
-            WireAgent::Letta => Self::Letta,
-            WireAgent::Maki => Self::Maki,
-            WireAgent::Muse => Self::Muse,
         }
     }
 }

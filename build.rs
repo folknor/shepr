@@ -109,7 +109,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let protocol = protocol_version(hash.0);
 
     fs::write(
-        out_dir.join("build_identity.rs"),
+        out_dir.join("build_id.rs"),
+        format!(
+            "/// Fingerprint of the source tree this binary was built from.\n\
+             pub(crate) const BUILD_ID: &str = \"{build_id}\";\n"
+        ),
+    )?;
+    fs::write(
+        out_dir.join("protocol_identity.rs"),
         format!(
             "/// Fingerprint of the source tree this binary was built from.\n\
              pub(crate) const BUILD_ID: &str = \"{build_id}\";\n\

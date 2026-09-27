@@ -1,7 +1,10 @@
+mod address;
+mod agent;
 mod diagnostic;
 mod io;
 mod keybinds;
 mod model;
+mod session_id;
 mod sidebar;
 mod tab_bar;
 mod theme;
@@ -10,6 +13,14 @@ mod window_title;
 mod wire;
 
 #[cfg(test)]
+pub(crate) use self::address::derive_client_socket_from_api_socket;
+pub use self::address::{CLIENT_SOCKET_PATH_ENV_VAR, SOCKET_PATH_ENV_VAR, ServerAddress};
+pub use self::agent::ConfigAgent;
+pub use self::session_id::{
+    DEFAULT_SESSION_NAME, SESSION_ENV_VAR, SessionId, SessionName, SessionNameError,
+    validate_session_name,
+};
+#[cfg(test)]
 pub use self::theme::CustomThemeColors;
 #[cfg(test)]
 pub(crate) use self::theme::THEME_NAMES;
@@ -17,7 +28,7 @@ pub use self::{
     diagnostic::ConfigDiagnostic,
     io::AppPaths,
     keybinds::{
-        ActionKeybinds, BindingConfig, IndexedKeybind, Keybinds, LiveKeybindConfig,
+        ActionKeybinds, BindingConfig, BindingKey, IndexedKeybind, Keybinds, LiveKeybindConfig,
         format_key_combo, normalize_key_combo, terminal_key_matches_combo,
     },
     model::{
@@ -56,14 +67,14 @@ pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
 
 impl Config {
     #[cfg(test)]
-    pub(crate) fn resolve_palette(&self) -> Result<crate::app::state::Palette, Vec<String>> {
+    pub(crate) fn resolve_palette(&self) -> Result<crate::theme::Palette, Vec<String>> {
         self.resolve_palette_with_ui_accent(false)
     }
 
     pub(crate) fn resolve_palette_with_ui_accent(
         &self,
         ui_accent_is_explicit: bool,
-    ) -> Result<crate::app::state::Palette, Vec<String>> {
+    ) -> Result<crate::theme::Palette, Vec<String>> {
         theme::resolve_palette(self, ui_accent_is_explicit)
     }
 

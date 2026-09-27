@@ -16,7 +16,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::layout::PaneId;
 use crate::protocol::CellData;
-use crate::terminal::{AbsRow, Point, ScreenRow, ViewportRow};
+use crate::vt::{AbsRow, Point, ScreenRow, ViewportRow};
 
 #[cfg(test)]
 mod migration_tests;
@@ -40,12 +40,12 @@ pub struct ScrollMetrics {
     pub offset_from_bottom: usize,
     pub max_offset_from_bottom: usize,
     pub viewport_rows: usize,
-    pub history_origin: crate::terminal::AbsRow,
+    pub history_origin: crate::vt::AbsRow,
 }
 
 impl ScrollMetrics {
     /// The stable row ID at the top of the current viewport.
-    pub fn viewport_top_row(self) -> crate::terminal::AbsRow {
+    pub fn viewport_top_row(self) -> crate::vt::AbsRow {
         let screen_row = self
             .max_offset_from_bottom
             .saturating_sub(self.offset_from_bottom);
@@ -54,11 +54,8 @@ impl ScrollMetrics {
     }
 
     /// Convert a viewport-relative row to its stable row ID.
-    pub fn absolute_row_at_viewport(
-        self,
-        row: crate::terminal::ViewportRow,
-    ) -> crate::terminal::AbsRow {
-        crate::terminal::AbsRow::from_viewport_top(self.viewport_top_row(), row)
+    pub fn absolute_row_at_viewport(self, row: crate::vt::ViewportRow) -> crate::vt::AbsRow {
+        crate::vt::AbsRow::from_viewport_top(self.viewport_top_row(), row)
     }
 }
 
@@ -70,7 +67,7 @@ pub struct ScrollPosition {
 
 impl ScrollPosition {
     #[cfg(test)]
-    pub fn viewport_top_row(self) -> crate::terminal::AbsRow {
+    pub fn viewport_top_row(self) -> crate::vt::AbsRow {
         self.metrics.viewport_top_row()
     }
 }
@@ -1887,7 +1884,7 @@ impl GhosttyPaneTerminal {
             return None;
         };
         Some(crate::input::KeyboardProtocol::from_kitty_flags(
-            core.terminal.kitty_keyboard_flags().bits(),
+            core.terminal.kitty_keyboard_flags(),
         ))
     }
 
@@ -2063,7 +2060,7 @@ impl GhosttyPaneTerminal {
         }
         let Some(modes) = crate::vt::lock_terminal_core(&self.core).ok().map(|core| {
             crate::input::KeyEncodeModes {
-                kitty_flags: core.terminal.kitty_keyboard_flags().bits(),
+                kitty_flags: core.terminal.kitty_keyboard_flags(),
                 modify_other_keys: core.terminal.modify_other_keys_level().as_u8(),
                 application_cursor: core
                     .terminal

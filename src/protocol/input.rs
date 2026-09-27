@@ -262,7 +262,7 @@ pub enum ClientMessage {
     /// Switch this connection into direct terminal attach mode.
     AttachTerminal {
         /// Terminal id to attach to.
-        terminal_id: crate::terminal::TerminalId,
+        terminal_id: TerminalId,
         /// Replace an existing writable attach owner for this terminal.
         takeover: bool,
     },
@@ -288,7 +288,7 @@ pub enum ClientMessage {
 
     /// Deliver client-classified semantic input directly to a stable pane target.
     ClientShellPaneInput {
-        pane_id: crate::workspace::PublicPaneId,
+        pane_id: PublicPaneId,
         #[serde(
             serialize_with = "codec::serialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>",
             deserialize_with = "codec::deserialize_bounded_vec::<{ codec::MAX_COLLECTION_ITEMS }, _, _>"
@@ -329,72 +329,16 @@ pub struct ClientHostColor {
     pub b: u8,
 }
 
-impl From<crate::host_term::theme::RgbColor> for ClientHostColor {
-    fn from(color: crate::host_term::theme::RgbColor) -> Self {
-        Self {
-            r: color.r,
-            g: color.g,
-            b: color.b,
-        }
-    }
-}
-
-impl From<ClientHostColor> for crate::host_term::theme::RgbColor {
-    fn from(color: ClientHostColor) -> Self {
-        Self {
-            r: color.r,
-            g: color.g,
-            b: color.b,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientHostDefaultColorKind {
     Foreground,
     Background,
 }
 
-impl From<crate::host_term::theme::DefaultColorKind> for ClientHostDefaultColorKind {
-    fn from(kind: crate::host_term::theme::DefaultColorKind) -> Self {
-        match kind {
-            crate::host_term::theme::DefaultColorKind::Foreground => Self::Foreground,
-            crate::host_term::theme::DefaultColorKind::Background => Self::Background,
-        }
-    }
-}
-
-impl From<ClientHostDefaultColorKind> for crate::host_term::theme::DefaultColorKind {
-    fn from(kind: ClientHostDefaultColorKind) -> Self {
-        match kind {
-            ClientHostDefaultColorKind::Foreground => Self::Foreground,
-            ClientHostDefaultColorKind::Background => Self::Background,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientHostAppearance {
     Dark,
     Light,
-}
-
-impl From<crate::host_term::theme::HostAppearance> for ClientHostAppearance {
-    fn from(appearance: crate::host_term::theme::HostAppearance) -> Self {
-        match appearance {
-            crate::host_term::theme::HostAppearance::Dark => Self::Dark,
-            crate::host_term::theme::HostAppearance::Light => Self::Light,
-        }
-    }
-}
-
-impl From<ClientHostAppearance> for crate::host_term::theme::HostAppearance {
-    fn from(appearance: ClientHostAppearance) -> Self {
-        match appearance {
-            ClientHostAppearance::Dark => Self::Dark,
-            ClientHostAppearance::Light => Self::Light,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

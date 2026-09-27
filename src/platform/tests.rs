@@ -453,10 +453,21 @@ fn wait_for_process_exits_times_out_on_a_live_process() {
     let _ = child.wait();
 }
 
-fn spawn_session_with_background_job() -> crate::pty::backend::SpawnedPty {
-    let mut cmd = crate::pty::PtyCommand::new("/bin/sh");
-    cmd.args(["-c", "sleep 30 & exec sleep 30"]);
-    crate::pty::backend::spawn_pty(24, 80, &cmd).expect("spawn session in a pty")
+fn spawn_session_with_background_job() -> std::process::Child {
+    use std::os::unix::process::CommandExt as _;
+
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", "sleep 30 & exec sleep 30"]);
+    // SAFETY: setsid has no Rust memory preconditions in the single-threaded child.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    command.spawn().expect("spawn session")
 }
 
 #[test]
@@ -466,8 +477,8 @@ fn session_members_are_found_without_the_leader_and_signalled_by_handle() {
     let openers: [fn(u32) -> Option<ProcessHandle>; 2] =
         [ProcessHandle::open, ProcessHandle::open_by_start_time];
     for open in openers {
-        let mut spawned = spawn_session_with_background_job();
-        let leader = spawned.child.id();
+        let mut child = spawn_session_with_background_job();
+        let leader = child.id();
         let deadline = Instant::now() + Duration::from_secs(5);
         let members = loop {
             let members = session_member_handles_with(leader, || false, open);
@@ -485,8 +496,8 @@ fn session_members_are_found_without_the_leader_and_signalled_by_handle() {
         for member in &members {
             assert!(member.signal(Signal::Kill));
         }
-        let _ = spawned.child.kill();
-        let _ = spawned.child.wait();
+        let _ = child.kill();
+        let _ = child.wait();
         let handles: Vec<&ProcessHandle> = members.iter().collect();
         assert!(wait_for_process_exits(&handles, Duration::from_secs(5)));
     }
@@ -494,13 +505,13 @@ fn session_members_are_found_without_the_leader_and_signalled_by_handle() {
 
 #[test]
 fn session_members_are_withheld_when_a_reaped_leaders_pid_is_held_again() {
-    let mut spawned = spawn_session_with_background_job();
-    let leader = spawned.child.id();
+    let mut child = spawn_session_with_background_job();
+    let leader = child.id();
     // The leader is alive, so from the point of view of a caller that has
     // already reaped its own leader, pid `leader` belongs to someone else.
     assert!(session_member_handles(leader, || true).is_empty());
-    let _ = spawned.child.kill();
-    let _ = spawned.child.wait();
+    let _ = child.kill();
+    let _ = child.wait();
     // Clean up the background sleep, which outlives the leader.
     for member in session_member_handles(leader, || false) {
         member.signal(Signal::Kill);
@@ -542,7 +553,7 @@ fn fake_clipboard_program(dir: &Path, name: &str, script: &str) -> &'static str 
 }
 
 fn quoted_path(path: &Path) -> String {
-    crate::remote::shell_quote(&path.to_string_lossy())
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
 #[test]

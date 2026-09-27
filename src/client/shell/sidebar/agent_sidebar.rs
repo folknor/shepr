@@ -12,7 +12,7 @@ use ratatui::{
 use super::*;
 
 pub(super) struct AgentRow {
-    pub(super) pane_id: crate::workspace::PublicPaneId,
+    pub(super) pane_id: crate::protocol::PublicPaneId,
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<ResolvedToken>>,

@@ -1051,7 +1051,7 @@ impl PaneRuntime {
 
     pub(crate) fn word_motion_target(
         &self,
-        row: crate::terminal::ScreenRow,
+        row: crate::vt::ScreenRow,
         col: u16,
         motion: crate::pane::TerminalWordMotion,
     ) -> Option<crate::pane::TerminalTextPoint> {
@@ -1064,7 +1064,7 @@ impl PaneRuntime {
 
     pub(crate) fn paragraph_motion_target(
         &self,
-        row: crate::terminal::ScreenRow,
+        row: crate::vt::ScreenRow,
         direction: i8,
     ) -> Option<crate::pane::TerminalTextPoint> {
         self.terminal.paragraph_motion_target(row, direction)

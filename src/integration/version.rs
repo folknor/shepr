@@ -8,10 +8,10 @@ pub(crate) struct AgentVersionRequirement {
 }
 
 pub(crate) fn agent_version_requirement(
-    target: crate::agents::IntegrationTarget,
+    target: crate::agent::IntegrationTarget,
 ) -> Option<AgentVersionRequirement> {
     match target {
-        crate::agents::IntegrationTarget::Kimi => Some(AgentVersionRequirement {
+        crate::agent::IntegrationTarget::Kimi => Some(AgentVersionRequirement {
             label: "kimi code",
             binary: "kimi",
             args: &["--version"],
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn every_minimum_agent_version_parses() {
-        let target = crate::agents::IntegrationTarget::Kimi;
+        let target = crate::agent::IntegrationTarget::Kimi;
         let requirement = agent_version_requirement(target).expect("test precondition");
         assert!(
             extract_version_triple(requirement.min_version).is_some(),

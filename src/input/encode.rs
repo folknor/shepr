@@ -4,12 +4,14 @@ use std::fmt::Write as _;
 use crossterm::event::KeyEvent;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
-use super::model::KITTY_FLAG_REPORT_ALL_KEYS;
 use super::{KeyboardProtocol, MouseProtocolEncoding, MouseProtocolMode, TerminalKey};
+use crate::protocol::KittyKeyboardFlags;
 
-const KITTY_FLAG_REPORT_EVENT_TYPES: u16 = 0b0000_0010;
-const KITTY_FLAG_REPORT_ALTERNATE_KEYS: u16 = 0b0000_0100;
-const KITTY_FLAG_REPORT_ASSOCIATED_TEXT: u16 = 0b0001_0000;
+use super::model::KITTY_FLAG_REPORT_ALL_KEYS;
+
+const KITTY_FLAG_REPORT_EVENT_TYPES: u16 = KittyKeyboardFlags::REPORT_EVENT_TYPES.bits();
+const KITTY_FLAG_REPORT_ALTERNATE_KEYS: u16 = KittyKeyboardFlags::REPORT_ALTERNATE_KEYS.bits();
+const KITTY_FLAG_REPORT_ASSOCIATED_TEXT: u16 = KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT.bits();
 
 /// Encode a key event for a PTY child using the pane's negotiated keyboard protocol.
 /// Test-only: production keys go through `encode_terminal_key_with_modes`.
@@ -349,7 +351,7 @@ pub struct KeyEncodeModes {
     pub application_cursor: bool,
 }
 
-const KITTY_FLAG_DISAMBIGUATE: u16 = 0b0000_0001;
+const KITTY_FLAG_DISAMBIGUATE: u16 = KittyKeyboardFlags::DISAMBIGUATE.bits();
 
 /// Encode a non-text key (Enter, Tab, arrows, function keys, ...) the way the
 /// child negotiated: kitty flags first, then modifyOtherKeys, then legacy

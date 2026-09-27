@@ -997,11 +997,11 @@ mod tests {
         let mut params = PaneSelectionReadParams {
             pane_id: public_pane_id.clone(),
             anchor: crate::api::schema::PaneSelectionPoint {
-                row: crate::terminal::AbsRow(0),
+                row: crate::vt::AbsRow(0),
                 col: 0,
             },
             cursor: crate::api::schema::PaneSelectionPoint {
-                row: crate::terminal::AbsRow(0),
+                row: crate::vt::AbsRow(0),
                 col: 4,
             },
             content_revision: Some(revision),
@@ -1044,7 +1044,7 @@ mod tests {
             PaneCopyMotionParams {
                 pane_id: public_pane_id.clone(),
                 cursor: crate::api::schema::PaneTextPoint {
-                    row: crate::terminal::ScreenRow(0),
+                    row: crate::vt::ScreenRow(0),
                     col: 0,
                 },
                 motion: PaneCopyMotion::NextWordStart,
@@ -1058,7 +1058,7 @@ mod tests {
             ResponseResult::PaneCopyMotion {
                 pane_id: public_pane_id,
                 cursor: crate::api::schema::PaneTextPoint {
-                    row: crate::terminal::ScreenRow(0),
+                    row: crate::vt::ScreenRow(0),
                     col: 6
                 },
                 content_revision: 0,
@@ -1084,7 +1084,7 @@ mod tests {
             PaneCopyMotionParams {
                 pane_id: public_pane_id.clone(),
                 cursor: PaneTextPoint {
-                    row: crate::terminal::ScreenRow(0),
+                    row: crate::vt::ScreenRow(0),
                     col: 2,
                 },
                 motion: PaneCopyMotion::NextParagraph,
@@ -1097,7 +1097,7 @@ mod tests {
             ResponseResult::PaneCopyMotion {
                 pane_id: public_pane_id,
                 cursor: PaneTextPoint {
-                    row: crate::terminal::ScreenRow(1),
+                    row: crate::vt::ScreenRow(1),
                     col: 2
                 },
                 content_revision: 0,
@@ -1131,7 +1131,7 @@ mod tests {
                 query: "alpha".into(),
                 direction: PaneCopySearchDirection::Forward,
                 cursor: PaneTextPoint {
-                    row: crate::terminal::ScreenRow(0),
+                    row: crate::vt::ScreenRow(0),
                     col: 0,
                 },
                 content_revision,
@@ -1156,14 +1156,14 @@ mod tests {
         assert_eq!(
             matches[0].start,
             PaneTextPoint {
-                row: crate::terminal::ScreenRow(0),
+                row: crate::vt::ScreenRow(0),
                 col: 0
             }
         );
         assert_eq!(
             matches[1].start,
             PaneTextPoint {
-                row: crate::terminal::ScreenRow(0),
+                row: crate::vt::ScreenRow(0),
                 col: 11
             }
         );
@@ -1199,7 +1199,7 @@ mod tests {
                 query: "a".into(),
                 direction: PaneCopySearchDirection::Forward,
                 cursor: PaneTextPoint {
-                    row: crate::terminal::ScreenRow(0),
+                    row: crate::vt::ScreenRow(0),
                     col: 0,
                 },
                 content_revision,
@@ -1234,7 +1234,7 @@ mod tests {
                 query: "alpha".into(),
                 direction: PaneCopySearchDirection::Forward,
                 cursor: PaneTextPoint {
-                    row: crate::terminal::ScreenRow(0),
+                    row: crate::vt::ScreenRow(0),
                     col: 0,
                 },
                 content_revision: 2,

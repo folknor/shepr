@@ -233,7 +233,7 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) tab_drag_insert_index: Option<usize>,
     pub(super) selected_workspace_id: Option<&'a WorkspaceNavigationTarget>,
     pub(super) reveal_navigation_workspace: &'a mut bool,
-    pub(super) dragged_workspace_id: Option<&'a crate::workspace::WorkspaceId>,
+    pub(super) dragged_workspace_id: Option<&'a crate::protocol::WorkspaceId>,
     pub(super) workspace_drop_indicator_row: Option<u16>,
 }
 

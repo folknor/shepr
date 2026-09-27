@@ -402,7 +402,7 @@ pub(crate) enum ServerEvent {
     /// A client requested direct attach to one terminal.
     ClientAttachTerminal {
         client_id: ClientId,
-        terminal_id: crate::terminal::TerminalId,
+        terminal_id: crate::protocol::TerminalId,
         takeover: bool,
     },
     /// A direct terminal attach client requested scrollback movement.
@@ -445,7 +445,7 @@ pub(crate) enum ServerEvent {
     /// A client-owned shell delivered semantic input to one stable pane target.
     ClientShellPaneInput {
         client_id: ClientId,
-        pane_id: crate::workspace::PublicPaneId,
+        pane_id: crate::protocol::PublicPaneId,
         events: Vec<ClientPaneInputEvent>,
     },
     /// A client-owned shell published one host terminal theme observation.

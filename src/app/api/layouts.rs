@@ -418,7 +418,7 @@ struct LayoutStaging<'a> {
     pane_runtimes: &'a mut std::collections::HashMap<
         PaneId,
         (
-            crate::terminal::TerminalId,
+            crate::protocol::TerminalId,
             crate::terminal::TerminalRuntime,
         ),
     >,
@@ -467,12 +467,9 @@ fn stage_layout_node(
                 .map_err(crate::api::error::ApiError::into_message)?;
             let command = layout_command(second_leaf)?;
             let launch_env = crate::pane::PaneLaunchEnv::from_extra(extra_env).with_identity(
-                crate::workspace::WorkspaceId::new(staging.workspace_id),
-                crate::workspace::PublicTabId::new(staging.workspace_id, staging.tab_number),
-                crate::workspace::PublicPaneId::new(
-                    staging.workspace_id,
-                    *staging.next_pane_number,
-                ),
+                crate::protocol::WorkspaceId::new(staging.workspace_id),
+                crate::protocol::PublicTabId::new(staging.workspace_id, staging.tab_number),
+                crate::protocol::PublicPaneId::new(staging.workspace_id, *staging.next_pane_number),
             );
             let direction = match direction {
                 SplitDirection::Right => Direction::Horizontal,

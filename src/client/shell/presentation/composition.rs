@@ -640,7 +640,7 @@ fn client_copy_cursor_cell(
     let hit = hits.iter().find(|hit| {
         hit.pane_id == copy_mode.pane_id && client_copy_surface_coherent(Some(copy_mode), hit)
     })?;
-    let viewport_top = crate::terminal::ScreenRow(
+    let viewport_top = crate::vt::ScreenRow(
         copy_mode
             .max_offset_from_bottom
             .saturating_sub(copy_mode.offset_from_bottom),
@@ -672,12 +672,12 @@ fn render_client_copy_search_highlights(
     if hit.inner_rect.is_empty() {
         return;
     }
-    let top = crate::terminal::ScreenRow(
+    let top = crate::vt::ScreenRow(
         copy_mode
             .max_offset_from_bottom
             .saturating_sub(copy_mode.offset_from_bottom),
     );
-    let bottom = crate::terminal::ScreenRow(
+    let bottom = crate::vt::ScreenRow(
         top.0
             .saturating_add(usize::from(hit.inner_rect.height.saturating_sub(1))),
     );
@@ -738,11 +738,11 @@ mod tests {
     fn text_range(row: usize, start_col: u16, end_col: u16) -> PaneTextRange {
         PaneTextRange {
             start: PaneTextPoint {
-                row: crate::terminal::ScreenRow(row),
+                row: crate::vt::ScreenRow(row),
                 col: start_col,
             },
             end: PaneTextPoint {
-                row: crate::terminal::ScreenRow(row),
+                row: crate::vt::ScreenRow(row),
                 col: end_col,
             },
         }
@@ -761,7 +761,7 @@ mod tests {
                 offset_from_bottom: 0,
                 max_offset_from_bottom: 0,
                 viewport_rows: 4,
-                history_origin: crate::terminal::AbsRow(0),
+                history_origin: crate::vt::AbsRow(0),
             }),
             pane_id: "pane".into(),
             mouse_reporting: false,
@@ -775,7 +775,7 @@ mod tests {
             geometry: (6, 4),
             alternate_screen_active: false,
             cursor: PaneTextPoint {
-                row: crate::terminal::ScreenRow(3),
+                row: crate::vt::ScreenRow(3),
                 col: 0,
             },
             offset_from_bottom: 0,

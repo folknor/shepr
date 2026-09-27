@@ -34,9 +34,9 @@ pub(crate) fn resolve_new_terminal_cwd(
 }
 
 pub(super) fn launch_cwd_for_terminal(
-    terminal_id: &crate::terminal::TerminalId,
+    terminal_id: &crate::protocol::TerminalId,
     terminals: &std::collections::HashMap<
-        crate::terminal::TerminalId,
+        crate::protocol::TerminalId,
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,

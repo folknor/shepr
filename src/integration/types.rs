@@ -147,7 +147,7 @@ pub(crate) struct LettaUninstallResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IntegrationStatus {
-    pub target: crate::agents::IntegrationTarget,
+    pub target: crate::agent::IntegrationTarget,
     pub path: PathBuf,
     pub state: IntegrationStatusKind,
     pub installed_version: Option<u32>,

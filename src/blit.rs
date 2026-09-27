@@ -1640,7 +1640,7 @@ mod tests {
         for row in 0_usize..3 {
             for col in 0..4 {
                 let (_, graphemes) = terminal
-                    .screen_cell(col, crate::terminal::ScreenRow(row))
+                    .screen_cell(col, crate::vt::ScreenRow(row))
                     .expect("test precondition");
                 assert_eq!(graphemes, vec![u32::from('B')]);
             }

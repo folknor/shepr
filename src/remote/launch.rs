@@ -116,7 +116,7 @@ impl RemoteExecutable {
 
     pub(super) fn session_args<'a>(session_name: &'a str, args: &[&'a str]) -> Vec<&'a str> {
         let mut session_args = Vec::with_capacity(args.len() + 2);
-        if session_name != crate::session::DEFAULT_SESSION_NAME {
+        if session_name != crate::config::DEFAULT_SESSION_NAME {
             session_args.extend(["--session", session_name]);
         }
         session_args.extend_from_slice(args);
@@ -220,7 +220,7 @@ pub(super) fn reattach_command(
         command.push_str(" --remote-keybindings ");
         command.push_str(keybindings.as_str());
     }
-    if session_name != crate::session::DEFAULT_SESSION_NAME {
+    if session_name != crate::config::DEFAULT_SESSION_NAME {
         command.push_str(" --session ");
         command.push_str(&shell_quote(session_name));
     }
