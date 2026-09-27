@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use super::{TerminalId, TerminalRuntime};
+use super::PaneRuntime;
+use crate::protocol::TerminalId;
 
 /// Server-owned live terminal runtimes, keyed by durable terminal id.
 ///
@@ -8,28 +9,28 @@ use super::{TerminalId, TerminalRuntime};
 /// pane, and terminal metadata while the server/application layer owns PTYs,
 /// parser backends, detector tasks, and channels.
 #[derive(Default)]
-pub(crate) struct TerminalRuntimeRegistry {
-    runtimes: HashMap<TerminalId, TerminalRuntime>,
+pub(crate) struct PaneRuntimeRegistry {
+    runtimes: HashMap<TerminalId, PaneRuntime>,
 }
 
-impl TerminalRuntimeRegistry {
+impl PaneRuntimeRegistry {
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub(crate) fn get(&self, terminal_id: &TerminalId) -> Option<&TerminalRuntime> {
+    pub(crate) fn get(&self, terminal_id: &TerminalId) -> Option<&PaneRuntime> {
         self.runtimes.get(terminal_id)
     }
 
     pub(crate) fn insert(
         &mut self,
         terminal_id: TerminalId,
-        runtime: TerminalRuntime,
-    ) -> Option<TerminalRuntime> {
+        runtime: PaneRuntime,
+    ) -> Option<PaneRuntime> {
         self.runtimes.insert(terminal_id, runtime)
     }
 
-    pub(crate) fn remove(&mut self, terminal_id: &TerminalId) -> Option<TerminalRuntime> {
+    pub(crate) fn remove(&mut self, terminal_id: &TerminalId) -> Option<PaneRuntime> {
         self.runtimes.remove(terminal_id)
     }
 
@@ -37,18 +38,18 @@ impl TerminalRuntimeRegistry {
         self.runtimes.clear();
     }
 
-    pub(crate) fn values(&self) -> impl Iterator<Item = &TerminalRuntime> {
+    pub(crate) fn values(&self) -> impl Iterator<Item = &PaneRuntime> {
         self.runtimes.values()
     }
 
     #[cfg(test)]
-    pub(crate) fn drain(&mut self) -> impl Iterator<Item = (TerminalId, TerminalRuntime)> + '_ {
+    pub(crate) fn drain(&mut self) -> impl Iterator<Item = (TerminalId, PaneRuntime)> + '_ {
         self.runtimes.drain()
     }
 }
 
-impl From<HashMap<TerminalId, TerminalRuntime>> for TerminalRuntimeRegistry {
-    fn from(runtimes: HashMap<TerminalId, TerminalRuntime>) -> Self {
+impl From<HashMap<TerminalId, PaneRuntime>> for PaneRuntimeRegistry {
+    fn from(runtimes: HashMap<TerminalId, PaneRuntime>) -> Self {
         Self { runtimes }
     }
 }

@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use crate::app::AppState;
-use crate::ui::PaneChromeInfo as PaneInfo;
+use crate::workspace::PaneChromeInfo as PaneInfo;
 
 pub(crate) fn pane_scrollbar_rect(info: &PaneInfo) -> Option<Rect> {
     info.scrollbar_rect
@@ -188,7 +188,7 @@ pub(super) fn render_pane_scrollbar(
     app: &AppState,
     frame: &mut Frame,
     info: &PaneInfo,
-    rt: &crate::terminal::TerminalRuntime,
+    rt: &crate::pane::PaneRuntime,
 ) {
     let Some(metrics) = rt.scroll_metrics() else {
         return;

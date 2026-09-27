@@ -1,49 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const THEME_NAMES: &[&str] = &[
-    "catppuccin",
-    "catppuccin-latte",
-    "terminal",
-    "tokyo-night",
-    "tokyo-night-day",
-    "dracula",
-    "nord",
-    "gruvbox",
-    "gruvbox-light",
-    "one-dark",
-    "one-light",
-    "solarized",
-    "solarized-light",
-    "kanagawa",
-    "kanagawa-lotus",
-    "rose-pine",
-    "rose-pine-dawn",
-    "vesper",
-];
-
-pub(crate) fn canonical_theme_name(name: &str) -> Option<&'static str> {
-    match name.to_lowercase().replace([' ', '_'], "-").as_str() {
-        "catppuccin" | "catppuccin-mocha" => Some("catppuccin"),
-        "catppuccin-latte" | "latte" | "light" => Some("catppuccin-latte"),
-        "terminal" => Some("terminal"),
-        "tokyo-night" | "tokyonight" => Some("tokyo-night"),
-        "tokyo-night-day" | "tokyo-day" | "tokyonight-day" => Some("tokyo-night-day"),
-        "dracula" => Some("dracula"),
-        "nord" => Some("nord"),
-        "gruvbox" | "gruvbox-dark" => Some("gruvbox"),
-        "gruvbox-light" => Some("gruvbox-light"),
-        "one-dark" | "onedark" => Some("one-dark"),
-        "one-light" | "onelight" => Some("one-light"),
-        "solarized" | "solarized-dark" => Some("solarized"),
-        "solarized-light" => Some("solarized-light"),
-        "kanagawa" => Some("kanagawa"),
-        "kanagawa-lotus" | "lotus" => Some("kanagawa-lotus"),
-        "rose-pine" | "rosepine" => Some("rose-pine"),
-        "rose-pine-dawn" | "rosepine-dawn" | "dawn" => Some("rose-pine-dawn"),
-        "vesper" => Some("vesper"),
-        _ => None,
-    }
-}
+use crate::theme::{ParsedThemeColors, THEME_NAMES, canonical_theme_name};
 
 /// Theme configuration: pick a built-in or override individual tokens.
 ///
@@ -177,29 +134,6 @@ impl CustomThemeColors {
             peach: color!(peach),
         })
     }
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct ParsedThemeColors {
-    pub(crate) accent: Option<ratatui::style::Color>,
-    pub(crate) panel_bg: Option<ratatui::style::Color>,
-    pub(crate) sidebar_bg: Option<ratatui::style::Color>,
-    pub(crate) active_row_bg: Option<ratatui::style::Color>,
-    pub(crate) selection_bg: Option<ratatui::style::Color>,
-    pub(crate) surface0: Option<ratatui::style::Color>,
-    pub(crate) surface1: Option<ratatui::style::Color>,
-    pub(crate) surface_dim: Option<ratatui::style::Color>,
-    pub(crate) overlay0: Option<ratatui::style::Color>,
-    pub(crate) overlay1: Option<ratatui::style::Color>,
-    pub(crate) text: Option<ratatui::style::Color>,
-    pub(crate) subtext0: Option<ratatui::style::Color>,
-    pub(crate) mauve: Option<ratatui::style::Color>,
-    pub(crate) green: Option<ratatui::style::Color>,
-    pub(crate) yellow: Option<ratatui::style::Color>,
-    pub(crate) red: Option<ratatui::style::Color>,
-    pub(crate) blue: Option<ratatui::style::Color>,
-    pub(crate) teal: Option<ratatui::style::Color>,
-    pub(crate) peach: Option<ratatui::style::Color>,
 }
 
 fn parse_configured_color(

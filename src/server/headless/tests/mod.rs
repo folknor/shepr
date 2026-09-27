@@ -2,6 +2,64 @@ use super::*;
 
 use bytes::Bytes;
 
+pub(crate) fn handle_server_event(
+    server: &mut HeadlessServer,
+    event: crate::server::client_transport::ServerEvent,
+) -> bool {
+    server.handle_server_event(event)
+}
+
+pub(crate) fn render_and_stream(server: &mut HeadlessServer) {
+    server.render_and_stream();
+}
+
+pub(crate) fn outer_terminal_focus(
+    server: &HeadlessServer,
+    client_id: crate::server::ClientId,
+) -> Option<bool> {
+    server
+        .clients
+        .get(&client_id)
+        .and_then(crate::server::clients::ClientConnection::shell_state)
+        .and_then(|shell| shell.outer_terminal_focus)
+}
+
+pub(crate) fn dispatch_lifecycle_messages(
+    server: &mut HeadlessServer,
+    client_id: crate::server::ClientId,
+    messages: Vec<crate::protocol::ClientMessage>,
+) {
+    for message in messages {
+        let event = match message {
+            crate::protocol::ClientMessage::ClientShellResize { geometry } => {
+                crate::server::client_transport::ServerEvent::ClientShellResize {
+                    client_id,
+                    cell_width_px: geometry.width(),
+                    cell_height_px: geometry.height(),
+                    surface_cols: geometry.cols(),
+                    surface_rows: geometry.rows(),
+                    pixel_mouse: geometry.pixel_mouse,
+                }
+            }
+            crate::protocol::ClientMessage::ClientShellFocus { focused } => {
+                crate::server::client_transport::ServerEvent::ClientShellFocus {
+                    client_id,
+                    focused,
+                }
+            }
+            crate::protocol::ClientMessage::ClientShellEndpointRequest { boot_id, request } => {
+                crate::server::client_transport::ServerEvent::ClientShellEndpointRequest {
+                    client_id,
+                    boot_id,
+                    request: Box::new(serde_json::from_str(&request).expect("test precondition")),
+                }
+            }
+            other => panic!("unhandled lifecycle message: {other:?}"),
+        };
+        server.handle_server_event(event);
+    }
+}
+
 #[path = "pane_move.rs"]
 mod pane_move_tests;
 #[path = "surface_delta.rs"]
@@ -31,7 +89,7 @@ async fn client_listener_readiness_wakes_for_new_connection() {
     assert!(listener.accept().is_ok());
 }
 
-fn client_shell_snapshot(
+pub(crate) fn client_shell_snapshot(
     receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
 ) -> Box<protocol::ClientShellSnapshot> {
     let ServerMessage::EndpointSnapshot(snapshot) = read_server_message(
@@ -44,7 +102,7 @@ fn client_shell_snapshot(
     snapshot
 }
 
-fn test_headless_server() -> HeadlessServer {
+pub(crate) fn test_headless_server() -> HeadlessServer {
     test_headless_server_with_event_hub(api::EventHub::default())
 }
 
@@ -91,13 +149,13 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
     }
 }
 
-fn shutdown_test_runtimes(server: &mut HeadlessServer) {
+pub(crate) fn shutdown_test_runtimes(server: &mut HeadlessServer) {
     for (_, runtime) in server.app.terminal_runtimes.drain() {
         runtime.shutdown();
     }
 }
 
-fn read_server_message(bytes: Vec<u8>) -> ServerMessage {
+pub(crate) fn read_server_message(bytes: Vec<u8>) -> ServerMessage {
     let mut cursor = std::io::Cursor::new(bytes);
     protocol::read_message(&mut cursor, MAX_FRAME_SIZE).expect("decode server message")
 }
@@ -188,7 +246,7 @@ async fn headless_api_reads_latest_title_without_spinner_event_flooding() {
         .get_mut(&terminal_id)
         .expect("test precondition")
         .detected_agent = Some(crate::detect::Agent::Claude);
-    let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"");
+    let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
     runtime.test_process_pty_bytes(b"\x1b]0;\xe2\xa0\x8b task\x07");
     server
         .app
@@ -527,7 +585,7 @@ async fn focused_terminal_title_syncs_without_requesting_a_sidebar_render() {
         .terminal_id(pane_id)
         .expect("terminal")
         .clone();
-    let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"");
+    let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
     runtime.test_process_pty_bytes("\x1b]0;⠋ building\x07".as_bytes());
     server
         .app
@@ -740,7 +798,7 @@ async fn promoted_client_window_title_uses_its_own_view() {
         Some(survivor_tab_id.as_str())
     );
 
-    let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"");
+    let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
     runtime.test_process_pty_bytes(b"\x1b]0;UPDATED OSC\x07");
     server
         .app
@@ -765,7 +823,7 @@ async fn promoted_client_window_title_uses_its_own_view() {
     shutdown_test_runtimes(&mut server);
 }
 
-fn test_client_writer() -> (
+pub(crate) fn test_client_writer() -> (
     ClientWriter,
     std::sync::mpsc::Receiver<Vec<u8>>,
     std::sync::mpsc::Receiver<Vec<u8>>,
@@ -1000,7 +1058,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         pane_id,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(
+        crate::pane::PaneRuntime::test_with_screen_bytes(
             80,
             23,
             b"\x1b[?1003h\x1b[?1006h\x1b[?1016hCLIENT_SHELL_LIVE",
@@ -1168,7 +1226,7 @@ fn install_shared_view_test_runtime(server: &mut HeadlessServer) -> crate::layou
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         pane_id,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"BASE"),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"BASE"),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -1339,11 +1397,11 @@ async fn sibling_retained_output_waits_for_synchronized_pane_to_finish() {
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         first,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
     );
     server.app.insert_test_runtime(
         second,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -1386,11 +1444,11 @@ async fn zoom_hidden_synchronized_pane_does_not_block_surface() {
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         hidden,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"HIDDEN"),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"HIDDEN"),
     );
     server.app.insert_test_runtime(
         visible,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"VISIBLE"),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"VISIBLE"),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -1620,11 +1678,11 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_tab() {
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         first_pane,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
     );
     server.app.insert_test_runtime(
         second_pane,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -1914,7 +1972,7 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
     let second_tab = workspace.test_add_tab(Some("second"));
     let second_pane = workspace.tabs[second_tab].root_pane;
     let (first_runtime, mut first_input) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
             24,
             0,
@@ -1922,7 +1980,7 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
             4,
         );
     let (second_runtime, mut second_input) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
             24,
             0,
@@ -2109,7 +2167,7 @@ async fn public_focus_moves_shell_focus_between_tabs() {
     let second_tab = workspace.test_add_tab(Some("second"));
     let second_pane = workspace.tabs[second_tab].root_pane;
     let (first_runtime, mut first_input) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
             24,
             0,
@@ -2117,7 +2175,7 @@ async fn public_focus_moves_shell_focus_between_tabs() {
             4,
         );
     let (second_runtime, mut second_input) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
             24,
             0,
@@ -2186,11 +2244,11 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         first_pane,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     server.app.insert_test_runtime(
         second_pane,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -2235,11 +2293,11 @@ async fn public_close_reapplies_controller_geometry() {
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         first_pane,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     server.app.insert_test_runtime(
         second_pane,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -2294,7 +2352,7 @@ async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
     for pane_id in [first_pane, second_pane, third_pane] {
         server.app.insert_test_runtime(
             pane_id,
-            crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+            crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
         );
     }
     server.app.state.set_active_index(Some(0));
@@ -2347,7 +2405,7 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
     let second_pane = workspace.tabs[second_tab].root_pane;
 
     let (second_runtime, mut second_input) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
             24,
             0,
@@ -2358,7 +2416,7 @@ async fn client_shell_tabs_render_accept_input_and_resize_independently() {
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         first_pane,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"FIRST_TAB"),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"FIRST_TAB"),
     );
     server.app.insert_test_runtime(second_pane, second_runtime);
     server.app.state.set_active_index(Some(0));
@@ -2581,11 +2639,11 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
     server.app.state.workspaces = vec![first, second];
     server.app.insert_test_runtime(
         first_pane,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"FIRST_AGENT"),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"FIRST_AGENT"),
     );
     server.app.insert_test_runtime(
         second_pane,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"SECOND_WORKSPACE"),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"SECOND_WORKSPACE"),
     );
     server.app.state.ensure_test_terminals();
     server.app.state.set_active_index(Some(0));
@@ -2836,13 +2894,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     let hidden_tab = workspace.test_add_tab(Some("hidden"));
     let hidden_pane = workspace.tabs[hidden_tab].root_pane;
     let (runtime, mut input_rx) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
-            80,
-            24,
-            0,
-            b"\x1b[>3u",
-            4,
-        );
+        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"\x1b[>3u", 4);
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(hidden_pane, runtime);
@@ -2896,14 +2948,13 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
     let mut server = test_headless_server();
     let workspace = crate::workspace::Workspace::test_new("scrolled-input");
     let pane_id = workspace.tabs[0].root_pane;
-    let (runtime, mut input_rx) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
-            80,
-            2,
-            10_000,
-            b"one\r\ntwo\r\nthree\r\n",
-            4,
-        );
+    let (runtime, mut input_rx) = crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+        80,
+        2,
+        10_000,
+        b"one\r\ntwo\r\nthree\r\n",
+        4,
+    );
     runtime.scroll_up(1);
     assert!(
         runtime
@@ -2953,7 +3004,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
             .app
             .state
             .runtime_for_pane_in_workspace(&server.app.terminal_runtimes, 0, pane_id)
-            .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
+            .and_then(crate::pane::PaneRuntime::scroll_metrics)
             .map(|metrics| metrics.offset_from_bottom),
         Some(0)
     );
@@ -3121,20 +3172,19 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
     shutdown_test_runtimes(&mut server);
 }
 
-fn install_focused_test_runtime(
+pub(crate) fn install_focused_test_runtime(
     server: &mut HeadlessServer,
     terminal_bytes: &[u8],
 ) -> tokio::sync::mpsc::Receiver<Bytes> {
     let workspace = crate::workspace::Workspace::test_new("focus-reporting");
     let pane_id = workspace.tabs[0].root_pane;
-    let (runtime, input_rx) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
-            80,
-            24,
-            0,
-            terminal_bytes,
-            4,
-        );
+    let (runtime, input_rx) = crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+        80,
+        24,
+        0,
+        terminal_bytes,
+        4,
+    );
 
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(pane_id, runtime);
@@ -3159,7 +3209,7 @@ fn retained_test_server_with_control(
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         pane_id,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, initial_screen),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, initial_screen),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -3381,7 +3431,7 @@ fn with_terminal_session_test_server(
     server.app.state.ensure_test_terminals();
     server.app.terminal_runtimes.insert(
         terminal_id.clone(),
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
 
     test(&mut server, terminal_id, terminal_id_string, public_pane_id);
@@ -3430,11 +3480,7 @@ fn explicit_agent_history_read_requires_idle_on_alternate_screen() {
             terminal.state = crate::detect::AgentState::Working;
             server.app.terminal_runtimes.insert(
                 terminal_id,
-                crate::terminal::TerminalRuntime::test_with_screen_bytes(
-                    80,
-                    24,
-                    b"\x1b[?1049hworking",
-                ),
+                crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"\x1b[?1049hworking"),
             );
             let request = api::schema::Request {
                 id: "read".into(),
@@ -3497,7 +3543,7 @@ fn terminal_attach_disconnect_restores_client_shell_pane_size() {
         .expect("second tab id");
     server.app.terminal_runtimes.insert(
         terminal_id.clone(),
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     server.clients.insert(
         1,
@@ -3796,11 +3842,11 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
     server.app.state.workspaces.push(workspace);
 
     let changed = server.handle_internal_event_with_forwarding(AppEvent::GitStatusRefreshed {
-        results: vec![crate::workspace::WorkspaceGitStatus {
+        results: vec![crate::events::WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd,
-            demand: crate::workspace::GitStatusRefreshDemand::ALL,
+            demand: crate::events::GitStatusRefreshDemand::ALL,
             auto_label: "cached".into(),
             branch: None,
             ahead_behind: None,
@@ -3822,11 +3868,11 @@ fn changed_git_refresh_requests_headless_render() {
     server.app.state.workspaces.push(workspace);
 
     let changed = server.handle_internal_event_with_forwarding(AppEvent::GitStatusRefreshed {
-        results: vec![crate::workspace::WorkspaceGitStatus {
+        results: vec![crate::events::WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd,
-            demand: crate::workspace::GitStatusRefreshDemand::ALL,
+            demand: crate::events::GitStatusRefreshDemand::ALL,
             auto_label: "one".into(),
             branch: Some("changed".into()),
             ahead_behind: None,
@@ -3910,7 +3956,7 @@ async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
     }
     server.app.insert_test_runtime(
         pane_id,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, screen.as_bytes()),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, screen.as_bytes()),
     );
     let (control, render_rx) = connect_test_shell(&mut server, 91, 80, 24);
     // The test writer forwards queued control messages from a background
@@ -3949,7 +3995,7 @@ async fn oversized_shell_frame_is_reported_once_until_a_frame_is_sent() {
 
     server.app.insert_test_runtime(
         pane_id,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     assert!(server.handle_server_event(ServerEvent::ClientShellResize {
         client_id: ClientId::test_new(91),
@@ -4075,7 +4121,7 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
     let second_tab = workspace.test_add_tab(Some("second"));
     let second_pane = workspace.tabs[second_tab].root_pane;
     let (second_runtime, mut second_input) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
             24,
             0,
@@ -4173,11 +4219,11 @@ async fn pane_death_reapplies_controller_geometry() {
     server.app.state.workspaces = vec![workspace];
     server.app.insert_test_runtime(
         first_pane,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     server.app.insert_test_runtime(
         dead_pane,
-        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+        crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
     );
     server.app.state.set_active_index(Some(0));
     server.app.state.set_selected_index(Some(0));
@@ -4220,7 +4266,7 @@ fn terminal_attach_scroll_moves_attached_runtime_viewport() {
     for line in 0..80 {
         bytes.extend_from_slice(format!("line {line:02}\r\n").as_bytes());
     }
-    let runtime = crate::terminal::TerminalRuntime::test_with_scrollback_bytes(20, 5, 4096, &bytes);
+    let runtime = crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 4096, &bytes);
 
     apply_terminal_attach_scroll(
         &runtime,
@@ -4259,14 +4305,13 @@ fn client_pane_pixel_mouse_uses_runtime_pixel_encoding() {
         .build()
         .expect("test runtime");
     let _runtime_guard = rt.enter();
-    let (runtime, mut input_rx) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
-            20,
-            5,
-            0,
-            b"\x1b[?1003h\x1b[?1006h\x1b[?1016h",
-            4,
-        );
+    let (runtime, mut input_rx) = crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+        20,
+        5,
+        0,
+        b"\x1b[?1003h\x1b[?1006h\x1b[?1016h",
+        4,
+    );
     runtime.resize(crate::geometry::PaneGeometry::new(20, 5, 10, 20));
 
     apply_client_pane_input_events(
@@ -4301,14 +4346,13 @@ fn client_pane_pixel_mouse_stays_pixel_scaled_when_sgr_is_reasserted() {
         .build()
         .expect("test runtime");
     let _runtime_guard = rt.enter();
-    let (runtime, mut input_rx) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
-            80,
-            24,
-            0,
-            b"\x1b[?1003h\x1b[?1006h\x1b[?1016h\x1b[?1006h",
-            4,
-        );
+    let (runtime, mut input_rx) = crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+        80,
+        24,
+        0,
+        b"\x1b[?1003h\x1b[?1006h\x1b[?1016h\x1b[?1006h",
+        4,
+    );
     runtime.resize(crate::geometry::PaneGeometry::new(80, 24, 10, 20));
 
     apply_client_pane_input_events(
@@ -4343,14 +4387,13 @@ fn client_pane_pixel_mouse_falls_back_to_canonical_cell_position() {
         .build()
         .expect("test runtime");
     let _runtime_guard = rt.enter();
-    let (runtime, mut input_rx) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
-            20,
-            5,
-            0,
-            b"\x1b[?1003h\x1b[?1006h",
-            4,
-        );
+    let (runtime, mut input_rx) = crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+        20,
+        5,
+        0,
+        b"\x1b[?1003h\x1b[?1006h",
+        4,
+    );
     runtime.resize(crate::geometry::PaneGeometry::new(20, 5, 10, 20));
 
     apply_client_pane_input_events(
@@ -4390,9 +4433,7 @@ fn client_pane_wheel_input_accumulates_scrollback_offset() {
         bytes.extend_from_slice(format!("line {line:02}\r\n").as_bytes());
     }
     let (runtime, mut input_rx) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
-            20, 5, 4096, &bytes, 4,
-        );
+        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(20, 5, 4096, &bytes, 4);
     let scroll = |kind| crate::protocol::ClientPaneInputEvent::Mouse {
         kind,
         position: crate::protocol::ClientMousePosition::Cell { column: 2, row: 1 },
@@ -4495,9 +4536,7 @@ fn terminal_attach_input_resets_scrolled_viewport() {
         bytes.extend_from_slice(format!("line {line:02}\r\n").as_bytes());
     }
     let (runtime, mut input_rx) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
-            20, 5, 4096, &bytes, 4,
-        );
+        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(20, 5, 4096, &bytes, 4);
 
     runtime.scroll_up(4);
     assert_eq!(
@@ -4529,7 +4568,7 @@ fn terminal_attach_input_resets_scrolled_viewport() {
 fn with_terminal_attach_runtime(
     initial_bytes: &[u8],
     initial_scroll: usize,
-    test: impl FnOnce(&crate::terminal::TerminalRuntime, &mut mpsc::Receiver<Bytes>),
+    test: impl FnOnce(&crate::pane::PaneRuntime, &mut mpsc::Receiver<Bytes>),
 ) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -4541,9 +4580,7 @@ fn with_terminal_attach_runtime(
         bytes.extend_from_slice(format!("line {line:02}\r\n").as_bytes());
     }
     let (runtime, mut input_rx) =
-        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
-            20, 5, 4096, &bytes, 4,
-        );
+        crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(20, 5, 4096, &bytes, 4);
     if initial_scroll > 0 {
         runtime.scroll_up(initial_scroll);
     }
@@ -4555,7 +4592,7 @@ fn with_terminal_attach_runtime(
     rt.shutdown_timeout(Duration::from_millis(100));
 }
 
-fn apply_terminal_attach_page_up(runtime: &crate::terminal::TerminalRuntime) {
+fn apply_terminal_attach_page_up(runtime: &crate::pane::PaneRuntime) {
     apply_terminal_attach_scroll(
         runtime,
         AttachScrollSource::PageKey {
@@ -5297,7 +5334,7 @@ fn client_shell_mouse_capture_combines_local_preference_with_endpoint_demand() {
 fn client_shell_focus_promotes_and_reaches_reporting_pane() {
     with_terminal_session_test_server(|server, terminal_id, _other_terminal_id, _pane_id| {
         let (runtime, mut input_rx) =
-            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+            crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
                 80,
                 24,
                 0,
@@ -5539,7 +5576,7 @@ fn direct_terminal_streams_child_keyboard_and_mouse_modes() {
 fn direct_terminal_mouse_uses_runtime_protocol_encoding() {
     with_terminal_session_test_server(|server, runtime_terminal_id, terminal_id, _pane_id| {
         let (runtime, mut input_rx) =
-            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+            crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
                 80,
                 24,
                 0,
@@ -5583,7 +5620,7 @@ fn direct_terminal_mouse_uses_runtime_protocol_encoding() {
 fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
     with_terminal_session_test_server(|server, runtime_terminal_id, terminal_id, _pane_id| {
         let (runtime, mut input_rx) =
-            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+            crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
                 80,
                 24,
                 0,

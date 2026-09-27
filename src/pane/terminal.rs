@@ -1,3 +1,4 @@
+use crate::terminal::TerminalReadSnapshot;
 use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -218,12 +219,6 @@ pub(crate) struct ProcessBytesResult {
     /// detection, an API read) while it held the lock. The bytes were not
     /// processed and no later bytes will be; the reader must end the pane.
     pub core_poisoned: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct TerminalReadSnapshot {
-    pub text: String,
-    pub truncated: bool,
 }
 
 pub(crate) struct GhosttyPaneTerminal {

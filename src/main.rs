@@ -30,6 +30,8 @@ mod ipc;
 mod layout;
 mod logging;
 mod machine;
+#[cfg(test)]
+mod netside_tests;
 mod pane;
 mod pathutil;
 mod persist;
@@ -240,9 +242,12 @@ fn main() -> io::Result<()> {
 
     let saved_federation =
         machine::EndpointCatalog::load(paths).is_ok_and(|catalog| catalog.has_ssh());
-    if let Err(err) =
-        server::autodetect::auto_detect_launch(saved_federation, &loaded_config, paths)
-    {
+    if let Err(err) = remote::autodetect::auto_detect_launch(
+        saved_federation,
+        &loaded_config,
+        paths,
+        client::run_client,
+    ) {
         eprintln!("shepr: {err}");
         std::process::exit(1);
     }

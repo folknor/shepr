@@ -14,7 +14,7 @@ fn normalize_api_key_alias(key: &str) -> &str {
     }
 }
 
-pub(super) fn encode_api_text(runtime: &crate::terminal::TerminalRuntime, text: &str) -> Vec<u8> {
+pub(super) fn encode_api_text(runtime: &crate::pane::PaneRuntime, text: &str) -> Vec<u8> {
     let bracketed = runtime.bracketed_paste_enabled();
     if bracketed {
         format!("\x1b[200~{text}\x1b[201~").into_bytes()
@@ -24,7 +24,7 @@ pub(super) fn encode_api_text(runtime: &crate::terminal::TerminalRuntime, text: 
 }
 
 pub(super) fn encode_api_keys(
-    runtime: &crate::terminal::TerminalRuntime,
+    runtime: &crate::pane::PaneRuntime,
     keys: &[String],
 ) -> Result<Vec<Vec<u8>>, ApiError> {
     let mut encoded_keys = Vec::with_capacity(keys.len());
@@ -41,7 +41,7 @@ pub(super) fn encode_api_keys(
 }
 
 pub(super) fn encode_api_submission_parts(
-    runtime: &crate::terminal::TerminalRuntime,
+    runtime: &crate::pane::PaneRuntime,
     text: &str,
 ) -> (Vec<u8>, Vec<u8>) {
     let text = encode_api_text(runtime, text);
@@ -52,17 +52,14 @@ pub(super) fn encode_api_submission_parts(
     (text, runtime.encode_terminal_key(enter.into()))
 }
 
-pub(super) fn encode_api_submission(
-    runtime: &crate::terminal::TerminalRuntime,
-    text: &str,
-) -> Vec<u8> {
+pub(super) fn encode_api_submission(runtime: &crate::pane::PaneRuntime, text: &str) -> Vec<u8> {
     let (mut text, enter) = encode_api_submission_parts(runtime, text);
     text.extend_from_slice(&enter);
     text
 }
 
 pub(super) fn encode_api_input(
-    runtime: &crate::terminal::TerminalRuntime,
+    runtime: &crate::pane::PaneRuntime,
     text: &str,
     keys: &[String],
 ) -> Result<Vec<u8>, ApiError> {
@@ -132,11 +129,11 @@ pub(super) fn effective_read_format(
 }
 
 pub(super) fn read_terminal_snapshot(
-    terminal: &crate::terminal::TerminalRuntime,
+    terminal: &crate::pane::PaneRuntime,
     source: crate::api::schema::ReadSource,
     format: crate::api::schema::ReadFormat,
     lines: Option<u32>,
-) -> Result<crate::pane::TerminalReadSnapshot, ApiError> {
+) -> Result<crate::terminal::TerminalReadSnapshot, ApiError> {
     validate_read_request(source, format, lines)?;
     Ok(read_validated_terminal_snapshot(
         terminal, source, format, lines,
@@ -168,11 +165,11 @@ fn validate_read_request(
 }
 
 fn read_validated_terminal_snapshot(
-    terminal: &crate::terminal::TerminalRuntime,
+    terminal: &crate::pane::PaneRuntime,
     source: crate::api::schema::ReadSource,
     format: crate::api::schema::ReadFormat,
     lines: Option<u32>,
-) -> crate::pane::TerminalReadSnapshot {
+) -> crate::terminal::TerminalReadSnapshot {
     use crate::api::schema::{ReadFormat, ReadSource};
 
     let line_limit = lines.map(|lines| lines as usize);
@@ -206,15 +203,15 @@ fn read_validated_terminal_snapshot(
 pub(crate) fn limit_snapshot_lines(
     text: String,
     limit: Option<usize>,
-) -> crate::pane::TerminalReadSnapshot {
+) -> crate::terminal::TerminalReadSnapshot {
     let Some(limit) = limit else {
-        return crate::pane::TerminalReadSnapshot {
+        return crate::terminal::TerminalReadSnapshot {
             text,
             truncated: false,
         };
     };
     let lines: Vec<_> = text.split_inclusive('\n').collect();
-    crate::pane::TerminalReadSnapshot {
+    crate::terminal::TerminalReadSnapshot {
         text: lines[lines.len().saturating_sub(limit)..].concat(),
         truncated: lines.len() > limit,
     }

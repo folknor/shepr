@@ -10,7 +10,7 @@
 mod io;
 pub(crate) mod lock;
 mod restore;
-mod snapshot;
+pub(crate) mod snapshot;
 mod writer;
 
 pub use self::io::{load, load_history};

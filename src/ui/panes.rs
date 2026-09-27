@@ -3,7 +3,7 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Borders, Paragraph, Wrap},
 };
 
 use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
@@ -12,12 +12,13 @@ use super::text::display_width;
 use super::text::truncate_end;
 use super::widgets::panel_contrast_fg;
 use crate::app::AppState;
-use crate::layout::PaneInfo as LayoutPaneInfo;
-use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry};
+use crate::pane::{PaneRuntime, PaneRuntimeRegistry};
 use crate::theme::Palette;
-use crate::ui::PaneChromeInfo as PaneInfo;
+#[cfg(test)]
+use crate::workspace::apply_pane_chrome;
+use crate::workspace::{PaneChromeInfo as PaneInfo, pane_inner_rect};
 
-pub(crate) fn pane_is_scrolled_back(rt: &TerminalRuntime) -> bool {
+pub(crate) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
     rt.scroll_metrics()
         .is_some_and(|metrics| metrics.offset_from_bottom > 0)
 }
@@ -35,7 +36,7 @@ fn pane_border_title(label: &str, pane_width: u16, _focused: bool) -> Option<Str
 // Keep terminal queries narrow, allocation-free, and short under the core lock.
 // The gutter rule itself is `terminal_content_rect`, shared with the size a
 // new pane's PTY is spawned at, so the two cannot drift.
-fn terminal_inner_rect(rt: &TerminalRuntime, pane_inner: Rect, pane_scrollbars: bool) -> Rect {
+fn terminal_inner_rect(rt: &PaneRuntime, pane_inner: Rect, pane_scrollbars: bool) -> Rect {
     crate::workspace::terminal_content_rect(
         pane_inner,
         pane_scrollbars,
@@ -43,130 +44,11 @@ fn terminal_inner_rect(rt: &TerminalRuntime, pane_inner: Rect, pane_scrollbars: 
     )
 }
 
-pub(crate) fn pane_inner_rect(area: Rect, borders: Borders) -> Rect {
-    if borders.is_empty() {
-        area
-    } else {
-        Block::default().borders(borders).inner(area)
-    }
-}
-
-fn ranges_overlap(a_start: u16, a_len: u16, b_start: u16, b_len: u16) -> bool {
-    a_start < b_start.saturating_add(b_len) && b_start < a_start.saturating_add(a_len)
-}
-
-fn pane_to_right<'a>(
-    info: &LayoutPaneInfo,
-    panes: &'a [LayoutPaneInfo],
-) -> Option<&'a LayoutPaneInfo> {
-    let right = info.rect.x.saturating_add(info.rect.width);
-    panes.iter().find(|other| {
-        other.id != info.id
-            && other.rect.x == right
-            && ranges_overlap(
-                info.rect.y,
-                info.rect.height,
-                other.rect.y,
-                other.rect.height,
-            )
-    })
-}
-
-fn pane_below<'a>(
-    info: &LayoutPaneInfo,
-    panes: &'a [LayoutPaneInfo],
-) -> Option<&'a LayoutPaneInfo> {
-    let bottom = info.rect.y.saturating_add(info.rect.height);
-    panes.iter().find(|other| {
-        other.id != info.id
-            && other.rect.y == bottom
-            && ranges_overlap(info.rect.x, info.rect.width, other.rect.x, other.rect.width)
-    })
-}
-
-fn shrink_for_one_cell_gap(size: u16) -> u16 {
-    if size > 1 { size - 1 } else { size }
-}
-
-pub(crate) fn apply_pane_chrome(
-    panes: &[LayoutPaneInfo],
-    pane_borders: crate::config::PaneBordersConfig,
-    pane_gaps: bool,
-    pane_outer_borders: bool,
-) -> Vec<PaneInfo> {
-    let multi_pane = panes.len() > 1;
-    let bordered = pane_borders.shows_borders(multi_pane);
-    let outer_left = panes.iter().map(|info| info.rect.x).min().unwrap_or(0);
-    let outer_top = panes.iter().map(|info| info.rect.y).min().unwrap_or(0);
-    let outer_right = panes
-        .iter()
-        .map(|info| info.rect.x.saturating_add(info.rect.width))
-        .max()
-        .unwrap_or(0);
-    let outer_bottom = panes
-        .iter()
-        .map(|info| info.rect.y.saturating_add(info.rect.height))
-        .max()
-        .unwrap_or(0);
-    panes
-        .iter()
-        .cloned()
-        .map(|layout_info| {
-            let right_neighbor = multi_pane
-                .then(|| pane_to_right(&layout_info, panes))
-                .flatten();
-            let below_neighbor = multi_pane
-                .then(|| pane_below(&layout_info, panes))
-                .flatten();
-            let mut info = PaneInfo::from(layout_info);
-
-            if multi_pane && pane_gaps && !pane_borders.draws_borders() {
-                if right_neighbor.is_some() {
-                    info.rect.width = shrink_for_one_cell_gap(info.rect.width);
-                }
-                if below_neighbor.is_some() {
-                    info.rect.height = shrink_for_one_cell_gap(info.rect.height);
-                }
-            }
-
-            info.borders = if !bordered {
-                Borders::NONE
-            } else {
-                let mut borders = Borders::ALL;
-                if !pane_gaps {
-                    if right_neighbor.is_some() {
-                        borders.remove(Borders::RIGHT);
-                    }
-                    if below_neighbor.is_some() {
-                        borders.remove(Borders::BOTTOM);
-                    }
-                }
-                if !pane_outer_borders {
-                    if info.rect.x == outer_left {
-                        borders.remove(Borders::LEFT);
-                    }
-                    if info.rect.y == outer_top {
-                        borders.remove(Borders::TOP);
-                    }
-                    if info.rect.x.saturating_add(info.rect.width) == outer_right {
-                        borders.remove(Borders::RIGHT);
-                    }
-                    if info.rect.y.saturating_add(info.rect.height) == outer_bottom {
-                        borders.remove(Borders::BOTTOM);
-                    }
-                }
-                borders
-            };
-            info
-        })
-        .collect()
-}
-
 fn runtime_for_tab_pane<'a>(
-    terminal_runtimes: &'a TerminalRuntimeRegistry,
+    terminal_runtimes: &'a PaneRuntimeRegistry,
     tab: &'a crate::workspace::Tab,
     pane_id: crate::layout::PaneId,
-) -> Option<(&'a crate::protocol::TerminalId, &'a TerminalRuntime)> {
+) -> Option<(&'a crate::protocol::TerminalId, &'a PaneRuntime)> {
     let terminal_id = tab.terminal_id(pane_id)?;
     terminal_runtimes
         .get(terminal_id)
@@ -174,7 +56,7 @@ fn runtime_for_tab_pane<'a>(
 }
 
 fn stable_scrollbar_gutter(
-    rt: &TerminalRuntime,
+    rt: &PaneRuntime,
     pane_inner: Rect,
     pane_scrollbars: bool,
 ) -> (Rect, Option<Rect>) {
@@ -199,7 +81,7 @@ fn stable_scrollbar_gutter(
 /// Apply a computed pane layout to every runtime it contains.
 pub(super) fn resize_pane_infos(
     app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     ws_idx: usize,
     tab_idx: usize,
     pane_infos: &[PaneInfo],
@@ -231,7 +113,7 @@ pub(super) fn resize_pane_infos(
 /// Compute pane layout info without mutating pane runtimes.
 pub(super) fn compute_pane_infos_for_tab(
     app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     ws_idx: usize,
     tab_idx: usize,
     area: Rect,
@@ -268,7 +150,7 @@ pub(super) fn compute_pane_infos_for_tab(
 #[cfg(test)]
 fn compute_pane_infos(
     app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     area: Rect,
 ) -> Vec<PaneInfo> {
     let Some(workspace_index) = app.active_index() else {
@@ -286,7 +168,7 @@ fn compute_pane_infos(
 
 pub(super) fn render_panes(
     app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     frame: &mut Frame,
     target: Option<&super::tab_surface::TabSurfaceTarget>,
     pane_infos: &[PaneInfo],
@@ -743,8 +625,8 @@ mod tests {
     use super::*;
     use crate::config::PaneBordersConfig;
     use crate::layout::PaneId;
+    use crate::pane::PaneRuntime;
     use crate::selection::Selection;
-    use crate::terminal::TerminalRuntime;
     use crate::terminal::TerminalState;
     use crate::workspace::Workspace;
 
@@ -753,9 +635,9 @@ mod tests {
     fn registry_with_runtime(
         workspace: &Workspace,
         pane_id: PaneId,
-        runtime: TerminalRuntime,
-    ) -> TerminalRuntimeRegistry {
-        let mut registry = TerminalRuntimeRegistry::new();
+        runtime: PaneRuntime,
+    ) -> PaneRuntimeRegistry {
+        let mut registry = PaneRuntimeRegistry::new();
         registry.insert(
             workspace
                 .terminal_id(pane_id)
@@ -790,7 +672,7 @@ mod tests {
             .get_mut(&terminal_id)
             .expect("test precondition")
             .restore_error = Some("Saved directory is unavailable. Restart to retry.".into());
-        let runtimes = TerminalRuntimeRegistry::new();
+        let runtimes = PaneRuntimeRegistry::new();
         let area = Rect::new(0, 0, 80, 24);
         let layout = crate::ui::compute_tab_surface_for(
             &app,
@@ -798,8 +680,18 @@ mod tests {
             crate::ui::TabSurfaceTarget::from_indices(&app, 0, 0),
             area,
         );
-        let (buffer, cursor, _, _) =
-            crate::server::render_stream::render_tab_surface_virtual(&app, &runtimes, layout, area);
+        let surface = crate::ui::TabSurfaceView {
+            target: layout.target.as_ref(),
+            pane_infos: &layout.pane_infos,
+            split_borders: &layout.split_borders,
+        };
+        let cursor = crate::ui::tab_surface_cursor(&app, &runtimes, surface);
+        let backend = ratatui::backend::TestBackend::new(area.width, area.height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test backend");
+        terminal
+            .draw(|frame| crate::ui::render_tab_surface(&app, &runtimes, surface, frame))
+            .expect("render tab surface");
+        let buffer = terminal.backend().buffer();
         let text: String = buffer
             .content
             .iter()
@@ -1106,7 +998,7 @@ mod tests {
                 direction: ratatui::layout::Direction::Vertical,
                 ratio: 0.5,
                 area: Rect::new(0, 0, 4, 4),
-                path: vec![crate::protocol::SplitBranch::First],
+                path: vec![crate::geometry::SplitBranch::First],
             },
         ];
         let ws = Workspace::test_new("test");
@@ -1171,7 +1063,7 @@ mod tests {
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             root_pane,
-            TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
+            PaneRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
         app.workspaces = vec![workspace];
         app.set_active_index(Some(0));
@@ -1197,7 +1089,7 @@ mod tests {
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             root_pane,
-            TerminalRuntime::test_with_scrollback_bytes(
+            PaneRuntime::test_with_scrollback_bytes(
                 40,
                 8,
                 1024,
@@ -1237,7 +1129,7 @@ mod tests {
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             root_pane,
-            TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
+            PaneRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
         app.workspaces = vec![workspace];
         app.set_active_index(Some(0));
@@ -1260,7 +1152,7 @@ mod tests {
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             focused_pane,
-            TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
+            PaneRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
         app.workspaces = vec![workspace];
         app.set_active_index(Some(0));
@@ -1283,7 +1175,7 @@ mod tests {
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             root_pane,
-            TerminalRuntime::test_with_scrollback_bytes(4, 8, 1024, b"ready\n"),
+            PaneRuntime::test_with_scrollback_bytes(4, 8, 1024, b"ready\n"),
         );
         app.workspaces = vec![workspace];
         app.set_active_index(Some(0));
@@ -1316,14 +1208,14 @@ mod tests {
                 let root = workspace.tabs[0].root_pane;
                 let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
                 workspace.tabs[0].zoomed = zoomed;
-                let mut terminal_runtimes = TerminalRuntimeRegistry::new();
+                let mut terminal_runtimes = PaneRuntimeRegistry::new();
                 for pane in [root, right] {
                     terminal_runtimes.insert(
                         workspace
                             .terminal_id(pane)
                             .expect("test precondition")
                             .clone(),
-                        TerminalRuntime::test_with_scrollback_bytes(20, 5, 1024, b""),
+                        PaneRuntime::test_with_scrollback_bytes(20, 5, 1024, b""),
                     );
                 }
                 app.workspaces = vec![workspace];
@@ -1354,7 +1246,7 @@ mod tests {
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             root_pane,
-            TerminalRuntime::test_with_scrollback_bytes(
+            PaneRuntime::test_with_scrollback_bytes(
                 40,
                 8,
                 1024,

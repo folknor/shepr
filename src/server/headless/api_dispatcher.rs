@@ -3,7 +3,7 @@ use crate::server::ClientId;
 
 pub(super) enum AltScreenReadConflict {
     None,
-    Frozen(crate::pane::TerminalReadSnapshot),
+    Frozen(crate::terminal::TerminalReadSnapshot),
     Defer,
 }
 

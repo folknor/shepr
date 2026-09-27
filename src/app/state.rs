@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::Rect;
 
 use crate::layout::PaneId;
-use crate::ui::PaneChromeInfo as PaneInfo;
+use crate::workspace::PaneChromeInfo as PaneInfo;
 
 use crate::host_term::theme::{HostAppearance, TerminalTheme};
 use crate::workspace::Workspace;
@@ -222,10 +222,10 @@ impl AppState {
     /// whose shell failed to start, or one still waiting on agent resume).
     pub(crate) fn runtime_for_pane_in_workspace<'a>(
         &'a self,
-        terminal_runtimes: &'a crate::terminal::TerminalRuntimeRegistry,
+        terminal_runtimes: &'a crate::pane::PaneRuntimeRegistry,
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
-    ) -> Option<&'a crate::terminal::TerminalRuntime> {
+    ) -> Option<&'a crate::pane::PaneRuntime> {
         let terminal_id = self.workspaces.get(ws_idx)?.terminal_id(pane_id)?;
         terminal_runtimes.get(terminal_id)
     }
@@ -461,7 +461,7 @@ mod tests {
         let pane_id = ws.tabs[0].root_pane;
         let terminal_id = ws.tabs[0].panes[&pane_id].attached_terminal_id.clone();
         state.workspaces = vec![ws];
-        let mut registry = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut registry = crate::pane::PaneRuntimeRegistry::new();
 
         assert!(
             state
@@ -471,7 +471,7 @@ mod tests {
 
         registry.insert(
             terminal_id,
-            crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 5, b""),
+            crate::pane::PaneRuntime::test_with_screen_bytes(20, 5, b""),
         );
         assert!(
             state

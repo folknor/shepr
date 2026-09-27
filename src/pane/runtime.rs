@@ -32,6 +32,7 @@ use crate::pty::actor::{
     PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult, ReaderExit,
 };
 use crate::render_signal::RenderSignal;
+use crate::terminal::TerminalReadSnapshot;
 
 pub(crate) struct TerminalDirtyPatchSnapshot {
     pub patch: TerminalDirtyPatchOutcome,

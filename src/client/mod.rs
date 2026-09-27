@@ -90,7 +90,6 @@ use tracing::{debug, info, warn};
 use crate::blit as render_ansi;
 use crate::ipc::LocalStream;
 use crate::protocol::{self, ClientMessage, MAX_FRAME_SIZE, ServerMessage};
-use crate::server::socket_paths::client_socket_path;
 
 fn remember_direct_notice(notices: &mut VecDeque<String>, message: String) {
     const MAX_NOTICES: usize = 64;
@@ -123,11 +122,14 @@ fn run_client_with_mode(
             escape,
         } => (Some((terminal_id, takeover)), Some(escape)),
     };
-    crate::logging::init_file_logging(paths, crate::logging::CLIENT_LOG_FILE);
+    crate::logging::init_file_logging(
+        &crate::session::data_dir(paths),
+        crate::logging::CLIENT_LOG_FILE,
+    );
 
     crate::host_term::modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let client_rendered_shell = attach_request.is_none();
-    let socket_path = client_socket_path(paths);
+    let socket_path = paths.server_address().client_socket().to_path_buf();
     let error_context = ClientErrorContext::new(
         paths.server_address().attach_command(paths.session_id()),
         std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR).ok(),
@@ -496,7 +498,7 @@ async fn run_client_loop(
     );
     if local_failure_policy.reconnects_local() {
         supervisors.add_local(
-            client_socket_path(&config.paths),
+            config.paths.server_address().client_socket().to_path_buf(),
             write_stream
                 .connection(&endpoint::ClientEndpointId::Local)
                 .map(|connection| connection.generation.get()),

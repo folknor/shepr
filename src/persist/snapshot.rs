@@ -5,12 +5,12 @@ use ratatui::layout::Direction;
 use serde::{Deserialize, Serialize};
 
 use crate::layout::Node;
+use crate::pane::PaneRuntimeRegistry;
 use crate::protocol::TerminalId;
-use crate::terminal::TerminalRuntimeRegistry;
 use crate::workspace::Workspace;
 
 /// Current snapshot format version. Files with any other version are ignored.
-pub(super) const SNAPSHOT_VERSION: u32 = 1;
+pub(crate) const SNAPSHOT_VERSION: u32 = 1;
 
 /// Serializable snapshot of the entire shepr session.
 #[derive(Serialize, Deserialize)]
@@ -164,7 +164,7 @@ pub fn capture(
         crate::protocol::TerminalId,
         crate::terminal::TerminalState,
     >,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &std::path::Path,
     active: Option<usize>,
     selected: usize,
@@ -190,7 +190,7 @@ fn capture_workspace(
         crate::protocol::TerminalId,
         crate::terminal::TerminalState,
     >,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &std::path::Path,
 ) -> WorkspaceSnapshot {
     let tabs: Vec<_> = ws
@@ -230,7 +230,7 @@ fn capture_tab(
         crate::protocol::TerminalId,
         crate::terminal::TerminalState,
     >,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &std::path::Path,
 ) -> TabSnapshot {
     let mut panes = HashMap::new();
@@ -239,7 +239,7 @@ fn capture_tab(
         let terminal = terminal_id.and_then(|id| terminals.get(id));
         let cwd = terminal_id
             .and_then(|id| terminal_runtimes.get(id))
-            .and_then(crate::terminal::TerminalRuntime::cwd_for_persistence)
+            .and_then(crate::pane::PaneRuntime::cwd_for_persistence)
             .or_else(|| terminal.map(|terminal| terminal.cwd.clone()))
             .unwrap_or_else(|| fallback_cwd.to_path_buf());
         let label = terminal.and_then(|terminal| terminal.manual_label.clone());
@@ -386,6 +386,15 @@ impl HistoryCarry {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn carry_restored_for_test(
+        &self,
+        terminal: &TerminalId,
+        history: Option<&PaneHistorySnapshot>,
+    ) {
+        self.carry_restored(terminal, history);
+    }
+
     /// The save-thread half of a live pane's history: records a successful
     /// primary-screen read as the pane's fallback, or falls back to the last
     /// one while the alternate screen hides the primary screen.
@@ -474,7 +483,7 @@ impl PendingHistory {
 pub fn capture_history(
     snapshot: &SessionSnapshot,
     workspaces: &[Workspace],
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     carry: &HistoryCarry,
 ) -> SessionHistorySnapshot {
     capture_pending_history(workspaces, terminal_runtimes, carry).resolve(snapshot)
@@ -483,7 +492,7 @@ pub fn capture_history(
 /// The event-loop half of a history capture; see `PendingHistory`.
 pub(crate) fn capture_pending_history(
     workspaces: &[Workspace],
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     carry: &HistoryCarry,
 ) -> PendingHistory {
     let mut carried = carry.lock();
@@ -513,7 +522,7 @@ pub(crate) fn capture_pending_history(
 
 fn capture_tab_history(
     tab: &crate::workspace::Tab,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     carried: &mut CarriedHistory,
 ) -> Vec<(u32, PendingPaneHistory)> {
     tab.panes
@@ -527,7 +536,7 @@ fn capture_tab_history(
 
 fn capture_pane_history(
     pane: &crate::pane::PaneState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     carried: &mut CarriedHistory,
 ) -> Option<PendingPaneHistory> {
     let terminal = &pane.attached_terminal_id;
@@ -553,13 +562,13 @@ fn capture_pane_history(
 }
 
 /// How a live pane's history gets read. The save path is built to run this
-/// read on the save thread, but a `TerminalRuntime` cannot leave the event
+/// read on the save thread, but a `PaneRuntime` cannot leave the event
 /// loop and the pane layer offers no `Send` handle to its terminal core yet,
 /// so for now the whole scrollback is still formatted here, on the loop,
 /// under one hold of the pane's terminal lock. Once the pane layer exposes
 /// such a handle (ideally one that formats in bounded chunks under short lock
 /// holds), returning a closure over it is the only change needed here.
-fn live_history_read(runtime: &crate::terminal::TerminalRuntime) -> PaneHistoryRead {
+fn live_history_read(runtime: &crate::pane::PaneRuntime) -> PaneHistoryRead {
     let ansi = runtime.snapshot_history();
     Box::new(move || ansi)
 }
@@ -584,7 +593,7 @@ pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
     }
 }
 
-pub(super) fn parse_snapshot(content: &str) -> Result<SessionSnapshot, String> {
+pub(crate) fn parse_snapshot(content: &str) -> Result<SessionSnapshot, String> {
     let snapshot = serde_json::from_str::<SessionSnapshot>(content).map_err(|e| e.to_string())?;
     if snapshot.version != SNAPSHOT_VERSION {
         return Err(format!(
@@ -605,919 +614,4 @@ pub(super) fn parse_history_snapshot(content: &str) -> Result<SessionHistorySnap
         ));
     }
     Ok(snapshot)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashMap;
-    use std::path::PathBuf;
-
-    use ratatui::layout::{Direction, Rect};
-
-    use super::*;
-    use crate::app::{AppState, Mode};
-    use crate::layout::NavDirection;
-    use crate::workspace::Workspace;
-
-    fn test_session_path(name: &str) -> String {
-        std::env::current_dir()
-            .expect("test precondition")
-            .join(name)
-            .display()
-            .to_string()
-    }
-
-    fn state_with_workspaces(names: &[&str]) -> AppState {
-        let mut state = AppState::test_new();
-        state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
-        state.ensure_test_terminals();
-        if !state.workspaces.is_empty() {
-            state.set_active_index(Some(0));
-            state.set_selected_index(Some(0));
-            state.mode = Mode::Terminal;
-        }
-        state
-    }
-
-    fn capture_from_state(state: &AppState) -> SessionSnapshot {
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
-        capture_from_state_with_runtimes(state, &terminal_runtimes)
-    }
-
-    fn capture_from_state_with_runtimes(
-        state: &AppState,
-        terminal_runtimes: &TerminalRuntimeRegistry,
-    ) -> SessionSnapshot {
-        capture(
-            &state.workspaces,
-            &state.terminals,
-            terminal_runtimes,
-            std::path::Path::new("/"),
-            state.active_index(),
-            state.selected_index().unwrap_or(0),
-            state.host_terminal_theme,
-        )
-    }
-
-    fn capture_history_from_state_with_runtimes(
-        state: &AppState,
-        terminal_runtimes: &TerminalRuntimeRegistry,
-    ) -> SessionHistorySnapshot {
-        capture_history_with_carry(state, terminal_runtimes, &HistoryCarry::default())
-    }
-
-    fn capture_history_with_carry(
-        state: &AppState,
-        terminal_runtimes: &TerminalRuntimeRegistry,
-        carry: &HistoryCarry,
-    ) -> SessionHistorySnapshot {
-        let snapshot = capture_from_state_with_runtimes(state, terminal_runtimes);
-        capture_history(&snapshot, &state.workspaces, terminal_runtimes, carry)
-    }
-
-    fn root_split_ratio(tab: &TabSnapshot) -> Option<f32> {
-        match &tab.layout {
-            LayoutSnapshot::Split { ratio, .. } => Some(*ratio),
-            LayoutSnapshot::Pane(_) => None,
-        }
-    }
-
-    #[test]
-    fn managed_agent_snapshot_omits_pending_and_persists_active_ownership() {
-        let mut state = state_with_workspaces(&["managed-snapshot"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
-        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
-            .attached_terminal_id
-            .clone();
-        let now = std::time::Instant::now();
-        state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition")
-            .begin_managed_agent(
-                "reviewer".into(),
-                crate::detect::Agent::Pi,
-                now,
-                std::time::Duration::ZERO,
-                std::time::Duration::from_secs(1),
-            );
-
-        let pending = capture_from_state(&state);
-        let pending_pane = &pending.workspaces[0].tabs[0].panes[&root.raw()];
-        assert_eq!(pending_pane.agent_name, None);
-        assert_eq!(pending_pane.managed_agent_kind, None);
-
-        let terminal = state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition");
-        terminal.set_detected_state(
-            Some(crate::detect::Agent::Pi),
-            crate::detect::AgentState::Idle,
-        );
-        assert!(terminal.reconcile_managed_agent_at(now, false));
-        let active = capture_from_state(&state);
-        let active_pane = &active.workspaces[0].tabs[0].panes[&root.raw()];
-        assert_eq!(active_pane.agent_name.as_deref(), Some("reviewer"));
-        assert_eq!(active_pane.managed_agent_kind.as_deref(), Some("pi"));
-    }
-
-    #[test]
-    fn round_trip_empty_session() {
-        let snap = SessionSnapshot {
-            version: SNAPSHOT_VERSION,
-            host_theme: Default::default(),
-            workspaces: vec![],
-            active: None,
-            selected: 0,
-        };
-        let json = serde_json::to_string(&snap).expect("test precondition");
-        let restored = parse_snapshot(&json).expect("test precondition");
-        assert!(restored.workspaces.is_empty());
-        assert_eq!(restored.active, None);
-    }
-
-    #[test]
-    fn saved_host_theme_round_trips_and_old_snapshots_default_to_empty() {
-        let color = crate::host_term::theme::RgbColor {
-            r: 12,
-            g: 34,
-            b: 56,
-        };
-        let mut theme = crate::host_term::theme::TerminalTheme {
-            background: Some(color),
-            ..Default::default()
-        };
-        theme.palette[240] = Some(color);
-        let saved = SavedHostTheme::from(theme);
-        let json = serde_json::to_string(&saved).expect("test precondition");
-        let loaded: SavedHostTheme = serde_json::from_str(&json).expect("test precondition");
-        assert_eq!(loaded.to_theme(), theme);
-
-        let old = r#"{"version":1,"workspaces":[],"active":null,"selected":0}"#;
-        let loaded = parse_snapshot(old).expect("old snapshot remains readable");
-        assert!(loaded.host_theme.to_theme().is_empty());
-    }
-
-    #[test]
-    fn capture_keeps_the_theme_for_a_headless_resume() {
-        let mut state = AppState::test_new();
-        let color = crate::host_term::theme::RgbColor { r: 2, g: 4, b: 8 };
-        state.host_terminal_theme.background = Some(color);
-        let snapshot = capture_from_state(&state);
-        assert_eq!(snapshot.host_theme.to_theme().background, Some(color));
-    }
-
-    #[test]
-    fn round_trip_layout_snapshot() {
-        let layout = LayoutSnapshot::Split {
-            direction: DirectionSnapshot::Horizontal,
-            ratio: 0.6,
-            first: Box::new(LayoutSnapshot::Pane(0)),
-            second: Box::new(LayoutSnapshot::Split {
-                direction: DirectionSnapshot::Vertical,
-                ratio: 0.5,
-                first: Box::new(LayoutSnapshot::Pane(1)),
-                second: Box::new(LayoutSnapshot::Pane(2)),
-            }),
-        };
-        let json = serde_json::to_string(&layout).expect("test precondition");
-        let restored: LayoutSnapshot = serde_json::from_str(&json).expect("test precondition");
-
-        match restored {
-            LayoutSnapshot::Split { ratio, .. } => assert!((ratio - 0.6).abs() < 0.01),
-            _ => panic!("expected split"),
-        }
-    }
-
-    #[test]
-    fn round_trip_full_workspace_snapshot() {
-        let mut panes = HashMap::new();
-        panes.insert(
-            0,
-            PaneSnapshot {
-                cwd: PathBuf::from("/home/can/Projects/shepr"),
-                label: None,
-                agent_name: None,
-                managed_agent_kind: None,
-                agent_session: None,
-                launch_argv: None,
-            },
-        );
-        panes.insert(
-            1,
-            PaneSnapshot {
-                cwd: PathBuf::from("/home/can/Projects/website"),
-                label: Some("website".into()),
-                agent_name: None,
-                managed_agent_kind: None,
-                agent_session: None,
-                launch_argv: None,
-            },
-        );
-
-        let snap = SessionSnapshot {
-            host_theme: Default::default(),
-            workspaces: vec![WorkspaceSnapshot {
-                id: Some("wproj".to_string()),
-                custom_name: Some("pi-mono".to_string()),
-                identity_cwd: PathBuf::from("/home/can/Projects/shepr"),
-                public_pane_numbers: HashMap::from([(0, 1), (1, 2)]),
-                next_public_pane_number: 3,
-                public_tab_numbers: vec![1],
-                next_public_tab_number: 2,
-                tabs: vec![TabSnapshot {
-                    custom_name: Some("api".to_string()),
-                    layout: LayoutSnapshot::Split {
-                        direction: DirectionSnapshot::Horizontal,
-                        ratio: 0.5,
-                        first: Box::new(LayoutSnapshot::Pane(0)),
-                        second: Box::new(LayoutSnapshot::Pane(1)),
-                    },
-                    panes,
-                    zoomed: false,
-                    focused: Some(0),
-                    root_pane: Some(0),
-                }],
-                active_tab: 0,
-            }],
-            active: Some(0),
-            selected: 0,
-            version: SNAPSHOT_VERSION,
-        };
-
-        let json = serde_json::to_string_pretty(&snap).expect("test precondition");
-        let restored = parse_snapshot(&json).expect("test precondition");
-
-        assert_eq!(restored.workspaces.len(), 1);
-        assert_eq!(restored.workspaces[0].id.as_deref(), Some("wproj"));
-        assert_eq!(
-            restored.workspaces[0].custom_name.as_deref(),
-            Some("pi-mono")
-        );
-        assert_eq!(restored.workspaces[0].tabs.len(), 1);
-        assert_eq!(restored.workspaces[0].tabs[0].panes.len(), 2);
-        assert_eq!(
-            restored.workspaces[0].tabs[0].panes[&0].cwd,
-            PathBuf::from("/home/can/Projects/shepr")
-        );
-        assert_eq!(
-            restored.workspaces[0].tabs[0].panes[&1].label.as_deref(),
-            Some("website")
-        );
-    }
-
-    #[test]
-    fn capture_contract_tracks_workspace_order_active_and_selected() {
-        let mut state = state_with_workspaces(&["a", "b", "c"]);
-        state.set_active_index(Some(1));
-        state.set_selected_index(Some(2));
-
-        state.move_workspace(1, 0);
-
-        let snapshot = capture_from_state(&state);
-        let ids: Vec<_> = state.workspaces.iter().map(|ws| ws.id.clone()).collect();
-        let captured_ids: Vec<_> = snapshot
-            .workspaces
-            .iter()
-            .map(|ws| ws.id.clone().expect("test precondition"))
-            .collect();
-        assert_eq!(captured_ids, ids);
-        assert_eq!(snapshot.active, state.active_index());
-        assert_eq!(snapshot.selected, state.selected_index().unwrap_or(0));
-    }
-
-    #[test]
-    fn capture_contract_tracks_workspace_and_tab_names_and_active_tab() {
-        let mut state = state_with_workspaces(&["one"]);
-        state.workspaces[0].set_custom_name("renamed-workspace".into());
-        let second_tab = state.workspaces[0].test_add_tab(Some("logs"));
-        state.workspaces[0].switch_tab(second_tab);
-        state.workspaces[0].tabs[0].set_custom_name("main".into());
-
-        let snapshot = capture_from_state(&state);
-        let workspace = &snapshot.workspaces[0];
-        assert_eq!(workspace.custom_name.as_deref(), Some("renamed-workspace"));
-        assert_eq!(workspace.active_tab, second_tab);
-        assert_eq!(workspace.tabs[0].custom_name.as_deref(), Some("main"));
-        assert_eq!(workspace.tabs[1].custom_name.as_deref(), Some("logs"));
-    }
-
-    #[test]
-    fn capture_contract_tracks_workspace_closure() {
-        let mut state = state_with_workspaces(&["one", "two"]);
-        state.set_selected_index(Some(1));
-        state.set_active_index(Some(1));
-
-        state.close_selected_workspace();
-
-        let snapshot = capture_from_state(&state);
-        assert_eq!(snapshot.workspaces.len(), 1);
-        assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("one"));
-        assert_eq!(snapshot.active, Some(0));
-        assert_eq!(snapshot.selected, 0);
-    }
-
-    #[test]
-    fn capture_contract_tracks_layout_focus_zoom_and_root_pane() {
-        let mut state = state_with_workspaces(&["one"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
-        let second = state.workspaces[0].test_split(Direction::Horizontal);
-        state.workspaces[0].tabs[0].layout.focus_pane(second);
-        state
-            .apply_pane_zoom(0, second, crate::app::actions::PaneZoomCommand::Toggle)
-            .expect("test precondition");
-
-        let snapshot = capture_from_state(&state);
-        let tab = &snapshot.workspaces[0].tabs[0];
-        assert!(matches!(tab.layout, LayoutSnapshot::Split { .. }));
-        assert_eq!(tab.focused, Some(second.raw()));
-        assert_eq!(tab.root_pane, Some(root.raw()));
-        assert!(tab.zoomed);
-        assert_eq!(tab.panes.len(), 2);
-    }
-
-    #[test]
-    fn capture_contract_tracks_focus_navigation() {
-        let mut state = state_with_workspaces(&["one"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
-        let second = state.workspaces[0].test_split(Direction::Horizontal);
-        crate::ui::compute_view_with_runtime_registry(
-            &mut state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
-            Rect::new(0, 0, 106, 20),
-        );
-
-        state.navigate_pane(NavDirection::Right);
-
-        let snapshot = capture_from_state(&state);
-        assert_eq!(snapshot.workspaces[0].tabs[0].focused, Some(second.raw()));
-        assert_ne!(snapshot.workspaces[0].tabs[0].focused, Some(root.raw()));
-    }
-
-    #[test]
-    fn capture_contract_tracks_resize_ratio_changes() {
-        let mut state = state_with_workspaces(&["one"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
-        state.workspaces[0].test_split(Direction::Horizontal);
-        state.workspaces[0].layout.focus_pane(root);
-        crate::ui::compute_view_with_runtime_registry(
-            &mut state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
-            Rect::new(0, 0, 106, 20),
-        );
-        let before = capture_from_state(&state);
-
-        state.resize_pane(NavDirection::Right);
-
-        let after = capture_from_state(&state);
-        let before_ratio =
-            root_split_ratio(&before.workspaces[0].tabs[0]).expect("test precondition");
-        let after_ratio =
-            root_split_ratio(&after.workspaces[0].tabs[0]).expect("test precondition");
-        assert_ne!(before_ratio, after_ratio);
-    }
-
-    #[test]
-    fn capture_contract_tracks_tab_closure() {
-        let mut state = state_with_workspaces(&["one"]);
-        let second_tab = state.workspaces[0].test_add_tab(Some("logs"));
-        state.switch_tab(second_tab);
-
-        let _ = state.remove_active_tab();
-
-        let snapshot = capture_from_state(&state);
-        let workspace = &snapshot.workspaces[0];
-        assert_eq!(workspace.tabs.len(), 1);
-        assert_eq!(workspace.active_tab, 0);
-        assert!(workspace.tabs[0].custom_name.is_none());
-    }
-
-    #[test]
-    fn capture_contract_tracks_pane_closure() {
-        let mut state = state_with_workspaces(&["one"]);
-        state.workspaces[0].test_split(Direction::Horizontal);
-
-        let focused = state.workspaces[0]
-            .focused_pane_id()
-            .expect("test precondition");
-        let _ = state.remove_pane(0, focused);
-
-        let snapshot = capture_from_state(&state);
-        let tab = &snapshot.workspaces[0].tabs[0];
-        assert_eq!(tab.panes.len(), 1);
-        assert!(matches!(tab.layout, LayoutSnapshot::Pane(_)));
-        assert!(!tab.zoomed);
-    }
-
-    #[test]
-    fn capture_contract_tracks_public_id_counters() {
-        let mut state = state_with_workspaces(&["one"]);
-        let second = state.workspaces[0].test_split(Direction::Horizontal);
-        let third = state.workspaces[0].test_split(Direction::Vertical);
-        let second_tab = state.workspaces[0].test_add_tab(None);
-
-        let _ = state.workspaces[0].close_pane(second);
-
-        let snapshot = capture_from_state(&state);
-        let workspace = &snapshot.workspaces[0];
-        assert_eq!(
-            workspace.public_pane_numbers,
-            HashMap::from([
-                (state.workspaces[0].tabs[0].root_pane.raw(), 1),
-                (third.raw(), 3),
-                (state.workspaces[0].tabs[second_tab].root_pane.raw(), 4),
-            ])
-        );
-        assert_eq!(workspace.next_public_pane_number, 5);
-        assert_eq!(workspace.public_tab_numbers, vec![1, 2]);
-        assert_eq!(workspace.next_public_tab_number, 3);
-    }
-
-    #[tokio::test]
-    async fn capture_prefers_live_shell_cwd_and_keeps_it_after_exit() {
-        let old = std::env::current_dir().expect("test precondition");
-        let scratch = crate::test_support::ScratchDir::new("persist-cwd");
-        let new = std::fs::canonicalize(scratch.path()).expect("test precondition");
-        let mut state = AppState::test_new();
-        state.workspaces = vec![Workspace::test_new("cwd-source")];
-        state.workspaces[0].identity_cwd = old.clone();
-        state.set_active_index(Some(0));
-        state.ensure_test_terminals();
-        let pane_id = state.workspaces[0].tabs[0].root_pane;
-        let terminal_id = state.workspaces[0]
-            .terminal_id(pane_id)
-            .expect("test precondition")
-            .clone();
-        let (events, _rx) = tokio::sync::mpsc::channel(32);
-        let runtime = crate::terminal::TerminalRuntime::spawn(
-            pane_id,
-            24,
-            80,
-            &old,
-            0,
-            Default::default(),
-            None,
-            crate::pane::PaneShellConfig::new("/bin/sh", false),
-            &crate::pane::PaneLaunchEnv::default(),
-            &events,
-            &std::sync::Arc::new(tokio::sync::Notify::new()),
-            &std::sync::Arc::new(crate::render_signal::RenderSignal::new()),
-        )
-        .expect("test precondition");
-        let pid = runtime.child_pid().expect("test precondition");
-        runtime
-            .try_send_bytes(bytes::Bytes::from(format!(
-                "cd '{}'; printf '\\033]7;file://{}\\007'; exec sleep 30\n",
-                new.display(),
-                old.display()
-            )))
-            .expect("test precondition");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while (crate::detect::process_cwd(pid).as_ref() != Some(&new)
-            || runtime.cwd().as_ref() != Some(&old))
-            && std::time::Instant::now() < deadline
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        assert_eq!(crate::detect::process_cwd(pid), Some(new.clone()));
-        assert_eq!(
-            runtime.cwd(),
-            Some(old.clone()),
-            "existing reported-cwd accessor is unchanged"
-        );
-        let mut runtimes = TerminalRuntimeRegistry::new();
-        runtimes.insert(terminal_id, runtime);
-        let before = capture_from_state_with_runtimes(&state, &runtimes);
-        assert_eq!(
-            before.workspaces[0].tabs[0]
-                .panes
-                .values()
-                .next()
-                .expect("test precondition")
-                .cwd,
-            new
-        );
-        assert_eq!(before.workspaces[0].identity_cwd, new);
-        assert_eq!(
-            runtimes.values().next().expect("test precondition").cwd(),
-            Some(old.clone())
-        );
-        crate::platform::signal_processes(&[pid], crate::platform::Signal::Kill);
-        let exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while crate::detect::process_cwd(pid).is_some() && std::time::Instant::now() < exit_deadline
-        {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        assert!(crate::detect::process_cwd(pid).is_none());
-        let after = capture_from_state_with_runtimes(&state, &runtimes);
-        assert_eq!(
-            after.workspaces[0].tabs[0]
-                .panes
-                .values()
-                .next()
-                .expect("test precondition")
-                .cwd,
-            new
-        );
-        assert_eq!(after.workspaces[0].identity_cwd, new);
-        assert_eq!(
-            runtimes.values().next().expect("test precondition").cwd(),
-            Some(old)
-        );
-        for (_, runtime) in runtimes.drain() {
-            runtime.shutdown();
-        }
-    }
-
-    #[test]
-    fn capture_contract_tracks_workspace_identity_and_pane_cwds() {
-        let mut state = state_with_workspaces(&["one"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
-        state.workspaces[0].identity_cwd = PathBuf::from("/tmp/pion");
-        let second = state.workspaces[0].test_split(Direction::Horizontal);
-        state.ensure_test_terminals();
-        let root_terminal_id = state.workspaces[0].tabs[0].panes[&root]
-            .attached_terminal_id
-            .clone();
-        state
-            .terminals
-            .get_mut(&root_terminal_id)
-            .expect("test precondition")
-            .cwd = PathBuf::from("/tmp/pion");
-        let second_terminal_id = state.workspaces[0].tabs[0].panes[&second]
-            .attached_terminal_id
-            .clone();
-        state
-            .terminals
-            .get_mut(&second_terminal_id)
-            .expect("test precondition")
-            .cwd = PathBuf::from("/tmp/shepr");
-
-        let snapshot = capture_from_state(&state);
-        let workspace = &snapshot.workspaces[0];
-        let tab = &workspace.tabs[0];
-        assert_eq!(workspace.identity_cwd, PathBuf::from("/tmp/pion"));
-        assert_eq!(tab.panes[&root.raw()].cwd, PathBuf::from("/tmp/pion"));
-        assert_eq!(tab.panes[&second.raw()].cwd, PathBuf::from("/tmp/shepr"));
-    }
-
-    #[tokio::test]
-    async fn capture_contract_tracks_pane_history_from_runtime() {
-        let state = state_with_workspaces(&["one"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
-        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
-            .attached_terminal_id
-            .clone();
-        let mut terminal_runtimes = TerminalRuntimeRegistry::new();
-        terminal_runtimes.insert(
-            terminal_id,
-            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
-                20,
-                3,
-                4096,
-                b"alpha\r\nbeta\r\ngamma\r\n",
-            ),
-        );
-
-        let snapshot = capture_from_state_with_runtimes(&state, &terminal_runtimes);
-        let encoded = serde_json::to_string(&snapshot).expect("test precondition");
-        assert!(!encoded.contains("alpha"));
-        assert!(!encoded.contains("\"history\""));
-
-        let history_snapshot = capture_history_from_state_with_runtimes(&state, &terminal_runtimes);
-        let history = &history_snapshot.workspaces[0].tabs[0].panes[&root.raw()];
-
-        assert!(history.ansi.contains("alpha"));
-        assert!(history.ansi.contains("gamma"));
-    }
-
-    #[tokio::test]
-    async fn capture_contract_tracks_history_for_each_pane() {
-        let mut state = state_with_workspaces(&["one"]);
-        let first = state.workspaces[0].tabs[0].root_pane;
-        let second = state.workspaces[0].test_split(Direction::Horizontal);
-        let first_terminal_id = state.workspaces[0].tabs[0].panes[&first]
-            .attached_terminal_id
-            .clone();
-        let second_terminal_id = state.workspaces[0].tabs[0].panes[&second]
-            .attached_terminal_id
-            .clone();
-        let mut terminal_runtimes = TerminalRuntimeRegistry::new();
-        terminal_runtimes.insert(
-            first_terminal_id,
-            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
-                20,
-                3,
-                4096,
-                b"first-pane-history\r\n",
-            ),
-        );
-        terminal_runtimes.insert(
-            second_terminal_id,
-            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
-                20,
-                3,
-                4096,
-                b"second-pane-history\r\n",
-            ),
-        );
-
-        let snapshot = capture_from_state_with_runtimes(&state, &terminal_runtimes);
-        let encoded = serde_json::to_string(&snapshot).expect("test precondition");
-        assert!(!encoded.contains("first-pane-history"));
-        assert!(!encoded.contains("second-pane-history"));
-
-        let history_snapshot = capture_history_from_state_with_runtimes(&state, &terminal_runtimes);
-        let tab = &history_snapshot.workspaces[0].tabs[0];
-        let first_history = &tab.panes[&first.raw()];
-        let second_history = &tab.panes[&second.raw()];
-
-        assert!(first_history.ansi.contains("first-pane-history"));
-        assert!(second_history.ansi.contains("second-pane-history"));
-    }
-
-    fn root_history(history: &SessionHistorySnapshot, root: crate::layout::PaneId) -> Option<&str> {
-        history.workspaces[0].tabs[0]
-            .panes
-            .get(&root.raw())
-            .map(|pane| pane.ansi.as_str())
-    }
-
-    /// The alternate screen hides the primary one from saves; a save made
-    /// meanwhile keeps the pane's last primary history instead of dropping it
-    /// or writing the alternate frame, and the fallback follows every fresh
-    /// primary read.
-    #[tokio::test]
-    async fn running_pane_saved_on_alternate_screen_keeps_last_primary_history() {
-        let state = state_with_workspaces(&["one"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
-        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
-            .attached_terminal_id
-            .clone();
-        let mut terminal_runtimes = TerminalRuntimeRegistry::new();
-        terminal_runtimes.insert(
-            terminal_id.clone(),
-            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
-                20,
-                3,
-                4096,
-                b"PRIMARY_ONE\r\n",
-            ),
-        );
-        let runtime = |runtimes: &TerminalRuntimeRegistry, bytes: &[u8]| {
-            runtimes
-                .get(&terminal_id)
-                .expect("test precondition")
-                .test_process_pty_bytes(bytes);
-        };
-        let carry = HistoryCarry::default();
-
-        let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
-        assert!(root_history(&saved, root).is_some_and(|ansi| ansi.contains("PRIMARY_ONE")));
-
-        runtime(&terminal_runtimes, b"\x1b[?1049hALT_FRAME");
-        for _ in 0..2 {
-            let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
-            let ansi = root_history(&saved, root).expect("alternate screen keeps the history");
-            assert!(ansi.contains("PRIMARY_ONE"));
-            assert!(!ansi.contains("ALT_FRAME"));
-        }
-
-        runtime(&terminal_runtimes, b"\x1b[?1049lPRIMARY_TWO\r\n");
-        let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
-        assert!(root_history(&saved, root).is_some_and(|ansi| ansi.contains("PRIMARY_TWO")));
-        runtime(&terminal_runtimes, b"\x1b[?1049hALT_AGAIN");
-        let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
-        let ansi = root_history(&saved, root).expect("alternate screen keeps the history");
-        assert!(ansi.contains("PRIMARY_TWO"));
-        assert!(!ansi.contains("ALT_AGAIN"));
-
-        // Closing the pane drops its fallback.
-        let other = state_with_workspaces(&["other"]);
-        capture_history_with_carry(&other, &TerminalRuntimeRegistry::new(), &carry);
-        assert!(carry.lock().is_empty());
-        for (_, runtime) in terminal_runtimes.drain() {
-            runtime.shutdown();
-        }
-    }
-
-    /// A restored pane without a runtime keeps its saved history in every
-    /// save until it runs. From then on only its own screen counts: the
-    /// restored copy is gone even while the pane is on the alternate screen,
-    /// and even if the pane later loses its runtime again.
-    #[tokio::test]
-    async fn restored_history_is_carried_until_the_pane_runs_then_superseded() {
-        let state = state_with_workspaces(&["one"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
-        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
-            .attached_terminal_id
-            .clone();
-        let carry = HistoryCarry::default();
-        carry.carry_restored(
-            &terminal_id,
-            Some(&PaneHistorySnapshot {
-                ansi: "RESTORED_HISTORY\r\n".into(),
-            }),
-        );
-        let mut terminal_runtimes = TerminalRuntimeRegistry::new();
-        for _ in 0..2 {
-            let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
-            assert_eq!(root_history(&saved, root), Some("RESTORED_HISTORY\r\n"));
-        }
-
-        // The pane starts straight into an alternate-screen program, as a
-        // resumed agent does: no primary history of its own yet.
-        terminal_runtimes.insert(
-            terminal_id.clone(),
-            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
-                20,
-                3,
-                4096,
-                b"\x1b[?1049hAGENT_TUI",
-            ),
-        );
-        let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
-        assert_eq!(root_history(&saved, root), None);
-
-        terminal_runtimes
-            .get(&terminal_id)
-            .expect("test precondition")
-            .test_process_pty_bytes(b"\x1b[?1049lLIVE_SCREEN\r\n");
-        let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
-        let ansi = root_history(&saved, root).expect("live history is saved");
-        assert!(ansi.contains("LIVE_SCREEN"));
-        assert!(!ansi.contains("RESTORED_HISTORY"));
-
-        if let Some(runtime) = terminal_runtimes.remove(&terminal_id) {
-            runtime.shutdown();
-        }
-        let saved = capture_history_with_carry(&state, &terminal_runtimes, &carry);
-        let ansi = root_history(&saved, root).expect("last live history is kept");
-        assert!(ansi.contains("LIVE_SCREEN"));
-        assert!(!ansi.contains("RESTORED_HISTORY"));
-    }
-
-    #[test]
-    fn capture_contract_tracks_hook_authority_agent_session() {
-        let mut state = state_with_workspaces(&["one"]);
-        let session_path = test_session_path("pi-session.jsonl");
-        let root = state.workspaces[0].tabs[0].root_pane;
-        state.ensure_test_terminals();
-        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
-            .attached_terminal_id
-            .clone();
-        let terminal = state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition");
-        terminal.set_detected_state(
-            Some(crate::detect::Agent::Pi),
-            crate::detect::AgentState::Idle,
-        );
-        terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
-            source: "shepr:pi".into(),
-            agent: crate::agent::Agent::Pi,
-            session_ref: crate::agent::resume::AgentSessionRef::path(session_path.clone())
-                .expect("test precondition"),
-        });
-        terminal.set_hook_authority_with_session_ref(
-            "shepr:pi".into(),
-            "pi".into(),
-            crate::detect::AgentState::Working,
-            None,
-            crate::agent::resume::AgentSessionRef::path(session_path.clone()),
-            Some(20),
-        );
-
-        let snapshot = capture_from_state(&state);
-        let agent_session = snapshot.workspaces[0].tabs[0].panes[&root.raw()]
-            .agent_session
-            .as_ref()
-            .expect("agent session should be captured");
-
-        assert_eq!(agent_session.source, "shepr:pi");
-        assert_eq!(agent_session.agent, "pi");
-        assert_eq!(
-            agent_session.session_ref.kind(),
-            crate::agent::resume::AgentSessionRefKind::Path
-        );
-        assert_eq!(agent_session.session_ref.value_str(), session_path);
-    }
-
-    #[test]
-    fn capture_contract_preserves_restored_agent_session() {
-        let mut state = state_with_workspaces(&["one"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
-        state.ensure_test_terminals();
-        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
-            .attached_terminal_id
-            .clone();
-        state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition")
-            .set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
-                source: "shepr:opencode".into(),
-                agent: crate::agent::Agent::OpenCode,
-                session_ref: crate::agent::resume::AgentSessionRef::id("opencode-session")
-                    .expect("test precondition"),
-            });
-
-        let snapshot = capture_from_state(&state);
-        let agent_session = snapshot.workspaces[0].tabs[0].panes[&root.raw()]
-            .agent_session
-            .as_ref()
-            .expect("persisted agent session should be captured");
-
-        assert_eq!(agent_session.source, "shepr:opencode");
-        assert_eq!(agent_session.agent, "opencode");
-        assert_eq!(
-            agent_session.session_ref.kind(),
-            crate::agent::resume::AgentSessionRefKind::Id
-        );
-        assert_eq!(agent_session.session_ref.value_str(), "opencode-session");
-    }
-
-    #[test]
-    fn other_or_missing_version_is_rejected() {
-        let json = r#"{"workspaces":[],"active":null,"selected":0}"#;
-        assert!(parse_snapshot(json).is_err());
-        let json = r#"{"version":999,"workspaces":[],"active":null,"selected":0}"#;
-        assert!(parse_snapshot(json).is_err());
-    }
-
-    #[test]
-    fn active_tab_default_is_zero() {
-        let json = r#"{"custom_name":"test","identity_cwd":"/tmp","tabs":[]}"#;
-        let ws: WorkspaceSnapshot = serde_json::from_str(json).expect("test precondition");
-        assert_eq!(ws.active_tab, 0);
-    }
-
-    #[test]
-    fn snapshot_parsing_preserves_missing_cwd() {
-        let mut panes = HashMap::new();
-        panes.insert(
-            0,
-            PaneSnapshot {
-                cwd: PathBuf::from("/tmp/this-directory-does-not-exist-for-shepr-test"),
-                label: None,
-                agent_name: None,
-                managed_agent_kind: None,
-                agent_session: None,
-                launch_argv: None,
-            },
-        );
-        panes.insert(
-            1,
-            PaneSnapshot {
-                cwd: std::env::var("HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|_| PathBuf::from("/tmp")),
-                label: None,
-                agent_name: None,
-                managed_agent_kind: None,
-                agent_session: None,
-                launch_argv: None,
-            },
-        );
-
-        let snap = SessionSnapshot {
-            version: SNAPSHOT_VERSION,
-            host_theme: Default::default(),
-            workspaces: vec![WorkspaceSnapshot {
-                id: Some("test-ws".to_string()),
-                custom_name: Some("fallback test".to_string()),
-                identity_cwd: PathBuf::from("/tmp"),
-                public_pane_numbers: HashMap::new(),
-                next_public_pane_number: 0,
-                public_tab_numbers: Vec::new(),
-                next_public_tab_number: 0,
-                tabs: vec![TabSnapshot {
-                    custom_name: None,
-                    layout: LayoutSnapshot::Split {
-                        direction: DirectionSnapshot::Horizontal,
-                        ratio: 0.5,
-                        first: Box::new(LayoutSnapshot::Pane(0)),
-                        second: Box::new(LayoutSnapshot::Pane(1)),
-                    },
-                    panes,
-                    zoomed: false,
-                    focused: Some(0),
-                    root_pane: Some(0),
-                }],
-                active_tab: 0,
-            }],
-            active: Some(0),
-            selected: 0,
-        };
-
-        let json = serde_json::to_string(&snap).expect("test precondition");
-        let restored = parse_snapshot(&json).expect("test precondition");
-        assert_eq!(restored.workspaces.len(), 1);
-        assert_eq!(
-            restored.workspaces[0].tabs[0].panes[&0].cwd,
-            PathBuf::from("/tmp/this-directory-does-not-exist-for-shepr-test")
-        );
-    }
 }

@@ -443,7 +443,7 @@ impl App {
     }
 }
 
-fn available_shell_name(runtime: &crate::terminal::TerminalRuntime) -> Option<String> {
+fn available_shell_name(runtime: &crate::pane::PaneRuntime) -> Option<String> {
     #[cfg(test)]
     if runtime.child_pid().is_none() {
         return Some("sh".into());
@@ -452,7 +452,7 @@ fn available_shell_name(runtime: &crate::terminal::TerminalRuntime) -> Option<St
 }
 
 pub(super) fn runtime_hosts_agent(
-    runtime: &crate::terminal::TerminalRuntime,
+    runtime: &crate::pane::PaneRuntime,
     expected: crate::detect::Agent,
 ) -> bool {
     #[cfg(test)]
@@ -462,7 +462,7 @@ pub(super) fn runtime_hosts_agent(
     live_runtime_agent(runtime) == Some(expected)
 }
 
-fn live_runtime_agent(runtime: &crate::terminal::TerminalRuntime) -> Option<crate::detect::Agent> {
+fn live_runtime_agent(runtime: &crate::pane::PaneRuntime) -> Option<crate::detect::Agent> {
     let job = crate::detect::foreground_job(runtime.child_pid()?)?;
     crate::detect::identify_agent_in_job(&job)
         .map(|(agent, _)| agent)

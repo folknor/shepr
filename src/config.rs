@@ -22,8 +22,6 @@ pub use self::session_id::{
 };
 #[cfg(test)]
 pub use self::theme::CustomThemeColors;
-#[cfg(test)]
-pub(crate) use self::theme::THEME_NAMES;
 pub use self::{
     diagnostic::ConfigDiagnostic,
     io::AppPaths,
@@ -47,13 +45,11 @@ pub use self::{
 };
 
 pub(crate) use self::keybinds::parse_key_combo;
-pub(crate) use self::theme::ParsedThemeColors;
 pub(crate) use self::{
     tab_bar::{
         MAX_TAB_BAR_COMMAND_INTERVAL_SECONDS, MAX_TAB_BAR_COMMAND_TIMEOUT_SECONDS,
         MAX_TAB_BAR_RIGHT_ENTRIES, parse_tab_bar_datetime_format, tab_bar_right_diagnostics,
     },
-    theme::canonical_theme_name,
     window_title::{sanitize_window_title_text, window_title_diagnostics},
 };
 

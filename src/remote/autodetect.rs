@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use tracing::info;
 
-use super::socket_paths::client_socket_path;
+fn client_socket_path(paths: &crate::config::AppPaths) -> std::path::PathBuf {
+    paths.server_address().client_socket().to_path_buf()
+}
 
 /// Maximum time to wait for the server's client socket to become ready
 /// after spawning the server process.
@@ -226,6 +228,7 @@ pub fn auto_detect_launch(
     saved_federation: bool,
     config: &crate::config::ValidatedConfig,
     paths: &crate::config::AppPaths,
+    run_client: impl FnOnce(&crate::config::ValidatedConfig, &crate::config::AppPaths) -> io::Result<()>,
 ) -> io::Result<()> {
     // The client requires terminal geometry before it can attach. Reject an
     // unusable terminal before socket lookup creates directories or starts a daemon.
@@ -258,7 +261,7 @@ pub fn auto_detect_launch(
     }
 
     // Now attach as a thin client.
-    crate::client::run_client(config, paths)
+    run_client(config, paths)
 }
 
 // ---------------------------------------------------------------------------

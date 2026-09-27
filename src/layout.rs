@@ -4,7 +4,7 @@ use std::cmp::Reverse;
 
 use ratatui::layout::{Direction, Rect};
 
-use crate::protocol::SplitBranch;
+use crate::geometry::SplitBranch;
 
 /// First-child share of a BSP split, constrained to leave room for both panes.
 #[derive(Debug, Clone, Copy, PartialEq)]

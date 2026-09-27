@@ -417,10 +417,7 @@ struct LayoutStaging<'a> {
     pane_terminals: &'a mut std::collections::HashMap<PaneId, crate::terminal::TerminalState>,
     pane_runtimes: &'a mut std::collections::HashMap<
         PaneId,
-        (
-            crate::protocol::TerminalId,
-            crate::terminal::TerminalRuntime,
-        ),
+        (crate::protocol::TerminalId, crate::pane::PaneRuntime),
     >,
     spawn: &'a crate::workspace::PaneSpawnHandles,
 }

@@ -1,7 +1,12 @@
 use std::collections::HashMap;
 
-use crate::pane::TerminalReadSnapshot;
 use crate::vt::{CellWide, ScreenTextRow};
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct TerminalReadSnapshot {
+    pub text: String,
+    pub truncated: bool,
+}
 
 const MIN_ALIGNMENT_RATIO_PERCENT: usize = 30;
 const SIMILAR_VIEWPORT_RATIO_PERCENT: usize = 70;

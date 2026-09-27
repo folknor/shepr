@@ -166,14 +166,17 @@ mod tests {
         let pane_id = ws.tabs[0].root_pane;
         app.state.workspaces.push(ws);
         app.state.set_active_index(Some(0));
-        app.state.view.pane_infos.push(crate::ui::PaneChromeInfo {
-            id: pane_id,
-            rect: ratatui::layout::Rect::new(0, 0, 80, 24),
-            inner_rect: ratatui::layout::Rect::new(0, 0, 80, 24),
-            scrollbar_rect: None,
-            borders: ratatui::widgets::Borders::NONE,
-            is_focused: true,
-        });
+        app.state
+            .view
+            .pane_infos
+            .push(crate::workspace::PaneChromeInfo {
+                id: pane_id,
+                rect: ratatui::layout::Rect::new(0, 0, 80, 24),
+                inner_rect: ratatui::layout::Rect::new(0, 0, 80, 24),
+                scrollbar_rect: None,
+                borders: ratatui::widgets::Borders::NONE,
+                is_focused: true,
+            });
         (app, pane_id)
     }
 }

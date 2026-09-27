@@ -860,7 +860,7 @@ impl ClientShellState {
                                         .path
                                         .into_iter()
                                         .map(|branch| {
-                                            branch == crate::protocol::SplitBranch::Second
+                                            branch == crate::geometry::SplitBranch::Second
                                         })
                                         .collect(),
                                     ratio,
@@ -1029,7 +1029,7 @@ impl ClientShellState {
                                             .path
                                             .into_iter()
                                             .map(|branch| {
-                                                branch == crate::protocol::SplitBranch::Second
+                                                branch == crate::geometry::SplitBranch::Second
                                             })
                                             .collect(),
                                         ratio,

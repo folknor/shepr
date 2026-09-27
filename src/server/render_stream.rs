@@ -5,11 +5,11 @@ use ratatui::layout::{Position, Rect, Size};
 
 use crate::app::state::AppState;
 use crate::blit::{BlitEncoder, EncodedBlit};
+use crate::pane::PaneRuntimeRegistry;
 use crate::protocol::{
     CursorState, FrameData, PaneSurfaceFrame, PaneSurfacePatch, RenderEncoding, ServerMessage,
     SurfaceRevision, TerminalFrame,
 };
-use crate::terminal::TerminalRuntimeRegistry;
 
 /// Per-client render baseline for the selected render encoding.
 pub(crate) enum ClientRenderState {
@@ -459,7 +459,7 @@ pub(crate) type RenderedTabSurface = (
 /// Renders only the active tab's pane surface at an origin-relative client viewport.
 pub(crate) fn render_tab_surface_virtual(
     app_state: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     layout: crate::ui::TabSurfaceLayout,
     area: Rect,
 ) -> RenderedTabSurface {
@@ -488,7 +488,7 @@ pub(crate) fn render_tab_surface_virtual(
 
 /// Renders one server-owned terminal directly for `terminal attach` clients.
 pub(crate) fn render_terminal_virtual(
-    runtime: &crate::terminal::TerminalRuntime,
+    runtime: &crate::pane::PaneRuntime,
     area: Rect,
 ) -> (ratatui::buffer::Buffer, Option<CursorState>) {
     let suppress_cursor = runtime.synchronized_output_active();

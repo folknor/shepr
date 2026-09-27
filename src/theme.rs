@@ -1,5 +1,73 @@
 use ratatui::style::Color;
 
+pub const THEME_NAMES: &[&str] = &[
+    "catppuccin",
+    "catppuccin-latte",
+    "terminal",
+    "tokyo-night",
+    "tokyo-night-day",
+    "dracula",
+    "nord",
+    "gruvbox",
+    "gruvbox-light",
+    "one-dark",
+    "one-light",
+    "solarized",
+    "solarized-light",
+    "kanagawa",
+    "kanagawa-lotus",
+    "rose-pine",
+    "rose-pine-dawn",
+    "vesper",
+];
+
+pub(crate) fn canonical_theme_name(name: &str) -> Option<&'static str> {
+    match name.to_lowercase().replace([' ', '_'], "-").as_str() {
+        "catppuccin" | "catppuccin-mocha" => Some("catppuccin"),
+        "catppuccin-latte" | "latte" | "light" => Some("catppuccin-latte"),
+        "terminal" => Some("terminal"),
+        "tokyo-night" | "tokyonight" => Some("tokyo-night"),
+        "tokyo-night-day" | "tokyo-day" | "tokyonight-day" => Some("tokyo-night-day"),
+        "dracula" => Some("dracula"),
+        "nord" => Some("nord"),
+        "gruvbox" | "gruvbox-dark" => Some("gruvbox"),
+        "gruvbox-light" => Some("gruvbox-light"),
+        "one-dark" | "onedark" => Some("one-dark"),
+        "one-light" | "onelight" => Some("one-light"),
+        "solarized" | "solarized-dark" => Some("solarized"),
+        "solarized-light" => Some("solarized-light"),
+        "kanagawa" => Some("kanagawa"),
+        "kanagawa-lotus" | "lotus" => Some("kanagawa-lotus"),
+        "rose-pine" | "rosepine" => Some("rose-pine"),
+        "rose-pine-dawn" | "rosepine-dawn" | "dawn" => Some("rose-pine-dawn"),
+        "vesper" => Some("vesper"),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct ParsedThemeColors {
+    pub(crate) accent: Option<ratatui::style::Color>,
+    pub(crate) panel_bg: Option<ratatui::style::Color>,
+    pub(crate) sidebar_bg: Option<ratatui::style::Color>,
+    pub(crate) active_row_bg: Option<ratatui::style::Color>,
+    pub(crate) selection_bg: Option<ratatui::style::Color>,
+    pub(crate) surface0: Option<ratatui::style::Color>,
+    pub(crate) surface1: Option<ratatui::style::Color>,
+    pub(crate) surface_dim: Option<ratatui::style::Color>,
+    pub(crate) overlay0: Option<ratatui::style::Color>,
+    pub(crate) overlay1: Option<ratatui::style::Color>,
+    pub(crate) text: Option<ratatui::style::Color>,
+    pub(crate) subtext0: Option<ratatui::style::Color>,
+    pub(crate) mauve: Option<ratatui::style::Color>,
+    pub(crate) green: Option<ratatui::style::Color>,
+    pub(crate) yellow: Option<ratatui::style::Color>,
+    pub(crate) red: Option<ratatui::style::Color>,
+    pub(crate) blue: Option<ratatui::style::Color>,
+    pub(crate) teal: Option<ratatui::style::Color>,
+    pub(crate) peach: Option<ratatui::style::Color>,
+}
+
 /// Resolved colors used by the UI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Palette {
@@ -502,7 +570,7 @@ impl Palette {
 
     /// Resolve a theme by name. Returns None for unknown names.
     pub fn from_name(name: &str) -> Option<Self> {
-        match crate::config::canonical_theme_name(name)? {
+        match canonical_theme_name(name)? {
             "catppuccin" => Some(Self::catppuccin()),
             "catppuccin-latte" => Some(Self::catppuccin_latte()),
             "terminal" => Some(Self::terminal()),
@@ -526,7 +594,7 @@ impl Palette {
     }
 
     /// Apply custom color overrides on top of this palette.
-    pub(crate) fn with_overrides(mut self, custom: &crate::config::ParsedThemeColors) -> Self {
+    pub(crate) fn with_overrides(mut self, custom: &ParsedThemeColors) -> Self {
         if let Some(color) = custom.accent {
             self.accent = color;
         }
@@ -618,7 +686,7 @@ mod tests {
 
     #[test]
     fn built_in_theme_names_resolve() {
-        for name in crate::config::THEME_NAMES {
+        for name in THEME_NAMES {
             assert!(
                 Palette::from_name(name).is_some(),
                 "theme should resolve: {name}"
@@ -628,7 +696,7 @@ mod tests {
 
     #[test]
     fn built_in_active_rows_remain_visible_with_matching_terminal_backgrounds() {
-        for name in crate::config::THEME_NAMES
+        for name in THEME_NAMES
             .iter()
             .copied()
             .filter(|name| *name != "terminal")
@@ -650,7 +718,7 @@ mod tests {
 
     #[test]
     fn built_in_selection_rows_stay_distinct_from_background_and_active_rows() {
-        for name in crate::config::THEME_NAMES
+        for name in THEME_NAMES
             .iter()
             .copied()
             .filter(|name| *name != "terminal")
@@ -676,7 +744,7 @@ mod tests {
 
     #[test]
     fn built_in_themes_leave_sidebar_background_unset() {
-        for name in crate::config::THEME_NAMES {
+        for name in THEME_NAMES {
             let palette = Palette::from_name(name).expect("test precondition");
             assert_eq!(
                 palette.sidebar_bg,
@@ -688,13 +756,12 @@ mod tests {
 
     #[test]
     fn custom_sidebar_colors_override_the_defaults() {
-        let custom = crate::config::CustomThemeColors {
-            sidebar_bg: Some("#181825".to_string()),
-            active_row_bg: Some("#313244".to_string()),
-            selection_bg: Some("#45475a".to_string()),
+        let parsed = ParsedThemeColors {
+            sidebar_bg: Some(Color::Rgb(24, 24, 37)),
+            active_row_bg: Some(Color::Rgb(49, 50, 68)),
+            selection_bg: Some(Color::Rgb(69, 71, 90)),
             ..Default::default()
         };
-        let parsed = custom.parse().expect("valid test colors");
         let palette = Palette::catppuccin().with_overrides(&parsed);
 
         assert_eq!(palette.sidebar_bg, Color::Rgb(24, 24, 37));

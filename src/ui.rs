@@ -1,16 +1,12 @@
 use ratatui::layout::Rect;
 
-mod pane_info;
 mod panes;
 mod scrollbar;
 mod tab_surface;
 mod text;
 mod widgets;
 
-pub(crate) use self::pane_info::PaneChromeInfo;
-pub(crate) use self::panes::{
-    apply_pane_chrome, pane_inner_rect, pane_is_scrolled_back, render_selection_highlight,
-};
+pub(crate) use self::panes::{pane_is_scrolled_back, render_selection_highlight};
 pub(crate) use self::scrollbar::{
     render_pane_scrollbar_buffer, render_scrollbar_buffer, scrollbar_offset_from_drag_row,
     scrollbar_offset_from_row, scrollbar_thumb, scrollbar_thumb_grab_offset,
@@ -22,12 +18,12 @@ pub(crate) use self::tab_surface::{
 };
 
 use crate::app::AppState;
-use crate::terminal::TerminalRuntimeRegistry;
+use crate::pane::PaneRuntimeRegistry;
 
 /// Refresh the active view geometry without resizing any terminal runtimes.
 pub fn compute_view_with_runtime_registry(
     app: &mut AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     area: Rect,
 ) {
     compute_view_internal(app, terminal_runtimes, area);
@@ -36,17 +32,13 @@ pub fn compute_view_with_runtime_registry(
 /// Refresh view geometry for callers that explicitly defer pane resizing.
 pub(crate) fn compute_view_without_resizing_panes(
     app: &mut AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     area: Rect,
 ) {
     compute_view_internal(app, terminal_runtimes, area);
 }
 
-fn compute_view_internal(
-    app: &mut AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
-    area: Rect,
-) {
+fn compute_view_internal(app: &mut AppState, terminal_runtimes: &PaneRuntimeRegistry, area: Rect) {
     let TabSurfaceLayout { pane_infos, .. } = compute_tab_surface(app, terminal_runtimes, area);
 
     app.view = crate::app::ViewState {
@@ -58,7 +50,7 @@ fn compute_view_internal(
 /// Resize visible panes in every open tab using the supplied terminal area.
 pub(crate) fn resize_all_tab_surfaces(
     app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     area: Rect,
     cell_size: crate::host_term::cell_size::HostCellSize,
 ) {

@@ -9,10 +9,24 @@ mod workspaces;
 
 use super::App;
 use crate::api::error::{ApiErrorCode, ApiResult};
+use crate::api::{Outcome, RenderDemand};
 #[cfg(test)]
 use crate::events::AppEvent;
 
 impl App {
+    pub(crate) fn handle_api_request_with_render(
+        &mut self,
+        request: crate::api::schema::Request,
+    ) -> Outcome {
+        let render = if request.method.traits().mutates_ui {
+            RenderDemand::Full
+        } else {
+            RenderDemand::None
+        };
+        let response = self.handle_api_request_after_internal_events_drained(request);
+        Outcome { response, render }
+    }
+
     #[cfg(test)]
     pub(crate) fn handle_api_request(&mut self, request: crate::api::schema::Request) -> String {
         let id = request.id.clone();
@@ -232,7 +246,7 @@ mod tests {
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        let (runtime, _rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
         let reset_notify = runtime.agent_detection_reset_notify_for_test();
         app.terminal_runtimes.insert(terminal_id, runtime);
 
@@ -272,7 +286,7 @@ mod tests {
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        let (runtime, _rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
         let reset_notify = runtime.agent_detection_reset_notify_for_test();
         app.terminal_runtimes.insert(terminal_id, runtime);
 
@@ -319,7 +333,7 @@ mod tests {
             .get_mut(&terminal_id)
             .expect("test precondition")
             .detected_agent = Some(Agent::Codex);
-        let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(
+        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(
             80,
             24,
             b"press enter to confirm or esc to cancel",
@@ -371,7 +385,7 @@ mod tests {
                 None,
                 Some(1),
             );
-        let runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"");
+        let runtime = crate::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
         app.terminal_runtimes.insert(terminal_id, runtime);
         let target = app.public_pane_id(0, pane_id).expect("test precondition");
 
@@ -403,7 +417,7 @@ mod tests {
         let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
             .attached_terminal_id
             .clone();
-        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        let (runtime, _rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
         app.terminal_runtimes.insert(terminal_id, runtime);
         let target = app.public_pane_id(0, pane_id).expect("test precondition");
 

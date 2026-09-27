@@ -826,7 +826,7 @@ impl HeadlessServer {
     fn runtime_for_terminal_id_string(
         &self,
         terminal_id: &str,
-    ) -> Option<&crate::terminal::TerminalRuntime> {
+    ) -> Option<&crate::pane::PaneRuntime> {
         let terminal_id = self.terminal_id_by_string(terminal_id)?;
         self.app.terminal_runtimes.get(terminal_id)
     }
@@ -1959,7 +1959,7 @@ impl HeadlessServer {
                 self.effective_size.rows.get(),
             );
         }
-        let outcome = api::handle(&mut self.app, msg.request);
+        let outcome = self.app.handle_api_request_with_render(msg.request);
         changed |= outcome.render != api::RenderDemand::None;
         let mut response = outcome.response;
         if let Some(snapshot) = frozen_alt_screen_read
@@ -2118,4 +2118,4 @@ fn bind_owner_only_listener(path: &Path) -> io::Result<LocalListener> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

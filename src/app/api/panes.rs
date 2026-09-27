@@ -687,14 +687,14 @@ impl From<ratatui::layout::Rect> for PaneLayoutRect {
     }
 }
 
-fn split_path_id(idx: usize, path: &[crate::protocol::SplitBranch]) -> String {
+fn split_path_id(idx: usize, path: &[crate::geometry::SplitBranch]) -> String {
     if path.is_empty() {
         return format!("split_{idx}_root");
     }
     let path = path
         .iter()
         .map(|branch| {
-            if *branch == crate::protocol::SplitBranch::Second {
+            if *branch == crate::geometry::SplitBranch::Second {
                 "1"
             } else {
                 "0"
@@ -773,8 +773,7 @@ mod tests {
     ) -> (App, String, tokio::sync::mpsc::Receiver<bytes::Bytes>) {
         let (mut app, public_pane_id) = app_with_test_workspace();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        let (runtime, rx) =
-            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, capacity);
+        let (runtime, rx) = crate::pane::PaneRuntime::test_with_channel_capacity(80, 24, capacity);
         app.insert_test_runtime(pane_id, runtime);
         (app, public_pane_id, rx)
     }
@@ -785,12 +784,8 @@ mod tests {
         let lines = (0..20)
             .map(|line| format!("line {line:02}\n"))
             .collect::<String>();
-        let runtime = crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
-            20,
-            5,
-            1000,
-            lines.as_bytes(),
-        );
+        let runtime =
+            crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, lines.as_bytes());
         app.insert_test_runtime(pane_id, runtime);
         (app, public_pane_id, pane_id)
     }
@@ -979,12 +974,7 @@ mod tests {
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         app.insert_test_runtime(
             pane_id,
-            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
-                20,
-                5,
-                1000,
-                b"hello world",
-            ),
+            crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"hello world"),
         );
 
         let runtime = app
@@ -1031,12 +1021,7 @@ mod tests {
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         app.insert_test_runtime(
             pane_id,
-            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
-                20,
-                5,
-                1000,
-                b"hello world",
-            ),
+            crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"hello world"),
         );
 
         let response = app.handle_pane_copy_motion(
@@ -1072,12 +1057,7 @@ mod tests {
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         app.insert_test_runtime(
             pane_id,
-            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
-                20,
-                5,
-                1000,
-                b"one\r\n\r\nthree",
-            ),
+            crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"one\r\n\r\nthree"),
         );
         let response = app.handle_pane_copy_motion(
             "req".into(),
@@ -1111,12 +1091,7 @@ mod tests {
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         app.insert_test_runtime(
             pane_id,
-            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
-                20,
-                5,
-                1000,
-                b"alpha beta alpha",
-            ),
+            crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"alpha beta alpha"),
         );
 
         let content_revision = app
@@ -1179,12 +1154,7 @@ mod tests {
         let text = "a ".repeat(1500);
         app.insert_test_runtime(
             pane_id,
-            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
-                200,
-                20,
-                4000,
-                text.as_bytes(),
-            ),
+            crate::pane::PaneRuntime::test_with_scrollback_bytes(200, 20, 4000, text.as_bytes()),
         );
         let content_revision = app
             .state
@@ -1220,12 +1190,7 @@ mod tests {
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         app.insert_test_runtime(
             pane_id,
-            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
-                20,
-                5,
-                1000,
-                b"alpha beta",
-            ),
+            crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"alpha beta"),
         );
         let response = app.handle_pane_copy_search(
             "req".into(),
@@ -1413,14 +1378,13 @@ mod tests {
     async fn api_pane_send_keys_sends_shifted_punctuation_as_text_in_kitty_mode() {
         let (mut app, pane_id) = app_with_test_workspace();
         let internal_pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        let (runtime, mut rx) =
-            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
-                80,
-                24,
-                0,
-                b"\x1b[>7u",
-                1,
-            );
+        let (runtime, mut rx) = crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+            80,
+            24,
+            0,
+            b"\x1b[>7u",
+            1,
+        );
         app.insert_test_runtime(internal_pane_id, runtime);
 
         let response = app.handle_api_request(crate::api::schema::Request {
@@ -1732,7 +1696,7 @@ mod tests {
         app.state.workspaces[0].tabs[0].layout.focus_pane(source);
         crate::ui::compute_view_with_runtime_registry(
             &mut app.state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
         let source_public = app.public_pane_id(0, source).expect("test precondition");
@@ -1768,7 +1732,7 @@ mod tests {
         app.state.workspaces[0].tabs[0].layout.focus_pane(source);
         crate::ui::compute_view_with_runtime_registry(
             &mut app.state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
         let source_public = app.public_pane_id(0, source).expect("test precondition");
@@ -2126,9 +2090,9 @@ mod tests {
         seed_terminal_states(&mut app);
         app.insert_test_runtime(
             source,
-            crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 5, b"moved"),
+            crate::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"moved"),
         );
-        let runtime = app.test_runtime(source) as *const crate::terminal::TerminalRuntime;
+        let runtime = app.test_runtime(source) as *const crate::pane::PaneRuntime;
         let source_public = app.public_pane_id(0, source).expect("test precondition");
 
         let response = app.handle_pane_move(
@@ -2660,7 +2624,7 @@ mod tests {
         app.state.workspaces[0].tabs[0].zoomed = true;
         crate::ui::compute_view_with_runtime_registry(
             &mut app.state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
         let right_public = app.public_pane_id(0, right).expect("test precondition");
@@ -2684,7 +2648,7 @@ mod tests {
         app.state.workspaces[0].tabs[0].layout.focus_pane(root);
         crate::ui::compute_view_with_runtime_registry(
             &mut app.state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
         let root_public = app.public_pane_id(0, root).expect("test precondition");
@@ -2719,7 +2683,7 @@ mod tests {
         app.state.workspaces[0].tabs[0].layout.focus_pane(root);
         crate::ui::compute_view_with_runtime_registry(
             &mut app.state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
         let root_public = app.public_pane_id(0, root).expect("test precondition");
@@ -2750,7 +2714,7 @@ mod tests {
         app.state.workspaces[0].tabs[0].layout.focus_pane(root);
         crate::ui::compute_view_with_runtime_registry(
             &mut app.state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
         let right_public = app.public_pane_id(0, right).expect("test precondition");
@@ -2781,7 +2745,7 @@ mod tests {
         app.state.workspaces[0].tabs[0].layout.focus_pane(right);
         crate::ui::compute_view_with_runtime_registry(
             &mut app.state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
         let root_public = app.public_pane_id(0, root).expect("test precondition");
@@ -2823,7 +2787,7 @@ mod tests {
         app.state.workspaces[0].tabs[0].layout.focus_pane(root);
         crate::ui::compute_view_with_runtime_registry(
             &mut app.state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
         let root_public = app.public_pane_id(0, root).expect("test precondition");
@@ -2935,7 +2899,7 @@ mod tests {
         app.state.workspaces[0].tabs[0].layout.focus_pane(root);
         crate::ui::compute_view_with_runtime_registry(
             &mut app.state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
         let root_public = app.public_pane_id(0, root).expect("test precondition");

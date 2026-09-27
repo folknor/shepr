@@ -1,4 +1,5 @@
 use super::*;
+use crate::geometry::SplitBranch;
 use serde::{Deserialize, Serialize};
 
 /// Origin-relative geometry for one pane in a rendered pane surface.
@@ -38,19 +39,6 @@ pub struct PaneSurfaceSplit {
         deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_SPLIT_PATH, _, _>"
     )]
     pub path: Vec<SplitBranch>,
-}
-
-/// Child selected at each step of a BSP split path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum SplitBranch {
-    First,
-    Second,
-}
-
-impl From<bool> for SplitBranch {
-    fn from(second: bool) -> Self {
-        if second { Self::Second } else { Self::First }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

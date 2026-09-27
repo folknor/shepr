@@ -93,8 +93,8 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
             height: 19,
         },
         path: vec![
-            crate::protocol::SplitBranch::First,
-            crate::protocol::SplitBranch::Second,
+            crate::geometry::SplitBranch::First,
+            crate::geometry::SplitBranch::Second,
         ],
     });
     state.set_pane_surface(pane_surface);
@@ -137,8 +137,8 @@ fn pane_split_drag_uses_projected_handle_and_stable_tab_path() {
             height: 19,
         },
         path: vec![
-            crate::protocol::SplitBranch::First,
-            crate::protocol::SplitBranch::Second,
+            crate::geometry::SplitBranch::First,
+            crate::geometry::SplitBranch::Second,
         ],
     });
     state.set_snapshot(Box::new(replacement));

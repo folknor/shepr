@@ -8,10 +8,11 @@ use tracing::{error, warn};
 use crate::detect::AgentState;
 use crate::events::AppEvent;
 use crate::layout::{Node, PaneId, TileLayout};
+use crate::pane::PaneRuntime;
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::protocol::TerminalId;
 use crate::render_signal::RenderSignal;
-use crate::terminal::{TerminalRuntime, TerminalState};
+use crate::terminal::TerminalState;
 use crate::workspace::Workspace;
 
 use super::snapshot::{
@@ -52,7 +53,7 @@ struct RestoreRuntimeContext<'a> {
 pub struct RestoredSession {
     pub workspaces: Vec<Workspace>,
     pub terminals: HashMap<TerminalId, TerminalState>,
-    pub terminal_runtimes: HashMap<TerminalId, TerminalRuntime>,
+    pub terminal_runtimes: HashMap<TerminalId, PaneRuntime>,
     /// The saved active workspace as an index into `workspaces`; if it was
     /// dropped, its nearest surviving neighbour. `None` if nothing was active
     /// or nothing survived.
@@ -84,12 +85,12 @@ enum RestoredPaneStart {
 type RestoredWorkspace = (
     Workspace,
     Vec<TerminalState>,
-    HashMap<TerminalId, TerminalRuntime>,
+    HashMap<TerminalId, PaneRuntime>,
 );
 type RestoredTab = (
     crate::workspace::Tab,
     Vec<TerminalState>,
-    HashMap<TerminalId, TerminalRuntime>,
+    HashMap<TerminalId, PaneRuntime>,
     HashMap<PaneId, u32>,
 );
 /// Restore workspaces from a snapshot. Each pane gets a fresh shell in its saved cwd.
@@ -337,7 +338,7 @@ fn restore_workspace(
         custom_name: snap.custom_name.clone(),
         identity_cwd: snap.identity_cwd.clone(),
         cached_identity_cwd: snap.identity_cwd.clone(),
-        cached_auto_label: crate::workspace::fallback_label_from_cwd(&snap.identity_cwd),
+        cached_auto_label: crate::events::fallback_label_from_cwd(&snap.identity_cwd),
         cached_git_status_key: snap.identity_cwd.clone(),
         cached_git_branch: None,
         cached_git_ahead_behind: None,
@@ -546,7 +547,7 @@ fn restore_tab(
             continue;
         }
 
-        let runtime_result = TerminalRuntime::spawn_with_initial_history(
+        let runtime_result = PaneRuntime::spawn_with_initial_history(
             *id,
             rows,
             cols,
@@ -987,7 +988,7 @@ mod tests {
         assert_eq!(tab.layout.pane_ids(), vec![tab.root_pane]);
         assert_eq!(tab.panes.len(), 1);
         assert_eq!(terminals.len(), 1);
-        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+        let mut runtimes = crate::pane::PaneRuntimeRegistry::from(runtimes);
         let captured = crate::persist::capture(
             &workspaces,
             &terminals,
@@ -1064,7 +1065,7 @@ mod tests {
                 format!("resume={resume} missing_cwd={missing_cwd} missing_shell={missing_shell}");
             let runtimeless = resume || missing_cwd || missing_shell;
             assert_eq!(runtimes.is_empty(), runtimeless, "{case}");
-            let mut runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+            let mut runtimes = crate::pane::PaneRuntimeRegistry::from(runtimes);
             let captured = crate::persist::capture(
                 &workspaces,
                 &terminals,
@@ -1114,7 +1115,7 @@ mod tests {
                 let terminal_id = tab.terminal_id(tab.root_pane).expect("test precondition");
                 runtimes.insert(
                     terminal_id.clone(),
-                    crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+                    crate::pane::PaneRuntime::test_with_scrollback_bytes(
                         20,
                         3,
                         4096,
@@ -1688,7 +1689,7 @@ mod tests {
                 &Arc::new(Notify::new()),
                 &Arc::new(RenderSignal::new()),
             );
-            let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
+            let runtimes = crate::pane::PaneRuntimeRegistry::from(runtimes);
             let captured = crate::persist::capture(
                 &workspaces,
                 &terminals,
@@ -1735,11 +1736,6 @@ mod tests {
                 .expect("test precondition");
             assert_eq!(runtimes.get(healthy).is_some(), !missing_shell);
             assert!(terminals[terminal_id].restore_error.is_some());
-            let mut state = crate::app::AppState::test_new();
-            state.workspaces = workspaces;
-            state.terminals = terminals;
-            state.set_active_index(Some(0));
-            state.assert_invariants_for_test();
         }
     }
 

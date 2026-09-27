@@ -6,14 +6,13 @@ use std::time::Instant;
 use tracing::debug;
 
 use crate::detect::{Agent, AgentState};
-use crate::events::AppEvent;
+use crate::events::{AppEvent, WorkspaceGitStatus};
 use crate::layout::PaneId;
 #[cfg(test)]
 use crate::layout::{NavDirection, find_in_direction};
 use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
 use crate::workspace::{
     PaneRemoval, PaneRemovalPlan as WorkspacePaneRemovalPlan, PaneRemovalScope, TabRemoval,
-    WorkspaceGitStatus,
 };
 
 use super::state::{AppState, Mode, PaneFocusTarget};
@@ -1111,7 +1110,7 @@ impl AppState {
 impl AppState {
     pub fn apply_workspace_git_statuses(
         &mut self,
-        terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+        terminal_runtimes: &crate::pane::PaneRuntimeRegistry,
         results: Vec<WorkspaceGitStatus>,
     ) -> bool {
         let mut changed = false;
@@ -1684,17 +1683,17 @@ mod tests {
             .expect("test precondition");
         let second_id = state.workspaces[1].id.to_string();
 
-        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let terminal_runtimes = crate::pane::PaneRuntimeRegistry::new();
         let changed = state.apply_workspace_git_statuses(
             &terminal_runtimes,
             vec![WorkspaceGitStatus {
                 workspace_id: first_id,
                 resolved_identity_cwd: first_cwd.clone(),
                 status_cache_key: first_cwd,
-                demand: crate::workspace::GitStatusRefreshDemand::ALL,
+                demand: crate::events::GitStatusRefreshDemand::ALL,
                 auto_label: "one".into(),
                 branch: Some("main".into()),
-                ahead_behind: Some(crate::workspace::AheadBehind {
+                ahead_behind: Some(crate::events::AheadBehind {
                     ahead: 2,
                     behind: 1,
                 }),
@@ -1706,7 +1705,7 @@ mod tests {
         assert_eq!(state.workspaces[0].branch().as_deref(), Some("main"));
         assert_eq!(
             state.workspaces[0].git_ahead_behind(),
-            Some(crate::workspace::AheadBehind {
+            Some(crate::events::AheadBehind {
                 ahead: 2,
                 behind: 1
             })
@@ -1720,22 +1719,22 @@ mod tests {
         let mut state = app_with_workspaces(&["one"]);
         let workspace_id = state.workspaces[0].id.to_string();
         state.workspaces[0].cached_git_branch = Some("old".into());
-        state.workspaces[0].cached_git_ahead_behind = Some(crate::workspace::AheadBehind {
+        state.workspaces[0].cached_git_ahead_behind = Some(crate::events::AheadBehind {
             ahead: 1,
             behind: 0,
         });
 
-        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let terminal_runtimes = crate::pane::PaneRuntimeRegistry::new();
         let changed = state.apply_workspace_git_statuses(
             &terminal_runtimes,
             vec![WorkspaceGitStatus {
                 workspace_id,
                 resolved_identity_cwd: std::path::PathBuf::from("/definitely/not/current"),
                 status_cache_key: std::path::PathBuf::from("/definitely/not/current"),
-                demand: crate::workspace::GitStatusRefreshDemand::ALL,
+                demand: crate::events::GitStatusRefreshDemand::ALL,
                 auto_label: "stale".into(),
                 branch: Some("main".into()),
-                ahead_behind: Some(crate::workspace::AheadBehind {
+                ahead_behind: Some(crate::events::AheadBehind {
                     ahead: 0,
                     behind: 1,
                 }),
@@ -1747,7 +1746,7 @@ mod tests {
         assert_eq!(state.workspaces[0].branch().as_deref(), Some("old"));
         assert_eq!(
             state.workspaces[0].git_ahead_behind(),
-            Some(crate::workspace::AheadBehind {
+            Some(crate::events::AheadBehind {
                 ahead: 1,
                 behind: 0
             })
@@ -1764,14 +1763,14 @@ mod tests {
         state.workspaces[0].cached_auto_label = "one".into();
         state.workspaces[0].cached_git_branch = Some("old".into());
 
-        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let terminal_runtimes = crate::pane::PaneRuntimeRegistry::new();
         let changed = state.apply_workspace_git_statuses(
             &terminal_runtimes,
             vec![WorkspaceGitStatus {
                 workspace_id,
                 resolved_identity_cwd: cwd.clone(),
                 status_cache_key: cwd,
-                demand: crate::workspace::GitStatusRefreshDemand {
+                demand: crate::events::GitStatusRefreshDemand {
                     branch: false,
                     ahead_behind: true,
                 },
@@ -1794,19 +1793,19 @@ mod tests {
             .resolved_identity_cwd()
             .expect("test precondition");
         state.workspaces[0].cached_git_branch = Some("main".into());
-        state.workspaces[0].cached_git_ahead_behind = Some(crate::workspace::AheadBehind {
+        state.workspaces[0].cached_git_ahead_behind = Some(crate::events::AheadBehind {
             ahead: 1,
             behind: 2,
         });
 
-        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let terminal_runtimes = crate::pane::PaneRuntimeRegistry::new();
         let changed = state.apply_workspace_git_statuses(
             &terminal_runtimes,
             vec![WorkspaceGitStatus {
                 workspace_id,
                 resolved_identity_cwd: cwd.clone(),
                 status_cache_key: cwd,
-                demand: crate::workspace::GitStatusRefreshDemand::ALL,
+                demand: crate::events::GitStatusRefreshDemand::ALL,
                 auto_label: "one".into(),
                 branch: None,
                 ahead_behind: None,
@@ -2663,7 +2662,7 @@ mod tests {
         state.workspaces[0].zoomed = true;
         crate::ui::compute_view_with_runtime_registry(
             &mut state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
 
@@ -2673,7 +2672,7 @@ mod tests {
         state.navigate_pane(NavDirection::Right);
         crate::ui::compute_view_with_runtime_registry(
             &mut state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
 
@@ -2692,7 +2691,7 @@ mod tests {
         state.workspaces[0].layout.focus_pane(root);
         crate::ui::compute_view_with_runtime_registry(
             &mut state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
         let before_root_rect = state
@@ -2713,7 +2712,7 @@ mod tests {
         assert!(state.swap_pane(NavDirection::Right));
         crate::ui::compute_view_with_runtime_registry(
             &mut state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
 
@@ -2749,14 +2748,14 @@ mod tests {
         state.workspaces[0].zoomed = true;
         crate::ui::compute_view_with_runtime_registry(
             &mut state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
 
         assert!(state.swap_pane(NavDirection::Right));
         crate::ui::compute_view_with_runtime_registry(
             &mut state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
 
@@ -2768,7 +2767,7 @@ mod tests {
         state.workspaces[0].zoomed = false;
         crate::ui::compute_view_with_runtime_registry(
             &mut state,
-            &crate::terminal::TerminalRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 20),
         );
         let root_rect = state

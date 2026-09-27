@@ -6,8 +6,9 @@ use crossterm::event::{KeyModifiers, MouseEventKind};
 use tracing::debug;
 
 use crate::api::schema::{PaneReadResult, ResponseResult};
+use crate::pane::PaneRuntime;
 use crate::protocol::TerminalId;
-use crate::terminal::{ScreenSnapshot, TerminalRuntime, UpwardMerge};
+use crate::terminal::{ScreenSnapshot, UpwardMerge};
 
 const INITIAL_QUIET: Duration = Duration::from_millis(10);
 const OUTPUT_QUIET: Duration = Duration::from_millis(10);
@@ -97,7 +98,7 @@ impl PendingAltScreenRead {
         &self,
         source: crate::api::schema::ReadSource,
         lines: Option<u32>,
-    ) -> crate::pane::TerminalReadSnapshot {
+    ) -> crate::terminal::TerminalReadSnapshot {
         let line_limit = lines.map(|lines| lines.min(1000) as usize);
         match source {
             crate::api::schema::ReadSource::Recent
@@ -130,7 +131,7 @@ impl PendingAltScreenRead {
         let _ = self.complete_fallback();
     }
 
-    pub(crate) fn abort(mut self, runtime: Option<&TerminalRuntime>, now: Instant) -> PollOutcome {
+    pub(crate) fn abort(mut self, runtime: Option<&PaneRuntime>, now: Instant) -> PollOutcome {
         self.valid = false;
         match self.phase {
             Phase::SettleInitial => self.complete_fallback(),
@@ -142,7 +143,7 @@ impl PendingAltScreenRead {
         }
     }
 
-    pub(crate) fn poll(mut self, runtime: Option<&TerminalRuntime>, now: Instant) -> PollOutcome {
+    pub(crate) fn poll(mut self, runtime: Option<&PaneRuntime>, now: Instant) -> PollOutcome {
         let Some(runtime) = runtime else {
             // The terminal is gone, and its viewport with it.
             return self.complete_fallback();
@@ -376,7 +377,7 @@ impl PendingAltScreenRead {
 
     fn start_harvest(
         mut self,
-        runtime: &TerminalRuntime,
+        runtime: &PaneRuntime,
         now: Instant,
         baseline_seq: u64,
     ) -> PollOutcome {
@@ -395,7 +396,7 @@ impl PendingAltScreenRead {
 
     fn start_restore(
         mut self,
-        runtime: &TerminalRuntime,
+        runtime: &PaneRuntime,
         now: Instant,
         baseline_seq: Option<u64>,
     ) -> PollOutcome {
@@ -486,7 +487,7 @@ enum WheelError {
 }
 
 fn send_wheel(
-    runtime: &TerminalRuntime,
+    runtime: &PaneRuntime,
     kind: MouseEventKind,
     events: usize,
     snapshot: &ScreenSnapshot,
@@ -528,7 +529,7 @@ mod tests {
     }
 
     fn pending_read(
-        runtime: &TerminalRuntime,
+        runtime: &PaneRuntime,
         now: Instant,
         lines: usize,
     ) -> (
@@ -585,7 +586,7 @@ mod tests {
             .build()
             .expect("test runtime");
         let _guard = rt.enter();
-        let (runtime, _input_rx) = TerminalRuntime::test_with_channel_capacity(20, 5, 8);
+        let (runtime, _input_rx) = PaneRuntime::test_with_channel_capacity(20, 5, 8);
         runtime.test_process_pty_bytes(&draw(&["16", "17", "18", "19", "20"], true));
         let started = Instant::now();
         let (pending, response_rx) = pending_read(&runtime, started, 8);
@@ -610,7 +611,7 @@ mod tests {
             .build()
             .expect("test runtime");
         let _guard = rt.enter();
-        let (runtime, mut input_rx) = TerminalRuntime::test_with_channel_capacity(20, 5, 8);
+        let (runtime, mut input_rx) = PaneRuntime::test_with_channel_capacity(20, 5, 8);
         runtime.test_process_pty_bytes(&draw(&["16", "17", "18", "19", "20"], true));
         let started = Instant::now();
         let (pending, response_rx) = pending_read(&runtime, started, 8);
@@ -639,7 +640,7 @@ mod tests {
             .build()
             .expect("test runtime");
         let _guard = rt.enter();
-        let (runtime, mut input_rx) = TerminalRuntime::test_with_channel_capacity(20, 5, 8);
+        let (runtime, mut input_rx) = PaneRuntime::test_with_channel_capacity(20, 5, 8);
         runtime.test_process_pty_bytes(&draw(&["16", "17", "18", "19", "20"], true));
         let started = Instant::now();
         let (pending, response_rx) = pending_read(&runtime, started, 8);
@@ -669,7 +670,7 @@ mod tests {
             .expect("test runtime");
         let _guard = rt.enter();
         let initial_bytes = draw(&["16", "17", "18", "19", "20"], true);
-        let (runtime, mut input_rx) = TerminalRuntime::test_with_channel_capacity(20, 5, 8);
+        let (runtime, mut input_rx) = PaneRuntime::test_with_channel_capacity(20, 5, 8);
         runtime.test_process_pty_bytes(&initial_bytes);
         let started = Instant::now();
         let (pending, response_rx) = pending_read(&runtime, started, 8);
@@ -734,7 +735,7 @@ mod tests {
             .build()
             .expect("test runtime");
         let _guard = rt.enter();
-        let (runtime, mut input_rx) = TerminalRuntime::test_with_channel_capacity(20, 5, 8);
+        let (runtime, mut input_rx) = PaneRuntime::test_with_channel_capacity(20, 5, 8);
         runtime.test_process_pty_bytes(&draw(&["16", "17", "18", "19", "20"], true));
         let started = Instant::now();
         let (pending, response_rx) = pending_read(&runtime, started, 8);
@@ -803,7 +804,7 @@ mod tests {
             .build()
             .expect("test runtime");
         let _guard = rt.enter();
-        let (runtime, mut input_rx) = TerminalRuntime::test_with_channel_capacity(20, 5, 8);
+        let (runtime, mut input_rx) = PaneRuntime::test_with_channel_capacity(20, 5, 8);
         runtime.test_process_pty_bytes(&draw(&["16", "17", "18", "19", "20"], true));
         let started = Instant::now();
         let (pending, response_rx) = pending_read(&runtime, started, 8);
@@ -860,7 +861,7 @@ mod tests {
             .expect("test runtime");
         let _guard = rt.enter();
         let initial = ["16", "17", "18", "19", "20"];
-        let (runtime, mut input_rx) = TerminalRuntime::test_with_channel_capacity(20, 5, 8);
+        let (runtime, mut input_rx) = PaneRuntime::test_with_channel_capacity(20, 5, 8);
         runtime.test_process_pty_bytes(&draw(&initial, true));
         let started = Instant::now();
         let (pending, response_rx) = pending_read(&runtime, started, 8);
@@ -920,7 +921,7 @@ mod tests {
             .expect("test runtime");
         let _guard = rt.enter();
         let initial = ["16", "17", "18", "19", "20"];
-        let (runtime, mut input_rx) = TerminalRuntime::test_with_channel_capacity(20, 5, 8);
+        let (runtime, mut input_rx) = PaneRuntime::test_with_channel_capacity(20, 5, 8);
         runtime.test_process_pty_bytes(&draw(&initial, true));
         let started = Instant::now();
         let (pending, response_rx) = pending_read(&runtime, started, 8);
@@ -991,7 +992,7 @@ mod tests {
             .expect("test runtime");
         let _guard = rt.enter();
         let initial = ["16", "17", "18", "19", "20", "ready"];
-        let (runtime, mut input_rx) = TerminalRuntime::test_with_channel_capacity(20, 6, 8);
+        let (runtime, mut input_rx) = PaneRuntime::test_with_channel_capacity(20, 6, 8);
         runtime.test_process_pty_bytes(&draw(&initial, true));
         let started = Instant::now();
         let (pending, response_rx) = pending_read(&runtime, started, 9);
@@ -1048,7 +1049,7 @@ mod tests {
             .expect("test runtime");
         let _guard = rt.enter();
         let initial_bytes = draw(&["16", "17", "18", "19", "20"], true);
-        let (runtime, mut input_rx) = TerminalRuntime::test_with_channel_capacity(20, 5, 8);
+        let (runtime, mut input_rx) = PaneRuntime::test_with_channel_capacity(20, 5, 8);
         runtime.test_process_pty_bytes(&initial_bytes);
         let started = Instant::now();
         let (pending, response_rx) = pending_read(&runtime, started, 8);

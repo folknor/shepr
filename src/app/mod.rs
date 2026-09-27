@@ -19,6 +19,8 @@ mod host_theme;
 mod ids;
 mod runtime;
 mod session;
+#[cfg(test)]
+mod snapshot_tests;
 pub mod state;
 mod tab_bar_status;
 mod terminal_targets;
@@ -71,7 +73,7 @@ impl AppPolicy {
 pub struct App {
     pub state: AppState,
     pub(crate) pixel_mouse_available: bool,
-    pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
+    pub(crate) terminal_runtimes: crate::pane::PaneRuntimeRegistry,
     pub event_tx: mpsc::Sender<AppEvent>,
     pub(crate) event_rx: mpsc::Receiver<AppEvent>,
     pub(crate) api_rx: tokio::sync::mpsc::UnboundedReceiver<crate::api::ApiRequestMessage>,
@@ -142,7 +144,7 @@ impl App {
 
         // Try to restore previous session
         let mut restored_terminals = std::collections::HashMap::new();
-        let mut restored_terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut restored_terminal_runtimes = crate::pane::PaneRuntimeRegistry::new();
         let mut pane_history_carry = crate::persist::HistoryCarry::default();
         let paths = paths.clone();
         let session_data_dir = crate::session::data_dir(&paths);
@@ -326,7 +328,7 @@ impl App {
     pub(crate) fn insert_test_runtime(
         &mut self,
         pane_id: crate::layout::PaneId,
-        runtime: crate::terminal::TerminalRuntime,
+        runtime: crate::pane::PaneRuntime,
     ) {
         let terminal_id = self
             .state
@@ -340,10 +342,7 @@ impl App {
 
     /// The live runtime of `pane_id`, looked up the way production does.
     #[cfg(test)]
-    pub(crate) fn test_runtime(
-        &self,
-        pane_id: crate::layout::PaneId,
-    ) -> &crate::terminal::TerminalRuntime {
+    pub(crate) fn test_runtime(&self, pane_id: crate::layout::PaneId) -> &crate::pane::PaneRuntime {
         self.state
             .workspaces
             .iter()
@@ -475,14 +474,14 @@ mod tests {
             .expect("test precondition");
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
-            results: vec![crate::workspace::WorkspaceGitStatus {
+            results: vec![crate::events::WorkspaceGitStatus {
                 workspace_id,
                 resolved_identity_cwd: resolved_identity_cwd.clone(),
                 status_cache_key: resolved_identity_cwd,
-                demand: crate::workspace::GitStatusRefreshDemand::ALL,
+                demand: crate::events::GitStatusRefreshDemand::ALL,
                 auto_label: "one".into(),
                 branch: Some("render-dirty-test".into()),
-                ahead_behind: Some(crate::workspace::AheadBehind {
+                ahead_behind: Some(crate::events::AheadBehind {
                     ahead: 1,
                     behind: 0,
                 }),
@@ -1395,7 +1394,7 @@ mod tests {
             .expect("test precondition")
             .set_manual_label("shell".into());
         let (runtime, mut receiver) =
-            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 1);
+            crate::pane::PaneRuntime::test_with_channel_capacity(80, 24, 1);
         runtime
             .try_send_bytes(bytes::Bytes::from_static(b"occupied"))
             .expect("test precondition");

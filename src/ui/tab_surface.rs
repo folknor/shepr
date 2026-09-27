@@ -3,9 +3,9 @@ use ratatui::{Frame, layout::Rect};
 use super::panes::{compute_pane_infos_for_tab, render_panes, resize_pane_infos};
 use crate::app::AppState;
 use crate::layout::SplitBorder;
+use crate::pane::PaneRuntimeRegistry;
 use crate::protocol::CursorState;
-use crate::terminal::TerminalRuntimeRegistry;
-use crate::ui::PaneChromeInfo as PaneInfo;
+use crate::workspace::PaneChromeInfo as PaneInfo;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TabSurfaceTarget {
@@ -59,7 +59,7 @@ pub(crate) struct TabSurfaceView<'a> {
 
 pub(crate) fn compute_tab_surface(
     app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     area: Rect,
 ) -> TabSurfaceLayout {
     let target = app.active_index().and_then(|workspace_index| {
@@ -71,7 +71,7 @@ pub(crate) fn compute_tab_surface(
 
 pub(crate) fn compute_tab_surface_for(
     app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     target: Option<TabSurfaceTarget>,
     area: Rect,
 ) -> TabSurfaceLayout {
@@ -101,7 +101,7 @@ pub(crate) fn compute_tab_surface_for(
 
 pub(crate) fn resize_tab_surface(
     app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     workspace_index: usize,
     tab_index: usize,
     area: Rect,
@@ -121,7 +121,7 @@ pub(crate) fn resize_tab_surface(
 
 pub(crate) fn resize_tab_surface_layout(
     app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     layout: &TabSurfaceLayout,
     cell_size: crate::host_term::cell_size::HostCellSize,
 ) {
@@ -144,7 +144,7 @@ pub(crate) fn resize_tab_surface_layout(
 
 pub(crate) fn render_tab_surface(
     app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     surface: TabSurfaceView<'_>,
     frame: &mut Frame,
 ) {
@@ -160,7 +160,7 @@ pub(crate) fn render_tab_surface(
 
 pub(crate) fn tab_surface_hyperlinks(
     app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     surface: TabSurfaceView<'_>,
 ) -> Vec<((u16, u16), String, String)> {
     let Some((ws_idx, _)) = surface.target.and_then(|target| target.resolve(app)) else {
@@ -182,7 +182,7 @@ pub(crate) fn tab_surface_hyperlinks(
 
 pub(crate) fn tab_surface_cursor(
     app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
+    terminal_runtimes: &PaneRuntimeRegistry,
     surface: TabSurfaceView<'_>,
 ) -> Option<CursorState> {
     let (ws_idx, _) = surface.target?.resolve(app)?;
@@ -269,7 +269,7 @@ mod tests {
         let mut workspace = Workspace::test_new("shell-workspace");
         let left = workspace.tabs[0].root_pane;
         let right = workspace.test_split(Direction::Horizontal);
-        let mut runtimes = TerminalRuntimeRegistry::new();
+        let mut runtimes = PaneRuntimeRegistry::new();
         let left_terminal = workspace.terminal_id(left).cloned().expect("left terminal");
         let right_terminal = workspace
             .terminal_id(right)
@@ -277,7 +277,7 @@ mod tests {
             .expect("right terminal");
         runtimes.insert(
             left_terminal,
-            crate::terminal::TerminalRuntime::test_with_screen_bytes(
+            crate::pane::PaneRuntime::test_with_screen_bytes(
                 20,
                 8,
                 format!("\x1b]8;;{uri}\x1b\\LEFT\x1b]8;;\x1b\\").as_bytes(),
@@ -285,7 +285,7 @@ mod tests {
         );
         runtimes.insert(
             right_terminal,
-            crate::terminal::TerminalRuntime::test_with_screen_bytes(20, 8, b"RIGHT"),
+            crate::pane::PaneRuntime::test_with_screen_bytes(20, 8, b"RIGHT"),
         );
 
         let mut app = AppState::test_new();

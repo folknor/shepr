@@ -6,16 +6,14 @@ use std::sync::{Arc, Mutex};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::writer::MakeWriter;
 
-use crate::api::schema::MethodTraits;
-
 const DEFAULT_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 /// One previous generation (`<name>.1`) survives a rotation, so the lines
 /// leading up to it are not lost the moment the limit is hit.
 const DEFAULT_RETAINED_LOG_FILES: usize = 1;
 
-pub(crate) fn init_file_logging(paths: &crate::config::AppPaths, file_name: &str) {
+pub(crate) fn init_file_logging(dir: &Path, file_name: &str) {
     let Ok(make_writer) = RotatingFileMakeWriter::new(
-        &crate::session::data_dir(paths),
+        dir,
         file_name,
         DEFAULT_MAX_LOG_BYTES,
         DEFAULT_RETAINED_LOG_FILES,
@@ -40,8 +38,8 @@ pub(crate) const SERVER_LOG_FILE: &str = "shepr-server.log";
 pub(crate) const CLIENT_LOG_FILE: &str = "shepr-client.log";
 
 /// The log files `--help` names: the only two any process writes.
-pub(crate) fn help_log_paths_summary(paths: &crate::config::AppPaths) -> String {
-    log_paths_summary(&crate::session::data_dir(paths))
+pub(crate) fn help_log_paths_summary(dir: &Path) -> String {
+    log_paths_summary(dir)
 }
 
 fn log_paths_summary(dir: &Path) -> String {
@@ -71,19 +69,24 @@ pub(crate) fn shutdown(role: &'static str) {
     );
 }
 
-pub(crate) fn api_request_started(request_id: &str, method: MethodTraits) {
+pub(crate) fn api_request_started(
+    request_id: &str,
+    method_name: &str,
+    mutates_ui: bool,
+    routine: bool,
+) {
     let event = "api.request.start";
     let subsystem = "api";
     let outcome = "started";
     let message = "api request received";
-    if method.mutates_ui && !method.routine {
+    if mutates_ui && !routine {
         tracing::info!(
             event,
             subsystem,
             outcome,
             request_id,
-            method = method.name,
-            changes_ui = method.mutates_ui,
+            method = method_name,
+            changes_ui = mutates_ui,
             "{message}"
         );
     } else {
@@ -92,24 +95,30 @@ pub(crate) fn api_request_started(request_id: &str, method: MethodTraits) {
             subsystem,
             outcome,
             request_id,
-            method = method.name,
-            changes_ui = method.mutates_ui,
+            method = method_name,
+            changes_ui = mutates_ui,
             "{message}"
         );
     }
 }
 
-pub(crate) fn api_request_completed(request_id: &str, method: MethodTraits, outcome: &'static str) {
+pub(crate) fn api_request_completed(
+    request_id: &str,
+    method_name: &str,
+    mutates_ui: bool,
+    routine: bool,
+    outcome: &'static str,
+) {
     let event = "api.request.complete";
     let subsystem = "api";
     let message = "api request completed";
-    if outcome != "ok" || (method.mutates_ui && !method.routine) {
+    if outcome != "ok" || (mutates_ui && !routine) {
         tracing::info!(
             event,
             subsystem,
             outcome,
             request_id,
-            method = method.name,
+            method = method_name,
             "{message}"
         );
     } else {
@@ -118,19 +127,19 @@ pub(crate) fn api_request_completed(request_id: &str, method: MethodTraits, outc
             subsystem,
             outcome,
             request_id,
-            method = method.name,
+            method = method_name,
             "{message}"
         );
     }
 }
 
-pub(crate) fn api_request_failed(request_id: &str, method: MethodTraits, err: &str) {
+pub(crate) fn api_request_failed(request_id: &str, method_name: &str, err: &str) {
     tracing::warn!(
         event = "api.request.fail",
         subsystem = "api",
         outcome = "error",
         request_id,
-        method = method.name,
+        method = method_name,
         err,
         "api request failed"
     );

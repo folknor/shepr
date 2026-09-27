@@ -159,6 +159,13 @@ mod tests {
     }
 
     #[test]
+    fn protocol_version_leaves_room_for_mismatch_tests() {
+        // Tests build a mismatching peer with `PROTOCOL_VERSION + 1` or `- 1`.
+        let version = std::hint::black_box(super::super::PROTOCOL_VERSION);
+        assert!(version > 0 && version < u32::MAX, "{version}");
+    }
+
+    #[test]
     fn different_build_is_named() {
         let other = encode(super::super::PROTOCOL_VERSION + 1, "00000000deadbeef");
         match read_preamble(&mut other.as_slice()) {

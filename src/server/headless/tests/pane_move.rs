@@ -50,7 +50,7 @@ async fn public_pane_move_focus_follows_the_moved_pane() {
         .terminal_id(source)
         .expect("test precondition")
         .clone();
-    let (runtime, mut input_rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+    let (runtime, mut input_rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
     server.app.terminal_runtimes.insert(terminal_id, runtime);
     let source_id = server
         .app

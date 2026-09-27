@@ -37,16 +37,6 @@ pub(crate) struct Outcome {
     pub(crate) render: RenderDemand,
 }
 
-pub(crate) fn handle(app: &mut crate::app::App, request: Request) -> Outcome {
-    let render = if request.method.traits().mutates_ui {
-        RenderDemand::Full
-    } else {
-        RenderDemand::None
-    };
-    let response = app.handle_api_request_after_internal_events_drained(request);
-    Outcome { response, render }
-}
-
 pub(crate) fn serialize_response_or_error<T: serde::Serialize>(
     request_id: &str,
     response: &T,

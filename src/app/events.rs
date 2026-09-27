@@ -18,8 +18,8 @@ impl App {
 
     fn handle_git_status_refreshed(
         &mut self,
-        results: Vec<crate::workspace::WorkspaceGitStatus>,
-        cache_updates: Vec<(std::path::PathBuf, crate::workspace::GitStatusCacheEntry)>,
+        results: Vec<crate::events::WorkspaceGitStatus>,
+        cache_updates: Vec<(std::path::PathBuf, crate::events::GitStatusCacheEntry)>,
     ) -> bool {
         self.git_refresh.finish(Instant::now(), cache_updates);
         let changed = self

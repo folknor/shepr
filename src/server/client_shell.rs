@@ -318,12 +318,10 @@ pub(super) fn render_pane_surface(
                                 workspace_index,
                                 pane.id,
                             );
-                            let mouse_reporting = runtime.is_some_and(
-                                crate::terminal::TerminalRuntime::mouse_reporting_enabled,
-                            );
-                            let sgr_pixel_mouse = runtime.is_some_and(
-                                crate::terminal::TerminalRuntime::sgr_pixel_mouse_enabled,
-                            );
+                            let mouse_reporting = runtime
+                                .is_some_and(crate::pane::PaneRuntime::mouse_reporting_enabled);
+                            let sgr_pixel_mouse = runtime
+                                .is_some_and(crate::pane::PaneRuntime::sgr_pixel_mouse_enabled);
                             let (pixel_width, pixel_height) = if cell_size.is_known() {
                                 (
                                     u32::from(pane.inner_rect.width) * cell_size.width_px,
@@ -351,7 +349,7 @@ pub(super) fn render_pane_surface(
                                 inner_rect: pane.inner_rect.into(),
                                 scrollbar_rect: pane.scrollbar_rect.map(Into::into),
                                 scroll: runtime
-                                    .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
+                                    .and_then(crate::pane::PaneRuntime::scroll_metrics)
                                     .map(|metrics| protocol::PaneSurfaceScrollMetrics {
                                         offset_from_bottom: metrics.offset_from_bottom as u64,
                                         max_offset_from_bottom: metrics.max_offset_from_bottom
@@ -362,9 +360,8 @@ pub(super) fn render_pane_surface(
                                 focused: pane.is_focused,
                                 mouse_reporting,
                                 sgr_pixel_mouse,
-                                alternate_screen_active: runtime.is_some_and(
-                                    crate::terminal::TerminalRuntime::alternate_screen_active,
-                                ),
+                                alternate_screen_active: runtime
+                                    .is_some_and(crate::pane::PaneRuntime::alternate_screen_active),
                                 pixel_width,
                                 pixel_height,
                             })
@@ -542,7 +539,7 @@ mod tests {
             direction: ratatui::layout::Direction::Horizontal,
             ratio: 0.5,
             area: Rect::new(2, 3, 40, 12),
-            path: vec![crate::protocol::SplitBranch::First],
+            path: vec![crate::geometry::SplitBranch::First],
         };
         assert_eq!(
             split_hit_rect(&horizontal, true, false, &[]),
@@ -563,7 +560,7 @@ mod tests {
             direction: ratatui::layout::Direction::Vertical,
             ratio: 0.5,
             area: Rect::new(2, 3, 40, 12),
-            path: vec![crate::protocol::SplitBranch::Second],
+            path: vec![crate::geometry::SplitBranch::Second],
         };
         assert_eq!(
             split_hit_rect(&vertical, true, true, &[]),

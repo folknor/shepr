@@ -39,11 +39,11 @@ pub(super) fn launch_cwd_for_terminal(
         crate::protocol::TerminalId,
         crate::terminal::TerminalState,
     >,
-    terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
+    terminal_runtimes: &crate::pane::PaneRuntimeRegistry,
 ) -> Option<PathBuf> {
     terminal_runtimes
         .get(terminal_id)
-        .and_then(crate::terminal::TerminalRuntime::follow_cwd)
+        .and_then(crate::pane::PaneRuntime::follow_cwd)
         .or_else(|| {
             terminals
                 .get(terminal_id)
@@ -286,7 +286,7 @@ impl App {
         let scroll = self
             .state
             .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
-            .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
+            .and_then(crate::pane::PaneRuntime::scroll_metrics)
             .map(|metrics| crate::api::schema::PaneScrollInfo {
                 offset_from_bottom: metrics.offset_from_bottom as u64,
                 max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
@@ -335,7 +335,7 @@ impl App {
         &self,
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
-    ) -> Option<(&crate::terminal::TerminalRuntime, String)> {
+    ) -> Option<(&crate::pane::PaneRuntime, String)> {
         let runtime =
             self.state
                 .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)?;
@@ -346,7 +346,7 @@ impl App {
         &self,
         ws_idx: usize,
         pane_id: crate::layout::PaneId,
-    ) -> Option<&crate::terminal::TerminalRuntime> {
+    ) -> Option<&crate::pane::PaneRuntime> {
         self.state
             .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
     }

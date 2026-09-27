@@ -12,7 +12,10 @@ pub fn run_server(config: &config::ValidatedConfig, paths: &config::AppPaths) ->
     let session_data_dir = crate::session::data_dir(paths);
     let lease = crate::persist::DataDirLease::acquire(&session_data_dir)?;
 
-    crate::logging::init_file_logging(paths, crate::logging::SERVER_LOG_FILE);
+    crate::logging::init_file_logging(
+        &crate::session::data_dir(paths),
+        crate::logging::SERVER_LOG_FILE,
+    );
 
     let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
     let event_hub = api::EventHub::default();
@@ -110,12 +113,12 @@ fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathB
 ///
 /// Must run while the process is still single-threaded; see `run_server`.
 fn take_startup_cwd() -> Option<PathBuf> {
-    let cwd = std::env::var_os(crate::server::autodetect::STARTUP_CWD_ENV_VAR)?;
+    let cwd = std::env::var_os(crate::remote::autodetect::STARTUP_CWD_ENV_VAR)?;
     // SAFETY: `run_server` calls this before it starts the API server thread,
     // the tokio runtime or anything else that spawns threads, and `main` spawns
     // none before calling `run_server`, so no other thread can be reading the
     // environment concurrently.
-    unsafe { std::env::remove_var(crate::server::autodetect::STARTUP_CWD_ENV_VAR) };
+    unsafe { std::env::remove_var(crate::remote::autodetect::STARTUP_CWD_ENV_VAR) };
     startup_cwd_from_env_value(cwd)
 }
 

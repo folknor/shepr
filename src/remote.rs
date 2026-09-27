@@ -1,6 +1,7 @@
 mod args;
 #[cfg(test)]
 mod attach;
+pub(crate) mod autodetect;
 mod bridge;
 mod discovery;
 mod host;

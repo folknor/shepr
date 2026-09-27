@@ -1,5 +1,5 @@
 use super::config::*;
-use crate::workspace::git::{
+use crate::events::git::{
     discovery::git_worktree_info,
     status::git_status_fingerprint,
     test_support::{temp_test_dir, write_fake_tracked_repo},

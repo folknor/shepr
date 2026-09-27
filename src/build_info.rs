@@ -26,11 +26,4 @@ mod tests {
         assert_eq!(BUILD_ID.len(), 16);
         assert!(BUILD_ID.bytes().all(|byte| byte.is_ascii_hexdigit()));
     }
-
-    #[test]
-    fn protocol_version_leaves_room_for_mismatch_tests() {
-        // Tests build a mismatching peer with `PROTOCOL_VERSION + 1` or `- 1`.
-        let version = std::hint::black_box(crate::protocol::PROTOCOL_VERSION);
-        assert!(version > 0 && version < u32::MAX, "{version}");
-    }
 }

@@ -544,9 +544,7 @@ mod tests {
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
         let (runtime, mut rx) =
-            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
-                80, 24, 0, b"", 2,
-            );
+            crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"", 2);
         runtime.test_process_pty_bytes(b"\x1b[?2004h");
         app.insert_test_runtime(pane_id, runtime);
 
@@ -693,7 +691,7 @@ mod tests {
             .expect("test precondition");
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::GithubCopilot), AgentState::Blocked);
-        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        let (runtime, mut rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
         app.insert_test_runtime(pane_id, runtime);
 
         let response = run_deferred_agent_prompt(
@@ -736,9 +734,7 @@ mod tests {
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::GithubCopilot), AgentState::Idle);
         let (runtime, mut rx) =
-            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
-                80, 24, 0, b"", 3,
-            );
+            crate::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(80, 24, 0, b"", 3);
         runtime.test_process_pty_bytes(b"\x1b[?2004h");
         app.insert_test_runtime(pane_id, runtime);
 
@@ -784,7 +780,7 @@ mod tests {
             .expect("test precondition");
         terminal.set_agent_name("reviewer".into());
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        let (runtime, mut rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
         app.insert_test_runtime(pane_id, runtime);
 
         let rejected = app.handle_agent_send_keys(
@@ -837,7 +833,7 @@ mod tests {
             std::time::Duration::from_secs(10),
         );
         terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
-        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        let (runtime, mut rx) = crate::pane::PaneRuntime::test_with_channel(80, 24);
         app.insert_test_runtime(pane_id, runtime);
 
         let response = run_deferred_agent_prompt(

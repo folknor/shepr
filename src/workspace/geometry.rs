@@ -4,12 +4,167 @@
 //! once), so a new pane must be spawned at the size view computation will give
 //! it, not at some other pane's size. The view computes its pane rects through
 //! the same `PaneGeometry::tab_panes` (BSP split, chrome, the zoomed case), and
-//! the same `ui::pane_inner_rect` and scrollbar gutter.
+//! the same `pane_inner_rect` and scrollbar gutter.
 
-use ratatui::{layout::Rect, widgets::Borders};
+use ratatui::{
+    layout::Rect,
+    widgets::{Block, Borders},
+};
 
-use crate::layout::{PaneId, TileLayout};
-use crate::ui::PaneChromeInfo as PaneInfo;
+use crate::layout::{PaneId, PaneInfo as LayoutPaneInfo, TileLayout};
+
+/// Layout position with the chrome and content geometry added for a view.
+#[derive(Clone)]
+pub(crate) struct PaneChromeInfo {
+    pub id: PaneId,
+    pub rect: Rect,
+    pub inner_rect: Rect,
+    pub scrollbar_rect: Option<Rect>,
+    pub borders: Borders,
+    pub is_focused: bool,
+}
+
+impl From<LayoutPaneInfo> for PaneChromeInfo {
+    fn from(pane: LayoutPaneInfo) -> Self {
+        Self {
+            id: pane.id,
+            rect: pane.rect,
+            inner_rect: pane.rect,
+            scrollbar_rect: None,
+            borders: Borders::NONE,
+            is_focused: pane.is_focused,
+        }
+    }
+}
+
+impl From<PaneChromeInfo> for LayoutPaneInfo {
+    fn from(pane: PaneChromeInfo) -> Self {
+        Self {
+            id: pane.id,
+            rect: pane.rect,
+            is_focused: pane.is_focused,
+        }
+    }
+}
+
+pub(crate) fn pane_inner_rect(area: Rect, borders: Borders) -> Rect {
+    if borders.is_empty() {
+        area
+    } else {
+        Block::default().borders(borders).inner(area)
+    }
+}
+
+fn ranges_overlap(a_start: u16, a_len: u16, b_start: u16, b_len: u16) -> bool {
+    a_start < b_start.saturating_add(b_len) && b_start < a_start.saturating_add(a_len)
+}
+
+fn pane_to_right<'a>(
+    info: &LayoutPaneInfo,
+    panes: &'a [LayoutPaneInfo],
+) -> Option<&'a LayoutPaneInfo> {
+    let right = info.rect.x.saturating_add(info.rect.width);
+    panes.iter().find(|other| {
+        other.id != info.id
+            && other.rect.x == right
+            && ranges_overlap(
+                info.rect.y,
+                info.rect.height,
+                other.rect.y,
+                other.rect.height,
+            )
+    })
+}
+
+fn pane_below<'a>(
+    info: &LayoutPaneInfo,
+    panes: &'a [LayoutPaneInfo],
+) -> Option<&'a LayoutPaneInfo> {
+    let bottom = info.rect.y.saturating_add(info.rect.height);
+    panes.iter().find(|other| {
+        other.id != info.id
+            && other.rect.y == bottom
+            && ranges_overlap(info.rect.x, info.rect.width, other.rect.x, other.rect.width)
+    })
+}
+
+fn shrink_for_one_cell_gap(size: u16) -> u16 {
+    if size > 1 { size - 1 } else { size }
+}
+
+pub(crate) fn apply_pane_chrome(
+    panes: &[LayoutPaneInfo],
+    pane_borders: crate::config::PaneBordersConfig,
+    pane_gaps: bool,
+    pane_outer_borders: bool,
+) -> Vec<PaneChromeInfo> {
+    let multi_pane = panes.len() > 1;
+    let bordered = pane_borders.shows_borders(multi_pane);
+    let outer_left = panes.iter().map(|info| info.rect.x).min().unwrap_or(0);
+    let outer_top = panes.iter().map(|info| info.rect.y).min().unwrap_or(0);
+    let outer_right = panes
+        .iter()
+        .map(|info| info.rect.x.saturating_add(info.rect.width))
+        .max()
+        .unwrap_or(0);
+    let outer_bottom = panes
+        .iter()
+        .map(|info| info.rect.y.saturating_add(info.rect.height))
+        .max()
+        .unwrap_or(0);
+    panes
+        .iter()
+        .cloned()
+        .map(|layout_info| {
+            let right_neighbor = multi_pane
+                .then(|| pane_to_right(&layout_info, panes))
+                .flatten();
+            let below_neighbor = multi_pane
+                .then(|| pane_below(&layout_info, panes))
+                .flatten();
+            let mut info = PaneChromeInfo::from(layout_info);
+
+            if multi_pane && pane_gaps && !pane_borders.draws_borders() {
+                if right_neighbor.is_some() {
+                    info.rect.width = shrink_for_one_cell_gap(info.rect.width);
+                }
+                if below_neighbor.is_some() {
+                    info.rect.height = shrink_for_one_cell_gap(info.rect.height);
+                }
+            }
+
+            info.borders = if !bordered {
+                Borders::NONE
+            } else {
+                let mut borders = Borders::ALL;
+                if !pane_gaps {
+                    if right_neighbor.is_some() {
+                        borders.remove(Borders::RIGHT);
+                    }
+                    if below_neighbor.is_some() {
+                        borders.remove(Borders::BOTTOM);
+                    }
+                }
+                if !pane_outer_borders {
+                    if info.rect.x == outer_left {
+                        borders.remove(Borders::LEFT);
+                    }
+                    if info.rect.y == outer_top {
+                        borders.remove(Borders::TOP);
+                    }
+                    if info.rect.x.saturating_add(info.rect.width) == outer_right {
+                        borders.remove(Borders::RIGHT);
+                    }
+                    if info.rect.y.saturating_add(info.rect.height) == outer_bottom {
+                        borders.remove(Borders::BOTTOM);
+                    }
+                }
+                borders
+            };
+            info
+        })
+        .collect()
+}
 
 /// Everything besides the layout tree that decides a pane's content size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,9 +206,9 @@ impl PaneGeometry {
     /// borders show for the tab's real pane count and outer borders are on.
     /// View computation, background resizing and spawn sizing all go through
     /// here, so the zoomed rule exists once.
-    pub(crate) fn tab_panes(&self, layout: &TileLayout, zoomed: bool) -> Vec<PaneInfo> {
+    pub(crate) fn tab_panes(&self, layout: &TileLayout, zoomed: bool) -> Vec<PaneChromeInfo> {
         if !zoomed {
-            return crate::ui::apply_pane_chrome(
+            return apply_pane_chrome(
                 &layout.panes(self.area),
                 self.pane_borders,
                 self.pane_gaps,
@@ -67,7 +222,7 @@ impl PaneGeometry {
         } else {
             Borders::NONE
         };
-        vec![PaneInfo {
+        vec![PaneChromeInfo {
             id: layout.focused(),
             rect: self.area,
             inner_rect: self.area,
@@ -91,7 +246,7 @@ impl PaneGeometry {
             .tab_panes(layout, zoomed)
             .into_iter()
             .find(|info| info.id == pane_id)?;
-        let pane_inner = crate::ui::pane_inner_rect(info.rect, info.borders);
+        let pane_inner = pane_inner_rect(info.rect, info.borders);
         let content = terminal_content_rect(pane_inner, self.pane_scrollbars, false);
         Some((content.height.max(1), content.width.max(1)))
     }

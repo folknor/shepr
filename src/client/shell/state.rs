@@ -115,7 +115,7 @@ pub(super) struct PaneSplitHit {
     pub(super) pos: u16,
     pub(super) area: Rect,
     pub(super) hit_rect: Rect,
-    pub(super) path: Vec<crate::protocol::SplitBranch>,
+    pub(super) path: Vec<crate::geometry::SplitBranch>,
     pub(super) topology_signature: u64,
 }
 

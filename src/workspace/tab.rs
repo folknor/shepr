@@ -7,8 +7,9 @@ use ratatui::layout::Direction;
 use super::PaneSpawnHandles;
 use crate::layout::{Node, PaneId, TileLayout};
 use crate::pane::{PaneLaunchEnv, PaneState};
+use crate::pane::{PaneRuntime, PaneRuntimeRegistry};
 use crate::protocol::TerminalId;
-use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
+use crate::terminal::TerminalState;
 
 pub(crate) type DetachedPane = (PaneId, TerminalId);
 
@@ -50,7 +51,7 @@ impl TabPane {
 pub struct NewPane {
     pub pane_id: PaneId,
     pub terminal: TerminalState,
-    pub runtime: TerminalRuntime,
+    pub runtime: PaneRuntime,
     pub(crate) prepared_layout: TileLayout,
 }
 
@@ -79,7 +80,7 @@ impl Tab {
         shell_config: crate::pane::PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
         spawn: &PaneSpawnHandles,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
         Self::new_with_runtime(
             number,
             initial_cwd,
@@ -108,7 +109,7 @@ impl Tab {
         host_terminal_appearance: Option<crate::host_term::theme::HostAppearance>,
         launch_env: &PaneLaunchEnv,
         spawn: &PaneSpawnHandles,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
         Self::new_with_runtime(
             number,
             initial_cwd,
@@ -137,10 +138,10 @@ impl Tab {
         launch_env: &PaneLaunchEnv,
         spawn: &PaneSpawnHandles,
         argv: Option<&[String]>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
         let (layout, root_id) = TileLayout::new();
         let runtime = if let Some(argv) = argv {
-            TerminalRuntime::spawn_argv_command(
+            PaneRuntime::spawn_argv_command(
                 root_id,
                 rows,
                 cols,
@@ -155,7 +156,7 @@ impl Tab {
                 &spawn.render_dirty,
             )?
         } else {
-            TerminalRuntime::spawn(
+            PaneRuntime::spawn(
                 root_id,
                 rows,
                 cols,
@@ -312,7 +313,7 @@ impl Tab {
         let actual_cwd = cwd.unwrap_or(default_cwd);
         let launch_argv = argv.map(<[String]>::to_vec);
         let runtime = match argv {
-            Some(argv) => TerminalRuntime::spawn_argv_command(
+            Some(argv) => PaneRuntime::spawn_argv_command(
                 new_id,
                 rows,
                 cols,
@@ -326,7 +327,7 @@ impl Tab {
                 &spawn.render_notify,
                 &spawn.render_dirty,
             ),
-            None => TerminalRuntime::spawn(
+            None => PaneRuntime::spawn(
                 new_id,
                 rows,
                 cols,
@@ -479,12 +480,12 @@ impl Tab {
         &self,
         pane_id: PaneId,
         terminals: &HashMap<TerminalId, TerminalState>,
-        terminal_runtimes: &TerminalRuntimeRegistry,
+        terminal_runtimes: &PaneRuntimeRegistry,
     ) -> Option<PathBuf> {
         let terminal_id = self.terminal_id(pane_id)?;
         terminal_runtimes
             .get(terminal_id)
-            .and_then(TerminalRuntime::cwd)
+            .and_then(PaneRuntime::cwd)
             .or_else(|| {
                 terminals
                     .get(terminal_id)
@@ -495,11 +496,11 @@ impl Tab {
     pub fn foreground_cwd_for_pane(
         &self,
         pane_id: PaneId,
-        terminal_runtimes: &TerminalRuntimeRegistry,
+        terminal_runtimes: &PaneRuntimeRegistry,
     ) -> Option<PathBuf> {
         let terminal_id = self.terminal_id(pane_id)?;
         terminal_runtimes
             .get(terminal_id)
-            .and_then(TerminalRuntime::foreground_cwd)
+            .and_then(PaneRuntime::foreground_cwd)
     }
 }

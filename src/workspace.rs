@@ -7,31 +7,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use ratatui::layout::Direction;
 use tokio::sync::{Notify, mpsc};
 
-use crate::events::AppEvent;
+use crate::events::{AheadBehind, AppEvent, GitSpaceMetadata, fallback_label_from_cwd};
 use crate::layout::{PaneId, TileLayout};
-use crate::pane::{PaneLaunchEnv, PaneState};
+use crate::pane::{PaneLaunchEnv, PaneRuntime, PaneRuntimeRegistry, PaneState};
 use crate::protocol::{
     PublicPaneId, PublicTabId, TerminalId, WorkspaceId, decode_public_number, encode_public_number,
 };
 use crate::render_signal::RenderSignal;
-use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
+use crate::terminal::TerminalState;
 
 mod aggregate;
 mod geometry;
-mod git;
 mod tab;
 
+#[cfg(test)]
+pub(crate) use self::geometry::apply_pane_chrome;
+pub use self::tab::{NewPane, Tab, TabPane};
 pub(crate) use self::{
-    geometry::{PaneGeometry, terminal_content_rect},
-    git::git_status_snapshot_for_cwd_with_demand,
+    geometry::{PaneChromeInfo, PaneGeometry, pane_inner_rect, terminal_content_rect},
     tab::MovedPane,
-};
-pub use self::{
-    git::{
-        GitSpaceMetadata, GitStatusCacheEntry, GitStatusRefreshDemand, derive_label_from_cwd,
-        fallback_label_from_cwd, git_status_cache_key,
-    },
-    tab::{NewPane, Tab, TabPane},
 };
 
 /// The channels a pane runtime reports through once it is spawned: the app
@@ -83,60 +77,6 @@ pub(crate) struct TabRemoval {
 pub(crate) struct TabCreationOutcome {
     pub(crate) tab_index: usize,
     pub(crate) root_pane: PaneId,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AheadBehind {
-    pub ahead: usize,
-    pub behind: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceGitStatus {
-    pub workspace_id: String,
-    pub resolved_identity_cwd: PathBuf,
-    pub status_cache_key: PathBuf,
-    pub demand: GitStatusRefreshDemand,
-    pub auto_label: String,
-    pub branch: Option<String>,
-    pub ahead_behind: Option<AheadBehind>,
-    pub space: Option<GitSpaceMetadata>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceGitStatusSnapshot {
-    pub auto_label: String,
-    pub branch: Option<String>,
-    pub ahead_behind: Option<AheadBehind>,
-    pub space: Option<GitSpaceMetadata>,
-}
-
-impl WorkspaceGitStatusSnapshot {
-    pub fn into_workspace_status(
-        self,
-        workspace_id: String,
-        resolved_identity_cwd: PathBuf,
-        status_cache_key: PathBuf,
-        demand: GitStatusRefreshDemand,
-    ) -> WorkspaceGitStatus {
-        let auto_label = self
-            .space
-            .as_ref()
-            .map(|space| {
-                self::git::automatic_workspace_label(&resolved_identity_cwd, &space.repo_root)
-            })
-            .unwrap_or_else(|| fallback_label_from_cwd(&resolved_identity_cwd));
-        WorkspaceGitStatus {
-            workspace_id,
-            resolved_identity_cwd,
-            status_cache_key,
-            demand,
-            auto_label,
-            branch: self.branch,
-            ahead_behind: self.ahead_behind,
-            space: self.space,
-        }
-    }
 }
 
 static NEXT_WORKSPACE_ID: AtomicU64 = AtomicU64::new(1);
@@ -321,7 +261,7 @@ impl Workspace {
         shell_config: crate::pane::PaneShellConfig<'_>,
         spawn: &PaneSpawnHandles,
         extra_env: Vec<(String, String)>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
         Self::new_with_tab(
             initial_cwd,
             rows,
@@ -348,7 +288,7 @@ impl Workspace {
         spawn: &PaneSpawnHandles,
         argv: Option<&[String]>,
         extra_env: Vec<(String, String)>,
-    ) -> std::io::Result<(Self, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
         let id = generate_workspace_id();
         let launch_env = PaneLaunchEnv::from_extra(extra_env).with_identity(
             WorkspaceId::new(id.clone()),
@@ -432,7 +372,7 @@ impl Workspace {
         shell_config: crate::pane::PaneShellConfig<'_>,
         extra_env: Vec<(String, String)>,
         spawn: &PaneSpawnHandles,
-    ) -> std::io::Result<(Tab, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Tab, TerminalState, PaneRuntime)> {
         self.create_tab_with_runtime(
             rows,
             cols,
@@ -460,7 +400,7 @@ impl Workspace {
         host_terminal_theme: crate::host_term::theme::TerminalTheme,
         host_terminal_appearance: Option<crate::host_term::theme::HostAppearance>,
         spawn: &PaneSpawnHandles,
-    ) -> std::io::Result<(Tab, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Tab, TerminalState, PaneRuntime)> {
         self.create_tab_with_runtime(
             rows,
             cols,
@@ -489,7 +429,7 @@ impl Workspace {
         argv: Option<&[String]>,
         extra_env: Vec<(String, String)>,
         spawn: &PaneSpawnHandles,
-    ) -> std::io::Result<(Tab, TerminalState, TerminalRuntime)> {
+    ) -> std::io::Result<(Tab, TerminalState, PaneRuntime)> {
         let number = self.next_public_tab_number;
         let pane_number = self.next_public_pane_number;
         let launch_env = self.launch_env_for_new_pane(number, pane_number, extra_env);
@@ -868,7 +808,7 @@ impl Workspace {
     pub fn resolved_identity_cwd_from(
         &self,
         terminals: &HashMap<TerminalId, TerminalState>,
-        terminal_runtimes: &TerminalRuntimeRegistry,
+        terminal_runtimes: &PaneRuntimeRegistry,
     ) -> Option<PathBuf> {
         self.tabs
             .first()
@@ -1469,9 +1409,9 @@ mod tests {
     #[test]
     fn linked_worktree_auto_label_uses_checkout_name_not_repo_name() {
         let (base, repo, checkout) =
-            self::git::test_support::create_repo_with_linked_worktree("linked-auto-label");
+            crate::events::git::test_support::create_repo_with_linked_worktree("linked-auto-label");
 
-        let (snapshot, _) = self::git::git_status_snapshot_for_cwd(&checkout, None);
+        let (snapshot, _) = crate::events::git::git_status_snapshot_for_cwd(&checkout, None);
         let space = snapshot.space;
         let auto_label = snapshot.auto_label;
 
@@ -1534,7 +1474,7 @@ mod tests {
         )]);
 
         assert_eq!(
-            ws.resolved_identity_cwd_from(&terminals, &TerminalRuntimeRegistry::new()),
+            ws.resolved_identity_cwd_from(&terminals, &PaneRuntimeRegistry::new()),
             Some(PathBuf::from("/new/repo/deep"))
         );
         assert_eq!(ws.display_name(), "repo");
@@ -1554,7 +1494,7 @@ mod tests {
             terminal_id.clone(),
             TerminalState::new(terminal_id, PathBuf::from("/shepr-test/pion")),
         );
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let terminal_runtimes = PaneRuntimeRegistry::new();
 
         assert_eq!(
             ws.resolved_identity_cwd_from(&terminals, &terminal_runtimes),

@@ -394,7 +394,10 @@ pub(crate) fn print_help(requested_session: Option<crate::config::SessionId>) {
     match crate::config::AppPaths::resolve_with_session(requested_session) {
         Ok(paths) => {
             println!("Config: {}", paths.config_file().display());
-            println!("Logs:   {}", crate::logging::help_log_paths_summary(&paths));
+            println!(
+                "Logs:   {}",
+                crate::logging::help_log_paths_summary(&crate::session::data_dir(&paths))
+            );
         }
         Err(errors) => {
             println!("Config: unavailable ({})", errors.join("; "));

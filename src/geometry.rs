@@ -4,6 +4,18 @@ use std::num::{NonZeroU16, NonZeroU32};
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum SplitBranch {
+    First,
+    Second,
+}
+
+impl From<bool> for SplitBranch {
+    fn from(second: bool) -> Self {
+        if second { Self::Second } else { Self::First }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GridSize {
     pub cols: NonZeroU16,

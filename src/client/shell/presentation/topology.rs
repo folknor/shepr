@@ -34,7 +34,7 @@ pub(super) fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64
             }],
         );
         for branch in &split.path {
-            hash ^= u64::from(*branch == crate::protocol::SplitBranch::Second);
+            hash ^= u64::from(*branch == crate::geometry::SplitBranch::Second);
             hash = hash.wrapping_mul(PRIME);
         }
         hash ^= 0xff;

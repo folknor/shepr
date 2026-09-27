@@ -365,7 +365,12 @@ fn handle_connection_with_stop(
 
     let request_id = request.id.clone();
     let method_traits = request.method.traits();
-    crate::logging::api_request_started(&request_id, method_traits);
+    crate::logging::api_request_started(
+        &request_id,
+        method_traits.name,
+        method_traits.mutates_ui,
+        method_traits.routine,
+    );
 
     // Requests sent to the app loop are handled there. The method facts are
     // the single routing classification; this thread only handles methods
@@ -430,13 +435,15 @@ fn handle_connection_with_stop(
             match &result {
                 Ok(()) => crate::logging::api_request_completed(
                     &request_id,
-                    method_traits,
+                    method_traits.name,
+                    method_traits.mutates_ui,
+                    method_traits.routine,
                     "stream_closed",
                 ),
                 Err(err) => {
                     crate::logging::api_request_failed(
                         &request_id,
-                        method_traits,
+                        method_traits.name,
                         &err.to_string(),
                     );
                 }
@@ -503,7 +510,13 @@ fn finish_wait_response(
     method: MethodTraits,
 ) -> std::io::Result<()> {
     let Some(response) = response else {
-        crate::logging::api_request_completed(request_id, method, "client_disconnected");
+        crate::logging::api_request_completed(
+            request_id,
+            method.name,
+            method.mutates_ui,
+            method.routine,
+            "client_disconnected",
+        );
         return Ok(());
     };
     finish_api_response(stream, request_id, method, &response)
@@ -519,10 +532,12 @@ fn finish_api_response(
     match &result {
         Ok(()) => crate::logging::api_request_completed(
             request_id,
-            method,
+            method.name,
+            method.mutates_ui,
+            method.routine,
             api_response_outcome(response),
         ),
-        Err(err) => crate::logging::api_request_failed(request_id, method, &err.to_string()),
+        Err(err) => crate::logging::api_request_failed(request_id, method.name, &err.to_string()),
     }
     result
 }

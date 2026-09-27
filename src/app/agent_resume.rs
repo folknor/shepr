@@ -299,7 +299,7 @@ impl App {
         tab_idx: usize,
         tab: &crate::workspace::Tab,
         terminal_area: Rect,
-    ) -> Vec<crate::ui::PaneChromeInfo> {
+    ) -> Vec<crate::workspace::PaneChromeInfo> {
         let mut pane_infos = derived_pending_agent_resume_pane_infos(
             tab,
             terminal_area,
@@ -423,7 +423,7 @@ impl App {
             return true;
         }
 
-        let runtime = match crate::terminal::TerminalRuntime::spawn(
+        let runtime = match crate::pane::PaneRuntime::spawn(
             pane_id,
             rows,
             cols,
@@ -498,7 +498,7 @@ fn derived_pending_agent_resume_pane_infos(
     pane_gaps: bool,
     pane_outer_borders: bool,
     pane_scrollbars: bool,
-) -> Vec<crate::ui::PaneChromeInfo> {
+) -> Vec<crate::workspace::PaneChromeInfo> {
     let geometry = crate::workspace::PaneGeometry {
         area: terminal_area,
         pane_borders,
@@ -519,7 +519,7 @@ fn derived_pending_agent_resume_pane_infos(
     panes
         .into_iter()
         .map(|mut info| {
-            let pane_inner = crate::ui::pane_inner_rect(info.rect, info.borders);
+            let pane_inner = crate::workspace::pane_inner_rect(info.rect, info.borders);
             info.inner_rect = stable_terminal_inner_rect(pane_inner);
             info
         })
@@ -1126,7 +1126,7 @@ mod tests {
             .terminal_id(hidden_pane)
             .cloned()
             .expect("test precondition");
-        app.state.view.pane_infos = vec![crate::ui::PaneChromeInfo {
+        app.state.view.pane_infos = vec![crate::workspace::PaneChromeInfo {
             id: visible_pane,
             rect: ratatui::layout::Rect::new(0, 0, 100, 30),
             inner_rect: ratatui::layout::Rect::new(1, 1, 98, 28),
@@ -1247,7 +1247,7 @@ mod tests {
             .terminal_id(pane_id)
             .cloned()
             .expect("test precondition");
-        app.state.view.pane_infos = vec![crate::ui::PaneChromeInfo {
+        app.state.view.pane_infos = vec![crate::workspace::PaneChromeInfo {
             id: pane_id,
             rect: ratatui::layout::Rect::new(0, 0, 100, 30),
             inner_rect: ratatui::layout::Rect::new(1, 1, 98, 28),
