@@ -28,7 +28,7 @@ pub fn app_dir_name() -> &'static str {
 /// Paths and the local target resolved once at the process boundary and
 /// passed to consumers. Production constructors reject unresolved path inputs
 /// that would put files relative to the working directory.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(any(test, feature = "test-support"), derive(Default))]
 pub struct AppPaths {
     config_dir: PathBuf,
@@ -40,6 +40,43 @@ pub struct AppPaths {
     session_id: super::SessionId,
     server_address: super::ServerAddress,
     provenance: PathProvenance,
+}
+
+impl<'de> Deserialize<'de> for AppPaths {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            config_dir: PathBuf,
+            state_dir: PathBuf,
+            runtime_dir: PathBuf,
+            config_file: PathBuf,
+            home_dir: Option<PathBuf>,
+            current_dir: Option<PathBuf>,
+            session_id: super::SessionId,
+            server_address: super::ServerAddress,
+            provenance: PathProvenance,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let paths = Self {
+            config_dir: wire.config_dir,
+            state_dir: wire.state_dir,
+            runtime_dir: wire.runtime_dir,
+            config_file: wire.config_file,
+            home_dir: wire.home_dir,
+            current_dir: wire.current_dir,
+            session_id: wire.session_id,
+            server_address: wire.server_address,
+            provenance: wire.provenance,
+        };
+        paths
+            .validate_resolved()
+            .map_err(serde::de::Error::custom)?;
+        Ok(paths)
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +93,28 @@ pub struct PathProvenance {
 }
 
 impl AppPaths {
+    fn validate_resolved(&self) -> Result<(), String> {
+        for (name, path) in [
+            ("config_dir", self.config_dir()),
+            ("state_dir", self.state_dir()),
+            ("runtime_dir", self.runtime_dir()),
+            ("config_file", self.config_file()),
+            ("API socket", self.server_address.api_socket()),
+            ("client socket", self.server_address.client_socket()),
+        ] {
+            if !path.is_absolute() {
+                return Err(format!("resolved {name} must be an absolute path"));
+            }
+        }
+        if self.home_dir().is_none_or(|path| !path.is_absolute()) {
+            return Err("resolved home_dir must be an absolute path".to_owned());
+        }
+        if self.current_dir().is_some_and(|path| !path.is_absolute()) {
+            return Err("resolved current_dir must be an absolute path".to_owned());
+        }
+        Ok(())
+    }
+
     pub fn config_dir(&self) -> &Path {
         &self.config_dir
     }
@@ -135,7 +194,7 @@ impl AppPaths {
             home_dir: home_dir.map(Path::to_path_buf),
             current_dir: current_dir.map(Path::to_path_buf),
             session_id: super::SessionId::Default,
-            server_address: super::ServerAddress::resolve(
+            server_address: super::ServerAddress::resolve_paths(
                 &root.join("runtime"),
                 &super::SessionId::Default,
                 false,
@@ -164,15 +223,12 @@ fn platform_xdg_dir(
 ) -> io::Result<(PathBuf, ConfigSource)> {
     if let Some(value) = std::env::var_os(variable) {
         let directory = PathBuf::from(value);
-        if !directory.is_absolute() {
-            return Err(io::Error::other(format!(
-                "{variable} must be an absolute path"
-            )));
+        if !directory.as_os_str().is_empty() && directory.is_absolute() {
+            return Ok((
+                directory.join(app_dir_name()),
+                ConfigSource::EnvironmentVariable(variable.to_owned()),
+            ));
         }
-        return Ok((
-            directory.join(app_dir_name()),
-            ConfigSource::EnvironmentVariable(variable.to_owned()),
-        ));
     }
 
     let home_dir = home_dir.ok_or_else(|| {
@@ -260,9 +316,12 @@ fn resolve_paths_from_env(
         platform_xdg_dir("XDG_STATE_HOME", ".local/state", Some(&home_dir))
             .map(|(path, source)| (Ok(path), source))
             .unwrap_or_else(|error| (Err(error), ConfigSource::Default));
+    // XDG_RUNTIME_DIR has no base-directory fallback in the XDG spec. Empty
+    // and relative values count as unset, which is an error for shepr because
+    // its runtime sockets need a user-private runtime directory.
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
+        .filter(|path| !path.as_os_str().is_empty() && path.is_absolute())
         .map(|path| path.join(app_dir_name()))
         .ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR must be set to an absolute path"));
 
@@ -451,9 +510,14 @@ impl Config {
     /// so `config check` passes exactly when a launch would accept the config.
     pub fn load_for_check(paths: &AppPaths) -> LoadedConfig {
         let mut loaded = Self::load_from_path(paths.config_file());
-        let config_unavailable = loaded.document_state == ConfigDocumentState::Unavailable;
-        if !config_unavailable
-            && let Some(error) = configured_home_path_error(&loaded.config, paths.home_dir())
+        let new_cwd = match loaded.document_state {
+            ConfigDocumentState::Unavailable => loaded.unavailable_new_cwd.as_ref(),
+            ConfigDocumentState::Missing | ConfigDocumentState::Loaded => {
+                Some(&loaded.config.terminal.new_cwd)
+            }
+        };
+        if let Some(new_cwd) = new_cwd
+            && let Some(error) = configured_new_cwd_home_path_error(new_cwd, paths.home_dir())
         {
             loaded.diagnostics.push(ConfigDiagnostic::Path(error));
         }
@@ -493,6 +557,7 @@ impl Config {
                     resolution,
                     diagnostics,
                     document_state: ConfigDocumentState::Missing,
+                    unavailable_new_cwd: None,
                 }
             }
             Err(err) => default_loaded_config(vec![ConfigDiagnostic::Read(format!(
@@ -511,11 +576,13 @@ impl Config {
                             match ConfigProvenance::from_config(&config, Some(&document)) {
                                 Ok(provenance) => provenance,
                                 Err(error) => {
-                                    return default_loaded_config(vec![
-                                        ConfigDiagnostic::Provenance(format!(
-                                            "config provenance error: {error}"
-                                        )),
-                                    ]);
+                                    let mut loaded =
+                                        default_loaded_config(vec![ConfigDiagnostic::Provenance(
+                                            format!("config provenance error: {error}"),
+                                        )]);
+                                    loaded.unavailable_new_cwd =
+                                        Some(config.terminal.new_cwd.clone());
+                                    return loaded;
                                 }
                             };
                         let resolution =
@@ -547,13 +614,21 @@ impl Config {
                             resolution,
                             diagnostics,
                             document_state: ConfigDocumentState::Loaded,
+                            unavailable_new_cwd: None,
                         }
                     }
-                    Err(err) => default_loaded_config(vec![ConfigDiagnostic::Parse(format!(
-                        "config parse error: {err}"
-                    ))]),
+                    Err(err) => {
+                        let mut loaded = default_loaded_config(vec![ConfigDiagnostic::Parse(
+                            format!("config parse error: {err}"),
+                        )]);
+                        loaded.unavailable_new_cwd = configured_new_cwd_for_check(&document);
+                        loaded
+                    }
                 }
             }
+            // Broken TOML has no typed document to project independent config
+            // checks from; keep the parser diagnostic instead of interpreting
+            // fragments of malformed source text.
             Err(err) => default_loaded_config(vec![ConfigDiagnostic::Parse(format!(
                 "config parse error: {err}"
             ))]),
@@ -582,6 +657,7 @@ fn default_loaded_config(diagnostics: Vec<ConfigDiagnostic>) -> LoadedConfig {
         resolution,
         diagnostics,
         document_state: ConfigDocumentState::Unavailable,
+        unavailable_new_cwd: None,
     }
 }
 
@@ -589,7 +665,14 @@ pub(crate) fn configured_home_path_error(
     config: &Config,
     home_dir: Option<&Path>,
 ) -> Option<String> {
-    let result = match &config.terminal.new_cwd {
+    configured_new_cwd_home_path_error(&config.terminal.new_cwd, home_dir)
+}
+
+fn configured_new_cwd_home_path_error(
+    new_cwd: &NewTerminalCwdConfig,
+    home_dir: Option<&Path>,
+) -> Option<String> {
+    let result = match new_cwd {
         NewTerminalCwdConfig::Home => home_dir
             .map(Path::to_path_buf)
             .ok_or_else(shepr_core::pathutil::missing_home_error),
@@ -603,6 +686,21 @@ pub(crate) fn configured_home_path_error(
     result
         .err()
         .map(|err| format!("terminal.new_cwd cannot be resolved: {err}"))
+}
+
+#[derive(Deserialize)]
+struct ConfiguredCwdPathCheck {
+    terminal: Option<TerminalCwdPathCheck>,
+}
+
+#[derive(Deserialize)]
+struct TerminalCwdPathCheck {
+    new_cwd: Option<NewTerminalCwdConfig>,
+}
+
+fn configured_new_cwd_for_check(document: &toml::Value) -> Option<NewTerminalCwdConfig> {
+    let projection: ConfiguredCwdPathCheck = document.clone().try_into().ok()?;
+    projection.terminal?.new_cwd
 }
 
 fn unknown_top_level_sections(
@@ -850,6 +948,38 @@ tab_bar_right = [
                 "missing {expected:?} from {messages:?}"
             );
         }
+    }
+
+    #[test]
+    fn config_check_reports_home_path_when_another_field_fails_to_parse() {
+        let scratch = shepr_test_support::ScratchDir::new("config-parse-diagnostics");
+        let paths = AppPaths::test_at(scratch.path());
+        std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
+        std::fs::write(
+            paths.config_file(),
+            "[terminal]\nnew_cwd = \"home\"\n[server]\nheadless_cols = \"wide\"\n",
+        )
+        .expect("write config fixture");
+
+        let report = Config::load_for_check(&paths);
+        let messages = report
+            .diagnostics
+            .iter()
+            .map(ConfigDiagnostic::message)
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("parse error")),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("terminal.new_cwd")),
+            "{messages:?}"
+        );
     }
 
     #[test]
@@ -1121,7 +1251,7 @@ id = "example"
     }
 
     #[test]
-    fn xdg_paths_use_separate_roots_and_reject_invalid_locations() {
+    fn xdg_paths_use_separate_roots_and_ignore_empty_or_relative_base_dirs() {
         let env = shepr_test_support::IsolatedEnv::new();
         let paths = AppPaths::resolve().expect("default paths resolve");
         assert_eq!(
@@ -1137,25 +1267,85 @@ id = "example"
             env.path().join("runtime").join(app_dir_name())
         );
 
-        for key in ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"] {
-            for invalid in ["", "relative/path"] {
-                env.set(key, invalid);
-                assert!(AppPaths::resolve().is_err(), "{key}={invalid:?}");
-            }
-            env.remove(key);
-            if key == "XDG_RUNTIME_DIR" {
-                assert!(AppPaths::resolve().is_err());
-            } else {
-                assert!(AppPaths::resolve().is_ok());
+        for (key, suffix) in [
+            ("XDG_CONFIG_HOME", ".config"),
+            ("XDG_STATE_HOME", ".local/state"),
+        ] {
+            for ignored in ["", "relative/path"] {
+                env.set(key, ignored);
+                let paths = AppPaths::resolve().expect("invalid XDG base is ignored");
+                let expected = env.home().join(suffix).join(app_dir_name());
+                let actual = if key == "XDG_CONFIG_HOME" {
+                    paths.config_dir()
+                } else {
+                    paths.state_dir()
+                };
+                assert_eq!(actual, expected, "{key}={ignored:?}");
             }
             env.set(key, env.path().join(key));
+            let paths = AppPaths::resolve().expect("absolute XDG base is accepted");
+            let expected = env.path().join(key).join(app_dir_name());
+            let actual = if key == "XDG_CONFIG_HOME" {
+                paths.config_dir()
+            } else {
+                paths.state_dir()
+            };
+            assert_eq!(actual, expected);
+            env.remove(key);
         }
+
+        for ignored in ["", "relative/path"] {
+            env.set("XDG_RUNTIME_DIR", ignored);
+            let errors = AppPaths::resolve().expect_err("runtime dir has no XDG default");
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("XDG_RUNTIME_DIR must be set")),
+                "XDG_RUNTIME_DIR={ignored:?}: {errors:?}"
+            );
+        }
+        env.remove("XDG_RUNTIME_DIR");
+        assert!(AppPaths::resolve().is_err());
         for invalid in ["", "relative/home"] {
             env.set("HOME", invalid);
             assert!(AppPaths::resolve().is_err());
         }
         env.remove("HOME");
         assert!(AppPaths::resolve().is_err());
+    }
+
+    #[test]
+    fn app_paths_wire_deserialization_rejects_unresolved_paths() {
+        let scratch = shepr_test_support::ScratchDir::new("app-paths-wire");
+        let paths = AppPaths::test_with_context(scratch.path(), Some(scratch.path()), None);
+        let wire = serde_json::to_value(&paths).expect("serialize test paths");
+        assert!(serde_json::from_value::<AppPaths>(wire.clone()).is_ok());
+
+        for field in ["config_dir", "state_dir", "runtime_dir", "config_file"] {
+            let mut invalid = wire.clone();
+            invalid[field] = serde_json::json!("relative/path");
+            assert!(
+                serde_json::from_value::<AppPaths>(invalid).is_err(),
+                "accepted relative {field}"
+            );
+        }
+
+        let mut invalid_home = wire.clone();
+        invalid_home["home_dir"] = serde_json::json!("relative/home");
+        assert!(serde_json::from_value::<AppPaths>(invalid_home).is_err());
+
+        let mut missing_home = wire.clone();
+        missing_home["home_dir"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<AppPaths>(missing_home).is_err());
+
+        let mut invalid_current_dir = wire.clone();
+        invalid_current_dir["current_dir"] = serde_json::json!("relative/current");
+        assert!(serde_json::from_value::<AppPaths>(invalid_current_dir).is_err());
+
+        let mut invalid_socket = wire;
+        invalid_socket["server_address"]["client_socket"] =
+            serde_json::json!("relative/client.sock");
+        assert!(serde_json::from_value::<AppPaths>(invalid_socket).is_err());
     }
 
     #[test]

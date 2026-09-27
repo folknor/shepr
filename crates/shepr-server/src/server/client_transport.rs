@@ -48,6 +48,10 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
 /// allocate a full `MAX_FRAME_SIZE` buffer.
 const MAX_HANDSHAKE_FRAME: usize = 64 * 1024;
 
+/// How long a transport thread waits for a client it could not register to
+/// receive its shutdown frame.
+const UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
+
 // Geometry limits for every client size the server accepts: the shell hello
 // and `ClientShellResize`, and the direct-attach `TerminalHello` and `Resize`.
 // The cell limit is what one frame can carry (see `MAX_SURFACE_CELLS`), not
@@ -159,6 +163,12 @@ impl ClientWriter {
         self.render.queue.discard_pending_render();
     }
 
+    /// Adds a barrier after the control messages already queued for this
+    /// client. The receiver completes after the writer flushes that prefix.
+    pub(crate) fn flush(&self) -> tokio::sync::oneshot::Receiver<()> {
+        self.control.flush()
+    }
+
     #[cfg(any(test, feature = "test-api"))]
     pub(crate) fn test_close(&self) {
         self.render.queue.close_writer();
@@ -183,6 +193,10 @@ impl ClientWriter {
                 let sent = match item {
                     ClientWriteItem::Control(data) => control.send(data).is_ok(),
                     ClientWriteItem::Render(data) => render.send(data).is_ok(),
+                    ClientWriteItem::Flush(ack) => {
+                        let _ = ack.send(());
+                        true
+                    }
                 };
                 if !sent {
                     break;
@@ -243,6 +257,10 @@ impl ClientControlWriter {
     pub(crate) fn send(&self, data: Vec<u8>) -> Result<(), SendError<Vec<u8>>> {
         self.queue.send_control(data)
     }
+
+    fn flush(&self) -> tokio::sync::oneshot::Receiver<()> {
+        self.queue.send_flush()
+    }
 }
 
 impl ClientRenderWriter {
@@ -272,16 +290,23 @@ struct ClientWriterQueue {
 
 #[derive(Debug, Default)]
 struct ClientWriterQueueState {
-    control: VecDeque<Vec<u8>>,
+    control: VecDeque<ClientControlItem>,
     render: Option<Vec<u8>>,
     senders: usize,
     writer_alive: bool,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 enum ClientWriteItem {
     Control(Vec<u8>),
     Render(Vec<u8>),
+    Flush(tokio::sync::oneshot::Sender<()>),
+}
+
+#[derive(Debug)]
+enum ClientControlItem {
+    Data(Vec<u8>),
+    Flush(tokio::sync::oneshot::Sender<()>),
 }
 
 impl ClientWriterQueue {
@@ -311,9 +336,19 @@ impl ClientWriterQueue {
         if !state.writer_alive {
             return Err(SendError(data));
         }
-        state.control.push_back(data);
+        state.control.push_back(ClientControlItem::Data(data));
         self.ready.notify_one();
         Ok(())
+    }
+
+    fn send_flush(&self) -> tokio::sync::oneshot::Receiver<()> {
+        let (ack, receiver) = tokio::sync::oneshot::channel();
+        let mut state = self.lock_state();
+        if state.writer_alive {
+            state.control.push_back(ClientControlItem::Flush(ack));
+            self.ready.notify_one();
+        }
+        receiver
     }
 
     fn try_send_render(&self, data: Vec<u8>) -> Result<(), TrySendError<Vec<u8>>> {
@@ -338,8 +373,11 @@ impl ClientWriterQueue {
     fn recv(&self) -> Option<ClientWriteItem> {
         let mut state = self.lock_state();
         loop {
-            if let Some(data) = state.control.pop_front() {
-                return Some(ClientWriteItem::Control(data));
+            if let Some(item) = state.control.pop_front() {
+                return Some(match item {
+                    ClientControlItem::Data(data) => ClientWriteItem::Control(data),
+                    ClientControlItem::Flush(ack) => ClientWriteItem::Flush(ack),
+                });
             }
             if let Some(data) = state.render.take() {
                 return Some(ClientWriteItem::Render(data));
@@ -358,6 +396,7 @@ impl ClientWriterQueue {
         let mut state = self.lock_state();
         state.writer_alive = false;
         state.render = None;
+        state.control.clear();
         self.ready.notify_all();
     }
 
@@ -786,8 +825,21 @@ fn send_shutdown_to_unregistered_client(writer: &ClientWriter) {
         reason: Some(shepr_protocol::ShutdownReason::Message(
             "server is shutting down".to_owned(),
         )),
-    }) {
-        let _ = writer.control.send(framed);
+    }) && writer.control.send(framed).is_ok()
+    {
+        // Handshake handling runs on a transport thread, so waiting here
+        // does not park the Tokio server loop. The wait is bounded: a writer
+        // stuck on a client that stopped reading must not pin this thread
+        // forever.
+        let mut flushed = writer.flush();
+        let deadline = std::time::Instant::now() + UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT;
+        while matches!(
+            flushed.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ) && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }
 
@@ -806,6 +858,16 @@ fn client_writer_loop(
                     server_event_tx.blocking_send(ServerEvent::ClientWriterDrained { client_id });
                 write_framed_bytes(&mut stream, &data)
             }
+            ClientWriteItem::Flush(ack) => match stream.flush() {
+                Ok(()) => {
+                    let _ = ack.send(());
+                    true
+                }
+                Err(err) => {
+                    debug!(err = %err, "client flush failed, closing writer");
+                    false
+                }
+            },
         };
         if !written {
             let _ = server_event_tx.blocking_send(ServerEvent::ClientDisconnected { client_id });

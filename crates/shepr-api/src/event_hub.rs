@@ -1,6 +1,9 @@
 #[derive(Clone, Default)]
 pub struct EventHub {
     inner: std::sync::Arc<std::sync::Mutex<EventHubState>>,
+    // The mutex can be poisoned after an event has been committed. Keep its
+    // last published cursor separately so callers never restart from zero.
+    current_sequence: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Default)]
@@ -19,16 +22,21 @@ impl EventHub {
     const MAX_EVENTS: usize = 512;
 
     pub fn push(&self, event: crate::schema::EventEnvelope) {
-        let Ok(mut state) = self.inner.lock() else {
-            return;
+        let sequence = {
+            let Ok(mut state) = self.inner.lock() else {
+                return;
+            };
+            state.next_sequence += 1;
+            let sequence = state.next_sequence;
+            state.events.push((sequence, event));
+            let overflow = state.events.len().saturating_sub(Self::MAX_EVENTS);
+            if overflow > 0 {
+                state.events.drain(0..overflow);
+            }
+            sequence
         };
-        state.next_sequence += 1;
-        let sequence = state.next_sequence;
-        state.events.push((sequence, event));
-        let overflow = state.events.len().saturating_sub(Self::MAX_EVENTS);
-        if overflow > 0 {
-            state.events.drain(0..overflow);
-        }
+        self.current_sequence
+            .fetch_max(sequence, std::sync::atomic::Ordering::Release);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -68,10 +76,8 @@ impl EventHub {
     }
 
     pub fn current_sequence(&self) -> u64 {
-        let Ok(state) = self.inner.lock() else {
-            return 0;
-        };
-        state.next_sequence
+        self.current_sequence
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 }
 

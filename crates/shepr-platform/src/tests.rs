@@ -383,7 +383,7 @@ fn config_metadata_preserves_ownership_and_acl_without_inheriting_extra_access()
         }
         set_attribute(&input, c"user.shepr-test", b"preserve this attribute");
         let original = input.metadata().expect("test precondition");
-        drop(create_private_temporary(&target).expect("test precondition"));
+        drop(create_private_file(&target).expect("test precondition"));
         let output = std::fs::File::open(&target).expect("test precondition");
         // Model a default ACL inherited from the destination's parent directory.
         set_attribute(&output, c"system.posix_acl_access", &acl);

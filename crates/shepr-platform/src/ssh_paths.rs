@@ -87,7 +87,7 @@ pub(super) fn with_name_token(name: &str, token: u64) -> String {
 
 /// 64 bits another local user cannot predict: getrandom(2), or std's
 /// OS-seeded hasher keys if that fails.
-fn unpredictable_token() -> u64 {
+pub(super) fn unpredictable_token() -> u64 {
     use std::hash::{BuildHasher, Hasher};
 
     let mut bytes = [0_u8; 8];

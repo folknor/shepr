@@ -1583,13 +1583,44 @@ mod tests {
     }
 
     #[test]
+    fn failed_session_saves_back_off_and_recover() {
+        let mut app = test_app();
+        let now = Instant::now();
+        let mut previous = Duration::ZERO;
+        for _ in 0..12 {
+            app.session_saver.session_save_deadline = None;
+            assert!(!app.record_session_save_result(Err(std::io::Error::other("disk full")), now));
+            let delay = app
+                .session_saver
+                .session_save_deadline
+                .expect("a failed save schedules a retry")
+                - now;
+            assert!(delay >= previous, "retry delay never shrinks while failing");
+            assert!(delay <= Duration::from_secs(30), "retry delay is capped");
+            previous = delay;
+        }
+        assert_eq!(previous, Duration::from_secs(30));
+
+        assert!(app.record_session_save_result(Ok(()), now));
+        app.session_saver.session_save_deadline = None;
+        app.record_session_save_result(Err(std::io::Error::other("disk full")), now);
+        assert_eq!(
+            app.session_saver.session_save_deadline,
+            Some(now + Duration::from_millis(250)),
+            "a success resets the backoff"
+        );
+    }
+
+    #[test]
     fn background_session_save_reschedules_when_writer_is_busy() {
         let mut app = test_app();
         app.policy = AppPolicy::PRODUCTION;
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         app.session_saver.session_save_thread = Some(std::thread::spawn(move || {
             let _ = release_rx.recv();
+            Ok(())
         }));
+        app.session_saver.session_save_deadline = Some(Instant::now() - Duration::from_secs(1));
 
         app.start_background_session_save();
 
@@ -1610,6 +1641,7 @@ mod tests {
         app.session_saver.session_save_thread = Some(std::thread::spawn(move || {
             let _ = release_rx.recv();
             done_tx.send(()).expect("test precondition");
+            Ok(())
         }));
         let releaser = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(30));
@@ -1669,10 +1701,20 @@ mod tests {
             exit_reason: shepr_platform::ChildExitReason::Interrupted,
         });
         assert!(shepr_mux::persist::load(&shepr_api::session::data_dir(&app.paths)).is_some());
+        assert!(
+            app.session_saver.session_save_deadline.is_some(),
+            "the pane exit schedules the normal autosave"
+        );
 
+        // The loop starts the autosave once its debounce has elapsed.
+        app.session_saver.session_save_deadline = Some(Instant::now() - Duration::from_secs(1));
         app.start_background_session_save();
+        assert!(app.session_saver.session_save_thread.is_some());
         if let Some(thread) = app.session_saver.session_save_thread.take() {
-            thread.join().expect("test precondition");
+            thread
+                .join()
+                .expect("test precondition")
+                .expect("session save succeeds");
         }
         app.save_session_before_teardown();
         app.retire_session_writer();

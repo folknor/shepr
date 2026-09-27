@@ -64,17 +64,31 @@ fn integration_status(
         return 0;
     }
 
-    for status in shepr_agent::integration::installed_integration_statuses(paths) {
-        let target = shepr_agent::integration::integration_target_label(status.target);
-        let state = describe_integration_state(
-            status.state,
-            status.installed_version,
-            status.expected_version,
-        );
-        println!("{target}: {state} ({})", status.path.display());
+    let mut unresolved = false;
+    for row in shepr_agent::integration::integration_status_rows(paths) {
+        match row {
+            Ok(status) => {
+                let target = shepr_agent::integration::integration_target_label(status.target);
+                let state = describe_integration_state(
+                    status.state,
+                    status.installed_version,
+                    status.expected_version,
+                );
+                println!("{target}: {state} ({})", status.path.display());
+            }
+            Err(error) => {
+                unresolved = true;
+                let target = shepr_agent::integration::integration_target_label(error.target);
+                println!(
+                    "{target}: unknown (directory unavailable: {})",
+                    error.message
+                );
+            }
+        }
     }
 
-    0
+    // A target that could not be checked is a failed check, not a clean report.
+    i32::from(unresolved)
 }
 
 fn describe_integration_state(

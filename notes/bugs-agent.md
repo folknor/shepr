@@ -15,17 +15,9 @@ Hunter coverage: detection, manifests, the manifest registry and reload, integra
 
 Every settings edit is read-modify-write with no lock, so two concurrent `shepr integration install` runs for the same target can lose one update. The rename is atomic; the edit is not.
 
-## AGT-011 - The Kimi version probe has no timeout
+## AGT-019 - The version probe can still hang on a grandchild holding stdout
 
-`enforce_agent_version` runs `kimi --version` from `PATH` and can hang the install.
-
-## AGT-013 - has_screen_manifest can disagree with the agent descriptor
-
-It returns false when a bundled manifest fails to compile, which is only logged. Downstream then treats that agent like Omp/Mastracode (Unknown counted as settled) even though `Agent::screen_manifest()` is true. The hunter suggests a unit test that compiles every bundled manifest and failing hard.
-
-## AGT-014 - installed_integration_statuses overstates and drops targets
-
-It returns NotInstalled entries too. It also silently drops any target whose directory failed to resolve (for example, no HOME) instead of reporting it.
+`run_version_probe` (`integration/version.rs`) kills the probed agent after 5 s, but once the child has exited it calls `wait_with_output`, which blocks until stdout closes. A grandchild that inherited stdout keeps it open and the install hangs anyway. Unlikely for a `--version` command.
 
 ## AGT-016 - Detection hot path allocates on every tick, per pane
 
@@ -41,7 +33,3 @@ It returns NotInstalled entries too. It also silently drops any target whose dir
 ## AGT-017 - Manifest compile work is duplicated and blocks the event loop
 
 Each regex is compiled twice per load (validation, then compilation). `reload_manifests` recompiles every bundled manifest synchronously on the app event loop, both at startup and on the reload API call. Also, a detection tick before the startup reload triggers `registry()` with no override dir, so all bundled manifests compile twice at boot.
-
-## AGT-018 - Region offset math assumes \n line endings
-
-It adds `len + 1` per line, so region offsets drift if a snapshot ever contains `\r\n`.

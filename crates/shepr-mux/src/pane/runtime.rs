@@ -110,7 +110,7 @@ pub struct PaneRuntime {
     io: PaneRuntimeIo,
     current_size: Cell<shepr_core::geometry::PaneGeometry>,
     child_liveness: Arc<ChildLiveness>,
-    reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
+    reported_cwd: Arc<Mutex<Option<ReportedCwd>>>,
     persistence_cwd: Mutex<Option<std::path::PathBuf>>,
     content_seq: Arc<AtomicU64>,
     content_write_lock: Arc<Mutex<()>>,
@@ -227,17 +227,59 @@ fn usable_reported_cwd(cwd: std::path::PathBuf) -> Option<std::path::PathBuf> {
     UsableCwd::new(cwd).map(UsableCwd::into_path_buf)
 }
 
+/// The last accepted OSC 7 report, with the pane shell's /proc cwd sampled
+/// when it arrived.
+///
+/// OSC 7 carries what /proc cannot: a logical path through symlinks, or the
+/// directory of a program the pane shell's /proc entry does not describe (a
+/// nested shell, a root shell under `sudo`). It goes stale when the shell
+/// changes directory without emitting a new report. The sample tells the two
+/// apart: while the shell's /proc cwd still equals it, nothing the shell did
+/// is newer than the report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReportedCwd {
+    path: std::path::PathBuf,
+    shell_cwd_at_report: Option<std::path::PathBuf>,
+}
+
+impl ReportedCwd {
+    /// The pane cwd given the shell's current /proc cwd: the report while the
+    /// shell has not moved since it arrived, otherwise the shell's own cwd.
+    fn resolve(
+        reported: Option<&Self>,
+        shell_cwd: Option<std::path::PathBuf>,
+    ) -> Option<std::path::PathBuf> {
+        match (shell_cwd, reported) {
+            (Some(shell_cwd), Some(reported))
+                if reported.shell_cwd_at_report.as_ref() == Some(&shell_cwd) =>
+            {
+                Some(reported.path.clone())
+            }
+            (Some(shell_cwd), _) => Some(shell_cwd),
+            (None, reported) => reported.map(|reported| reported.path.clone()),
+        }
+    }
+}
+
 fn publish_reported_cwd(
     pane_id: PaneId,
+    shell_pid: u32,
     cwd: std::path::PathBuf,
-    reported_cwd: &Arc<Mutex<Option<std::path::PathBuf>>>,
+    reported_cwd: &Arc<Mutex<Option<ReportedCwd>>>,
     events: &mpsc::Sender<AppEvent>,
 ) {
     let Some(cwd) = usable_reported_cwd(cwd) else {
         return;
     };
+    // One readlink per OSC 7, sampled before taking the lock.
+    let shell_cwd_at_report = shepr_agent::detect::process_cwd(shell_pid);
     let mut last_reported = shepr_vt::lock_auxiliary(reported_cwd);
-    if last_reported.as_ref() == Some(&cwd) {
+    if let Some(last) = last_reported.as_mut()
+        && last.path == cwd
+    {
+        // A repeated report is not a new event, but it is fresh evidence
+        // that the path is current wherever the shell now is.
+        last.shell_cwd_at_report = shell_cwd_at_report;
         return;
     }
     // The dedupe slot is updated only once the event is queued: if the shared
@@ -250,7 +292,10 @@ fn publish_reported_cwd(
         cwd: cwd.clone(),
     }) {
         Ok(()) => {
-            *last_reported = Some(cwd);
+            *last_reported = Some(ReportedCwd {
+                path: cwd,
+                shell_cwd_at_report,
+            });
         }
         Err(err) => {
             drop(last_reported);
@@ -271,7 +316,7 @@ fn apply_process_result(
     terminal: &PaneTerminal,
     render_notify: &Notify,
     render_dirty: &RenderSignal,
-    reported_cwd: &Arc<Mutex<Option<std::path::PathBuf>>>,
+    reported_cwd: &Arc<Mutex<Option<ReportedCwd>>>,
     events: &mpsc::Sender<AppEvent>,
 ) -> Vec<Bytes> {
     if result.default_color_owner_pending {
@@ -286,7 +331,7 @@ fn apply_process_result(
     }
 
     if let Some(cwd) = result.reported_cwd {
-        publish_reported_cwd(pane_id, cwd, reported_cwd, events);
+        publish_reported_cwd(pane_id, shell_pid, cwd, reported_cwd, events);
     }
     for content in result.clipboard_writes {
         if let Err(err) = events.try_send(AppEvent::ClipboardWrite { content }) {
@@ -1413,13 +1458,16 @@ impl PaneRuntime {
     }
 
     /// Get the current working directory of the child shell process.
+    ///
+    /// The latest OSC 7 report wins while the shell's /proc cwd is unchanged
+    /// since that report arrived; once the shell has moved without reporting,
+    /// its /proc cwd wins. One /proc read per call.
     pub fn cwd(&self) -> Option<std::path::PathBuf> {
-        if let Some(cwd) = shepr_vt::lock_auxiliary(&self.reported_cwd).clone() {
-            return Some(cwd);
-        }
-
-        let pid = self.child_liveness.pid();
-        shepr_agent::detect::process_cwd(pid)
+        let shell_cwd = shepr_agent::detect::process_cwd(self.child_liveness.pid());
+        ReportedCwd::resolve(
+            shepr_vt::lock_auxiliary(&self.reported_cwd).as_ref(),
+            shell_cwd,
+        )
     }
 
     pub fn cwd_for_persistence(&self) -> Option<std::path::PathBuf> {
@@ -1435,7 +1483,11 @@ impl PaneRuntime {
         }
         shepr_vt::lock_auxiliary(&self.persistence_cwd)
             .clone()
-            .or_else(|| shepr_vt::lock_auxiliary(&self.reported_cwd).clone())
+            .or_else(|| {
+                shepr_vt::lock_auxiliary(&self.reported_cwd)
+                    .as_ref()
+                    .map(|reported| reported.path.clone())
+            })
     }
 
     pub fn child_pid(&self) -> Option<u32> {
@@ -1825,10 +1877,16 @@ mod tests {
 
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let (events, _event_rx) = mpsc::channel(1);
-        publish_reported_cwd(runtime.pane_id, cwd.clone(), &runtime.reported_cwd, &events);
+        publish_reported_cwd(
+            runtime.pane_id,
+            runtime.child_liveness.pid(),
+            cwd.clone(),
+            &runtime.reported_cwd,
+            &events,
+        );
         assert_eq!(
-            shepr_vt::lock_auxiliary(&runtime.reported_cwd).as_ref(),
-            Some(&cwd),
+            reported_path(&runtime),
+            Some(cwd.clone()),
             "test setup must pass cache admission"
         );
 
@@ -1852,21 +1910,105 @@ mod tests {
             })
             .expect("test precondition");
 
-        publish_reported_cwd(runtime.pane_id, cwd.clone(), &runtime.reported_cwd, &events);
+        let shell_pid = runtime.child_liveness.pid();
+        publish_reported_cwd(
+            runtime.pane_id,
+            shell_pid,
+            cwd.clone(),
+            &runtime.reported_cwd,
+            &events,
+        );
         assert!(
             shepr_vt::lock_auxiliary(&runtime.reported_cwd).is_none(),
             "an unsent report must not occupy the dedupe slot"
         );
 
         let _ = event_rx.recv().await.expect("drain filler event");
-        publish_reported_cwd(runtime.pane_id, cwd.clone(), &runtime.reported_cwd, &events);
+        publish_reported_cwd(
+            runtime.pane_id,
+            shell_pid,
+            cwd.clone(),
+            &runtime.reported_cwd,
+            &events,
+        );
         let Ok(AppEvent::TerminalCwdReported { cwd: sent, .. }) = event_rx.try_recv() else {
             panic!("expected the retried cwd report");
         };
         assert_eq!(sent, cwd);
+        assert_eq!(reported_path(&runtime), Some(cwd));
+    }
+
+    fn reported_path(runtime: &PaneRuntime) -> Option<std::path::PathBuf> {
+        shepr_vt::lock_auxiliary(&runtime.reported_cwd)
+            .as_ref()
+            .map(|reported| reported.path.clone())
+    }
+
+    #[test]
+    fn reported_cwd_wins_until_the_shell_moves_without_reporting() {
+        let report = |path: &str, shell: Option<&str>| ReportedCwd {
+            path: path.into(),
+            shell_cwd_at_report: shell.map(Into::into),
+        };
+        let shell = |path: &str| Some(std::path::PathBuf::from(path));
+
+        // A nested or root shell reported its directory; the pane shell has
+        // not moved since, so the report is the newest information.
+        let nested = report("/srv/nested", Some("/home/u"));
         assert_eq!(
-            shepr_vt::lock_auxiliary(&runtime.reported_cwd).as_ref(),
-            Some(&cwd)
+            ReportedCwd::resolve(Some(&nested), shell("/home/u")),
+            shell("/srv/nested")
+        );
+        // The shell changed directory without a new report: the report is stale.
+        assert_eq!(
+            ReportedCwd::resolve(Some(&nested), shell("/tmp")),
+            shell("/tmp")
+        );
+        // An unreadable /proc link keeps the report as the only evidence.
+        assert_eq!(
+            ReportedCwd::resolve(Some(&nested), None),
+            shell("/srv/nested")
+        );
+        // A report taken while /proc was unreadable cannot vouch for itself.
+        let unsampled = report("/srv/nested", None);
+        assert_eq!(
+            ReportedCwd::resolve(Some(&unsampled), shell("/home/u")),
+            shell("/home/u")
+        );
+        assert_eq!(
+            ReportedCwd::resolve(None, shell("/home/u")),
+            shell("/home/u")
+        );
+        assert_eq!(ReportedCwd::resolve(None, None), None);
+    }
+
+    #[tokio::test]
+    async fn a_repeated_report_refreshes_its_shell_sample_without_a_new_event() {
+        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        let (events, mut event_rx) = mpsc::channel(4);
+        let scratch = crate::test_support::ScratchDir::new("cwd-repeat");
+        let cwd = scratch.to_path_buf();
+        *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(ReportedCwd {
+            path: cwd.clone(),
+            shell_cwd_at_report: Some("/stale".into()),
+        });
+
+        // The test runtime has no shell, so the fresh sample is unreadable.
+        publish_reported_cwd(
+            runtime.pane_id,
+            0,
+            cwd.clone(),
+            &runtime.reported_cwd,
+            &events,
+        );
+
+        assert!(event_rx.try_recv().is_err(), "a repeat is not a new event");
+        assert_eq!(
+            shepr_vt::lock_auxiliary(&runtime.reported_cwd).clone(),
+            Some(ReportedCwd {
+                path: cwd,
+                shell_cwd_at_report: None,
+            })
         );
     }
 
@@ -1912,7 +2054,10 @@ mod tests {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let scratch = crate::test_support::ScratchDir::new("follow-cwd");
         let cwd = scratch.to_path_buf();
-        *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(cwd.clone());
+        *shepr_vt::lock_auxiliary(&runtime.reported_cwd) = Some(ReportedCwd {
+            path: cwd.clone(),
+            shell_cwd_at_report: None,
+        });
 
         assert_eq!(runtime.follow_cwd(), Some(cwd));
     }

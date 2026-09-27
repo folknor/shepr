@@ -480,30 +480,31 @@ mod tests {
         assert!(resolve_machine(&[mac.clone(), duplicate], "mac").is_err());
     }
 
-    /// Whether `shepr --machine mac <command>` would reach the network: it
-    /// must parse, and then pass the API-only check.
+    /// Parse a real CLI command through the production invocation parser so
+    /// these cases reach `validate_machine_command` rather than failing clap.
+    fn machine_cli_command(command: &[&str]) -> super::super::CliCommand {
+        let mut argv = vec!["shepr".to_string(), "--machine".into(), "mac".into()];
+        argv.extend(command.iter().map(ToString::to_string));
+        let invocation = super::super::parse_invocation(&argv)
+            .unwrap_or_else(|code| panic!("{command:?} should parse (exit {code})"));
+        match invocation.launch {
+            super::super::Launch::Cli(command) => *command,
+            _ => panic!("{command:?} should parse as a CLI command"),
+        }
+    }
+
     fn machine_command_allowed(command: &[&str]) -> bool {
-        let mut input = vec!["--machine", "mac"];
-        input.extend_from_slice(command);
-        let Ok(matches) = parse(&input) else {
-            return false;
-        };
-        let Some((name, matches)) = matches.subcommand() else {
-            return false;
-        };
-        let Some(command) = super::super::CliCommand::from_matches(name, matches) else {
-            return false;
-        };
+        let command = machine_cli_command(command);
         validate_machine_command(&command).is_ok()
     }
 
     #[test]
-    fn machine_commands_reject_local_side_effects_and_tui_attach() {
+    fn machine_commands_reject_real_local_commands() {
         for command in [
-            &["update"][..],
-            &["machine", "remove", "mac"],
+            &["machine", "remove", "mac"][..],
+            &["machine", "list"],
+            &["session", "list"],
             &["session", "delete", "default"],
-            &["session", "attach", "work"],
             &["agent", "attach", "w4:p1"],
             &[
                 "agent",
@@ -514,19 +515,11 @@ mod tests {
                 "claude",
             ],
             &["terminal", "attach", "w4:p1"],
-            &["terminal", "session", "control", "w4:p1"],
-            &["plugin", "install", "./plugin"],
             &["integration", "install", "pi"],
+            &["integration", "status"],
             &["config", "check"],
-            &["api", "schema", "--output", "schema.json"],
-            // There is no `api` command; this used to pass the check and then
-            // exit 0 without doing anything.
-            &["api", "snapshot"],
             &["status", "client"],
             &["status"],
-            &["server"],
-            &["client"],
-            &["remote-api-bridge"],
         ] {
             assert!(!machine_command_allowed(command), "{command:?}");
         }
@@ -542,5 +535,22 @@ mod tests {
         ] {
             assert!(machine_command_allowed(command), "{command:?}");
         }
+    }
+
+    #[test]
+    fn machine_session_attach_is_rejected_as_a_tui_launch() {
+        let argv = ["shepr", "--machine", "mac", "session", "attach", "work"].map(str::to_owned);
+        let invocation = super::super::parse_invocation(&argv)
+            .expect("session attach should parse as a TUI launch");
+        assert!(matches!(
+            invocation.launch,
+            super::super::Launch::Tui {
+                attached_session: Some(name)
+            } if name == "work"
+        ));
+
+        let error = run_on_machine("mac", None, &shepr_config::AppPaths::default())
+            .expect_err("a TUI launch has no API command to run on a machine");
+        assert_eq!(error.exit_code(), 2);
     }
 }

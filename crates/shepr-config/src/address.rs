@@ -7,15 +7,38 @@ use std::process::Command;
 pub const CLIENT_SOCKET_PATH_ENV_VAR: &str = "SHEPR_CLIENT_SOCKET_PATH";
 pub const SOCKET_PATH_ENV_VAR: &str = "SHEPR_SOCKET_PATH";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServerAddress {
     api_socket: PathBuf,
     client_socket: PathBuf,
     source: AddressSource,
 }
 
-// Only for `AppPaths::default()` in tests; production addresses come from
-// `AppPaths::resolve`, which validates process environment paths.
+impl<'de> Deserialize<'de> for ServerAddress {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            api_socket: PathBuf,
+            client_socket: PathBuf,
+            source: AddressSource,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        let address = Self {
+            api_socket: wire.api_socket,
+            client_socket: wire.client_socket,
+            source: wire.source,
+        };
+        address.validate_paths().map_err(serde::de::Error::custom)?;
+        Ok(address)
+    }
+}
+
+// Only for test fixtures; production addresses come from `AppPaths::resolve`,
+// which validates process environment paths.
 #[cfg(any(test, feature = "test-support"))]
 impl Default for ServerAddress {
     fn default() -> Self {
@@ -35,22 +58,14 @@ enum AddressSource {
 }
 
 impl ServerAddress {
-    /// Builds an address from pre-validated path overrides. Production
-    /// environment values must be resolved through `AppPaths::resolve`.
-    pub fn resolve(
-        runtime_dir: &Path,
-        session: &super::SessionId,
-        session_was_requested: bool,
-        api_socket_override: Option<&str>,
-        client_socket_override: Option<&str>,
-    ) -> Self {
-        Self::resolve_paths(
-            runtime_dir,
-            session,
-            session_was_requested,
-            api_socket_override.map(Path::new),
-            client_socket_override.map(Path::new),
-        )
+    pub(crate) fn validate_paths(&self) -> Result<(), String> {
+        if !self.api_socket.is_absolute() {
+            return Err("API socket path must be absolute".to_owned());
+        }
+        if !self.client_socket.is_absolute() {
+            return Err("client socket path must be absolute".to_owned());
+        }
+        Ok(())
     }
 
     pub(crate) fn resolve_paths(

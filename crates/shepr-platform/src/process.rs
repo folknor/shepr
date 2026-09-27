@@ -336,6 +336,7 @@ pub(super) fn session_and_tty_from_stat(stat: &str) -> Option<(i32, i32)> {
 
 /// Signal processes by bare pid. Test-only: production code signals through
 /// `ProcessHandle`, which cannot hit a reused pid.
+#[cfg(any(test, feature = "test-support"))]
 pub fn signal_processes(pids: &[u32], signal: Signal) {
     for &pid in pids {
         let Ok(pid) = i32::try_from(pid) else {

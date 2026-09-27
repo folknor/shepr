@@ -185,12 +185,41 @@ fn integration_hook_events(
         .unwrap_or(&[])
 }
 
-pub fn installed_integration_statuses(
+/// One row per supported target, in spec order, for `integration status`.
+/// Includes `NotInstalled` rows because the command reports the full
+/// supported-target inventory. A target whose directory could not be resolved
+/// is an error row, so the CLI can print it instead of silently omitting it.
+pub fn integration_status_rows(
+    paths: &super::env::AgentIntegrationPaths,
+) -> Vec<Result<super::IntegrationStatus, super::IntegrationStatusError>> {
+    integration_specs(paths)
+        .map(|(target, path, expected_version)| match path {
+            Ok(path) => Ok(integration_status_at(target, path, expected_version)),
+            Err(error) => Err(super::IntegrationStatusError {
+                target,
+                message: error.to_string(),
+            }),
+        })
+        .collect()
+}
+
+/// The resolvable rows of [`integration_status_rows`]. Unresolvable targets
+/// are logged and skipped: callers here only act on installed integrations.
+pub(crate) fn installed_integration_statuses(
     paths: &super::env::AgentIntegrationPaths,
 ) -> Vec<super::IntegrationStatus> {
-    integration_specs(paths)
-        .filter_map(|(target, path, expected_version)| {
-            Some(integration_status_at(target, path.ok()?, expected_version))
+    integration_status_rows(paths)
+        .into_iter()
+        .filter_map(|row| match row {
+            Ok(status) => Some(status),
+            Err(error) => {
+                tracing::warn!(
+                    integration = error.target.label(),
+                    error = %error.message,
+                    "could not resolve integration directory while checking status"
+                );
+                None
+            }
         })
         .collect()
 }
@@ -628,6 +657,22 @@ mod registration_tests {
         assert_eq!(
             integration_target_label(IntegrationTarget::AntigravityCli),
             crate::agent::Agent::Antigravity.label()
+        );
+    }
+
+    #[test]
+    fn unresolvable_integration_directories_are_reported_as_error_rows() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        env.remove("HOME");
+        let paths = crate::integration::AgentIntegrationPaths::resolve();
+
+        let rows = integration_status_rows(&paths);
+        assert_eq!(rows.len(), INTEGRATION_SPECS.len(), "one row per target");
+        let errors = rows.iter().filter(|row| row.is_err()).count();
+        assert!(errors > 0, "targets under HOME cannot resolve without it");
+        assert_eq!(
+            installed_integration_statuses(&paths).len(),
+            rows.len() - errors
         );
     }
 

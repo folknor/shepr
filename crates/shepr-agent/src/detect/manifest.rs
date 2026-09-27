@@ -1503,10 +1503,7 @@ fn before_current_prompt_marker<'a>(content: &'a str, lines: &[&'a str]) -> &'a 
     let Some(index) = current_codex_prompt_index(lines) else {
         return content;
     };
-    let byte_offset = lines[..index]
-        .iter()
-        .map(|line| line.len() + 1)
-        .sum::<usize>();
+    let byte_offset = line_start_offset(content, lines, index);
     &content[..byte_offset.min(content.len())]
 }
 
@@ -1580,10 +1577,16 @@ fn above_prompt_box<'a>(content: &'a str, lines: &[&'a str]) -> &'a str {
 fn after_last_horizontal_rule(content: &str) -> &str {
     let mut last_rule_end = 0usize;
     let mut offset = 0usize;
-    for line in content.lines() {
-        let next_offset = offset + line.len() + 1;
+    for segment in content.split_inclusive('\n') {
+        let line = segment.strip_suffix('\n').unwrap_or(segment);
+        let line = if segment.ends_with('\n') {
+            line.strip_suffix('\r').unwrap_or(line)
+        } else {
+            line
+        };
+        let next_offset = offset + segment.len();
         if is_horizontal_rule(line) {
-            last_rule_end = next_offset.min(content.len());
+            last_rule_end = next_offset;
         }
         offset = next_offset;
     }
@@ -1638,10 +1641,12 @@ fn slice_from_line_index<'a>(content: &'a str, lines: &[&str], index: usize) -> 
 }
 
 fn line_start_offset(content: &str, lines: &[&str], index: usize) -> usize {
-    lines[..index.min(lines.len())]
-        .iter()
-        .map(|line| line.len() + 1)
-        .sum::<usize>()
+    // `str::lines()` strips both bytes of CRLF. Use the borrowed line's
+    // original start address so slices retain the exact line-ending width.
+    lines
+        .get(index)
+        .map(|line| line.as_ptr().addr().saturating_sub(content.as_ptr().addr()))
+        .unwrap_or(content.len())
         .min(content.len())
 }
 

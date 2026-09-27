@@ -23,28 +23,9 @@ Hot path; breaks "Hot paths multiply".
 - This runs on every `RenderDemand::Full`: any internal event, API request, server event or agent state change, capped at 60 Hz.
 - Fix: make the shell projection event-driven. Bump a revision when topology, labels, agent state or metadata change, and rebuild only then. The config is encoded once at startup, but those bytes still ride in every `ClientShellSnapshot`: a copy per render per shell client, plus a byte comparison on the server and another on the client. Send them once per connection (or as an `Arc<[u8]>`, which needs serde's `rc` feature).
 
-## SRV-004 - The exhaustive internal-event drain before each API request can starve it
-
-- `handle_api_request_with_shutdown_check_inner` calls `drain_all_internal_events_with_forwarding` (`headless/internal_events.rs:93-104`). That loops until a batch finds no event.
-- PTY reader and detector threads keep refilling `event_rx` (capacity 256). Under sustained output (StateChanged, title and hook events) the loop can keep going, and the API request, plus the whole event loop, stalls for as long as producers keep up.
-- Bound the drain to a snapshot of the queue length on entry.
-
-Related: API-001 (a request that times out still runs later).
-
-## SRV-005 - A failed session save is never retried
-
-- `start_background_session_save` / `save_session_now` (`app/session.rs`) clear `session_save_deadline` before the job runs. `SessionWriter::finish_save` (`shepr-mux/src/persist/writer.rs`) only logs errors.
-- After a transient failure (ENOSPC, EIO) the on-disk session stays stale until the next mutation or shutdown. Layout changes can be lost across a crash, against the session-restore claim.
-- The writer should report failure back so the saver can go back to `retry()`, which already exists for the thread-busy case.
-
 ## SRV-006 - render_pane_surface takes &mut App but only reads
 
 `client_shell.rs:266`. The signature forces `render_and_stream` to hold `&mut self.app` per client and hides that rendering is pure (the "Render is pure" principle). Make it `&App`.
-
-## SRV-007 - Blocking sleeps on the async runtime during shutdown
-
-- `initiate_shutdown` and `complete_shutdown` (`headless/lifecycle.rs:271, 299`) call `std::thread::sleep(50ms)` inside the tokio loop. It's also a guess at flush timing, not a guarantee.
-- The writer threads should report the flush, or the shutdown should await it.
 
 ## SRV-008 - Stale AGENTS.md UI description and duplicated compute_view wrappers
 
@@ -62,8 +43,6 @@ Related: API-001 (a request that times out still runs later).
 
 `workspace_info` no longer invents a tab id, but the same `position + 1` fallback remains in `app/api/tabs.rs` (~111), `app/api/agents.rs` (~213) and `app/api/panes.rs` (~314). Tabs use stable public numbers and a bare position is rejected elsewhere, so if the lookup ever fails these can report a different tab's id. They should report no id or an error.
 
-Related: MUX-009.
-
 ## SRV-011 - ServerAgentManifests is a status read that mutates state
 
 `ServerAgentManifests` is a status read but mutates state (`refresh_agent_manifest_summaries`).
@@ -71,3 +50,11 @@ Related: MUX-009.
 ## SRV-013 - ApiDispatcher swap dance
 
 The `ApiDispatcher` swap dance (`with_api_dispatcher` taking it out, then `with_server_dispatcher` swapping it back in during dispatch) works, but it is hard to follow. `HeadlessServer` and `ApiDispatcher` are really one owner, and splitting routing state out as a plain struct passed by `&mut` would remove the swaps.
+
+## SRV-014 - Pane-exit checkpoints save the session inline on the event loop
+
+`save_session_now()` (`app/session.rs`, ~188), reached from pane-exit checkpoints in `app/events.rs` (~93), joins any in-flight writer and does the filesystem work inline on the tokio loop. Ordinary saves now run on the writer thread and retry on failure, but this path still pauses every client for the length of a disk write, including history formatting.
+
+## SRV-015 - A failing save during a host-shutdown warning holds the logind delay lock
+
+When logind warns of a host shutdown, the server checkpoints and then releases the delay lock. If the save keeps failing, `freeze_for_host_shutdown` returns early and the lock is never released, so host shutdown waits until logind's `InhibitDelayMaxSec` runs out. Probably acceptable, but the lock should be released after a bounded number of failed attempts.

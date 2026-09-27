@@ -289,6 +289,9 @@ fn server_status_json(
 }
 
 fn update_status_json(server: &ServerRuntimeStatus) -> UpdateStatusJson {
+    // This object is emitted only by the full overview. Machine targets reject
+    // that command, so its local version comparison is never paired with the
+    // remote server object's intentionally unknown stale-binary value.
     UpdateStatusJson {
         restart_needed: restart_needed_bool(server),
         server_binary_stale: server_binary_stale_bool(server),

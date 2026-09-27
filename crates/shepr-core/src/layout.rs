@@ -38,8 +38,27 @@ static NEXT_PANE_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32
 
 impl PaneId {
     /// Allocate a globally unique PaneId.
+    ///
+    /// Never returns the placeholder id 0 and never hands out an id twice.
+    /// The counter refuses to advance past `u32::MAX` instead of wrapping, so
+    /// exhausting it (four billion panes in one process) is a loud failure
+    /// rather than a silent reuse of live ids.
     pub fn alloc() -> Self {
-        Self(NEXT_PANE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+        match Self::alloc_from(&NEXT_PANE_ID) {
+            Some(id) => id,
+            // Continuing would have to reuse a live id; there is no safe value.
+            None => panic!("pane id space exhausted: more than u32::MAX - 1 panes allocated"),
+        }
+    }
+
+    fn alloc_from(counter: &std::sync::atomic::AtomicU32) -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        counter
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                next.checked_add(1)
+            })
+            .ok()
+            .map(Self)
     }
 
     pub fn raw(self) -> u32 {
@@ -814,6 +833,16 @@ fn split_extent(total: u16, ratio: f32) -> (u16, u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pane_id_allocation_stops_at_the_end_of_the_id_space_instead_of_wrapping() {
+        let counter = std::sync::atomic::AtomicU32::new(u32::MAX - 2);
+        assert_eq!(PaneId::alloc_from(&counter), Some(PaneId(u32::MAX - 2)));
+        assert_eq!(PaneId::alloc_from(&counter), Some(PaneId(u32::MAX - 1)));
+        assert_eq!(PaneId::alloc_from(&counter), None);
+        assert_eq!(PaneId::alloc_from(&counter), None, "exhaustion is sticky");
+        assert_ne!(PaneId::alloc().raw(), 0);
+    }
 
     #[test]
     fn split_ratio_rejects_values_outside_layout_bounds() {

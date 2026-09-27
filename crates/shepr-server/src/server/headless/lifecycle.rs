@@ -1,5 +1,8 @@
 use super::*;
 
+/// Upper bound on the wait for client writers to flush their shutdown frames.
+const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// The server lifecycle states that can affect saves or request handling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ShutdownPhase {
@@ -178,7 +181,7 @@ impl HeadlessServer {
     /// Applies warning and cancellation notifications from logind to the
     /// lifecycle state machine. A warning checkpoints before freezing saves;
     /// cancellation thaws and marks the live session dirty again.
-    pub(super) fn sync_host_shutdown_freeze(&mut self, _now: Instant) {
+    pub(super) fn sync_host_shutdown_freeze(&mut self, now: Instant) {
         if self.lifecycle.phase() == ShutdownPhase::Stopping {
             return;
         }
@@ -196,7 +199,11 @@ impl HeadlessServer {
                     self.freeze_for_host_shutdown();
                 }
             }
-            ShutdownPhase::HostShutdownWarning => self.freeze_for_host_shutdown(),
+            ShutdownPhase::HostShutdownWarning => {
+                if !self.app.policy.persists_session() || self.app.session_saver.is_due(now) {
+                    self.freeze_for_host_shutdown();
+                }
+            }
             ShutdownPhase::Frozen => {
                 let generation = self
                     .host_shutdown_monitor
@@ -224,8 +231,8 @@ impl HeadlessServer {
             .as_ref()
             .map(shepr_platform::HostShutdownMonitor::warning_generation);
         let persist_session = self.app.policy.persists_session();
-        if persist_session {
-            self.app.save_session_now();
+        if persist_session && !self.app.save_session_now() {
+            return;
         }
         self.app.policy = crate::app::AppPolicy::Suspended;
         self.app.session_saver.clear_deadline();
@@ -264,17 +271,13 @@ impl HeadlessServer {
             )),
         };
         self.send_to_all_clients(&shutdown_msg);
-
-        // Give client writer threads a moment to flush the shutdown message.
-        // A short sleep ensures the message is written to the socket before
-        // we close the connections.
-        std::thread::sleep(Duration::from_millis(50));
+        self.queue_shutdown_flushes();
 
         self.app.state.should_quit = true;
     }
 
-    /// Completes the shutdown sequence: send ServerShutdown to clients, answer
-    /// every outstanding API request, and close client connections.
+    /// Completes the shutdown sequence, answer every outstanding API request,
+    /// and close client connections after their shutdown frames are flushed.
     ///
     /// Socket files are not removed here but in `release_sockets_after_save`,
     /// once the session is on disk: while either socket file exists a new
@@ -286,19 +289,6 @@ impl HeadlessServer {
         info!("completing server shutdown");
         self.reject_late_client_connections().await;
 
-        // Send ServerShutdown to all remaining clients.
-        if !self.clients.is_empty() {
-            let shutdown_msg = ServerMessage::ServerShutdown {
-                reason: Some(shepr_protocol::ShutdownReason::Message(
-                    "server is shutting down".to_owned(),
-                )),
-            };
-            self.send_to_all_clients(&shutdown_msg);
-
-            // Give writer threads a moment to flush before closing.
-            std::thread::sleep(Duration::from_millis(50));
-        }
-
         // Close the request channel and answer what is left in it, then the
         // reads parked on alternate-screen traversals that no loop will drive.
         self.reject_queued_api_requests_for_shutdown();
@@ -306,8 +296,45 @@ impl HeadlessServer {
 
         // Close all client connections.
         self.clients.clear();
+        self.await_shutdown_flushes().await;
 
         Ok(())
+    }
+
+    fn queue_shutdown_flushes(&mut self) {
+        let flushes = self
+            .clients
+            .values()
+            .filter_map(|client| {
+                client
+                    .writer
+                    .as_ref()
+                    .map(crate::server::client_transport::ClientWriter::flush)
+            })
+            .collect::<Vec<_>>();
+        self.shutdown_flushes.extend(flushes);
+    }
+
+    /// Waits for client writers to flush their shutdown frames, bounded by
+    /// one shared deadline: a writer stuck in a socket write to a client that
+    /// stopped reading must not hold server shutdown forever.
+    async fn await_shutdown_flushes(&mut self) {
+        let deadline = tokio::time::Instant::now() + SHUTDOWN_FLUSH_TIMEOUT;
+        for flush in std::mem::take(&mut self.shutdown_flushes) {
+            match tokio::time::timeout_at(deadline, flush).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => {
+                    debug!("client writer exited before acknowledging shutdown flush");
+                }
+                Err(_) => {
+                    warn!(
+                        timeout_ms = SHUTDOWN_FLUSH_TIMEOUT.as_millis(),
+                        "client writers did not flush shutdown frames in time; closing anyway"
+                    );
+                    break;
+                }
+            }
+        }
     }
 
     /// Removes the API socket and then the client socket, after the final

@@ -2,15 +2,16 @@
 //!
 //! Two rules, each implemented once, here:
 //!
-//! - Scratch files live in a [`ScratchDir`]: a fresh directory per test under
-//!   one root that this test process creates and owns, removed when the test
-//!   ends (and the root when the process exits). Never a fixed path shared
-//!   between tests or runs under `/tmp` or `/var/tmp`, and never anything
-//!   under the real `$HOME`.
+//! - Scratch files live in a [`ScratchDir`]: a fresh private directory per
+//!   test. `new` puts it under one root created by the test process; `new_in`
+//!   puts it on the chosen filesystem. Dropped directories are removed at the
+//!   end of the test, and directories kept until exit are removed by process
+//!   cleanup. Never a fixed or shared path under `/tmp` or `/var/tmp`, and
+//!   never anything under the real `$HOME`.
 //! - A test that changes the process environment, or reads a variable (or the
 //!   explicit-session flag) that another test changes, holds an
-//!   [`IsolatedEnv`] for its whole body. There is one lock for the whole
-//!   crate, so these tests exclude each other whichever module they live in.
+//!   [`IsolatedEnv`] for its whole body. These tests serialize with one another
+//!   when they run in the same test process, whichever module they live in.
 //!   The guard also points `HOME` and `XDG_RUNTIME_DIR` at scratch and clears
 //!   the other XDG base directories and every inherited `SHEPR_*` variable,
 //!   so nothing under test
@@ -31,6 +32,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 static SCRATCH_ROOT: OnceLock<PathBuf> = OnceLock::new();
 static SCRATCH_ROOT_OWNER: AtomicU32 = AtomicU32::new(0);
+static SCRATCH_CLEANUP_REGISTERED: OnceLock<()> = OnceLock::new();
+static KEPT_SCRATCH_DIRS: OnceLock<Mutex<Vec<(u32, PathBuf)>>> = OnceLock::new();
 static NEXT_SCRATCH: AtomicUsize = AtomicUsize::new(0);
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -47,6 +50,21 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
     std::fs::DirBuilder::new().mode(0o700).create(path)
 }
 
+fn ensure_exit_cleanup() {
+    let _ = SCRATCH_ROOT_OWNER.compare_exchange(
+        0,
+        std::process::id(),
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+    SCRATCH_CLEANUP_REGISTERED.get_or_init(|| {
+        // SAFETY: atexit(3) only records a function pointer. The handler is a
+        // plain `extern "C"` function that cannot unwind: it reads statics and
+        // ignores every error.
+        unsafe { libc::atexit(remove_scratch_root) };
+    });
+}
+
 /// The root every [`ScratchDir`] of this test process lives under, created on
 /// first use.
 ///
@@ -56,6 +74,7 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
 /// resolved once, so a test that changes `TMPDIR` does not move later scratch
 /// directories.
 fn scratch_root() -> &'static Path {
+    ensure_exit_cleanup();
     SCRATCH_ROOT.get_or_init(|| {
         let pid = std::process::id();
         let root = std::env::temp_dir().join(format!("shepr-test-{pid}"));
@@ -63,23 +82,34 @@ fn scratch_root() -> &'static Path {
         // with the same pid that was killed before its exit cleanup ran.
         let _ = std::fs::remove_dir_all(&root);
         create_private_dir(&root).expect("create the test scratch root");
-        SCRATCH_ROOT_OWNER.store(pid, Ordering::Release);
-        // SAFETY: atexit(3) only records a function pointer. The handler is a
-        // plain `extern "C"` function that cannot unwind: it reads statics
-        // and ignores every error.
-        unsafe { libc::atexit(remove_scratch_root) };
         root
     })
 }
 
 extern "C" fn remove_scratch_root() {
+    let pid = std::process::id();
     // A forked child that calls exit(3) runs this too; only the process that
     // created the root removes it.
-    if SCRATCH_ROOT_OWNER.load(Ordering::Acquire) != std::process::id() {
-        return;
-    }
-    if let Some(root) = SCRATCH_ROOT.get() {
+    if SCRATCH_ROOT_OWNER.load(Ordering::Acquire) == pid
+        && let Some(root) = SCRATCH_ROOT.get()
+    {
         let _ = std::fs::remove_dir_all(root);
+    }
+    remove_kept_scratch_dirs(pid);
+}
+
+fn remove_kept_scratch_dirs(owner: u32) {
+    if let Some(paths) = KEPT_SCRATCH_DIRS.get() {
+        let mut paths = paths.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut index = 0;
+        while index < paths.len() {
+            if paths[index].0 == owner {
+                let (_, path) = paths.swap_remove(index);
+                let _ = std::fs::remove_dir_all(path);
+            } else {
+                index += 1;
+            }
+        }
     }
 }
 
@@ -113,11 +143,19 @@ impl ScratchDir {
     }
 
     /// Gives up per-test cleanup for a directory that must outlive this
-    /// guard, such as one a returned fixture keeps using. It is still removed
-    /// with the scratch root when the test process exits.
+    /// guard, such as one a returned fixture keeps using. It is removed with
+    /// this test process's scratch cleanup, even when it was created outside
+    /// the default scratch root.
     pub fn keep_until_exit(self) -> PathBuf {
+        ensure_exit_cleanup();
         let mut this = std::mem::ManuallyDrop::new(self);
-        std::mem::take(&mut this.path)
+        let path = std::mem::take(&mut this.path);
+        let paths = KEPT_SCRATCH_DIRS.get_or_init(|| Mutex::new(Vec::new()));
+        paths
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((std::process::id(), path.clone()));
+        path
     }
 }
 
@@ -143,8 +181,8 @@ impl Drop for ScratchDir {
 
 /// Exclusive, restorable access to the process environment for one test.
 ///
-/// Holding it serializes the test against every other test that holds one,
-/// crate-wide. On creation it snapshots the environment, sets `HOME` to a
+/// Holding it serializes the test against other tests in its process that hold
+/// one. On creation it snapshots the environment, sets `HOME` to a
 /// fresh scratch directory, removes the XDG base directory variables and every
 /// `SHEPR_*` variable. On drop it puts the snapshot back exactly.
 ///
@@ -176,7 +214,9 @@ impl IsolatedEnv {
         for key in XDG_BASE_DIR_VARS {
             env.remove(key);
         }
-        env.set("XDG_RUNTIME_DIR", env.path().join("runtime"));
+        let runtime_dir = env.path().join("runtime");
+        create_private_dir(&runtime_dir).expect("create the scratch runtime directory");
+        env.set("XDG_RUNTIME_DIR", runtime_dir);
         let inherited_shepr: Vec<OsString> = env
             .saved
             .iter()
@@ -204,7 +244,7 @@ impl IsolatedEnv {
         // SAFETY: set_var is unsafe because another thread may read the
         // environment at the same time. Every test that changes the
         // environment does so through an `IsolatedEnv`, and `&self` proves
-        // this call happens while the crate-wide environment lock is held.
+        // this call happens while the process-local environment lock is held.
         unsafe { std::env::set_var(key, value) };
     }
 
@@ -257,5 +297,40 @@ mod tests {
         let path = first.to_path_buf();
         drop(first);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn isolated_env_creates_a_private_runtime_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let env = IsolatedEnv::new();
+        let runtime_dir = env.path().join("runtime");
+        let metadata = std::fs::metadata(&runtime_dir).expect("runtime directory exists");
+
+        assert!(metadata.is_dir());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+        assert_eq!(
+            std::env::var_os("XDG_RUNTIME_DIR"),
+            Some(runtime_dir.into_os_string())
+        );
+    }
+
+    #[test]
+    fn kept_scratch_outside_the_root_is_registered_for_exit_cleanup() {
+        let scratch = ScratchDir::new_in(&std::env::temp_dir(), "kept-external");
+        let path = scratch.keep_until_exit();
+
+        assert!(path.exists());
+        // Only check the registration: running the process-wide cleanup here
+        // would delete directories other tests in this process still use.
+        let registered = KEPT_SCRATCH_DIRS
+            .get()
+            .expect("keeping a directory registers it")
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .any(|(owner, kept)| *owner == std::process::id() && *kept == path);
+        assert!(registered);
+        std::fs::remove_dir_all(&path).expect("remove the kept test directory");
     }
 }

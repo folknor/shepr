@@ -11,7 +11,8 @@ use super::client_transport::ServerEvent;
 pub(crate) const MAX_ENDPOINT_COMMAND_BYTES: usize = 1024 * 1024;
 pub(crate) const MAX_ENDPOINT_BOOT_ID_BYTES: usize = 128;
 pub(crate) const MAX_ENDPOINT_REQUEST_ID_BYTES: usize = 128;
-const ENDPOINT_RESPONSE_CHUNK_BYTES: usize = 512 * 1024;
+// The wire field cap; a larger chunk would fail to encode.
+const ENDPOINT_RESPONSE_CHUNK_BYTES: usize = shepr_protocol::MAX_ENDPOINT_RESPONSE_CHUNK_BYTES;
 
 const CLIENT_SHELL_METHODS: &[&str] = &[
     "client_shell.surface.set",

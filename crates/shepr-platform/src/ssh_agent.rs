@@ -134,6 +134,10 @@ impl State {
         // Keep a working agent rather than letting probes or a second client replace it.
         let unavailable = self.path.with_extension("unavailable");
         self.last_probe = Some(Instant::now());
+        // Connection-level liveness cannot tell whether forwarded keys have
+        // changed. Keep the daemon's inherited agent as its stable default;
+        // letting a later client preempt it would redirect every shared pane
+        // to that client's temporary forwarded agent.
         let target = self
             .fallback
             .as_deref()

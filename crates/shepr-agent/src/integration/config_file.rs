@@ -108,7 +108,7 @@ impl Replacement {
             // the platform writer preserves the original permissions before publication.
             // New configs retain ordinary create/umask/inherited-ACL defaults.
             let created = if existing.is_some() {
-                shepr_platform::create_private_temporary(&temporary)
+                shepr_platform::create_private_file(&temporary)
             } else {
                 shepr_platform::create_config_temporary(&temporary)
             };

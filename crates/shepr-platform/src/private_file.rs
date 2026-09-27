@@ -10,10 +10,6 @@ pub fn create_private_file(path: &Path) -> std::io::Result<std::fs::File> {
         .open(path)
 }
 
-pub fn create_private_temporary(path: &Path) -> std::io::Result<std::fs::File> {
-    create_private_file(path)
-}
-
 pub fn sync_directory(directory: &Path) -> std::io::Result<()> {
     std::fs::File::open(directory)?.sync_all()
 }

@@ -1,4 +1,10 @@
 use std::io;
+use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const VERSION_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 pub(crate) struct AgentVersionRequirement {
     pub label: &'static str,
@@ -47,11 +53,17 @@ pub(crate) fn enforce_agent_version(
     requirement: &AgentVersionRequirement,
 ) -> io::Result<Option<String>> {
     let probe = format!("{} {}", requirement.binary, requirement.args.join(" "));
-    let output = match std::process::Command::new(requirement.binary)
-        .args(requirement.args)
-        .output()
-    {
-        Ok(output) if output.status.success() => output,
+    let output = match run_version_probe(requirement, VERSION_PROBE_TIMEOUT) {
+        Ok(Some(output)) if output.status.success() => output,
+        Ok(None) => {
+            return Ok(Some(format!(
+                "{} `{probe}` timed out after {} seconds while verifying the installed version; hooks require {} {} or newer",
+                super::INSTALL_WARNING_PREFIX,
+                VERSION_PROBE_TIMEOUT.as_secs(),
+                requirement.label,
+                requirement.min_version
+            )));
+        }
         _ => {
             return Ok(Some(format!(
                 "{} could not run `{probe}` to verify the installed version; hooks require {} {} or newer",
@@ -92,6 +104,40 @@ pub(crate) fn enforce_agent_version(
         )));
     }
     Ok(None)
+}
+
+/// Polls the version command so a process that exceeds the deadline is killed.
+/// Only stdout is needed; stderr is discarded as before.
+fn run_version_probe(
+    requirement: &AgentVersionRequirement,
+    timeout: Duration,
+) -> io::Result<Option<Output>> {
+    let mut child = Command::new(requirement.binary)
+        .args(requirement.args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().map(Some),
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(VERSION_PROBE_POLL_INTERVAL);
+                continue;
+            }
+            Ok(None) => {
+                // A failed kill is only an error if the child is still running.
+                if let Err(error) = child.kill()
+                    && child.try_wait()?.is_none()
+                {
+                    return Err(error);
+                }
+                child.wait()?;
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 #[cfg(test)]

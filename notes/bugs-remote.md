@@ -81,6 +81,10 @@ Related: CMD-004 (two separate notions of build mismatch in the CLI).
 
 `crates/shepr-remote/src/remote/saved.rs`. `SavedSshConnector` caches a local managed-SSH setup failure for the connector's whole lifetime. The machine fails soft, but a transient runtime-dir problem can only be cleared by restarting the client.
 
+## RMT-014 - Remote bridges prepare their local socket without the startup lock
+
+`crates/shepr-remote/src/remote/bridge.rs` (~67) calls `prepare_socket_path` on the bridge's local socket without `acquire_socket_startup_lock`, the flock the API server now takes before the stale-socket unlink. Two bridges racing for the same machine can each see the socket as stale and unlink the other's live one.
+
 ## RMT-011 - Idle saved machines may drop every minute without a keepalive (unverified)
 
 Saved bridges run with `--idle-timeout-v1`, and the remote watchdog calls `process::exit(1)` after 60s with no bytes either way (`shepr-platform/src/remote_bridge.rs`). The hunter did not confirm whether the client sends keepalives. Without one, idle saved machines would drop and reconnect every minute.

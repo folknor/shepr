@@ -252,6 +252,9 @@ pub struct LoadedConfig {
     pub(crate) resolution: super::validated::ConfigResolution,
     pub diagnostics: Vec<super::ConfigDiagnostic>,
     pub(crate) document_state: ConfigDocumentState,
+    // Typed independently from the full document so `config check` can still
+    // report its home-path problem when another config field fails to parse.
+    pub(crate) unavailable_new_cwd: Option<NewTerminalCwdConfig>,
 }
 
 impl LoadedConfig {

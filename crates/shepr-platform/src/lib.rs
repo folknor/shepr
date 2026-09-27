@@ -33,7 +33,7 @@ pub use host::{
     should_draw_host_cursor_by_default, should_query_host_terminal_palette,
     take_terminal_resize_signal, terminal_grid_size, watch_terminal_resize_signal,
 };
-pub use private_file::{create_private_file, create_private_temporary, sync_directory};
+pub use private_file::{create_private_file, sync_directory};
 pub use process::{ProcessHandle, Signal, session_member_handles, wait_for_process_exits};
 pub use remote_bridge_io::{RemoteBridgeWake, forward_remote_bridge_stdio};
 pub use shutdown::HostShutdownMonitor;
@@ -57,6 +57,7 @@ use clipboard::{
 };
 #[cfg(test)]
 use host::{is_detached_session, resolve_launch_executable, text_indicates_wsl};
+#[cfg(any(test, feature = "test-support"))]
 pub use process::signal_processes;
 #[cfg(test)]
 use process::{process_exists, session_member_handles_with, state_and_start_time_from_stat};

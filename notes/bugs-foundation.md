@@ -11,28 +11,11 @@
 
 Hunter coverage: all of `shepr-core` and `shepr-test-support`, most of `shepr-platform`; `terminal_environment.rs` and `tests.rs` were not read.
 
-## FND-001 - Two servers can start on the same socket path
-
-`crates/shepr-platform/src/ipc.rs`, `prepare_socket_path`. It checks whether the socket is live, then unlinks it if stale, with no lock around the two steps. Two servers starting together can both see "stale". A unlinks and binds; B then unlinks A's live socket and links its own. You end up with two servers, one of them unreachable. This breaks the promise in `bind_private_local_listener`'s doc that "a listener that raced us to the path is never replaced": the hard-link protection is undone by the unconditional unlink just before it. The fix is a startup lock (flock on a sibling lock file held for the server's lifetime), after which the stale-socket unlink is safe.
-
-Related: the remote hunter notes that two bridges arriving at once on a remote host both start daemons and rely on the server refusing the second bind (see RMT-009).
-
-## FND-002 - Private-socket binding often falls back to the less safe path
-
-`ipc.rs`, `bind_via_private_staging`. The staged name `.shepr-<pid>-<nanos hex>-<n>/s` adds roughly 35-40 bytes to the socket path. So any path that fits the 107-byte limit but is within about 40 bytes of it takes the bind-then-chmod fallback, which is connectable with umask permissions for a moment. The code documents the fallback, but the staging name is what makes it common. Use a very short staging name, or bind through `/proc/self/fd/<dirfd>/s` on an O_PATH directory fd.
-
 ## FND-007 - HostShutdownMonitor: misplaced doc and missed cancellation during D-Bus outage
 
 `crates/shepr-platform/src/shutdown.rs`.
-- The doc comment describing `release_delay_lock` ("Tell the monitor that the session checkpoint…") sits on `warning_generation`, so `release_delay_lock` itself is undocumented and the getter carries the wrong contract.
+- The doc comment describing `release_delay_lock` ("Tell the monitor that the session checkpoint...") sits on `warning_generation`, so `release_delay_lock` itself is undocumented and the getter carries the wrong contract.
 - When the D-Bus connection errors while a shutdown is pending, `requested` stays true with no inhibitor held, and the reconnect loop backs off up to 60 s. That is fine for a shutdown, but a cancellation that happens during the outage is only noticed after reconnecting.
-
-## FND-008 - IsolatedEnv creates less isolation than its doc says
-
-`crates/shepr-test-support/src/lib.rs`.
-- It sets `XDG_RUNTIME_DIR` to `<scratch>/runtime` but never creates that directory, so code under test gets a missing runtime dir and ends up creating it itself.
-- The doc still says "one lock for the whole crate"; since the extraction it is one lock per test binary. It should be reworded without a count.
-- `ScratchDir::new_in` directories are not under the scratch root, so `keep_until_exit` on one leaks it, contrary to that method's doc.
 
 ## FND-009 - Config writes fail on files carrying privileged xattrs or foreign ownership
 
@@ -44,9 +27,7 @@ Related: the remote hunter notes that two bridges arriving at once on a remote h
 
 ## FND-011 - ChildExitReason variants misclassify or are never produced
 
-`ChildExitReason::Interrupted` covers death by any signal, including SIGHUP/SIGKILL that shepr sends itself, and `WaitFailed` is never produced by `classify_child_exit`.
-
-Related: TRM-011 (reader panic reported as `Exited`).
+`ChildExitReason::Interrupted` covers death by any signal, including SIGHUP/SIGKILL that shepr sends itself, and `WaitFailed` is never produced by `classify_child_exit`. (A PTY reader panic now has its own `ReaderPanicked` variant.)
 
 ## FND-012 - workspace_label_from_cwd compares raw $HOME
 
@@ -55,18 +36,3 @@ Related: TRM-011 (reader panic reported as `Exited`).
 ## FND-013 - expand_tilde_path passes non-UTF-8 paths through unexpanded
 
 `expand_tilde_path*` passes non-UTF-8 paths through unexpanded, even ones that start with `~/`.
-
-## FND-014 - Small platform smells
-
-- In `lib.rs`, `signal_processes` is documented as test-only but is exported `pub` unconditionally.
-- `create_private_temporary` is a pure alias of `create_private_file`.
-- `poll_local_stream_read` throws away the byte count it computes.
-- `ssh_agent`: the server's inherited fallback agent always takes priority over every attached client's agent. This is intentional per the comment, but it means a stale inherited sshd socket that still accepts connections wins over a fresh one.
-
-## FND-016 - Per-crate test builds rely on workspace feature unification
-
-shepr-termio, shepr-client and shepr-mux tests only compiled under the whole workspace until their `test-support` features were enabled through dev-dependencies. shepr-remote and shepr-vt have not been checked for the same gap. shepr-server's `test-api` feature has it too: `server/headless/tests/mod.rs` uses `shepr_api::error::test_json` and `EventHub::events_after`, which need `shepr-api/test-support`, but `test-api` does not enable it.
-
-## FND-015 - PaneId::alloc wraps to the placeholder id
-
-`PaneId::alloc()` uses a wrapping `AtomicU32`. After about 4.3 billion allocations it returns 0, the placeholder id that `TileLayout` now rejects, and then reuses live ids. Unlikely in practice, but it breaks the layout identity invariant that `from_saved` and `insert_pane_near` enforce.

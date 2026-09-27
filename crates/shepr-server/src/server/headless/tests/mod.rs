@@ -156,6 +156,7 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
         host_shutdown_monitor: None,
         server_event_rx,
         server_event_tx,
+        shutdown_flushes: Vec::new(),
     }
 }
 

@@ -58,6 +58,15 @@ impl Compatibility {
 /// the sender instead of making the peer tear the connection down.
 pub const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 
+/// Largest direct-terminal ANSI byte field that fits with the current wire
+/// envelope: one byte for the `Terminal` variant index and three for the
+/// byte-length varint at the 2 MiB frame cap.
+pub const MAX_TERMINAL_FRAME_BYTES: usize = MAX_FRAME_SIZE - 4;
+
+/// Largest client-shell endpoint response chunk emitted by the server. This
+/// matches its 512 KiB chunking and leaves room for the message envelope.
+pub const MAX_ENDPOINT_RESPONSE_CHUNK_BYTES: usize = 512 * 1024;
+
 /// Whether an encoded payload fits in one protocol frame.
 pub const fn frame_payload_fits(size: usize) -> bool {
     size <= MAX_FRAME_SIZE

@@ -606,13 +606,12 @@ impl ValidatedConfig {
     pub fn test_default() -> Self {
         let config = Config::default();
         let provenance = ConfigProvenance::defaults(&config);
-        Self::new(config, provenance, AppPaths::default())
-            .expect("the default test config is valid")
+        Self::new(config, provenance, test_app_paths()).expect("the default test config is valid")
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_from_config(config: Config, source: Option<&str>) -> Self {
-        Self::test_from_config_with_paths(config, source, AppPaths::default())
+        Self::test_from_config_with_paths(config, source, test_app_paths())
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -643,6 +642,18 @@ impl PartialEq for ValidatedConfig {
 }
 
 impl Eq for ValidatedConfig {}
+
+/// Absolute paths, so the config survives the resolved-path check on the
+/// wire, that are identical across calls, so two test configs compare equal.
+/// The root cannot be created by an unprivileged user: a test that writes
+/// through these paths fails instead of leaving files in a shared location.
+/// Tests that need real directories pass a `ScratchDir` to
+/// `test_from_config_with_paths`.
+#[cfg(any(test, feature = "test-support"))]
+fn test_app_paths() -> AppPaths {
+    let root = std::path::Path::new("/nonexistent/shepr-test-config");
+    AppPaths::test_with_context(root, Some(root), None)
+}
 
 impl Serialize for ValidatedConfig {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -752,7 +763,12 @@ mod tests {
 
     #[test]
     fn wire_deserialization_revalidates_raw_config() {
-        let validated = ValidatedConfig::test_default();
+        let scratch = shepr_test_support::ScratchDir::new("validated-config-wire");
+        let validated = ValidatedConfig::test_from_config_with_paths(
+            Config::default(),
+            None,
+            AppPaths::test_with_context(scratch.path(), Some(scratch.path()), None),
+        );
         let mut wire = serde_json::to_value(validated).expect("serialize test config");
         wire["config"]["server"]["headless_cols"] = serde_json::json!(0);
 
@@ -760,16 +776,21 @@ mod tests {
     }
 
     #[test]
-    fn wire_deserialization_checks_home_cwd_against_captured_paths() {
-        let validated = ValidatedConfig::test_default();
+    fn wire_deserialization_rejects_missing_captured_home_directory() {
+        let scratch = shepr_test_support::ScratchDir::new("validated-config-home-wire");
+        let validated = ValidatedConfig::test_from_config_with_paths(
+            Config::default(),
+            None,
+            AppPaths::test_with_context(scratch.path(), Some(scratch.path()), None),
+        );
         let mut wire = serde_json::to_value(validated).expect("serialize test config");
         wire["config"]["terminal"]["new_cwd"] = serde_json::json!("Home");
         wire["paths"]["home_dir"] = serde_json::Value::Null;
 
         let error = serde_json::from_value::<ValidatedConfig>(wire)
-            .expect_err("home cwd requires the captured home directory");
+            .expect_err("resolved paths require the captured home directory");
         assert!(
-            error.to_string().contains("terminal.new_cwd"),
+            error.to_string().contains("resolved home_dir"),
             "unexpected error: {error}"
         );
     }

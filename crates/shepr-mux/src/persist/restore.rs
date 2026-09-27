@@ -37,6 +37,7 @@ struct PaneRestoreStartup<'a> {
 
 struct RestoreRuntimeContext<'a> {
     scrollback_limit_bytes: usize,
+    host_theme: shepr_termio::host_term::theme::TerminalTheme,
     shell_config: crate::pane::PaneShellConfig<'a>,
     resume_agents_on_restore: bool,
     events: mpsc::Sender<AppEvent>,
@@ -146,6 +147,7 @@ fn restore_with_imports(
     let mut terminal_runtimes = HashMap::new();
     let mut resumed_agent_sessions = HashSet::new();
     let history_carry = HistoryCarry::default();
+    let host_theme = snapshot.host_theme.to_theme();
     // Where each saved workspace ended up, `None` for a dropped one.
     let mut restored_index = Vec::with_capacity(snapshot.workspaces.len());
     let saved_ids: HashSet<&str> = snapshot
@@ -158,6 +160,7 @@ fn restore_with_imports(
         let workspace_id = restored_workspace_id(ws_snap.id.as_deref(), &saved_ids, &mut used_ids);
         let runtime_context = RestoreRuntimeContext {
             scrollback_limit_bytes,
+            host_theme,
             shell_config,
             resume_agents_on_restore,
             events: events.clone(),
@@ -553,7 +556,7 @@ fn restore_tab(
             cols,
             &saved_pane.cwd,
             runtime_context.scrollback_limit_bytes,
-            shepr_termio::host_term::theme::TerminalTheme::default(),
+            runtime_context.host_theme,
             None,
             runtime_context.shell_config,
             &launch_env,

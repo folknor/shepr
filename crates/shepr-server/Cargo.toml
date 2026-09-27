@@ -5,7 +5,12 @@ edition = "2024"
 publish = false
 
 [features]
-test-api = ["dep:shepr-test-support", "shepr-mux/test-api", "shepr-config/test-support"]
+test-api = [
+    "dep:shepr-test-support",
+    "shepr-api/test-support",
+    "shepr-mux/test-api",
+    "shepr-config/test-support",
+]
 
 [dependencies]
 base64 = { workspace = true }
@@ -39,6 +44,7 @@ shepr-agent = { path = "../shepr-agent", features = ["test-support"] }
 shepr-api = { path = "../shepr-api", features = ["test-support"] }
 shepr-config = { path = "../shepr-config", features = ["test-support"] }
 shepr-mux = { path = "../shepr-mux", features = ["test-api"] }
+shepr-platform = { path = "../shepr-platform", features = ["test-support"] }
 shepr-protocol = { path = "../shepr-protocol", features = ["test-support"] }
 shepr-termio = { path = "../shepr-termio", features = ["test-support"] }
 shepr-test-support = { path = "../shepr-test-support" }

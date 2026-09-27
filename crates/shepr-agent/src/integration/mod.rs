@@ -14,9 +14,9 @@ mod version;
 pub use actions::{install_target, uninstall_target};
 pub use env::AgentIntegrationPaths;
 pub use registry::{
-    installed_integration_statuses, integration_target_label, print_outdated_update_notice,
+    integration_status_rows, integration_target_label, print_outdated_update_notice,
 };
-pub use types::{IntegrationStatus, IntegrationStatusKind};
+pub use types::{IntegrationStatus, IntegrationStatusError, IntegrationStatusKind};
 
 const PI_EXTENSION_INSTALL_NAME: &str = "shepr-agent-state.ts";
 const PI_EXTENSION_ASSET: &str = include_str!("assets/pi/shepr-agent-state.ts");

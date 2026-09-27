@@ -84,17 +84,21 @@ pub fn write_message<W: Write, M: Serialize>(writer: &mut W, msg: &M) -> Result<
 ///
 /// This is the owned-buffer form of [`write_message`] for callers that queue
 /// frames rather than write them: the payload is encoded straight behind a
-/// placeholder prefix, so no second copy of the frame is ever made. Passing a
-/// `Vec` to `write_message` instead would encode into one buffer and then copy
-/// all of it into the `Vec`.
+/// placeholder prefix, so no second copy of the frame is ever made. It retains
+/// at most `MAX_FRAME_SIZE` payload bytes while counting excess bytes for an
+/// exact oversized error. Passing a `Vec` to `write_message` instead would
+/// encode into one buffer and then copy all of it into the `Vec`.
 ///
 /// # Errors
 ///
 /// `FramingError::Oversized` if the payload exceeds `MAX_FRAME_SIZE` (the
 /// encoded buffer is dropped), or `FramingError::Codec` if encoding fails.
 pub fn encode_frame<M: Serialize>(msg: &M) -> Result<Vec<u8>, FramingError> {
-    let mut frame = vec![0u8; LENGTH_PREFIX_BYTES];
-    let len = codec::encode_into(&mut frame, msg)?;
+    // Keep the output bounded during the one serialization pass. Calling
+    // `encoded_len` first would traverse every field again on the client
+    // fanout path; this buffer counts any excess bytes without retaining them.
+    let mut output = FramePayloadBuffer::new();
+    let len = codec::encode_into(&mut output, msg)?;
     if !frame_payload_fits(len) {
         return Err(FramingError::Oversized {
             claimed: len,
@@ -105,8 +109,40 @@ pub fn encode_frame<M: Serialize>(msg: &M) -> Result<Vec<u8>, FramingError> {
         claimed: len,
         max: MAX_FRAME_SIZE,
     })?;
-    frame[..LENGTH_PREFIX_BYTES].copy_from_slice(&prefix.to_le_bytes());
-    Ok(frame)
+    output.frame[..LENGTH_PREFIX_BYTES].copy_from_slice(&prefix.to_le_bytes());
+    Ok(output.frame)
+}
+
+struct FramePayloadBuffer {
+    frame: Vec<u8>,
+    payload_len: usize,
+}
+
+impl FramePayloadBuffer {
+    fn new() -> Self {
+        Self {
+            frame: vec![0u8; LENGTH_PREFIX_BYTES],
+            payload_len: 0,
+        }
+    }
+}
+
+impl Write for FramePayloadBuffer {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let next_len = self
+            .payload_len
+            .checked_add(bytes.len())
+            .ok_or_else(|| io::Error::other("encoded frame size overflow"))?;
+        let remaining = MAX_FRAME_SIZE.saturating_sub(self.payload_len);
+        let retained = bytes.len().min(remaining);
+        self.frame.extend_from_slice(&bytes[..retained]);
+        self.payload_len = next_len;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Reads and deserializes a length-prefixed frame from a reader.

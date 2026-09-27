@@ -2,7 +2,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
-use shepr_config::{ServerAddress, derive_client_socket_from_api_socket};
+use shepr_config::derive_client_socket_from_api_socket;
 
 /// Returns the resolved client protocol socket for this process.
 pub fn client_socket_path(paths: &shepr_config::AppPaths) -> PathBuf {
@@ -29,58 +29,50 @@ pub(crate) fn prepare_socket_path(path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::IsolatedEnv;
     use std::os::unix::net::UnixListener;
     use std::time::Duration;
 
     #[test]
     fn client_socket_path_derived_from_api_socket_override() {
-        let address = ServerAddress::resolve(
-            Path::new("/tmp"),
-            &shepr_config::SessionId::Default,
-            false,
-            Some("/tmp/test-shepr.sock"),
-            None,
-        );
+        let env = IsolatedEnv::new();
+        env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/test-shepr.sock");
+        let paths = shepr_config::AppPaths::resolve().expect("API socket override resolves");
         assert_eq!(
-            address.client_socket(),
+            paths.server_address().client_socket(),
             Path::new("/tmp/test-shepr-client.sock")
         );
     }
 
     #[test]
-    fn client_socket_path_api_override_takes_precedence_over_legacy_client_override() {
-        let address = ServerAddress::resolve(
-            Path::new("/tmp"),
-            &shepr_config::SessionId::Default,
-            false,
-            Some("/tmp/test-shepr.sock"),
-            Some("/tmp/legacy-client.sock"),
-        );
+    fn client_socket_path_api_override_takes_precedence_over_client_override() {
+        let env = IsolatedEnv::new();
+        env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/test-shepr.sock");
+        env.set(shepr_config::CLIENT_SOCKET_PATH_ENV_VAR, "/tmp/client.sock");
+        let paths = shepr_config::AppPaths::resolve().expect("socket overrides resolve");
         assert_eq!(
-            address.client_socket(),
+            paths.server_address().client_socket(),
             Path::new("/tmp/test-shepr-client.sock")
         );
     }
 
     #[test]
     fn explicit_session_address_ignores_both_socket_overrides() {
+        let env = IsolatedEnv::new();
+        env.set(shepr_config::SOCKET_PATH_ENV_VAR, "/tmp/other-api.sock");
+        env.set(
+            shepr_config::CLIENT_SOCKET_PATH_ENV_VAR,
+            "/tmp/other-client.sock",
+        );
         let session = shepr_config::SessionId::parse("work").expect("test precondition");
-        let address = ServerAddress::resolve(
-            Path::new("/tmp/runtime"),
-            &session,
-            true,
-            Some("/tmp/other-api.sock"),
-            Some("/tmp/other-client.sock"),
-        );
+        let paths = shepr_config::AppPaths::resolve_with_session(Some(session.clone()))
+            .expect("explicit session resolves");
+        let address = paths.server_address();
+        let expected_api = session.api_socket_path_under(paths.runtime_dir());
+        let expected_client = session.client_socket_path_under(paths.runtime_dir());
 
-        assert_eq!(
-            address.api_socket(),
-            Path::new("/tmp/runtime/sessions/work/shepr.sock")
-        );
-        assert_eq!(
-            address.client_socket(),
-            Path::new("/tmp/runtime/sessions/work/shepr-client.sock")
-        );
+        assert_eq!(address.api_socket(), expected_api.as_path());
+        assert_eq!(address.client_socket(), expected_client.as_path());
         assert_eq!(
             address.attach_command(&session),
             "shepr session attach work"
@@ -88,35 +80,29 @@ mod tests {
     }
 
     #[test]
-    fn client_socket_path_respects_legacy_client_override_without_api_override() {
-        let address = ServerAddress::resolve(
-            Path::new("/tmp"),
-            &shepr_config::SessionId::Named(
-                shepr_config::SessionName::parse("work").expect("test precondition"),
-            ),
-            false,
-            None,
-            Some("/tmp/test-shepr-client.sock"),
+    fn client_socket_path_respects_client_override_without_api_override() {
+        let env = IsolatedEnv::new();
+        env.set(
+            shepr_config::CLIENT_SOCKET_PATH_ENV_VAR,
+            "/tmp/test-shepr-client.sock",
         );
+        let paths = shepr_config::AppPaths::resolve().expect("client socket override resolves");
+        let address = paths.server_address();
+        let expected_api = paths.runtime_dir().join("shepr.sock");
         assert_eq!(
             address.client_socket(),
             Path::new("/tmp/test-shepr-client.sock")
         );
-        assert_eq!(
-            address.api_socket(),
-            Path::new("/tmp/sessions/work/shepr.sock")
-        );
+        assert_eq!(address.api_socket(), expected_api.as_path());
     }
 
     #[test]
     fn client_socket_path_defaults_to_runtime_dir() {
-        let session = shepr_config::SessionId::Default;
-        let address =
-            ServerAddress::resolve(Path::new("/tmp/runtime"), &session, false, None, None);
-        assert_eq!(
-            address.client_socket(),
-            Path::new("/tmp/runtime/shepr-client.sock")
-        );
+        let _env = IsolatedEnv::new();
+        let paths = shepr_config::AppPaths::resolve().expect("default paths resolve");
+        let address = paths.server_address();
+        let expected_client = paths.runtime_dir().join("shepr-client.sock");
+        assert_eq!(address.client_socket(), expected_client.as_path());
     }
 
     #[test]

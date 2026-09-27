@@ -194,6 +194,8 @@ pub struct HeadlessServer {
     server_event_rx: mpsc::Receiver<ServerEvent>,
     /// Sender for server events (cloned for each client thread).
     server_event_tx: mpsc::Sender<ServerEvent>,
+    /// Acknowledgements for shutdown frames queued to client writer threads.
+    shutdown_flushes: Vec<tokio::sync::oneshot::Receiver<()>>,
 }
 
 impl HeadlessServer {
@@ -251,6 +253,7 @@ impl HeadlessServer {
             host_shutdown_monitor: None,
             server_event_rx,
             server_event_tx,
+            shutdown_flushes: Vec::new(),
         })
     }
 
@@ -476,6 +479,7 @@ impl HeadlessServer {
                             })
                         {
                             let _ = writer.control.send(message);
+                            self.shutdown_flushes.push(writer.flush());
                         }
                     }
                     // Already dequeued, so the shutdown drain would never see
@@ -808,6 +812,7 @@ impl HeadlessServer {
                 })
             {
                 let _ = writer.control.send(message);
+                self.shutdown_flushes.push(writer.flush());
             }
         }
     }

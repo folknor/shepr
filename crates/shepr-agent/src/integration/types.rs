@@ -154,6 +154,14 @@ pub struct IntegrationStatus {
     pub expected_version: u32,
 }
 
+/// A supported target whose status could not be checked because its
+/// directory did not resolve (for example, no usable home directory).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntegrationStatusError {
+    pub target: crate::agent::IntegrationTarget,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegrationStatusKind {
     NotInstalled,

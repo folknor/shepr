@@ -345,6 +345,8 @@ impl Workspace {
 
     pub fn tab_display_name(&self, tab_idx: usize) -> Option<String> {
         let tab = self.tabs.get(tab_idx)?;
+        // Default labels track current position for the UI; `Tab::number` is a
+        // stable public identifier and intentionally may differ after a close or reorder.
         Some(
             tab.custom_name
                 .clone()

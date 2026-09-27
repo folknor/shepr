@@ -5,8 +5,9 @@ pub(crate) use rules::WireSidebarTokenRule;
 pub(crate) use rules::WireSidebarTokenStyle;
 
 use std::collections::BTreeMap;
+use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::MapAccess, de::Visitor};
 
 use super::ConfigAgent;
 
@@ -196,11 +197,52 @@ struct RawStyledSidebarToken {
     rules: Vec<SidebarTokenRule>,
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
 enum RawSidebarToken {
     Plain(String),
     Styled(RawStyledSidebarToken),
+}
+
+impl<'de> Deserialize<'de> for RawSidebarToken {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct RawSidebarTokenVisitor;
+
+        impl<'de> Visitor<'de> for RawSidebarTokenVisitor {
+            type Value = RawSidebarToken;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a sidebar token string or styled token table")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(RawSidebarToken::Plain(value.to_owned()))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(RawSidebarToken::Plain(value))
+            }
+
+            fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let token = RawStyledSidebarToken::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )?;
+                Ok(RawSidebarToken::Styled(token))
+            }
+        }
+
+        deserializer.deserialize_any(RawSidebarTokenVisitor)
+    }
 }
 
 impl RawSidebarToken {
@@ -678,6 +720,30 @@ rows = [[{ token = "$status", rules = [{ contains = "error", bold = true }] }]]
 
     #[test]
     fn rejects_invalid_occurrence_styles() {
+        let invalid_color = toml::from_str::<crate::Config>(
+            r##"[ui.sidebar.agents]
+rows = [[{ token = "workspace", fg = "red" }]]
+"##,
+        )
+        .expect_err("invalid token color");
+        assert!(
+            invalid_color
+                .to_string()
+                .contains("sidebar token fg must be #RGB or #RRGGBB"),
+            "unexpected error: {invalid_color}"
+        );
+
+        let invalid_rule = toml::from_str::<SidebarConfig>(
+            "[agents]\nrows = [[{ token = 'machine', rules = [{ gt = 80, ignore_case = true }] }]]",
+        )
+        .expect_err("invalid numeric rule");
+        assert!(
+            invalid_rule
+                .to_string()
+                .contains("ignore_case applies only to sidebar text conditions"),
+            "unexpected error: {invalid_rule}"
+        );
+
         for entry in [
             r##"{ token = "workspace", fg = "red" }"##,
             r##"{ token = "workspace", fg = "#abcd" }"##,

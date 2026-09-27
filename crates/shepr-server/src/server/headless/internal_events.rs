@@ -91,16 +91,12 @@ impl HeadlessServer {
     }
 
     pub(super) fn drain_all_internal_events_with_forwarding(&mut self) -> bool {
-        let mut changed = false;
-        loop {
-            let (had_event, batch_changed) =
-                self.drain_internal_events_with_forwarding_up_to(crate::app::APP_EVENT_DRAIN_LIMIT);
-            changed |= batch_changed;
-            if !had_event || self.lifecycle.stop_requested(self.app.state.should_quit) {
-                break;
-            }
-        }
-        changed
+        // Drain the events already queued when this API request reached the
+        // loop. Producers may keep adding events while we process them, but
+        // those belong to the next loop turn so they cannot starve the request.
+        let queued_on_entry = self.app.event_rx.len();
+        self.drain_internal_events_with_forwarding_up_to(queued_on_entry)
+            .1
     }
 
     pub(super) fn drain_internal_events_with_forwarding_up_to(

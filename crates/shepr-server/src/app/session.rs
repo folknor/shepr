@@ -2,9 +2,15 @@ use std::time::{Duration, Instant};
 
 use super::{App, SESSION_SAVE_DEBOUNCE};
 
+const SESSION_SAVE_RETRY_MIN: Duration = Duration::from_millis(250);
+const SESSION_SAVE_RETRY_MAX: Duration = Duration::from_secs(30);
+
 pub(crate) struct SessionSaver {
     pub(crate) session_save_deadline: Option<Instant>,
-    pub(crate) session_save_thread: Option<std::thread::JoinHandle<()>>,
+    session_save_check_deadline: Option<Instant>,
+    /// Consecutive failed saves, for the retry backoff.
+    failed_saves: u32,
+    pub(crate) session_save_thread: Option<std::thread::JoinHandle<std::io::Result<()>>>,
     pub(crate) session_writer: std::sync::Arc<std::sync::Mutex<shepr_mux::persist::SessionWriter>>,
     pub(crate) pane_exit_checkpoint_pending: bool,
 }
@@ -15,6 +21,8 @@ impl SessionSaver {
     ) -> Self {
         Self {
             session_save_deadline: None,
+            session_save_check_deadline: None,
+            failed_saves: 0,
             session_save_thread: None,
             session_writer: writer,
             pane_exit_checkpoint_pending: false,
@@ -22,7 +30,11 @@ impl SessionSaver {
     }
 
     pub(crate) fn deadline(&self) -> Option<Instant> {
-        self.session_save_deadline
+        match (self.session_save_deadline, self.session_save_check_deadline) {
+            (Some(save), Some(check)) => Some(save.min(check)),
+            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+            (None, None) => None,
+        }
     }
 
     pub(crate) fn is_due(&self, now: Instant) -> bool {
@@ -31,6 +43,7 @@ impl SessionSaver {
 
     pub(crate) fn clear_deadline(&mut self) {
         self.session_save_deadline = None;
+        self.session_save_check_deadline = None;
     }
 
     fn schedule(&mut self, now: Instant) {
@@ -39,7 +52,35 @@ impl SessionSaver {
     }
 
     fn retry(&mut self, now: Instant) {
-        self.session_save_deadline = Some(now + Duration::from_millis(250));
+        self.retry_after(now, SESSION_SAVE_RETRY_MIN);
+    }
+
+    /// Schedules the retry for a failed save. The delay doubles per
+    /// consecutive failure up to a cap, so a persistent failure (a full disk,
+    /// a directory where the history file belongs) does not re-capture and
+    /// rewrite the whole session four times a second.
+    fn retry_after_failure(&mut self, now: Instant) -> Duration {
+        self.failed_saves = self.failed_saves.saturating_add(1);
+        let exponent = self.failed_saves.saturating_sub(1).min(16);
+        let delay = SESSION_SAVE_RETRY_MIN
+            .saturating_mul(1 << exponent)
+            .min(SESSION_SAVE_RETRY_MAX);
+        self.retry_after(now, delay);
+        delay
+    }
+
+    fn retry_after(&mut self, now: Instant, delay: Duration) {
+        let retry = now + delay;
+        self.session_save_deadline = Some(
+            self.session_save_deadline
+                .filter(|deadline| *deadline > now)
+                .map_or(retry, |deadline| deadline.min(retry)),
+        );
+    }
+
+    fn save_is_due(&self, now: Instant) -> bool {
+        self.session_save_deadline
+            .is_some_and(|deadline| now >= deadline)
     }
 }
 
@@ -65,7 +106,7 @@ impl App {
         }
     }
 
-    fn reap_finished_session_save(&mut self) {
+    fn reap_finished_session_save(&mut self, now: Instant) {
         if self
             .session_saver
             .session_save_thread
@@ -73,7 +114,41 @@ impl App {
             .is_some_and(std::thread::JoinHandle::is_finished)
             && let Some(thread) = self.session_saver.session_save_thread.take()
         {
-            let _ = thread.join();
+            self.session_saver.session_save_check_deadline = None;
+            let result = match thread.join() {
+                Ok(result) => result,
+                Err(_) => Err(std::io::Error::other("session save thread panicked")),
+            };
+            self.record_session_save_result(result, now);
+        }
+    }
+
+    pub(super) fn record_session_save_result(
+        &mut self,
+        result: std::io::Result<()>,
+        now: Instant,
+    ) -> bool {
+        match result {
+            Err(err) => {
+                let delay = self.session_saver.retry_after_failure(now);
+                tracing::warn!(
+                    err = %err,
+                    failures = self.session_saver.failed_saves,
+                    retry_ms = delay.as_millis(),
+                    "session save failed; scheduling a retry"
+                );
+                false
+            }
+            Ok(()) => {
+                if self.session_saver.failed_saves > 0 {
+                    tracing::info!(
+                        failures = self.session_saver.failed_saves,
+                        "session save recovered after failures"
+                    );
+                    self.session_saver.failed_saves = 0;
+                }
+                true
+            }
         }
     }
 
@@ -109,60 +184,76 @@ impl App {
     pub(crate) fn start_background_session_save(&mut self) {
         if !self.policy.persists_session() {
             self.session_saver.session_save_deadline = None;
+            self.session_saver.session_save_check_deadline = None;
             return;
         }
 
-        self.reap_finished_session_save();
+        let now = Instant::now();
+        self.reap_finished_session_save(now);
         if self.session_saver.session_save_thread.is_some() {
-            self.session_saver.retry(Instant::now());
+            if self.session_saver.save_is_due(now) {
+                self.session_saver.retry(now);
+            }
+            self.session_saver.session_save_check_deadline = Some(now + Duration::from_millis(250));
+            return;
+        }
+        if !self.session_saver.save_is_due(now) {
             return;
         }
 
         let job = self.capture_session_save_job();
         self.session_saver.pane_exit_checkpoint_pending = false;
         self.session_saver.session_save_deadline = None;
+        self.session_saver.session_save_check_deadline = None;
         let writer = std::sync::Arc::clone(&self.session_saver.session_writer);
-        // The job goes to the thread over a channel rather than inside the
-        // closure, so a failed spawn hands it back to be saved inline instead
-        // of capturing everything a second time.
-        let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<SessionSaveJob>(1);
+        // Keep the filesystem work off the Tokio loop. If the worker cannot
+        // start, the saver captures a fresh snapshot on its scheduled retry.
         match std::thread::Builder::new()
             .name("shepr-session-save".into())
-            .spawn(move || {
-                if let Ok(job) = job_rx.recv() {
-                    run_session_save_job(job, &writer);
-                }
-            }) {
+            .spawn(move || run_session_save_job(job, &writer))
+        {
             Ok(thread) => {
-                if let Err(std::sync::mpsc::SendError(job)) = job_tx.send(job) {
-                    // Only possible if the thread is already gone.
-                    run_session_save_job(job, &self.session_saver.session_writer);
-                }
                 self.session_saver.session_save_thread = Some(thread);
+                self.session_saver.session_save_check_deadline =
+                    Some(now + Duration::from_millis(250));
             }
             Err(err) => {
-                tracing::warn!(err = %err, "failed to spawn session save thread; saving inline");
-                run_session_save_job(job, &self.session_saver.session_writer);
+                self.record_session_save_result(
+                    Err(std::io::Error::new(
+                        err.kind(),
+                        format!("failed to spawn session save thread: {err}"),
+                    )),
+                    now,
+                );
             }
         }
     }
 
-    pub(crate) fn save_session_now(&mut self) {
+    pub(crate) fn save_session_now(&mut self) -> bool {
         if let Some(thread) = self.session_saver.session_save_thread.take() {
-            let _ = thread.join();
+            self.session_saver.session_save_check_deadline = None;
+            let result = match thread.join() {
+                Ok(result) => result,
+                Err(_) => Err(std::io::Error::other("session save thread panicked")),
+            };
+            self.record_session_save_result(result, Instant::now());
         }
 
         if !self.policy.persists_session() {
-            self.session_saver.session_save_deadline = None;
-            return;
+            self.session_saver.clear_deadline();
+            return true;
         }
 
-        run_session_save_job(
+        let result = run_session_save_job(
             self.capture_session_save_job(),
             &self.session_saver.session_writer,
         );
         self.session_saver.pane_exit_checkpoint_pending = false;
-        self.session_saver.session_save_deadline = None;
+        let saved = self.record_session_save_result(result, Instant::now());
+        if saved {
+            self.session_saver.clear_deadline();
+        }
+        saved
     }
 
     pub(crate) fn checkpoint_session_before_pane_exit(&mut self) {
@@ -171,7 +262,9 @@ impl App {
         {
             return;
         }
-        self.save_session_now();
+        if !self.save_session_now() {
+            return;
+        }
         self.session_saver.pane_exit_checkpoint_pending = true;
         self.state.session_dirty = false;
     }
@@ -187,7 +280,7 @@ impl App {
     /// directory claim until their processes have finished tearing down.
     pub(crate) fn save_session_before_teardown(&mut self) {
         if self.session_saver.pane_exit_checkpoint_pending && !self.state.session_dirty {
-            self.session_saver.session_save_deadline = None;
+            self.session_saver.clear_deadline();
         } else {
             self.save_session_now();
         }
@@ -197,7 +290,7 @@ impl App {
         if let Some(thread) = self.session_saver.session_save_thread.take() {
             let _ = thread.join();
         }
-        self.session_saver.session_save_deadline = None;
+        self.session_saver.clear_deadline();
         // Retiring only drops the lock and marks the writer done; a panic in
         // an earlier save cannot leave anything here half-updated.
         self.session_saver
@@ -211,7 +304,7 @@ impl App {
 fn run_session_save_job(
     job: SessionSaveJob,
     writer: &std::sync::Mutex<shepr_mux::persist::SessionWriter>,
-) {
+) -> std::io::Result<()> {
     // Formatting pane history is the expensive part of a save; it happens
     // here, before the writer is locked.
     let job = match job {
@@ -225,7 +318,7 @@ fn run_session_save_job(
         Ok(writer) => writer,
         Err(err) => {
             tracing::warn!(err = %err, "session writer is poisoned; refusing to modify session");
-            return;
+            return Err(std::io::Error::other("session writer mutex is poisoned"));
         }
     };
     match job {

@@ -103,7 +103,7 @@ pub(super) fn publish_private_file(
     replace: bool,
 ) -> std::io::Result<Published> {
     let directory = containing_directory(target);
-    let mut output = shepr_platform::create_private_temporary(pending)?;
+    let mut output = shepr_platform::create_private_file(pending)?;
     let mut published = false;
     let result = (|| {
         if !replace {

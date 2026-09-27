@@ -13,6 +13,8 @@ use super::{
     },
 };
 
+const GIT_STATUS_RETRY_DELAY: Duration = Duration::from_secs(30);
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GitStatusRefreshDemand {
     pub branch: bool,
@@ -98,11 +100,12 @@ pub fn git_status_snapshot_for_cwd_with_demand(
     cached: Option<&GitStatusCacheEntry>,
     demand: GitStatusRefreshDemand,
 ) -> (WorkspaceGitStatusSnapshot, Option<GitStatusCacheEntry>) {
+    let now = Instant::now();
     if let Some(cached) = cached.filter(|entry| {
         entry.fingerprint.is_none()
             && entry
                 .retry_after
-                .is_some_and(|retry_after| retry_after > Instant::now())
+                .is_some_and(|retry_after| retry_after > now)
     }) {
         return (cached.snapshot.clone(), Some(cached.clone()));
     }
@@ -123,7 +126,7 @@ pub fn git_status_snapshot_for_cwd_with_demand(
             snapshot.clone(),
             Some(GitStatusCacheEntry {
                 fingerprint: None,
-                retry_after: Some(Instant::now() + Duration::from_secs(30)),
+                retry_after: Some(now + GIT_STATUS_RETRY_DELAY),
                 snapshot,
             }),
         );
@@ -144,30 +147,66 @@ pub fn git_status_snapshot_for_cwd_with_demand(
             ahead_behind: None,
             space: Some(space),
         };
-        return (
-            snapshot.clone(),
-            fingerprint.map(|fingerprint| GitStatusCacheEntry {
+        let cache_entry = if let Some(fingerprint) = fingerprint {
+            let prior = cached.filter(|entry| {
+                entry
+                    .fingerprint
+                    .as_ref()
+                    .is_some_and(|cached| cached.same_head_and_repository_context(&fingerprint))
+            });
+            let prior_status = prior.and_then(|entry| {
+                entry.fingerprint.as_ref().map(|fingerprint| {
+                    (
+                        fingerprint.clone(),
+                        entry.retry_after,
+                        entry.snapshot.ahead_behind,
+                    )
+                })
+            });
+            let (fingerprint, retry_after, ahead_behind) =
+                prior_status.unwrap_or((fingerprint, Some(now), None));
+            GitStatusCacheEntry {
                 fingerprint: Some(fingerprint),
-                retry_after: None,
-                snapshot,
-            }),
-        );
+                retry_after,
+                snapshot: WorkspaceGitStatusSnapshot {
+                    ahead_behind,
+                    ..snapshot.clone()
+                },
+            }
+        } else {
+            GitStatusCacheEntry {
+                fingerprint: None,
+                retry_after: Some(now + GIT_STATUS_RETRY_DELAY),
+                snapshot: snapshot.clone(),
+            }
+        };
+        return (snapshot, Some(cache_entry));
     }
 
     let Some(fingerprint) = fingerprint(repository_context, true) else {
+        let snapshot = WorkspaceGitStatusSnapshot {
+            auto_label,
+            branch: None,
+            ahead_behind: None,
+            space: Some(space),
+        };
         return (
-            WorkspaceGitStatusSnapshot {
-                auto_label,
-                branch: None,
-                ahead_behind: None,
-                space: Some(space),
-            },
-            None,
+            snapshot.clone(),
+            Some(GitStatusCacheEntry {
+                fingerprint: None,
+                retry_after: Some(now + GIT_STATUS_RETRY_DELAY),
+                snapshot,
+            }),
         );
     };
     let branch = fingerprint.branch_name().map(str::to_string);
 
-    if let Some(cached) = cached.filter(|entry| entry.fingerprint.as_ref() == Some(&fingerprint)) {
+    if let Some(cached) = cached.filter(|entry| {
+        entry.fingerprint.as_ref() == Some(&fingerprint)
+            && entry
+                .retry_after
+                .is_none_or(|retry_after| retry_after > now)
+    }) {
         let snapshot = WorkspaceGitStatusSnapshot {
             auto_label,
             branch,
@@ -178,16 +217,23 @@ pub fn git_status_snapshot_for_cwd_with_demand(
             snapshot.clone(),
             Some(GitStatusCacheEntry {
                 fingerprint: Some(fingerprint),
-                retry_after: None,
+                retry_after: cached.retry_after,
                 snapshot,
             }),
         );
     }
 
-    let ahead_behind = fingerprint
-        .head_oid()
-        .zip(fingerprint.upstream_oid())
-        .and_then(|(head_oid, upstream_oid)| git_ahead_behind_between(cwd, head_oid, upstream_oid));
+    let revision_pair = fingerprint.head_oid().zip(fingerprint.upstream_oid());
+    let (ahead_behind, retry_after) = match revision_pair {
+        Some((head_oid, upstream_oid)) => {
+            let ahead_behind = git_ahead_behind_between(cwd, head_oid, upstream_oid);
+            let retry_after = ahead_behind
+                .is_none()
+                .then(|| Instant::now() + GIT_STATUS_RETRY_DELAY);
+            (ahead_behind, retry_after)
+        }
+        None => (None, None),
+    };
     let snapshot = WorkspaceGitStatusSnapshot {
         auto_label,
         branch,
@@ -198,7 +244,7 @@ pub fn git_status_snapshot_for_cwd_with_demand(
         snapshot.clone(),
         Some(GitStatusCacheEntry {
             fingerprint: Some(fingerprint),
-            retry_after: None,
+            retry_after,
             snapshot,
         }),
     )
@@ -226,6 +272,13 @@ fn fingerprint(mut repo: RepoContext, include_upstream: bool) -> Option<GitStatu
 }
 
 impl GitStatusFingerprint {
+    fn same_head_and_repository_context(&self, other: &Self) -> bool {
+        self.head == other.head
+            && self.repository_context.0 == other.repository_context.0
+            && self.repository_context.1 == other.repository_context.1
+            && self.repository_context.2 == other.repository_context.2
+    }
+
     fn branch_name(&self) -> Option<&str> {
         match &self.head {
             GitHeadIdentity::Branch { short_name, .. } => Some(short_name.as_str()),

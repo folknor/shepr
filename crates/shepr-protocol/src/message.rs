@@ -87,8 +87,8 @@ impl std::fmt::Display for ShutdownReason {
 pub struct TerminalFrame {
     /// Terminal escape bytes ready to write directly to stdout.
     #[serde(
-        serialize_with = "codec::serialize_bounded_bytes::<MAX_FRAME_SIZE, _>",
-        deserialize_with = "codec::deserialize_bounded_bytes::<MAX_FRAME_SIZE, _>"
+        serialize_with = "codec::serialize_bounded_bytes::<MAX_TERMINAL_FRAME_BYTES, _>",
+        deserialize_with = "codec::deserialize_bounded_bytes::<MAX_TERMINAL_FRAME_BYTES, _>"
     )]
     pub bytes: Vec<u8>,
 }
@@ -155,8 +155,8 @@ pub enum ServerMessage {
         request_id: RequestId,
         final_chunk: bool,
         #[serde(
-            serialize_with = "codec::serialize_bounded_bytes::<MAX_FRAME_SIZE, _>",
-            deserialize_with = "codec::deserialize_bounded_bytes::<MAX_FRAME_SIZE, _>"
+            serialize_with = "codec::serialize_bounded_bytes::<MAX_ENDPOINT_RESPONSE_CHUNK_BYTES, _>",
+            deserialize_with = "codec::deserialize_bounded_bytes::<MAX_ENDPOINT_RESPONSE_CHUNK_BYTES, _>"
         )]
         data: Vec<u8>,
     },

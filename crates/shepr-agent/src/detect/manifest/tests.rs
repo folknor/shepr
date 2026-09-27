@@ -741,7 +741,7 @@ fn screen_regions_extract_structure_without_classifying_agent_state() {
 }
 
 #[test]
-fn all_bundled_manifests_parse_and_validate() {
+fn all_bundled_manifests_parse_validate_and_compile() {
     for agent in Agent::screen_manifest_agents() {
         assert!(
             bundled_manifest(agent).is_some(),
@@ -750,8 +750,11 @@ fn all_bundled_manifests_parse_and_validate() {
         );
     }
     for (key, content) in BUNDLED_MANIFESTS {
-        let parsed = parse_bundled_manifest(key, content);
-        assert!(parsed.is_ok(), "bundled {key} manifest: {parsed:?}");
+        let manifest = parse_bundled_manifest(key, content)
+            .unwrap_or_else(|error| panic!("bundled {key} manifest: {error}"));
+        if let Err(error) = loaded_manifest(manifest, ManifestSource::Bundled) {
+            panic!("bundled {key} manifest could not be compiled: {error}");
+        }
     }
     assert!(parse_bundled_manifest("claude", &local_manifest("idle", "x")).is_err());
 }

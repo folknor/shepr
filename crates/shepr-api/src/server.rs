@@ -18,9 +18,9 @@ use crate::subscriptions::{ActiveSubscription, SubscriptionStream};
 use crate::wait::{prompt_agent, wait_for_agent, wait_for_event, wait_for_output};
 use crate::{ApiRequestMessage, ApiRequestSender, EventHub, socket_path};
 use shepr_platform::ipc::{
-    LocalStream, SocketFileIdentity, bind_private_local_listener, is_connection_closed_error,
-    local_stream_peer_closed, peer_is_same_user, remove_socket_file_if_owned,
-    set_local_stream_polling, socket_file_identity,
+    LocalStream, SocketFileIdentity, SocketStartupLock, acquire_socket_startup_lock,
+    bind_private_local_listener, is_connection_closed_error, local_stream_peer_closed,
+    peer_is_same_user, remove_socket_file_if_owned, set_local_stream_polling, socket_file_identity,
 };
 
 #[cfg(test)]
@@ -50,6 +50,10 @@ pub struct ServerHandle {
     path: PathBuf,
     identity: SocketFileIdentity,
     running: Arc<AtomicBool>,
+    // Declared last so it is released only after `drop` has removed the
+    // socket file and joined the listener: a racing server cannot claim the
+    // path while this one still owns it.
+    _startup_lock: SocketStartupLock,
 }
 
 impl Drop for ServerHandle {
@@ -136,6 +140,10 @@ fn start_server_inner(
     paths: &shepr_config::AppPaths,
 ) -> std::io::Result<ServerHandle> {
     let path = socket_path(paths);
+    // Held for the server lifetime. A second server on the same path fails
+    // here with `AddrInUse` instead of racing `prepare_socket_path`, which
+    // could otherwise unlink a socket whose owner has not started listening.
+    let startup_lock = acquire_socket_startup_lock(&path)?;
     prepare_socket_path(&path)?;
 
     // Owner-only from the moment the path is reachable (see
@@ -216,6 +224,7 @@ fn start_server_inner(
         path,
         identity,
         running,
+        _startup_lock: startup_lock,
     })
 }
 
@@ -371,6 +380,11 @@ fn handle_connection_with_stop(
         method_traits.routine,
     );
 
+    // Socket-thread waits and streams bypass `handle_request`, so gate them here too.
+    if let Some(response) = shutdown_rejection(&request, server_stop) {
+        return finish_api_response(&mut stream, &request_id, method_traits, &response);
+    }
+
     // Requests sent to the app loop are handled there. The method facts are
     // the single routing classification; this thread only handles methods
     // whose response or connection lifetime belongs here.
@@ -408,7 +422,7 @@ fn handle_connection_with_stop(
                     result: ResponseResult::Ok {},
                 },
             )?;
-            while running.load(Ordering::Relaxed) {
+            while running.load(Ordering::Relaxed) && !server_is_stopping(server_stop) {
                 if local_stream_peer_closed(&stream)? {
                     break;
                 }
@@ -574,15 +588,32 @@ fn handle_request(
             };
             return crate::serialize_response_or_error(&request.id, &response);
         }
-    } else if server_stop.is_some_and(|stop| stop.load(Ordering::Acquire)) {
-        return error_response_json(
-            &request.id,
-            crate::error::ApiErrorCode::ServerUnavailable,
-            "server is shutting down".into(),
-        );
+    } else if let Some(response) = shutdown_rejection(&request, server_stop) {
+        return response;
     }
 
     dispatch_to_app(request, api_tx, Some(ORDINARY_REQUEST_TIMEOUT), None)
+}
+
+fn server_is_stopping(server_stop: Option<&Arc<AtomicBool>>) -> bool {
+    server_stop.is_some_and(|stop| stop.load(Ordering::Acquire))
+}
+
+fn shutdown_rejection(request: &Request, server_stop: Option<&Arc<AtomicBool>>) -> Option<String> {
+    if !server_is_stopping(server_stop)
+        || matches!(
+            &request.method,
+            Method::Ping(_) | Method::ServerStop(_) | Method::ClientShellSurfaceSet(_)
+        )
+    {
+        return None;
+    }
+
+    Some(error_response_json(
+        &request.id,
+        crate::error::ApiErrorCode::ServerUnavailable,
+        "server is shutting down".into(),
+    ))
 }
 
 pub fn api_method_name(method: &Method) -> &'static str {
@@ -1046,6 +1077,7 @@ mod tests {
     #[test]
     fn dropping_the_handle_stops_the_listener_thread() {
         let path = unique_test_path("listener-drop");
+        let startup_lock = acquire_socket_startup_lock(&path).expect("test precondition");
         let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
         let identity = socket_file_identity(&path).expect("test precondition");
         let running = Arc::new(AtomicBool::new(true));
@@ -1061,9 +1093,18 @@ mod tests {
             path: path.clone(),
             identity,
             running,
+            _startup_lock: startup_lock,
         };
+        assert_eq!(
+            acquire_socket_startup_lock(&path)
+                .err()
+                .map(|error| error.kind()),
+            Some(io::ErrorKind::AddrInUse),
+            "a live handle keeps the socket path locked"
+        );
 
         drop(handle);
+        acquire_socket_startup_lock(&path).expect("the lock is released with the handle");
 
         assert_eq!(
             Arc::strong_count(&alive),

@@ -292,6 +292,9 @@ pub(crate) fn parse_invocation(args: &[String]) -> Result<Invocation, i32> {
                 }
                 Some((name, matches)) => match CliCommand::from_matches(name, matches) {
                     Some(command) => Launch::Cli(Box::new(command)),
+                    // `every_cli_spec_root_has_typed_parser` keeps parser
+                    // coverage aligned with the spec; retain a clear release
+                    // mode error if the invariant is ever broken at runtime.
                     None => {
                         shepr_platform::begin_cli_output();
                         eprintln!(
@@ -433,7 +436,7 @@ pub(crate) fn run(
     requested_session: Option<shepr_config::SessionId>,
 ) -> CliResult<i32> {
     if matches!(command, CliCommand::Config(ConfigCommand::Check)) {
-        return Ok(config_check());
+        return Ok(config_check(requested_session));
     }
     let paths = resolve_app_paths(requested_session)?;
     let context = target::CliContext::local(paths);
@@ -447,7 +450,7 @@ fn dispatch_with_config(
 ) -> CliResult<i32> {
     match command {
         CliCommand::Status(command) => status::run_status_command(*command, context),
-        CliCommand::Config(ConfigCommand::Check) => Ok(config_check()),
+        CliCommand::Config(ConfigCommand::Check) => Ok(config_check_from_paths(context)),
         CliCommand::Config(ConfigCommand::Invalid) => Ok(missing_subcommand()),
         CliCommand::Machine(command) => machine::run_machine_command(command.clone(), context),
         CliCommand::Server(command) => server::run_server_command(*command, context),
@@ -501,79 +504,87 @@ pub(super) fn usage_error(message: &str) -> i32 {
     error.exit_code()
 }
 
-fn config_check() -> i32 {
+fn config_check(requested_session: Option<shepr_config::SessionId>) -> i32 {
     // Path problems are reported like any other config issue instead of
     // aborting the check.
-    let (diagnostics, provenance) = match shepr_config::AppPaths::resolve() {
-        Ok(paths) => {
-            let loaded = shepr_config::load_for_check(&paths);
-            let mut sources = loaded
-                .provenance()
-                .values()
-                .iter()
-                .map(|origin| format!("{} = {} <- {}", origin.key, origin.value, origin.source))
-                .collect::<Vec<_>>();
-            let path_sources = paths.provenance();
-            let home = paths.home_dir().map_or_else(
-                || "unavailable".to_owned(),
-                |path| path.display().to_string(),
-            );
-            let current = paths.current_dir().map_or_else(
-                || "unavailable".to_owned(),
-                |path| path.display().to_string(),
-            );
-            sources.extend([
-                format!(
-                    "paths.config_dir={} <- {}",
-                    paths.config_dir().display(),
-                    path_sources.config_dir
-                ),
-                format!(
-                    "paths.state_dir={} <- {}",
-                    paths.state_dir().display(),
-                    path_sources.state_dir
-                ),
-                format!(
-                    "paths.config_file={} <- {}",
-                    paths.config_file().display(),
-                    path_sources.config_file
-                ),
-                format!("paths.home_dir={home} <- {}", path_sources.home_dir),
-                format!(
-                    "paths.current_dir={current} <- {}",
-                    path_sources.current_dir
-                ),
-                format!(
-                    "paths.session_id={} <- {}",
-                    paths.session_id().display_name(),
-                    path_sources.session_id
-                ),
-                format!(
-                    "paths.api_socket={} <- {}",
-                    paths.server_address().api_socket().display(),
-                    path_sources.api_socket
-                ),
-                format!(
-                    "paths.client_socket={} <- {}",
-                    paths.server_address().client_socket().display(),
-                    path_sources.client_socket
-                ),
-            ]);
-            (loaded.diagnostics, sources)
-        }
-        Err(diagnostics) => (
-            diagnostics
+    match shepr_config::AppPaths::resolve_with_session(requested_session) {
+        Ok(paths) => config_check_from_paths(&paths),
+        Err(diagnostics) => print_config_check(
+            &diagnostics
                 .into_iter()
                 .map(shepr_config::ConfigDiagnostic::Path)
-                .collect(),
+                .collect::<Vec<_>>(),
             Vec::new(),
         ),
-    };
+    }
+}
+
+fn config_check_from_paths(paths: &shepr_config::AppPaths) -> i32 {
+    let loaded = shepr_config::load_for_check(paths);
+    let mut sources = loaded
+        .provenance()
+        .values()
+        .iter()
+        .map(|origin| format!("{} = {} <- {}", origin.key, origin.value, origin.source))
+        .collect::<Vec<_>>();
+    let path_sources = paths.provenance();
+    let home = paths.home_dir().map_or_else(
+        || "unavailable".to_owned(),
+        |path| path.display().to_string(),
+    );
+    let current = paths.current_dir().map_or_else(
+        || "unavailable".to_owned(),
+        |path| path.display().to_string(),
+    );
+    sources.extend([
+        format!(
+            "paths.config_dir={} <- {}",
+            paths.config_dir().display(),
+            path_sources.config_dir
+        ),
+        format!(
+            "paths.state_dir={} <- {}",
+            paths.state_dir().display(),
+            path_sources.state_dir
+        ),
+        format!(
+            "paths.config_file={} <- {}",
+            paths.config_file().display(),
+            path_sources.config_file
+        ),
+        format!("paths.home_dir={home} <- {}", path_sources.home_dir),
+        format!(
+            "paths.current_dir={current} <- {}",
+            path_sources.current_dir
+        ),
+        format!(
+            "paths.session_id={} <- {}",
+            paths.session_id().display_name(),
+            path_sources.session_id
+        ),
+        format!(
+            "paths.api_socket={} <- {}",
+            paths.server_address().api_socket().display(),
+            path_sources.api_socket
+        ),
+        format!(
+            "paths.client_socket={} <- {}",
+            paths.server_address().client_socket().display(),
+            path_sources.client_socket
+        ),
+    ]);
+    print_config_check(&loaded.diagnostics, sources)
+}
+
+fn print_config_check(
+    diagnostics: &[shepr_config::ConfigDiagnostic],
+    provenance: Vec<String>,
+) -> i32 {
     if diagnostics.is_empty() {
         println!("config: ok");
     } else {
         println!("config: issues found");
-        for diagnostic in &diagnostics {
+        for diagnostic in diagnostics {
             println!("{diagnostic}");
         }
     }
@@ -891,6 +902,42 @@ mod tests {
         match super::spec::command().try_get_matches_from(&argv) {
             Ok(_) => panic!("{args:?} should be rejected"),
             Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn every_cli_spec_root_has_typed_parser() {
+        let samples: [(&str, &[&str]); 11] = [
+            ("status", &["status"]),
+            ("config", &["config", "check"]),
+            ("machine", &["machine", "list"]),
+            ("server", &["server", "stop"]),
+            ("workspace", &["workspace", "list"]),
+            ("tab", &["tab", "list"]),
+            ("agent", &["agent", "list"]),
+            ("pane", &["pane", "list"]),
+            ("terminal", &["terminal", "title", "clear"]),
+            ("session", &["session", "list"]),
+            ("integration", &["integration", "status"]),
+        ];
+        let launch_only = ["client", "remote-api-bridge", "remote-client-bridge"];
+        let spec = super::spec::command();
+        let mut spec_groups = spec
+            .get_subcommands()
+            .map(clap::Command::get_name)
+            .filter(|name| !launch_only.contains(name))
+            .collect::<Vec<_>>();
+        let mut sampled_groups = samples.iter().map(|(name, _)| *name).collect::<Vec<_>>();
+        spec_groups.sort_unstable();
+        sampled_groups.sort_unstable();
+        assert_eq!(spec_groups, sampled_groups);
+
+        for (name, args) in samples {
+            let invocation = parse(args);
+            match invocation.launch {
+                Launch::Cli(command) => assert_eq!(command.name(), name, "{args:?}"),
+                _ => panic!("{args:?} should produce a typed CLI command"),
+            }
         }
     }
 
