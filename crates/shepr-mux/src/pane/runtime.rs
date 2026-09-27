@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::os::fd::{AsFd, OwnedFd};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -47,6 +48,85 @@ pub struct TerminalDirtyPatchSnapshot {
 
 const MIN_PANE_ROWS: u16 = 2;
 const MIN_PANE_COLS: u16 = 4;
+
+/// Owns the pane child while its watcher awaits the pidfd. If the watcher is
+/// dropped before it reaps (the runtime shutting down while the child still
+/// runs), the child is handed to a detached thread that waits for it, so it
+/// never stays a zombie for the rest of the process.
+struct UnreapedChild(Option<std::process::Child>);
+
+impl UnreapedChild {
+    fn take(&mut self) -> Option<std::process::Child> {
+        self.0.take()
+    }
+}
+
+impl Drop for UnreapedChild {
+    fn drop(&mut self) {
+        let Some(mut child) = self.0.take() else {
+            return;
+        };
+        if let Ok(None) = child.try_wait() {
+            let spawned = std::thread::Builder::new()
+                .name("shepr-pane-reaper".into())
+                .spawn(move || {
+                    let _ = child.wait();
+                });
+            if let Err(err) = spawned {
+                tracing::warn!(%err, "could not start a reaper for an abandoned pane child");
+            }
+        }
+    }
+}
+
+async fn wait_for_child_exit(
+    child: std::process::Child,
+    pidfd: Option<OwnedFd>,
+) -> std::io::Result<std::process::ExitStatus> {
+    let mut child = UnreapedChild(Some(child));
+    let Some(pidfd) = pidfd else {
+        return wait_for_child_exit_blocking(child).await;
+    };
+    let async_pidfd = match tokio::io::unix::AsyncFd::new(pidfd) {
+        Ok(async_pidfd) => async_pidfd,
+        Err(err) => {
+            tracing::debug!(%err, "could not register child pidfd; falling back to child wait");
+            return wait_for_child_exit_blocking(child).await;
+        }
+    };
+    if let Err(err) = async_pidfd.readable().await {
+        tracing::debug!(%err, "child pidfd readiness failed; falling back to child wait");
+        return wait_for_child_exit_blocking(child).await;
+    }
+
+    match shepr_platform::reap_pidfd(async_pidfd.get_ref().as_fd()) {
+        Ok(status) => {
+            // waitid(P_PIDFD, WEXITED) reaps the child, so dropping its
+            // std::process::Child wrapper cannot leave a zombie behind.
+            drop(child.take());
+            Ok(status)
+        }
+        Err(err) => {
+            // Kernels may expose pidfd_open before waitid(P_PIDFD); the child
+            // is ready by now, so Child::wait is only a short fallback reap.
+            tracing::debug!(%err, "waitid on child pidfd failed; falling back to child wait");
+            wait_for_child_exit_blocking(child).await
+        }
+    }
+}
+
+async fn wait_for_child_exit_blocking(
+    mut child: UnreapedChild,
+) -> std::io::Result<std::process::ExitStatus> {
+    let Some(mut child) = child.take() else {
+        return Err(std::io::Error::other("pane child was already reaped"));
+    };
+    // A blocking task keeps running once started even if this await is
+    // dropped, so the fallback reaps on runtime shutdown too.
+    tokio::task::spawn_blocking(move || child.wait())
+        .await
+        .map_err(std::io::Error::other)?
+}
 
 /// The smallest geometry a pane's PTY and emulator ever get. Spawn and resize
 /// both go through this so the child never sees a 0-row or 0-column PTY and
@@ -730,16 +810,24 @@ impl PaneRuntime {
         {
             let child_liveness = Arc::clone(&child_liveness);
             let events = events.clone();
-            let rt = tokio::runtime::Handle::current();
-            // Moving this waiter to AsyncFd needs the pidfd already held by
-            // ProcessHandle, but that descriptor is private to shepr-platform.
-            // Expose a waitable pidfd there before replacing the sole Child
-            // reaper; do not open a second process handle or add a polling loop
-            // here.
-            tokio::task::spawn_blocking(move || {
-                // Blocking waitpid on this child only; no process-wide SIGCHLD
-                // handling is involved.
-                let exit_reason = match child.wait() {
+            let pidfd = child_liveness
+                .leader()
+                .and_then(|leader| match leader.try_clone_pidfd() {
+                    Ok(pidfd) => pidfd,
+                    Err(err) => {
+                        tracing::debug!(
+                            pane = pane_id.raw(),
+                            pid,
+                            %err,
+                            "could not duplicate child pidfd; falling back to child wait"
+                        );
+                        None
+                    }
+                });
+            // Await the owned pidfd so each live pane uses no blocking-pool
+            // thread; waitid reaps it while Child::wait remains the fallback.
+            tokio::spawn(async move {
+                let exit_reason = match wait_for_child_exit(child, pidfd).await {
                     Ok(status) => {
                         let exit_reason = shepr_platform::classify_child_exit(&status);
                         let status_text = status.to_string();
@@ -752,11 +840,14 @@ impl PaneRuntime {
                     }
                 };
                 child_liveness.mark_wait_completed();
-                // Use blocking send - PaneDied is critical, must not be dropped
-                if let Err(e) = rt.block_on(events.send(AppEvent::PaneDied {
-                    pane_id,
-                    exit_reason,
-                })) {
+                // Wait for channel capacity so this critical pane exit is not dropped.
+                if let Err(e) = events
+                    .send(AppEvent::PaneDied {
+                        pane_id,
+                        exit_reason,
+                    })
+                    .await
+                {
                     error!(pane = pane_id.raw(), err = %e, "failed to send PaneDied event");
                 }
             });

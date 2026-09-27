@@ -141,9 +141,20 @@ pub fn shared_ssh_control_path(
     let path = runtime_dir.join(format!("{}-%C", &hash[..16]));
     // OpenSSH first binds ControlPath + '.' + 16 random characters, then
     // renames it. Reserve those 17 bytes, not just the final socket's length.
-    let expanded = path.to_string_lossy().replace("%C", &"0".repeat(40));
-    let staging = PathBuf::from(format!("{expanded}.{}", "0".repeat(16)));
-    if !fits_unix_socket_path(&staging) {
+    // OpenSSH expands each literal `%C` token to 40 ASCII bytes, then appends
+    // a dot and 16 random bytes while staging the socket. Count the added
+    // bytes directly so a non-UTF-8 runtime directory is measured as its
+    // actual path bytes.
+    let path_bytes = path.as_os_str().as_bytes();
+    let code_expansions = path_bytes
+        .windows(2)
+        .filter(|token| token[0] == b'%' && token[1] == b'C')
+        .count();
+    let staging_path_len = path_bytes
+        .len()
+        .saturating_add(code_expansions.saturating_mul(40 - 2))
+        .saturating_add(1 + 16);
+    if staging_path_len > UNIX_SOCKET_PATH_MAX {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "SSH control socket staging path exceeds the Unix socket length limit",

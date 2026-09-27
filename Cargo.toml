@@ -22,31 +22,31 @@ bytes = "1"
 # clap is the CLI parser (src/cli/spec.rs). error-context makes usage errors
 # name the offending argument and value instead of only the error kind.
 clap = { version = "4.5", default-features = false, features = ["std", "help", "usage", "error-context"] }
-crossterm = "0.29"
+crossterm = { version = "0.29", default-features = false, features = ["bracketed-paste", "events"] }
 ctrlc = { version = "3", features = ["termination"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 interprocess = "2.4.2"
 jsonc-parser = { version = "0.33.1", default-features = false, features = ["cst", "serde_json"] }
 # Also the PTY layer (crates/shepr-pty/src/backend.rs): openpty, session setup, pre-exec.
 libc = "0.2"
-ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
+# The client initializes Ratatui with Crossterm; other optional backends, the
+# calendar widget, layout cache, macros and underline-color support are unused.
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_ignored = "0.1.14"
 serde_json = "1"
-sha2 = "0.11.0"
-time = { version = "0.3.47", features = ["formatting"] }
+sha2 = { version = "0.11.0", default-features = false, features = ["alloc"] }
+time = { version = "0.3.47", default-features = false, features = ["formatting", "std"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util"] }
 toml = "1.1.6"
 toml_edit = "0.25.15"
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["env-filter", "fmt"] }
 unicode-segmentation = "1.13.1"
 unicode-width = "0.2"
 # logind's delay inhibitor lets the server save before host shutdown kills panes.
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
-
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
-
 
 [workspace.lints.clippy]
 # Style: modern idiomatic Rust
@@ -90,30 +90,9 @@ dbg_macro = "deny"
 todo = "deny"
 
 [dependencies]
-base64 = { workspace = true }
-bytes = { workspace = true }
 clap = { workspace = true }
-crossterm = { workspace = true }
-ctrlc = { workspace = true }
-interprocess = { workspace = true }
-jsonc-parser = { workspace = true }
-libc = { workspace = true }
-ratatui = { workspace = true }
-regex = { workspace = true }
 serde = { workspace = true }
-serde_ignored = { workspace = true }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
-time = { workspace = true }
-tokio = { workspace = true }
-toml = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-unicode-segmentation = { workspace = true }
-unicode-width = { workspace = true }
-zbus = { workspace = true }
-
-futures-util = { workspace = true }
 
 shepr-agent = { path = "crates/shepr-agent" }
 shepr-api = { path = "crates/shepr-api" }
@@ -123,11 +102,8 @@ shepr-core = { path = "crates/shepr-core" }
 shepr-mux = { path = "crates/shepr-mux" }
 shepr-platform = { path = "crates/shepr-platform" }
 shepr-protocol = { path = "crates/shepr-protocol" }
-shepr-pty = { path = "crates/shepr-pty" }
 shepr-remote = { path = "crates/shepr-remote" }
 shepr-server = { path = "crates/shepr-server" }
-shepr-termio = { path = "crates/shepr-termio" }
-shepr-vt = { path = "crates/shepr-vt" }
 
 [lints]
 workspace = true
@@ -141,3 +117,5 @@ shepr-protocol = { path = "crates/shepr-protocol", features = ["test-support"] }
 shepr-server = { path = "crates/shepr-server", features = ["test-api"] }
 shepr-termio = { path = "crates/shepr-termio", features = ["test-support"] }
 shepr-test-support = { path = "crates/shepr-test-support" }
+tokio = { workspace = true }
+toml = { workspace = true }

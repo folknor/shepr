@@ -49,12 +49,25 @@ pub(super) fn run_server_command(
     }
 }
 
-/// The local path skips the protocol check on purpose, like `session stop`:
-/// the protocol-mismatch error tells the user to run this command, so it must
-/// be able to stop a server from another build.
+/// Both paths skip the build check on purpose, like `session stop`: the
+/// build-mismatch error tells the user to stop the server, so this must be
+/// able to stop a server from another build. That holds for `--machine` too,
+/// where an in-place upgrade of the remote binary leaves the old server
+/// running.
 fn server_stop(paths: &super::target::CliContext) -> super::CliResult<i32> {
     if paths.is_remote() {
-        return super::send_ok_request(paths, Method::ServerStop(EmptyParams::default()));
+        let response = super::send_request_unchecked(
+            paths,
+            &Request {
+                id: "cli:server:stop".into(),
+                method: Method::ServerStop(EmptyParams::default()),
+            },
+        )?;
+        return Ok(if super::print_response_error(&response)? {
+            1
+        } else {
+            0
+        });
     }
 
     match shepr_api::session::stop_active_server(paths) {

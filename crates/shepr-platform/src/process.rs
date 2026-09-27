@@ -91,6 +91,17 @@ impl ProcessHandle {
         self.pid
     }
 
+    /// Duplicate the pidfd for readiness polling, if this handle has one.
+    /// The returned descriptor has its own lifetime and can be registered
+    /// with an async poller without exposing or transferring this handle's fd.
+    pub fn try_clone_pidfd(&self) -> std::io::Result<Option<std::os::fd::OwnedFd>> {
+        let ProcessIdentity::Pidfd(fd) = &self.identity else {
+            return Ok(None);
+        };
+        // `OwnedFd::try_clone` duplicates with F_DUPFD_CLOEXEC.
+        fd.try_clone().map(Some)
+    }
+
     pub(super) fn pidfd(&self) -> Option<RawFd> {
         match &self.identity {
             ProcessIdentity::Pidfd(fd) => Some(fd.as_raw_fd()),
@@ -334,6 +345,63 @@ pub(super) fn session_and_tty_from_stat(stat: &str) -> Option<(i32, i32)> {
     Some((session, tty_nr))
 }
 
+/// Reap the exited child behind `pidfd` with `waitid(P_PIDFD, WEXITED)` and
+/// return the status `Child::wait` would have reported. Call it once the
+/// pidfd is readable: it blocks until the child exits.
+pub fn reap_pidfd(pidfd: std::os::fd::BorrowedFd<'_>) -> std::io::Result<std::process::ExitStatus> {
+    let id = libc::id_t::try_from(pidfd.as_raw_fd()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "pidfd cannot be represented as a waitid id",
+        )
+    })?;
+    // SAFETY: siginfo_t is a plain C output record with a valid all-zero
+    // representation; waitid overwrites its status fields on success.
+    let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+    loop {
+        // SAFETY: `info` is writable storage for one siginfo_t and `id` is a
+        // live pidfd borrowed for this call; WEXITED reaps that process.
+        let result = unsafe { libc::waitid(libc::P_PIDFD, id, &mut info, libc::WEXITED) };
+        if result == 0 {
+            break;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.kind() != std::io::ErrorKind::Interrupted {
+            return Err(err);
+        }
+    }
+    // SAFETY: waitid succeeded with WEXITED, so it filled a SIGCHLD record
+    // whose si_status field is initialized.
+    let status = unsafe { info.si_status() };
+    exit_status_from_waitid(info.si_code, status).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "waitid returned unexpected child status code {}",
+                info.si_code
+            ),
+        )
+    })
+}
+
+/// The `wait(2)` status word for a `waitid` result, so the `ExitStatus` is
+/// the one `waitpid` (and so `Child::wait`) produces: exit code in bits 8-15,
+/// terminating signal in bits 0-6, 0x80 for a core dump.
+fn exit_status_from_waitid(
+    code: libc::c_int,
+    status: libc::c_int,
+) -> Option<std::process::ExitStatus> {
+    use std::os::unix::process::ExitStatusExt;
+
+    let raw = match code {
+        libc::CLD_EXITED => (status & 0xff) << 8,
+        libc::CLD_KILLED => status & 0x7f,
+        libc::CLD_DUMPED => (status & 0x7f) | 0x80,
+        _ => return None,
+    };
+    Some(std::process::ExitStatus::from_raw(raw))
+}
+
 /// Signal processes by bare pid. Test-only: production code signals through
 /// `ProcessHandle`, which cannot hit a reused pid.
 #[cfg(any(test, feature = "test-support"))]
@@ -366,5 +434,54 @@ pub(super) fn process_exists(pid: u32) -> bool {
         true
     } else {
         std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+}
+
+#[cfg(test)]
+mod reap_tests {
+    use super::*;
+    use std::os::fd::AsFd;
+    use std::os::unix::process::ExitStatusExt;
+
+    fn reap(script: &str) -> (std::process::ExitStatus, std::process::Child) {
+        let child = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(script)
+            .spawn()
+            .expect("test precondition");
+        let handle = ProcessHandle::open(child.id()).expect("child is alive");
+        let pidfd = handle
+            .try_clone_pidfd()
+            .expect("pidfd duplicates")
+            .expect("kernel supports pidfds");
+        (reap_pidfd(pidfd.as_fd()).expect("waitid reaps"), child)
+    }
+
+    #[test]
+    fn reaped_status_matches_what_wait_reports() {
+        let (status, mut child) = reap("exit 7");
+        assert_eq!(status.code(), Some(7));
+        assert_eq!(status.signal(), None);
+        // Already reaped: a second wait finds no child, so none is left a zombie.
+        assert!(child.try_wait().is_err());
+
+        let (status, _child) = reap("kill -KILL $$");
+        assert_eq!(status.code(), None);
+        assert_eq!(status.signal(), Some(libc::SIGKILL));
+        assert!(!status.core_dumped());
+    }
+
+    #[test]
+    fn waitid_codes_map_to_wait_status_words() {
+        let exited = exit_status_from_waitid(libc::CLD_EXITED, 255).expect("exit");
+        assert_eq!(exited.code(), Some(255));
+        let killed = exit_status_from_waitid(libc::CLD_KILLED, libc::SIGTERM).expect("kill");
+        assert_eq!(killed.signal(), Some(libc::SIGTERM));
+        assert!(!killed.core_dumped());
+        let dumped = exit_status_from_waitid(libc::CLD_DUMPED, libc::SIGSEGV).expect("dump");
+        assert_eq!(dumped.signal(), Some(libc::SIGSEGV));
+        assert!(dumped.core_dumped());
+        assert_eq!(dumped.into_raw(), libc::SIGSEGV | 0x80);
+        assert!(exit_status_from_waitid(libc::CLD_STOPPED, libc::SIGSTOP).is_none());
     }
 }

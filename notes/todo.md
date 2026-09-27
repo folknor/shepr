@@ -34,6 +34,11 @@ Selections and copy-mode positions drift once scrollback is full, because they n
 - Client: store selections and the copy-mode cursor/anchor with the `_at` methods, viewport top = `history_origin + max_offset - offset`. Until then the claim "Ordinary selections are live buffer ranges" (`src/client/shell/state.rs`) is untrue.
 - API: `PaneTextPoint.row` is `u32` and names a screen row; widen it to `u64` and call the `_absolute` readers.
 - Mouse copy: once rows are absolute, `content_revision: None` is safe because evicted rows are refused. Then drop the `allow(dead_code)`.
+- Fix the row tracker first. `crates/shepr-vt/src/rows.rs` identifies the anchor row by buffer address plus `row_signature`, which hashes only `cell.c`, so blank or identical rows all match. When one batch pushes more lines than the history ring holds (a synchronized-update frame is replayed in one batch, and vte buffers up to 2 MB), the anchor address reappears on another blank row and evictions are undercounted modulo the ring size, so an absolute id can be reused. Count evictions directly (observe `linefeed`/`scroll_up` at the history limit) or keep a per-row sequence number the tracker owns. Nothing consumes absolute rows yet, which is why this waits for this item.
+
+## Collapse the client's handoff state into one enum
+
+`ClientLoop` in `crates/shepr-client/src/lib.rs` spreads presentation ownership across `pending_activation`, `deferred_local_activation`, `scheduled_activation`, `presentation_frozen`, `freeze_recovery_attempted` and the selection tracker. Fixes like `stale_freeze_recovery` and `correct_committed_surface_size` read as patches for combinations those flags allow. One presentation-ownership enum (Owned, Handoff, Unavailable, DeferredLocal) would make illegal combinations unrepresentable. No defect has been traced to it; do it if handoff bugs start appearing.
 
 ## Replace the JSON/base64 tunnel with typed wire messages
 

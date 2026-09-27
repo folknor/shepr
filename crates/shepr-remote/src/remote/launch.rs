@@ -10,7 +10,7 @@ pub fn run_remote(
     paths: &shepr_config::AppPaths,
 ) -> io::Result<()> {
     let session_name = paths.session_id().display_name().to_owned();
-    let runtime_dir = xdg_runtime_dir(paths)?;
+    let runtime_dir = paths.xdg_runtime_dir();
     let local_socket = local_forward_socket_path(runtime_dir, &remote.target, &session_name)?;
     let program = std::env::args()
         .next()
@@ -95,7 +95,8 @@ pub fn prepare_saved_ssh(
             detached_server_daemon: true,
             ..
         } => Ok(prepared.remote_shepr.clone()),
-        _ => Err(io::Error::other(
+        _ => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
             "remote server is not ready for saved machines",
         )),
     }
@@ -155,27 +156,32 @@ impl RemoteExecutable {
         // (xonsh, fish, nushell). Run the script under /bin/sh, as the API bridge does
         // (discovery feeds its script to `/bin/sh -s` instead), so the login shell only
         // has to launch one quoted command.
-        posix_shell_command(&posix_remote_output_command(&format!(
-            "exec {}",
-            self.command(&args)
-        )))
+        posix_shell_command(&posix_remote_output_command(&self.command(&args)))
     }
 
     pub(super) fn saved_bridge_command(&self, session_name: &str) -> String {
         let args = Self::session_args(session_name, &["remote-client-bridge"]);
-        format!("exec {} </dev/null", self.command(&args))
+        format!("{} </dev/null", self.command(&args))
     }
 }
 
 /// Prefixes `command` with the output-ready marker line (preceded by a newline, so
-/// the marker starts a line of its own after any login banner).
+/// the marker starts a line of its own after any login banner) and maps a remote
+/// command's exit 255 to 254. OpenSSH also uses 255 for its own failures, so the
+/// wrapper keeps a remote program's 255 from being mistaken for a broken SSH link.
 ///
 /// The prefix is deliberately plain words with no quotes or newlines. For a plain
-/// `command` such as the client bridge's `exec <path> ...`, the wrapped result of
+/// `command` such as the client bridge's `<path> ...`, the wrapped result of
 /// [`posix_shell_command`] reaches a non-POSIX login shell as `/bin/sh -c` plus one
 /// single-quoted argument with nothing inside it to escape.
+///
+/// Scripts fed to `/bin/sh -s` end with a newline; it is trimmed so the status
+/// suffix does not start a line with `;`, which is a shell syntax error.
 pub(super) fn posix_remote_output_command(command: &str) -> String {
-    format!("echo; echo {REMOTE_OUTPUT_READY_MARKER}; {command}")
+    let command = command.trim_end();
+    format!(
+        "echo; echo {REMOTE_OUTPUT_READY_MARKER}; {command}; shepr_exit_status=$?; if [ $shepr_exit_status -eq 255 ]; then exit 254; fi; exit $shepr_exit_status"
+    )
 }
 
 /// Runs a POSIX script under `/bin/sh` regardless of the remote login shell.
@@ -188,6 +194,7 @@ pub(super) struct PreparedRemoteShepr {
 }
 
 pub(crate) const STALE_API_METADATA: &str = "shepr-machine-metadata-stale-v1";
+pub(crate) const STALE_API_METADATA_EXIT_CODE: i32 = 78;
 
 pub(crate) fn cached_remote_api_command(executable: &RemoteExecutable, session: &str) -> String {
     let path = shell_quote(executable.as_str());
@@ -201,10 +208,8 @@ pub(crate) fn cached_remote_api_command(executable: &RemoteExecutable, session: 
     // needs quoting would bring `'\''` back; paths come from discovery and
     // session names are validated.
     let script = format!(
-        "if {path} --session {session} remote-api-bridge --check </dev/null >/dev/null 2>&1; then {}; else echo {STALE_API_METADATA} >&2; exit 78; fi",
-        posix_remote_output_command(&format!(
-            "exec {path} --session {session} remote-api-bridge"
-        )),
+        "if {path} --session {session} remote-api-bridge --check </dev/null >/dev/null 2>&1; then {}; else echo {STALE_API_METADATA} >&2; exit {STALE_API_METADATA_EXIT_CODE}; fi",
+        posix_remote_output_command(&format!("{path} --session {session} remote-api-bridge")),
     );
     posix_shell_command(&script)
 }

@@ -224,7 +224,6 @@ fn hello_write_error(error: shepr_protocol::FramingError) -> ClientError {
 mod tests {
     use super::*;
     use interprocess::local_socket::traits::Listener as _;
-    use shepr_protocol::PROTOCOL_VERSION;
     use std::io;
 
     fn socket_pair(name: &str) -> (LocalStream, LocalStream, std::path::PathBuf) {
@@ -353,24 +352,19 @@ mod tests {
         // A server of another build: its preamble names it, and nothing after
         // it (here: garbage) needs to decode for the mismatch to be reported.
         let mut opening = shepr_protocol::preamble::local_preamble().to_vec();
-        let version_start = shepr_protocol::preamble::PREAMBLE_MAGIC.len();
-        opening[version_start..version_start + 4]
-            .copy_from_slice(&(PROTOCOL_VERSION + 1).to_le_bytes());
-        let id_start = version_start + 4;
+        let id_start = shepr_protocol::preamble::PREAMBLE_MAGIC.len();
         let other_id = if opening[id_start] == b'0' {
             b'1'
         } else {
             b'0'
         };
         opening[id_start] = other_id;
+        let peer_id = String::from_utf8_lossy(&opening[id_start..]).into_owned();
         opening.extend_from_slice(&[0xff; 16]);
         match handshake_against_opening("preamble-other-build", opening) {
             ClientError::Preamble(error) => {
                 let error = error.to_string();
-                assert!(
-                    error.contains(&format!("protocol {}", PROTOCOL_VERSION + 1)),
-                    "{error}"
-                );
+                assert!(error.contains(&format!("build {peer_id}")), "{error}");
                 assert!(error.contains("different shepr build"), "{error}");
             }
             other => panic!("expected a build mismatch, got {other}"),

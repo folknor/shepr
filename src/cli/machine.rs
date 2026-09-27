@@ -141,13 +141,14 @@ fn status(
             ) {
                 Ok(()) => ("reachable", None),
                 Err(error) => {
-                    let message = error.to_string();
-                    let status = if shepr_remote::ssh_error_requires_authentication(&message) {
+                    let status = if shepr_remote::SshFailureDiagnostic::from_error(&error)
+                        .requires_authentication()
+                    {
                         "auth required"
                     } else {
                         "error"
                     };
-                    (status, Some(message))
+                    (status, Some(error.to_string()))
                 }
             };
             MachineStatusRow {

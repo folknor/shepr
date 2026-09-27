@@ -23,7 +23,6 @@ mod integration;
 mod machine;
 mod matches;
 mod pane;
-mod protocol_guard;
 mod runtime;
 mod server;
 mod server_not_running;
@@ -670,8 +669,8 @@ fn session_list(paths: &shepr_config::AppPaths, json: bool) -> CliResult<i32> {
     Ok(0)
 }
 
-/// Deliberately skips the protocol check that `send_request` does: the
-/// protocol-mismatch error tells the user to run `session stop` / `server
+/// Deliberately skips the build check that `send_request` does: the
+/// build-mismatch error tells the user to run `session stop` / `server
 /// stop`, so stopping must keep working against a server from another build.
 /// `shepr_api::session` sends a bare `server.stop` JSON line for that reason.
 fn session_stop(name: &str, json: bool, paths: &shepr_config::AppPaths) -> CliResult<i32> {
@@ -753,7 +752,7 @@ fn send_ok_request(context: &target::CliContext, method: Method) -> CliResult<i3
 
 fn send_request(context: &target::CliContext, request: &Request) -> CliResult<serde_json::Value> {
     let client = target::api_client(context)?;
-    ensure_server_protocol_compatible(context, &client, &request.id)?;
+    ensure_server_build_matches(context, &client, &request.id)?;
     client
         .request_value(request)
         .map_err(|err| map_server_not_running_or_io(context, err, &request.id, &client))
@@ -769,37 +768,35 @@ fn send_request_unchecked(
         .map_err(|err| map_server_not_running_or_io(context, err, &request.id, &client))
 }
 
-fn ensure_server_protocol_compatible(
+fn ensure_server_build_matches(
     context: &target::CliContext,
     client: &ApiClient,
     request_id: &str,
 ) -> CliResult<()> {
-    // Checked once per target: a polling command must not pay a status round
-    // trip (up to 15 s under `--machine`) before every request.
-    if context.protocol_checked() {
+    // Checked once per target so polling commands need only one status request.
+    if context.build_checked() {
         return Ok(());
     }
     let status = target::server_status(context, client)
         .map_err(|err| map_server_not_running_or_io(context, err, request_id, client))?;
-    let server_protocol = match shepr_protocol::Compatibility::of(status.protocol) {
-        shepr_protocol::Compatibility::Compatible => {
-            context.mark_protocol_checked();
-            return Ok(());
-        }
-        shepr_protocol::Compatibility::DifferentBuild(protocol) => protocol,
-        shepr_protocol::Compatibility::Unknown => {
-            return Err(
-                std::io::Error::other("server ping did not include a protocol version").into(),
-            );
-        }
+    if status.build_id == shepr_protocol::BUILD_ID {
+        context.mark_build_checked();
+        return Ok(());
+    }
+    let response = shepr_api::schema::ErrorResponse {
+        id: request_id.to_owned(),
+        error: shepr_api::schema::ErrorBody {
+            code: "build_mismatch".into(),
+            message: format!(
+                "this shepr client (build {}) differs from the running server (build {}); restart the server with this build before using this command. {}",
+                shepr_protocol::BUILD_ID,
+                status.build_id,
+                target::restart_guidance(context)
+            ),
+        },
     };
-    let response = protocol_guard::mismatch_response(
-        request_id,
-        server_protocol,
-        &target::restart_guidance(context),
-    );
 
-    Err(protocol_guard::cli_error(response))
+    Err(CliError::Response(response))
 }
 
 /// Whether the local API socket is definitely absent or stale. Other probe

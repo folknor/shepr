@@ -17,13 +17,13 @@ shepr-core = { path = "../shepr-core" }
 shepr-platform = { path = "../shepr-platform" }
 shepr-protocol = { path = "../shepr-protocol" }
 shepr-vt = { path = "../shepr-vt" }
-toml = { workspace = true }
 tracing = { workspace = true }
 unicode-width = { workspace = true }
 
 [dev-dependencies]
 # Keybinding tests build configs through shepr-config's test constructors.
 shepr-config = { path = "../shepr-config", features = ["test-support"] }
+toml = { workspace = true }
 
 [lints]
 workspace = true

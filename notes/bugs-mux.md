@@ -11,12 +11,10 @@
 
 Hunter coverage: `git/status.rs`, `pane/runtime.rs` (first 1550 lines), `pane/agent_detection.rs`, `pane/teardown.rs`, all of `persist/` except the tests at the end of `restore.rs`, and the first 400 lines of `workspace.rs`. Not read: `events.rs`, `render_signal.rs`, `terminal/*`, `git/discovery.rs`, `git/config.rs`, the `pane/` files `state.rs`, `launch.rs`, `process_probe.rs`, `osc.rs`, `cwd.rs` and `cursor.rs`, and `workspace/tab.rs`, `workspace/aggregate.rs`, `workspace/geometry.rs`.
 
-The pane runtime reap finding from the pty hunter (TRM-010) sits in bugs-terminal.md though the code is in this crate.
-
 ## MUX-008 - Workspace Deref/DerefMut expect a tab
 
-`workspace.rs:166-180`. That is a production panic path, against the no-`unwrap` rule; the comment admits it. The fix is the crate-wide `active_tab()` pass the comment describes.
+`workspace.rs`, the `Deref`/`DerefMut` impls to the active tab. That is a production panic path, against the no-`unwrap` rule; the comment admits it. The fix is the crate-wide `active_tab()` pass the comment describes, which reaches callers in shepr-server too. The cheaper route, agreed with the owner: make "a workspace always has at least one tab" hold by type (a non-empty tab collection), or show it holds by construction and document it at the `expect`.
 
-## MUX-012 - History pairing now rests on pane ids alone
+## MUX-013 - A persist comment sits above the wrong item
 
-`persist/snapshot.rs`. The layout fingerprint deliberately hashes only workspace/tab structure, split layouts and sorted pane ids. If pane ids can be renumbered between two saves of the same shape, a stale history file pairs with a different pane. Check how pane ids are assigned at capture time; if they are not stable across saves, add a per-pane identity to the pairing.
+`persist/snapshot.rs`: the comment explaining why pane ids are stable across saves (and restore carries history across its id remap) sits above the `layout_fingerprint` field, which it does not describe. Move it to the pairing site it explains.

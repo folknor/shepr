@@ -66,7 +66,7 @@ mod render;
 mod retained_surface;
 mod surface_interest;
 
-use api_dispatcher::{AltScreenReadConflict, ApiDispatcher};
+use api_dispatcher::AltScreenReadConflict;
 pub use bootstrap::run_server;
 use lifecycle::{ShutdownLifecycle, ShutdownPhase};
 
@@ -166,8 +166,17 @@ pub struct HeadlessServer {
     /// Window title set through `client.window_title.set`. While present it wins
     /// over the configured `ui.window_title` until the API clears it again.
     api_window_title: Option<String>,
-    /// Routes requests parked behind alternate-screen reads or manifest reloads.
-    api_dispatcher: ApiDispatcher,
+    /// Pending API work lives with the server state it routes and mutates.
+    /// Alternate-screen reads that are being captured without an attached client.
+    pending_alt_screen_reads: Vec<crate::server::alt_screen_read::PendingAltScreenRead>,
+    deferred_alt_screen_reads: Vec<shepr_api::ApiRequestMessage>,
+    /// Requests answered by the running manifest reload; empty when none runs.
+    running_agent_manifest_reload: Vec<shepr_api::ApiRequestMessage>,
+    /// Requests that arrived while a reload was running. They get a fresh
+    /// reload once it finishes, so they see files changed since it started.
+    queued_agent_manifest_reloads: Vec<shepr_api::ApiRequestMessage>,
+    /// Identifies the running manifest reload's completion.
+    agent_manifest_reload_token: u64,
     agent_manifest_reload_tx: mpsc::UnboundedSender<AgentManifestReloadCompletion>,
     agent_manifest_reload_rx: mpsc::UnboundedReceiver<AgentManifestReloadCompletion>,
     /// Whether the set of panes whose PTY output should wake the loop at once
@@ -255,7 +264,11 @@ impl HeadlessServer {
             resolved_config,
             sent_window_title: None,
             api_window_title: None,
-            api_dispatcher: ApiDispatcher::default(),
+            pending_alt_screen_reads: Vec::new(),
+            deferred_alt_screen_reads: Vec::new(),
+            running_agent_manifest_reload: Vec::new(),
+            queued_agent_manifest_reloads: Vec::new(),
+            agent_manifest_reload_token: 0,
             agent_manifest_reload_tx,
             agent_manifest_reload_rx,
             immediate_pty_sources_dirty: true,
@@ -442,8 +455,7 @@ impl HeadlessServer {
                 self.has_app_client(),
             );
             let next_deadline = self
-                .api_dispatcher
-                .next_deadline()
+                .next_pending_alt_screen_read_deadline()
                 .map_or(next_deadline, |pending| {
                     Some(next_deadline.map_or(pending, |current| current.min(pending)))
                 });
@@ -1297,10 +1309,7 @@ impl HeadlessServer {
 
         let real_terminal_id = terminal_id.clone();
 
-        if self
-            .api_dispatcher
-            .has_pending_read_for(real_terminal_id.as_str())
-        {
+        if self.has_pending_read_for(real_terminal_id.as_str()) {
             self.send_to_client(
                 client_id,
                 &ServerMessage::ServerShutdown {
@@ -1925,14 +1934,6 @@ impl HeadlessServer {
         }
     }
 
-    #[cfg(any(test, feature = "test-api"))]
-    fn agent_read_not_idle_error(
-        &self,
-        request: &shepr_api::schema::Request,
-    ) -> Option<shepr_api::schema::ErrorBody> {
-        self.api_dispatcher.agent_read_not_idle_error(self, request)
-    }
-
     fn handle_api_request_with_shutdown_check_inner(
         &mut self,
         msg: shepr_api::ApiRequestMessage,
@@ -1948,14 +1949,11 @@ impl HeadlessServer {
         let method = msg.request.method.traits().name;
         self.immediate_pty_sources_dirty = true;
 
-        let frozen_alt_screen_read = match self
-            .api_dispatcher
-            .alt_screen_read_conflict(self, &msg.request)
-        {
+        let frozen_alt_screen_read = match self.alt_screen_read_conflict(&msg.request) {
             AltScreenReadConflict::None => None,
             AltScreenReadConflict::Frozen(snapshot) => Some(snapshot),
             AltScreenReadConflict::Defer => {
-                self.api_dispatcher.defer(msg);
+                self.defer_alt_screen_read_request(msg);
                 return false;
             }
         };
@@ -1984,15 +1982,12 @@ impl HeadlessServer {
         // resume geometry, and an earlier request may have changed the layout
         // without anything cheaper recording that it did.
         self.sync_foreground_client_state();
-        if let Some(error) = self
-            .api_dispatcher
-            .agent_read_not_idle_error(self, &msg.request)
-        {
+        if let Some(error) = self.agent_read_not_idle_error(&msg.request) {
             let response = Err(shepr_api::error::ApiError::from_body(error));
             shepr_api::send_api_response(&msg.respond_to, &request_id, method, response);
             return changed;
         }
-        let alt_screen_read_spec = self.api_dispatcher.alt_screen_read_spec(self, &msg.request);
+        let alt_screen_read_spec = self.alt_screen_read_spec(&msg.request);
         if matches!(
             &msg.request.method,
             shepr_api::schema::Method::AgentPrompt(_)
@@ -2042,7 +2037,7 @@ impl HeadlessServer {
                 spec.content_seq,
                 Instant::now(),
             );
-            self.api_dispatcher.push_pending_read(pending);
+            self.push_pending_alt_screen_read(pending);
             return changed;
         }
         shepr_api::send_api_response(&msg.respond_to, &request_id, method, response);

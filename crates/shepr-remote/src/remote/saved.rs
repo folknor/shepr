@@ -5,7 +5,6 @@ use crate::machine::{ProfileId, RemoteExecutable, SshMetadataCache, SshTarget};
 
 use super::{
     DiscoveryProgress, RemoteSsh, SshStdioBridge, resume_installed_remote_shepr_discovery,
-    xdg_runtime_dir,
 };
 
 pub struct SavedSshBridge {
@@ -141,6 +140,8 @@ impl SavedSshConnector {
             discovery,
             ..
         } = &mut *state;
+        // Setup above either stored the transport or returned its setup error. Keep
+        // this checked arm instead of panicking if the connector state changes later.
         let Some(ssh) = ssh.as_mut() else {
             return Err(io::Error::other("saved SSH transport is unavailable"));
         };
@@ -201,7 +202,7 @@ impl SavedSshConnector {
         if std::time::Instant::now() >= deadline {
             return Err(super::attempt_deadline_passed());
         }
-        let path = saved_bridge_path(xdg_runtime_dir(&self.paths)?, &self.profile_id)?;
+        let path = saved_bridge_path(self.paths.xdg_runtime_dir(), &self.profile_id)?;
         let bridge = SshStdioBridge::start(
             target.clone(),
             remote_shepr,
@@ -247,8 +248,10 @@ impl SavedSshApiBridge {
             }
         };
         let command = super::cached_remote_api_command(&metadata, session);
+        // The managed SSH config remains necessary on a cache hit: its include and
+        // ControlMaster options are still applied by the bridge's SSH subprocess.
         let path = shepr_platform::remote_bridge_endpoint_path(
-            xdg_runtime_dir(paths)?,
+            paths.xdg_runtime_dir(),
             &format!("shepr-api-ssh-{}-{profile_id}.sock", std::process::id()),
             &format!(
                 "shepr-api-{}-{}.sock",
@@ -367,16 +370,30 @@ mod tests {
 
     #[test]
     fn prompt_and_compatibility_failures_require_attention() {
-        for message in [
-            "Permission denied (publickey)",
-            "Host key verification failed",
-            "matching Shepr is not ready; install or update",
-            "handshake rejected",
+        let authentication = super::super::SshFailureDiagnostic::from_ssh_output(
+            Some(super::super::SSH_OWN_FAILURE_EXIT_CODE),
+            "Permission denied (publickey)".into(),
+        );
+        assert!(
+            super::super::SshFailureDiagnostic::from_error(&io::Error::other(authentication))
+                .needs_attention()
+        );
+        let host_key = super::super::SshFailureDiagnostic::from_ssh_output(
+            Some(super::super::SSH_OWN_FAILURE_EXIT_CODE),
+            "Host key verification failed".into(),
+        );
+        assert!(
+            super::super::SshFailureDiagnostic::from_error(&io::Error::other(host_key))
+                .needs_attention()
+        );
+        for error in [
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "matching Shepr is not ready; install or update",
+            ),
+            io::Error::new(io::ErrorKind::InvalidData, "handshake rejected"),
         ] {
-            assert!(
-                super::super::SshFailureDiagnostic::from_error(&io::Error::other(message))
-                    .needs_attention()
-            );
+            assert!(super::super::SshFailureDiagnostic::from_error(&error).needs_attention());
         }
         assert!(
             !super::super::SshFailureDiagnostic::from_error(&io::Error::new(

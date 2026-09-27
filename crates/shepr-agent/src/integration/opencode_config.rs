@@ -334,6 +334,8 @@ mod tests {
             return;
         }
 
+        // The child inherits this isolated HOME and XDG state for its lock.
+        let _env = shepr_test_support::IsolatedEnv::new();
         let dir = unique_dir();
         let path = dir.join("cli.json");
         let original = r#"{"theme":{"name":"catppuccin"},"plugins":["example"]}"#;
@@ -363,14 +365,13 @@ mod tests {
             actual, original,
             "failed registration must preserve preferences"
         );
-        assert_eq!(
-            remaining_files, 2,
-            "only the config and persistent update lock should remain"
-        );
+        // The update lock lives under the XDG state directory, not beside the config.
+        assert_eq!(remaining_files, 1, "only the config should remain");
     }
 
     #[test]
     fn add_and_remove_tui_plugin_preserves_jsonc_config() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let dir = unique_dir();
         let config_path = dir.join(TUI_CONFIG_NAME);
         fs::write(
@@ -418,6 +419,7 @@ mod tests {
 
     #[test]
     fn managed_jsonc_leaves_opencode_migration_target_absent() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let dir = unique_dir();
         let legacy_config_path = dir.join("opencode.json");
         let legacy_config = "{\n  \"theme\": \"system\"\n}\n";
@@ -441,6 +443,7 @@ mod tests {
 
     #[test]
     fn remove_tui_plugin_leaves_empty_managed_config() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let dir = unique_dir();
         let config_path = add_tui_plugin(&dir, "./shepr-tui-state.js").expect("test precondition");
 
@@ -473,6 +476,7 @@ mod tests {
 
     #[test]
     fn configured_tui_plugin_accepts_option_tuple() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let dir = unique_dir();
         fs::write(
             dir.join(TUI_CONFIG_NAME),
@@ -491,6 +495,7 @@ mod tests {
 
     #[test]
     fn cli_registration_preserves_options_and_other_preferences() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let dir = unique_dir();
         let state = unique_dir();
         let path = dir.join("cli.json");
@@ -520,6 +525,7 @@ mod tests {
 
     #[test]
     fn cli_registration_creates_missing_config_when_no_migration_pending() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let dir = unique_dir();
         let state = unique_dir();
         let path = add_cli_plugin(&dir, &state, "./shepr-opencode")
@@ -537,6 +543,7 @@ mod tests {
 
     #[test]
     fn cli_registration_defers_while_migration_pending() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let dir = unique_dir();
         let state = unique_dir();
         fs::write(dir.join("tui.json"), "{}").expect("test precondition");

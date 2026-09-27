@@ -37,6 +37,7 @@ pub enum ResponseResult {
     Pong {
         version: String,
         protocol: u32,
+        build_id: String,
         capabilities: Option<ServerCapabilities>,
     },
     SessionSnapshot {

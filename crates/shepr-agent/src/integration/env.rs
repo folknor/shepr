@@ -84,7 +84,9 @@ impl AgentIntegrationPaths {
     }
 }
 
-fn absolute_xdg_home(variable: &str) -> Option<PathBuf> {
+/// An XDG base directory variable, honoured only when it is an absolute path;
+/// unset, empty or relative values mean the spec's default, as in shepr-config.
+pub(super) fn absolute_xdg_home(variable: &str) -> Option<PathBuf> {
     let path = std::env::var_os(variable).map(PathBuf::from)?;
     path.is_absolute().then_some(path)
 }

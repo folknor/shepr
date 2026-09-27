@@ -144,13 +144,13 @@ impl From<SessionError> for String {
 }
 
 pub fn restart_after_update_guidance(stop_command: &str, attach_command: Option<&str>) -> String {
+    // A build mismatch can only be cleared by stopping the server, and the
+    // correct command depends on the active session and socket overrides.
     let restart = match attach_command {
         Some(command) => format!("Run `{stop_command}`, then run `{command}` again."),
         None => format!("Run `{stop_command}`, then restart Shepr with the same socket override."),
     };
-    format!(
-        "Stop the old server to use the new version.\nStopping exits pane processes.\n{restart}"
-    )
+    format!("Stop the running server to use this build.\nStopping exits pane processes.\n{restart}")
 }
 
 pub fn restart_after_update_guidance_for(paths: &shepr_config::AppPaths) -> String {
@@ -794,7 +794,7 @@ mod tests {
                 "shepr session stop work",
                 Some("shepr session attach work")
             ),
-            "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `shepr session stop work`, then run `shepr session attach work` again."
+            "Stop the running server to use this build.\nStopping exits pane processes.\nRun `shepr session stop work`, then run `shepr session attach work` again."
         );
     }
 
@@ -806,7 +806,7 @@ mod tests {
 
         assert_eq!(
             restart_after_update_guidance_for(&paths),
-            "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `SHEPR_SESSION=default SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr server stop`, then run `SHEPR_SESSION=default SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr` again."
+            "Stop the running server to use this build.\nStopping exits pane processes.\nRun `SHEPR_SESSION=default SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr server stop`, then run `SHEPR_SESSION=default SHEPR_SOCKET_PATH=/tmp/custom-shepr.sock shepr` again."
         );
     }
 
@@ -822,7 +822,7 @@ mod tests {
 
         assert_eq!(
             restart_after_update_guidance_for(&paths),
-            "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `SHEPR_SESSION=work SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr server stop`, then run `SHEPR_SESSION=work SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr` again."
+            "Stop the running server to use this build.\nStopping exits pane processes.\nRun `SHEPR_SESSION=work SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr server stop`, then run `SHEPR_SESSION=work SHEPR_CLIENT_SOCKET_PATH=/tmp/work-client.sock shepr` again."
         );
     }
 

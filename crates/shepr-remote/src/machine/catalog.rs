@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::io::{self, Read as _, Write as _};
-use std::os::fd::AsRawFd as _;
-use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -185,6 +184,9 @@ impl EndpointCatalog {
         Ok(id)
     }
 
+    /// Removes a profile from this in-memory catalog. The command that persists the
+    /// removal also invalidates its profile-scoped SSH metadata; this value does not
+    /// own application paths and cannot remove that file itself.
     pub fn remove_ssh(&mut self, id: &ProfileId) -> bool {
         let previous_len = self.ssh.len();
         self.ssh.retain(|profile| &profile.id != id);
@@ -356,6 +358,8 @@ impl EndpointCatalogWatch {
 /// What a catalog change means for connections: which saved machines stop being
 /// supervised and which start. A machine whose target or session changed is both retired
 /// and started, because its connector, bridge and remote server belong to the old target.
+/// Although the CLI exposes only add and remove, the watcher can read a valid catalog
+/// replacement with a re-pointed profile, so this keeps the active connector in sync.
 /// A label change is neither.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct EndpointCatalogChanges {
@@ -398,49 +402,18 @@ impl EndpointCatalog {
 
 /// Locks the catalog's persistent sidecar across its read, merge, and atomic write.
 /// The lock file remains beside the catalog so all writers always lock the same inode.
-fn acquire_catalog_update_lock(catalog_path: &Path) -> Result<std::fs::File, String> {
-    let parent = catalog_path
+fn acquire_catalog_update_lock(
+    catalog_path: &Path,
+) -> Result<shepr_platform::ipc::FlockLock, String> {
+    let _parent = catalog_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .ok_or_else(|| format!("invalid endpoint catalog path: {}", catalog_path.display()))?;
-    std::fs::create_dir_all(parent)
-        .map_err(|error| format!("failed to create endpoint catalog directory: {error}"))?;
-
     let mut lock_name = catalog_path.as_os_str().to_os_string();
     lock_name.push(".lock");
     let lock_path = PathBuf::from(lock_name);
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(&lock_path)
-        .map_err(|error| format!("failed to open endpoint catalog lock: {error}"))?;
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("failed to inspect endpoint catalog lock: {error}"))?;
-    // SAFETY: geteuid takes no pointers and only returns the caller's effective user id.
-    let effective_uid = unsafe { libc::geteuid() };
-    if !metadata.is_file() || metadata.uid() != effective_uid {
-        return Err("endpoint catalog lock must be a regular file owned by this user".into());
-    }
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))
-        .map_err(|error| format!("failed to secure endpoint catalog lock: {error}"))?;
-
-    loop {
-        // SAFETY: flock uses only the open descriptor owned by file.
-        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-        if result == 0 {
-            return Ok(file);
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::Interrupted {
-            continue;
-        }
-        return Err(format!("failed to lock endpoint catalog: {error}"));
-    }
+    shepr_platform::ipc::acquire_flock_lock(&lock_path, true)
+        .map_err(|error| format!("failed to lock endpoint catalog: {error}"))
 }
 
 fn load_selection_from_path(path: &Path) -> Result<Option<EndpointSelection>, String> {

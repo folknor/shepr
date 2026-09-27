@@ -36,7 +36,7 @@ lints_workspace_required = true
 [[dependency_rule]]
 name = "shepr-core-layer"
 from = "shepr-core"
-allow = ["ratatui", "serde", "unicode-width"]
+allow = ["ratatui", "serde"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -48,7 +48,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-vt-layer"
 from = "shepr-vt"
-allow = ["alacritty_terminal", "serde", "shepr-core", "tracing", "unicode-segmentation", "unicode-width"]
+allow = ["alacritty_terminal", "serde", "shepr-core", "unicode-width"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -96,7 +96,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-termio-layer"
 from = "shepr-termio"
-allow = ["base64", "crossterm", "ratatui", "serde", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-vt", "toml", "tracing", "unicode-width"]
+allow = ["base64", "crossterm", "ratatui", "serde", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-vt", "tracing", "unicode-width"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -108,13 +108,13 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-client-layer"
 from = "shepr-client"
-allow = ["base64", "crossterm", "ctrlc", "interprocess", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-remote", "shepr-termio", "shepr-vt", "time", "tokio", "toml", "tracing", "unicode-segmentation", "unicode-width"]
+allow = ["base64", "crossterm", "ctrlc", "interprocess", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-remote", "shepr-termio", "shepr-vt", "tokio", "toml", "tracing", "unicode-segmentation", "unicode-width"]
 kinds = ["normal"]
 
 [[dependency_rule]]
 name = "shepr-mux-layer"
 from = "shepr-mux"
-allow = ["bytes", "crossterm", "libc", "ratatui", "regex", "serde", "serde_json", "sha2", "shepr-agent", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-termio", "shepr-vt", "tokio", "tracing", "unicode-width"]
+allow = ["bytes", "crossterm", "ratatui", "regex", "serde", "serde_json", "sha2", "shepr-agent", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-termio", "shepr-vt", "tokio", "tracing", "unicode-width"]
 kinds = ["normal"]
 
 [[dependency_rule]]

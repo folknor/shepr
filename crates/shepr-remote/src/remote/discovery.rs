@@ -95,11 +95,8 @@ impl DiscoverySteps for SshDiscovery<'_> {
                 };
                 // This command reports the candidate binary's identity. Reject a
                 // different build here instead of accepting it and failing later
-                // during the server bridge's protocol preamble.
-                let expected_version = shepr_protocol::build_version();
-                if status.version.as_deref() == Some(expected_version.as_str())
-                    && status.protocol == Some(shepr_protocol::PROTOCOL_VERSION)
-                {
+                // during the server bridge's build-identity preamble.
+                if status.build_id.as_deref() == Some(shepr_protocol::BUILD_ID) {
                     Ok(true)
                 } else {
                     Err(remote_compatibility_error(self.target(), &status))
@@ -437,7 +434,7 @@ pub(super) struct RemoteClientStatusJson {
     #[serde(default)]
     pub(super) version: Option<String>,
     #[serde(default)]
-    pub(super) protocol: Option<u32>,
+    pub(super) build_id: Option<String>,
 }
 
 pub(super) fn parse_client_status_json(status: &str) -> Option<RemoteClientStatusJson> {
@@ -446,25 +443,24 @@ pub(super) fn parse_client_status_json(status: &str) -> Option<RemoteClientStatu
         .rev()
         .filter(|line| !line.trim().is_empty())
         .filter_map(|line| serde_json::from_str::<RemoteClientStatusJson>(line).ok())
-        .find(|status| status.version.is_some() || status.protocol.is_some())
+        .find(|status| status.version.is_some() || status.build_id.is_some())
 }
 
 fn remote_compatibility_error(target: &str, status: &RemoteClientStatusJson) -> io::Error {
-    let version = status
-        .version
-        .as_deref()
-        .filter(|version| version.chars().all(|ch| ch.is_ascii_graphic()))
-        .unwrap_or("unknown");
-    let protocol = status
-        .protocol
-        .map(|protocol| protocol.to_string())
-        .unwrap_or_else(|| "unknown".to_owned());
+    let printable = |value: Option<&str>| {
+        value
+            .filter(|value| value.chars().all(|ch| ch.is_ascii_graphic()))
+            .unwrap_or("unknown")
+            .to_owned()
+    };
+    let version = printable(status.version.as_deref());
+    let build_id = printable(status.build_id.as_deref());
     io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
-            "remote Shepr compatibility error on {target}: found version {version} and protocol {protocol}; this client requires version {} and protocol {}. Install the same Shepr build on the remote host and retry",
+            "remote Shepr compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. Install the same Shepr build on the remote host and retry",
             shepr_protocol::build_version(),
-            shepr_protocol::PROTOCOL_VERSION
+            shepr_protocol::BUILD_ID
         ),
     )
 }

@@ -15,24 +15,9 @@ Hunter coverage: all of `crates/shepr-remote` plus the platform code it lands in
 
 Managed SSH config creation is a hard error and never falls back to plain ssh, and a saved connector now retries a failed setup on its next attempt. But `SavedSshConnector::new` is infallible, so a setup error that would fail on every attempt (for example an over-long `XDG_RUNTIME_DIR`) reaches the client only on the first connection attempt instead of failing the client launch. Making it launch-fatal needs the client's endpoint supervisor to surface it.
 
-## RMT-006 - SSH failure classification is plain substring matching
-
-`lib.rs::classify_ssh_diagnostic`.
-- Any "permission denied" without an auth method, and any "not ready", becomes `Compatibility` (needs attention). That includes such text from remote command stderr or a login banner.
-- Exit code 255 from the *remote command* is treated as an SSH link failure (`from_ssh_output`, `is_link_failure`). That keeps a stale remembered executable and discovery progress instead of rediscovering.
-- Errors re-wrapped with `format!` in `bridge.rs` ("remote bridge upload failed: {err}") lose the typed diagnostic and get classified again from text.
-- A structured failure type carried end to end would replace this.
-
 ## RMT-007 - prepare_saved_ssh could hang (unverified)
 
 `prepare_saved_ssh` (`launch.rs`) runs `exec shepr remote-client-bridge </dev/null` over *interactive* `sh_output`, which has no timeout, with the idle watchdog off. It returns only if the remote server closes a client connection that half-closes before its handshake. If the server instead waits for a handshake with no timeout, `machine add`'s prepare step hangs. The hunter did not check the server side.
-
-## RMT-008 - Bridge-level smells
-
-`remote/bridge.rs`:
-- The accept thread runs `bridge_connection` inline and then keeps accepting. Any later connect by the same user to that socket starts a fresh ssh.
-- `reported_failure` always blocks up to 1s even when nothing failed.
-- The failure channel is `sync_channel(1)` with `try_send`, so a failure left over from an earlier connection on the same bridge can be reported for a later one.
 
 ## RMT-009 - Remote-host server probing is loose
 
@@ -41,19 +26,18 @@ Managed SSH config creation is a hard error and never falls back to plain ssh, a
 - Every probe opens and drops a real client connection, which the server has to time out.
 - Structurally, `autodetect` (local server launch) does not belong in `shepr-remote`. It belongs with the client or binary.
 
-## RMT-010 - Smaller remote items
+## RMT-017 - Two remote paths skip the build-id check
 
-- `remove_ssh` never deletes `state/client/ssh-metadata/<id>.json`, so those files pile up.
-- `EndpointCatalogChanges` has retire-and-restart handling for a changed target/session, but the documented add/remove-only machine commands can never produce that change.
-- `SavedSshApiBridge::start` writes a temporary ssh config dir even when it uses cached metadata.
-- `wait_with_output_timeout` captures remote stdout/stderr with no size limit.
-- `SavedSshConnector::connect` keeps an unreachable "saved SSH transport is unavailable" branch after the lazy setup; `xdg_runtime_dir()` in `remote/ssh.rs` is now a trivial `Ok` wrapper.
-
-## RMT-017 - Two remote paths still skip the build check, and the flock checks are duplicated
-
-- The API-forwarding discovery probe (`remote_api_forwarding_supported`, `remote-api-bridge --check`) does not compare the remote build identity; only the status probe does.
+Autodetect, the discovery status probe and remote daemon startup now compare the exact build id. Two paths still skip it:
+- The API-forwarding discovery probe (`remote_api_forwarding_supported`, `remote-api-bridge --check`) does not compare build identity at all.
 - Saved connector attempts through `remote/host.rs` check that the remote server socket is listening but do not preflight the running daemon's build, so a stale daemon is caught only by the bridge handshake.
-- `machine/catalog.rs` (`acquire_catalog_update_lock`, blocking flock) repeats the open, ownership, mode and flock work of `shepr_platform::ipc::acquire_socket_startup_lock` (non-blocking). One platform helper taking a sidecar path and a blocking flag, returning a guard, could serve both, and the agent config-edit lock too.
+
+## RMT-018 - Bridge and capture smells
+
+- `remote/bridge.rs` `reported_failure` holds the failure-receiver mutex across its 1 s `recv_timeout`, so the accept thread can wait up to a second when it discards a stale failure. No deadlock; CLI use is serial.
+- Remote SSH stdout capture is capped at 1 MiB keeping the first bytes, so a login banner over 1 MiB would push out the trailing status JSON; keep the tail instead, or cap only stderr.
+- `machine/catalog.rs` `acquire_catalog_update_lock` binds an unused `_parent` only to validate the path.
+- `PROTOCOL_VERSION` and the `protocol` fields in Pong, `RuntimeStatus`, session info and status output are now informational only; nothing compares them. Removing them is a schema-wide cleanup.
 
 ## RMT-011 - Idle saved machines may drop every minute without a keepalive (unverified)
 

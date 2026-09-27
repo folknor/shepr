@@ -34,7 +34,9 @@ pub use host::{
     take_terminal_resize_signal, terminal_grid_size, watch_terminal_resize_signal,
 };
 pub use private_file::{create_private_file, sync_directory};
-pub use process::{ProcessHandle, Signal, session_member_handles, wait_for_process_exits};
+pub use process::{
+    ProcessHandle, Signal, reap_pidfd, session_member_handles, wait_for_process_exits,
+};
 pub use remote_bridge_io::{RemoteBridgeWake, forward_remote_bridge_stdio};
 pub use shutdown::HostShutdownMonitor;
 pub use ssh_paths::fits_unix_socket_path;

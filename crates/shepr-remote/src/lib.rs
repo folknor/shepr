@@ -54,7 +54,8 @@ pub enum SshFailure {
 }
 
 /// A connection failure with its diagnostic class kept alongside its text.
-/// Remote command output, IO errors and endpoint events all use this classifier.
+/// Text classification is reserved for the SSH process boundary; errors and
+/// endpoint events carry this value after that point.
 #[derive(Clone, Debug)]
 pub struct SshFailureDiagnostic {
     failure: SshFailure,
@@ -91,16 +92,13 @@ impl SshFailureDiagnostic {
             return failure.clone();
         }
         let message = error.to_string();
-        let mut failure = classify_ssh_diagnostic(&message);
-        if failure == SshFailure::Other {
-            failure = if is_ssh_link_error_kind(error.kind()) {
-                SshFailure::Link
-            } else if is_attention_error_kind(error.kind()) {
-                SshFailure::Compatibility
-            } else {
-                SshFailure::Other
-            };
-        }
+        let failure = if is_ssh_link_error_kind(error.kind()) {
+            SshFailure::Link
+        } else if is_attention_error_kind(error.kind()) {
+            SshFailure::Compatibility
+        } else {
+            SshFailure::Other
+        };
         Self {
             failure,
             origin: SshFailureOrigin::Io(error.kind()),
@@ -110,24 +108,41 @@ impl SshFailureDiagnostic {
 
     pub fn from_message(message: impl Into<String>) -> Self {
         let message = message.into();
-        let failure = classify_ssh_diagnostic(&message);
         Self {
-            failure,
+            failure: SshFailure::Other,
             origin: SshFailureOrigin::Message,
             message,
         }
     }
 
     pub fn from_ssh_output(exit_code: Option<i32>, message: String) -> Self {
-        let mut failure = classify_ssh_diagnostic(&message);
-        if failure == SshFailure::Other && exit_code == Some(SSH_OWN_FAILURE_EXIT_CODE) {
-            failure = SshFailure::Link;
-        }
+        let failure = if exit_code == Some(STALE_API_METADATA_EXIT_CODE)
+            && message.contains(STALE_API_METADATA)
+        {
+            SshFailure::StaleMetadata
+        } else if exit_code == Some(SSH_OWN_FAILURE_EXIT_CODE) {
+            match classify_ssh_diagnostic(&message) {
+                SshFailure::Other => SshFailure::Link,
+                failure => failure,
+            }
+        } else {
+            SshFailure::Other
+        };
         Self {
             failure,
             origin: SshFailureOrigin::SshOutput(exit_code),
             message,
         }
+    }
+
+    pub fn failure(&self) -> SshFailure {
+        self.failure
+    }
+
+    /// Adds display context while retaining this diagnostic's structured class.
+    pub fn with_context(mut self, context: impl Into<String>) -> Self {
+        self.message = format!("{}: {}", context.into(), self.message);
+        self
     }
 
     pub fn requires_authentication(&self) -> bool {
@@ -179,6 +194,10 @@ impl std::ops::Deref for SshFailureDiagnostic {
 }
 
 fn classify_ssh_diagnostic(message: &str) -> SshFailure {
+    // OpenSSH has no structured stderr format. Only the SSH-output constructor
+    // uses these narrow signatures, and only for ssh's own exit 255; generic
+    // errors and remote command output are classified by their typed source or
+    // exit status.
     let message = message.to_ascii_lowercase();
     if message.contains("host key verification failed")
         || message.contains("remote host identification has changed")
@@ -194,22 +213,6 @@ fn classify_ssh_diagnostic(message: &str) -> SshFailure {
             && (message.contains("sign_and_send_pubkey") || message.contains("agent")))
     {
         return SshFailure::Authentication;
-    }
-    if message.contains(STALE_API_METADATA) {
-        return SshFailure::StaleMetadata;
-    }
-    if [
-        "permission denied",
-        "unsupported remote platform",
-        "not ready",
-        "install or update",
-        // A generic handshake can end during a transient restart; only a rejection needs attention.
-        "handshake rejected",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
-    {
-        return SshFailure::Compatibility;
     }
     SshFailure::Other
 }
@@ -285,10 +288,6 @@ fn is_remote_auth_error(err: &std::io::Error) -> bool {
     SshFailureDiagnostic::from_error(err).requires_authentication()
 }
 
-pub fn ssh_error_requires_authentication(message: &str) -> bool {
-    SshFailureDiagnostic::from_message(message).requires_authentication()
-}
-
 fn ssh_check_command(target: &str) -> String {
     format!("ssh {}", shell_quote(target))
 }
@@ -303,7 +302,11 @@ mod tests {
             "Host key verification failed.",
             "REMOTE HOST IDENTIFICATION HAS CHANGED!",
         ] {
-            assert!(is_remote_host_key_error(&std::io::Error::other(message)));
+            let failure = SshFailureDiagnostic::from_ssh_output(
+                Some(SSH_OWN_FAILURE_EXIT_CODE),
+                message.into(),
+            );
+            assert!(is_remote_host_key_error(&std::io::Error::other(failure)));
         }
         assert!(!is_remote_host_key_error(&std::io::Error::other(
             "server closed connection"
@@ -312,18 +315,23 @@ mod tests {
 
     #[test]
     fn remote_auth_error_matches_ssh_auth_denied() {
-        let err = std::io::Error::other(
-            "remote platform detection failed: user@host: Permission denied (publickey).",
+        let diagnostic = SshFailureDiagnostic::from_ssh_output(
+            Some(SSH_OWN_FAILURE_EXIT_CODE),
+            "remote platform detection failed: user@host: Permission denied (publickey).".into(),
         );
+        let err = std::io::Error::other(diagnostic);
 
         assert!(is_remote_auth_error(&err));
     }
 
     #[test]
     fn remote_auth_error_matches_keyboard_interactive_denied() {
-        let err = std::io::Error::other(
-            "remote server status failed: user@host: Permission denied (keyboard-interactive).",
+        let diagnostic = SshFailureDiagnostic::from_ssh_output(
+            Some(SSH_OWN_FAILURE_EXIT_CODE),
+            "remote server status failed: user@host: Permission denied (keyboard-interactive)."
+                .into(),
         );
+        let err = std::io::Error::other(diagnostic);
 
         assert!(is_remote_auth_error(&err));
     }
@@ -337,17 +345,23 @@ mod tests {
 
     #[test]
     fn remote_auth_error_matches_case_insensitive_signing_failures() {
-        let err = std::io::Error::other(
-            "SIGN_AND_SEND_PUBKEY: SIGNING FAILED for ED25519 from agent: agent refused operation",
+        let diagnostic = SshFailureDiagnostic::from_ssh_output(
+            Some(SSH_OWN_FAILURE_EXIT_CODE),
+            "SIGN_AND_SEND_PUBKEY: SIGNING FAILED for ED25519 from agent: agent refused operation"
+                .into(),
         );
+        let err = std::io::Error::other(diagnostic);
 
         assert!(is_remote_auth_error(&err));
     }
 
     #[test]
     fn remote_auth_error_does_not_treat_host_key_errors_as_authentication() {
-        let err =
-            std::io::Error::other("Permission denied (publickey). Host key verification failed.");
+        let diagnostic = SshFailureDiagnostic::from_ssh_output(
+            Some(SSH_OWN_FAILURE_EXIT_CODE),
+            "Permission denied (publickey). Host key verification failed.".into(),
+        );
+        let err = std::io::Error::other(diagnostic);
 
         assert!(!is_remote_auth_error(&err));
     }

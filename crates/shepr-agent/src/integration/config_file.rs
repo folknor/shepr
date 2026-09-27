@@ -2,8 +2,6 @@
 
 use std::fs::{self, OpenOptions};
 use std::io;
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -12,11 +10,9 @@ mod tests;
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-/// Holds the persistent sidecar lock for one user-owned config file.
+/// Holds the persistent lock for one user-owned config file.
 pub(super) struct ConfigUpdateLock {
-    /// `None` when the config's directory does not exist: there is nothing to
-    /// edit, and creating the directory only for a lock would leave debris.
-    _file: Option<std::fs::File>,
+    _lock: shepr_platform::ipc::FlockLock,
 }
 
 /// Serializes Shepr's read-modify-write of a user config across processes.
@@ -25,41 +21,67 @@ pub(super) struct ConfigUpdateLock {
 pub(super) fn lock_config_for_update(path: &Path) -> io::Result<ConfigUpdateLock> {
     check_config_target(path)?;
     let target = resolve_target(path)?;
-    if target.parent().is_some_and(|parent| !parent.is_dir()) {
-        return Ok(ConfigUpdateLock { _file: None });
-    }
-    let mut lock_name = target.as_os_str().to_os_string();
-    lock_name.push(".lock");
-    let lock_path = PathBuf::from(lock_name);
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(&lock_path)?;
-    let metadata = file.metadata()?;
-    // SAFETY: geteuid takes no pointers and only returns the caller's effective user id.
-    let effective_uid = unsafe { libc::geteuid() };
-    if !metadata.is_file() || metadata.uid() != effective_uid {
-        return Err(io::Error::other(
-            "integration config lock must be a regular file owned by this user",
-        ));
-    }
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    let lock_path = config_update_lock_path(&target)?;
+    // No lock means no edit: a lock directory that cannot be created or a
+    // lock that cannot be taken fails the change instead of editing unlocked.
+    let lock = shepr_platform::ipc::acquire_flock_lock(&lock_path, true).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "could not lock {} for editing ({}): {error}",
+                target.display(),
+                lock_path.display()
+            ),
+        )
+    })?;
+    Ok(ConfigUpdateLock { _lock: lock })
+}
 
+fn config_update_lock_path(target: &Path) -> io::Result<PathBuf> {
+    // State storage keeps the lock identity stable across logins, so editors
+    // running in separate sessions still serialize on the same inode.
+    let state_home = match super::env::absolute_xdg_home("XDG_STATE_HOME") {
+        Some(path) => path,
+        None => super::env::home_dir()?.join(".local/state"),
+    };
+    let lock_dir = state_home.join("shepr").join("integration-locks");
+    // Resolve an existing target or parent so two symlinked agent config
+    // directories still key the same persistent lock file.
+    let key = canonicalize_config_target(target)?;
+    Ok(shepr_platform::ipc::keyed_lock_path(&lock_dir, &key))
+}
+
+/// Resolves existing ancestors while allowing the target or its parent to be
+/// absent before the first integration install.
+fn canonicalize_config_target(target: &Path) -> io::Result<PathBuf> {
+    let mut current = target;
+    let mut missing = Vec::new();
     loop {
-        // SAFETY: flock uses only the open descriptor owned by file.
-        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
-        if result == 0 {
-            return Ok(ConfigUpdateLock { _file: Some(file) });
+        match fs::canonicalize(current) {
+            Ok(mut canonical) => {
+                for component in missing.iter().rev() {
+                    canonical.push(component);
+                }
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let Some(file_name) = current.file_name() else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "integration config target has no file name",
+                    ));
+                };
+                missing.push(PathBuf::from(file_name));
+                current = match current
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                {
+                    Some(parent) => parent,
+                    None => Path::new("."),
+                };
+            }
+            Err(error) => return Err(error),
         }
-        let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::Interrupted {
-            continue;
-        }
-        return Err(error);
     }
 }
 

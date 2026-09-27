@@ -1,6 +1,9 @@
 use super::*;
 
-use super::process::{PIPE_DRAIN_GRACE, PipeCapture, PipeEcho, wait_with_output_timeout};
+use super::process::{
+    PIPE_DRAIN_GRACE, PipeCapture, PipeEcho, SSH_STDERR_CAPTURE_LIMIT, SSH_STDOUT_CAPTURE_LIMIT,
+    wait_with_output_timeout,
+};
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -9,13 +12,7 @@ use std::sync::{Arc, atomic::Ordering};
 use std::time::{Duration, Instant};
 
 pub(super) const NONINTERACTIVE_SSH_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
-pub(super) const NONINTERACTIVE_SSH_STDERR_LIMIT: usize = 16 * 1024;
-
-/// Return the XDG runtime root stored with the resolved application paths.
-/// SSH setup must not infer it from the application-scoped runtime directory.
-pub(super) fn xdg_runtime_dir(paths: &shepr_config::AppPaths) -> io::Result<&Path> {
-    Ok(paths.xdg_runtime_dir())
-}
+pub(super) const NONINTERACTIVE_SSH_STDERR_LIMIT: usize = SSH_STDERR_CAPTURE_LIMIT;
 
 #[derive(Clone)]
 pub(crate) struct ManagedSshOptions {
@@ -383,9 +380,14 @@ pub(super) fn output_with_forwarded_stderr(
         .stderr
         .take()
         .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "ssh command stderr missing"))?;
+    let child_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "ssh command stdout missing"))?;
     // A ControlPersist master forked by this command may keep stderr open after the
     // command exits; the capture stops waiting for it shortly after the exit.
-    let stderr_relay = PipeCapture::spawn(child_stderr, usize::MAX, PipeEcho::Stderr);
+    let stdout_capture = PipeCapture::spawn(child_stdout, SSH_STDOUT_CAPTURE_LIMIT, PipeEcho::None);
+    let stderr_relay = PipeCapture::spawn(child_stderr, SSH_STDERR_CAPTURE_LIMIT, PipeEcho::Stderr);
 
     let write_result = if let Some(bytes) = stdin {
         if let Some(mut child_stdin) = child.stdin.take() {
@@ -399,15 +401,20 @@ pub(super) fn output_with_forwarded_stderr(
     } else {
         Ok(())
     };
-    // Stdout is read to its end: OpenSSH points a daemonized master's stdin and stdout
-    // at /dev/null; only its stderr handling has varied between releases.
-    let output_result = child.wait_with_output();
+    // OpenSSH points a daemonized master's stdin and stdout at /dev/null; only its
+    // stderr handling has varied between releases. Reader threads drain both pipes
+    // while retaining bounded output.
+    let status_result = child.wait();
+    let stdout_result = stdout_capture.finish(PIPE_DRAIN_GRACE);
     let stderr_result = stderr_relay.finish(PIPE_DRAIN_GRACE);
 
-    let mut output = output_result?;
+    let status = status_result?;
     write_result?;
-    output.stderr = stderr_result?;
-    Ok(output)
+    Ok(Output {
+        status,
+        stdout: stdout_result?,
+        stderr: stderr_result?,
+    })
 }
 
 pub(super) fn normalize_remote_output(mut output: Output) -> io::Result<Output> {

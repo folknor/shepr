@@ -8,7 +8,7 @@
 //! record before any frame:
 //!
 //! ```text
-//! [8 bytes magic "SHEPRBID"][u32 LE PROTOCOL_VERSION][16 bytes BUILD_ID, ASCII]
+//! [8 bytes magic "SHEPRBID"][16 bytes BUILD_ID, ASCII]
 //! ```
 //!
 //! The layout never depends on the codec, so any two builds can read each
@@ -25,15 +25,12 @@ use std::io::{self, Read, Write};
 pub const PREAMBLE_MAGIC: [u8; 8] = *b"SHEPRBID";
 
 const BUILD_ID_BYTES: usize = 16;
-const VERSION_BYTES: usize = 4;
-
 /// Total preamble length in bytes.
-pub const PREAMBLE_LEN: usize = PREAMBLE_MAGIC.len() + VERSION_BYTES + BUILD_ID_BYTES;
+pub const PREAMBLE_LEN: usize = PREAMBLE_MAGIC.len() + BUILD_ID_BYTES;
 
 /// The build identity a peer announced in its preamble.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerBuild {
-    pub protocol_version: u32,
     pub build_id: String,
 }
 
@@ -57,15 +54,13 @@ impl std::fmt::Display for PreambleError {
             Self::UnexpectedEof => f.write_str("connection closed during the build-identity exchange"),
             Self::Io(error) => write!(f, "build-identity exchange failed: {error}"),
             Self::NotShepr => f.write_str(
-                "peer did not open with the shepr build-identity preamble; it is not a shepr endpoint of a compatible build",
+                "peer did not open with the shepr build-identity preamble; it is not a shepr endpoint or predates this preamble",
             ),
             Self::DifferentBuild(peer) => write!(
                 f,
-                "protocol mismatch: peer is a different shepr build (build {}, protocol {}); this is build {} (protocol {}). Install the same shepr build on both sides and restart the server",
+                "build mismatch: peer is a different shepr build (build {}); this is build {}. Install the same shepr build on both sides and restart the server",
                 peer.build_id,
-                peer.protocol_version,
                 super::limits::BUILD_ID,
-                super::PROTOCOL_VERSION,
             ),
         }
     }
@@ -82,15 +77,13 @@ impl std::error::Error for PreambleError {
 
 /// This build's preamble.
 pub fn local_preamble() -> [u8; PREAMBLE_LEN] {
-    encode(super::PROTOCOL_VERSION, super::limits::BUILD_ID)
+    encode(super::limits::BUILD_ID)
 }
 
-fn encode(protocol_version: u32, build_id: &str) -> [u8; PREAMBLE_LEN] {
+fn encode(build_id: &str) -> [u8; PREAMBLE_LEN] {
     let mut preamble = [0u8; PREAMBLE_LEN];
-    let (magic, rest) = preamble.split_at_mut(PREAMBLE_MAGIC.len());
+    let (magic, id) = preamble.split_at_mut(PREAMBLE_MAGIC.len());
     magic.copy_from_slice(&PREAMBLE_MAGIC);
-    let (version, id) = rest.split_at_mut(VERSION_BYTES);
-    version.copy_from_slice(&protocol_version.to_le_bytes());
     // `BUILD_ID` is 16 hex digits (`build.rs`); anything shorter is padded
     // with zeros and anything longer truncated, so the record stays fixed.
     for (slot, byte) in id.iter_mut().zip(build_id.bytes()) {
@@ -119,16 +112,13 @@ pub fn read_preamble<R: Read>(reader: &mut R) -> Result<(), PreambleError> {
 }
 
 fn check(received: &[u8; PREAMBLE_LEN]) -> Result<(), PreambleError> {
-    let (magic, rest) = received.split_at(PREAMBLE_MAGIC.len());
+    let (magic, id) = received.split_at(PREAMBLE_MAGIC.len());
     if magic != PREAMBLE_MAGIC {
         return Err(PreambleError::NotShepr);
     }
     if *received == local_preamble() {
         return Ok(());
     }
-    let (version, id) = rest.split_at(VERSION_BYTES);
-    let mut version_bytes = [0u8; VERSION_BYTES];
-    version_bytes.copy_from_slice(version);
     let build_id = id
         .iter()
         .take_while(|byte| **byte != 0)
@@ -140,10 +130,7 @@ fn check(received: &[u8; PREAMBLE_LEN]) -> Result<(), PreambleError> {
             }
         })
         .collect();
-    Err(PreambleError::DifferentBuild(PeerBuild {
-        protocol_version: u32::from_le_bytes(version_bytes),
-        build_id,
-    }))
+    Err(PreambleError::DifferentBuild(PeerBuild { build_id }))
 }
 
 #[cfg(test)]
@@ -159,21 +146,13 @@ mod tests {
     }
 
     #[test]
-    fn protocol_version_leaves_room_for_mismatch_tests() {
-        // Tests build a mismatching peer with `PROTOCOL_VERSION + 1` or `- 1`.
-        let version = std::hint::black_box(super::super::PROTOCOL_VERSION);
-        assert!(version > 0 && version < u32::MAX, "{version}");
-    }
-
-    #[test]
     fn different_build_is_named() {
-        let other = encode(super::super::PROTOCOL_VERSION + 1, "00000000deadbeef");
+        let other = encode("00000000deadbeef");
         match read_preamble(&mut other.as_slice()) {
             Err(PreambleError::DifferentBuild(peer)) => {
                 assert_eq!(peer.build_id, "00000000deadbeef");
-                assert_eq!(peer.protocol_version, super::super::PROTOCOL_VERSION + 1);
                 let message = PreambleError::DifferentBuild(peer).to_string();
-                assert!(message.contains("protocol mismatch"), "{message}");
+                assert!(message.contains("build mismatch"), "{message}");
                 assert!(message.contains("00000000deadbeef"), "{message}");
                 assert!(
                     message.contains(super::super::limits::BUILD_ID),
@@ -185,8 +164,8 @@ mod tests {
     }
 
     #[test]
-    fn same_version_but_different_build_id_is_still_a_mismatch() {
-        let other = encode(super::super::PROTOCOL_VERSION, "ffffffffffffffff");
+    fn different_build_id_is_a_mismatch() {
+        let other = encode("ffffffffffffffff");
         if super::super::limits::BUILD_ID == "ffffffffffffffff" {
             return;
         }

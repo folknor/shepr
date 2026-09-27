@@ -93,20 +93,16 @@ fn validate_running_server_compatibility(paths: &shepr_config::AppPaths) -> io::
         )));
     };
 
-    let compatibility = shepr_protocol::Compatibility::of(status.protocol);
-    if compatibility.is_compatible() {
+    if status.build_id == shepr_protocol::BUILD_ID {
         return Ok(());
     }
 
     Err(io::Error::other(format!(
-        "the running shepr server is a different build; restart it before attaching.\n\nserver: v{} protocol {}\nclient: v{} protocol {}\n\n{}",
+        "the running shepr server is a different build; restart it before attaching.\n\nserver: v{} build {}\nclient: v{} build {}\n\n{}",
         status.version.as_deref().unwrap_or("unknown"),
-        match compatibility {
-            shepr_protocol::Compatibility::DifferentBuild(protocol) => protocol.to_string(),
-            _ => "unavailable".to_string(),
-        },
+        status.build_id,
         shepr_protocol::build_version(),
-        shepr_protocol::PROTOCOL_VERSION,
+        shepr_protocol::BUILD_ID,
         shepr_api::session::restart_after_update_guidance_for(paths)
     )))
 }
@@ -448,7 +444,7 @@ test "$sid" = "$$"
             assert!(request.contains("ping"));
             stream
                 .write_all(
-                    b"{\"id\":\"autodetect:server:status\",\"result\":{\"type\":\"pong\",\"version\":\"0.5.5\",\"protocol\":2}}\n",
+                    b"{\"id\":\"autodetect:server:status\",\"result\":{\"type\":\"pong\",\"version\":\"0.5.5\",\"protocol\":2,\"build_id\":\"0123456789abcdef\"}}\n",
                 )
                 .expect("test precondition");
             stream.flush().expect("test precondition");
@@ -460,6 +456,7 @@ test "$sid" = "$$"
         let _ = handle.join();
         assert_eq!(status.version.as_deref(), Some("0.5.5"));
         assert_eq!(status.protocol, Some(2));
+        assert_eq!(status.build_id, "0123456789abcdef");
     }
 
     #[test]
@@ -478,7 +475,7 @@ test "$sid" = "$$"
     }
 
     #[test]
-    fn validate_running_server_compatibility_names_session_commands_for_protocol_mismatch() {
+    fn validate_running_server_compatibility_names_session_commands_for_build_mismatch() {
         let env = IsolatedEnv::new();
         env.set(shepr_config::SESSION_ENV_VAR, "work");
         let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
@@ -493,9 +490,15 @@ test "$sid" = "$$"
                 .read_line(&mut request)
                 .expect("test precondition");
             assert!(request.contains("ping"));
+            // Same protocol number, different build: only the build id decides.
+            let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
+                "0000000000000000"
+            } else {
+                "ffffffffffffffff"
+            };
             let body = format!(
-                "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"protocol\":{}}}}}\n",
-                shepr_protocol::PROTOCOL_VERSION + 1
+                "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"protocol\":{},\"build_id\":\"{other_build}\"}}}}\n",
+                shepr_protocol::PROTOCOL_VERSION
             );
             stream
                 .write_all(body.as_bytes())
@@ -508,7 +511,7 @@ test "$sid" = "$$"
 
         let _ = handle.join();
         assert!(
-            message.contains("Stop the old server to use the new version"),
+            message.contains("Stop the running server to use this build"),
             "unexpected error: {message}"
         );
         assert!(

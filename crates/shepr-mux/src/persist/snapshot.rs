@@ -547,6 +547,8 @@ impl PendingHistory {
         let carry = self.carry;
         SessionHistorySnapshot {
             version: SNAPSHOT_VERSION,
+            // Live panes keep their allocated IDs across saves. Restore allocates
+            // fresh IDs, but carries each saved history through the ID remap.
             layout_fingerprint: layout_fingerprint(snapshot),
             workspaces: self
                 .workspaces

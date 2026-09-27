@@ -1,11 +1,13 @@
 use std::fs;
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::Stream as _;
+use sha2::{Digest as _, Sha256};
 
 pub type LocalListener = interprocess::local_socket::Listener;
 pub type LocalStream = interprocess::local_socket::Stream;
@@ -42,7 +44,74 @@ pub struct SocketFileIdentity {
 /// has stopped. The regular sidecar file stays beside the socket after the
 /// guard drops so later processes always lock the same inode.
 pub struct SocketStartupLock {
+    _lock: FlockLock,
+}
+
+/// An exclusive advisory lock held for the lifetime of this guard.
+///
+/// The lock file is intentionally left in place after the guard drops. Removing
+/// it could let racing processes lock different inodes at the same path.
+pub struct FlockLock {
     _file: fs::File,
+}
+
+/// Returns a stable lock-file path for `key` inside `lock_dir`.
+///
+/// The SHA-256 digest keeps arbitrary filesystem paths within one filename
+/// component while mapping the same target to the same persistent inode.
+pub fn keyed_lock_path(lock_dir: &Path, key: &Path) -> PathBuf {
+    let digest = Sha256::digest(key.as_os_str().as_bytes());
+    let file_name: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    lock_dir.join(format!("{file_name}.lock"))
+}
+
+/// Opens a private sidecar file and takes an exclusive `flock` on it.
+///
+/// `blocking` selects whether another holder makes this call wait or return
+/// `WouldBlock`. The file remains on disk after the returned guard is dropped
+/// so callers racing on the same path continue to lock the same inode.
+pub fn acquire_flock_lock(lock_path: &Path, blocking: bool) -> io::Result<FlockLock> {
+    if let Some(parent) = lock_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::create_dir_all(parent)?;
+    }
+
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(lock_path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.uid() != super::effective_uid() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "lock must be a regular file owned by this user",
+        ));
+    }
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+
+    let mut operation = libc::LOCK_EX;
+    if !blocking {
+        operation |= libc::LOCK_NB;
+    }
+    loop {
+        // SAFETY: flock(2) uses only the open descriptor owned by `file` and
+        // does not read or write memory through the call.
+        let result = unsafe { libc::flock(file.as_raw_fd(), operation) };
+        if result == 0 {
+            return Ok(FlockLock { _file: file });
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(error);
+    }
 }
 
 /// Acquire the lifetime lock associated with `socket_path`.
@@ -50,49 +119,18 @@ pub struct SocketStartupLock {
 /// The lock file has `.lock` appended to the socket path, so it shares the
 /// socket's parent directory without using any of `sun_path`'s 107 bytes.
 pub fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStartupLock> {
-    if let Some(parent) = socket_path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)?;
-    }
-
     let lock_path = socket_startup_lock_path(socket_path);
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .mode(0o600)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(&lock_path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.uid() != super::effective_uid() {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "socket startup lock must be a regular file owned by this user",
-        ));
-    }
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
-
-    loop {
-        // SAFETY: flock(2) uses only the open descriptor owned by `file` and
-        // does not read or write memory through the call.
-        let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if result == 0 {
-            return Ok(SocketStartupLock { _file: file });
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::Interrupted {
-            continue;
-        }
+    let lock = acquire_flock_lock(&lock_path, false).map_err(|error| {
         if error.kind() == io::ErrorKind::WouldBlock {
-            return Err(io::Error::new(
+            io::Error::new(
                 io::ErrorKind::AddrInUse,
                 format!("server startup lock is held for {}", socket_path.display()),
-            ));
+            )
+        } else {
+            error
         }
-        return Err(error);
-    }
+    })?;
+    Ok(SocketStartupLock { _lock: lock })
 }
 
 fn socket_startup_lock_path(socket_path: &Path) -> PathBuf {
@@ -517,6 +555,38 @@ mod tests {
         shepr_test_support::ScratchDir::new(name)
             .keep_until_exit()
             .join("s.sock")
+    }
+
+    #[test]
+    fn flock_lock_is_private_persistent_and_can_be_nonblocking() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let dir = shepr_test_support::ScratchDir::new("flock-lock");
+        let lock_path = dir.join("locks/resource.lock");
+        let lock = acquire_flock_lock(&lock_path, true).expect("acquire blocking lock");
+        let metadata = fs::metadata(&lock_path).expect("lock file exists");
+        assert!(metadata.is_file());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            metadata.uid(),
+            fs::metadata(dir.path())
+                .expect("scratch directory exists")
+                .uid()
+        );
+        let first_inode = metadata.ino();
+
+        let error = match acquire_flock_lock(&lock_path, false) {
+            Ok(_) => panic!("second nonblocking lock unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        drop(lock);
+
+        let _lock = acquire_flock_lock(&lock_path, true).expect("reacquire blocking lock");
+        assert_eq!(
+            fs::metadata(&lock_path).expect("lock file persists").ino(),
+            first_inode
+        );
     }
 
     #[test]

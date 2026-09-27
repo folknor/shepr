@@ -5,6 +5,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+pub(super) const SSH_STDOUT_CAPTURE_LIMIT: usize = 1024 * 1024;
+pub(super) const SSH_STDERR_CAPTURE_LIMIT: usize = 16 * 1024;
 
 /// How long a pipe reader may keep running after the ssh child has exited.
 ///
@@ -104,8 +106,10 @@ pub(super) fn wait_with_output_timeout(
         .stderr
         .take()
         .ok_or_else(|| io::Error::other("SSH command stderr was not captured"))?;
-    let stdout = PipeCapture::spawn(stdout, usize::MAX, PipeEcho::None);
-    let stderr = PipeCapture::spawn(stderr, usize::MAX, PipeEcho::None);
+    // Discovery and status responses are small. Drain both pipes to avoid a
+    // child blocking, but retain only bounded output from the remote host.
+    let stdout = PipeCapture::spawn(stdout, SSH_STDOUT_CAPTURE_LIMIT, PipeEcho::None);
+    let stderr = PipeCapture::spawn(stderr, SSH_STDERR_CAPTURE_LIMIT, PipeEcho::None);
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {

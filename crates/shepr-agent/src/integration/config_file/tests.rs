@@ -1,5 +1,6 @@
 use super::*;
 use crate::integration::test_support::symlink_file;
+use shepr_test_support::IsolatedEnv;
 
 struct Directory(PathBuf);
 
@@ -82,6 +83,11 @@ fn abandoned_and_failed_publication_leave_config_unchanged() {
 
 #[test]
 fn config_update_lock_covers_the_full_read_modify_write() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let env = IsolatedEnv::new();
+    let state_home = env.path().join("state");
+    env.set("XDG_STATE_HOME", &state_home);
     let dir = Directory::new();
     let path = dir.0.join("settings.json");
     fs::write(&path, "0").expect("test precondition");
@@ -108,7 +114,93 @@ fn config_update_lock_covers_the_full_read_modify_write() {
         worker.join().expect("test precondition");
     }
 
-    assert_eq!(fs::read_to_string(path).expect("test precondition"), "2");
+    assert_eq!(fs::read_to_string(&path).expect("test precondition"), "2");
+    assert_eq!(fs::read_dir(&dir.0).expect("test precondition").count(), 1);
+
+    let target = resolve_target(&path).expect("test precondition");
+    let lock_path = config_update_lock_path(&target).expect("test precondition");
+    assert!(lock_path.starts_with(state_home));
+    let metadata = fs::metadata(&lock_path).expect("persistent config lock");
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    assert_eq!(
+        metadata.uid(),
+        fs::metadata(env.home()).expect("test precondition").uid()
+    );
+    let first_inode = metadata.ino();
+    {
+        let _lock = lock_config_for_update(&path).expect("test precondition");
+    }
+    assert_eq!(
+        fs::metadata(&lock_path)
+            .expect("persistent config lock")
+            .ino(),
+        first_inode
+    );
+}
+
+#[test]
+fn config_update_lock_ignores_empty_or_relative_state_home() {
+    let env = IsolatedEnv::new();
+    let dir = Directory::new();
+    let target = dir.0.join("settings.json");
+    let default_dir = env.home().join(".local/state/shepr/integration-locks");
+    for value in ["", "relative/state"] {
+        env.set("XDG_STATE_HOME", value);
+        let lock_path = config_update_lock_path(&target).expect("test precondition");
+        assert!(
+            lock_path.starts_with(&default_dir),
+            "{value:?}: {lock_path:?}"
+        );
+    }
+}
+
+#[test]
+fn config_update_lock_that_cannot_be_created_fails_the_edit() {
+    let env = IsolatedEnv::new();
+    // A regular file where the state directory should be: the lock directory
+    // cannot be created, and the edit must not go ahead unlocked.
+    let blocker = env.path().join("state-file");
+    fs::write(&blocker, "").expect("test precondition");
+    env.set("XDG_STATE_HOME", &blocker);
+    let dir = Directory::new();
+    let path = dir.0.join("settings.json");
+
+    let error = match lock_config_for_update(&path) {
+        Ok(_) => panic!("an uncreatable lock directory must fail the edit"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("could not lock"),
+        "unexpected error: {error}"
+    );
+}
+
+#[test]
+fn config_update_lock_resolves_parent_symlink_aliases() {
+    let env = IsolatedEnv::new();
+    let state_home = env.path().join("state");
+    env.set("XDG_STATE_HOME", &state_home);
+    let dir = Directory::new();
+    let actual = dir.0.join("actual");
+    fs::create_dir(&actual).expect("test precondition");
+    let alias = dir.0.join("alias");
+    std::os::unix::fs::symlink(&actual, &alias).expect("test precondition");
+
+    let alias_config = alias.join("nested/settings.json");
+    let actual_config = actual.join("nested/settings.json");
+    let alias_target = resolve_target(&alias_config).expect("test precondition");
+    let actual_target = resolve_target(&actual_config).expect("test precondition");
+    let alias_lock = config_update_lock_path(&alias_target).expect("test precondition");
+    let actual_lock = config_update_lock_path(&actual_target).expect("test precondition");
+    assert_eq!(alias_lock, actual_lock);
+
+    let _lock = lock_config_for_update(&alias_config).expect("test precondition");
+    let error = match shepr_platform::ipc::acquire_flock_lock(&actual_lock, false) {
+        Ok(_) => panic!("alias path did not share the existing config lock"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(fs::read_dir(&actual).expect("test precondition").count(), 0);
 }
 
 #[test]

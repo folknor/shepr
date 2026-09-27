@@ -7,10 +7,6 @@ publish = false
 [dependencies]
 ratatui = { workspace = true }
 serde = { workspace = true }
-unicode-width = { workspace = true }
-
-[dev-dependencies]
-shepr-test-support = { path = "../shepr-test-support" }
 
 [lints]
 workspace = true

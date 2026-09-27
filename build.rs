@@ -6,8 +6,9 @@
 //! protocol number cannot guard that, because nothing forces anyone to bump
 //! it. This script fingerprints every input that shapes the binary (the
 //! manifest, the lockfile, this script and every file under `src/`) and hands
-//! the result to the crate as `BUILD_ID` and `PROTOCOL_VERSION`, which the
-//! handshake, `ping` and `status` compare. Any source change yields a new
+//! the result to the crate as `BUILD_ID`, which the handshake preamble, `ping`
+//! and `status` compare exactly, and `PROTOCOL_VERSION`, a derived number
+//! reported for information only. Any source change yields a new
 //! identity, so a stale server or a hand-copied remote binary is reported as
 //! a mismatch instead of passing as compatible.
 //!
@@ -75,7 +76,7 @@ fn relative_name(root: &Path, path: &Path) -> Result<String, Box<dyn Error>> {
 
 /// Folds the 64-bit fingerprint into `1..u32::MAX`. Keeping clear of both
 /// ends means `PROTOCOL_VERSION + 1` and `- 1`, which tests use to build a
-/// mismatching peer, can never overflow.
+/// peer that differs only in this informational number, can never overflow.
 fn protocol_version(hash: u64) -> u32 {
     let folded = (hash ^ (hash >> 32)) & u64::from(u32::MAX);
     let span = u64::from(u32::MAX - 1);

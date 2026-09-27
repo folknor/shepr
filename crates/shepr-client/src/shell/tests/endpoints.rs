@@ -110,7 +110,14 @@ fn multi_machine_sidebar_draws_the_workspace_drop_marker() {
 fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
     let (mut state, id) = state_with_remote();
     state.set_endpoint_status(&id, ClientEndpointStatus::Attention);
-    state.set_machine_diagnostic(&id, "Permission denied (keyboard-interactive)");
+    // ssh exits 255 for its own failures; this is how an auth prompt failure arrives.
+    state.set_machine_diagnostic(
+        &id,
+        &shepr_remote::SshFailureDiagnostic::from_ssh_output(
+            Some(255),
+            "Permission denied (keyboard-interactive)".into(),
+        ),
+    );
     for _ in 0..2 {
         state.compose(120, 40).expect("test precondition");
         let hit = state

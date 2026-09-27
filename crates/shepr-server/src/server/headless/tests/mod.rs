@@ -148,7 +148,11 @@ fn test_headless_server_with_event_hub(event_hub: shepr_api::EventHub) -> Headle
         resolved_config,
         sent_window_title: None,
         api_window_title: None,
-        api_dispatcher: ApiDispatcher::default(),
+        pending_alt_screen_reads: Vec::new(),
+        deferred_alt_screen_reads: Vec::new(),
+        running_agent_manifest_reload: Vec::new(),
+        queued_agent_manifest_reloads: Vec::new(),
+        agent_manifest_reload_token: 0,
         agent_manifest_reload_tx,
         agent_manifest_reload_rx,
         immediate_pty_sources_dirty: true,
@@ -422,7 +426,7 @@ async fn complete_shutdown_answers_queued_and_deferred_requests_and_closes_the_c
     let (queued, queued_rx) = shutdown_test_request("queued");
     api_tx.send(queued).expect("test precondition");
     let (deferred, deferred_rx) = shutdown_test_request("deferred");
-    server.api_dispatcher.defer(deferred);
+    server.defer_alt_screen_read_request(deferred);
 
     server.initiate_shutdown();
     server
@@ -432,7 +436,7 @@ async fn complete_shutdown_answers_queued_and_deferred_requests_and_closes_the_c
 
     assert_server_unavailable(&queued_rx, "queued");
     assert_server_unavailable(&deferred_rx, "deferred");
-    assert!(!server.api_dispatcher.has_deferred());
+    assert!(!server.has_deferred_alt_screen_read_requests());
     // A request dispatched after cleanup fails at the sender, which the API
     // thread turns into `server_unavailable` at once.
     let (late, _late_rx) = shutdown_test_request("late");
@@ -3744,7 +3748,7 @@ fn terminal_attach_disconnect_restores_client_shell_pane_size() {
 fn terminal_attach_is_rejected_during_alt_screen_read() {
     with_terminal_session_test_server(|server, terminal_id, terminal_id_string, _| {
         let (respond_to, _response_rx) = std::sync::mpsc::channel();
-        server.api_dispatcher.push_pending_read(
+        server.push_pending_alt_screen_read(
             crate::server::alt_screen_read::PendingAltScreenRead::start(
                 terminal_id,
                 "read".into(),
@@ -5063,6 +5067,9 @@ fn headless_scheduled_tasks_expire_agent_metadata() {
 #[tokio::test]
 async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_client() {
     let mut server = test_headless_server();
+    // Keep a shell reading its PTY so the resume command cannot race the
+    // default `/usr/bin/true` test shell exiting before the input is queued.
+    server.app.state.settings.default_shell = "/bin/sh".into();
     let workspace = shepr_mux::workspace::Workspace::test_new("restored");
     let pane_id = workspace.tabs[0].root_pane;
     let terminal_id = workspace
@@ -5080,7 +5087,7 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
         .expect("test terminal should exist")
         .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
         "shepr:codex\0codex\0Id\0codex-session",
-        vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+        vec!["/bin/true".into()],
     ));
 
     server.render_and_stream();
@@ -5115,6 +5122,9 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
 #[tokio::test]
 async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_ticks() {
     let mut server = test_headless_server();
+    // Keep a shell reading its PTY so the resume command cannot race the
+    // default `/usr/bin/true` test shell exiting before the input is queued.
+    server.app.state.settings.default_shell = "/bin/sh".into();
     let workspace = shepr_mux::workspace::Workspace::test_new("restored");
     let pane_id = workspace.tabs[0].root_pane;
     let terminal_id = workspace
@@ -5132,7 +5142,7 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
         .expect("test terminal should exist")
         .pending_agent_resume_plan = Some(shepr_agent::agent::resume::test_codex_plan(
         "shepr:codex\0codex\0Id\0codex-session",
-        vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+        vec!["/bin/true".into()],
     ));
     server.render_and_stream();
 

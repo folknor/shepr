@@ -47,6 +47,14 @@ machines configured, losing the local server does not end the client either:
 it keeps serving the remote machines and reconnects once the local server is
 restarted.
 
+Panes run agents and shells. Key encoding to pane children covers what those
+use: legacy encoding, kitty disambiguate and the keys crossterm's `KeyCode`
+models, and modifyOtherKeys for Enter, Esc, Tab and Backspace. Full kitty
+report-all fidelity (F13 and above, lock and bare modifier keys, keypad
+identity) and full modifyOtherKeys level 1/2 encoding are deliberately not
+implemented; they need a shepr-owned key model, which the owner decided is
+not worth it for agent and shell panes. Do not file these as defects.
+
 ## Workspace layout
 
 The root `shepr` package is the binary. Extracted libraries live under

@@ -34,7 +34,7 @@ pub(crate) struct SshStdioBridge {
     socket_identity: shepr_platform::ipc::SocketFileIdentity,
     _socket_startup_lock: shepr_platform::ipc::SocketStartupLock,
     should_stop: Arc<AtomicBool>,
-    failure_rx: mpsc::Receiver<io::Error>,
+    failure_rx: Arc<std::sync::Mutex<mpsc::Receiver<io::Error>>>,
     thread: Option<JoinHandle<()>>,
     // Dropped after `Drop::drop` has removed the socket; see `TeardownRegistry`.
     _teardown: TeardownRegistration,
@@ -92,7 +92,13 @@ impl SshStdioBridge {
         let should_stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&should_stop);
         let thread_ssh_options = ssh_options.cloned();
+        // A failure belongs to the last accepted stream. Before accepting a later
+        // stream, discard any unclaimed report so a slow earlier SSH exit cannot
+        // be shown as the later request's failure. Keep send nonblocking so the SSH
+        // worker can finish even if its caller is already unwinding.
         let (failure_tx, failure_rx) = mpsc::sync_channel(1);
+        let failure_rx = Arc::new(std::sync::Mutex::new(failure_rx));
+        let thread_failure_rx = Arc::clone(&failure_rx);
         let thread = thread::spawn(move || {
             while !thread_stop.load(Ordering::Acquire) {
                 match listener.accept() {
@@ -110,6 +116,7 @@ impl SshStdioBridge {
                                 continue;
                             }
                         }
+                        discard_unclaimed_bridge_failure(&thread_failure_rx);
                         let stream = match prepare_remote_bridge_stream(stream) {
                             Ok(stream) => stream,
                             Err(err) => {
@@ -120,6 +127,9 @@ impl SshStdioBridge {
                                 continue;
                             }
                         };
+                        // Each local API request has its own stream and therefore its
+                        // own SSH stdio process. The streams are served serially because
+                        // one SSH process can carry only one local stream.
                         if let Err(err) = bridge_connection(
                             stream,
                             &target,
@@ -164,10 +174,22 @@ impl SshStdioBridge {
     }
 
     pub(crate) fn reported_failure(&self) -> Option<io::Error> {
+        // A local client can observe EOF before this worker has reaped ssh and
+        // sent its exit diagnostic. The bounded wait lets that result arrive;
+        // a cleanly closed stream adds no more than one second after the EOF.
         self.failure_rx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .recv_timeout(BRIDGE_FAILURE_REPORT_TIMEOUT)
             .ok()
     }
+}
+
+fn discard_unclaimed_bridge_failure(failure_rx: &std::sync::Mutex<mpsc::Receiver<io::Error>>) {
+    let failure_rx = failure_rx
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    while failure_rx.try_recv().is_ok() {}
 }
 
 pub(super) fn prepare_remote_bridge_stream(
@@ -415,10 +437,14 @@ pub(super) fn bridge_connection(
     }
     if !stopping && !client_closed {
         upload_result.map_err(|err| {
-            io::Error::new(err.kind(), format!("remote bridge upload failed: {err}"))
+            let diagnostic = super::SshFailureDiagnostic::from_error(&err)
+                .with_context("remote bridge upload failed");
+            io::Error::new(err.kind(), diagnostic)
         })?;
         download_result.map_err(|err| {
-            io::Error::new(err.kind(), format!("remote bridge download failed: {err}"))
+            let diagnostic = super::SshFailureDiagnostic::from_error(&err)
+                .with_context("remote bridge download failed");
+            io::Error::new(err.kind(), diagnostic)
         })?;
     }
 

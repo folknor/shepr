@@ -8,11 +8,7 @@ publish = false
 alacritty_terminal = { workspace = true }
 serde = { workspace = true }
 shepr-core = { path = "../shepr-core" }
-tracing = { workspace = true }
 unicode-width = { workspace = true }
-
-[dev-dependencies]
-shepr-test-support = { path = "../shepr-test-support" }
 
 [lints]
 workspace = true

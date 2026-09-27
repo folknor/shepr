@@ -6,52 +6,6 @@
 // `1..u32::MAX`, so it changes whenever any source file does.
 include!(concat!(env!("OUT_DIR"), "/protocol_identity.rs"));
 
-/// How a server's advertised protocol relates to this build. Client-protocol
-/// connections are settled by the preamble; this is for the JSON API, which
-/// has none and only learns the server's protocol from its status reply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Compatibility {
-    /// The server reports this build's protocol.
-    Compatible,
-    /// The server reports another build's protocol.
-    DifferentBuild(u32),
-    /// The server did not report a protocol.
-    Unknown,
-}
-
-impl Compatibility {
-    pub fn of(server_protocol: Option<u32>) -> Self {
-        match server_protocol {
-            Some(protocol) if protocol == PROTOCOL_VERSION => Self::Compatible,
-            Some(protocol) => Self::DifferentBuild(protocol),
-            None => Self::Unknown,
-        }
-    }
-
-    pub fn is_compatible(self) -> bool {
-        self == Self::Compatible
-    }
-
-    /// `Some(true)` when compatible, `Some(false)` for another build, `None`
-    /// when the server did not say.
-    pub fn known(self) -> Option<bool> {
-        match self {
-            Self::Compatible => Some(true),
-            Self::DifferentBuild(_) => Some(false),
-            Self::Unknown => None,
-        }
-    }
-
-    /// `yes`, `no` or `unknown`, for status output.
-    pub fn label(self) -> &'static str {
-        match self.known() {
-            Some(true) => "yes",
-            Some(false) => "no",
-            None => "unknown",
-        }
-    }
-}
-
 /// Maximum allowed frame payload size (2 MB) in either direction. Readers
 /// reject larger length prefixes to prevent denial-of-service, and
 /// `write_message` refuses to produce them, so an oversized message fails at

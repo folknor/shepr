@@ -577,6 +577,7 @@ fn handle_request(
             result: ResponseResult::Pong {
                 version: shepr_protocol::build_version(),
                 protocol: shepr_protocol::PROTOCOL_VERSION,
+                build_id: shepr_protocol::BUILD_ID.to_owned(),
                 capabilities,
             },
         };

@@ -12,7 +12,7 @@ pub(super) const REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from
 pub(super) enum RemoteServerStatus {
     Running {
         version: Option<String>,
-        protocol: Option<u32>,
+        build_id: Option<String>,
         /// Started as a detached daemon, so an SSH drop disconnects only the
         /// client. A daemon lifecycle requirement; `ensure_remote_server_build`
         /// checks the build separately.
@@ -25,7 +25,8 @@ pub(super) enum RemoteServerStatus {
 pub(super) struct RemoteServerStatusJson {
     pub(super) running: bool,
     pub(super) version: Option<String>,
-    pub(super) protocol: Option<u32>,
+    #[serde(default)]
+    pub(super) build_id: Option<String>,
     pub(super) capabilities: Option<RemoteServerCapabilitiesJson>,
 }
 
@@ -61,21 +62,18 @@ pub(super) fn ensure_remote_server_build(
     status: &RemoteServerStatus,
 ) -> io::Result<()> {
     let RemoteServerStatus::Running {
-        version, protocol, ..
+        version, build_id, ..
     } = status
     else {
         return Ok(());
     };
-    let expected_version = shepr_protocol::build_version();
-    if version.as_deref() == Some(expected_version.as_str())
-        && *protocol == Some(shepr_protocol::PROTOCOL_VERSION)
-    {
+    if build_id.as_deref() == Some(shepr_protocol::BUILD_ID) {
         return Ok(());
     }
     Err(remote_server_compatibility_error(
         target,
         version.as_deref(),
-        *protocol,
+        build_id.as_deref(),
     ))
 }
 
@@ -106,7 +104,7 @@ pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<Remote
     }
     Ok(RemoteServerStatus::Running {
         version: parsed.version,
-        protocol: parsed.protocol,
+        build_id: parsed.build_id,
         detached_server_daemon: parsed
             .capabilities
             .is_some_and(|capabilities| capabilities.detached_server_daemon),
@@ -116,20 +114,22 @@ pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<Remote
 fn remote_server_compatibility_error(
     target: &str,
     version: Option<&str>,
-    protocol: Option<u32>,
+    build_id: Option<&str>,
 ) -> io::Error {
-    let version = version
-        .filter(|version| version.chars().all(|ch| ch.is_ascii_graphic()))
-        .unwrap_or("unknown");
-    let protocol = protocol
-        .map(|protocol| protocol.to_string())
-        .unwrap_or_else(|| "unknown".to_owned());
+    let printable = |value: Option<&str>| {
+        value
+            .filter(|value| value.chars().all(|ch| ch.is_ascii_graphic()))
+            .unwrap_or("unknown")
+            .to_owned()
+    };
+    let version = printable(version);
+    let build_id = printable(build_id);
     io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
-            "remote Shepr server compatibility error on {target}: found version {version} and protocol {protocol}; this client requires version {} and protocol {}. Restart the remote server with this build and retry",
+            "remote Shepr server compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. Restart the remote server with this build and retry",
             shepr_protocol::build_version(),
-            shepr_protocol::PROTOCOL_VERSION
+            shepr_protocol::BUILD_ID
         ),
     )
 }
@@ -231,32 +231,29 @@ pub(super) fn read_remote_confirmation(
 mod tests {
     use super::*;
 
-    fn running(version: Option<String>, protocol: Option<u32>) -> RemoteServerStatus {
+    fn running(version: Option<String>, build_id: Option<&str>) -> RemoteServerStatus {
         RemoteServerStatus::Running {
             version,
-            protocol,
+            build_id: build_id.map(str::to_owned),
             detached_server_daemon: true,
         }
     }
 
     #[test]
     fn only_a_running_server_from_this_build_passes_the_build_check() {
-        let this_build = running(
-            Some(shepr_protocol::build_version()),
-            Some(shepr_protocol::PROTOCOL_VERSION),
-        );
+        // The build id alone decides; the version string is only reported.
+        let this_build = running(Some("0.0.0-old".into()), Some(shepr_protocol::BUILD_ID));
         assert!(ensure_remote_server_build("host", &this_build).is_ok());
         assert!(ensure_remote_server_build("host", &RemoteServerStatus::NotRunning).is_ok());
 
+        let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
+            "0000000000000000"
+        } else {
+            "ffffffffffffffff"
+        };
         for stale in [
-            running(
-                Some("0.0.0-old".into()),
-                Some(shepr_protocol::PROTOCOL_VERSION),
-            ),
-            running(
-                Some(shepr_protocol::build_version()),
-                Some(shepr_protocol::PROTOCOL_VERSION.wrapping_add(1)),
-            ),
+            running(Some(shepr_protocol::build_version()), Some(other_build)),
+            running(Some(shepr_protocol::build_version()), None),
             running(None, None),
         ] {
             let error = ensure_remote_server_build("host", &stale).expect_err("stale daemon");

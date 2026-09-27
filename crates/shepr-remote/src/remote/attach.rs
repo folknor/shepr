@@ -357,16 +357,20 @@ mod tests {
 
     #[test]
     fn ssh_authentication_diagnostics_are_narrow() {
+        let requires_authentication = |message: &str| {
+            crate::SshFailureDiagnostic::from_ssh_output(
+                Some(crate::SSH_OWN_FAILURE_EXIT_CODE),
+                message.into(),
+            )
+            .requires_authentication()
+        };
         for message in [
             "user@host: Permission denied (publickey).",
             "Permission denied (keyboard-interactive,password).",
             "Permission denied (password).",
             "sign_and_send_pubkey: signing failed for ED25519 from agent: agent refused operation",
         ] {
-            assert!(
-                crate::ssh_error_requires_authentication(message),
-                "{message}"
-            );
+            assert!(requires_authentication(message), "{message}");
         }
         for message in [
             "Host key verification failed.",
@@ -376,10 +380,7 @@ mod tests {
             "agent disconnected",
             "Permission denied (publickey). Host key verification failed.",
         ] {
-            assert!(
-                !crate::ssh_error_requires_authentication(message),
-                "{message}"
-            );
+            assert!(!requires_authentication(message), "{message}");
         }
     }
 
@@ -793,11 +794,9 @@ mod tests {
     #[test]
     fn noninteractive_remote_bridge_requests_idle_timeout() {
         let remote = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
-        assert!(
-            remote
-                .bridge_command("agents", true)
-                .ends_with(" --session agents remote-client-bridge --idle-timeout-v1'")
-        );
+        assert!(remote.bridge_command("agents", true).contains(
+            " --session agents remote-client-bridge --idle-timeout-v1; shepr_exit_status="
+        ));
     }
 
     #[test]
@@ -805,11 +804,11 @@ mod tests {
         let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
         assert_eq!(
             remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME, false),
-            "/bin/sh -c 'echo; echo shepr-remote-output-ready:1; exec /usr/bin/shepr remote-client-bridge'"
+            "/bin/sh -c 'echo; echo shepr-remote-output-ready:1; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq 255 ]; then exit 254; fi; exit $shepr_exit_status'"
         );
         assert_eq!(
             remote_shepr.saved_bridge_command("agents"),
-            "exec /usr/bin/shepr --session agents remote-client-bridge </dev/null"
+            "/usr/bin/shepr --session agents remote-client-bridge </dev/null"
         );
     }
 
@@ -820,7 +819,7 @@ mod tests {
 
         assert_eq!(
             remote_shepr.bridge_command(shepr_config::DEFAULT_SESSION_NAME, false),
-            "/bin/sh -c 'echo; echo shepr-remote-output-ready:1; exec /usr/bin/shepr remote-client-bridge'"
+            "/bin/sh -c 'echo; echo shepr-remote-output-ready:1; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq 255 ]; then exit 254; fi; exit $shepr_exit_status'"
         );
     }
 
@@ -858,6 +857,43 @@ mod tests {
         let mut stdout = output.stdout;
         normalize_remote_stdout(&mut stdout, output.status.success()).expect("marker line present");
         assert_eq!(stdout, b"payload");
+    }
+
+    /// `sh_output` scripts end with a newline and are fed to `/bin/sh -s`; the
+    /// wrapper must stay valid shell for them and keep 255 for ssh's own failures.
+    #[test]
+    fn remote_output_wrapper_accepts_newline_scripts_and_remaps_exit_255() {
+        use std::io::Write as _;
+
+        let run = |script: &str| {
+            let mut child = std::process::Command::new("/bin/sh")
+                .arg("-s")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("test precondition");
+            child
+                .stdin
+                .take()
+                .expect("test precondition")
+                .write_all(posix_remote_output_command(script).as_bytes())
+                .expect("test precondition");
+            child.wait_with_output().expect("test precondition")
+        };
+
+        let output = run("printf payload\n");
+        assert!(output.status.success(), "{output:?}");
+        let mut stdout = output.stdout;
+        normalize_remote_stdout(&mut stdout, true).expect("marker line present");
+        assert_eq!(stdout, b"payload");
+
+        assert_eq!(
+            run(&known_remote_binary_candidate_script()).status.code(),
+            Some(0)
+        );
+        assert_eq!(run("exit 3\n").status.code(), Some(3));
+        assert_eq!(run("(exit 255)\n").status.code(), Some(254));
     }
 
     /// The cached API-bridge command reaches the login shell as `/bin/sh -c`
@@ -979,22 +1015,23 @@ mod tests {
     #[test]
     fn parse_client_status_json_reads_last_json_record() {
         let status = parse_client_status_json(
-            "wrapper output\n{\"version\":\"0.8.0\",\"protocol\":20}\n{\"wrapper\":true}\n",
+            "wrapper output\n{\"version\":\"0.8.0\",\"build_id\":\"0123456789abcdef\"}\n{\"wrapper\":true}\n",
         )
         .expect("test precondition");
         assert_eq!(status.version.as_deref(), Some("0.8.0"));
+        assert_eq!(status.build_id.as_deref(), Some("0123456789abcdef"));
     }
 
     #[test]
     fn parse_remote_server_status_json_reads_running_server() {
         assert_eq!(
             parse_remote_server_status_json(
-                r#"{"status":"running","running":true,"version":"0.6.0","protocol":8,"capabilities":{"detached_server_daemon":true,"ssh_agent_registration":false}}"#
+                r#"{"status":"running","running":true,"version":"0.6.0","protocol":8,"build_id":"0123456789abcdef","capabilities":{"detached_server_daemon":true,"ssh_agent_registration":false}}"#
             )
             .expect("test precondition"),
             RemoteServerStatus::Running {
                 version: Some("0.6.0".into()),
-                protocol: Some(8),
+                build_id: Some("0123456789abcdef".into()),
                 detached_server_daemon: true
             }
         );

@@ -60,6 +60,7 @@ enum ServerRuntimeStatus {
     Running {
         version: Option<String>,
         protocol: Option<u32>,
+        build_id: String,
         capabilities: Option<shepr_api::schema::ServerCapabilities>,
     },
     NotRunning,
@@ -79,6 +80,7 @@ fn print_full_status(paths: &super::target::CliContext, json: bool) -> super::Cl
 
     println!("client:");
     println!("  version: {}", shepr_protocol::build_version());
+    println!("  build_id: {}", shepr_protocol::BUILD_ID);
     println!("  protocol: {}", shepr_protocol::PROTOCOL_VERSION);
     println!();
     println!("server:");
@@ -86,10 +88,6 @@ fn print_full_status(paths: &super::target::CliContext, json: bool) -> super::Cl
     println!();
     println!("update:");
     println!("  restart_needed: {}", restart_needed_label(&server));
-    println!(
-        "  server_binary_stale: {}",
-        server_binary_stale_label(&server)
-    );
 
     Ok(0)
 }
@@ -111,6 +109,7 @@ fn print_client_status(json: bool, paths: &shepr_config::AppPaths) -> super::Cli
     }
 
     println!("version: {}", shepr_protocol::build_version());
+    println!("build_id: {}", shepr_protocol::BUILD_ID);
     println!("protocol: {}", shepr_protocol::PROTOCOL_VERSION);
     println!("binary: {}", current_exe_label());
     Ok(())
@@ -123,14 +122,18 @@ fn print_server_status_body(
 ) {
     match server {
         ServerRuntimeStatus::Running {
-            version, protocol, ..
+            version,
+            protocol,
+            build_id,
+            ..
         } => {
             println!("{indent}status: running");
             println!("{indent}version: {}", option_label(version.as_deref()));
+            println!("{indent}build_id: {build_id}");
             println!("{indent}protocol: {}", protocol_label(*protocol));
             println!(
-                "{indent}protocol_compatible: {}",
-                shepr_protocol::Compatibility::of(*protocol).label()
+                "{indent}build_compatible: {}",
+                build_compatible_label(server)
             );
             println!("{indent}socket: {}", super::target::socket_label(paths));
         }
@@ -149,6 +152,7 @@ fn read_server_runtime_status(
         Ok(status) => Ok(ServerRuntimeStatus::Running {
             version: status.version,
             protocol: status.protocol,
+            build_id: status.build_id,
             capabilities: status.capabilities,
         }),
         Err(err) if paths.is_remote() => {
@@ -176,18 +180,10 @@ fn protocol_label(protocol: Option<u32>) -> String {
 }
 
 fn restart_needed_label(server: &ServerRuntimeStatus) -> &'static str {
-    match restart_needed_bool(server) {
-        Some(true) => "yes",
-        Some(false) => "no",
-        None => "unknown",
-    }
-}
-
-fn server_binary_stale_label(server: &ServerRuntimeStatus) -> &'static str {
-    match server_binary_stale_bool(server) {
-        Some(true) => "yes",
-        Some(false) => "no",
-        None => "unknown",
+    if restart_needed_bool(server) {
+        "yes"
+    } else {
+        "no"
     }
 }
 
@@ -201,6 +197,7 @@ struct FullStatusJson {
 #[derive(Serialize)]
 struct ClientStatusJson {
     version: String,
+    build_id: String,
     protocol: u32,
     binary: String,
     session: Option<String>,
@@ -212,12 +209,12 @@ struct ServerStatusJson {
     running: bool,
     version: Option<String>,
     protocol: Option<u32>,
+    build_id: Option<String>,
     capabilities: Option<ServerCapabilitiesJson>,
     compatible: Option<bool>,
     socket: String,
     session: Option<String>,
-    restart_needed: Option<bool>,
-    server_binary_stale: Option<bool>,
+    restart_needed: bool,
 }
 
 #[derive(Serialize)]
@@ -228,13 +225,13 @@ struct ServerCapabilitiesJson {
 
 #[derive(Serialize)]
 struct UpdateStatusJson {
-    restart_needed: Option<bool>,
-    server_binary_stale: Option<bool>,
+    restart_needed: bool,
 }
 
 fn client_status_json(paths: &shepr_config::AppPaths) -> ClientStatusJson {
     ClientStatusJson {
         version: shepr_protocol::build_version(),
+        build_id: shepr_protocol::BUILD_ID.to_owned(),
         protocol: shepr_protocol::PROTOCOL_VERSION,
         binary: current_exe_label(),
         session: paths.session_id().name().map(str::to_owned),
@@ -249,70 +246,70 @@ fn server_status_json(
         ServerRuntimeStatus::Running {
             version,
             protocol,
+            build_id,
             capabilities,
         } => ServerStatusJson {
             status: "running",
             running: true,
             version: version.clone(),
             protocol: *protocol,
+            build_id: Some(build_id.clone()),
             capabilities: capabilities
                 .as_ref()
                 .map(|capabilities| ServerCapabilitiesJson {
                     detached_server_daemon: capabilities.detached_server_daemon,
                     ssh_agent_registration: capabilities.ssh_agent_registration,
                 }),
-            compatible: shepr_protocol::Compatibility::of(*protocol).known(),
+            compatible: build_compatible_bool(server),
             socket: api::socket_path(paths).display().to_string(),
             session: paths.session_id().name().map(str::to_owned),
             restart_needed: restart_needed_bool(server),
-            server_binary_stale: server_binary_stale_bool(server),
         },
         ServerRuntimeStatus::NotRunning => ServerStatusJson {
             status: "not_running",
             running: false,
             version: None,
             protocol: None,
+            build_id: None,
             capabilities: None,
             compatible: None,
             socket: api::socket_path(paths).display().to_string(),
             session: paths.session_id().name().map(str::to_owned),
-            restart_needed: Some(false),
-            server_binary_stale: Some(false),
+            restart_needed: false,
         },
     };
     if let Some((_, session)) = super::target::remote_identity(paths) {
         status.socket = super::target::socket_label(paths);
         status.session = Some(session);
-        status.server_binary_stale = None;
     }
     status
 }
 
 fn update_status_json(server: &ServerRuntimeStatus) -> UpdateStatusJson {
-    // This object is emitted only by the full overview. Machine targets reject
-    // that command, so its local version comparison is never paired with the
-    // remote server object's intentionally unknown stale-binary value.
     UpdateStatusJson {
         restart_needed: restart_needed_bool(server),
-        server_binary_stale: server_binary_stale_bool(server),
     }
 }
 
-fn restart_needed_bool(server: &ServerRuntimeStatus) -> Option<bool> {
-    match server {
-        ServerRuntimeStatus::Running { protocol, .. } => {
-            Some(!shepr_protocol::Compatibility::of(*protocol).is_compatible())
-        }
-        ServerRuntimeStatus::NotRunning => Some(false),
+fn build_compatible_label(server: &ServerRuntimeStatus) -> &'static str {
+    match build_compatible_bool(server) {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
     }
 }
 
-fn server_binary_stale_bool(server: &ServerRuntimeStatus) -> Option<bool> {
+fn build_compatible_bool(server: &ServerRuntimeStatus) -> Option<bool> {
     match server {
-        ServerRuntimeStatus::Running { version, .. } => version
-            .as_deref()
-            .map(|version| version != shepr_protocol::build_version()),
-        ServerRuntimeStatus::NotRunning => Some(false),
+        ServerRuntimeStatus::Running { build_id, .. } => Some(build_id == shepr_protocol::BUILD_ID),
+        ServerRuntimeStatus::NotRunning => None,
+    }
+}
+
+fn restart_needed_bool(server: &ServerRuntimeStatus) -> bool {
+    match server {
+        ServerRuntimeStatus::Running { build_id, .. } => build_id != shepr_protocol::BUILD_ID,
+        ServerRuntimeStatus::NotRunning => false,
     }
 }
 
@@ -336,10 +333,15 @@ fn current_exe_label() -> String {
 mod tests {
     use super::*;
 
-    fn running_server(version: Option<&str>, protocol: Option<u32>) -> ServerRuntimeStatus {
+    fn running_server(
+        version: Option<&str>,
+        protocol: Option<u32>,
+        build_id: &str,
+    ) -> ServerRuntimeStatus {
         ServerRuntimeStatus::Running {
             version: version.map(str::to_owned),
             protocol,
+            build_id: build_id.to_owned(),
             capabilities: Some(shepr_api::schema::ServerCapabilities {
                 detached_server_daemon: true,
                 ssh_agent_registration: false,
@@ -349,7 +351,11 @@ mod tests {
 
     #[test]
     fn status_exposes_only_dynamic_server_capabilities() {
-        let server = running_server(Some("test"), Some(shepr_protocol::PROTOCOL_VERSION));
+        let server = running_server(
+            Some("test"),
+            Some(shepr_protocol::PROTOCOL_VERSION),
+            shepr_protocol::BUILD_ID,
+        );
         let paths = super::super::target::CliContext::test_local(shepr_config::AppPaths::default());
         let value =
             serde_json::to_value(server_status_json(&paths, &server)).expect("test precondition");
@@ -359,21 +365,26 @@ mod tests {
     }
 
     #[test]
-    fn stale_compatible_server_does_not_require_restart() {
-        let server = running_server(Some("0.0.0-old"), Some(shepr_protocol::PROTOCOL_VERSION));
+    fn same_build_does_not_require_restart_even_if_protocol_differs() {
+        let server = running_server(
+            Some("0.0.0-old"),
+            Some(shepr_protocol::PROTOCOL_VERSION + 1),
+            shepr_protocol::BUILD_ID,
+        );
 
-        assert_eq!(restart_needed_bool(&server), Some(false));
-        assert_eq!(server_binary_stale_bool(&server), Some(true));
+        assert!(!restart_needed_bool(&server));
+        assert_eq!(build_compatible_bool(&server), Some(true));
     }
 
     #[test]
-    fn server_with_other_protocol_requires_restart() {
+    fn different_build_requires_restart_even_if_protocol_matches() {
         let server = running_server(
             Some(shepr_protocol::build_version().as_str()),
-            Some(shepr_protocol::PROTOCOL_VERSION + 1),
+            Some(shepr_protocol::PROTOCOL_VERSION),
+            "ffffffffffffffff",
         );
 
-        assert_eq!(restart_needed_bool(&server), Some(true));
-        assert_eq!(server_binary_stale_bool(&server), Some(false));
+        assert!(restart_needed_bool(&server));
+        assert_eq!(build_compatible_bool(&server), Some(false));
     }
 }

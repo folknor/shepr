@@ -19,7 +19,7 @@ enum ApiTarget {
 pub(super) struct CliContext {
     paths: shepr_config::AppPaths,
     target: RefCell<ApiTarget>,
-    protocol_checked: Cell<bool>,
+    build_checked: Cell<bool>,
     caller_pane_id: Option<String>,
     caller_socket: Option<std::ffi::OsString>,
 }
@@ -29,7 +29,7 @@ impl CliContext {
         Self {
             paths,
             target: RefCell::new(ApiTarget::Local),
-            protocol_checked: Cell::new(false),
+            build_checked: Cell::new(false),
             caller_pane_id: std::env::var(shepr_mux::pane::SHEPR_PANE_ID_ENV_VAR).ok(),
             caller_socket: std::env::var_os(shepr_config::SOCKET_PATH_ENV_VAR),
         }
@@ -40,7 +40,7 @@ impl CliContext {
         Self {
             paths,
             target: RefCell::new(ApiTarget::Local),
-            protocol_checked: Cell::new(false),
+            build_checked: Cell::new(false),
             caller_pane_id: None,
             caller_socket: None,
         }
@@ -58,18 +58,18 @@ impl CliContext {
                 bridge: None,
                 ssh_settings,
             }))),
-            protocol_checked: Cell::new(false),
+            build_checked: Cell::new(false),
             caller_pane_id: None,
             caller_socket: None,
         }
     }
 
-    pub(super) fn protocol_checked(&self) -> bool {
-        self.protocol_checked.get()
+    pub(super) fn build_checked(&self) -> bool {
+        self.build_checked.get()
     }
 
-    pub(super) fn mark_protocol_checked(&self) {
-        self.protocol_checked.set(true);
+    pub(super) fn mark_build_checked(&self) {
+        self.build_checked.set(true);
     }
 
     pub(super) fn is_remote(&self) -> bool {
@@ -204,20 +204,20 @@ pub(super) fn remote_error(context: &CliContext, error: io::Error) -> io::Error 
         .as_ref()
         .and_then(shepr_remote::SavedSshApiBridge::reported_failure)
         .unwrap_or(error);
-    io::Error::new(
-        error.kind(),
-        format!(
-            "machine '{}' (session {}): {error}",
-            target.profile.label, target.profile.session
-        ),
-    )
+    // Keep the typed SSH failure so callers can still tell authentication,
+    // host-key and link failures apart after the machine name is added.
+    let diagnostic = shepr_remote::SshFailureDiagnostic::from_error(&error).with_context(format!(
+        "machine '{}' (session {})",
+        target.profile.label, target.profile.session
+    ));
+    io::Error::new(error.kind(), diagnostic)
 }
 
 pub(super) fn restart_guidance(context: &CliContext) -> String {
     match &*context.target.borrow() {
         ApiTarget::Machine(target) => format!(
-            "Update Shepr and restart the server on machine '{}' (session {}). Stopping the server exits its pane processes.",
-            target.profile.label, target.profile.session
+            "Install the same Shepr build on machine '{}' and stop its server (session {}) with `shepr --machine {} server stop`; the next connection starts it again. Stopping the server exits its pane processes.",
+            target.profile.label, target.profile.session, target.profile.id
         ),
         ApiTarget::Local => shepr_api::session::restart_after_update_guidance_for(context),
     }

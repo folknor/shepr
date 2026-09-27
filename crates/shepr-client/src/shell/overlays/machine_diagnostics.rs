@@ -7,15 +7,22 @@ use shepr_termio::input::raw_input::RawInputEvent;
 
 #[derive(Default)]
 pub(super) struct MachineDiagnostics {
-    errors: HashMap<ClientEndpointId, String>,
+    errors: HashMap<ClientEndpointId, MachineDiagnostic>,
     hover: Option<ClientEndpointId>,
+}
+
+/// A machine's last failure: sanitized display text plus the structured SSH
+/// class it was reported with, so the text is never re-parsed.
+struct MachineDiagnostic {
+    message: String,
+    requires_authentication: bool,
 }
 
 impl MachineDiagnostics {
     pub(super) fn required_for(&self, endpoint: &ClientShellEndpoint) -> bool {
         self.errors
             .get(&endpoint.endpoint_id)
-            .is_some_and(|message| shepr_remote::ssh_error_requires_authentication(message))
+            .is_some_and(|diagnostic| diagnostic.requires_authentication)
     }
 
     pub(super) fn badge_style(
@@ -37,15 +44,22 @@ impl MachineDiagnostics {
 }
 
 impl ClientShellState {
-    pub(crate) fn set_machine_diagnostic(&mut self, id: &ClientEndpointId, message: &str) {
+    pub(crate) fn set_machine_diagnostic(
+        &mut self,
+        id: &ClientEndpointId,
+        failure: &shepr_remote::SshFailureDiagnostic,
+    ) {
         if !id.is_local() {
             self.machine_diagnostics.errors.insert(
                 id.clone(),
-                message
-                    .chars()
-                    .filter(|c| !c.is_control() || *c == '\n')
-                    .take(4096)
-                    .collect(),
+                MachineDiagnostic {
+                    message: failure
+                        .chars()
+                        .filter(|c| !c.is_control() || *c == '\n')
+                        .take(4096)
+                        .collect(),
+                    requires_authentication: failure.requires_authentication(),
+                },
             );
         }
     }
@@ -95,13 +109,13 @@ impl ClientShellState {
         if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
             return false;
         }
-        let Some(error) = self.machine_diagnostics.errors.get(&id) else {
+        let Some(diagnostic) = self.machine_diagnostics.errors.get(&id) else {
             return true;
         };
         let ClientEndpointId::Ssh(profile_id) = &id else {
             return true;
         };
-        let command = if shepr_remote::ssh_error_requires_authentication(error) {
+        let command = if diagnostic.requires_authentication {
             format!("shepr machine reconnect {profile_id}")
         } else {
             format!("shepr machine status {profile_id}")
@@ -122,7 +136,7 @@ impl ClientShellState {
                 code,
             },
             title: format!("{}: {command}", self.endpoint_label(&id)),
-            body: error.clone(),
+            body: diagnostic.message.clone(),
         });
         outcome.repaint = true;
         true
